@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use ui::prelude::*;
 
@@ -53,6 +53,16 @@ pub struct Delivery {
     /// the timer was deleted.
     #[serde(default)]
     pub native_owners: BTreeSet<String>,
+    /// Alarm occurrences handed to the host, retained across app restarts.
+    #[serde(default)]
+    pub native_alarms_scheduled: BTreeMap<String, i64>,
+    /// Alarm tags this device owns until cancellation is confirmed.
+    #[serde(default)]
+    pub native_alarm_owners: BTreeSet<String>,
+    /// Completed host one-shot generations: automatic switch-off must not
+    /// cancel a snooze retained by the host. Edits and deletion still cancel.
+    #[serde(default)]
+    pub native_completed_alarms: BTreeMap<String, (u8, u8, u8, i64)>,
 }
 
 /// One alarm's armed occurrence on this device.
@@ -69,7 +79,7 @@ pub struct ArmedAlarm {
     pub last_rung: Option<NaiveDate>,
 }
 
-fn schedule_of(alarm: &Alarm) -> (u8, u8, u8, i64) {
+pub(crate) fn schedule_of(alarm: &Alarm) -> (u8, u8, u8, i64) {
     (alarm.hour, alarm.minute, alarm.repeat, alarm.enabled_at_ms)
 }
 
@@ -80,6 +90,7 @@ pub enum DueEvent {
         id: Id,
         label: String,
         scheduled_for: DateTime<Utc>,
+        native_scheduled: bool,
     },
     Timer {
         id: Id,
@@ -116,12 +127,17 @@ pub fn tick(
             continue;
         }
         let armed = delivery.alarms.entry(id.as_str().to_owned()).or_default();
-        if armed.schedule != schedule_of(alarm) {
+        let rearmed = armed.schedule != schedule_of(alarm);
+        if rearmed {
             *armed = ArmedAlarm {
                 schedule: schedule_of(alarm),
                 next_due_ms: None,
                 last_rung: armed.last_rung,
             };
+        }
+        if !rearmed && alarm.repeat == 0 && armed.next_due_ms.is_none() && armed.last_rung.is_some()
+        {
+            continue;
         }
         if armed.next_due_ms.is_none_or(|deadline| deadline > now_ms) {
             // Resolve in local time, so future deadlines follow time zone
@@ -137,10 +153,18 @@ pub fn tick(
             continue;
         };
         let scheduled_for = instant(deadline);
+        let native_scheduled =
+            delivery.native_alarms_scheduled.remove(id.as_str()) == Some(deadline);
+        if alarm.repeat == 0 && native_scheduled {
+            delivery
+                .native_completed_alarms
+                .insert(id.as_str().to_owned(), schedule_of(alarm));
+        }
         found.due.push(DueEvent::Alarm {
             id: id.clone(),
             label: alarm.label.clone(),
             scheduled_for,
+            native_scheduled,
         });
         armed.last_rung = Some(scheduled_for.with_timezone(&Local).date_naive());
         if alarm.repeat == 0 {
@@ -194,29 +218,12 @@ pub(crate) fn next_occurrence_in<Tz: TimeZone>(
     if !alarm.enabled {
         return None;
     }
-    for day in 0..=8_i64 {
-        let date = after
-            .date_naive()
-            .checked_add_signed(chrono::Duration::days(day))?;
-        if last_rung == Some(date)
-            || (alarm.repeat != 0 && !alarm.repeats_on(date.weekday().into()))
-        {
-            continue;
-        }
-        let mut naive = date.and_time(alarm.local_time());
-        for _ in 0..180 {
-            if let Some(candidate) = after.timezone().from_local_datetime(&naive).earliest() {
-                if candidate > *after {
-                    return Some(candidate);
-                }
-                // A valid occurrence that has passed belongs to another day.
-                // Only nonexistent spring-forward times advance by a minute.
-                break;
-            }
-            naive = naive.checked_add_signed(chrono::Duration::minutes(1))?;
-        }
+    ui::notify::CalendarAlarm {
+        hour: alarm.hour,
+        minute: alarm.minute,
+        weekdays: alarm.repeat,
     }
-    None
+    .next_in(last_rung, after)
 }
 
 /// The clock the shell shows above other windows.

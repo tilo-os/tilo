@@ -2,9 +2,8 @@
 //!
 //! Every [`Category`] pane is findable from the unified Ctrl+K palette by its
 //! title, summary, or any of its built-in keyword synonyms ("vpn", "night
-//! light", "wallpaper", …). Each entry invokes its pane's row's open
-//! effect, so search, agents, accessibility and the sidebar all
-//! open a pane the same way.
+//! light", "wallpaper", …). Each entry is anchored at its pane's row and
+//! opens that pane, as an agent's `open` of the row and the sidebar do.
 //!
 //! This indexes **panes** (navigation), not individual toggles — those are
 //! already exported to Ctrl+K as the app's effects.
@@ -25,7 +24,7 @@ pub fn pane_entries() -> Vec<SearchEntry> {
         .copied()
         .map(|category| {
             SearchEntry::new(category.label(), category.keywords().join(" "))
-                .invoking(crate::effects::open_pane_address(category))
+                .anchored(crate::effects::pane_row_id(category))
                 .grouped(SETTINGS_KIND)
                 .subtitled(category.subtitle())
                 .with_icon(category.icon().name())
@@ -36,7 +35,6 @@ pub fn pane_entries() -> Vec<SearchEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::ActionAddress;
     use ui::search::{SearchProvider, SearchRegistry};
 
     /// The app's search source, as the framework builds it.
@@ -51,8 +49,8 @@ mod tests {
         // "night light" is a Displays keyword synonym, not in the label.
         let hits = provider.search("night light");
         assert!(
-            hits.iter().any(|r| r.action_address()
-                == Some(crate::effects::open_pane_address(Category::Displays))),
+            hits.iter()
+                .any(|r| r.action_id == crate::effects::pane_row_id(Category::Displays)),
             "a keyword synonym surfaces its pane, got {:?}",
             hits.iter().map(|r| &r.title).collect::<Vec<_>>()
         );
@@ -65,7 +63,8 @@ mod tests {
         let mut cursor = None;
         let mut titles = Vec::new();
         loop {
-            let page = provider.search_page("", cursor.as_ref(), 1, 1);
+            let page =
+                provider.search_page(&ui::search::SearchQuery::new(""), cursor.as_ref(), 1, 1);
             assert!(page.inspected <= 1, "a page must respect its work budget");
             assert!(
                 page.results.len() <= 1,
@@ -88,51 +87,79 @@ mod tests {
     }
 
     #[test]
-    fn result_addresses_the_exported_open_action() {
+    fn a_hit_is_anchored_at_its_panes_row() {
         let mut registry = SearchRegistry::new();
         registry.register(Box::new(source()));
         let hit = registry
             .query("appearance")
             .into_iter()
-            .find(|r| {
-                r.action_address() == Some(crate::effects::open_pane_address(Category::Appearance))
-            })
+            .find(|r| r.action_id == crate::effects::pane_row_id(Category::Appearance))
             .expect("Appearance is findable");
         assert_eq!(
-            hit.action_address(),
-            Some(crate::effects::open_pane_address(Category::Appearance))
+            hit.anchor(),
+            crate::effects::pane_row_id(Category::Appearance)
         );
     }
 
-    /// Every search address names a pane's row, which offers exactly that
-    /// view; a removed pane or action names nothing.
+    /// Every hit's anchor names a pane's row, which opens exactly that pane;
+    /// a removed pane names nothing.
     #[test]
-    fn every_search_address_names_its_panes_row() {
+    fn every_search_anchor_names_its_panes_row() {
         let config = crate::prefs::test_env::ScratchConfig::new();
         let app = config.app();
         let hits = source().search("");
         assert_eq!(hits.len(), Category::ALL.len());
         for (category, hit) in Category::ALL.iter().copied().zip(hits) {
-            let address = hit.action_address().expect("canonical action address");
-            assert_eq!(address, crate::effects::open_pane_address(category));
-            let row = crate::effects::row(&app, &address.resource)
-                .expect("the search address names a row")
+            assert_eq!(hit.action_id, crate::effects::pane_row_id(category));
+            assert_eq!(crate::effects::pane_of_row(&hit.action_id), Some(category));
+            let row = crate::effects::row(&app, &hit.action_id)
+                .expect("the anchor names a row")
                 .into_resource();
-            let rows = [row];
-            let spec = tilo_actions::door::resolve(&rows, &address)
-                .expect("the row offers the search address");
-            assert_eq!(spec.kind, tilo_actions::OperationKind::View);
+            let open = row
+                .actions
+                .iter()
+                .find(|spec| spec.id == "open-pane")
+                .expect("the row opens its pane");
+            assert_eq!(open.kind, tilo_actions::OperationKind::View);
         }
-
         assert!(crate::effects::row(&app, "settings.section:removed-pane").is_none());
-        let stale_action = ActionAddress::new(
-            crate::effects::pane_row_id(Category::Accessibility),
-            "removed-action",
-        );
-        let current = crate::effects::row(&app, &stale_action.resource)
-            .expect("the current row remains")
-            .into_resource();
-        let rows = [current];
-        assert!(tilo_actions::door::resolve(&rows, &stale_action).is_none());
+        assert!(crate::effects::pane_of_row("settings.section:removed-pane").is_none());
+    }
+
+    /// A hit opens its pane in the mounted `ResourceApp`, including the
+    /// narrow navigation stack, as picking it in search does.
+    #[test]
+    fn every_pane_search_hit_opens_its_mounted_live_surface() {
+        let provider = source();
+        for width in [1200, 440] {
+            let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
+                .expect("Settings mounts in its production resource host");
+            app.harness()
+                .resize((width, 900))
+                .expect("Settings lays out at this window width");
+            for category in Category::ALL.iter().copied() {
+                let anchor = crate::effects::pane_row_id(category);
+                let hit = provider
+                    .search(&category.label())
+                    .into_iter()
+                    .find(|hit| hit.action_id == anchor)
+                    .expect("the pane is found by its displayed name");
+                app.call("open", serde_json::json!({ "anchor": hit.anchor() }))
+                    .expect("the mounted app opens the hit's anchor");
+                app.harness().relayout();
+                assert_eq!(
+                    app.surface::<crate::SettingsApp, _>(|surface| surface.selected()),
+                    Some(category),
+                    "search opens {category:?} at width {width}"
+                );
+                if width == 440 {
+                    assert_eq!(
+                        app.surface::<crate::SettingsApp, _>(|surface| surface.sidebar_open()),
+                        Some(false),
+                        "the narrow search result opens content rather than the category list"
+                    );
+                }
+            }
+        }
     }
 }

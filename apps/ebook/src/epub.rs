@@ -56,6 +56,36 @@ const MAX_SPINE_ITEMS: usize = 1_024;
 const MAX_COVER_DIMENSION: u32 = 4_096;
 const MAX_COVER_PIXELS: u64 = 4_000_000;
 
+/// Why a book could not be opened, in words a reader can act on. It is the
+/// outermost context of every [`parse_epub`] error, so the error's `Display`
+/// is this sentence; the parser's own detail stays in the chain (`{:#}`) for
+/// logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenProblem {
+    /// Larger than [`MAX_EPUB_BYTES`].
+    TooLarge,
+    /// Not a ZIP archive, or no readable EPUB package inside it.
+    Damaged,
+    /// The package lists no chapters, or none of them hold text.
+    NoChapters,
+    /// A chapter the package lists is missing or unreadable.
+    MissingChapter,
+    /// More chapters or text than the reader holds in memory.
+    TooLong,
+}
+
+impl std::fmt::Display for OpenProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::TooLarge => "The book is larger than 128 MiB.",
+            Self::Damaged => "The file is damaged or isn’t an EPUB book.",
+            Self::NoChapters => "The book has no chapters to read.",
+            Self::MissingChapter => "Part of the book is missing or damaged.",
+            Self::TooLong => "The book is too long to open.",
+        })
+    }
+}
+
 type Archive<'a> = BoundedArchive<Cursor<&'a [u8]>>;
 
 /// A book's stable identity: the BLAKE3 content hash of its EPUB bytes,
@@ -86,29 +116,32 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
             "epub is too large ({} MiB; maximum is {} MiB)",
             bytes.len() / (1024 * 1024),
             MAX_EPUB_BYTES / (1024 * 1024)
-        ));
+        )
+        .context(OpenProblem::TooLarge));
     }
     // `Cursor<&[u8]>` lets the archive seek through the caller's buffer
     // directly. A `Cursor<Vec<u8>>` would duplicate even an accepted 128 MiB
     // book before we had read a single chapter.
-    let mut archive =
-        BoundedArchive::from_bytes(bytes, ZipLimits::default()).context("open epub zip")?;
+    let mut archive = BoundedArchive::from_bytes(bytes, ZipLimits::default())
+        .context("open epub zip")
+        .context(OpenProblem::Damaged)?;
 
-    let opf_path = epub::find_opf_path(&mut archive)?;
+    let opf_path = epub::find_opf_path(&mut archive).context(OpenProblem::Damaged)?;
     let base = parent_dir(&opf_path);
 
-    let pkg = epub::read_package(&mut archive, &opf_path)?;
+    let pkg = epub::read_package(&mut archive, &opf_path).context(OpenProblem::Damaged)?;
     if pkg.spine.is_empty() {
-        return Err(anyhow!("OPF spine is empty"));
+        return Err(anyhow!("OPF spine is empty").context(OpenProblem::NoChapters));
     }
 
     // Build href -> title map from the TOC (nav doc first, then NCX).
     let toc = read_toc(&mut archive, &pkg, &base);
 
     if pkg.spine.len() > MAX_SPINE_ITEMS {
-        return Err(anyhow!(
-            "epub has too many spine documents (maximum {MAX_SPINE_ITEMS})"
-        ));
+        return Err(
+            anyhow!("epub has too many spine documents (maximum {MAX_SPINE_ITEMS})")
+                .context(OpenProblem::TooLong),
+        );
     }
     let mut chapters = Vec::with_capacity(pkg.spine.len());
     let mut total_spine_bytes = 0usize;
@@ -119,13 +152,15 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
         // successfully-opened book lie about its contents, so report the
         // precise chapter instead.
         let src = read_entry(&mut archive, spine_href, MAX_CHAPTER_BYTES)
-            .with_context(|| format!("read spine document: {spine_href}"))?;
+            .with_context(|| format!("read spine document: {spine_href}"))
+            .context(OpenProblem::MissingChapter)?;
         total_spine_bytes = total_spine_bytes.saturating_add(src.len());
         if total_spine_bytes > MAX_TOTAL_SPINE_BYTES {
             return Err(anyhow!(
                 "epub text is too large (maximum {} MiB)",
                 MAX_TOTAL_SPINE_BYTES / (1024 * 1024)
-            ));
+            )
+            .context(OpenProblem::TooLong));
         }
         let blocks = parse_xhtml(&src);
         let title = toc
@@ -133,15 +168,11 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
             .cloned()
             .or_else(|| first_heading(&blocks))
             .unwrap_or_else(|| format!("Chapter {}", chapters.len() + 1));
-        chapters.push(Chapter {
-            title,
-            href: spine_href.to_string(),
-            blocks,
-        });
+        chapters.push(Chapter { title, blocks });
     }
 
     if chapters.is_empty() {
-        return Err(anyhow!("epub has no readable chapters"));
+        return Err(anyhow!("epub has no readable chapters").context(OpenProblem::NoChapters));
     }
 
     // Identity is the content hash of the file, never the path or the
@@ -173,13 +204,11 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
             pkg.title
         },
         author: pkg.creator,
-        publisher: pkg.publisher,
         language: if pkg.language.is_empty() {
             "en".into()
         } else {
             pkg.language
         },
-        description: pkg.description,
         chapters,
         cover_tint,
         subject,
@@ -338,7 +367,7 @@ mod tests {
             // The same bytes always produce the same id — that is what lets a book's
             // highlights and reading progress follow it across folders, devices and
             // peers. Two different files produce two different ids.
-            let bytes = include_bytes!("../assets/sample.epub");
+            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/sample.epub"));
             let a = parse_epub(bytes, 0, "Fable").unwrap();
             let b = parse_epub(bytes, 3, "Something else").unwrap();
             assert_eq!(
@@ -363,7 +392,7 @@ mod tests {
 
         // --- phase: parses_the_bundled_sample ---
         {
-            let bytes = include_bytes!("../assets/sample.epub");
+            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/sample.epub"));
             let book = parse_epub(bytes, 0, "Fable").expect("sample.epub parses");
             assert_eq!(book.title, "The Lantern-Keeper's Almanac");
             assert_eq!(book.author, "Wren Halloway");

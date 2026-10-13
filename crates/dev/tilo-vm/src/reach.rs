@@ -9,12 +9,12 @@
 //! address. A device that is not found either is asleep or gone, and
 //! `tilo-vm vm wake` sends its Wake-on-LAN magic packet from this machine.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs as _, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::hypervisor::{CommandLine, Runner};
+use crate::hypervisor::{CommandLine, Runner, SshEndpoint};
 
 /// The UDP port magic packets go to (discard).
 pub const WAKE_PORT: u16 = 9;
@@ -325,35 +325,44 @@ pub fn lost(detail: &str) -> bool {
     .any(|sign| detail.contains(sign))
 }
 
-/// What one TCP connection attempt to the SSH port says.
+/// What an authenticated SSH attempt says about device reachability.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Probe {
-    /// Something listens, or refuses: the machine is there; ssh says the rest.
+    /// The machine answers; normal connection handling reports any refusal.
     There,
     /// No route, or no answer in time.
     Lost(String),
-    /// The name does not resolve here (an ssh config alias, say): only ssh
-    /// can tell.
+    /// The SSH transport could not be run; normal connection handling explains it.
     Unknown,
 }
 
-/// Try the SSH port once, for at most `timeout`.
-pub fn probe(host: &str, port: u16, timeout: Duration) -> Probe {
-    let addresses: Vec<SocketAddr> = match (host, port).to_socket_addrs() {
-        Ok(addresses) => addresses.collect(),
-        Err(_) => return Probe::Unknown,
-    };
-    let mut lost = None;
-    for address in addresses {
-        match TcpStream::connect_timeout(&address, timeout) {
-            Ok(_) => return Probe::There,
-            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
-                return Probe::There;
-            }
-            Err(error) => lost = Some(error.to_string()),
+/// Check reachability through the ordinary key-only SSH transport.
+///
+/// A raw TCP connect followed by close counts as an unauthenticated connection
+/// to sshd and can penalize later legitimate requests. Authenticate instead,
+/// using the same key and host-key policy as the eventual daemon connection.
+/// `true` needs neither root nor the daemon to be installed.
+pub fn probe(
+    runner: &mut dyn Runner,
+    endpoint: &SshEndpoint,
+    key: Option<&str>,
+    timeout: Duration,
+) -> Probe {
+    let mut command = crate::remote::ssh_transport(endpoint, key, false);
+    let timeout = format!("ConnectTimeout={}", timeout.as_secs().max(1));
+    for argument in &mut command.args {
+        if argument.starts_with("ConnectTimeout=") {
+            argument.clone_from(&timeout);
         }
     }
-    lost.map_or(Probe::Unknown, Probe::Lost)
+    command.args.push("true".into());
+    match runner.output(&command) {
+        Ok(output) if !output.success && lost(&output.stderr) => {
+            Probe::Lost(output.stderr.trim().to_owned())
+        }
+        Ok(_) => Probe::There,
+        Err(_) => Probe::Unknown,
+    }
 }
 
 /// `name` (`<hostname>.local`) through the system resolver (`getent hosts`,
@@ -602,6 +611,118 @@ mod tests {
         assert_eq!(resolve(&mut runner, "yoga.local"), None);
     }
 
+    struct SshProbe {
+        stderr: &'static str,
+        commands: Vec<CommandLine>,
+        interactive_called: bool,
+    }
+
+    impl Runner for SshProbe {
+        fn output(&mut self, command: &CommandLine) -> Result<Output, CliError> {
+            self.commands.push(command.clone());
+            Ok(Output {
+                success: self.stderr.is_empty(),
+                status: String::new(),
+                stdout: String::new(),
+                stderr: self.stderr.into(),
+            })
+        }
+
+        fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
+            self.interactive_called = true;
+            Err(CliError::ToolMissing {
+                tool: command.program.clone(),
+                purpose: "reachability must never request interactive authentication".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn reachability_authenticates_without_opening_an_unauthenticated_tcp_probe() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = SshEndpoint {
+            host: "127.0.0.1".into(),
+            port: listener.local_addr().unwrap().port(),
+            user: "owner".into(),
+        };
+        let mut runner = SshProbe {
+            stderr: "",
+            commands: Vec::new(),
+            interactive_called: false,
+        };
+        for _ in 0..10 {
+            assert_eq!(
+                probe(
+                    &mut runner,
+                    &endpoint,
+                    Some("/private/key"),
+                    Duration::from_secs(3)
+                ),
+                Probe::There
+            );
+        }
+        assert_eq!(runner.commands.len(), 10);
+        assert!(!runner.interactive_called);
+        for command in &runner.commands {
+            let mut expected = crate::remote::ssh_transport(&endpoint, Some("/private/key"), false);
+            for argument in &mut expected.args {
+                if argument == "ConnectTimeout=10" {
+                    *argument = "ConnectTimeout=3".into();
+                }
+            }
+            expected.args.push("true".into());
+            assert_eq!(command, &expected);
+            assert!(command.args.iter().any(|arg| arg == "BatchMode=yes"));
+            assert!(
+                command
+                    .args
+                    .iter()
+                    .any(|arg| arg == "StrictHostKeyChecking=accept-new")
+            );
+            assert!(!command.args.iter().any(|arg| arg == "sudo" || arg == "-t"));
+        }
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn authenticated_reachability_keeps_refusals_distinct_from_network_loss() {
+        let endpoint = SshEndpoint {
+            host: "device-alias".into(),
+            port: 22,
+            user: "owner".into(),
+        };
+        let mut runner = SshProbe {
+            stderr: "",
+            commands: Vec::new(),
+            interactive_called: false,
+        };
+        for detail in [
+            "Permission denied (publickey).",
+            "Host key verification failed.",
+            "ssh: connect to host x port 22: Connection refused",
+        ] {
+            runner.stderr = detail;
+            assert_eq!(
+                probe(&mut runner, &endpoint, None, Duration::from_secs(3)),
+                Probe::There
+            );
+        }
+        for detail in [
+            "ssh: connect to host x port 22: No route to host",
+            "ssh: connect to host x port 22: Connection timed out",
+        ] {
+            runner.stderr = detail;
+            assert_eq!(
+                probe(&mut runner, &endpoint, None, Duration::from_secs(3)),
+                Probe::Lost(detail.into())
+            );
+        }
+    }
+
     /// ssh's words for a lost route, as opposed to a refusal.
     #[test]
     fn a_lost_route_is_told_apart_from_a_refusal() {
@@ -612,6 +733,5 @@ mod tests {
         assert!(lost("connect to host x port 22: Network is unreachable"));
         assert!(!lost("ssh: connect to host x port 22: Connection refused"));
         assert!(!lost("Permission denied (publickey)."));
-        assert_eq!(probe("127.0.0.1", 1, Duration::from_secs(1)), Probe::There);
     }
 }

@@ -6,11 +6,6 @@
 )]
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
@@ -29,7 +24,7 @@ use tilo_user_identity::{
 };
 
 use tilo_relay::{
-    RelayConfig, RelayHandle, WorkspaceBinding,
+    RelayConfig, WorkspaceBinding,
     daemon::{Relay, RelayIdentity},
 };
 
@@ -245,12 +240,6 @@ pub async fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
     })
     .await;
 }
-
-#[allow(
-    dead_code,
-    reason = "names RelayHandle so the fixture import stays exercised"
-)]
-pub fn _keep_symbols_used(_h: &RelayHandle) {}
 
 fn phase_bytes() -> &'static std::sync::Mutex<std::collections::VecDeque<u8>> {
     static BUFFER: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<u8>>> =

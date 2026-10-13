@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use crate::carrier;
 pub use crate::carrier::{HANDSHAKE_BUDGET, SETUP_BUDGET};
+use crate::session_authority::{AuthorityDriver, Verdict};
 use crate::voice;
 
 pub const MAX_SESSIONS: usize = 8;
@@ -30,11 +31,9 @@ pub const MAX_AUTHORIZATION_BYTES: usize = carrier::MAX_GRANT_BYTES;
 pub const VOICE_PATH: &str = "/moq/voice";
 /// The one track a voice broadcast carries.
 pub const VOICE_TRACK: &str = "audio";
-const AUTHORITY_INTERVAL: Duration = Duration::from_millis(100);
-/// Longest continuous authority outage (owner contention) a live session may
-/// ride through, and the longest an offered namespace whose publisher
-/// authority lapsed may stay present before the subscriber fails closed.
-const AUTHORITY_FENCE: Duration = Duration::from_millis(900);
+/// Longest an offered namespace whose publisher authority lapsed may stay
+/// offered to a subscriber before that subscriber fails closed.
+const LAPSED_OFFER_FENCE: Duration = Duration::from_millis(900);
 /// How long a revoked or expired session may stay open after the revocation
 /// notice so the client closes first. Chromium can crash its renderer when the
 /// server closes a WebTransport session with streams in flight. No media flows
@@ -73,20 +72,19 @@ pub enum Direction {
     Subscribe,
 }
 
-/// A host-owned, privately constructed authorization result. Implementations
-/// must recheck expiry, revocation, membership and participation generation in
-/// `current`. Names are exact opaque broadcast paths, never arbitrary prefixes.
-#[derive(Clone, Copy, Debug)]
+/// One observation of a session's authority. There is no "cannot tell"
+/// state: an authority that cannot observe current permission answers
+/// `Denied`, and the session ends on that observation
+/// (see `session_authority`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthorizationStatus {
     Current,
-    /// Temporary observation contention, bounded by the verified lease's
-    /// monotonic deadline. This never grants a new session admission.
-    Unavailable {
-        expires_at: Instant,
-    },
     Denied,
 }
 
+/// A host-owned, privately constructed authorization result. Implementations
+/// must recheck expiry, revocation, membership and participation generation in
+/// `current`. Names are exact opaque broadcast paths, never arbitrary prefixes.
 pub trait SessionAuthorization: Send + Sync {
     fn publication(&self) -> Option<&str>;
     fn subscriptions(&self) -> &[String];
@@ -118,7 +116,8 @@ pub trait SessionAuthorization: Send + Sync {
     /// authority lapsed while this session's own authority is current is
     /// pushed to `lapsed` instead of denying the whole session: the relay
     /// closes that publication and fails this session closed only if it
-    /// stays offered past the authority fence. The default fails closed.
+    /// stays offered past the lapsed-offer fence (900 ms). The default fails
+    /// closed.
     fn status_offered(&self, offered: &[&str], lapsed: &mut Vec<String>) -> AuthorizationStatus {
         let _ = lapsed;
         offered.iter().fold(self.status_all(), |status, name| {
@@ -134,36 +133,11 @@ pub trait RelayAuthority: Send + Sync {
     ///
     /// Returns [`Denied`] when the proof does not authorize a session.
     fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied>;
-    /// Like [`admit`](Self::admit), but reports owner/state contention that
-    /// occurred *before* any proof was verified or consumed as
-    /// [`Admission::Busy`], so the relay may retry within a short bound.
-    /// Implementations must never return `Busy` after consuming the proof.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Admission::Busy`] for contention before the proof was consumed,
-    /// and [`Admission::Denied`] otherwise.
-    fn try_admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Admission> {
-        self.admit(proof).map_err(|_| Admission::Denied)
-    }
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("media admission denied")]
 pub struct Denied;
-
-/// Admission failure classification. `Busy` is transient contention; it never
-/// admits by itself.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Admission {
-    Denied,
-    Busy,
-}
-
-/// New-session admission waits at most this long for transient owner/state
-/// contention to clear. It admits only on a `Current` observation.
-pub const ADMISSION_CONTENTION_WAIT: Duration = Duration::from_millis(250);
-const ADMISSION_RETRY: Duration = Duration::from_millis(5);
 
 #[derive(Default)]
 struct Counters {
@@ -171,7 +145,6 @@ struct Counters {
     rejected: AtomicU64,
     expired: AtomicU64,
     active: AtomicU64,
-    fenced: AtomicU64,
     lapsed: AtomicU64,
     forwarded: AtomicU64,
     dropped: AtomicU64,
@@ -181,9 +154,8 @@ struct Counters {
 
 /// Content-free lifecycle counters. These are not packet or audio-quality
 /// measurements, and never expose the proof or participant namespace.
-/// `fenced` counts sessions closed because authority stayed unobservable past
-/// the fence; `lapsed` counts publications closed because a subscriber
-/// observed their publisher authority lapse. `forwarded` and `dropped` count
+/// `lapsed` counts publications closed because a subscriber observed their
+/// publisher authority lapse. `forwarded` and `dropped` count
 /// objects and bundles the relay copied or refused. The two maxima
 /// (milliseconds) diagnose scheduler stalls versus slow owner observations.
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
@@ -192,7 +164,6 @@ pub struct CounterSnapshot {
     pub rejected: u64,
     pub expired: u64,
     pub active: u64,
-    pub fenced: u64,
     pub lapsed: u64,
     pub forwarded: u64,
     pub dropped: u64,
@@ -256,10 +227,13 @@ struct Ingress {
 
 struct RelayScopes {
     authorization: Arc<dyn SessionAuthorization>,
+    authority: AuthorityDriver,
     ingress: Option<Ingress>,
     subscribe: Option<moq_net::origin::Consumer>,
     /// The session's own view of `subscribe`, the only thing it is served from.
     view: Option<crate::mirror::Mirror>,
+    /// Re-bundles the voice datagrams `view` serves for this session's loss.
+    downlink: Arc<crate::mirror::Downlink>,
     offered: Option<Offered>,
 }
 
@@ -316,7 +290,6 @@ impl Relay {
             rejected: load(&c.rejected),
             expired: load(&c.expired),
             active: load(&c.active),
-            fenced: load(&c.fenced),
             lapsed: load(&c.lapsed),
             forwarded: load(&c.forwarded),
             dropped: load(&c.dropped),
@@ -363,7 +336,7 @@ impl Relay {
             return;
         };
         let accepted = carrier::accept(transport, |proof| async move {
-            let mut scopes = self.scopes(&proof).await?;
+            let mut scopes = self.scopes(&proof)?;
             let mut server = moq_net::Server::new();
             if let Some(ingress) = &scopes.ingress {
                 let name = scopes.authorization.publication()?;
@@ -371,8 +344,12 @@ impl Relay {
                 server = server.with_subscriber(own);
             }
             if let Some(subscribe) = &scopes.subscribe {
-                let view =
-                    crate::mirror::Mirror::start(subscribe.clone(), VIEW_BYTES, VOICE_RETAIN);
+                let view = crate::mirror::Mirror::start(
+                    subscribe.clone(),
+                    VIEW_BYTES,
+                    VOICE_RETAIN,
+                    Some(scopes.downlink.clone()),
+                );
                 server = server.with_publisher(view.consume());
                 scopes.view = Some(view);
             }
@@ -386,24 +363,11 @@ impl Relay {
         self.run_session(accepted, scopes).await;
     }
 
-    async fn scopes(&self, proof: &[u8]) -> Option<RelayScopes> {
+    fn scopes(&self, proof: &[u8]) -> Option<RelayScopes> {
         if proof.is_empty() || proof.len() > MAX_AUTHORIZATION_BYTES {
             return None;
         }
-        // Transient contention (an owner commit in progress, or another
-        // session's periodic check holding the authority) is waited out for a
-        // short bound instead of turning an honest join into a denial. Only a
-        // Current observation admits; the bound and expiry keep this fail-closed.
-        let deadline = crate::later(Instant::now(), ADMISSION_CONTENTION_WAIT);
-        let authorization = loop {
-            match self.authority.try_admit(proof) {
-                Ok(authorization) => break authorization,
-                Err(Admission::Busy) if Instant::now() < deadline => {
-                    tokio::time::sleep(ADMISSION_RETRY).await;
-                }
-                Err(_) => return None,
-            }
-        };
+        let authorization = self.authority.admit(proof).ok()?;
         if !scopes_well_formed(authorization.as_ref()) {
             return None;
         }
@@ -435,17 +399,8 @@ impl Relay {
                 (Some(consumer), None)
             }
         };
-        loop {
-            match self.observe(authorization.as_ref(), offered.as_mut()) {
-                AuthorizationStatus::Current => break,
-                AuthorizationStatus::Unavailable { expires_at }
-                    if Instant::now() < deadline.min(expires_at) =>
-                {
-                    tokio::time::sleep(ADMISSION_RETRY).await;
-                }
-                _ => return None,
-            }
-        }
+        let authority =
+            AuthorityDriver::admit(self.observe(authorization.as_ref(), offered.as_mut()))?;
         let ingress = authorization.publication().map(|_| {
             let (origin, task) =
                 carrier::OriginTask::produce(carrier::origin_config(INGRESS_BYTES, VOICE_RETAIN));
@@ -456,9 +411,11 @@ impl Relay {
         });
         Some(RelayScopes {
             authorization,
+            authority,
             ingress,
             subscribe,
             view: None,
+            downlink: Arc::default(),
             offered,
         })
     }
@@ -467,7 +424,7 @@ impl Relay {
     /// against exactly the namespaces the relay currently offers it. A lapsed
     /// publisher is not this subscriber's revocation: its publication is
     /// closed instead, and the subscriber fails closed only if that namespace
-    /// is still offered after the authority fence.
+    /// is still offered after [`LAPSED_OFFER_FENCE`].
     fn observe(
         &self,
         authorization: &dyn SessionAuthorization,
@@ -499,7 +456,7 @@ impl Relay {
                     let stale = offered
                         .lapsed
                         .values()
-                        .any(|since| now.duration_since(*since) >= AUTHORITY_FENCE);
+                        .any(|since| now.duration_since(*since) >= LAPSED_OFFER_FENCE);
                     if stale {
                         AuthorizationStatus::Denied
                     } else {
@@ -544,10 +501,6 @@ impl Relay {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one select loop owns the session's authority, revocation and driver"
-    )]
     async fn run_session(&self, accepted: carrier::Accepted, scopes: RelayScopes) {
         let carrier::Accepted {
             session,
@@ -557,13 +510,18 @@ impl Relay {
         } = accepted;
         let RelayScopes {
             authorization,
+            mut authority,
             ingress,
             subscribe: _subscribe,
             mut view,
+            downlink,
             mut offered,
         } = scopes;
-        // Scopes were observed Current during admission; the validity loop
-        // below re-observes every 100 ms with the bounded outage fence.
+        // Voice redundancy toward this session follows the loss its own
+        // connection measures.
+        downlink.attach((*transport).clone());
+        // Scopes were observed Current during admission; the loop below
+        // re-observes them on the authority driver's schedule.
         if !scopes_well_formed(authorization.as_ref()) {
             session.abort(moq_net::Error::Unauthorized);
             self.counters.rejected.fetch_add(1, Ordering::Relaxed);
@@ -594,11 +552,7 @@ impl Relay {
         tokio::pin!(revoked);
         let driver = moq_net::time::run(driver);
         tokio::pin!(driver);
-        let mut validity = tokio::time::interval(AUTHORITY_INTERVAL);
-        validity.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut last_current = Instant::now();
-        let mut last_tick = last_current;
-        let mut unavailable_deadline: Option<Instant> = None;
+        let mut last_tick = Instant::now();
         let lapsed = loop {
             tokio::select! {
                 _ = session.closed() => break false,
@@ -608,44 +562,16 @@ impl Relay {
                     self.counters.lapsed.fetch_add(1, Ordering::Relaxed);
                     break true;
                 },
-                () = async {
-                    if let Some(deadline) = unavailable_deadline {
-                        tokio::time::sleep_until(deadline.into()).await;
-                    } else {
-                        std::future::pending::<()>().await;
-                    }
-                } => {
-                    self.counters.fenced.fetch_add(1, Ordering::Relaxed);
-                    break true;
-                },
-                _ = validity.tick() => {
+                verdict = authority.next(|| {
                     let ticked = Instant::now();
                     let gap = ticked.duration_since(last_tick).as_millis().try_into().unwrap_or(u64::MAX);
                     self.counters.max_tick_gap_ms.fetch_max(gap, Ordering::Relaxed);
                     last_tick = ticked;
-                    let observed = self.observe(authorization.as_ref(), offered.as_mut());
-                    // Deadline expiry is terminal even if an unbiased select
-                    // chooses revalidation first, or the observation itself
-                    // returns after the deadline. A late Current cannot revive
-                    // an expired outage/verified-grant fence.
-                    let observed_at = Instant::now();
-                    let observed = if unavailable_deadline.is_some_and(|deadline| observed_at >= deadline) {
-                        AuthorizationStatus::Denied
-                    } else {
-                        observed
-                    };
-                    match observed {
-                        AuthorizationStatus::Current => {
-                            last_current = observed_at;
-                            unavailable_deadline = None;
-                        }
-                        AuthorizationStatus::Unavailable { expires_at } => {
-                            let deadline = crate::later(last_current, AUTHORITY_FENCE).min(expires_at);
-                            unavailable_deadline = Some(unavailable_deadline.map_or(deadline, |old| old.min(deadline)));
-                        }
-                        AuthorizationStatus::Denied => break true,
-                    }
-                }
+                    self.observe(authorization.as_ref(), offered.as_mut())
+                }) => match verdict {
+                    Verdict::Continue => {}
+                    Verdict::Revoked => break true,
+                },
             }
         };
         if lapsed {
@@ -709,13 +635,13 @@ impl Drop for LoopbackRelay {
 }
 
 /// The next datagram or group of a subscribed track.
-enum Next {
+pub(crate) enum Next {
     Datagram(moq_net::Datagram),
     Group(Box<moq_net::group::Consumer>),
     End,
 }
 
-async fn next(track: &mut moq_net::track::Subscriber) -> Next {
+pub(crate) async fn next(track: &mut moq_net::track::Subscriber) -> Next {
     moq_net::kio::wait(|waiter| {
         if let Poll::Ready(datagram) = track.poll_recv_datagram(waiter) {
             return Poll::Ready(match datagram {
@@ -902,27 +828,19 @@ fn scope_status(authorization: &dyn SessionAuthorization) -> AuthorizationStatus
     authorization.status_all()
 }
 
-/// Denial dominates; otherwise the earliest outage deadline is kept.
+/// Denial dominates.
 fn merge_status(a: AuthorizationStatus, b: AuthorizationStatus) -> AuthorizationStatus {
     match (a, b) {
-        (AuthorizationStatus::Denied, _) | (_, AuthorizationStatus::Denied) => {
-            AuthorizationStatus::Denied
+        (AuthorizationStatus::Current, AuthorizationStatus::Current) => {
+            AuthorizationStatus::Current
         }
-        (
-            AuthorizationStatus::Unavailable { expires_at: x },
-            AuthorizationStatus::Unavailable { expires_at: y },
-        ) => AuthorizationStatus::Unavailable {
-            expires_at: x.min(y),
-        },
-        (status @ AuthorizationStatus::Unavailable { .. }, AuthorizationStatus::Current)
-        | (AuthorizationStatus::Current, status) => status,
+        _ => AuthorizationStatus::Denied,
     }
 }
 
 fn combine_scope_status<A: SessionAuthorization + ?Sized>(
     authorization: &A,
 ) -> AuthorizationStatus {
-    let mut expires: Option<Instant> = None;
     let publication = authorization
         .publication()
         .map(|name| (Direction::Publish, name));
@@ -931,17 +849,11 @@ fn combine_scope_status<A: SessionAuthorization + ?Sized>(
         .iter()
         .map(|name| (Direction::Subscribe, name.as_str()));
     for (direction, namespace) in publication.into_iter().chain(subscriptions) {
-        match authorization.status(direction, namespace) {
-            AuthorizationStatus::Denied => return AuthorizationStatus::Denied,
-            AuthorizationStatus::Current => {}
-            AuthorizationStatus::Unavailable { expires_at } => {
-                expires = Some(expires.map_or(expires_at, |old| old.min(expires_at)));
-            }
+        if authorization.status(direction, namespace) == AuthorizationStatus::Denied {
+            return AuthorizationStatus::Denied;
         }
     }
-    expires.map_or(AuthorizationStatus::Current, |expires_at| {
-        AuthorizationStatus::Unavailable { expires_at }
-    })
+    AuthorizationStatus::Current
 }
 
 #[cfg(test)]
@@ -982,8 +894,6 @@ mod status_all_tests {
 
     struct PerScope {
         names: Vec<String>,
-        first: Instant,
-        second: Instant,
         denied: bool,
     }
     impl SessionAuthorization for PerScope {
@@ -998,30 +908,19 @@ mod status_all_tests {
         }
         fn status(&self, _: Direction, name: &str) -> AuthorizationStatus {
             match name {
-                "call/one" => AuthorizationStatus::Unavailable {
-                    expires_at: self.first,
-                },
                 "call/two" if self.denied => AuthorizationStatus::Denied,
-                "call/two" => AuthorizationStatus::Unavailable {
-                    expires_at: self.second,
-                },
                 _ => AuthorizationStatus::Current,
             }
         }
     }
 
     #[test]
-    fn default_aggregate_keeps_earliest_deadline_and_any_namespace_denial() {
-        let now = Instant::now();
+    fn default_aggregate_denies_on_any_namespace_denial() {
         let mut owner = PerScope {
             names: vec!["call/one".into(), "call/two".into()],
-            first: now + Duration::from_secs(5),
-            second: now + Duration::from_secs(2),
             denied: false,
         };
-        assert!(
-            matches!(scope_status(&owner), AuthorizationStatus::Unavailable { expires_at } if expires_at == owner.second)
-        );
+        assert!(matches!(scope_status(&owner), AuthorizationStatus::Current));
         owner.denied = true;
         assert!(matches!(scope_status(&owner), AuthorizationStatus::Denied));
         owner.names.clear();

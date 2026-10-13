@@ -5,6 +5,8 @@
 //! `AppKind` is the tile-host enum re-exported from `tile_host`: one enum,
 //! `Terminal, Files, Editor, Browser, Settings`.
 
+// Optional floating capabilities remain available through `dyn AppWidget`.
+// Re-export the extension at the app contract for hosts that import this module.
 use crate::widget::{AppKind, Widget};
 use std::cell::RefCell;
 use std::fmt;
@@ -93,12 +95,22 @@ pub struct HostShellAllow {
     pub answer: Option<bool>,
 }
 
+/// Admission result for a topology request, not acknowledgement of peer application.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DeviceDisplayMoveReply {
+    pub result: Option<Result<(), String>>,
+}
+
 /// A typed, device-local request from app content to shell chrome. Keeping
 /// this on the common app contract lets both in-process tiles and future IPC
 /// adapters use one destination without an app reaching into compositor
 /// state or pretending a status toast completed the navigation.
 #[derive(Debug, Clone)]
 pub enum AppHostIntent {
+    MoveDeviceDisplay {
+        request: settings_store::device_displays::DeviceDisplayMove,
+        reply: Weak<RefCell<DeviceDisplayMoveReply>>,
+    },
     ShowWorkspaceActivity {
         resource_id: String,
         version_id: Option<[u8; 16]>,
@@ -107,6 +119,9 @@ pub enum AppHostIntent {
         /// an empty resource lens while the durable indexes converge.
         entry: Option<crate::widget::HistoryEntry>,
     },
+    /// Open the platform search scoped to this app (or one part of it), with
+    /// the query already typed. The shell focuses the source tab first.
+    OpenSearch(crate::search::SearchRequest),
     /// A Files-selected local document. The shell validates and admits it only
     /// after the originating tile has released its record loan.
     OpenDocument {
@@ -126,6 +141,16 @@ pub enum AppHostIntent {
 impl PartialEq for AppHostIntent {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (
+                Self::MoveDeviceDisplay {
+                    request: left,
+                    reply: left_reply,
+                },
+                Self::MoveDeviceDisplay {
+                    request: right,
+                    reply: right_reply,
+                },
+            ) => left == right && Weak::ptr_eq(left_reply, right_reply),
             (
                 Self::ShowWorkspaceActivity {
                     resource_id: left_resource,
@@ -161,6 +186,7 @@ impl PartialEq for AppHostIntent {
                     && left_token == right_token
                     && Weak::ptr_eq(left_reply, right_reply)
             }
+            (Self::OpenSearch(left), Self::OpenSearch(right)) => left == right,
             (
                 Self::AllowHostShell { reply: left_reply },
                 Self::AllowHostShell { reply: right_reply },
@@ -248,8 +274,10 @@ pub trait AppWidget: Widget {
     fn app_kind(&self) -> AppKind;
     fn app_title(&self) -> &str;
     fn app_icon(&self) -> IconDescriptor;
-    /// Which role permission governs this app. `None` means "ungated".
-    fn permission_hint(&self) -> Option<AppKind>;
+    /// Which role permission governs this app. Default `None`: ungated.
+    fn permission_hint(&self) -> Option<AppKind> {
+        None
+    }
     /// Command-palette contributions. Default is none.
     fn commands(&self) -> Vec<AppCommand> {
         vec![]
@@ -257,6 +285,31 @@ pub trait AppWidget: Widget {
 
     /// Framework-owned durability, delivered only after the record loan ends.
     fn record_save_status(&mut self, _status: crate::record::RecordSaveStatus) {}
+
+    /// Answer a device-owner operation from the authenticated hosting shell.
+    /// This is not an app action and never grants access to a host shell.
+    ///
+    /// # Errors
+    /// Refuses unsupported or unavailable device-shell operations.
+    fn device_shell_operation(
+        &mut self,
+        _operation: &crate::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        Err("This application has no device shell".into())
+    }
+
+    /// Handle the trusted shell owner selecting the device shell, without granting it.
+    fn request_device_shell(&mut self) -> bool {
+        false
+    }
+
+    /// Whether the person asked to try a failed record save again
+    /// ([`crate::SaveAction::Retry`] on the [`crate::SaveStatusSurface`]),
+    /// once. The host that owns the record submits its changes again before
+    /// it next reports [`Self::record_save_status`].
+    fn take_save_retry(&mut self) -> bool {
+        false
+    }
 
     /// Drain a one-shot request for shell-owned chrome.
     fn take_host_intent(&mut self) -> Option<AppHostIntent> {
@@ -271,10 +324,10 @@ mod component_adapter {
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
         AudiencePresentationWidgetExt, AutoCommit, CaptureMode, CompleteContentProvider,
-        CompleteContentWidgetExt, Continuable, ControlBindingMetadata, DragPayload,
-        FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt,
-        HashMap, HashSet, Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey,
-        ResourceOperationStart, Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
+        CompleteContentWidgetExt, Continuable, ControlBindingMetadata, FloatingSurfaceProvider,
+        FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt, HashMap, HashSet,
+        Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey, ResourceOperationStart,
+        Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
 
     pub(crate) struct BoundAppWidget {
@@ -290,6 +343,46 @@ mod component_adapter {
                 component,
                 relayout: false,
             }
+        }
+
+        /// Run `f` on the component's root inside the component's record
+        /// frame, lending it the frame's edits at the record root. With no
+        /// root, or when the frame refuses, the answer is `R::default()`.
+        fn with_root_edits<R: Default>(
+            &mut self,
+            edits: &mut crate::widget::Edits<'_>,
+            f: impl FnOnce(&mut (dyn Widget + 'static), &mut crate::widget::Edits<'_>, &ObjId) -> R,
+        ) -> R {
+            let binding = self.component.callback_binding();
+            binding
+                .with_document(edits.document_mut(), |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return R::default();
+                    };
+                    f(root, &mut crate::widget::Edits::lend(document), record_root)
+                })
+                .unwrap_or_default()
+        }
+
+        /// Run `f` on the component's root inside its callback binding.
+        /// `None` when the binding refuses or there is no root.
+        fn in_root<'a, R>(
+            &'a self,
+            f: impl FnOnce(&'a (dyn AppWidget + 'static)) -> R,
+        ) -> Option<R> {
+            let binding = self.component.callback_binding();
+            let _entry = binding.enter().ok()?;
+            self.component.root.as_deref().map(f)
+        }
+
+        /// [`Self::in_root`] with the root lent mutably.
+        fn in_root_mut<R>(
+            &mut self,
+            f: impl FnOnce(&mut (dyn AppWidget + 'static)) -> R,
+        ) -> Option<R> {
+            let binding = self.component.callback_binding();
+            let _entry = binding.enter().ok()?;
+            self.component.root.as_deref_mut().map(f)
         }
     }
 
@@ -315,61 +408,114 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
+            self.with_root_edits(state, |root, edits, record_root| {
+                let Some(continuable) =
+                    crate::widget::capability::capability_mut::<dyn Continuable>(&mut *root)
+                else {
+                    return false;
+                };
+                continuable.restore_continuation_metadata(metadata, edits, record_root)
+            })
+        }
+
+        fn restore_live_continuation_metadata(
+            &mut self,
+            metadata: &crate::collaboration::ContinuationMetadata,
+            state: &AutoCommit,
+            _path: &ObjId,
+        ) -> bool {
             let binding = self.component.callback_binding();
             binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    let Some(continuable) =
-                        crate::widget::capability::capability_mut::<dyn Continuable>(&mut *root)
-                    else {
-                        return false;
-                    };
-                    continuable.restore_continuation_metadata(
-                        metadata,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    )
+                .read_document(state, |document, record_root| {
+                    self.component.root.as_deref_mut().is_some_and(|root| {
+                        crate::widget::capability::capability_mut::<dyn Continuable>(root)
+                            .is_some_and(|continuable| {
+                                continuable.restore_live_continuation_metadata(
+                                    metadata,
+                                    document,
+                                    record_root,
+                                )
+                            })
+                    })
                 })
                 .unwrap_or(false)
         }
     }
 
     impl FloatingSurfaceProvider for BoundAppWidget {
+        fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+            self.in_root_mut(|root| root.on_floating_surface_ime_source_changed(id));
+        }
+
+        fn draw_floating_surface(
+            &mut self,
+            id: &str,
+            scene: &mut vello::Scene,
+            transform: vello::kurbo::Affine,
+            text_renderer: &mut crate::text_render::TextRenderer,
+            theme: &crate::theme::Theme,
+            presence: &crate::presence::PresenceCtx,
+        ) -> bool {
+            self.in_root_mut(|root| {
+                root.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
+            })
+            .unwrap_or_default()
+        }
+
+        fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+            self.in_root_mut(|root| root.on_floating_surface_focus_changed(id, focused));
+        }
+
+        fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+            self.in_root_mut(|root| root.on_floating_surface_event_source(id));
+        }
+
+        fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+            self.in_root(|root| root.floating_surface_accessibility(id))
+                .flatten()
+        }
+
+        fn perform_floating_surface_accessibility_action(
+            &mut self,
+            id: &str,
+            target: &str,
+            action: &crate::a11y::Action,
+            state: &mut crate::widget::Edits<'_>,
+            _path: &ObjId,
+        ) -> bool {
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.perform_floating_surface_accessibility_action(
+                    id,
+                    target,
+                    action,
+                    edits,
+                    record_root,
+                )
+            })
+        }
+
+        fn floating_surface_ime(
+            &self,
+            id: &str,
+        ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)> {
+            self.in_root(|root| root.floating_surface_ime(id)).flatten()
+        }
+
         fn take_floating_surface_request(
             &mut self,
         ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            self.component
-                .root
-                .as_deref_mut()?
-                .take_floating_surface_request()
+            self.in_root_mut(|root| root.take_floating_surface_request())
+                .flatten()
         }
 
         fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            self.component
-                .root
-                .as_deref_mut()?
-                .take_capture_studio_request()
+            self.in_root_mut(|root| root.take_capture_studio_request())
+                .flatten()
         }
 
         fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            self.component.root.as_deref_mut().map_or_else(
-                Vec::new,
-                FloatingSurfaceWidgetExt::take_floating_surface_source_updates,
-            )
+            self.in_root_mut(FloatingSurfaceWidgetExt::take_floating_surface_source_updates)
+                .unwrap_or_default()
         }
 
         fn draw_floating_surfaces(
@@ -380,60 +526,32 @@ mod component_adapter {
             theme: &crate::theme::Theme,
             presence: &crate::presence::PresenceCtx,
         ) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            if let Some(root) = self.component.root.as_deref_mut() {
-                root.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
-            }
+            self.in_root_mut(|root| {
+                root.draw_floating_surfaces(scene, transform, text_renderer, theme, presence)
+            });
         }
 
         fn floating_surface_presentations(
             &self,
         ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            self.component.root.as_deref().map_or_else(
-                Vec::new,
-                FloatingSurfaceWidgetExt::floating_surface_presentations,
-            )
+            self.in_root(FloatingSurfaceWidgetExt::floating_surface_presentations)
+                .unwrap_or_default()
         }
 
         fn active_floating_surface_ids(&self) -> Vec<String> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            self.component.root.as_deref().map_or_else(
-                Vec::new,
-                FloatingSurfaceWidgetExt::active_floating_surface_ids,
-            )
+            self.in_root(FloatingSurfaceWidgetExt::active_floating_surface_ids)
+                .unwrap_or_default()
         }
 
         fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            if let Some(root) = self.component.root.as_deref_mut() {
-                root.set_floating_surface_bounds(bounds);
-            }
+            self.in_root_mut(|root| root.set_floating_surface_bounds(bounds));
         }
 
         fn on_floating_surface_host_message(
             &mut self,
             message: &crate::floating_surface::FloatingSurfaceHostMessage,
         ) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            if let Some(root) = self.component.root.as_deref_mut() {
-                root.on_floating_surface_host_message(message);
-            }
+            self.in_root_mut(|root| root.on_floating_surface_host_message(message));
         }
     }
 
@@ -441,24 +559,12 @@ mod component_adapter {
         fn audience_presentation_request(
             &self,
         ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            self.component
-                .root
-                .as_deref()?
-                .audience_presentation_request()
+            self.in_root(|root| root.audience_presentation_request())
+                .flatten()
         }
 
         fn on_audience_presentation_changed(&mut self, active: bool) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            if let Some(root) = self.component.root.as_deref_mut() {
-                root.on_audience_presentation_changed(active);
-            }
+            self.in_root_mut(|root| root.on_audience_presentation_changed(active));
         }
 
         fn draw_audience_presentation(
@@ -469,13 +575,10 @@ mod component_adapter {
             theme: &Theme,
             rect: vello::kurbo::Rect,
         ) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            self.component.root.as_deref_mut().is_some_and(|root| {
+            self.in_root_mut(|root| {
                 root.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
             })
+            .unwrap_or_default()
         }
 
         fn handle_audience_presentation_event(
@@ -484,65 +587,32 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    self.component.root.as_deref_mut().is_some_and(|root| {
-                        root.handle_audience_presentation_event(
-                            event,
-                            &mut crate::widget::Edits::lend(document),
-                            record_root,
-                        )
-                    })
-                })
-                .unwrap_or(false)
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.handle_audience_presentation_event(event, edits, record_root)
+            })
         }
 
         fn on_audience_presentation_closed(&mut self) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            if let Some(root) = self.component.root.as_deref_mut() {
-                root.on_audience_presentation_closed();
-            }
+            self.in_root_mut(|root| root.on_audience_presentation_closed());
         }
     }
 
     impl FullscreenProvider for BoundAppWidget {
         fn fullscreen_intent(&self) -> Option<bool> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            self.component.root.as_deref()?.fullscreen_intent()
+            self.in_root(|root| root.fullscreen_intent()).flatten()
         }
 
         fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return crate::fullscreen::FullscreenRequest::mirror(
-                    crate::fullscreen::FullscreenTarget::Largest,
-                );
-            };
-            self.component.root.as_deref().map_or_else(
-                || {
+            self.in_root(FullscreenWidgetExt::fullscreen_params)
+                .unwrap_or_else(|| {
                     crate::fullscreen::FullscreenRequest::mirror(
                         crate::fullscreen::FullscreenTarget::Largest,
                     )
-                },
-                FullscreenWidgetExt::fullscreen_params,
-            )
+                })
         }
 
         fn on_fullscreen_changed(&mut self, active: bool) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            if let Some(root) = self.component.root.as_deref_mut() {
-                root.on_fullscreen_changed(active);
-            }
+            self.in_root_mut(|root| root.on_fullscreen_changed(active));
         }
     }
 
@@ -551,20 +621,18 @@ mod component_adapter {
         /// shows at full height: the window taller by what the document's
         /// primary scroll hides.
         fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            if let Some(size) = root.complete_content_size() {
-                return Some(size);
-            }
-            let hidden = unrolled_height(root)?;
-            let rect = root.get_rect();
-            Some(vello::kurbo::Size::new(
-                rect.width(),
-                rect.height() + hidden,
-            ))
+            self.in_root(|root| {
+                if let Some(size) = root.complete_content_size() {
+                    return Some(size);
+                }
+                let hidden = unrolled_height(root)?;
+                let rect = root.get_rect();
+                Some(vello::kurbo::Size::new(
+                    rect.width(),
+                    rect.height() + hidden,
+                ))
+            })
+            .flatten()
         }
 
         fn draw_complete_content(
@@ -576,6 +644,9 @@ mod component_adapter {
             theme: &Theme,
             presence: &PresenceCtx,
         ) -> bool {
+            if self.component.behaviour.capture_protected {
+                crate::secret_paint::note_secret_painted();
+            }
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return false;
@@ -609,14 +680,9 @@ mod component_adapter {
                 return false;
             }
             let permissions = binding.permissions.borrow().clone();
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                &permissions,
-            );
+            presence.with_permissions(permissions, || {
+                root.draw(scene, transform, text_renderer, theme, presence);
+            });
             let _ = crate::widget::layout::lay_out_detached(root, live, theme, text_renderer);
             if let Some(offset) = offset {
                 let _ = root.apply_primary_vertical_scroll(
@@ -655,10 +721,15 @@ mod component_adapter {
             dyn crate::record::capability::RecordScoped,
             dyn crate::view::capability::ViewState,
             dyn crate::component_lifecycle::ComponentLifecycle,
+            dyn crate::component_lifecycle::WindowActivation,
             dyn crate::undo::UndoPoints
         );
         fn as_any(&self) -> Option<&dyn std::any::Any> {
             Some(self)
+        }
+
+        fn observe_physical_input(&mut self, input: crate::widget::PhysicalInput) {
+            self.in_root_mut(|root| root.observe_physical_input(input));
         }
 
         // A component's diagnostic probe observes its own record, the
@@ -677,6 +748,11 @@ mod component_adapter {
                     root.native_input_snapshot(doc, &automerge::ROOT)
                 })
                 .flatten()
+        }
+
+        fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+            self.in_root(|root| root.view_only_scroll(event))
+                .unwrap_or_default()
         }
 
         fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
@@ -746,69 +822,42 @@ mod component_adapter {
             Ok(())
         }
         fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.mount_native_views(host);
+            self.in_root_mut(|root| root.mount_native_views(host));
         }
         fn unmount_native_views(&mut self) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.unmount_native_views();
+            self.in_root_mut(|root| root.unmount_native_views());
         }
         fn native_view_frame_start(&mut self) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.native_view_frame_start();
+            self.in_root_mut(|root| root.native_view_frame_start());
         }
         fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.set_platform_conventions(conventions);
+            self.in_root_mut(|root| root.set_platform_conventions(conventions));
         }
         fn set_interaction_environment(
             &mut self,
             environment: crate::interaction::InteractionEnvironment,
         ) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.set_interaction_environment(environment);
+            self.in_root_mut(|root| root.set_interaction_environment(environment));
         }
         fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
-            binding
-                .read_document(state, |document, record_root| {
-                    if let Some(root) = self.component.root.as_deref_mut() {
-                        root.sync(document, record_root);
-                    }
-                })
-                .unwrap_or(());
-            self.component.project_record_save_status();
+            let sync_root = |component: &mut AppComponent| {
+                binding
+                    .read_document(state, |document, record_root| {
+                        if let Some(root) = component.root.as_deref_mut() {
+                            root.sync(document, record_root);
+                        }
+                    })
+                    .unwrap_or(());
+            };
+            sync_root(&mut self.component);
+            // The record's durability, sampled once the root has synced. A
+            // change is shown by syncing the root again with it, so the frame
+            // needs no rebuilt tree (which repaints the whole window).
+            if self.component.project_record_save_status() {
+                sync_root(&mut self.component);
+            }
         }
         fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _path: &ObjId) {
             let binding = self.component.callback_binding();
@@ -850,26 +899,15 @@ mod component_adapter {
             theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
+            let Some(child) = self.in_root_mut(|root| root.build_layout(taffy, theme, node_map))
+            else {
                 return taffy.leaf_node(taffy::Style::default());
             };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return taffy.leaf_node(taffy::Style::default());
+            let style = taffy::Style {
+                size: taffy::Size::from_percent(1.0, 1.0),
+                ..Default::default()
             };
-            let child = root.build_layout(taffy, theme, node_map);
-            let node = taffy.parent_node(
-                taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            );
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_node(style, &[child], node_map, self)
         }
         fn measure(
             &mut self,
@@ -877,14 +915,8 @@ mod component_adapter {
             available: taffy::Size<taffy::AvailableSpace>,
             text_renderer: &mut TextRenderer,
         ) -> taffy::Size<f32> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return taffy::Size::ZERO;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return taffy::Size::ZERO;
-            };
-            root.measure(known, available, text_renderer)
+            self.in_root_mut(|root| root.measure(known, available, text_renderer))
+                .unwrap_or_default()
         }
         fn apply_layout(
             &mut self,
@@ -892,21 +924,14 @@ mod component_adapter {
             node: NodeId,
             origin: vello::kurbo::Point,
         ) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            if let Some(root) = self.component.root.as_deref_mut()
-                && let Ok(children) = taffy.children(node)
-                && let Some(child) = children.first()
-            {
-                let location = taffy.layout(node).copied().unwrap_or_default().location;
-                let origin = vello::kurbo::Point::new(
-                    origin.x + f64::from(location.x),
-                    origin.y + f64::from(location.y),
-                );
-                root.apply_layout(taffy, *child, origin);
-            }
+            self.in_root_mut(|root| {
+                if let Ok(children) = taffy.children(node)
+                    && let Some(child) = children.first()
+                {
+                    let origin = crate::widget::layout_rect(taffy, node, origin).origin();
+                    root.apply_layout(taffy, *child, origin);
+                }
+            });
         }
         fn draw(
             &mut self,
@@ -923,17 +948,16 @@ mod component_adapter {
             let Some(root) = self.component.root.as_deref_mut() else {
                 return;
             };
-            // TileHost's clipped/animated steady-state paint uses ordinary draw.
-            // Canonical roots must still receive their permission-aware hook.
+            // Protection belongs to this component even inside a desktop or
+            // chrome container; its enclosing presented frame must retain it.
+            if self.component.behaviour.capture_protected {
+                crate::secret_paint::note_secret_painted();
+            }
+            // The component's own authority, not whatever its container holds.
             let permissions = binding.permissions.borrow().clone();
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                &permissions,
-            );
+            presence.with_permissions(permissions, || {
+                root.draw(scene, transform, text_renderer, theme, presence);
+            });
         }
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             let binding = self.component.callback_binding();
@@ -981,24 +1005,12 @@ mod component_adapter {
                 .map_or_else(Vec::new, |root| vec![root as &mut dyn Widget])
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return &[];
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return &[];
-            };
-            root.local_resource_operation_handlers()
+            self.in_root(|root| root.local_resource_operation_handlers())
+                .unwrap_or(&[])
         }
         fn resource_operation_handlers(&self) -> HashSet<String> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return HashSet::new();
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return HashSet::new();
-            };
-            root.resource_operation_handlers()
+            self.in_root(|root| root.resource_operation_handlers())
+                .unwrap_or_default()
         }
         fn name(&self) -> &'static str {
             "BoundComponent"
@@ -1010,173 +1022,69 @@ mod component_adapter {
             Some(self)
         }
         fn test_rects(&self) -> Vec<(String, vello::kurbo::Rect)> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return Vec::new();
-            };
-            root.test_rects()
+            self.in_root(|root| root.test_rects()).unwrap_or_default()
         }
         fn get_rect(&self) -> vello::kurbo::Rect {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return vello::kurbo::Rect::ZERO;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return vello::kurbo::Rect::ZERO;
-            };
-            root.get_rect()
+            self.in_root(|root| root.get_rect()).unwrap_or_default()
         }
         fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.cursor_shape(point)
+            self.in_root(|root| root.cursor_shape(point)).flatten()
         }
         fn tooltip(&self) -> Option<&str> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.tooltip()
+            self.in_root(|root| root.tooltip()).flatten()
         }
         fn is_focusable(&self) -> bool {
             false
         }
         fn set_focus(&mut self, focused: bool) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.set_focus(focused);
+            self.in_root_mut(|root| root.set_focus(focused));
         }
         fn is_focused(&self) -> bool {
             false
         }
         fn wants_tab_input(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.wants_tab_input()
+            self.in_root(|root| root.wants_tab_input())
+                .unwrap_or_default()
         }
         fn ime_cursor_rect(&self) -> Option<vello::kurbo::Rect> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.ime_cursor_rect()
+            self.in_root(|root| root.ime_cursor_rect()).flatten()
         }
         fn traps_focus(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.traps_focus()
+            self.in_root(|root| root.traps_focus()).unwrap_or_default()
         }
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
             None
         }
         fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<vello::kurbo::Rect> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.synthetic_accessibility_rect(path)
+            self.in_root(|root| root.synthetic_accessibility_rect(path))
+                .flatten()
         }
         fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return false;
-            };
-            root.focus_synthetic_accessibility(path)
+            self.in_root_mut(|root| root.focus_synthetic_accessibility(path))
+                .unwrap_or_default()
         }
         fn accessibility_child_parent(&self, child_index: usize) -> Option<usize> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.accessibility_child_parent(child_index)
+            self.in_root(|root| root.accessibility_child_parent(child_index))
+                .flatten()
         }
         fn accessibility_child_path(&self, child_index: usize) -> Option<Vec<usize>> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.accessibility_child_path(child_index)
+            self.in_root(|root| root.accessibility_child_path(child_index))
+                .flatten()
         }
         fn accessibility_represents_child(&self, child_index: usize) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            self.component
-                .root
-                .as_deref()
-                .is_some_and(|root| root.accessibility_represents_child(child_index))
+            self.in_root(|root| root.accessibility_represents_child(child_index))
+                .unwrap_or_default()
         }
         fn perform_action(
-            &mut self,
-            action: &crate::a11y::Action,
-            state: &mut crate::widget::Edits<'_>,
-            _path: &crate::widget::ModelPath,
-        ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.perform_action(
-                        action,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    )
-                })
-                .unwrap_or(false)
-        }
-        fn perform_action_at(
             &mut self,
             action: &crate::a11y::Action,
             key_path: &[u64],
             state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.perform_action_at(
-                        action,
-                        key_path,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    )
-                })
-                .unwrap_or(false)
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.perform_action(action, key_path, edits, record_root)
+            })
         }
         fn perform_semantic_action(
             &mut self,
@@ -1185,77 +1093,53 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.perform_semantic_action(
-                        target,
-                        action,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    )
-                })
-                .unwrap_or(false)
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.perform_semantic_action(target, action, edits, record_root)
+            })
         }
         fn is_enabled(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.is_enabled()
+            self.in_root(|root| root.is_enabled()).unwrap_or_default()
+        }
+        fn ime_requires_deferred_ack(&self) -> bool {
+            self.in_root(|root| root.ime_requires_deferred_ack())
+                .unwrap_or(true)
+        }
+
+        fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+            self.in_root_mut(|root| root.start_deferred_text())
+                .flatten()
+        }
+
+        fn commit_deferred_text(
+            &mut self,
+            text: &str,
+        ) -> Option<crate::webview::text_input::Receipt> {
+            self.in_root_mut(|root| root.commit_deferred_text(text))
+                .flatten()
+        }
+
+        fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+            self.in_root(|root| root.ime_edit_fingerprint(key))
+                .flatten()
         }
         fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.ime_purpose()
+            self.in_root(|root| root.ime_purpose()).flatten()
         }
+        fn ime_multiline(&self) -> bool {
+            self.in_root(Widget::ime_multiline).unwrap_or_default()
+        }
+
         fn presented(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.presented()
+            self.in_root(|root| root.presented()).unwrap_or_default()
         }
         fn opening(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.opening()
+            self.in_root(|root| root.opening()).unwrap_or_default()
         }
         fn text_review(&self) -> Option<(usize, String)> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.text_review()
+            self.in_root(|root| root.text_review()).flatten()
         }
         fn nav_availability(&self) -> crate::gesture::NavAvailability {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return crate::gesture::NavAvailability::default();
-            };
-            self.component
-                .root
-                .as_deref()
-                .map(Widget::nav_availability)
-                .unwrap_or_default()
+            self.in_root(Widget::nav_availability).unwrap_or_default()
         }
         fn on_external_event(
             &mut self,
@@ -1263,19 +1147,9 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _root: &crate::widget::ModelPath,
         ) {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    root.on_external_event(
-                        payload,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    );
-                })
-                .unwrap_or(());
+            self.with_root_edits(state, |root, edits, record_root| {
+                root.on_external_event(payload, edits, record_root);
+            });
         }
         fn on_nav_gesture(
             &mut self,
@@ -1295,42 +1169,18 @@ mod component_adapter {
                 .unwrap_or(false)
         }
         fn take_focus_reset(&mut self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return false;
-            };
-            root.take_focus_reset()
+            self.in_root_mut(|root| root.take_focus_reset())
+                .unwrap_or_default()
         }
         fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.appearance_intent()
+            self.in_root(|root| root.appearance_intent()).flatten()
         }
         fn set_motion_reduced(&mut self, reduced: bool) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.set_motion_reduced(reduced);
+            self.in_root_mut(|root| root.set_motion_reduced(reduced));
         }
         fn needs_idle_sync(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.needs_idle_sync()
+            self.in_root(|root| root.needs_idle_sync())
+                .unwrap_or_default()
         }
 
         fn apply_room_action(
@@ -1339,19 +1189,9 @@ mod component_adapter {
             type_id: &str,
             payload: &[u8],
         ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(doc.document_mut(), |document, _record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.apply_room_action(
-                        &mut crate::widget::Edits::lend(document),
-                        type_id,
-                        payload,
-                    )
-                })
-                .unwrap_or(false)
+            self.with_root_edits(doc, |root, edits, _| {
+                root.apply_room_action(edits, type_id, payload)
+            })
         }
         fn start_operation(
             &mut self,
@@ -1407,65 +1247,29 @@ mod component_adapter {
             }
             update
         }
-        fn accepts_drop(&self, payload: &DragPayload) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.accepts_drop(payload)
-        }
-        fn on_drop(
-            &mut self,
-            payload: DragPayload,
-            state: &mut crate::widget::Edits<'_>,
-            _path: &crate::widget::ModelPath,
-        ) {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    root.on_drop(
-                        payload,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    );
-                })
-                .unwrap_or(());
-        }
         fn wants_pointer_capture(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.wants_pointer_capture()
-        }
-        fn is_floating(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.is_floating()
+            self.in_root(|root| root.wants_pointer_capture())
+                .unwrap_or_default()
         }
         fn needs_animation_frame(&self) -> bool {
+            self.in_root(|root| root.needs_animation_frame())
+                .unwrap_or_default()
+        }
+        fn has_pending_visual_work(&self) -> bool {
+            self.in_root(Widget::has_pending_visual_work)
+                .unwrap_or_default()
+        }
+        fn has_transient_feedback(&self) -> bool {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return false;
             };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.needs_animation_frame()
+            self.component.save_status_wake_deadline().is_some()
+                || self
+                    .component
+                    .root
+                    .as_deref()
+                    .is_some_and(Widget::has_transient_feedback)
         }
         fn next_wake_deadline(&self) -> Option<Instant> {
             let binding = self.component.callback_binding();
@@ -1480,110 +1284,48 @@ mod component_adapter {
             }
         }
         fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.modal_capture()
+            self.in_root(|root| root.modal_capture()).flatten()
         }
         fn take_structure_dirty(&mut self) -> bool {
-            let relayout = std::mem::take(&mut self.relayout);
+            self.take_structure_change().rebuilds()
+        }
+        /// The root's change as it says it; the component's own reasons (a
+        /// relayout it asked for, a save status no `App` presented) rebuild.
+        fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+            use crate::widget::StructureChange;
+            let relayout = StructureChange::of(std::mem::take(&mut self.relayout));
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return relayout;
             };
-            let save_status_changed = self.component.take_save_status_changed();
+            let save_status_changed =
+                StructureChange::of(self.component.take_save_status_changed());
             let Some(root) = self.component.root.as_deref_mut() else {
                 return relayout;
             };
-            root.take_structure_dirty() | save_status_changed | relayout
+            root.take_structure_change()
+                .join(save_status_changed)
+                .join(relayout)
         }
         fn needs_redraw(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.needs_redraw()
+            self.in_root(|root| root.needs_redraw()).unwrap_or_default()
         }
         fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return;
-            };
-            root.collect_damage(regions);
+            self.in_root(|root| root.collect_damage(regions));
         }
         fn mark_drawn(&mut self) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.mark_drawn();
+            self.in_root_mut(|root| root.mark_drawn());
         }
         fn release_scene_cache(&mut self) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.release_scene_cache();
+            self.in_root_mut(|root| root.release_scene_cache());
         }
         fn is_layout_dirty(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.is_layout_dirty()
+            self.in_root(|root| root.is_layout_dirty())
+                .unwrap_or_default()
         }
         fn layout_needs_measure(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.layout_needs_measure()
-        }
-        fn draw_with_presence(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-            _permissions: &crate::permissions::PermissionContext,
-        ) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            let permissions = binding.permissions.borrow().clone();
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                &permissions,
-            );
+            self.in_root(|root| root.layout_needs_measure())
+                .unwrap_or_default()
         }
         fn draw_overlay(
             &mut self,
@@ -1593,35 +1335,28 @@ mod component_adapter {
             theme: &Theme,
             presence: &PresenceCtx,
         ) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.draw_overlay(scene, transform, text_renderer, theme, presence);
+            if self.component.behaviour.capture_protected {
+                crate::secret_paint::note_secret_painted();
+            }
+            self.in_root_mut(|root| {
+                root.draw_overlay(scene, transform, text_renderer, theme, presence)
+            });
         }
     }
 
     impl crate::undo::UndoPoints for BoundAppWidget {
         fn get_state(&self) -> Option<String> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            crate::undo::get_state(root)
+            self.in_root(|root| crate::undo::get_state(root)).flatten()
         }
         fn set_state(&mut self, state: &str) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            crate::undo::set_state(root, state);
+            self.in_root_mut(|root| crate::undo::set_state(root, state));
+        }
+    }
+
+    impl crate::component_lifecycle::WindowActivation for BoundAppWidget {
+        fn take_window_activation_intent(&self) -> bool {
+            self.in_root(crate::component_lifecycle::take_window_activation_intent)
+                .unwrap_or_default()
         }
     }
 
@@ -1646,6 +1381,9 @@ mod component_adapter {
         fn take_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
             self.component.take_replacement()
         }
+        fn take_save_status_presentation(&mut self) -> bool {
+            self.component.take_save_status_changed()
+        }
         fn take_component_close_reports(
             &mut self,
         ) -> Vec<crate::application::ComponentCloseReport> {
@@ -1655,73 +1393,39 @@ mod component_adapter {
 
     impl crate::view::capability::ViewState for BoundAppWidget {
         fn view_state(&self) -> Option<crate::view::ViewContribution> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            crate::view::capability::view_state(root)
+            self.in_root(|root| crate::view::capability::view_state(root))
+                .flatten()
         }
         fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            crate::view::capability::restore_view_state(root, view);
+            self.in_root_mut(|root| crate::view::capability::restore_view_state(root, view));
         }
     }
 
     impl crate::record::capability::RecordScoped for BoundAppWidget {
         fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            crate::record::capability::record_intent(root)
+            self.in_root(|root| crate::record::capability::record_intent(root))
+                .flatten()
         }
         fn set_record_scope(&mut self, record: &crate::record::RecordId) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            crate::record::capability::set_record_scope(root, record);
+            self.in_root_mut(|root| crate::record::capability::set_record_scope(root, record));
         }
     }
 
     impl crate::presence::capability::PublishesPresence for BoundAppWidget {
         fn presence_key(&self) -> Option<PresenceKey> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            crate::presence::capability::presence_key(root)
+            self.in_root(|root| crate::presence::capability::presence_key(root))
+                .flatten()
         }
         fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            crate::presence::capability::presence_payload(root)
+            self.in_root(|root| crate::presence::capability::presence_payload(root))
+                .flatten()
         }
     }
 
     impl crate::permissions::capability::PermissionGated for BoundAppWidget {
         fn permission_scope(&self) -> Option<PermissionScope> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            crate::permissions::capability::permission_scope(root)
+            self.in_root(|root| crate::permissions::capability::permission_scope(root))
+                .flatten()
         }
     }
 
@@ -1735,20 +1439,14 @@ mod component_adapter {
             doc: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(doc.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    crate::search::capability::activate_search_result(
-                        root,
-                        action_id,
-                        &mut crate::widget::Edits::lend(document),
-                        record_root,
-                    );
-                })
-                .unwrap_or(());
+            self.with_root_edits(doc, |root, edits, record_root| {
+                crate::search::capability::activate_search_result(
+                    root,
+                    action_id,
+                    edits,
+                    record_root,
+                );
+            });
         }
     }
 
@@ -1911,15 +1609,17 @@ mod component_adapter {
                     crate::widget::controls::has_pending_control_invocation(root)
                 })
         }
+        fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+            self.in_root(|root| crate::widget::controls::action_control_bindings(root))
+                .unwrap_or_default()
+        }
+        fn has_action_control_bindings(&self) -> bool {
+            self.in_root(|root| crate::widget::controls::has_action_control_bindings(root))
+                .unwrap_or_default()
+        }
         fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return Vec::new();
-            };
-            crate::widget::controls::control_action_bindings(root)
+            self.in_root(|root| crate::widget::controls::control_action_bindings(root))
+                .unwrap_or_default()
         }
         fn refresh_control_action_availability(
             &mut self,
@@ -1940,15 +1640,11 @@ mod component_adapter {
             Option<crate::history_mode::HistoryRegistration>,
             crate::history_mode::HistoryRegistrationError,
         > {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Ok(None);
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return Ok(None);
-            };
-            Ok(crate::history_mode::capability::history_registration(root)?
-                .filter(crate::history_mode::HistoryRegistration::is_checked_files_only))
+            self.in_root(|root| {
+                Ok(crate::history_mode::capability::history_registration(root)?
+                    .filter(crate::history_mode::HistoryRegistration::is_checked_files_only))
+            })
+            .unwrap_or(Ok(None))
         }
 
         fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
@@ -1966,15 +1662,20 @@ mod component_adapter {
     }
 
     impl crate::undo::LocalUndo for BoundAppWidget {
-        fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        fn local_undo_status(&self) -> Option<crate::undo::LocalUndoStatus> {
             let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return false;
-            };
-            crate::undo::handle_local_undo_request(root, request)
+            let _entry = binding.enter().ok()?;
+            crate::undo::local_undo_status(self.component.root.as_deref()?)
+        }
+
+        fn local_undo_is_deferred(&self) -> bool {
+            self.in_root(|root| crate::undo::local_undo_is_deferred(root))
+                .unwrap_or_default()
+        }
+
+        fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+            self.in_root_mut(|root| crate::undo::handle_local_undo_request(root, request))
+                .unwrap_or_default()
         }
     }
 
@@ -2079,9 +1780,30 @@ mod component_adapter {
         fn commands(&self) -> Vec<AppCommand> {
             vec![]
         }
+        fn device_shell_operation(
+            &mut self,
+            operation: &crate::floating_surface::DeviceShellOperation,
+        ) -> Result<serde_json::Value, String> {
+            let binding = self.component.callback_binding();
+            let _entry = binding
+                .enter()
+                .map_err(|_| "Terminal is not available".to_string())?;
+            self.component
+                .root
+                .as_deref_mut()
+                .ok_or("Terminal is not available")?
+                .device_shell_operation(operation)
+        }
+        fn request_device_shell(&mut self) -> bool {
+            self.in_root_mut(AppWidget::request_device_shell)
+                .unwrap_or_default()
+        }
         fn take_host_intent(&mut self) -> Option<AppHostIntent> {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
+            if let Some(request) = binding.take_search_request() {
+                return Some(AppHostIntent::OpenSearch(request));
+            }
             self.component.root.as_deref_mut()?.take_host_intent()
         }
     }
@@ -2093,6 +1815,92 @@ mod native_lifecycle_tests {
     use super::*;
     use crate::application::{LaunchTarget, RestoreInput};
     use crate::application_test_support as probe;
+
+    #[test]
+    fn native_history_status_crosses_only_the_live_bound_owner() {
+        use crate::undo::{LocalUndo, LocalUndoStatus, UndoStatus};
+        use crate::widget::Decorator;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct History {
+            root: Box<dyn AppWidget>,
+            reads: Rc<Cell<u32>>,
+        }
+        impl Decorator for History {
+            crate::provides!(dyn LocalUndo; inner = root);
+            type Inner = dyn AppWidget;
+            fn inner(&self) -> &(dyn AppWidget + 'static) {
+                self.root.as_ref()
+            }
+            fn inner_mut(&mut self) -> &mut (dyn AppWidget + 'static) {
+                self.root.as_mut()
+            }
+        }
+        impl AppWidget for History {
+            fn app_kind(&self) -> AppKind {
+                self.root.app_kind()
+            }
+            fn app_title(&self) -> &str {
+                self.root.app_title()
+            }
+            fn app_icon(&self) -> IconDescriptor {
+                self.root.app_icon()
+            }
+            fn permission_hint(&self) -> Option<AppKind> {
+                self.root.permission_hint()
+            }
+        }
+        impl LocalUndo for History {
+            fn local_undo_status(&self) -> Option<LocalUndoStatus> {
+                self.reads.set(self.reads.get() + 1);
+                Some(LocalUndoStatus::Ready(UndoStatus {
+                    can_undo: true,
+                    ..Default::default()
+                }))
+            }
+            fn local_undo_is_deferred(&self) -> bool {
+                self.reads.set(self.reads.get() + 1);
+                true
+            }
+            fn handle_local_undo_request(&mut self, _: crate::undo::UndoRequest) -> bool {
+                true
+            }
+        }
+        let host = probe::ProbeHost::new();
+        let mut component =
+            probe::instantiate_probe(&host, 42, LaunchTarget::New, RestoreInput::None).unwrap();
+        let reads = Rc::new(Cell::new(0));
+        component.root = Some(Box::new(History {
+            root: component.root.take().unwrap(),
+            reads: reads.clone(),
+        }));
+        let binding = component.callback_binding();
+        let mut widget = BoundAppWidget::new(component);
+        assert!(matches!(
+            crate::undo::local_undo_status(&widget),
+            Some(LocalUndoStatus::Ready(UndoStatus { can_undo: true, .. }))
+        ));
+        assert!(crate::undo::local_undo_is_deferred(&widget));
+        let live_reads = reads.get();
+        assert!(live_reads >= 2);
+        binding.closing.set(true);
+        assert!(crate::undo::local_undo_status(&widget).is_none());
+        assert!(!crate::undo::local_undo_is_deferred(&widget));
+        assert_eq!(
+            reads.get(),
+            live_reads,
+            "closing owner must never be queried"
+        );
+        widget.component.close();
+        assert!(crate::undo::local_undo_status(&widget).is_none());
+        assert!(!crate::undo::local_undo_is_deferred(&widget));
+        assert_eq!(
+            reads.get(),
+            live_reads,
+            "closed owner must never be queried"
+        );
+    }
 
     #[test]
     fn free_native_lifecycle_walk_enters_bound_owner_once_and_refuses_closed_owner() {

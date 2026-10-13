@@ -116,8 +116,8 @@ impl Drop for PenScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, ElementState, MouseButton};
+
+    use winit::event::DeviceId;
 
     fn sample(pressure: f64, eraser: bool) -> WindowEvent {
         WindowEvent::PenSample {
@@ -129,19 +129,10 @@ mod tests {
     }
 
     fn moved() -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(4.0, 5.0),
-        }
+        crate::synthetic_input::cursor_moved(4.0, 5.0)
     }
 
-    fn pressed() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     /// The pen a widget would see while `event` is dispatched.
     fn seen(input: &mut PenInput, event: &WindowEvent) -> Option<PenSample> {
@@ -161,7 +152,7 @@ mod tests {
             eraser: false,
         };
         assert_eq!(seen(&mut input, &moved()), Some(pen));
-        assert_eq!(seen(&mut input, &pressed()), None, "a mouse's press");
+        assert_eq!(seen(&mut input, &mouse_press()), None, "a mouse's press");
         assert_eq!(current(), None, "nothing outside a dispatch");
 
         assert!(input.route(&sample(1.0, true)).is_none());
@@ -172,7 +163,7 @@ mod tests {
             "other events neither see nor spend the sample"
         );
         assert_eq!(
-            seen(&mut input, &pressed()),
+            seen(&mut input, &mouse_press()),
             Some(PenSample {
                 pressure: 1.0,
                 tilt: (20.0, -10.0),

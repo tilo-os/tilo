@@ -1,10 +1,6 @@
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     clippy::arithmetic_side_effects,
     clippy::float_cmp,
     reason = "in a test these are the assertion, not a hazard; scroll offsets are exact"
@@ -85,7 +81,7 @@ fn navigation_first_layout_reveals_and_marks_canonical_focus() {
         (&mut *ptr)
             .row_mut(StripId(2))
             .unwrap()
-            .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+            .tick_snap_at(ui::time::Instant::now() + ui::time::Duration::from_secs(1));
     }
     frame.relayout();
     let row = unsafe { (&*ptr).row(StripId(2)).unwrap() };
@@ -149,12 +145,15 @@ struct NavigationFrame {
 }
 impl NavigationFrame {
     fn new(tree: DesktopTree, width: u32) -> Self {
+        Self::with_chrome(tree, width, SurfaceChrome::default())
+    }
+    fn with_chrome(tree: DesktopTree, width: u32, chrome: SurfaceChrome) -> Self {
         let records = RecordStore::in_memory();
         let mut surface = Box::new(DesktopSurface::build(
             &tree,
             &records,
             &mut Unavailable,
-            SurfaceChrome::default(),
+            chrome,
         ));
         let ptr = std::ptr::from_mut(surface.as_mut());
         let frame = ui::headless::FrameHarness::new(ui::state::State::new(), surface, (width, 720));
@@ -184,7 +183,7 @@ impl NavigationFrame {
             self.surface_mut()
                 .row_mut(strip)
                 .unwrap()
-                .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+                .tick_snap_at(ui::time::Instant::now() + ui::time::Duration::from_secs(1));
         }
         self.frame.relayout();
     }
@@ -198,6 +197,193 @@ impl NavigationFrame {
             row.get_rect()
         );
     }
+}
+
+#[test]
+fn external_navigation_edge_resize_keeps_a_scrolled_strip_anchored() {
+    use tilo_desktop::composition::{NavigationChrome, WorkArea};
+    use ui::widget::Widget;
+
+    let mut tree = navigation_tree();
+    tree.active_group.insert(StripId(2), 4);
+    let mut test = NavigationFrame::with_chrome(
+        tree,
+        1472,
+        SurfaceChrome {
+            navigation: NavigationChrome::External,
+            work_area: WorkArea::Flush { top: 40.0 },
+            ..SurfaceChrome::default()
+        },
+    );
+    test.frame
+        .set_theme(ui::Theme::light().with_reduce_motion(true));
+    test.frame.poll_frame().unwrap();
+    let row = test.surface().row(StripId(2)).unwrap();
+    let before = row.groups[0].get_rect();
+    let neighbor = row.groups[1].get_rect();
+    let pan = row.scroll_x();
+    assert!(pan > 100.0 && before.x1 > 20.0 && before.x1 < 1400.0);
+    let point = (before.x1 - 2.0, before.center().y);
+    let moved = |x| ui::synthetic_input::cursor_moved(x, point.1);
+    test.frame.send(&moved(point.0));
+    test.frame.send(&ui::synthetic_input::mouse_press());
+    assert!(test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
+    for delta in [20.0, 40.0, 60.0, 80.0] {
+        test.frame.send(&moved(point.0 + delta));
+        test.frame.poll_frame().unwrap();
+        let row = test.surface().row(StripId(2)).unwrap();
+        let resized = row.groups[0].get_rect();
+        assert!(
+            (row.scroll_x() - pan).abs() < 1.0,
+            "the viewport stays under the hand: {pan} -> {}",
+            row.scroll_x()
+        );
+        assert!((resized.x0 - before.x0).abs() < 1.0);
+        assert!(
+            (resized.x1 - before.x1 - delta).abs() < 2.0,
+            "the trailing edge follows each actual pointer sample: {before:?} -> {resized:?}"
+        );
+        assert!((row.groups[1].get_rect().width() - neighbor.width()).abs() < 1.0);
+    }
+    test.frame.send(&ui::synthetic_input::mouse_release());
+    assert!(!test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
+    let intents = test.surface_mut().take_intents();
+    assert!(intents.iter().any(|intent| matches!(
+        intent,
+        tilo_desktop::intents::DesktopIntent::Local(
+            tilo_desktop::intents::LocalViewIntent::Width { group: 3, .. }
+        )
+    )));
+    for intent in intents {
+        if let tilo_desktop::intents::DesktopIntent::Local(view) = intent {
+            tilo_desktop::intents::apply_local_view(&mut test.tree, view);
+        }
+    }
+    test.reconcile();
+    test.frame.poll_frame().unwrap();
+    let row = test.surface().row(StripId(2)).unwrap();
+    assert!((row.scroll_x() - pan).abs() < 1.0);
+    assert!((row.groups[0].get_rect().x0 - before.x0).abs() < 1.0);
+    assert!((row.groups[0].get_rect().x1 - before.x1 - 80.0).abs() < 2.0);
+}
+
+#[test]
+fn external_navigation_edge_resize_survives_unrelated_snapshot_revision() {
+    use tilo_desktop::composition::{NavigationChrome, WorkArea};
+    use ui::widget::Widget;
+
+    let mut tree = navigation_tree();
+    tree.active_group.insert(StripId(2), 4);
+    let mut test = NavigationFrame::with_chrome(
+        tree,
+        1472,
+        SurfaceChrome {
+            navigation: NavigationChrome::External,
+            work_area: WorkArea::Flush { top: 40.0 },
+            ..SurfaceChrome::default()
+        },
+    );
+    test.frame
+        .set_theme(ui::Theme::light().with_reduce_motion(true));
+    test.frame.poll_frame().unwrap();
+    let row = test.surface().row(StripId(2)).unwrap();
+    let before = row.groups[0].get_rect();
+    let neighbor = row.groups[1].get_rect();
+    let pan = row.scroll_x();
+    assert!(pan > 100.0 && before.x1 > 20.0 && before.x1 < 1400.0);
+    let point = (before.x1 - 2.0, before.center().y);
+    let moved = |x| ui::synthetic_input::cursor_moved(x, point.1);
+    test.frame.send(&moved(point.0));
+    test.frame.send(&ui::synthetic_input::mouse_press());
+    assert!(test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
+    for delta in [20.0, 40.0, 60.0, 80.0] {
+        test.frame.send(&moved(point.0 + delta));
+        test.tree.workspaces[0].strips[0].name = format!("Revision {delta}");
+        test.reconcile();
+        test.frame.poll_frame().unwrap();
+        let row = test.surface().row(StripId(2)).unwrap();
+        let resized = row.groups[0].get_rect();
+        assert!(
+            (row.scroll_x() - pan).abs() < 1.0,
+            "the viewport stays under the hand: {pan} -> {}",
+            row.scroll_x()
+        );
+        assert!((resized.x0 - before.x0).abs() < 1.0);
+        assert!(
+            (resized.x1 - before.x1 - delta).abs() < 2.0,
+            "the trailing edge follows each actual pointer sample: {before:?} -> {resized:?}"
+        );
+        assert!((row.groups[1].get_rect().width() - neighbor.width()).abs() < 1.0);
+    }
+    test.frame.send(&ui::synthetic_input::mouse_release());
+    assert!(!test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
+    let intents = test.surface_mut().take_intents();
+    assert!(intents.iter().any(|intent| matches!(
+        intent,
+        tilo_desktop::intents::DesktopIntent::Local(
+            tilo_desktop::intents::LocalViewIntent::Width { group: 3, .. }
+        )
+    )));
+    for intent in intents {
+        if let tilo_desktop::intents::DesktopIntent::Local(view) = intent {
+            tilo_desktop::intents::apply_local_view(&mut test.tree, view);
+        }
+    }
+    test.reconcile();
+    test.frame.poll_frame().unwrap();
+    let row = test.surface().row(StripId(2)).unwrap();
+    assert!((row.scroll_x() - pan).abs() < 1.0);
+    assert!((row.groups[0].get_rect().x0 - before.x0).abs() < 1.0);
+    assert!((row.groups[0].get_rect().x1 - before.x1 - 80.0).abs() < 2.0);
+}
+
+#[test]
+fn external_navigation_edge_drag_interrupts_an_inflight_width_animation() {
+    use tilo_desktop::composition::{NavigationChrome, WorkArea};
+    use tilo_desktop::intents::{LocalViewIntent, apply_local_view};
+    use ui::widget::Widget;
+
+    let mut test = NavigationFrame::with_chrome(
+        navigation_tree(),
+        1472,
+        SurfaceChrome {
+            navigation: NavigationChrome::External,
+            work_area: WorkArea::Flush { top: 40.0 },
+            ..SurfaceChrome::default()
+        },
+    );
+    test.frame.set_theme(ui::Theme::light());
+    test.frame.poll_frame().unwrap();
+    apply_local_view(
+        &mut test.tree,
+        LocalViewIntent::Width {
+            group: 3,
+            width: WindowWidth::Wide,
+        },
+    );
+    test.reconcile();
+    let group = &test.surface().row(StripId(2)).unwrap().groups[0];
+    let before = group.get_rect();
+    assert!(
+        group.resolved_width_px() > before.width() + 50.0,
+        "the real reconciled width spring is still in flight"
+    );
+    let point = (before.x1 - 2.0, before.center().y);
+    let moved = |delta| ui::synthetic_input::cursor_moved(point.0 + delta, point.1);
+    test.frame.send(&moved(0.0));
+    test.frame.send(&ui::synthetic_input::mouse_press());
+    assert!(test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
+    for delta in [20.0, 40.0, 60.0] {
+        test.frame.send(&moved(delta));
+        test.frame.poll_frame().unwrap();
+        let after = test.surface().row(StripId(2)).unwrap().groups[0].get_rect();
+        assert!(
+            (after.x1 - before.x1 - delta).abs() < 2.0,
+            "each ordinary frame follows the held edge instead of the old spring: {before:?} -> {after:?} at {delta}"
+        );
+    }
+    test.frame.send(&ui::synthetic_input::mouse_release());
+    assert!(!test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
 }
 
 #[test]
@@ -285,7 +471,7 @@ fn navigation_stepping_back_twice_pans_once_and_then_asks_for_no_frame() {
             test.surface_mut()
                 .row_mut(StripId(2))
                 .unwrap()
-                .scroll_group_into_view_animated(4, ui::clock::Instant::now());
+                .scroll_group_into_view_animated(4, ui::time::Instant::now());
             std::thread::sleep(std::time::Duration::from_millis(16));
             test.frame.poll_frame().unwrap();
             false
@@ -570,4 +756,69 @@ fn navigation_newly_mounted_real_writer_focus_is_not_an_admitted_focus_intent() 
         "a newly mounted Writer's default focus is not user input"
     );
     assert_eq!(test.tree.active_group[&StripId(2)], 3);
+}
+
+#[test]
+fn external_navigation_lone_window_keeps_pointer_resize_and_local_width_intent() {
+    use tilo_desktop::composition::{NavigationChrome, WorkArea};
+    use tilo_desktop::intents::{DesktopIntent, LocalViewIntent, apply_local_view};
+    use ui::widget::Widget;
+
+    let mut tree = tree();
+    tree.active_strip.insert(tree.active, StripId(2));
+    tree.active_group.insert(StripId(2), 3);
+    let records = RecordStore::in_memory();
+    let mut surface = Box::new(DesktopSurface::build(
+        &tree,
+        &records,
+        &mut Unavailable,
+        SurfaceChrome {
+            navigation: NavigationChrome::External,
+            work_area: WorkArea::Flush { top: 40.0 },
+            ..SurfaceChrome::default()
+        },
+    ));
+    let ptr = std::ptr::from_mut(surface.as_mut());
+    let mut frame = ui::headless::FrameHarness::new(ui::state::State::new(), surface, (1472, 920));
+    frame.set_theme(ui::Theme::light().with_reduce_motion(true));
+    frame.poll_frame().unwrap();
+    let before = unsafe { (&*ptr).row(StripId(2)).unwrap().groups[0].get_rect() };
+    assert!(before.height() > 0.0 && before.x1 < 1472.0);
+    let point = (before.x1 - 2.0, before.center().y);
+    frame.drag_at(point, (point.0 - 80.0, point.1));
+    frame.poll_frame().unwrap();
+    let after = unsafe { (&*ptr).row(StripId(2)).unwrap().groups[0].get_rect() };
+    assert!(
+        after.width() < before.width() - 70.0,
+        "the actual external-navigation window must narrow through its trailing edge: {before:?} -> {after:?}"
+    );
+    assert!(
+        (after.x0 - before.x0).abs() < 1.0,
+        "the leading edge stays anchored"
+    );
+    let intents = unsafe { (&mut *ptr).take_intents() };
+    assert!(
+        !intents
+            .iter()
+            .any(|intent| matches!(intent, DesktopIntent::Session(_)))
+    );
+    let width = intents
+        .into_iter()
+        .find_map(|intent| match intent {
+            DesktopIntent::Local(LocalViewIntent::Width { group: 3, width }) => Some(width),
+            _ => None,
+        })
+        .expect("the drag exports the ordinary local width intent");
+    assert_ne!(width, WindowWidth::Normal);
+    apply_local_view(&mut tree, LocalViewIntent::Width { group: 3, width });
+    assert_eq!(tree.workspaces[0].strips[0].window_groups[0].width, width);
+    assert_eq!(tree.workspaces[0].strips[0].window_groups.len(), 1);
+    unsafe {
+        (&mut *ptr).reconcile(&tree, &records, &mut Unavailable);
+    }
+    frame.poll_frame().unwrap();
+    assert_eq!(
+        unsafe { (&*ptr).row(StripId(2)).unwrap().groups[0].width() },
+        tilo_desktop::composition::ui_width(width)
+    );
 }

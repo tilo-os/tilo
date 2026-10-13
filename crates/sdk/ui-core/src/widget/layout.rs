@@ -8,9 +8,9 @@ use taffy::{AvailableSpace, LengthPercentage, NodeId, Size, TaffyTree};
 
 use super::Widget;
 use crate::Theme;
-use crate::bound_dispatch::{BoundNodeMap, mutate_bound_node};
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::tokens::Typography;
+use crate::bound_dispatch::{BoundNodeMap, layout_bound_node, mutate_bound_node};
+use crate::text_render::TextRenderer;
+use crate::tokens::TextRole;
 
 /// What sizes an extent handed to a responsive shell (HIG §9.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,10 +24,10 @@ pub enum ExtentSizing {
     Icon,
 }
 
-/// A breakpoint or pane width **authored at 1×** for a responsive shell
-/// (`NavSplit`, `NavShell`, `AppShell`, `SidebarDrawer`), resolved against
-/// the theme once when the tree is built. The one place the
-/// authored-to-resolved rule lives, so the four shells cannot drift.
+/// A breakpoint or pane width **authored at 1×** for a painted app's
+/// [`crate::widget::SidebarDrawer`], resolved against the theme once when
+/// the tree is built. `NavShell` reads its widths from the metrics and
+/// applies the same rule to them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AuthoredExtent {
     px: f64,
@@ -93,15 +93,19 @@ impl AuthoredExtent {
 /// logical px.
 ///
 /// It grows with `ui_scale` like every metric, and once the theme's body line
-/// (`typography.scale.base` at the current text scale) outgrows the room the
+/// (`typography.size(TextRole::Body)` at the current text scale) outgrows the room the
 /// authored height left for it, by exactly that difference: the authored
 /// padding around the line is kept and the label never overflows the control.
 /// Unchanged on a stock theme, so 1× geometry is exactly what was authored.
 #[must_use]
 pub fn text_control_height(authored: f64, theme: &Theme) -> f64 {
     let ui = f64::from(theme.ui_scale);
-    let line_at_1x = f64::from(TextStyle::new(Typography::default().scale.base).line_height_px());
-    let line_now = f64::from(TextStyle::new(theme.tokens.typography.scale.base).line_height_px());
+    let line_at_1x = f64::from(
+        crate::tokens::typography::stock()
+            .style(TextRole::Body)
+            .line_height_px(),
+    );
+    let line_now = f64::from(theme.text(TextRole::Body).line_height_px());
     let padding = (authored - line_at_1x).max(0.0) * ui;
     (authored * ui).max(line_now + padding)
 }
@@ -136,6 +140,36 @@ pub fn insets(top: f32, right: f32, bottom: f32, left: f32) -> taffy::Rect<Lengt
         top: length(top.max(0.0)),
         bottom: length(bottom.max(0.0)),
     }
+}
+
+thread_local! {
+    static LAYOUT_CLIP: std::cell::Cell<Option<vello::kurbo::Rect>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The window area content is seen through while it is being placed: the
+/// viewport of the nearest enclosing scroll view (intersected with any
+/// outer one), or `None` when nothing clips it. A collection reads it in
+/// [`Widget::apply_layout`] to keep only the rows near what is shown laid
+/// out; drawing culls against `PresenceCtx::should_cull` instead.
+#[must_use]
+pub fn layout_clip() -> Option<vello::kurbo::Rect> {
+    LAYOUT_CLIP.with(std::cell::Cell::get)
+}
+
+/// Run `place` (a scroll view placing its content) with `clip` as the
+/// [`layout_clip`], narrowed by any clip already in effect.
+pub fn with_layout_clip<T>(clip: vello::kurbo::Rect, place: impl FnOnce() -> T) -> T {
+    struct Restore(Option<vello::kurbo::Rect>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LAYOUT_CLIP.with(|cell| cell.set(self.0));
+        }
+    }
+    let outer = layout_clip();
+    let clip = outer.map_or(clip, |outer| outer.intersect(clip));
+    let _restore = Restore(LAYOUT_CLIP.with(|cell| cell.replace(Some(clip))));
+    place()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -227,7 +261,7 @@ pub(super) unsafe fn compute_widget_layout_depth(
     for &node in nodes.keys() {
         // SAFETY: use the same admission/lifetime checks as measurement below.
         let needs_measure = unsafe {
-            mutate_bound_node(bindings, nodes, node, |widget| {
+            layout_bound_node(bindings, nodes, node, |widget| {
                 widget.layout_needs_measure()
             })
         }
@@ -241,7 +275,7 @@ pub(super) unsafe fn compute_widget_layout_depth(
             // SAFETY: caller owns the stable matching tree, each callback is
             // exclusive, and bound dispatch checks admission and lifetime.
             unsafe {
-                mutate_bound_node(bindings, nodes, node, |widget| {
+                layout_bound_node(bindings, nodes, node, |widget| {
                     widget.measure(known, available, text)
                 })
             }
@@ -265,10 +299,10 @@ pub(super) unsafe fn compute_widget_layout_depth(
         }
         for &node in nodes.keys() {
             // SAFETY: same contract as measurement; no topology mutation is
-            // permitted by adjust_layout_with_measure.
+            // permitted by adjust_layout_style.
             changed |= unsafe {
-                mutate_bound_node(bindings, nodes, node, |widget| {
-                    widget.adjust_layout_with_measure(taffy, node, text)
+                layout_bound_node(bindings, nodes, node, |widget| {
+                    widget.adjust_layout_style(taffy, node, text)
                 })
             }
             .unwrap_or(false);
@@ -573,11 +607,14 @@ impl CompositionFocus {
         bindings: &BoundNodeMap,
         allowed: Option<&[NodeId]>,
     ) -> Option<NodeId> {
+        // Asked of every node: look the order up, do not scan it each time.
+        let allowed: Option<std::collections::HashSet<NodeId>> =
+            allowed.map(|order| order.iter().copied().collect());
         let focused: Vec<_> = nodes
             .keys()
             .copied()
             .filter(|&node| {
-                allowed.is_none_or(|order| order.contains(&node))
+                allowed.as_ref().is_none_or(|order| order.contains(&node))
                     && unsafe {
                         crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
                             widget.is_focusable() && widget.is_enabled() && widget.is_focused()
@@ -759,19 +796,6 @@ impl Widget for AnonymousFocusProbe {
         nodes.insert(node, self as *mut dyn Widget);
         node
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut TextRenderer,
-        _: &crate::Theme,
-        _: &crate::PresenceCtx,
-    ) {
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
     fn is_focusable(&self) -> bool {
         true
     }
@@ -800,7 +824,7 @@ impl crate::undo::UndoPoints for AnonymousFocusProbe {
 mod tests {
     use super::*;
     use crate::widget::TaffyTreeExt;
-    use vello::kurbo::{Affine, Point, Rect};
+    use vello::kurbo::{Point, Rect};
 
     #[derive(Default)]
     struct UnsettledStyles {
@@ -833,7 +857,12 @@ mod tests {
                 height: 20.0,
             }
         }
-        fn adjust_layout_style(&mut self, tree: &mut TaffyTree<()>, node: NodeId) -> bool {
+        fn adjust_layout_style(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            node: NodeId,
+            _text: &mut crate::text_render::TextRenderer,
+        ) -> bool {
             self.adjustments = self.adjustments.checked_add(1).unwrap();
             let mut style = tree.style(node).unwrap().clone();
             style.size.width = taffy::Dimension::length(if self.adjustments.is_multiple_of(2) {
@@ -846,18 +875,6 @@ mod tests {
         }
         fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {
             panic!("unsettled geometry must not be applied")
-        }
-        fn draw(
-            &mut self,
-            _: &mut vello::Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &crate::Theme,
-            _: &crate::PresenceCtx,
-        ) {
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -891,11 +908,9 @@ mod tests {
             assert_eq!(text_control_height(34.0, &stock), 34.0);
             assert_eq!(text_control_height(36.0, &stock), 36.0);
 
-            let line_1x =
-                f64::from(TextStyle::new(stock.tokens.typography.scale.base).line_height_px());
+            let line_1x = f64::from(stock.text(TextRole::Body).line_height_px());
             let two = Theme::dark().with_text_scale(2.0);
-            let line_2x =
-                f64::from(TextStyle::new(two.tokens.typography.scale.base).line_height_px());
+            let line_2x = f64::from(two.text(TextRole::Body).line_height_px());
             assert!(
                 (line_2x - 2.0 * line_1x).abs() < 1e-3,
                 "the theme's body line doubles"
@@ -964,8 +979,9 @@ mod tests {
         }
 
         fn ordinary_hosts_keep_default_pixel_rounding() {
-            use crate::widget::Button;
-            let mut widget = Button::new("ordinary", "Ordinary").with_size(100.25, 40.25);
+            let mut widget = crate::widget::Container::new()
+                .with_no_padding()
+                .with_size(100.25, 40.25);
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1460,6 +1476,36 @@ pub(super) fn allocation_or_content_size(
     }
 }
 
+/// A linear container's `(rect, paint_rect)` at `origin`: the rect spans
+/// [`allocation_or_content_size`], the paint rect the laid-out box grown to
+/// fit its content.
+pub(super) fn flow_rects(
+    tree: &TaffyTree<()>,
+    node: NodeId,
+    origin: vello::kurbo::Point,
+) -> (vello::kurbo::Rect, vello::kurbo::Rect) {
+    let layout = tree.layout(node).copied().unwrap_or_default();
+    let allocated = allocation_or_content_size(tree, node, &layout);
+    let location = vello::kurbo::Point::new(
+        origin.x + f64::from(layout.location.x),
+        origin.y + f64::from(layout.location.y),
+    );
+    let rect = vello::kurbo::Rect::new(
+        location.x,
+        location.y,
+        location.x + f64::from(allocated.width),
+        location.y + f64::from(allocated.height),
+    );
+    let paint_rect = vello::kurbo::Rect::from_origin_size(
+        location,
+        (
+            f64::from(layout.size.width.max(layout.content_size.width)),
+            f64::from(layout.size.height.max(layout.content_size.height)),
+        ),
+    );
+    (rect, paint_rect)
+}
+
 /// Lay `widget` out on its own at `rect`, in a layout tree of its own, with
 /// the passes the host runs (build, resolve, apply) but at a size the host
 /// did not give it: a capture drawing a scrolling document at its full
@@ -1485,10 +1531,7 @@ pub(crate) fn lay_out_detached(
     let child = widget.build_layout(&mut taffy, theme, &mut nodes);
     let root = taffy.new_with_children(
         taffy::Style {
-            size: Size {
-                width: taffy::Dimension::length(w),
-                height: taffy::Dimension::length(h),
-            },
+            size: Size::from_lengths(w, h),
             ..Default::default()
         },
         &[child],

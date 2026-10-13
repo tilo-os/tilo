@@ -130,8 +130,8 @@ pub struct LiveRecord {
     /// Application identifier.
     #[serde(deserialize_with = "text128")]
     pub app: String,
-    /// Record identifier within the application.
-    #[serde(deserialize_with = "text128")]
+    /// Record identifier within the application; empty names its package-primary record.
+    #[serde(deserialize_with = "record128")]
     pub record: String,
 }
 
@@ -147,11 +147,7 @@ impl LiveRecord {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.app.is_empty()
-            || self.app.len() > 128
-            || self.record.is_empty()
-            || self.record.len() > 128
-        {
+        if self.app.is_empty() || self.app.len() > 128 || self.record.len() > 128 {
             Err(LiveWireError::Invalid)
         } else {
             Ok(())
@@ -177,6 +173,83 @@ pub struct LiveAnchor {
     /// Opaque cursor bytes, 1..=[`MAX_OBJECT_ID_BYTES`].
     #[serde(with = "object_bytes")]
     pub cursor: Vec<u8>,
+}
+
+/// The editor a selection anchor names: its postcard scope key, or the key's
+/// 16-byte scope digest when the scoped form would not fit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnchorScope<'a> {
+    /// The editor's postcard scope key.
+    Key(&'a [u8]),
+    /// The 16-byte digest of the editor's scope key.
+    Digest([u8; 16]),
+}
+
+/// A selection from `start` to `end` in the editor whose postcard scope key
+/// is `key`, as an anchor and a same-scope head. `digest` is asked for only
+/// when the scoped anchor exceeds [`MAX_OBJECT_ID_BYTES`]; `None` when even
+/// the digest form does not fit.
+pub fn selection_anchors(
+    key: &[u8],
+    digest: impl FnOnce() -> Option<[u8; 16]>,
+    start: u64,
+    end: u64,
+) -> Option<(LiveAnchor, LiveAnchor)> {
+    let mut anchor = vec![ANCHOR_TAG_SCOPED];
+    push_uvarint(&mut anchor, start);
+    anchor.extend_from_slice(key);
+    if anchor.len() > MAX_OBJECT_ID_BYTES {
+        anchor = vec![ANCHOR_TAG_DIGEST];
+        push_uvarint(&mut anchor, start);
+        anchor.extend_from_slice(&digest()?);
+    }
+    let mut head = vec![ANCHOR_TAG_SAME_SCOPE];
+    push_uvarint(&mut head, end);
+    (anchor.len() <= MAX_OBJECT_ID_BYTES)
+        .then_some((LiveAnchor { cursor: anchor }, LiveAnchor { cursor: head }))
+}
+
+/// The editor scope and range of a pair made by [`selection_anchors`].
+pub fn read_selection_anchors<'a>(
+    anchor: &'a LiveAnchor,
+    head: &LiveAnchor,
+) -> Option<(AnchorScope<'a>, u64, u64)> {
+    let (&tag, rest) = anchor.cursor.split_first()?;
+    let (start, key) = read_uvarint(rest)?;
+    let scope = match tag {
+        ANCHOR_TAG_SCOPED => AnchorScope::Key(key),
+        ANCHOR_TAG_DIGEST => AnchorScope::Digest(key.try_into().ok()?),
+        _ => return None,
+    };
+    let (&tag, rest) = head.cursor.split_first()?;
+    if tag != ANCHOR_TAG_SAME_SCOPE {
+        return None;
+    }
+    let (end, _) = read_uvarint(rest)?;
+    Some((scope, start, end))
+}
+
+fn push_uvarint(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let byte = u8::try_from(value & 0x7f).unwrap_or(0);
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+fn read_uvarint(bytes: &[u8]) -> Option<(u64, &[u8])> {
+    let mut value = 0u64;
+    for (index, (byte, shift)) in bytes.iter().zip((0u32..64).step_by(7)).enumerate() {
+        value |= u64::from(byte & 0x7f).checked_shl(shift)?;
+        if byte & 0x80 == 0 {
+            return Some((value, bytes.get(index.checked_add(1)?..)?));
+        }
+    }
+    None
 }
 
 /// Drag lifecycle; `End` is followed by the durable change.
@@ -215,7 +288,7 @@ pub enum ParticipantKind {
 ///
 /// Self-asserted and cosmetic. Who a publisher is comes from the host-stamped
 /// device; that a device is an agent, and on whose behalf, comes from its
-/// root-signed [`AgentDelegation`](crate::agents::AgentDelegation).
+/// root-signed [`Delegation`](crate::delegation::Delegation).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveParticipant {
@@ -677,6 +750,15 @@ fn text128<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Er
     bounded_text::<D, 128>(d)
 }
 
+fn record128<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    let value = String::deserialize(d)?;
+    if value.len() > 128 {
+        Err(de::Error::custom("record exceeds bounds"))
+    } else {
+        Ok(value)
+    }
+}
+
 fn preview_text<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
     bounded_text::<D, MAX_PREVIEW_TEXT_BYTES>(d)
 }
@@ -848,6 +930,63 @@ mod tests {
             drag: None,
             participant: None,
         })
+    }
+
+    #[test]
+    fn package_primary_presence_is_sealed_and_bound_to_its_exact_record() {
+        let primary = LiveRecord {
+            app: "so.tilo.chat".into(),
+            record: String::new(),
+        };
+        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let channel = collab_types::document_channel_id(&primary.app, room, &primary.record);
+        let frame = LiveFrame::Presence(PresenceFrame {
+            seq: 1,
+            sent_at_ms: 1,
+            focus: Some(primary.clone()),
+            pointer: Some([1.0, 2.0]),
+            selection: None,
+            drag: None,
+            participant: None,
+        });
+        let bytes = SealedLiveFrame::seal(&frame, |_, retention, cleartext: &[u8]| {
+            Ok::<_, String>((
+                EncryptionMetadata::content_key(3, channel, retention),
+                cleartext.to_vec(),
+            ))
+        })
+        .unwrap();
+        let sealed = SealedLiveFrame::decode(&bytes).unwrap();
+        assert_eq!(
+            sealed
+                .open_in_record(room, &primary, |_, _, bytes| {
+                    Ok::<_, String>(bytes.to_vec())
+                })
+                .unwrap(),
+            frame
+        );
+        let named = LiveRecord {
+            record: "other".into(),
+            ..primary
+        };
+        assert!(matches!(
+            sealed.open_in_record(
+                room,
+                &named,
+                |_, _, _| -> std::result::Result<Vec<u8>, String> {
+                    panic!("a different record must be refused before opening")
+                }
+            ),
+            Err(LiveSealError::Mismatch)
+        ));
+        assert!(
+            LiveRecord {
+                app: String::new(),
+                record: String::new()
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

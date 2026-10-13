@@ -1,23 +1,23 @@
 //! Populated, interactive reference scene for the chart catalogue.
 
+use tilo_ui::TextRole;
 use tilo_ui::chart_palette::ChartPalette;
 use tilo_ui::num::f64_of_usize;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{
     AxisLabelFormat, Candle, CandlestickChart, Card, CardGrid, CartesianAnnotation, CartesianPan,
     CartesianPlot, CartesianRenderingStyle, CartesianStyle, Category, CategoryChart,
-    CategoryLayout, CategorySeries, ChordChart, ChordLink, ChordNode, ChordSelection, Column,
-    DistributionChart, DistributionSeries, FunnelChart, FunnelStage, Heatmap, HeatmapCell,
-    Histogram, MarkerShape, PieChart, PieSlice, PlotAxis, PlotDatum, PlotSeries, PolarAreaChart,
-    PolarAreaDatum, PolarAreaStyle, RadarAxis, RadarChart, RadarSeries, RangeBar, RangeChart,
-    SankeyChart, SankeyLink, SankeyNode, SankeySelection, Scrollable, SeriesKind, SunburstChart,
-    SunburstNode, Text, Treemap, TreemapItem, Widget,
+    CategoryLayout, CategorySeries, ChartItem, ChartLink, ChartNode, ChordChart, ChordSelection,
+    Column, DistributionChart, DistributionSeries, FunnelChart, Heatmap, HeatmapCell, Histogram,
+    MarkerShape, PieChart, PieSlice, PlotAxis, PlotDatum, PlotSeries, PolarAreaChart,
+    PolarAreaStyle, RadarAxis, RadarChart, RadarSeries, RangeBar, RangeChart, SankeyChart,
+    SankeySelection, Scrollable, SeriesKind, SunburstChart, SunburstNode, Text, Treemap, Widget,
 };
 
 const CHART_HEIGHT: f32 = 270.0;
 
 fn card(title: &str, chart: impl Widget + 'static) -> Box<dyn Widget> {
-    Box::new(Card::titled(title, Box::new(chart)))
+    Box::new(Card::new(Box::new(chart)).with_title(title))
 }
 
 /// Build the same scene used by the live example and offscreen visual checks.
@@ -27,7 +27,7 @@ pub fn build(theme: &Theme) -> Box<dyn Widget> {
 
 #[allow(
     dead_code,
-    reason = "used by the screenshot registry, not the live gallery binary"
+    reason = "ui-shots renders the inspected variant; ui-lab includes this file for the plain scene only"
 )]
 pub fn build_inspected(theme: &Theme) -> Box<dyn Widget> {
     build_scene(theme, true)
@@ -103,7 +103,7 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
             .labelled("Target 40")
             .with_detail("Forecast performance objective"),
     ])
-    .styled(CartesianStyle {
+    .with_style(CartesianStyle {
         rendering: CartesianRenderingStyle {
             show_markers_on_lines: true,
             ..Default::default()
@@ -135,7 +135,7 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
         .marker_radius(5.0)
         .sorted_by_x(),
     ])
-    .styled(CartesianStyle {
+    .with_style(CartesianStyle {
         x_axis: PlotAxis::default()
             .logarithmic()
             .formatted(AxisLabelFormat::Compact)
@@ -201,11 +201,11 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
     .with_height(CHART_HEIGHT);
 
     let mut treemap = Treemap::new(vec![
-        TreemapItem::new("src", "Source", 42.0).colored(c[0]),
-        TreemapItem::new("assets", "Assets", 25.0).colored(c[1]),
-        TreemapItem::new("tests", "Tests", 16.0).colored(c[2]),
-        TreemapItem::new("docs", "Docs", 10.0).colored(c[3]),
-        TreemapItem::new("config", "Config", 7.0).colored(c[5]),
+        ChartItem::new("src", "Source", 42.0).colored(c[0]),
+        ChartItem::new("assets", "Assets", 25.0).colored(c[1]),
+        ChartItem::new("tests", "Tests", 16.0).colored(c[2]),
+        ChartItem::new("docs", "Docs", 10.0).colored(c[3]),
+        ChartItem::new("config", "Config", 7.0).colored(c[5]),
     ])
     .with_height(CHART_HEIGHT);
 
@@ -283,14 +283,14 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
         ["Visits", "Signup", "Trial", "Paid", "Churn"]
             .into_iter()
             .zip(c.iter().copied().cycle())
-            .map(|(label, color)| SankeyNode::new(label, label).colored(color))
+            .map(|(label, color)| ChartNode::new(label, label).colored(color))
             .collect(),
         vec![
-            SankeyLink::new("v-s", "Visits", "Signup", 72.0),
-            SankeyLink::new("v-t", "Visits", "Trial", 28.0),
-            SankeyLink::new("s-t", "Signup", "Trial", 54.0),
-            SankeyLink::new("t-p", "Trial", "Paid", 61.0),
-            SankeyLink::new("t-c", "Trial", "Churn", 21.0),
+            ChartLink::new("v-s", "Visits", "Signup", 72.0),
+            ChartLink::new("v-t", "Visits", "Trial", 28.0),
+            ChartLink::new("s-t", "Signup", "Trial", 54.0),
+            ChartLink::new("t-p", "Trial", "Paid", 61.0),
+            ChartLink::new("t-c", "Trial", "Churn", 21.0),
         ],
     )
     .with_height(CHART_HEIGHT);
@@ -299,15 +299,15 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
         ["Design", "Engineering", "Research", "Support", "Sales"]
             .into_iter()
             .zip(c.iter().copied().cycle())
-            .map(|(label, color)| ChordNode::new(label, label).colored(color))
+            .map(|(label, color)| ChartNode::new(label, label).colored(color))
             .collect(),
         vec![
-            ChordLink::new("d-e", "Design", "Engineering", 32.0),
-            ChordLink::new("d-r", "Design", "Research", 14.0),
-            ChordLink::new("e-r", "Engineering", "Research", 25.0),
-            ChordLink::new("e-s", "Engineering", "Support", 18.0),
-            ChordLink::new("support-sales", "Support", "Sales", 27.0),
-            ChordLink::new("sales-design", "Sales", "Design", 21.0),
+            ChartLink::new("d-e", "Design", "Engineering", 32.0),
+            ChartLink::new("d-r", "Design", "Research", 14.0),
+            ChartLink::new("e-r", "Engineering", "Research", 25.0),
+            ChartLink::new("e-s", "Engineering", "Support", 18.0),
+            ChartLink::new("support-sales", "Support", "Sales", 27.0),
+            ChartLink::new("sales-design", "Sales", "Design", 21.0),
         ],
     )
     .with_height(CHART_HEIGHT);
@@ -328,10 +328,10 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
     .with_height(CHART_HEIGHT);
 
     let mut funnel = FunnelChart::new(vec![
-        FunnelStage::new("visit", "Visited", 12_400.0).colored(c[0]),
-        FunnelStage::new("signup", "Signed up", 7_850.0).colored(c[3]),
-        FunnelStage::new("trial", "Started trial", 4_920.0).colored(c[1]),
-        FunnelStage::new("paid", "Subscribed", 2_640.0).colored(c[2]),
+        ChartItem::new("visit", "Visited", 12_400.0).colored(c[0]),
+        ChartItem::new("signup", "Signed up", 7_850.0).colored(c[3]),
+        ChartItem::new("trial", "Started trial", 4_920.0).colored(c[1]),
+        ChartItem::new("paid", "Subscribed", 2_640.0).colored(c[2]),
     ])
     .with_height(CHART_HEIGHT);
 
@@ -366,13 +366,13 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
         .into_iter()
         .zip(c.iter().copied().cycle())
         .map(|((label, value), color)| {
-            PolarAreaDatum::new(label, label, value)
+            ChartItem::new(label, label, value)
                 .colored(color)
                 .with_detail("active users")
         })
         .collect(),
     )
-    .styled(PolarAreaStyle {
+    .with_style(PolarAreaStyle {
         inner_radius: 0.3,
         ..Default::default()
     })
@@ -421,15 +421,12 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
     let content = Column::new()
         .with_intrinsic_height()
         .with_gap(18.0)
-        .push(Box::new(Text::new("Interactive chart gallery").with_size(30.0)))
+        .push(Box::new(Text::new("Interactive chart gallery").with_role(TextRole::Display)))
         .push(Box::new(Text::new(
             "Resize to reflow. Hover points, cells, links, nodes, and segments; click to activate accessible data targets.",
         )))
         .push(Box::new(
-            CardGrid::new(cards)
-                .with_min_card_width(430.0)
-                .with_card_height(350.0)
-                .with_gap(18.0),
+            CardGrid::new(cards).with_card_width(tilo_ui::widget::CardWidth::Wide),
         ));
     Box::new(Scrollable::new_vertical().with_child(Box::new(content)))
 }

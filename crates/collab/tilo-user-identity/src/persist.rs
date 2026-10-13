@@ -279,7 +279,7 @@ impl IdentityPaths {
     pub fn ensure_directories(&self) -> io::Result<()> {
         if let Some(parent) = self.user_pubkey.parent() {
             #[cfg(windows)]
-            private_fs::directory(parent)?;
+            tilo_files::native::private::directory(parent)?;
             #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
@@ -289,7 +289,7 @@ impl IdentityPaths {
             .filter(|_| self.device_key_custody == DeviceKeyCustody::File)
         {
             #[cfg(windows)]
-            private_fs::directory(parent)?;
+            tilo_files::native::private::directory(parent)?;
             #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
@@ -428,8 +428,9 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
 }
 
 /// The directories public identity files live in get this mode whatever the
-/// writer's umask, keeping a setgid bit inherited from their parent: under
-/// `sudo tilo-enroll install-cert` a new `device/certs` was otherwise `0700`.
+/// writer's umask, keeping a setgid bit inherited from their parent. The
+/// machine's group-writable device tree must also allow later login users
+/// in that same trust group to publish their own root-signed certificates.
 const PUBLIC_DIR_MODE: u32 = 0o755;
 
 fn create_public_dir(path: &Path) -> io::Result<()> {
@@ -442,10 +443,17 @@ fn create_public_dir(path: &Path) -> io::Result<()> {
     {
         use std::os::unix::fs::PermissionsExt as _;
         let inherited = fs::metadata(path)?.permissions().mode() & 0o7000;
-        fs::set_permissions(
-            path,
-            fs::Permissions::from_mode(inherited | PUBLIC_DIR_MODE),
-        )?;
+        let parent_mode = path
+            .parent()
+            .map(fs::metadata)
+            .transpose()?
+            .map(|metadata| metadata.permissions().mode() & 0o7777);
+        let mode = if parent_mode == Some(0o2770) {
+            0o770
+        } else {
+            PUBLIC_DIR_MODE
+        };
+        fs::set_permissions(path, fs::Permissions::from_mode(inherited | mode))?;
     }
     Ok(())
 }
@@ -493,7 +501,7 @@ fn signing_key_from_file(
     // component. A leaf-only O_NOFOLLOW check still permits an exchanged
     // parent directory to redirect an otherwise trusted key path.
     #[cfg(windows)]
-    let file = private_fs::read(path)?;
+    let file = tilo_files::native::private::read(path)?;
     #[cfg(not(windows))]
     let file = open_regular_without_symlinks(path).map_err(|error| {
         PersistError::Io(io::Error::new(
@@ -585,7 +593,7 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     let seed = Zeroizing::new(sk.to_bytes());
     #[cfg(windows)]
-    return private_fs::write_atomic(path, seed.as_ref());
+    return tilo_files::native::private::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
     tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), 0o600)
 }
@@ -669,7 +677,7 @@ pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     let seed = Zeroizing::new(sk.to_bytes());
     #[cfg(windows)]
-    return private_fs::write_atomic(path, seed.as_ref());
+    return tilo_files::native::private::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
     tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
 }
@@ -889,7 +897,10 @@ fn publish_identity_bytes_no_clobber(
 fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, PersistError> {
     protect_secret_process()?;
     let seed = Zeroizing::new(key.to_bytes());
-    Ok(private_fs::create_atomic(path, seed.as_ref())?)
+    Ok(tilo_files::native::private::create_atomic(
+        path,
+        seed.as_ref(),
+    )?)
 }
 
 /// Create a private, complete temporary candidate beside the final device-key
@@ -1017,8 +1028,9 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
 /// `sign` is the person's existing root capability. It receives the device
 /// certificate digest and returns the signature. This function never receives
 /// or writes the root secret. It writes the person's public key, a freshly
-/// generated device key, and the signed certificate under `paths`. An existing
-/// device key is left untouched.
+/// generated device key, and the signed certificate under `paths`, both as the
+/// default and the identity-specific certificate used for authorization. An
+/// existing device key is left untouched.
 ///
 /// # Errors
 ///
@@ -1086,6 +1098,7 @@ pub fn provision_joined_device(
             "target already has a device identity",
         )));
     }
+    write_device_cert(&paths.device_cert_for_user(&cert.user_public_key), &cert)?;
     write_device_cert(&paths.device_cert, &cert)?;
     if paths.user_privkey.exists() {
         return Err(PersistError::Io(io::Error::new(
@@ -1260,6 +1273,10 @@ mod tests {
         assert!(!cert.capabilities.can_admit_devices);
         verify_device_cert_at(&cert, 1_000).unwrap();
         assert_eq!(read_device_cert(&paths.device_cert).unwrap(), cert);
+        assert_eq!(
+            read_device_cert(&paths.device_cert_for_user(&cert.user_public_key)).unwrap(),
+            cert
+        );
         assert_eq!(
             read_device_key(&paths.device_privkey)
                 .unwrap()
@@ -1918,6 +1935,35 @@ mod tests {
                 seed
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn public_certificates_preserve_the_device_directory_trust_group() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(dir.path());
+        paths.ensure_directories().unwrap();
+        let device_dir = paths.device_cert.parent().unwrap();
+        fs::set_permissions(device_dir, fs::Permissions::from_mode(0o2770)).unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: [3; 32],
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        crate::sign_device_cert(&mut cert, &root).unwrap();
+        let cert_path = paths.device_cert_for_user(&cert.user_public_key);
+        write_device_cert(&cert_path, &cert).unwrap();
+        let metadata = fs::metadata(cert_path.parent().unwrap()).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o7777, 0o2770);
+        assert_eq!(metadata.gid(), fs::metadata(device_dir).unwrap().gid());
+        assert_eq!(read_device_cert(&cert_path).unwrap(), cert);
+        assert!(!paths.device_privkey.exists());
     }
 
     #[cfg(unix)]

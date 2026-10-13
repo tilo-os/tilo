@@ -16,6 +16,78 @@ use crate::gesture::Ink;
 use crate::model::Artwork;
 use crate::render::Renderer;
 
+/// A local tool presentation preference; mixed documents keep every action.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Workspace {
+    #[default]
+    Auto,
+    Vector,
+    Photo,
+    Painting,
+    Pixel,
+}
+
+impl Workspace {
+    pub fn of(art: &Artwork) -> Self {
+        if art
+            .marks
+            .iter()
+            .any(|mark| matches!(mark.shape, crate::model::Shape::Image { .. }))
+        {
+            Self::Photo
+        } else if art.layers.iter().any(|layer| !layer.medium.is_empty()) {
+            Self::Painting
+        } else if art
+            .marks
+            .iter()
+            .any(|mark| mark.style.brush.as_deref() == Some("pixel"))
+        {
+            Self::Pixel
+        } else {
+            Self::Vector
+        }
+    }
+
+    pub fn tools(self) -> &'static [Tool] {
+        match self {
+            Self::Painting => &[
+                Tool::Brush,
+                Tool::Eraser,
+                Tool::Eyedropper,
+                Tool::Select,
+                Tool::Rect,
+                Tool::Ellipse,
+            ],
+            Self::Photo => &[
+                Tool::Select,
+                Tool::Marquee,
+                Tool::Lasso,
+                Tool::Wand,
+                Tool::Brush,
+                Tool::Eraser,
+                Tool::Eyedropper,
+            ],
+            Self::Pixel => &[
+                Tool::Select,
+                Tool::Marquee,
+                Tool::Brush,
+                Tool::Bucket,
+                Tool::Eraser,
+                Tool::Eyedropper,
+            ],
+            _ => &[
+                Tool::Select,
+                Tool::Rect,
+                Tool::Ellipse,
+                Tool::Line,
+                Tool::Pen,
+                Tool::Text,
+                Tool::Eyedropper,
+            ],
+        }
+    }
+}
+
 /// What the pointer does on the canvas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
@@ -59,11 +131,6 @@ impl Tool {
         Self::Text,
         Self::Eyedropper,
     ];
-
-    /// Whether the tool selects an area of the artwork.
-    pub fn selects_area(self) -> bool {
-        matches!(self, Self::Marquee | Self::Oval | Self::Lasso | Self::Wand)
-    }
 
     /// The Fluent id of the tool's name.
     pub fn label(self) -> &'static str {
@@ -150,8 +217,11 @@ pub struct Tools {
     pub layer: LocalState<String>,
     /// The marks selected on the canvas.
     pub selection: LocalState<Vec<String>>,
+    /// Exact objects chosen from the tree, consumed by the canvas.
+    pub pick_objects: LocalState<Option<Vec<String>>>,
     /// A past version shown in place of the artwork, by change id.
     pub preview: LocalState<Option<String>>,
+    pub checkpoint_name: LocalState<String>,
     /// How far the canvas is zoomed: screen pixels per artwork unit, as
     /// the canvas last showed it.
     pub zoom: LocalState<f64>,
@@ -165,6 +235,8 @@ pub struct Tools {
     pub keys: LocalState<Vec<CanvasKey>>,
     /// Whether the sidebar of inspector, layers and history is shown.
     pub sidebar: LocalState<bool>,
+    pub workspace: LocalState<Workspace>,
+    pub all_tools: LocalState<bool>,
     /// The canvas's width in logical pixels, in steps of [`ROOM_STEP`], as
     /// it was last laid out: what the strip over it has room for.
     pub room: LocalState<u32>,
@@ -181,9 +253,6 @@ pub struct Tools {
     pub layer_adjust: LocalState<bool>,
     /// A picture being chosen to add, until the chooser answers.
     pub picking: Rc<RefCell<Option<ui::portal::ContentsChannel>>>,
-    /// A subject to find or an edge to refine, asked from a button: the
-    /// canvas draws what it needs and the rest runs off the window's thread.
-    pub finding: Rc<RefCell<Finding>>,
     /// The preset the brush lays strokes with on a plain layer.
     pub preset: LocalState<Preset>,
     /// The brush's opacity, `0..=1`.
@@ -335,6 +404,8 @@ pub enum ViewRequest {
     Fit,
     /// One artwork unit to a screen pixel.
     Actual,
+    /// Whole screen pixels per artwork cell.
+    Pixel,
 }
 
 /// Where the magic wand and the bucket look for colour.
@@ -370,17 +441,20 @@ impl Default for Tools {
             load: LocalState::new(0.5),
             layer: LocalState::new(String::new()),
             selection: LocalState::new(Vec::new()),
+            pick_objects: LocalState::new(None),
             preview: LocalState::new(None),
+            checkpoint_name: LocalState::new(String::new()),
             zoom: LocalState::new(1.0),
             view: LocalState::new(None),
             keys: LocalState::new(Vec::new()),
             sidebar: LocalState::new(true),
+            workspace: LocalState::new(Workspace::Auto),
+            all_tools: LocalState::new(false),
             room: LocalState::new(0),
             stop: LocalState::new(0),
             crop: LocalState::new(false),
             live: Rc::default(),
             picking: Rc::default(),
-            finding: Rc::default(),
             layer_adjust: LocalState::new(false),
             preset: LocalState::new(Preset::Round),
             opacity: LocalState::new(1.0),
@@ -471,7 +545,12 @@ impl Tools {
     /// not a colour.
     pub fn hex(&self) -> String {
         let rgba = self.colour().to_rgba8();
-        format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b)
+        let rgb = format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b);
+        if rgba.a == 255 {
+            rgb
+        } else {
+            format!("{rgb}{:02x}", rgba.a)
+        }
     }
 
     /// The colour the brush paints, for drawing its preview: the pigment's
@@ -522,6 +601,10 @@ impl Tools {
     pub fn choose_preset(&self, preset: Preset) {
         let dynamics = Dynamics::of(preset, &BTreeMap::new());
         self.preset.set(preset);
+        if preset.pixel() {
+            self.size.set(0.0);
+            self.view.set(Some(ViewRequest::Pixel));
+        }
         self.flow.set(dynamics.flow);
         self.hardness.set(dynamics.hardness);
         self.smoothing.set(dynamics.smoothing);
@@ -632,13 +715,4 @@ mod tests {
             .set(Some(("burnt-sienna".into(), "#8a3c1e".into())));
         assert_eq!(tools.paint(), "pigment:burnt-sienna");
     }
-}
-
-/// Finding an area off the window's thread.
-#[derive(Default)]
-pub struct Finding {
-    /// Asked for and not started: the select it resolves.
-    pub wanted: Option<crate::selection::Select>,
-    /// Under way: the area, as the select to apply, or why not.
-    pub pending: Option<std::sync::mpsc::Receiver<Result<crate::selection::Select, String>>>,
 }

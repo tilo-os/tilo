@@ -130,7 +130,7 @@ impl VideoEditorApp {
         match crate::project_file::save(&path, &self.project) {
             Ok(()) => {
                 self.recents = crate::project_file::recents::remember(&self.recents, &path);
-                self.project_notice = Some(Notice::ok(format!("Saved to {}", path.display())));
+                self.project_notice = Some(Notice::ok(saved_words(&path)));
                 // Save As can move the project; relative media follows it.
                 crate::media::set_project_anchor(path.parent().map(std::path::Path::to_path_buf));
                 self.project_path = Some(path);
@@ -203,11 +203,11 @@ impl VideoEditorApp {
         let replaced = !self.project_is_empty();
         let mut notice = Self::opened_notice(&path, &project);
         if replaced {
-            notice.text.push_str(" · Undo to go back");
+            notice.text.push_str(". Undo to go back");
         }
         self.project_notice = Some(notice);
 
-        self.submit(&crate::actions::load_project_action(&project));
+        self.submit(vec![crate::resource::load_project(&project)]);
         // The host applies the open after this event; the document it leaves
         // is the one the file holds, so that is what reads as saved.
         // Recording today's heads instead would call the opened project
@@ -321,20 +321,17 @@ impl VideoEditorApp {
     /// The rows the project menu offers right now.
     pub(super) fn project_menu_rows(&self) -> Vec<(ProjectMenuItem, String)> {
         let mut rows = vec![
-            (ProjectMenuItem::Open, "Open…  (Ctrl+O)".to_string()),
+            (ProjectMenuItem::Open, "Open…".to_string()),
             (
                 ProjectMenuItem::Save,
                 match &self.project_path {
-                    Some(_) => "Save  (Ctrl+S)".to_string(),
+                    Some(_) => "Save".to_string(),
                     // Naming what Save will actually do, rather than letting
                     // the user press it and be surprised by a file chooser.
-                    None => "Save…  (Ctrl+S)".to_string(),
+                    None => "Save…".to_string(),
                 },
             ),
-            (
-                ProjectMenuItem::SaveAs,
-                "Save As…  (Ctrl+Shift+S)".to_string(),
-            ),
+            (ProjectMenuItem::SaveAs, "Save as…".to_string()),
         ];
         // Recents, minus the project already open — an entry that reopens
         // what you are looking at is a row that does nothing.
@@ -365,8 +362,19 @@ impl VideoEditorApp {
                 self.project_menu.push(ui::widget::MenuItem::separator());
                 first_recent = false;
             }
-            self.project_menu
-                .push(ui::widget::MenuItem::action(label, || {}));
+            // The menu names the keys that do the same thing, so the rows
+            // teach them.
+            let shortcut = match item {
+                ProjectMenuItem::Open => Some(ui::platform::Shortcut::command("O")),
+                ProjectMenuItem::Save => Some(ui::platform::Shortcut::command("S")),
+                ProjectMenuItem::SaveAs => Some(ui::platform::Shortcut::command("S").shift()),
+                ProjectMenuItem::Recent(_) => None,
+            };
+            let mut row = ui::widget::MenuItem::action(label, || {});
+            if let Some(shortcut) = shortcut {
+                row = row.with_shortcut(shortcut);
+            }
+            self.project_menu.push(row);
             self.project_menu_items.push(item);
         }
         self.project_menu.open_at([at.x as f32, at.y as f32]);
@@ -494,4 +502,14 @@ impl VideoEditorApp {
     pub(super) fn export_is_offered(&self) -> bool {
         crate::export::unavailable_reason().is_none() && !self.export_running()
     }
+}
+
+/// What the header row says after a save: the folder the file went to, by
+/// name. The project button already names the file, and a whole path in a
+/// pill is a line nobody reads.
+pub(super) fn saved_words(path: &Path) -> String {
+    path.parent().and_then(Path::file_name).map_or_else(
+        || "Saved".to_string(),
+        |folder| format!("Saved to {}", folder.to_string_lossy()),
+    )
 }

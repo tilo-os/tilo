@@ -1,22 +1,11 @@
 //! Wire-level presence and rejection tests for `xdg_activation_v1`.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test harness failures are assertions"
-)]
-
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
-
-use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
-use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
+use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1};
-use wayland_protocols::xdg::shell::client::{
-    xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
-};
+use wayland_protocols::xdg::shell::client::{xdg_popup, xdg_positioner, xdg_toplevel, xdg_wm_base};
+
+use crate::support::wayland::foreign_id;
 
 #[derive(Default)]
 struct Client {
@@ -29,25 +18,7 @@ struct Client {
     popup_done: usize,
 }
 
-impl Dispatch<wl_registry::WlRegistry, ()> for Client {
-    fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.push((name, interface, version));
-        }
-    }
-}
+crate::support::wayland::test_client!(Client);
 
 impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for Client {
     fn event(
@@ -76,36 +47,6 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     ) {
         if let wl_keyboard::Event::Enter { serial, .. } = event {
             state.keyboard_serial = Some(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
-    fn event(
-        _: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
         }
     }
 }
@@ -142,101 +83,15 @@ delegate_noop!(Client: ignore wl_seat::WlSeat);
 delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore xdg_positioner::XdgPositioner);
 
-struct Harness {
-    display: Display<shell::compositor::state::State>,
-    state: shell::compositor::state::State,
-    queue: wayland_client::EventQueue<Client>,
-    client: Client,
-    conn: Connection,
-    _event_loop: EventLoop<'static, shell::compositor::state::State>,
-}
-
-impl Harness {
-    fn new() -> Self {
-        let event_loop = EventLoop::try_new().expect("calloop");
-        let display = Display::new().expect("display");
-        let state = shell::compositor::state::State::new(event_loop.handle(), display.handle());
-        let (server, client) = UnixStream::pair().expect("socket pair");
-        display
-            .handle()
-            .insert_client(
-                server,
-                Arc::new(shell::compositor::state::ClientState::default()),
-            )
-            .expect("client insert");
-        client.set_nonblocking(true).expect("nonblocking");
-        let conn = Connection::from_socket(client).expect("client connection");
-        let queue = conn.new_event_queue::<Client>();
-        Self {
-            display,
-            state,
-            queue,
-            client: Client::default(),
-            conn,
-            _event_loop: event_loop,
-        }
-    }
-
-    fn pump(&mut self) {
-        for _ in 0..6 {
-            let _ = self.queue.flush();
-            let _ = self.display.dispatch_clients(&mut self.state);
-            let _ = self.display.flush_clients();
-            if let Some(guard) = self.conn.prepare_read() {
-                let _ = guard.read();
-            }
-            let _ = self.queue.dispatch_pending(&mut self.client);
-        }
-    }
-
-    fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> Option<I>
-    where
-        Client: Dispatch<I, ()>,
-    {
-        let (name, _, advertised) = self
-            .client
-            .globals
-            .iter()
-            .find(|(_, name, _)| name == interface)?
-            .clone();
-        let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        Some(registry.bind(name, version.min(advertised), &self.queue.handle(), ()))
-    }
-}
-
-fn foreign_id(state: &shell::compositor::state::State, app_id: &str) -> u64 {
-    let tree = state.workspace_tree.read();
-    tree.desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .find_map(|tab| match &tab.tile {
-            shell::shell::state::TileContent::Foreign {
-                app_id: actual,
-                surface_id,
-            } if actual == app_id => Some(*surface_id),
-            _ => None,
-        })
-        .expect("foreign surface was adopted")
-}
+type Harness = crate::support::wayland::Harness<Client>;
 
 #[test]
 #[serial_test::serial(process_env)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn xdg_activation_needs_an_attributed_token_and_activates_once() {
     // Phase `activation_global_is_advertised_but_unattributed_tokens_are_not_authority`.
     {
         let mut h = Harness::new();
-        let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-        h.pump();
-        let manager = h
-            .bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1)
-            .expect("xdg_activation_v1 must be advertised");
+        let manager = h.bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1);
         let token = manager.get_activation_token(&h.queue.handle(), ());
         token.commit();
         h.pump();
@@ -255,18 +110,10 @@ fn xdg_activation_needs_an_attributed_token_and_activates_once() {
     // Phase `focused_serial_activates_matching_toplevel_once`.
     {
         let mut h = Harness::new();
-        let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-        h.pump();
-        let activation = h
-            .bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1)
-            .expect("activation");
-        let compositor = h
-            .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-            .expect("compositor");
-        let wm = h
-            .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
-            .expect("xdg shell");
-        let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+        let activation = h.bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1);
+        let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+        let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+        let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
         let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
         let qh = h.queue.handle();
 
@@ -329,17 +176,9 @@ fn xdg_activation_needs_an_attributed_token_and_activates_once() {
     {
         shell::shell::launcher::clear_pending_placements();
         let mut h = Harness::new();
-        let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-        h.pump();
-        let activation = h
-            .bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1)
-            .expect("activation");
-        let compositor = h
-            .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-            .expect("compositor");
-        let wm = h
-            .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
-            .expect("xdg shell");
+        let activation = h.bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1);
+        let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+        let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
         let identity = "org.example.HostToken";
         let desktop_id = "org.example.HostToken.desktop";
         // This is the pre-existing peer/document tab a host launch must adopt,
@@ -430,15 +269,9 @@ fn real_xdg_popups_and_titles_are_handled_without_becoming_tabs() {
     // Phase `real_xdg_popup_is_grabbed_configured_repositioned_and_never_adopted_as_a_tab`.
     {
         let mut h = Harness::new();
-        let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-        h.pump();
-        let compositor = h
-            .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-            .expect("compositor");
-        let wm = h
-            .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
-            .expect("xdg shell");
-        let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+        let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+        let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+        let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
         let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
         let qh = h.queue.handle();
 
@@ -554,14 +387,8 @@ fn real_xdg_popups_and_titles_are_handled_without_becoming_tabs() {
     // Phase `real_xdg_title_change_distinguishes_same_app_windows`.
     {
         let mut h = Harness::new();
-        let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-        h.pump();
-        let compositor = h
-            .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-            .expect("compositor");
-        let wm = h
-            .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
-            .expect("xdg shell");
+        let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+        let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
         let qh = h.queue.handle();
         for title in ["draft-a.md", "draft-b.md"] {
             let surface = compositor.create_surface(&qh, ());

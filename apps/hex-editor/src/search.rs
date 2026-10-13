@@ -14,23 +14,6 @@ pub enum SearchKind {
 /// unbounded allocation and make the result counter misleadingly expensive.
 pub const MAX_RETAINED_MATCHES: usize = 10_000;
 
-impl SearchKind {
-    #[must_use]
-    pub fn toggle(self) -> Self {
-        match self {
-            SearchKind::Hex => SearchKind::Text,
-            SearchKind::Text => SearchKind::Hex,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            SearchKind::Hex => "hex",
-            SearchKind::Text => "text",
-        }
-    }
-}
-
 /// Parse a hex query like "de ad", "deadbeef", or "DE-AD" into raw bytes.
 /// Whitespace and the separators `-`, `:`, `,` are ignored. Returns None
 /// if any remaining char isn't a hex digit or the digit count is odd.
@@ -65,26 +48,56 @@ pub fn needle(query: &str, kind: SearchKind) -> Option<Vec<u8>> {
     }
 }
 
-/// Find every match offset of `needle` in `haystack` (overlapping). Used
-/// for the "N matches" indicator and to drive next/prev navigation.
-pub fn find_all(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
-    find_all_bounded(haystack, needle, usize::MAX).0
+/// How a text query matches the bytes: letter case and word boundaries. A
+/// hex query is always exact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchRules {
+    /// Letters must agree in case.
+    pub match_case: bool,
+    /// The match must not touch another letter, digit or underscore.
+    pub whole_word: bool,
 }
 
-/// Find overlapping matches while retaining at most `limit` offsets.
-///
-/// The boolean is true when more hits exist. Callers can show an honest
-/// `10,000+` result count without allocating an offset for every matching byte
-/// in a large file.
-pub fn find_all_bounded(haystack: &[u8], needle: &[u8], limit: usize) -> (Vec<usize>, bool) {
+impl MatchRules {
+    /// Byte-exact, anywhere: how a hex pattern matches.
+    pub const EXACT: Self = Self {
+        match_case: true,
+        whole_word: false,
+    };
+}
+
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// Like [`find_all_bounded`], under `rules`.
+pub fn find_matches(
+    haystack: &[u8],
+    needle: &[u8],
+    rules: MatchRules,
+    limit: usize,
+) -> (Vec<usize>, bool) {
     if needle.is_empty() || needle.len() > haystack.len() {
         return (Vec::new(), false);
     }
     let mut hits = Vec::new();
     let mut truncated = false;
     for (offset, window) in haystack.windows(needle.len()).enumerate() {
-        if window != needle {
+        let same = if rules.match_case {
+            window == needle
+        } else {
+            window.eq_ignore_ascii_case(needle)
+        };
+        if !same {
             continue;
+        }
+        if rules.whole_word {
+            let before = offset.checked_sub(1).and_then(|i| haystack.get(i));
+            let after = haystack.get(offset + needle.len());
+            if before.copied().is_some_and(is_word_byte) || after.copied().is_some_and(is_word_byte)
+            {
+                continue;
+            }
         }
         if hits.len() == limit {
             truncated = true;
@@ -93,39 +106,6 @@ pub fn find_all_bounded(haystack: &[u8], needle: &[u8], limit: usize) -> (Vec<us
         hits.push(offset);
     }
     (hits, truncated)
-}
-
-/// The first match at or after `from`, wrapping to the start of the
-/// buffer if none is found in the tail.
-pub fn find_next(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-    let last = haystack.len() - needle.len();
-    let from = from.min(last.saturating_add(1));
-    (from..=last)
-        .find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
-        .or_else(|| {
-            (0..from).find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
-        })
-}
-
-/// The last match strictly before `from`, wrapping to the end of the
-/// buffer if none precedes it.
-pub fn find_prev(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-    let last = haystack.len() - needle.len();
-    let before = from.min(last.saturating_add(1));
-    (0..before)
-        .rev()
-        .find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
-        .or_else(|| {
-            (before..=last)
-                .rev()
-                .find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
-        })
 }
 
 #[cfg(test)]
@@ -148,38 +128,24 @@ mod tests {
     }
 
     #[test]
-    fn find_helpers_overlap_bound_and_wrap() {
-        // find_all reports overlapping matches.
-        let hay = b"aaaa";
-        assert_eq!(find_all(hay, b"aa"), vec![0, 1, 2]);
-
-        // Bounded find reports more hits without retaining them.
-        let (hits, truncated) = find_all_bounded(b"aaaa", b"a", 2);
-        assert_eq!(hits, vec![0, 1]);
-        assert!(truncated);
-
-        // find_next wraps.
-        let hay = b"\x00\xFF\x00\xFF";
-        let needle = b"\xFF";
-        assert_eq!(find_next(hay, needle, 0), Some(1));
-        assert_eq!(find_next(hay, needle, 2), Some(3));
-        // Past the last match wraps to the first.
-        assert_eq!(find_next(hay, needle, 4), Some(1));
-
-        // find_prev wraps.
-        assert_eq!(find_prev(hay, needle, 3), Some(1));
-        assert_eq!(find_prev(hay, needle, 1), Some(3)); // wraps to end
-
-        // Navigation does not depend on retaining all hits.
-        let hay = vec![0_u8; MAX_RETAINED_MATCHES + 12];
-        assert_eq!(
-            find_next(&hay, &[0], MAX_RETAINED_MATCHES + 5),
-            Some(MAX_RETAINED_MATCHES + 5)
-        );
-        assert_eq!(
-            find_prev(&hay, &[0], MAX_RETAINED_MATCHES + 5),
-            Some(MAX_RETAINED_MATCHES + 4)
-        );
+    fn find_matches_honours_case_and_word_boundaries() {
+        let hay = b"IHDR ihdr IHDRx _IHDR";
+        let any = MatchRules {
+            match_case: false,
+            whole_word: false,
+        };
+        assert_eq!(find_matches(hay, b"ihdr", any, 10).0, vec![0, 5, 10, 17]);
+        let exact = MatchRules {
+            match_case: true,
+            whole_word: false,
+        };
+        assert_eq!(find_matches(hay, b"ihdr", exact, 10).0, vec![5]);
+        let word = MatchRules {
+            match_case: false,
+            whole_word: true,
+        };
+        assert_eq!(find_matches(hay, b"ihdr", word, 10).0, vec![0, 5]);
+        assert_eq!(find_matches(hay, b"IHDR", word, 1), (vec![0], true));
     }
 
     #[test]
@@ -189,8 +155,9 @@ mod tests {
             Some(vec![0x50, 0x4E, 0x47])
         );
         // The PNG magic bytes.
-        let hay = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        let n = needle("50 4e 47", SearchKind::Hex).unwrap();
-        assert_eq!(find_next(&hay, &n, 0), Some(1));
+        assert_eq!(
+            needle("50 4e 47", SearchKind::Hex),
+            Some(vec![0x50, 0x4E, 0x47])
+        );
     }
 }

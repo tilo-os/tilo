@@ -5,15 +5,19 @@
 //! an application could imitate.
 //!
 //! The decisions all live in [`crate::onboarding::Onboarding`]; this
-//! file is only the composition, built from shared `ui` widgets (`Card`,
+//! file is only the composition, built from shared `ui` widgets (`Section`,
 //! `Banner`, `Text`, `Button`, `Checkbox`) so the ceremony inherits the
 //! system theme, focus order and accessibility like the rest of the desktop.
 //!
-//! On a Tilo system that has not opted in yet, setup also offers the media
-//! codecs pack after the backup step ([`CodecSetup`]). It is an explicit
-//! opt-in (a button, nothing pre-selected), runs through the same polkit-
-//! allowed unit as Settings, and never blocks setup: the download continues in
-//! the background and the result arrives as a notification.
+//! On a Tilo system that has not opted in yet, setup also offers to play more
+//! video and audio formats after the backup step ([`CodecSetup`]): a page
+//! with one large Install button that downloads the media codecs extension
+//! only when pressed; nothing is chosen in advance. It runs
+//! through the same polkit-allowed unit as Settings and never blocks setup:
+//! the download continues in the background and the result arrives as a
+//! notification.
+
+mod semantic;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -25,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
@@ -32,11 +37,11 @@ use taffy::{NodeId, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::theme::Theme;
 use ui::widget::{
-    Banner, Button, Card, Checkbox, ChoiceCard, Column, FilePicker, FilePickerMode, IconWidget,
-    ProgressBar, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget,
+    Banner, Button, ButtonRole, Checkbox, Column, FilePicker, FilePickerMode, IconWidget, ListRow,
+    ProgressBar, Row, Scrollable, Section, Spacer, Spinner, Text, TextInput, Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -72,6 +77,11 @@ const INTRO_PANEL_HEIGHT: f32 = 520.0;
 /// on ordinary laptop displays; the inner viewport still scrolls when large
 /// text or a short window cannot fit that content.
 const READY_PANEL_PREFERRED_HEIGHT: f32 = 552.0;
+/// The formats step is a full page like the hand-off: a title, a line and one
+/// large Install button; its results add a banner and a progress bar. One
+/// height for all of them, so choosing does not make the card jump.
+const CODECS_PANEL_PREFERRED_HEIGHT: f32 = READY_PANEL_PREFERRED_HEIGHT;
+/// The formats step's Install button: the page's single, deliberate action.
 const VIEWPORT_GUTTER: f32 = 24.0;
 /// A 40 px action plus the footer's 17 px bottom inset. The gap above the
 /// footer belongs to the parent column and must not be reserved twice; doing
@@ -317,25 +327,11 @@ pub fn codecs_title() -> String {
     t("onboarding-codecs-title")
 }
 
+/// The one short line under the offer: where the formats come from, and that
+/// the choice can be undone.
 #[must_use]
-pub fn codecs_body() -> String {
-    t("onboarding-codecs-body")
-}
-
-/// What the pack enables, in the owner's terms.
-#[must_use]
-pub fn codecs_enables() -> Vec<String> {
-    vec![
-        t("onboarding-codecs-enables-hardware"),
-        t("onboarding-codecs-enables-playback"),
-        t("onboarding-codecs-enables-encoding"),
-    ]
-}
-
-/// Where it comes from, and what Tilo does not do.
-#[must_use]
-pub fn codecs_source() -> String {
-    t("onboarding-codecs-source")
+pub fn codecs_note() -> String {
+    t("onboarding-codecs-note")
 }
 
 #[must_use]
@@ -591,12 +587,6 @@ impl PressedActions {
         let pressed = self.clone();
         Button::new(id, label).on_click(move || pressed.press(action))
     }
-
-    /// A choice card whose activation takes `action`.
-    fn card(&self, card: ChoiceCard, action: &'static str) -> ChoiceCard {
-        let pressed = self.clone();
-        card.on_click(move || pressed.press(action))
-    }
 }
 
 #[allow(
@@ -605,6 +595,7 @@ impl PressedActions {
 )]
 pub struct OnboardingView {
     flow: Onboarding,
+    semantic: Rc<RefCell<semantic::Snapshot>>,
     context: OnboardingContext,
     /// Existing metadata is authoritative when its keyring item is
     /// unavailable or its collaboration chain cannot be verified. Recovery
@@ -631,6 +622,10 @@ pub struct OnboardingView {
     /// `false` shows the post-mint backup step; `true` shows the concise
     /// desktop hand-off. Persisted separately so a crash cannot skip backup.
     identity_ready_page: bool,
+    /// This device joined the identity from another one and holds only its
+    /// public record: the root key stays on the approving device, so the
+    /// ready screen recommends no backup of this one.
+    joined_member: bool,
     /// Settings can reopen the proven backup ceremony for an existing
     /// identity. That is a short modal task, not a second first-login flow.
     portable_backup_only: bool,
@@ -675,6 +670,9 @@ pub struct OnboardingView {
     /// Review renderer only: draw the nearby screen as if pairing were
     /// running, without starting the privileged helper.
     nearby_active_for_snapshot: bool,
+    /// The keys of the choice rows activated since the last sync. A row
+    /// reports its activation here; sync turns each into the same model key
+    /// a button would have set.
     nearby_status_path: Option<PathBuf>,
     codec_setup: Option<CodecSetup>,
     /// Whether this run offers the media codecs step: the pack is available
@@ -686,6 +684,8 @@ pub struct OnboardingView {
     codec_status: CodecPackStatus,
     /// The install started from this page, until its unit returns.
     codec_running: Option<Receiver<Result<(), String>>>,
+    /// Terminal result of the actual setup worker, used by semantic receipts.
+    codec_worker_succeeded: Option<bool>,
     /// A refusal from systemd or polkit (the helper's own errors arrive in
     /// its status).
     codec_error: Option<String>,
@@ -877,6 +877,7 @@ impl OnboardingView {
     ) -> Self {
         Self {
             flow: Onboarding::new(),
+            semantic: Rc::default(),
             context,
             recovery_only: false,
             minter,
@@ -889,6 +890,7 @@ impl OnboardingView {
             backup_copy_form_open: false,
             backup_skip_acknowledged: false,
             identity_ready_page: false,
+            joined_member: false,
             portable_backup_only: false,
             progress_error: None,
             tour_page: None,
@@ -922,11 +924,21 @@ impl OnboardingView {
             codec_page: false,
             codec_status: CodecPackStatus::default(),
             codec_running: None,
+            codec_worker_succeeded: None,
             codec_error: None,
             codec_changed: Arc::new(AtomicBool::new(false)),
             codec_watching: false,
             synced_at: Instant::now(),
         }
+    }
+
+    pub(crate) fn semantic_provider(&self) -> Rc<dyn crate::shell::search::SearchProvider> {
+        self.publish_semantic_state();
+        Rc::new(semantic::Provider::new(self))
+    }
+
+    fn publish_semantic_state(&self) {
+        *self.semantic.borrow_mut() = semantic::Snapshot::from_view(self);
     }
 
     /// Take `action` as though its button had been clicked. Review renderers
@@ -971,9 +983,7 @@ impl OnboardingView {
 
     /// The media codecs page's text, in reading order (headless tests).
     pub fn codec_page_lines(&self) -> Vec<String> {
-        let mut lines = vec![codecs_title(), codecs_body()];
-        lines.extend(codecs_enables());
-        lines.push(codecs_source());
+        let mut lines = vec![codecs_title(), codecs_note()];
         if let Some((title, message)) = self.codec_outcome() {
             lines.push(title);
             lines.extend(message);
@@ -984,11 +994,10 @@ impl OnboardingView {
                 &[("percent", format!("{:.0}", fraction * 100.0).into())],
             ));
         }
-        lines.extend(
-            self.codec_page_buttons()
-                .into_iter()
-                .map(|(_, label, _, _)| label),
-        );
+        match self.codec_choice() {
+            Some(choice) => lines.extend(choice.into_iter().map(|(_, label, _)| label)),
+            None => lines.push(t("onboarding-continue")),
+        }
         lines
     }
 
@@ -1055,47 +1064,41 @@ impl OnboardingView {
         }
     }
 
-    /// (id, label, key, primary) of the page's footer actions.
-    fn codec_page_buttons(&self) -> Vec<(&'static str, String, &'static str, bool)> {
+    /// The page's own choice while nothing runs: (id, label, key) of the
+    /// one large Install (or Try again) button, then the quiet way past it.
+    /// `None` once a request is underway or done; the footer then offers
+    /// Continue.
+    fn codec_choice(&self) -> Option<[(&'static str, String, &'static str); 2]> {
         let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
         if failed && self.codec_running.is_none() {
-            return vec![
-                (
-                    "onboarding.codecs.skip.button",
-                    t("onboarding-codecs-skip"),
-                    KEY_CODECS_SKIP,
-                    false,
-                ),
+            return Some([
                 (
                     "onboarding.codecs.install.button",
                     t("onboarding-codecs-retry"),
                     KEY_CODECS_INSTALL,
-                    true,
                 ),
-            ];
+                (
+                    "onboarding.codecs.skip.button",
+                    t("onboarding-codecs-skip"),
+                    KEY_CODECS_SKIP,
+                ),
+            ]);
         }
         if self.codec_install_requested() {
-            return vec![(
-                "onboarding.codecs.continue.button",
-                t("onboarding-continue"),
-                KEY_CODECS_CONTINUE,
-                true,
-            )];
+            return None;
         }
-        vec![
-            (
-                "onboarding.codecs.skip.button",
-                t("onboarding-codecs-not-now"),
-                KEY_CODECS_SKIP,
-                false,
-            ),
+        Some([
             (
                 "onboarding.codecs.install.button",
                 t("onboarding-codecs-install"),
                 KEY_CODECS_INSTALL,
-                true,
             ),
-        ]
+            (
+                "onboarding.codecs.skip.button",
+                t("onboarding-codecs-not-now"),
+                KEY_CODECS_SKIP,
+            ),
+        ])
     }
 
     fn start_codec_install(&mut self) {
@@ -1129,6 +1132,7 @@ impl OnboardingView {
         match spawned {
             Ok(_) => {
                 self.codec_error = None;
+                self.codec_worker_succeeded = None;
                 self.codec_running = Some(rx);
             }
             Err(error) => {
@@ -1150,12 +1154,14 @@ impl OnboardingView {
         if let Some(events) = self.codec_running.as_ref() {
             match events.try_recv() {
                 Ok(result) => {
+                    self.codec_worker_succeeded = Some(result.is_ok());
                     self.codec_error = result.err();
                     self.codec_running = None;
                     changed = true;
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
+                    self.codec_worker_succeeded = Some(false);
                     self.codec_running = None;
                     changed = true;
                 }
@@ -1176,6 +1182,7 @@ impl OnboardingView {
         if let Some(events) = self.codec_running.as_ref()
             && let Ok(result) = events.recv()
         {
+            self.codec_worker_succeeded = Some(result.is_ok());
             self.codec_error = result.err();
             self.codec_running = None;
             self.codec_changed.store(true, Ordering::Release);
@@ -1233,6 +1240,7 @@ impl OnboardingView {
         self.backup_copy_form_open = false;
         self.backup_skip_acknowledged = false;
         self.identity_ready_page = false;
+        self.joined_member = false;
         self.portable_backup_only = true;
         self.progress_error = None;
         self.tour_page = None;
@@ -1265,6 +1273,7 @@ impl OnboardingView {
             .unwrap_or_else(|| identity_dir.join("primary.json"));
         match crate::onboarding::existing_identity_at(&identity_path) {
             Ok(identity) => {
+                self.joined_member = crate::onboarding::holds_no_identity_secret(&identity_path);
                 self.flow.resume_created(identity);
                 self.identity_ready_page = matches!(
                     stage,
@@ -1383,6 +1392,7 @@ impl OnboardingView {
         self.backup_was_verified = false;
         self.backup_copy_form_open = false;
         self.identity_ready_page = false;
+        self.joined_member = false;
         self.portable_backup_only = false;
         self.tour_page = None;
         self.tour_only = false;
@@ -1461,16 +1471,16 @@ impl OnboardingView {
                 self.codec_page = true;
                 self.codec_status = CodecPackStatus::parse(match state {
                     OnboardingVisualState::CodecsInstalling => {
-                        r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading codecs"}}"#
+                        r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":5,"label":"Downloading","bytes":14000000,"total":38000000}}"#
                     }
                     OnboardingVisualState::CodecsWaitingForNetwork => {
                         r#"{"state":"waiting-for-network","desired":true}"#
                     }
                     OnboardingVisualState::CodecsInstalled => {
-                        r#"{"state":"installed","mesa":"enabled","desired":true}"#
+                        r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#
                     }
                     OnboardingVisualState::CodecsFailed => {
-                        r#"{"state":"failed","desired":true,"last_error":"rpmfusion-free: could not download repository metadata (connection reset)."}"#
+                        r#"{"state":"failed","desired":true,"last_error":"Could not download the manifest (connection reset)."}"#
                     }
                     _ => r#"{"state":"not-installed"}"#,
                 });
@@ -1639,7 +1649,7 @@ impl OnboardingView {
             // pages retain the viewport stop for Page/Home/End navigation.
             scroll = scroll.without_sequential_focus();
         }
-        let mut scroll = scroll.with_content_gutter(spacing.s3);
+        let mut scroll = scroll;
         if !backup_in_scroll {
             // This is first-run guidance, not an incidental list. Keep the
             // thumb visible whenever content overflows so compact and large
@@ -1716,13 +1726,12 @@ impl OnboardingView {
                 },
                 KEY_BACKUP_BROWSE,
             )
-            .fit_content(40.0)
-            .with_style(if self.backup_was_verified {
+            .role(if self.backup_was_verified {
                 // Continue remains the clear completion action after a verified
                 // backup; making another copy is an optional follow-up task.
-                ui::widget::ButtonStyle::Neutral
+                ui::widget::ButtonRole::Secondary
             } else {
-                ui::widget::ButtonStyle::Primary
+                ui::widget::ButtonRole::Primary
             });
         Box::new(
             Column::new()
@@ -1772,62 +1781,54 @@ impl OnboardingView {
         self.nearby.is_some() || self.nearby_active_for_snapshot
     }
 
-    /// The ways forward from a choice screen, one card per flow.
-    fn choice_cards(&self) -> Option<Vec<ChoiceCard>> {
+    /// The ways forward from a choice screen, one row per flow.
+    fn choices(&self) -> Option<[Choice; 2]> {
         match self.flow.screen() {
-            Screen::Intro => Some(vec![
-                self.pressed.card(
-                    ChoiceCard::new(
-                        "onboarding.existing.card",
-                        ui::icons::Icon::User,
-                        t("onboarding-choice-existing"),
-                        t("onboarding-choice-existing-detail"),
-                    ),
-                    KEY_EXISTING,
-                ),
-                self.pressed.card(
-                    ChoiceCard::new(
-                        "onboarding.begin.card",
-                        ui::icons::Icon::Plus,
-                        t("onboarding-choice-create"),
-                        t("onboarding-choice-create-detail"),
-                    ),
-                    KEY_BEGIN,
-                ),
+            Screen::Intro => Some([
+                Choice {
+                    id: "onboarding.existing.card",
+                    icon: ui::icons::Icon::User,
+                    title: "onboarding-choice-existing",
+                    detail: "onboarding-choice-existing-detail",
+                    key: KEY_EXISTING,
+                },
+                Choice {
+                    id: "onboarding.begin.card",
+                    icon: ui::icons::Icon::Plus,
+                    title: "onboarding-choice-create",
+                    detail: "onboarding-choice-create-detail",
+                    key: KEY_BEGIN,
+                },
             ]),
-            Screen::Existing => Some(vec![
-                self.pressed.card(
-                    ChoiceCard::new(
-                        "onboarding.existing.nearby.card",
-                        ui::icons::Icon::Monitor,
-                        t("onboarding-choice-nearby"),
-                        t("onboarding-choice-nearby-detail"),
-                    ),
-                    KEY_CHOOSE_NEARBY,
-                ),
-                self.pressed.card(
-                    ChoiceCard::new(
-                        "onboarding.existing.restore.card",
-                        ui::icons::Icon::Archive,
-                        t("onboarding-choice-restore"),
-                        t("onboarding-choice-restore-detail"),
-                    ),
-                    KEY_CHOOSE_RESTORE,
-                ),
+            Screen::Existing => Some([
+                Choice {
+                    id: "onboarding.existing.nearby.card",
+                    icon: ui::icons::Icon::Monitor,
+                    title: "onboarding-choice-nearby",
+                    detail: "onboarding-choice-nearby-detail",
+                    key: KEY_CHOOSE_NEARBY,
+                },
+                Choice {
+                    id: "onboarding.existing.restore.card",
+                    icon: ui::icons::Icon::Archive,
+                    title: "onboarding-choice-restore",
+                    detail: "onboarding-choice-restore-detail",
+                    key: KEY_CHOOSE_RESTORE,
+                },
             ]),
             _ => None,
         }
     }
 
-    /// The pinned footer of a choice screen: its cards stay in view at every
+    /// The pinned footer of a choice screen: its rows stay in view at every
     /// size, like the action row of the other screens. Intro has nothing to
     /// go back to; the use-existing choice keeps its Back (or keyring retry)
-    /// row below the cards.
+    /// row below the rows.
     fn choice_footer_height(&self, theme: &Theme) -> Option<f32> {
-        let cards = self.choice_cards()?;
+        let choices = self.choices()?;
+        let count = f32::from(u8::try_from(choices.len()).unwrap_or(u8::MAX));
+        let stack = count * choice_row_height(theme);
         let spacing = &theme.tokens.spacing;
-        let count = f32::from(u8::try_from(cards.len()).unwrap_or(u8::MAX));
-        let stack = count * ChoiceCard::height_for(theme) + (count - 1.0).max(0.0) * spacing.s3;
         Some(if self.flow.screen() == Screen::Intro {
             stack + spacing.s4
         } else {
@@ -1835,16 +1836,26 @@ impl OnboardingView {
         })
     }
 
-    fn choice_footer(&self, theme: &Theme, cards: Vec<ChoiceCard>) -> Box<dyn Widget> {
+    fn choice_footer(&self, theme: &Theme, choices: [Choice; 2]) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let mut stack = Column::new()
+        let rows = choices
+            .into_iter()
+            .map(|choice| {
+                let pressed = self.pressed.clone();
+                Box::new(
+                    ListRow::new(choice.id, t(choice.title))
+                        .icon(choice.icon)
+                        .secondary(t(choice.detail))
+                        .disclosure()
+                        .on_activate(move || pressed.press(choice.key)),
+                ) as Box<dyn Widget>
+            })
+            .collect();
+        let stack = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_horizontal_padding(spacing.s3, spacing.s3)
-            .with_gap(spacing.s3);
-        for card in cards {
-            stack = stack.push(Box::new(card));
-        }
+            .push(Box::new(Section::new(rows)));
         if self.flow.screen() == Screen::Intro {
             return Box::new(
                 Column::new()
@@ -1852,7 +1863,7 @@ impl OnboardingView {
                     .with_intrinsic_height()
                     .with_gap(0.0)
                     .push(Box::new(stack))
-                    // The intro's cards have no action row below them; keep
+                    // The intro's rows have no action row below them; keep
                     // the action row's visible inset from the panel edge.
                     .push(Box::new(Spacer::fixed(spacing.s4))),
             );
@@ -1868,8 +1879,8 @@ impl OnboardingView {
     }
 
     fn identity_footer(&self, theme: &Theme) -> Box<dyn Widget> {
-        if let Some(cards) = self.choice_cards() {
-            return self.choice_footer(theme, cards);
+        if let Some(choices) = self.choices() {
+            return self.choice_footer(theme, choices);
         }
         let acknowledgement = match self.flow.screen() {
             Screen::NoRecovery => Some(
@@ -1921,22 +1932,17 @@ impl OnboardingView {
                         &t("onboarding-connect-retry-keyring"),
                         KEY_CONNECT_RETRY,
                     )
-                    .fit_content(40.0)
                     .with_icon(ui::icons::Icon::Refresh),
             )]),
             Screen::Existing => footer_actions(vec![back_button(&self.pressed)]),
             Screen::Nearby => {
                 let mut actions = vec![back_button(&self.pressed)];
                 if self.nearby_active() {
-                    actions.push(Box::new(
-                        self.pressed
-                            .button(
-                                "onboarding.connect.cancel.button",
-                                &t("onboarding-cancel"),
-                                KEY_CONNECT_CANCEL,
-                            )
-                            .fit_content(40.0),
-                    ));
+                    actions.push(Box::new(self.pressed.button(
+                        "onboarding.connect.cancel.button",
+                        &t("onboarding-cancel"),
+                        KEY_CONNECT_CANCEL,
+                    )));
                 } else {
                     actions.push(Box::new(
                         self.pressed
@@ -1945,9 +1951,8 @@ impl OnboardingView {
                                 &t("onboarding-nearby-try-again"),
                                 KEY_CONNECT_NEARBY,
                             )
-                            .fit_content(40.0)
                             .with_icon(ui::icons::Icon::Refresh)
-                            .with_style(ui::widget::ButtonStyle::Primary),
+                            .role(ui::widget::ButtonRole::Primary),
                     ));
                 }
                 footer_actions(actions)
@@ -1961,9 +1966,8 @@ impl OnboardingView {
                             &t("onboarding-restore-backup"),
                             KEY_IMPORT,
                         )
-                        .fit_content(40.0)
                         .with_icon(ui::icons::Icon::ArrowRight)
-                        .with_style(ui::widget::ButtonStyle::Primary)
+                        .role(ui::widget::ButtonRole::Primary)
                         .with_enabled(self.connect_source_selected),
                 ),
             ]),
@@ -1976,24 +1980,19 @@ impl OnboardingView {
                             &t("onboarding-create-local-identity"),
                             KEY_CREATE,
                         )
-                        .fit_content(40.0)
                         .with_icon(ui::icons::Icon::Shield)
-                        .with_style(ui::widget::ButtonStyle::Primary)
+                        .role(ui::widget::ButtonRole::Primary)
                         .with_enabled(self.flow.can_create()),
                 ),
             ]),
             Screen::Done if self.identity_ready_page && self.codec_page => self.codec_actions(),
             Screen::Done if self.identity_ready_page => self.finish_action(),
             Screen::Done if self.portable_backup_only => footer_actions(vec![
-                Box::new(
-                    self.pressed
-                        .button(
-                            "onboarding.backup.cancel.button",
-                            &t("onboarding-cancel"),
-                            KEY_FINISH,
-                        )
-                        .fit_content(40.0),
-                ),
+                Box::new(self.pressed.button(
+                    "onboarding.backup.cancel.button",
+                    &t("onboarding-cancel"),
+                    KEY_FINISH,
+                )),
                 Box::new(
                     self.pressed
                         .button(
@@ -2001,8 +2000,7 @@ impl OnboardingView {
                             &t("onboarding-done"),
                             KEY_BACKUP_CONTINUE,
                         )
-                        .fit_content(40.0)
-                        .with_style(ui::widget::ButtonStyle::Primary)
+                        .role(ui::widget::ButtonRole::Primary)
                         .with_enabled(self.backup_was_verified),
                 ),
             ]),
@@ -2014,20 +2012,15 @@ impl OnboardingView {
                             &t("onboarding-continue"),
                             KEY_BACKUP_CONTINUE,
                         )
-                        .fit_content(40.0)
-                        .with_style(ui::widget::ButtonStyle::Primary),
+                        .role(ui::widget::ButtonRole::Primary),
                 )])
             }
             Screen::Done if self.backup_was_verified => footer_actions(vec![
-                Box::new(
-                    self.pressed
-                        .button(
-                            "onboarding.backup.another.button",
-                            &t("onboarding-backup-save-another"),
-                            KEY_BACKUP_ANOTHER,
-                        )
-                        .fit_content(40.0),
-                ),
+                Box::new(self.pressed.button(
+                    "onboarding.backup.another.button",
+                    &t("onboarding-backup-save-another"),
+                    KEY_BACKUP_ANOTHER,
+                )),
                 Box::new(
                     self.pressed
                         .button(
@@ -2035,8 +2028,7 @@ impl OnboardingView {
                             &t("onboarding-continue"),
                             KEY_BACKUP_CONTINUE,
                         )
-                        .fit_content(40.0)
-                        .with_style(ui::widget::ButtonStyle::Primary),
+                        .role(ui::widget::ButtonRole::Primary),
                 ),
             ]),
             Screen::Done => footer_actions(vec![Box::new(
@@ -2046,8 +2038,7 @@ impl OnboardingView {
                         &t("onboarding-backup-continue-without"),
                         KEY_BACKUP_CONTINUE,
                     )
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Neutral)
+                    .role(ui::widget::ButtonRole::Secondary)
                     .with_enabled(self.backup_skip_acknowledged),
             )]),
         }
@@ -2125,7 +2116,6 @@ impl OnboardingView {
                 .push(Box::new(
                     Scrollable::new_vertical()
                         .with_max_height(scroll_height)
-                        .with_content_gutter(theme.tokens.spacing.s3)
                         // Tour pages intentionally teach several concepts;
                         // expose overflow persistently instead of making a
                         // first-time user wait for a transient wheel hint.
@@ -2187,9 +2177,9 @@ impl OnboardingView {
                         .push(Box::new(
                             Text::new(&number.to_string())
                                 .with_role(ui::tokens::typography::TextRole::Label)
-                                .with_weight(ui::text_render::TextWeight::Semibold)
-                                .with_numeric_style(ui::text_render::NumericStyle::TabularLining)
-                                .with_color(theme.accent_primary),
+                                .strong()
+                                .numeric()
+                                .with_color(theme.text_dim),
                         ))
                         .push(Box::new(
                             Column::new()
@@ -2221,13 +2211,13 @@ impl OnboardingView {
                             .push(Box::new(
                                 Text::new(&t(keys))
                                     .with_role(ui::tokens::typography::TextRole::Label)
-                                    .with_color(theme.accent_primary),
+                                    .with_color(theme.text_primary),
                             ))
                             .push(paragraph(&t(copy), theme)),
                     ),
                     None => paragraph(&t(copy), theme),
                 };
-                body = body.push(Box::new(Card::titled(t(card_title), content)));
+                body = body.push(Box::new(Section::titled(t(card_title), vec![content])));
             }
         }
         Box::new(body)
@@ -2241,29 +2231,20 @@ impl OnboardingView {
             (t("onboarding-continue"), KEY_TOUR_NEXT)
         };
         footer_actions(vec![
-            Box::new(
-                self.pressed
-                    .button(
-                        "onboarding.tour.skip.button",
-                        &t("onboarding-tour-skip"),
-                        KEY_TOUR_SKIP,
-                    )
-                    .fit_content(40.0),
-            ),
-            Box::new(
-                self.pressed
-                    .button(
-                        "onboarding.tour.back.button",
-                        &t("onboarding-back"),
-                        KEY_TOUR_BACK,
-                    )
-                    .fit_content(40.0),
-            ),
+            Box::new(self.pressed.button(
+                "onboarding.tour.skip.button",
+                &t("onboarding-tour-skip"),
+                KEY_TOUR_SKIP,
+            )),
+            Box::new(self.pressed.button(
+                "onboarding.tour.back.button",
+                &t("onboarding-back"),
+                KEY_TOUR_BACK,
+            )),
             Box::new(
                 self.pressed
                     .button("onboarding.tour.next.button", &primary_label, primary_key)
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Primary),
+                    .role(ui::widget::ButtonRole::Primary),
             ),
         ])
     }
@@ -2363,7 +2344,7 @@ impl OnboardingView {
                     Text::new(&grouped_code(code))
                         .with_id("onboarding.nearby.code")
                         .with_role(ui::tokens::typography::TextRole::Display)
-                        .with_numeric_style(ui::text_render::NumericStyle::TabularLining),
+                        .numeric(),
                 ));
         }
         if let Some(message) = &self.nearby_status {
@@ -2380,7 +2361,7 @@ impl OnboardingView {
                     Row::new()
                         .no_wrap()
                         .with_gap(theme.tokens.spacing.s2)
-                        .push(Box::new(Spinner::with_size(20.0)))
+                        .push(Box::new(Spinner::with_size(theme.tokens.metrics.icon_md)))
                         .push(Box::new(text)),
                 ))
             } else {
@@ -2388,7 +2369,7 @@ impl OnboardingView {
             };
         }
         Box::new(
-            body.push(Box::new(Card::new(Box::new(steps))))
+            body.push(Box::new(Section::new(vec![Box::new(steps)])))
                 .push(Box::new(status)),
         )
     }
@@ -2400,15 +2381,13 @@ impl OnboardingView {
         let path = TextInput::from_state(&self.connect_path)
             .with_id("onboarding.connect.path.field")
             .with_accessible_name(t("onboarding-connect-file"))
-            .with_placeholder(&t("onboarding-connect-file-placeholder"))
-            .with_font_size(theme.tokens.typography.scale.base);
+            .with_placeholder(t("onboarding-connect-file-placeholder"));
         let passphrase = secret_input(
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,
             &t("onboarding-connect-passphrase"),
             &t("onboarding-connect-passphrase-placeholder"),
-        )
-        .with_font_size(theme.tokens.typography.scale.base);
+        );
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -2437,7 +2416,6 @@ impl OnboardingView {
                             &t("onboarding-connect-browse"),
                             KEY_CONNECT_BROWSE,
                         )
-                        .fit_content(40.0)
                         .with_icon(ui::icons::Icon::FolderOpen),
                 )),
             ));
@@ -2584,58 +2562,83 @@ impl OnboardingView {
                 theme,
             ))
             .push(paragraph(&body, theme))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-done-next-title"),
-                paragraph(&t("onboarding-done-next-body"), theme),
+                vec![paragraph(&t("onboarding-done-next-body"), theme)],
             )))
-            .push(Box::new(Card::titled(
-                if self.backup_was_verified {
-                    t("onboarding-done-backup-verified")
-                } else {
-                    t("onboarding-done-backup-recommended")
-                },
-                paragraph_with_id(
-                    &if self.backup_was_verified {
-                        t("onboarding-done-backup-verified-body")
-                    } else {
-                        t("onboarding-done-backup-recommended-body")
-                    },
+            .push(Box::new(Section::titled(
+                t(done_backup_title_key(
+                    self.joined_member,
+                    self.backup_was_verified,
+                )),
+                vec![paragraph_with_id(
+                    &t(done_backup_body_key(
+                        self.joined_member,
+                        self.backup_was_verified,
+                    )),
                     theme,
                     "onboarding.done.backup-guidance",
-                ),
+                )],
             )));
 
         if self.context == OnboardingContext::FullSystem {
-            page = page.push(Box::new(Card::titled(
+            page = page.push(Box::new(Section::titled(
                 t("onboarding-done-system-care-title"),
-                paragraph(&t("onboarding-done-system-care-body"), theme),
+                vec![paragraph(&t("onboarding-done-system-care-body"), theme)],
             )));
         }
         Box::new(page)
     }
 
-    /// The media codecs offer: what it enables, where it comes from, and the
-    /// live result once the owner chose to install.
+    /// The offer to play more formats: a centred title and one short line
+    /// over a single large Install button, with a quiet way past it. Nothing
+    /// is chosen until the person presses Install; once they did, the live
+    /// result takes the button's place.
     fn codecs(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let enables = fact_list(
-            [
-                ui::icons::Icon::Monitor,
-                ui::icons::Icon::Play,
-                ui::icons::Icon::Camera,
-            ]
-            .into_iter()
-            .zip(codecs_enables()),
-            theme,
-        );
-        // Once the owner chose, the live result leads the page, above the
-        // explanation, so it is visible without scrolling at every size.
+        let centred = |widget: Box<dyn Widget>| -> Box<dyn Widget> {
+            Box::new(
+                Row::new()
+                    .with_padding(0.0, 0.0)
+                    .no_wrap()
+                    .push(Box::new(Spacer::new()))
+                    .push(widget)
+                    .push(Box::new(Spacer::new())),
+            )
+        };
+        let outcome = self.codec_outcome();
+        // The bare offer sits in the middle of the page; a result needs the
+        // room for its banner.
+        let top = if outcome.is_some() {
+            spacing.s2
+        } else if theme.text_scale > 1.0 {
+            spacing.s6
+        } else {
+            spacing.s8 * 2.0
+        };
         let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
+            .with_extra_top_padding(top)
             .with_gap(spacing.s4)
-            .push(heading(&codecs_title(), theme));
-        if let Some((title, message)) = self.codec_outcome() {
+            .push(centred(Box::new(
+                ui::widget::IconWidget::new(ui::icons::Icon::Film)
+                    .sized(ui::widget::IconSize::Large)
+                    .accent(),
+            )))
+            .push(Box::new(
+                Text::new(&codecs_title())
+                    .with_role(ui::tokens::typography::TextRole::Display)
+                    .with_align(ui::ParagraphAlign::Center),
+            ))
+            .push(Box::new(
+                Text::new(&codecs_note())
+                    .with_id("onboarding.codecs.note")
+                    .with_role(ui::tokens::typography::TextRole::Body)
+                    .with_color(theme.text_dim)
+                    .with_align(ui::ParagraphAlign::Center),
+            ));
+        if let Some((title, message)) = outcome {
             let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
             let banner = match self.codec_status.state {
                 _ if failed => Banner::error(title),
@@ -2654,40 +2657,47 @@ impl OnboardingView {
                 ProgressBar::new(fraction).with_label(t("onboarding-codecs-installing-title")),
             ));
         }
-        page = page
-            .push(paragraph_with_id(
-                &codecs_body(),
-                theme,
-                "onboarding.codecs.body",
-            ))
-            .push(Box::new(Card::titled(
-                t("onboarding-codecs-enables-title"),
-                enables,
-            )))
-            .push(Box::new(Card::titled(
-                t("onboarding-codecs-source-title"),
-                paragraph_with_id(&codecs_source(), theme, "onboarding.codecs.source"),
-            )));
+        if let Some([(id, label, key), (quiet_id, quiet_label, quiet_key)]) = self.codec_choice() {
+            // The one way in is this button. It holds keyboard focus so
+            // Enter is the same deliberate press; it starts the download and
+            // never moves past the page by itself.
+            let install = self
+                .pressed
+                .button(id, &label, key)
+                .control_size(ui::widget::ControlSize::Large)
+                .with_icon(ui::icons::Icon::Download)
+                .role(ButtonRole::Primary)
+                .with_default_focus();
+            let skip = self
+                .pressed
+                .button(quiet_id, &quiet_label, quiet_key)
+                .role(ButtonRole::Plain);
+            if self.codec_outcome().is_none() {
+                page = page.push(Box::new(Spacer::fixed(spacing.s2)));
+            }
+            page = page
+                .push(centred(Box::new(install)))
+                .push(centred(Box::new(skip)));
+        }
         Box::new(page)
     }
 
     fn codec_actions(&self) -> Box<dyn Widget> {
-        footer_actions(
-            self.codec_page_buttons()
-                .into_iter()
-                .map(|(id, label, key, primary)| {
-                    let button = self.pressed.button(id, &label, key).fit_content(40.0);
-                    let button = if primary {
-                        button
-                            .with_icon(ui::icons::Icon::ArrowRight)
-                            .with_style(ui::widget::ButtonStyle::Primary)
-                    } else {
-                        button
-                    };
-                    Box::new(button) as Box<dyn Widget>
-                })
-                .collect(),
-        )
+        if self.codec_choice().is_some() {
+            return footer_actions(Vec::new());
+        }
+        footer_actions(vec![Box::new(
+            self.pressed
+                .button(
+                    "onboarding.codecs.continue.button",
+                    &t("onboarding-continue"),
+                    KEY_CODECS_CONTINUE,
+                )
+                .control_size(ui::widget::ControlSize::Large)
+                .with_icon(ui::icons::Icon::ArrowRight)
+                .role(ButtonRole::Primary)
+                .with_default_focus(),
+        )])
     }
 
     /// Sticky final action, deliberately outside the Done screen's scrollable
@@ -2696,14 +2706,11 @@ impl OnboardingView {
         // Continuing to the desktop is the primary hand-off. The optional
         // tour remains explicit rather than making “Skip” the first desktop
         // action a new user has to decipher.
-        let tour = self
-            .pressed
-            .button(
-                "onboarding.tour.start.button",
-                &t("onboarding-tour-take"),
-                KEY_TOUR_START,
-            )
-            .fit_content(40.0);
+        let tour = self.pressed.button(
+            "onboarding.tour.start.button",
+            &t("onboarding-tour-take"),
+            KEY_TOUR_START,
+        );
         let enter = self
             .pressed
             .button(
@@ -2711,15 +2718,38 @@ impl OnboardingView {
                 &t("onboarding-finish"),
                 KEY_FINISH,
             )
-            .fit_content(40.0)
             .with_icon(ui::icons::Icon::ArrowRight)
-            .with_style(ui::widget::ButtonStyle::Primary);
+            .role(ui::widget::ButtonRole::Primary);
         footer_actions(vec![Box::new(tour), Box::new(enter)])
     }
 }
 
+/// The ready screen's backup heading. A device that joined from another one
+/// holds no root key, so nothing on it needs a backup.
+fn done_backup_title_key(joined_member: bool, backup_verified: bool) -> &'static str {
+    if joined_member {
+        "onboarding-done-joined-key-elsewhere"
+    } else if backup_verified {
+        "onboarding-done-backup-verified"
+    } else {
+        "onboarding-done-backup-recommended"
+    }
+}
+
+/// The ready screen's backup guidance under [`done_backup_title_key`].
+fn done_backup_body_key(joined_member: bool, backup_verified: bool) -> &'static str {
+    if joined_member {
+        "onboarding-done-joined-key-elsewhere-body"
+    } else if backup_verified {
+        "onboarding-done-backup-verified-body"
+    } else {
+        "onboarding-done-backup-recommended-body"
+    }
+}
+
+/// The title at the top of an onboarding page.
 fn heading(text: &str, _theme: &Theme) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::Display))
+    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::LargeTitle))
 }
 
 /// Secondary body copy. Takes the live theme rather than a hard-coded
@@ -2767,7 +2797,7 @@ fn fact_list(
                 .no_wrap()
                 .align_start()
                 .with_gap(theme.tokens.spacing.s3)
-                .push(Box::new(IconWidget::new(icon, 20.0).accent()))
+                .push(Box::new(IconWidget::new(icon).dim()))
                 .push(Box::new(
                     Text::new(&text).with_role(ui::tokens::typography::TextRole::Body),
                 )),
@@ -2776,7 +2806,7 @@ fn fact_list(
     Box::new(list)
 }
 
-/// One step of a real sequence: its number in a quiet accent, then the
+/// One step of a real sequence: its number in quiet ink, then the
 /// instruction.
 fn numbered_step(number: usize, text: &str, theme: &Theme) -> Box<dyn Widget> {
     Box::new(
@@ -2787,9 +2817,9 @@ fn numbered_step(number: usize, text: &str, theme: &Theme) -> Box<dyn Widget> {
             .push(Box::new(
                 Text::new(&number.to_string())
                     .with_role(ui::tokens::typography::TextRole::Body)
-                    .with_weight(ui::text_render::TextWeight::Semibold)
-                    .with_numeric_style(ui::text_render::NumericStyle::TabularLining)
-                    .with_color(theme.accent_primary),
+                    .strong()
+                    .numeric()
+                    .with_color(theme.text_dim),
             ))
             .push(Box::new(
                 Text::new(text).with_role(ui::tokens::typography::TextRole::Body),
@@ -2817,7 +2847,6 @@ fn back_button(pressed: &PressedActions) -> Box<dyn Widget> {
     Box::new(
         pressed
             .button("onboarding.back.button", &t("onboarding-back"), KEY_BACK)
-            .fit_content(40.0)
             .with_icon(ui::icons::Icon::ArrowLeft),
     )
 }
@@ -2924,14 +2953,20 @@ impl OnboardingView {
             // competes with the tour's own keyboard focus.
             return;
         }
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
         if theme.name.eq_ignore_ascii_case("high contrast") {
             return;
         }
 
         // Quiet, theme-derived depth: two broad accent blooms make the
         // trusted setup surface distinct without becoming illustration.
-        let bloom = colors.accent[5].with_alpha_factor(0.10);
+        let bloom = colors.text_primary.with_alpha_factor(0.10);
         let radius = self.rect.width().max(self.rect.height()) * 0.34;
         scene.fill(
             Fill::NonZero,
@@ -2943,7 +2978,7 @@ impl OnboardingView {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[3].with_alpha_factor(0.07),
+            colors.intent.you.with_alpha_factor(0.07),
             None,
             &Circle::new(Point::new(self.rect.x1, self.rect.y1), radius * 0.82),
         );
@@ -2994,23 +3029,7 @@ impl OnboardingView {
             // nothing — the edge does the separating (§9.3) — so the former
             // by-name high-contrast guard is not needed. Ground is
             // `panel_ground`, edge the derived Panel border.
-            let radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
-            ui::chrome::shell::panel_shadow(scene, transform, panel, radius, theme, 1.0);
-            let shape = RoundedRect::from_rect(panel, radius);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ui::chrome::shell::panel_ground(theme),
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::chrome::shell::panel_border(theme),
-                None,
-                &shape,
-            );
+            ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         }
 
         let mut local = Scene::new();
@@ -3062,6 +3081,12 @@ impl OnboardingView {
 
 impl Drop for OnboardingView {
     fn drop(&mut self) {
+        let mut snapshot = self.semantic.borrow_mut();
+        snapshot.phase = if self.finished { "finished" } else { "closed" };
+        snapshot.failed = !self.finished;
+        snapshot.operations.clear();
+        snapshot.revision = snapshot.revision.wrapping_add(1);
+        drop(snapshot);
         self.nearby = None;
         clear_secret(&self.connect_passphrase);
         clear_secret(&self.backup_passphrase);
@@ -3177,14 +3202,14 @@ impl Widget for OnboardingView {
 
         // Choosing the nearby flow is the explicit request to pair, so the
         // screen opens with pairing already under way.
-        let mut start_nearby = false;
-        if self.pressed.take(KEY_CHOOSE_NEARBY) && self.flow.screen() == Screen::Existing {
+        let mut start_nearby =
+            self.pressed.take(KEY_CHOOSE_NEARBY) && self.flow.screen() == Screen::Existing;
+        if start_nearby {
             self.error = None;
             self.nearby_failure = None;
             self.nearby_status = None;
             self.nearby_code = None;
             self.flow.choose_nearby();
-            start_nearby = true;
         }
 
         if self.pressed.take(KEY_CONNECT_BROWSE)
@@ -3271,8 +3296,15 @@ impl Widget for OnboardingView {
                 self.nearby = None;
                 self.nearby_code = None;
                 self.flow.complete_connected(identity);
-                self.identity_ready_page = false;
-                let _ = self.persist_progress(PersistedStage::IdentityReady);
+                // A joined device holds the identity's public record and a
+                // member certificate; its root key stays on the device that
+                // approved the join. There is nothing here to back up, and
+                // losing this device loses no identity, so first use ends on
+                // the ready screen instead of the backup step. The journal
+                // records the hand-off first, so a restart resumes there.
+                self.identity_ready_page = self.persist_progress(PersistedStage::ReadyToEnter);
+                self.joined_member = true;
+                self.codec_page = self.identity_ready_page && self.codec_step_offered;
                 self.error = None;
                 self.nearby_status = Some(t("onboarding-nearby-connected"));
                 self.invalidation.structure();
@@ -3593,6 +3625,7 @@ impl Widget for OnboardingView {
             self.invalidation.both();
             self.transition_started = Instant::now();
         }
+        self.publish_semantic_state();
     }
 
     fn build_layout(
@@ -3620,6 +3653,7 @@ impl Widget for OnboardingView {
         // The introduction's pinned cards take a fixed share of the panel, so
         // it keeps one stable height instead of measuring its explanation.
         let intro_page = self.tour_page.is_none() && self.flow.screen() == Screen::Intro;
+        let codecs_page = ready_identity_page && self.codec_page;
         let dense_identity_page = self.tour_page.is_none()
             && (accessibility_expanded
                 || matches!(
@@ -3635,6 +3669,8 @@ impl Widget for OnboardingView {
             ACCESSIBLE_PANEL_HEIGHT
         } else if dense_identity_page {
             DENSE_PANEL_PREFERRED_HEIGHT
+        } else if codecs_page {
+            CODECS_PANEL_PREFERRED_HEIGHT
         } else if ready_identity_page {
             READY_PANEL_PREFERRED_HEIGHT
         } else {
@@ -3656,6 +3692,8 @@ impl Widget for OnboardingView {
                 taffy::Dimension::length(ACCESSIBLE_PANEL_HEIGHT)
             } else if dense_identity_page {
                 taffy::Dimension::length(DENSE_PANEL_PREFERRED_HEIGHT)
+            } else if codecs_page {
+                taffy::Dimension::length(CODECS_PANEL_PREFERRED_HEIGHT)
             } else if ready_identity_page {
                 taffy::Dimension::length(READY_PANEL_PREFERRED_HEIGHT)
             } else if intro_page {
@@ -3685,10 +3723,7 @@ impl Widget for OnboardingView {
             flex_direction: taffy::FlexDirection::Column,
             justify_content: Some(taffy::JustifyContent::Center),
             align_items: Some(taffy::AlignItems::Center),
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
                 left: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
                 right: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
@@ -3697,19 +3732,11 @@ impl Widget for OnboardingView {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
             && let Some(&cn) = children.first()
@@ -3956,6 +3983,28 @@ fn onboarding_picker_rect(viewport: Rect) -> Rect {
     Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
+fn choice_row_height(theme: &Theme) -> f32 {
+    let spacing = &theme.tokens.spacing;
+    let text = theme
+        .text(ui::tokens::typography::TextRole::Body)
+        .line_height_px()
+        + theme
+            .text(ui::tokens::typography::TextRole::Caption)
+            .line_height_px();
+    (text + 2.0 * spacing.s2)
+        .max(theme.tokens.metrics.min_pointer_target + spacing.s2)
+        .ceil()
+}
+
+struct Choice {
+    id: &'static str,
+    icon: ui::icons::Icon,
+    title: &'static str,
+    detail: &'static str,
+    /// The model key the row sets, read by sync like a button's.
+    key: &'static str,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3966,7 +4015,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
-    use ui::widget::identity_flow::{IdentityRecord, SerializableIdentity};
+    use tilo_identity_ceremony::{IdentityRecord, SerializableIdentity};
     use winit::event::Modifiers;
 
     fn view() -> (OnboardingView, Arc<AtomicUsize>) {
@@ -4121,6 +4170,106 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_joined_identity_ends_first_use_on_the_ready_screen() {
+        // A device that joined from a nearby one holds a public record and a
+        // member certificate; the root key never leaves the approving device.
+        // Its first use ends where the person can enter the desktop, not on a
+        // backup step warning that losing this device loses the identity.
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let identity_dir = dir.path().join("identity");
+        std::fs::create_dir(&identity_dir).expect("identity dir");
+        std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o700))
+            .expect("private identity dir");
+        let record = identity_dir.join("identity-joined.json");
+        std::fs::write(
+            &record,
+            runtime_identity::public_member_record("Member", [1, 2, 3], [7; 32]).expect("record"),
+        )
+        .expect("write record");
+        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))
+            .expect("private record");
+        let status = identity_dir.join(".nearby-enrollment-status.json");
+        let complete = serde_json::json!({
+            "state": "complete",
+            "verification_code": "123456",
+            "identity": hex::encode([7; 32]),
+            "record_path": record,
+        });
+        let mut helper = Command::new("sh");
+        helper
+            .args(["-c", r#"printf '%s' "$2" > "$1"; exec sleep 30"#, "helper"])
+            .arg(&status)
+            .arg(complete.to_string());
+        let (mut view, _) = view();
+        view.identity_dir = Some(identity_dir.clone());
+        view.flow.begin_existing();
+        view.flow.choose_nearby();
+        view.nearby = Some(
+            crate::onboarding_nearby::NearbyPairing::spawn(
+                helper,
+                &identity_dir,
+                &status,
+                Duration::from_secs(600),
+            )
+            .expect("spawn helper"),
+        );
+        view.nearby_status_path = Some(status);
+        let doc = AutoCommit::new();
+        let deadline = tilo_test_env::hang_deadline();
+        while view.nearby.is_some() {
+            assert!(Instant::now() < deadline, "the join never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+            view.sync(&doc, &automerge::ROOT);
+        }
+
+        assert_eq!(view.flow.screen(), Screen::Done);
+        assert_eq!(view.error(), None);
+        assert_eq!(
+            load_progress(&identity_dir).expect("load progress"),
+            Some(PersistedStage::ReadyToEnter),
+            "a restart resumes at the ready screen"
+        );
+        let composition = view.build_composition(&Theme::dark(), PANEL_MAX_HEIGHT);
+        let mut names = Vec::new();
+        accessible_names(&*composition, &mut names);
+        assert!(
+            names.contains(&t("onboarding-done-title")),
+            "the joined device ends on the ready screen: {names:?}"
+        );
+        assert!(
+            accessibility_for_id(&*composition, "onboarding.backup.skip-acknowledged.box")
+                .is_none(),
+            "a joined device is not asked to back up an identity it does not hold"
+        );
+        let joined_guidance = |names: &[String]| {
+            assert!(
+                names.contains(&t("onboarding-done-joined-key-elsewhere"))
+                    && names.contains(&t("onboarding-done-joined-key-elsewhere-body")),
+                "the ready screen says the key stays on the approving device: {names:?}"
+            );
+            assert!(
+                !names.contains(&t("onboarding-done-backup-recommended")),
+                "a joined device is not told a backup is still recommended: {names:?}"
+            );
+        };
+        joined_guidance(&names);
+
+        // A restart resumes on the same ready screen, knowing the device
+        // joined from its identity record alone.
+        runtime_identity::set_active_identity(&identity_dir, "identity-joined")
+            .expect("select the joined identity");
+        let (mut resumed, _) = self::view();
+        resumed.identity_dir = Some(identity_dir);
+        resumed.restore_pending_progress_from_disk();
+        assert_eq!(resumed.flow.screen(), Screen::Done);
+        let composition = resumed.build_composition(&Theme::dark(), PANEL_MAX_HEIGHT);
+        let mut names = Vec::new();
+        accessible_names(&*composition, &mut names);
+        joined_guidance(&names);
+    }
+
     fn process_group_has_live_member(pgid: i32) -> bool {
         std::fs::read_dir("/proc").is_ok_and(|entries| {
             entries.flatten().any(|entry| {
@@ -4153,70 +4302,30 @@ mod tests {
     }
 
     fn escape_event() -> WindowEvent {
-        use winit::event::KeyEvent;
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-
         // winit keeps the platform field private. These inert placeholders
         // match the toolkit and greeter keyboard-event tests.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(NamedKey::Escape);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        }
+        let event = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::Escape),
+            None,
+            ElementState::Pressed,
+        );
+        ui::synthetic_input::keyboard_input(event)
     }
 
     fn dispatch_escape(view: &mut OnboardingView, document: &mut AutoCommit) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy
-            .new_leaf(taffy::Style::default())
-            .expect("event target");
-        let mut handled = false;
-        let mut focus_target = None;
-        view.handle_event(
-            &escape_event(),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(document),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(document)
+            .send(view, &escape_event())
+            .handled
     }
 
     fn pointer_event(position: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(position.x, position.y),
-        }
+        ui::synthetic_input::cursor_moved(position.x, position.y)
     }
 
-    fn primary_press_event() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
-    fn primary_release_event() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_release;
 
     fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
         if let Some(name) = widget.accessibility().and_then(|node| node.name) {
@@ -4228,13 +4337,7 @@ mod tests {
     }
 
     fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<ui::a11y::AccessNode> {
-        if widget.test_id() == Some(id) {
-            return widget.accessibility();
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| accessibility_for_id(child, id))
+        ui::widget::find_test_id(widget, id)?.accessibility()
     }
 
     fn write_fixture_identity(directory: &std::path::Path) {
@@ -4835,7 +4938,6 @@ mod tests {
                 assert!(navigation.contains("Command+K"));
                 assert!(navigation.contains("Option+Space"));
             } else {
-                assert!(navigation.contains("Super+K"));
                 assert!(navigation.contains("Super+Space"));
             }
             assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
@@ -5444,6 +5546,17 @@ mod tests {
         let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
+    /// The label of the control a focus reset lands on.
+    fn default_focus_label(view: &OnboardingView) -> Option<String> {
+        fn find(widget: &dyn Widget) -> Option<String> {
+            if widget.is_default_keyboard_focus() {
+                return widget.accessibility().and_then(|node| node.name);
+            }
+            widget.children().into_iter().find_map(find)
+        }
+        view.composed.as_deref().and_then(find)
+    }
+
     fn stage_label(view: &OnboardingView) -> Option<String> {
         view.composed
             .as_deref()
@@ -5452,7 +5565,7 @@ mod tests {
     }
 
     #[test]
-    fn the_codecs_step_explains_the_choice_and_nothing_is_preselected() {
+    fn the_codecs_step_is_one_install_button_with_nothing_chosen() {
         let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
         let (view, _) = view();
         let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
@@ -5462,22 +5575,26 @@ mod tests {
         layout(&mut view);
         assert_eq!(stage_label(&view).as_deref(), Some("Step 4 of 5"));
         let lines = view.codec_page_lines();
-        for needle in [
-            "AMD and Intel",
-            "screen sharing, recording and calls",
-            "RPM Fusion",
-            "Cisco (OpenH264)",
-            "Tilo does not host or distribute them",
-        ] {
-            assert!(
-                lines.iter().any(|line| line.contains(needle)),
-                "{needle}: {lines:?}"
-            );
-        }
+        let note = accessibility_for_id(
+            view.composed.as_deref().expect("rendered codecs page"),
+            "onboarding.codecs.note",
+        )
+        .expect("the formats source explanation must be accessible");
+        assert_eq!(note.name.as_deref(), Some(codecs_note().as_str()));
         assert_eq!(
-            &lines[lines.len() - 2..],
-            ["Not now", "Install media codecs"],
-            "an explicit button, not a pre-ticked box"
+            lines,
+            [
+                "Play more video and audio formats",
+                "Downloaded to this device from the formats' publishers. You can turn it off in Settings.",
+                "Install",
+                "Not now",
+            ],
+            "a title, one short line, the Install button and a way past it; no essay"
+        );
+        assert_eq!(
+            default_focus_label(&view).as_deref(),
+            Some("Install"),
+            "Enter is the same deliberate press as clicking Install"
         );
         assert!(fake.runs().is_empty(), "reaching the step installs nothing");
         // The step blocks neither the tour nor finishing only by accident:
@@ -5493,7 +5610,7 @@ mod tests {
         let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
         let (view, _) = view();
         let mut view = view.with_codec_setup(fake.setup(
-            r#"{"state":"installed","mesa":"enabled","desired":true}"#,
+            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
             Ok(()),
         ));
         let mut doc = AutoCommit::new();
@@ -5503,14 +5620,18 @@ mod tests {
         view.wait_for_codec_install();
         view.sync(&doc, &automerge::ROOT);
         assert_eq!(fake.runs(), vec![CodecAction::Install]);
+        assert!(
+            view.codec_page_visible(),
+            "Install never moves past the page by itself"
+        );
         assert_eq!(view.codec_status().state, PackState::Installed);
         layout(&mut view);
         let lines = view.codec_page_lines();
-        assert!(lines.contains(&"Media codecs installed".to_string()));
+        assert!(lines.contains(&"More video and audio formats are on".to_string()));
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("sign out and back in")),
+                .any(|line| line.contains("Sign out and back in")),
             "{lines:?}"
         );
         assert_eq!(lines.last().map(String::as_str), Some("Continue"));
@@ -5553,7 +5674,7 @@ mod tests {
         let mut view = view.with_codec_setup(CodecSetup::with(
             Arc::new(move || CodecPackStatus::parse(&reader.lock().unwrap())),
             Arc::new(move |_| {
-                *writer.lock().unwrap() = r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading codecs"}}"#.to_string();
+                *writer.lock().unwrap() = r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading"}}"#.to_string();
                 let _ = started_tx.lock().unwrap().send(());
                 let _ = gate.lock().unwrap().recv();
                 Ok(())
@@ -5580,7 +5701,7 @@ mod tests {
         view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
         assert_eq!(view.codec_status().state, PackState::Installing);
-        assert!(lines.contains(&"Installing media codecs".to_string()));
+        assert!(lines.contains(&"Installing more formats".to_string()));
         assert!(lines.contains(&"Progress: 29%".to_string()), "{lines:?}");
         assert!(
             lines.iter().any(|line| line.contains("Setup can continue")),
@@ -5613,7 +5734,7 @@ mod tests {
         view.wait_for_codec_install();
         view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
-        assert!(lines.contains(&"Media codecs will install once you are online".to_string()));
+        assert!(lines.contains(&"Installs once you are online".to_string()));
         assert!(
             lines
                 .iter()
@@ -5638,9 +5759,9 @@ mod tests {
         view.wait_for_codec_install();
         view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
-        assert!(lines.contains(&"Media codecs could not be installed".to_string()));
+        assert!(lines.contains(&"Could not install more formats".to_string()));
         assert!(lines.contains(&"Access denied: not an administrator".to_string()));
-        assert_eq!(&lines[lines.len() - 2..], ["Skip", "Try again"]);
+        assert_eq!(&lines[lines.len() - 2..], ["Try again", "Skip"]);
         layout(&mut view);
         press(&view, &mut doc, KEY_CODECS_INSTALL);
         view.sync(&doc, &automerge::ROOT);
@@ -6188,7 +6309,7 @@ mod tests {
                         .unwrap_or_else(|| panic!("choice screen exposes {id}"));
                     assert!(focusable, "{id} must be a keyboard focus stop");
                     assert!(
-                        rect.height() >= 64.0
+                        rect.height() >= f64::from(theme.tokens.metrics.min_pointer_target)
                             && rect.x0 >= panel.x0 + 8.0
                             && rect.x1 <= panel.x1 - 8.0
                             && rect.y0 >= scroll.y1
@@ -6197,12 +6318,15 @@ mod tests {
                         theme.name,
                     );
                     if let Some(previous) = previous {
-                        assert!(rect.y0 >= previous.y1 + 8.0, "cards need a gap");
-                        assert!((rect.x0 - previous.x0).abs() < 0.5, "cards share an edge");
+                        assert!(
+                            (rect.y0 - previous.y1).abs() < 0.5,
+                            "the choices are one list, edge to edge"
+                        );
+                        assert!((rect.x0 - previous.x0).abs() < 0.5, "rows share an edge");
                     }
                     previous = Some(rect);
-                    let node = accessibility_for_id(&view, id).expect("card semantics");
-                    assert_eq!(node.role, ui::a11y::Role::Button);
+                    let node = accessibility_for_id(&view, id).expect("row semantics");
+                    assert_eq!(node.role, ui::a11y::Role::ListItem);
                     assert!(
                         node.value.as_deref().is_some_and(|value| !value.is_empty()),
                         "{id} announces its description"
@@ -6329,11 +6453,11 @@ mod tests {
                 )
                 .expect("host acknowledgement layout");
             view.apply_layout(&taffy, node, Point::ZERO);
-            let row = node_map
-                .values()
-                .find_map(|&pointer| unsafe {
+            let (row_node, row) = node_map
+                .iter()
+                .find_map(|(&node, &pointer)| unsafe {
                     ((*pointer).test_id() == Some("onboarding.understood.row"))
-                        .then(|| (*pointer).get_rect())
+                        .then(|| (node, (*pointer).get_rect()))
                 })
                 .expect("labelled acknowledgement row");
             let label_point = Point::new(row.x1 - 8.0, row.center().y);
@@ -6343,7 +6467,7 @@ mod tests {
             );
 
             let mut focus = None;
-            for event in [pointer_event(label_point), primary_press_event()] {
+            for event in [pointer_event(label_point), mouse_press()] {
                 let mut handled = false;
                 view.handle_event(
                     &event,
@@ -6358,7 +6482,19 @@ mod tests {
                         taffy: &taffy,
                     },
                 );
-                assert!(handled, "the labelled checkbox row must handle {event:?}");
+                if matches!(event, WindowEvent::CursorMoved { .. }) {
+                    assert!(
+                        !handled,
+                        "hover movement must remain available to sibling controls"
+                    );
+                } else {
+                    assert!(handled, "the labelled checkbox row must handle {event:?}");
+                    assert_eq!(
+                        focus,
+                        Some(row_node),
+                        "the label press must focus the acknowledgement checkbox"
+                    );
+                }
             }
             view.settle(
                 &mut ui::widget::Edits::lend(&mut document),
@@ -6414,15 +6550,16 @@ mod tests {
                 })
                 .expect("continue without backup button");
             assert!(
-                button.width() >= 44.0 && button.height() >= 40.0,
+                button.width() >= 44.0
+                    && button.height() >= f64::from(theme.tokens.metrics.min_pointer_target),
                 "backup continuation needs a practical pointer target: {button:?}"
             );
 
             let mut focus = None;
             for event in [
                 pointer_event(button.center()),
-                primary_press_event(),
-                primary_release_event(),
+                mouse_press(),
+                mouse_release(),
             ] {
                 let mut handled = false;
                 view.handle_event(
@@ -6438,7 +6575,12 @@ mod tests {
                         taffy: &taffy,
                     },
                 );
-                if !matches!(event, WindowEvent::CursorMoved { .. }) {
+                if matches!(event, WindowEvent::CursorMoved { .. }) {
+                    assert!(
+                        !handled,
+                        "hover movement must remain available to sibling controls"
+                    );
+                } else {
                     assert!(
                         handled,
                         "the backup continuation button must handle {event:?}"

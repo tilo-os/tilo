@@ -11,44 +11,28 @@
 )]
 
 use std::collections::HashMap;
+use tilo_ui::widget::TaffyTreeExt;
 
-use taffy::{AvailableSpace, Dimension, Style};
+use taffy::{AvailableSpace, Style};
 use taffy::{NodeId, Size, TaffyTree};
+use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::overlay::{FocusTrap, Modal, OverlayStack, Popover};
+use tilo_ui::overlay::FocusTrap;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::permission_prompt::{PROMPT_HEIGHT, PermissionPrompt};
-use tilo_ui::widget::popover_widget::PopoverSide;
-use tilo_ui::widget::{ModalDialog, PopoverWidget, Text, Widget};
+use tilo_ui::widget::{ModalDialog, Popover, PopoverSide, Text, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::Color;
 
 #[test]
-fn overlay_stack_orders_layers_and_traps_focus() {
-    // Case `overlay_stack_push_pop_order`.
-    {
-        let mut s = OverlayStack::new();
-        let a = s.push_modal(Modal::new("a")).expect("initial ID");
-        let b = s
-            .push_popover(Popover::new("b", Point::new(100.0, 100.0)))
-            .expect("second ID");
-        assert_eq!(s.len(), 2);
-        assert_eq!(s.top_id(), Some(b));
-        s.dismiss(a);
-        assert_eq!(s.len(), 1);
-        assert_eq!(s.top_id(), Some(b));
-    }
-
-    // Case `focus_trap_cycles_only_within_members`.
-    {
-        let trap = FocusTrap::new(vec![1, 2, 3]);
-        assert_eq!(trap.next_from(1), Some(2));
-        assert_eq!(trap.next_from(3), Some(1));
-        assert_eq!(trap.prev_from(1), Some(3));
-    }
+fn focus_trap_cycles_only_within_members() {
+    let trap = FocusTrap::new(vec![1, 2, 3]);
+    assert_eq!(trap.next_from(1), Some(2));
+    assert_eq!(trap.next_from(3), Some(1));
+    assert_eq!(trap.prev_from(1), Some(3));
 }
 
 // ---------------------------------------------------------------------------
@@ -57,11 +41,13 @@ fn overlay_stack_orders_layers_and_traps_focus() {
 // to visibly move against the panel's own fill; the declared `border_standard`
 // both used to stroke sat within rounding distance of `raised` on the dark
 // preset and read as no edge at all. `TILO_UI_SCREENSHOT_DIR` dumps
-// `modal_dialog_{dark,light}.png` and `popover_widget_{dark,light}.png`.
+// `modal_dialog_{dark,light}.png` and `popover_{dark,light}.png`.
 // ---------------------------------------------------------------------------
 
-const CANVAS_W: u32 = 640;
-const CANVAS_H: u32 = 420;
+// Both axes must fit a desktop panel. Short landscape windows intentionally
+// present full-window sheets, which have no floating panel edge.
+const CANVAS_W: u32 = 960;
+const CANVAS_H: u32 = 720;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
     tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
@@ -101,7 +87,7 @@ fn themes() -> [(&'static str, Theme); 2] {
     [("dark", Theme::dark()), ("light", Theme::light())]
 }
 
-/// A fixed-size popover body that paints one label. `PopoverWidget` sizes
+/// A fixed-size popover body that paints one label. `Popover` sizes
 /// its panel from `Widget::measure`, and the bare taffy pass used here has
 /// no text measure, so a `Text` alone would collapse the panel around its
 /// glyphs.
@@ -131,17 +117,11 @@ impl Widget for FixedContent {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(self.size.width),
-                    height: Dimension::length(self.size.height),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size::from_lengths(self.size.width, self.size.height),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -170,16 +150,16 @@ impl Widget for FixedContent {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let size = theme.tokens.typography.scale.sm;
-        let (_, h) = text_renderer.measure(self.label, size, None);
+        let style = theme.text(TextRole::Caption);
+        let (_, h) = text_renderer.measure_style(self.label, None, &style);
         let y = self.rect.y0 + (self.rect.height() - f64::from(h)) / 2.0;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             self.label,
-            size,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(self.rect.x0, y)),
             None,
+            &style,
         );
     }
 
@@ -210,30 +190,31 @@ fn overlay_panels_register_their_edge_in_both_themes() {
                 "Discard changes?",
                 Text::new("Your edits to the shared page will be lost."),
             )
-            .open(true)
-            .with_viewport(viewport);
+            .open(true);
             let mut tr = TextRenderer::new();
-            dialog.layout_in(viewport, &theme, &mut tr);
-            let panel = dialog.get_rect();
-            assert!(panel.width() > 100.0, "{name}: dialog laid out ({panel:?})");
-
             let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
-            dialog.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let rgba = renderer.render(&scene, theme.bg_app);
+            let previous = presence.push_viewport(viewport);
+            dialog.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            presence.pop_viewport(previous);
+            let panel = dialog.get_rect();
+            assert!(panel.width() > 100.0, "{name}: dialog laid out ({panel:?})");
+            let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
             dump(&format!("modal_dialog_{name}"), &rgba);
             assert_edge_registers(&rgba, panel, name, "modal-dialog");
         }
     }
 
-    // Case `popover_widget_panel_edge_registers_in_both_themes`.
+    // Case `popover_panel_edge_registers_in_both_themes`.
     {
         let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
         let anchor = Rect::new(240.0, 60.0, 400.0, 92.0);
         for (name, theme) in themes() {
             let content = FixedContent::new(200.0, 40.0, "Shared with 3 collaborators");
-            let mut popover = PopoverWidget::new(anchor, content, PopoverSide::Below)
+            let mut popover = Popover::with_content(content)
+                .anchored(anchor)
+                .side(PopoverSide::Below)
                 .open(true)
                 .with_viewport(viewport);
             lay_out(&mut popover, &theme);
@@ -241,12 +222,12 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
-            popover.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            popover.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             let panel = popover.get_rect();
             assert!(panel.width() > 40.0, "{name}: popover laid out ({panel:?})");
-            let rgba = renderer.render(&scene, theme.bg_app);
-            dump(&format!("popover_widget_{name}"), &rgba);
-            assert_edge_registers(&rgba, panel, name, "popover-widget");
+            let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
+            dump(&format!("popover_{name}"), &rgba);
+            assert_edge_registers(&rgba, panel, name, "popover");
         }
     }
 
@@ -271,7 +252,7 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
             prompt.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let rgba = renderer.render(&scene, theme.bg_app);
+            let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
             dump(&format!("permission_prompt_{name}"), &rgba);
             assert_edge_registers(&rgba, prompt.get_rect(), name, "permission-prompt");
         }

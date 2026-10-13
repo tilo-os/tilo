@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "file": "ambient_pad.wav",
+      "sha256": "2fc350def7cba51bddb3e09997a7c564b9edc28bd9fed55757abfa9af011a8d0",
+      "bytes": 128044,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/2fc350def7cba51bddb3e09997a7c564b9edc28bd9fed55757abfa9af011a8d0/ambient_pad.wav"
+    },
+    {
+      "file": "vo_take3.wav",
+      "sha256": "8e6f2fad10360bffd14e847d48442928cd3043268f9c82bf549d9e96a863ee4e",
+      "bytes": 128044,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/8e6f2fad10360bffd14e847d48442928cd3043268f9c82bf549d9e96a863ee4e/vo_take3.wav"
+    }
+  ]
+}

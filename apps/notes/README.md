@@ -7,8 +7,10 @@ include bold, italic, underline, strikethrough, code, external links and
 `[[Note]]` links. A standalone `![[Note]]` becomes a live, one-level embed; its
 stable target survives renames and bounded previews keep cyclic embeds safe.
 
-Created and last-edited dates sit below the title. The transient status bubble
-reports save state and word count without taking permanent editor space. The
+Created and last-edited dates sit below the title, with the note's tags and the
+notes that link to it as buttons. The transient status bubble reports save
+state and word count without taking permanent editor space, and a note that
+cannot be saved says so under its title until it can. The
 layout fills the available view, keeps the note header visible while the body
 scrolls, and collapses the note tree into a drawer at narrow widths.
 

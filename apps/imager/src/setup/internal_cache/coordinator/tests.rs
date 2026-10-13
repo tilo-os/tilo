@@ -2,6 +2,7 @@ use super::*;
 use crate::setup::{
     internal_bundle,
     internal_download::tests::{Server, response},
+    test_support::isolated,
 };
 use std::io::Read;
 
@@ -1268,10 +1269,6 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
 
 /// Lost acks.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn lost_acks_stay_uncertain_until_fresh_recovery() {
     isolated(
         "lost_ack_is_uncertain_until_fresh_operation_recovers_surviving_record",
@@ -1625,19 +1622,4 @@ fn cancelled_reader_failure(verification: bool) {
             "failed reader boundary must preserve uncertainty: {status:?}"
         );
     }
-}
-
-/// Runs one merged phase on a fresh thread so the thread-local fault hooks,
-/// scripts and counters start clean, exactly as when the phase was its own
-/// test; a failing phase re-raises its original panic payload.
-fn isolated(phase: &str, body: impl FnOnce() + Send) {
-    std::thread::scope(|scope| {
-        let handle = std::thread::Builder::new()
-            .name(phase.to_owned())
-            .spawn_scoped(scope, body)
-            .expect("spawn isolated test phase");
-        if let Err(panic) = handle.join() {
-            std::panic::resume_unwind(panic);
-        }
-    });
 }

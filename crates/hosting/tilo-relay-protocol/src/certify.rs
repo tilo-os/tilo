@@ -19,13 +19,29 @@
 //! host → approver:   ApproverReply::Decided | ApproverReply::Refused { reason }
 //! ```
 //!
-//! A request the host itself queued for an agent it supervises carries an
-//! [`AgentProposal`]: the label, colour, rooms, apps and expiry the person
-//! asked for. `ApproverRequest::AgentProposals` lists them, and the one
-//! consent step is `ApproverDecision::IssueAgent`, a capability-less
+//! A request the host itself queued for a delegate device (an agent it
+//! supervises, or a bot) carries a [`DelegateProposal`]: the label, colour, rooms, apps and expiry the person
+//! asked for. `ApproverRequest::DelegateProposals` lists them, and the one
+//! consent step is `ApproverDecision::IssueDelegate`, a capability-less
 //! certificate together with the root-signed delegation of exactly that
 //! proposal (or a narrower one). A bare `Issue` is refused for such a
-//! request, so an agent never exists without its delegation.
+//! request, so a delegate never exists without its delegation.
+//!
+//! An agent the host supervises asks its person before an action their
+//! grants leave to them. The host queues the question for this one
+//! invocation as a [`PendingConfirmation`]; an approver lists them
+//! (`ApproverRequest::Confirmations`), shows each as the host's
+//! confirmation sheet ([`PendingConfirmation::question`], Allow once or
+//! Deny) and answers with `ApproverRequest::Answer`. An unanswered question
+//! expires as a refusal.
+//!
+//! A member of a workspace the host serves pairs a new device the same way,
+//! through any host they share: the new device posts its request to the
+//! host's HTTPS `/certify` and shows its pairing code, and a page holding
+//! the member's root reads and answers that member's pending requests with
+//! [`MemberApproval`]s (`/certify/approve`), each signed by the root. The
+//! host lists a member only their own requests and accepts a certificate
+//! only for the exact request it answers.
 //!
 //! The host never signs a certificate. An approver is a device of the host's
 //! user with `can_admit_devices`, i.e. one that holds root custody. The host
@@ -36,8 +52,8 @@
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{CertificationRequest, DeviceCert};
 
-use crate::agents::{AgentDelegation, AgentProposal};
 use crate::auth::Hello;
+use crate::delegation::{DelegateProposal, Delegation};
 
 /// ALPN of the certification exchange. Frozen wire ABI.
 pub const CERTIFY_ALPN: &[u8] = b"tilo-device-certify/1";
@@ -106,23 +122,85 @@ pub enum ApproverDecision {
     Issue(DeviceCert),
     /// Decline.
     Deny,
-    /// An agent request: its capability-less certificate and the root-signed
-    /// delegation of its proposal, approved together.
-    IssueAgent {
-        /// Root-signed certificate for the agent's device.
+    /// A delegate's request (an agent or a bot): its capability-less
+    /// certificate and the root-signed delegation of its proposal, approved
+    /// together.
+    IssueDelegate {
+        /// Root-signed certificate for the delegate's device.
         cert: DeviceCert,
         /// Root-signed delegation; no wider than the proposal.
-        delegation: AgentDelegation,
+        delegation: Delegation,
     },
 }
 
-/// A pending request the host queued for an agent, and what it proposes.
+/// Domain label of a [`MemberApproval`] signature.
+pub const MEMBER_APPROVAL_LABEL: &[u8] = b"tilo member approval v1\0";
+/// How far a [`MemberApproval`]'s time may be from the host's clock.
+pub const MEMBER_APPROVAL_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
+
+/// An approver command from a member's root over HTTPS: only
+/// [`ApproverRequest::ListPending`] (that member's own requests) and
+/// [`ApproverRequest::Decide`] (one of them) are answered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingAgent {
-    /// [`PendingCertification::request_digest`] of the agent's request.
+pub struct MemberApproval {
+    /// The member's root, which signs.
+    pub user_public_key: [u8; 32],
+    /// When it was signed, Unix-epoch nanoseconds.
+    pub issued_at_ns: u64,
+    /// The command.
+    pub request: ApproverRequest,
+    /// Root Ed25519 signature over [`Self::signed_message`].
+    #[serde(with = "serde_bytes")]
+    pub signature: [u8; 64],
+}
+
+impl MemberApproval {
+    /// What the root signs: the label, the root, the time and the command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the command cannot be encoded.
+    pub fn signed_message(
+        user_public_key: &[u8; 32],
+        issued_at_ns: u64,
+        request: &ApproverRequest,
+    ) -> Result<Vec<u8>, postcard::Error> {
+        let mut message = MEMBER_APPROVAL_LABEL.to_vec();
+        message.extend_from_slice(user_public_key);
+        message.extend_from_slice(&issued_at_ns.to_le_bytes());
+        message.extend_from_slice(&postcard::to_allocvec(request)?);
+        Ok(message)
+    }
+
+    /// Check the signature, and that it was signed within the allowed skew
+    /// of `now_ns`.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the approval is refused.
+    pub fn verify(&self, now_ns: u64) -> Result<(), &'static str> {
+        if self.issued_at_ns.abs_diff(now_ns) > MEMBER_APPROVAL_SKEW_NS {
+            return Err("the approval is too old or from the future");
+        }
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&self.user_public_key)
+            .map_err(|_| "the approval names no valid root")?;
+        let message = Self::signed_message(&self.user_public_key, self.issued_at_ns, &self.request)
+            .map_err(|_| "the approval cannot be encoded")?;
+        key.verify_strict(
+            &message,
+            &ed25519_dalek::Signature::from_bytes(&self.signature),
+        )
+        .map_err(|_| "the approval is not signed by its root")
+    }
+}
+
+/// A pending request the host queued for a delegate, and what it proposes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingDelegate {
+    /// [`PendingCertification::request_digest`] of the delegate's request.
     pub request_digest: [u8; 32],
-    /// What the person asked the agent to be allowed.
-    pub proposal: AgentProposal,
+    /// What the person asked the delegate to be allowed.
+    pub proposal: DelegateProposal,
 }
 
 /// Approver command after mutual authentication.
@@ -141,8 +219,61 @@ pub enum ApproverRequest {
         /// The decision.
         decision: ApproverDecision,
     },
-    /// Read the proposals of every pending agent request.
-    AgentProposals,
+    /// Read the proposals of every pending delegate request.
+    DelegateProposals,
+    /// Read every question an agent is waiting on.
+    Confirmations,
+    /// Answer one question.
+    Answer {
+        /// [`PendingConfirmation::id`] of the question.
+        id: [u8; 32],
+        /// The person's answer, for that one invocation.
+        answer: ConfirmationAnswer,
+    },
+}
+
+/// A question an agent on the host puts to its person: one invocation of
+/// an action the person's grants leave to them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingConfirmation {
+    /// Names this question, to answer it.
+    pub id: [u8; 32],
+    /// [`crate::delegation::Delegate::agent_id`] of the asking agent.
+    pub agent_id: String,
+    /// The agent's display name.
+    pub agent_label: String,
+    /// What the action does, as the record that offers it says.
+    pub action_label: String,
+    /// What it acts on, as the record that offers it says.
+    pub resource_label: String,
+    /// What the action risks, as `tilo_actions::RiskLevel` names it
+    /// (`none`, `low`, `destructive`, `privileged`, `sensitive`), for the
+    /// sheet to state. An approver reads an unknown name as the gravest.
+    pub risk: String,
+    /// The room the agent acts in.
+    pub room: String,
+    /// Unanswered by then, the question is a refusal; ns since the epoch.
+    pub expires_at_ns: u64,
+}
+
+impl PendingConfirmation {
+    /// The question as the confirmation sheet puts it.
+    #[must_use]
+    pub fn question(&self) -> String {
+        format!(
+            "{} wants to {}: {}, for you",
+            self.agent_label, self.action_label, self.resource_label
+        )
+    }
+}
+
+/// The person's answer to a [`PendingConfirmation`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfirmationAnswer {
+    /// Run this one invocation.
+    AllowOnce,
+    /// Do not run it.
+    Deny,
 }
 
 /// Host answer to an [`ApproverRequest`].
@@ -157,6 +288,51 @@ pub enum ApproverReply {
         /// Human-readable reason.
         reason: String,
     },
-    /// Every pending agent request's proposal.
-    AgentProposals(Vec<PendingAgent>),
+    /// Every pending delegate request's proposal.
+    DelegateProposals(Vec<PendingDelegate>),
+    /// Every question an agent is waiting on.
+    Confirmations(Vec<PendingConfirmation>),
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{Signer as _, SigningKey};
+
+    fn approval(root: &SigningKey, issued_at_ns: u64, request: ApproverRequest) -> MemberApproval {
+        let user_public_key = root.verifying_key().to_bytes();
+        let message =
+            MemberApproval::signed_message(&user_public_key, issued_at_ns, &request).unwrap();
+        MemberApproval {
+            user_public_key,
+            issued_at_ns,
+            request,
+            signature: root.sign(&message).to_bytes(),
+        }
+    }
+
+    #[test]
+    fn a_member_approval_holds_only_for_its_root_command_and_time() {
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let now = 1_000 * MEMBER_APPROVAL_SKEW_NS;
+        let signed = approval(&root, now, ApproverRequest::ListPending);
+        assert_eq!(signed.verify(now + 1), Ok(()));
+        assert!(
+            signed.verify(now + 2 * MEMBER_APPROVAL_SKEW_NS).is_err(),
+            "too old"
+        );
+        let mut other = signed.clone();
+        other.request = ApproverRequest::Decide {
+            request_digest: [1; 32],
+            decision: ApproverDecision::Deny,
+        };
+        assert!(
+            other.verify(now).is_err(),
+            "the signature covers the command"
+        );
+        let mut stranger = signed;
+        stranger.user_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+        assert!(stranger.verify(now).is_err(), "and the root");
+    }
 }

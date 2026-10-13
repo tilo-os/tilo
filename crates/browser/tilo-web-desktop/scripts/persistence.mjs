@@ -14,6 +14,7 @@ import {dirname, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {deflateSync} from 'node:zlib';
 import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
+import {fixtureBytes} from '../../../../tools/web/fixture-assets.mjs';
 
 const [bundle, ...only] = process.argv.slice(2);
 const shots = process.env.SHOTS_DIR;
@@ -26,9 +27,9 @@ const FIXTURES = {
   left: () => file('left.txt', 'text/plain', Buffer.from('alpha\nPERSIST-LEFT\ngamma\n')),
   right: () => file('right.txt', 'text/plain', Buffer.from('alpha\nPERSIST-RIGHT\ngamma\n')),
   png: () => file('persist-probe.png', 'image/png', png(64, 48)),
-  epub: () => file('sample.epub', 'application/epub+zip', readFileSync(`${repo}/apps/ebook/assets/sample.epub`)),
-  pdf: () => file('latin.pdf', 'application/pdf', readFileSync(`${repo}/crates/platform/tilo-pdf/tests/fixtures/latin.pdf`)),
-  mp4: () => file('persist-clip.mp4', 'video/mp4', readFileSync(`${repo}/apps/video-player/tests/fixtures/h264-aac.mp4`)),
+  epub: () => file('sample.epub', 'application/epub+zip', fixtureBytes(repo, 'apps/ebook/assets/artifacts.json', 'sample.epub')),
+  pdf: () => file('latin.pdf', 'application/pdf', fixtureBytes(repo, 'crates/platform/tilo-pdf/tests/fixtures/artifacts.json', 'latin.pdf')),
+  mp4: () => file('persist-clip.mp4', 'video/mp4', fixtureBytes(repo, 'apps/video-player/tests/fixtures/artifacts.json', 'h264-aac.mp4')),
 };
 
 // Steps: {at: [x, y]} clicks; {press: 'Name'} clicks the control with that
@@ -136,7 +137,7 @@ const server = process.env.SERVER ? {url: process.env.SERVER, close() {}} : awai
 // Chrome's synthetic camera answers getUserMedia without a prompt.
 const browser = await launch({args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream']});
 const results = [];
-const presented = "/frames [1-9]/.test(document.getElementById('status')?.textContent ?? '')";
+const presented = "/frames [1-9]/.test((document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? ''))";
 const text = s => s.replaceAll('{nonce}', nonce);
 
 async function nodes(tab) {
@@ -209,7 +210,7 @@ async function committed(tab) {
   await tab.evaluate('globalThis.tiloMount?.flush?.()').catch(() => {});
   let status = '';
   for (let i = 0; i < 40; i++) {
-    status = await tab.evaluate("document.getElementById('status')?.textContent ?? ''");
+    status = await tab.evaluate("(document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? '')");
     if (/committed/.test(status)) break;
     await sleep(250);
   }
@@ -238,7 +239,7 @@ try {
     try {
       await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false});
       await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: CHOOSER});
-      await tab.navigate(`${server.url}/index.html?app=${encodeURIComponent(app)}`);
+      await tab.navigate(`${server.url}/app/#/me/${app}`);
       await tab.waitFor(presented, {timeout: 300000});
       await sleep(2000);
       if (recipe.files) {
@@ -263,7 +264,7 @@ try {
       const errors = tab.log.filter(l => l.startsWith('EXC') || /panic/i.test(l));
       if (errors.length) result.detail += `; ${errors[0]}`;
     } catch (error) {
-      const status = await tab.evaluate("document.getElementById('status')?.textContent ?? ''").catch(() => '?');
+      const status = await tab.evaluate("(document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? '')").catch(() => '?');
       result.detail = `${String(error?.message ?? error).slice(0, 300)} (status: ${status}; ${tab.log.slice(0, 2).join(' | ').slice(0, 300)})`;
     } finally {
       results.push(result);

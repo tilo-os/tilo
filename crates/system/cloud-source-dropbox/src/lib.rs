@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use cloud_source::{
     Capabilities, Change, ChangeFeed, ChangePage, CloudSource, ContentHash, CredentialSource,
     Cursor, Download, Error, HashAlgorithm, Item, ItemId, ItemKind, Notify, Quota, Result,
-    Revision, RevisionInfo, Support, UploadSession, UploadState, UploadTarget, Wait,
+    Revision, RevisionInfo, Support, UploadSession, UploadState, UploadTarget, Wait, http,
 };
 use serde_json::{Value, json};
 
@@ -142,34 +142,6 @@ fn check_name(name: &str) -> Result<()> {
         return Err(Error::InvalidResponse("file name"));
     }
     Ok(())
-}
-
-/// Reads exactly `remaining` bytes; an early end of stream is an error, so
-/// a cut-off body never looks like a short file.
-struct Exact<R> {
-    inner: R,
-    remaining: u64,
-}
-
-impl<R: Read> Read for Exact<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.remaining == 0 || buf.is_empty() {
-            return Ok(0);
-        }
-        let want = usize::try_from(self.remaining)
-            .unwrap_or(usize::MAX)
-            .min(buf.len());
-        let slice = buf.get_mut(..want).unwrap_or_default();
-        let read = self.inner.read(slice)?;
-        if read == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "the download ended early",
-            ));
-        }
-        self.remaining = self.remaining.saturating_sub(read as u64);
-        Ok(read)
-    }
 }
 
 impl DropboxSource {
@@ -454,59 +426,39 @@ impl DropboxSource {
         {
             return Err(Error::Conflict { current });
         }
-        let total = entry
-            .size
-            .or_else(|| downloaded.content_range.as_ref().and_then(|(_, t)| *t));
-        let mut body: Box<dyn Read + Send> = Box::new(downloaded.response);
-        let range = match range {
-            None => {
-                let len = total
-                    .or(downloaded.content_length)
-                    .ok_or(Error::InvalidResponse("size"))?;
-                let exact = Exact {
-                    inner: body,
-                    remaining: len,
-                };
-                let body: Box<dyn Read + Send> = match entry.content_hash {
-                    Some(hash) => Box::new(content_hash::Verifying::new(exact, hash)),
-                    None => Box::new(exact),
-                };
-                return Ok(Download {
-                    body,
-                    range: 0..len,
-                    total: Some(len),
-                    revision: current,
-                });
-            }
-            Some(wanted) => {
-                let end = total.map_or(wanted.end, |t| wanted.end.min(t));
-                let wanted = wanted.start..end.max(wanted.start);
-                if downloaded.partial {
-                    let (got, _) = downloaded
-                        .content_range
-                        .ok_or(Error::InvalidResponse("content-range"))?;
-                    if got.start != wanted.start || got.end < wanted.end {
-                        return Err(Error::InvalidResponse("content-range"));
-                    }
-                } else {
-                    // The server sent the whole body: skip to the range.
-                    let skipped = io::copy(&mut (&mut body).take(wanted.start), &mut io::sink())?;
-                    if skipped != wanted.start {
-                        return Err(Error::InvalidResponse("short body"));
-                    }
-                }
-                wanted
-            }
+        let total = entry.size.or_else(|| {
+            downloaded
+                .served
+                .content_range
+                .as_ref()
+                .and_then(|(_, t)| *t)
+        });
+        let body: Box<dyn Read + Send> = Box::new(downloaded.response);
+        let Some(wanted) = range else {
+            let len = total
+                .or(downloaded.served.declared)
+                .ok_or(Error::InvalidResponse("size"))?;
+            let exact = http::Exact::new(body, len);
+            let body: Box<dyn Read + Send> = match entry.content_hash {
+                Some(hash) => Box::new(content_hash::Verifying::new(exact, hash)),
+                None => Box::new(exact),
+            };
+            return Ok(Download {
+                body,
+                range: 0..len,
+                total: Some(len),
+                revision: current,
+            });
         };
-        let len = range.end.saturating_sub(range.start);
+        let wanted = match total {
+            Some(total) => wanted.start..wanted.end.min(total).max(wanted.start),
+            None => wanted,
+        };
+        let download = http::ranged_body(body, Some(wanted), downloaded.served)?;
         Ok(Download {
-            body: Box::new(Exact {
-                inner: body,
-                remaining: len,
-            }),
-            range,
             total,
             revision: current,
+            ..download
         })
     }
 
@@ -1003,22 +955,5 @@ mod tests {
         assert!(!is_rev(&Revision::new("abc")));
         assert!(is_dropbox_id(&ItemId::new("id:a4ayc_80_OEAAAAAAAAAXw")));
         assert!(!is_dropbox_id(&ItemId::new("missing")));
-    }
-
-    #[test]
-    fn exact_reads_fail_on_early_end() {
-        let mut short = Exact {
-            inner: &b"abc"[..],
-            remaining: 5,
-        };
-        let error = short.read_to_end(&mut Vec::new()).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
-        let mut exact = Exact {
-            inner: &b"abcdef"[..],
-            remaining: 4,
-        };
-        let mut out = Vec::new();
-        exact.read_to_end(&mut out).unwrap();
-        assert_eq!(out, b"abcd");
     }
 }

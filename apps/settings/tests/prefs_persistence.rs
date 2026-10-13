@@ -9,16 +9,6 @@
 //! fails. The accounts test needs no environment at all; it hands the pane an
 //! explicit config root.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use settings::accounts::{AccountDirectory, AccountKind, AccountRoot};
 
 struct AcceptAccount;
@@ -73,10 +63,9 @@ fn local_prefs_and_accounts_persist_to_disk() {
             "Add persisted a real account to the shared store"
         );
         assert_eq!(views[0].id, "test@gmail.com");
-        assert!(
-            views[0].summary.contains("imap.gmail.com"),
-            "IMAP host was auto-configured from the address, got summary {:?}",
-            views[0].summary
+        assert_eq!(
+            dir.mail.accounts[0].config.imap_host, "imap.gmail.com",
+            "IMAP host was auto-configured from the address"
         );
         let id = views[0].id.clone();
 

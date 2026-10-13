@@ -3,7 +3,7 @@
 //!
 //! Each row draws the same control twice — once through a permissive
 //! [`PermissionContext`] and once through one that grants nothing — via the
-//! real `draw_with_presence` path, which is where the scrim is applied. What
+//! real `draw` path, which is where the scrim is applied. What
 //! the PNG shows is therefore the production denied state, not a mock of it.
 //!
 //! Both a neutral control (primary text on the card) and an accent-filled one
@@ -22,11 +22,13 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
+use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::{PermissionContext, PermissionScope, Verb};
+use tilo_ui::permissions::{ActionKind, PermissionContext, PermissionScope};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{Button, Checkbox, Toggle, Widget};
 
 const WIDTH: u32 = 760;
@@ -37,15 +39,12 @@ const COL_DENIED: f64 = 420.0;
 /// A scope nothing in `denying()` grants, so every control carrying it draws
 /// its denied state.
 fn locked() -> PermissionScope {
-    PermissionScope::app("locked.example", Verb::Write)
+    PermissionScope::app("locked.example", ActionKind::Undoable)
 }
 
 /// A context that grants nothing at all.
 fn denying() -> PermissionContext {
-    PermissionContext::from_capabilities(
-        tilo_ui::permissions::Actor::person(None, "nobody"),
-        vec![],
-    )
+    PermissionContext::stranger("nobody")
 }
 
 fn stamp(
@@ -76,14 +75,10 @@ fn stamp(
         )
         .map_err(|error| format!("layout failed: {error}"))?;
     widget.apply_layout(&taffy, node, origin);
-    widget.draw_with_presence(
-        scene,
-        Affine::IDENTITY,
-        tr,
-        theme,
-        &PresenceCtx::default(),
-        permissions,
-    );
+    let presence = PresenceCtx::default();
+    presence.with_permissions(permissions.clone(), || {
+        widget.draw(scene, Affine::IDENTITY, tr, theme, &presence);
+    });
     Ok(())
 }
 
@@ -94,13 +89,13 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
     let c = &theme.tokens.colors;
 
     let caption = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, y: f64, s: &str| {
-        tr.draw_text(
+        tr.draw_style(
             scene,
             s,
-            theme.tokens.typography.scale.sm,
             c.text_dim,
             Affine::translate((x, y)),
             None,
+            &theme.text(TextRole::Caption),
         );
     };
     caption(&mut scene, &mut tr, COL_ENABLED, 16.0, "granted");
@@ -114,7 +109,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
 
         // Accent-filled control: white label on the accent.
         let mut primary = Button::new("d_primary", "Publish")
-            .primary()
+            .role(ButtonRole::Primary)
             .with_permission_scope(locked());
         stamp(
             &mut scene,
@@ -164,7 +159,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
     }
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());
     Ok(())
 }

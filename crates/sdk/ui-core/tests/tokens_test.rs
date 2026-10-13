@@ -1,13 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_ui::Theme;
 use tilo_ui::tokens::{Metrics, Radii, Spacing, SpacingStep, Tokens};
 
@@ -20,21 +10,18 @@ fn colour_and_radius_tokens_have_their_documented_shape() {
         assert_ne!(t.colors.neutral[0], t.colors.neutral[10]);
     }
 
-    // Case `radii_scale_is_ordered_4_8_12_24_pill`.
-    // The radius steps are strictly ordered, and pinned to the exact scale
-    // (Tailwind `rounded`/`-lg`/`-xl`/`-3xl`/`-full`), so a drift in one step is
-    // a visible failure rather than a softer corner.
+    // Case `radii_are_the_shape_table_by_role`.
+    // Each role is pinned to the design language's table, so a drift in one
+    // step is a visible failure rather than a softer corner.
     {
         let r = Radii::default();
-        assert!(r.sm < r.md);
-        assert!(r.md < r.lg);
-        assert!(r.lg < r.xl);
-        assert!(r.xl < r.full);
-        assert_eq!(r.sm, 4.0);
-        assert_eq!(r.md, 8.0);
-        assert_eq!(r.lg, 12.0);
-        assert_eq!(r.xl, 24.0);
+        assert_eq!(r.detail, 4.0);
+        assert_eq!(r.item, 6.0);
+        assert_eq!(r.control, 8.0);
+        assert_eq!(r.tile, 14.0);
+        assert_eq!(r.panel, 18.0);
         assert_eq!(r.full, 9999.0);
+        assert_eq!(r.concentric(r.panel, 6.0), 12.0);
     }
 }
 
@@ -82,7 +69,16 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         assert_eq!(m.sidebar_width, 280.0);
         assert_eq!(m.drawer_width, 320.0);
         assert_eq!(m.overview_width, 340.0);
-        assert_eq!(m.compact_breakpoint, 720.0);
+        assert_eq!(m.compact_breakpoint, 840.0);
+        assert_eq!(
+            m.content_min_width, m.panel_width_sheet,
+            "content beside a sidebar keeps a readable column"
+        );
+        assert_eq!(
+            m.compact_breakpoint,
+            m.sidebar_width + m.content_min_width,
+            "the sidebar docks while the content keeps the room it needs"
+        );
         assert_eq!(
             m.drawer_width, m.panel_width_utility,
             "a slid-in drawer and a docked utility panel are one width"
@@ -98,7 +94,7 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         assert_eq!(t.padding_standard, t.tokens.spacing.s3);
         assert_eq!(t.gap_standard, t.tokens.spacing.s3);
         // tokens are the source of truth
-        assert_eq!(f64::from(t.tokens.radii.md), t.radius_standard);
+        assert_eq!(f64::from(t.tokens.radii.control), t.radius_standard);
     }
 
     // Case `ui_scale_scales_metrics_with_spacing`.
@@ -109,7 +105,7 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         assert!((m.bar_height - 60.0).abs() < 1e-4);
         assert!((m.min_pointer_target - 48.0).abs() < 1e-4);
         assert!((m.panel_width_utility - 480.0).abs() < 1e-4);
-        assert!((m.compact_breakpoint - 1080.0).abs() < 1e-4);
+        assert!((m.compact_breakpoint - 1260.0).abs() < 1e-4);
         assert!(
             (m.bar_height / scaled.tokens.spacing.s4 - 40.0 / 16.0).abs() < 1e-4,
             "bar height keeps its ratio to the spacing scale"
@@ -117,9 +113,20 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         let text_only = Theme::dark().with_text_scale(2.0);
         assert_eq!(
             text_only.tokens.metrics,
-            Metrics::BASE,
-            "text scale grows type, never targets or panel widths"
+            Metrics::BASE.with_icons_scaled(Metrics::icon_growth(2.0)),
+            "text scale grows type and the glyphs beside it, never targets or panel widths"
         );
+        let unit = text_only.at_unit_text_scale().tokens.metrics;
+        for (back, base) in [
+            (unit.icon_sm, Metrics::BASE.icon_sm),
+            (unit.icon_md, Metrics::BASE.icon_md),
+            (unit.icon_lg, Metrics::BASE.icon_lg),
+        ] {
+            assert!(
+                (back - base).abs() < 1e-3,
+                "taking the text scale back out returns the glyphs to their 1x sizes"
+            );
+        }
     }
 
     // Case `text_growth_follows_larger_text_and_never_shrinks`.
@@ -140,11 +147,16 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
     }
 }
 
-use tilo_ui::permissions::{PermissionScope, ResourceRef, Verb};
+use tilo_ui::permissions::{ActionKind, PermissionScope, TreePath};
 
 #[test]
 fn permission_scope_constructs() {
-    let s = PermissionScope::workspace(Verb::Write);
-    assert_eq!(s.op, Verb::Write);
-    assert_eq!(s.resource, ResourceRef::Workspace);
+    let s = PermissionScope::workspace(ActionKind::Undoable);
+    assert_eq!(
+        s,
+        PermissionScope::Action {
+            node: TreePath::root(),
+            kind: ActionKind::Undoable,
+        }
+    );
 }

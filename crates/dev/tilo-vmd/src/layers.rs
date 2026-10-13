@@ -11,7 +11,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
+use tilo_vm_protocol::layer_hash::{self, EntryContent, PROVENANCE, RELEASE_DIR};
 use tilo_vm_protocol::{LayerInfo, Provenance};
 
 use crate::error::DaemonError;
@@ -19,10 +19,6 @@ use crate::fsutil::{self, write_atomic};
 
 /// Top-level trees systemd-sysext merges; anything else is rejected.
 const ALLOWED_TOP: [&str; 2] = ["usr", "opt"];
-/// Written by the importer, so excluded from the content hash.
-const RELEASE_DIR: &str = "usr/lib/extension-release.d";
-/// Metadata beside the tree, also excluded from the hash.
-const PROVENANCE: &str = "provenance.json";
 
 /// What [`LayerStore::collect`] removed, and what it kept for its age.
 #[derive(Debug, Default)]
@@ -145,6 +141,26 @@ impl LayerStore {
         Ok(out)
     }
 
+    /// Recompute the canonical identity; directory names alone are not cache proof.
+    ///
+    /// # Errors
+    /// Missing, damaged or unreadable layers, including missing provenance.
+    pub fn verify(&self, hash: &str) -> Result<LayerInfo, DaemonError> {
+        let path = self.require(hash)?;
+        if !path.join("usr").is_dir() || tree_hash(&path)? != hash {
+            return Err(DaemonError::InvalidLayer(format!(
+                "cached layer {hash} is damaged"
+            )));
+        }
+        let provenance = self.provenance(hash).ok_or_else(|| {
+            DaemonError::InvalidLayer(format!("cached layer {hash} has no valid provenance"))
+        })?;
+        Ok(LayerInfo {
+            hash: hash.to_owned(),
+            provenance,
+        })
+    }
+
     pub fn provenance(&self, hash: &str) -> Option<Provenance> {
         let bytes = fs::read(self.path(hash).join(PROVENANCE)).ok()?;
         serde_json::from_slice(&bytes).ok()
@@ -210,36 +226,27 @@ impl LayerStore {
     /// Unknown layers and I/O failures.
     pub fn files(&self, hash: &str) -> Result<Vec<LayerFile>, DaemonError> {
         let root = self.require(hash)?;
-        let mut entries = Vec::new();
-        fsutil::walk(&root, Path::new(""), &mut entries).map_err(DaemonError::io("walk layer"))?;
-        entries.sort();
-        let mut files = Vec::new();
-        for relative in entries {
-            let text = relative.to_string_lossy().replace('\\', "/");
-            if text == PROVENANCE
-                || text == RELEASE_DIR
-                || text.starts_with(&format!("{RELEASE_DIR}/"))
-            {
-                continue;
-            }
-            let path = root.join(&relative);
-            let meta = fs::symlink_metadata(&path).map_err(DaemonError::io("stat layer entry"))?;
-            let (sha256, link) = if meta.file_type().is_symlink() {
-                let target = fs::read_link(&path).map_err(DaemonError::io("read link"))?;
-                (None, Some(target.to_string_lossy().into_owned()))
-            } else if meta.is_file() {
-                (Some(file_digest(&path)?), None)
-            } else {
-                continue;
-            };
-            files.push(LayerFile {
-                path: format!("/{text}"),
-                sha256,
-                link,
-                executable: meta.is_file() && fsutil::is_executable(&meta),
-            });
-        }
-        Ok(files)
+        let entries = layer_hash::entries(&root).map_err(layer_error("list layer"))?;
+        Ok(entries
+            .into_iter()
+            .map(|entry| {
+                let path = format!("/{}", entry.path);
+                match entry.content {
+                    EntryContent::Link(target) => LayerFile {
+                        path,
+                        sha256: None,
+                        link: Some(target),
+                        executable: false,
+                    },
+                    EntryContent::File { sha256, executable } => LayerFile {
+                        path,
+                        sha256: Some(sha256),
+                        link: None,
+                        executable,
+                    },
+                }
+            })
+            .collect())
     }
 
     fn stage(&self) -> Result<PathBuf, DaemonError> {
@@ -263,6 +270,7 @@ impl LayerStore {
         let hash = tree_hash(stage)?;
         let target = self.path(&hash);
         if target.is_dir() {
+            self.verify(&hash)?;
             return Ok((hash, true));
         }
         // systemd matches `extension-release.<NAME>` against the image name,
@@ -281,7 +289,10 @@ impl LayerStore {
         match fs::rename(stage, &target) {
             Ok(()) => Ok((hash, false)),
             // A concurrent import of identical content won the rename.
-            Err(_) if target.is_dir() => Ok((hash, true)),
+            Err(_) if target.is_dir() => {
+                self.verify(&hash)?;
+                Ok((hash, true))
+            }
             Err(e) => Err(DaemonError::io("publish layer")(e)),
         }
     }
@@ -323,63 +334,18 @@ fn validate_top(stage: &Path) -> Result<(), DaemonError> {
 /// # Errors
 /// Special files and I/O failures.
 pub fn tree_hash(root: &Path) -> Result<String, DaemonError> {
-    let mut entries = Vec::new();
-    fsutil::walk(root, Path::new(""), &mut entries).map_err(DaemonError::io("walk layer"))?;
-    entries.sort();
-    let mut hasher = Sha256::new();
-    for relative in entries {
-        let text = relative.to_string_lossy().replace('\\', "/");
-        if text == PROVENANCE || text == RELEASE_DIR || text.starts_with(&format!("{RELEASE_DIR}/"))
-        {
-            continue;
-        }
-        let path = root.join(&relative);
-        let meta = fs::symlink_metadata(&path).map_err(DaemonError::io("stat layer entry"))?;
-        let kind = meta.file_type();
-        let (tag, content) = if kind.is_dir() {
-            // Directories are implied by the paths below them; empty ones
-            // carry nothing a sysext needs.
-            continue;
-        } else if kind.is_symlink() {
-            let target = fs::read_link(&path).map_err(DaemonError::io("read link"))?;
-            ("l", target.to_string_lossy().into_owned())
-        } else if kind.is_file() {
-            let tag = if fsutil::is_executable(&meta) {
-                "x"
-            } else {
-                "f"
-            };
-            (tag, file_digest(&path)?)
-        } else {
-            return Err(DaemonError::InvalidLayer(format!(
-                "{text} is not a file, directory or symlink"
-            )));
-        };
-        for part in [tag, text.as_str(), content.as_str()] {
-            hasher.update(part.as_bytes());
-            hasher.update([0]);
-        }
-    }
-    Ok(hex::encode(hasher.finalize()))
+    layer_hash::tree_hash(root).map_err(layer_error("hash layer"))
 }
 
-fn file_digest(path: &Path) -> Result<String, DaemonError> {
-    use std::io::BufRead as _;
-    let file = fs::File::open(path).map_err(DaemonError::io("read layer file"))?;
-    let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
-    let mut hasher = Sha256::new();
-    loop {
-        let chunk = reader
-            .fill_buf()
-            .map_err(DaemonError::io("read layer file"))?;
-        if chunk.is_empty() {
-            break;
+/// Special files reject the layer; anything else is an I/O failure.
+fn layer_error(context: &'static str) -> impl Fn(std::io::Error) -> DaemonError {
+    move |error| {
+        if error.kind() == std::io::ErrorKind::InvalidData {
+            DaemonError::InvalidLayer(error.to_string())
+        } else {
+            DaemonError::io(context)(error)
         }
-        hasher.update(chunk);
-        let read = chunk.len();
-        reader.consume(read);
     }
-    Ok(hex::encode(hasher.finalize()))
 }
 
 #[cfg(test)]
@@ -452,6 +418,10 @@ mod tests {
             assert!(layer.join("provenance.json").is_file());
             // The published layer hashes to its own name: the release file is excluded.
             assert_eq!(tree_hash(&layer).unwrap(), a);
+            assert_eq!(
+                a, "f2f0d3c50144acd8bb0005d2b2121c93cb336b88098616b0e88c8a5b996b9342",
+                "existing layer identities remain stable"
+            );
             assert_eq!(store.list().unwrap().len(), 1);
             assert_eq!(
                 fs::read_dir(root.path().join("staging")).unwrap().count(),
@@ -610,7 +580,7 @@ mod tests {
             let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
             // The importer's release file and provenance are not the layer's content.
             assert_eq!(paths, ["/usr/bin/shell", "/usr/share/tilo/x.toml"]);
-            let digest = hex::encode(Sha256::digest(b"v1"));
+            let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"v1"));
             assert_eq!(files[0].sha256.as_deref(), Some(digest.as_str()));
             assert!(files[0].executable);
             assert!(store.files("0".repeat(64).as_str()).is_err());

@@ -38,6 +38,12 @@
       "version": "0.1.0"
     },
     {
+      "id": "so.tilo.chip-design",
+      "name": "Chip Design",
+      "category": "Development",
+      "version": "0.1.0"
+    },
+    {
       "id": "so.tilo.clocks",
       "name": "Clocks",
       "category": "Utility",
@@ -77,6 +83,12 @@
       "id": "so.tilo.maps",
       "name": "Maps",
       "category": "Utility",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.messages",
+      "name": "Messages",
+      "category": "Network",
       "version": "0.1.0"
     },
     {
@@ -240,6 +252,14 @@
       ]
     },
     {
+      "id": "so.tilo.discord",
+      "name": "Discord",
+      "category": "Network",
+      "platforms": [
+        "linux"
+      ]
+    },
+    {
       "id": "so.tilo.disk-usage",
       "name": "Disk Usage Analyzer",
       "category": "System",
@@ -277,15 +297,6 @@
       "id": "so.tilo.git-client",
       "name": "Git",
       "category": "Development",
-      "platforms": [
-        "linux",
-        "macos"
-      ]
-    },
-    {
-      "id": "so.tilo.hot-reload-demo",
-      "name": "Hot reload",
-      "category": "Utility",
       "platforms": [
         "linux",
         "macos"

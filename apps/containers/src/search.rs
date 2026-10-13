@@ -1,10 +1,9 @@
 //! The local container engine as search entries.
 //!
-//! Hits address the same live rows and operations agents and collaborators
-//! use. The entries are read from the already-loaded engine, so a search
+//! Hits are anchored at the same live rows agents and collaborators use;
+//! opening one shows its row. The entries are read from the already-loaded engine, so a search
 //! never invokes podman on the palette's latency-sensitive query path.
 
-use ui::tilo_actions::ActionAddress;
 use ui::tilo_resource::SearchEntry;
 
 use crate::model::Engine;
@@ -21,10 +20,10 @@ pub fn engine_entries(engine: &Engine) -> Vec<SearchEntry> {
                 container.name.clone(),
                 format!("{} {}", container.id, container.status.label()),
             )
-            .invoking(ActionAddress::new(&resource_id, "select"))
+            .anchored(resource_id.clone())
             .grouped("Containers")
             .subtitled(format!(
-                "{} · {}",
+                "Image {0}, currently {1}.",
                 container.image,
                 container.status.label()
             ))
@@ -36,7 +35,7 @@ pub fn engine_entries(engine: &Engine) -> Vec<SearchEntry> {
                 format!("{} logs", container.name),
                 container.logs.join("\n"),
             )
-            .invoking(ActionAddress::new(&log_resource_id, "open"))
+            .anchored(log_resource_id.clone())
             .grouped("Container logs")
             .subtitled("Matching recent log output")
             .with_icon("file-text"),
@@ -50,7 +49,7 @@ pub fn engine_entries(engine: &Engine) -> Vec<SearchEntry> {
                 reference.clone(),
                 format!("{} {}", image.repository, image.tag),
             )
-            .invoking(ActionAddress::new(&resource_id, "open"))
+            .anchored(resource_id.clone())
             .grouped("Container images")
             .subtitled(ui::format::bytes(image.size_bytes))
             .with_icon("layers"),
@@ -60,9 +59,12 @@ pub fn engine_entries(engine: &Engine) -> Vec<SearchEntry> {
         let resource_id = format!("volume:{}", volume.name);
         entries.push(
             SearchEntry::new(volume.name.clone(), volume.driver.clone())
-                .invoking(ActionAddress::new(&resource_id, "open"))
+                .anchored(resource_id.clone())
                 .grouped("Container volumes")
-                .subtitled(format!("{} · used by {}", volume.driver, volume.in_use_by))
+                .subtitled(format!(
+                    "Driver {0}, used by {1}.",
+                    volume.driver, volume.in_use_by
+                ))
                 .with_icon("hard-drive"),
         );
     }
@@ -70,10 +72,10 @@ pub fn engine_entries(engine: &Engine) -> Vec<SearchEntry> {
         let resource_id = format!("distrobox:{}", distrobox.name);
         entries.push(
             SearchEntry::new(distrobox.name.clone(), distrobox.status.label())
-                .invoking(ActionAddress::new(&resource_id, "open"))
+                .anchored(resource_id.clone())
                 .grouped("Distrobox")
                 .subtitled(format!(
-                    "{} · {}",
+                    "Image {0}, currently {1}.",
                     distrobox.image,
                     distrobox.status.label()
                 ))
@@ -101,11 +103,15 @@ mod tests {
             let provider = source(&crate::model::sample_engine());
             let container = provider.search("web-frontend").remove(0);
             assert_eq!(container.kind, "Containers");
-            assert!(container.action_address().is_some());
+            assert!(container.action_id.starts_with("container:"));
 
             let logs = provider.search("sigkill");
             assert!(logs.iter().any(|hit| hit.kind == "Container logs"));
-            assert!(logs.iter().all(|hit| hit.action_address().is_some()));
+            assert!(
+                logs.iter()
+                    .filter(|hit| hit.kind == "Container logs")
+                    .all(|hit| hit.action_id.ends_with(":logs"))
+            );
         }
 
         // --- phase: limited_search_stops_materialising_at_budget ---
@@ -132,7 +138,12 @@ mod tests {
             let mut cursor = None;
             let mut found = false;
             loop {
-                let page = provider.search_page("needle", cursor.as_ref(), 7, 3);
+                let page = provider.search_page(
+                    &ui::search::SearchQuery::new("needle"),
+                    cursor.as_ref(),
+                    7,
+                    3,
+                );
                 assert!(page.inspected <= 7);
                 found |= page
                     .results

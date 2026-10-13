@@ -7,8 +7,13 @@ use crate::{
 use ui::framework::PersonRecord;
 use ui::{
     LocalState,
+    icons::Icon,
+    tokens::TextRole,
     webview::AddressFields,
-    widget::{Button, Column, Text, TextInput, Widget},
+    widget::{
+        Actions, Button, ButtonRole, Column, Field, Form, FormSection, ListRow, Section, Text,
+        TextInput, Widget,
+    },
 };
 #[derive(Clone, Debug)]
 enum Action {
@@ -113,6 +118,38 @@ impl AddressControls {
             postal_code: profile.postal_code.clone(),
             country: profile.country.clone(),
         })
+    }
+    /// Review fixture: autofill on, with two saved profiles, one chosen.
+    pub(crate) fn stage_for_review(&mut self) {
+        self.private = false;
+        self.enabled = true;
+        self.profiles = vec![
+            AddressProfile {
+                id: "home".into(),
+                label: "Home".into(),
+                full_name: "Alex Morgan".into(),
+                given_name: "Alex".into(),
+                family_name: "Morgan".into(),
+                street: "14 Elm Street".into(),
+                city: "Portland".into(),
+                region: "Oregon".into(),
+                postal_code: "97201".into(),
+                country: "United States".into(),
+            },
+            AddressProfile {
+                id: "work".into(),
+                label: "Work".into(),
+                full_name: "Alex Morgan".into(),
+                given_name: "Alex".into(),
+                family_name: "Morgan".into(),
+                street: "300 Pine Avenue".into(),
+                city: "Seattle".into(),
+                region: "Washington".into(),
+                postal_code: "98101".into(),
+                country: "United States".into(),
+            },
+        ];
+        self.selected = Some("home".into());
     }
     pub fn is_editing(&self) -> bool {
         self.editing.is_some()
@@ -239,51 +276,70 @@ impl AddressControls {
         }
     }
     fn button(&self, id: &str, label: &str, action: Action) -> Button {
+        Button::new(id, label).on_effect(self.command(action))
+    }
+    fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.action.clone();
-        Button::new(id, label)
-            .with_size(210.0, 32.0)
-            .on_effect(move || pending.set(Some(action.clone())))
+        move || pending.set(Some(action.clone()))
     }
     pub fn panel(&self) -> Box<dyn Widget> {
-        let mut column=Column::new().with_intrinsic_height().push(line("Address profiles stay on this device. Filling requires your selection and confirmation."));
+        let mut column = Column::new().with_no_padding().with_intrinsic_height();
         if self.private {
             return Box::new(
                 column.push(line("Address autofill is unavailable in private windows.")),
             );
         }
-        column = column.push(line(&self.notice)).push(Box::new(self.button(
-            "browser.address.enable",
-            if self.enabled {
-                "Disable address autofill"
-            } else {
-                "Enable address autofill"
-            },
-            Action::Enable(!self.enabled),
-        )));
+        if !self.notice.is_empty() {
+            column = column.push(line(&self.notice));
+        }
+        if self.editing.is_none() {
+            column = column.push(Box::new(
+                self.button(
+                    "browser.address.enable",
+                    if self.enabled {
+                        "Turn off address autofill"
+                    } else {
+                        "Turn on address autofill"
+                    },
+                    Action::Enable(!self.enabled),
+                )
+                .role(if self.enabled {
+                    ButtonRole::Secondary
+                } else {
+                    ButtonRole::Primary
+                }),
+            ));
+        }
         column = self.profile_controls(column);
         if let Some(id) = &self.delete {
             let label = self
                 .profiles
                 .iter()
                 .find(|p| &p.id == id)
-                .map_or("selected address", |p| p.label.as_str());
+                .map_or("the selected address", |p| p.label.as_str());
             column = column
                 .push(line(&format!("Delete {label}?")))
-                .push(Box::new(self.button(
-                    "browser.address.delete.confirm",
-                    "Confirm delete",
-                    Action::ConfirmDelete,
-                )))
-                .push(Box::new(self.button(
-                    "browser.address.delete.cancel",
-                    "Keep address",
-                    Action::CancelDelete,
-                )));
+                .push(Box::new(
+                    Actions::new(
+                        self.button(
+                            "browser.address.delete.confirm",
+                            "Delete address",
+                            Action::ConfirmDelete,
+                        )
+                        .role(ButtonRole::Destructive),
+                    )
+                    .secondary(self.button(
+                        "browser.address.delete.cancel",
+                        "Keep address",
+                        Action::CancelDelete,
+                    )),
+                ));
         }
         Box::new(column)
     }
     fn profile_controls(&self, mut column: Column) -> Column {
         if self.editing.is_some() {
+            let mut section = FormSection::new("Address");
             for (i, (label, field)) in [
                 "Profile label",
                 "Full name",
@@ -291,7 +347,7 @@ impl AddressControls {
                 "Family name",
                 "Street address",
                 "City",
-                "Region / state",
+                "Region or state",
                 "Postal code",
                 "Country",
             ]
@@ -299,56 +355,52 @@ impl AddressControls {
             .zip(&self.fields)
             .enumerate()
             {
-                column = column.push(line(label)).push(Box::new(
-                    TextInput::from_state(field)
-                        .with_id(&format!("browser.address.field.{i}"))
-                        .with_accessible_name(*label),
+                section = section.field(Field::new(
+                    *label,
+                    TextInput::from_state(field).with_id(&format!("browser.address.field.{i}")),
                 ));
             }
-            column = column
-                .push(Box::new(self.button(
-                    "browser.address.save",
-                    "Save address",
-                    Action::Save,
-                )))
-                .push(Box::new(self.button(
-                    "browser.address.cancel",
-                    "Discard edits",
-                    Action::Cancel,
-                )));
+            column = column.push(Box::new(
+                Form::new().section(section).with_actions(
+                    Actions::new(
+                        self.button("browser.address.save", "Save address", Action::Save)
+                            .role(ButtonRole::Primary),
+                    )
+                    .secondary(self.button(
+                        "browser.address.cancel",
+                        "Discard edits",
+                        Action::Cancel,
+                    )),
+                ),
+            ));
         } else {
-            for (i, profile) in self.profiles.iter().enumerate() {
-                let label = format!(
-                    "{}{}",
-                    if self.selected.as_ref() == Some(&profile.id) {
-                        "✓ "
-                    } else {
-                        ""
-                    },
-                    profile.label
-                );
-                column = column
-                    .push(Box::new(
-                        self.button(
-                            &format!("browser.address.select.{i}"),
-                            &label,
-                            Action::Select(profile.id.clone()),
-                        )
-                        .with_enabled(self.enabled),
-                    ))
-                    .push(Box::new(
-                        self.button(
-                            &format!("browser.address.edit.{i}"),
-                            "Edit address",
-                            Action::Edit(profile.id.clone()),
-                        )
-                        .with_enabled(self.enabled),
-                    ))
-                    .push(Box::new(self.button(
-                        &format!("browser.address.delete.{i}"),
-                        "Delete address…",
-                        Action::Delete(profile.id.clone()),
-                    )));
+            let rows: Vec<Box<dyn Widget>> = self
+                .profiles
+                .iter()
+                .enumerate()
+                .map(|(i, profile)| {
+                    let mut row =
+                        ListRow::new(format!("browser.address.select.{i}"), &profile.label)
+                            .selected(self.selected.as_ref() == Some(&profile.id));
+                    if self.enabled {
+                        row = row
+                            .on_activate(self.command(Action::Select(profile.id.clone())))
+                            .action(
+                                Icon::Pencil,
+                                "Edit address",
+                                self.command(Action::Edit(profile.id.clone())),
+                            );
+                    }
+                    row = row.action(
+                        Icon::Trash2,
+                        "Delete address",
+                        self.command(Action::Delete(profile.id.clone())),
+                    );
+                    Box::new(row) as Box<dyn Widget>
+                })
+                .collect();
+            if !rows.is_empty() {
+                column = column.push(Box::new(Section::new(rows)));
             }
             if self.enabled {
                 column = column.push(Box::new(self.button(
@@ -363,7 +415,7 @@ impl AddressControls {
 }
 
 fn line(text: &str) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_size(13.0))
+    Box::new(Text::new(text).with_role(TextRole::Body))
 }
 
 #[cfg(test)]
@@ -431,7 +483,7 @@ mod tests {
             editor.act(Action::New);
             assert!(editor.profiles.is_empty());
             assert!(editor.editing.is_none());
-            assert!(book.with(|saved| *saved == crate::autofill::SavedProfiles::default()));
+            assert!(book.with(|saved| *saved == crate::autofill::AddressBook::default()));
         }
     }
 }

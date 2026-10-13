@@ -1,21 +1,14 @@
-//! Attenuable invite tokens: a derived token can drop caps but adding a
-//! cap the parent lacks is rejected; an expired token is rejected. All
+//! Attenuable invite tokens: a derived token can lower the role but raising
+//! it above the parent's is rejected; an expired token is rejected. All
 //! proven on the real `mint_root` / `attenuate` / `verify_chain` path.
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
-use collab_types::caps::Verb;
 use collab_types::{
     ArtifactId, InviteError, InviteSpec, Role, attenuate, generate_keypair, mint_root, verify_chain,
 };
@@ -26,27 +19,19 @@ fn t(secs: u64) -> SystemTime {
         .unwrap()
 }
 
-fn verbs(vs: &[Verb]) -> BTreeSet<Verb> {
-    vs.iter().copied().collect()
-}
-
 const WORKSPACE: u64 = 0xA11CE;
 
-/// Root grant: `role` + `caps` for `subject`, whole-workspace, no
-/// expiry unless overridden.
-fn spec(subject: collab_types::Ed25519PublicKey, role: Role, caps: &[Verb]) -> InviteSpec {
+/// Root grant: `role` for `subject`, whole-workspace, no expiry unless
+/// overridden.
+fn spec(subject: collab_types::Ed25519PublicKey, role: Role) -> InviteSpec {
     InviteSpec {
         subject,
         workspace: WORKSPACE,
         role,
-        caps: verbs(caps),
         sub_resource: None,
         not_after: None,
     }
 }
-
-const EDITOR_CAPS: &[Verb] = &[Verb::Read, Verb::Comment, Verb::Write];
-const COMMENT_CAPS: &[Verb] = &[Verb::Read, Verb::Comment];
 
 /// `spec` with an expiry.
 fn expiring(spec: InviteSpec, not_after: SystemTime) -> InviteSpec {
@@ -64,33 +49,28 @@ fn pinned_to(spec: InviteSpec, doc: ArtifactId) -> InviteSpec {
     }
 }
 
-/// Attenuation that narrows is valid: dropping caps (and the chain then
+/// Attenuation that narrows is valid: lowering the role (and the chain then
 /// verifies to the tightest grant), pinning to one sub-resource or keeping
 /// the same pin, and tightening the expiry window.
 #[test]
-fn a_holder_may_attenuate_by_dropping_caps_pinning_or_shortening_expiry() {
-    // Case: a derived token may drop caps.
+fn a_holder_may_attenuate_by_lowering_the_role_pinning_or_shortening_expiry() {
+    // Case: a derived token may lower the role.
     let (root_sk, root_pub) = generate_keypair();
     let (alice_sk, alice_pub) = generate_keypair();
     let (bob_sk, bob_pub) = generate_keypair();
     let (_carol_sk, carol_pub) = generate_keypair();
 
-    // Root grants Alice an Editor bundle: read/comment/write.
-    let root = mint_root(spec(alice_pub, Role::Editor, EDITOR_CAPS), &root_sk).unwrap();
-    // Alice (the holder) attenuates: hand Bob a comment-only subset.
-    let child = attenuate(
-        &root,
-        spec(bob_pub, Role::Commenter, COMMENT_CAPS),
-        &alice_sk,
-    )
-    .expect("dropping caps must be a valid attenuation");
+    // Root admits Alice as an Editor.
+    let root = mint_root(spec(alice_pub, Role::Editor), &root_sk).unwrap();
+    // Alice (the holder) attenuates: hand Bob the Commenter role.
+    let child = attenuate(&root, spec(bob_pub, Role::Commenter), &alice_sk)
+        .expect("lowering the role must be a valid attenuation");
     // The chain verifies and the effective (tightest) grant is Bob's
-    // comment-only bundle.
+    // Commenter role.
     let chain = [root.clone(), child];
     let effective = verify_chain(&chain, t(10), &[root_pub]).expect("narrowing chain must verify");
     assert_eq!(effective.subject, bob_pub);
-    assert_eq!(effective.caps, verbs(COMMENT_CAPS));
-    assert!(!effective.caps.contains(&Verb::Write), "write was dropped");
+    assert_eq!(effective.role, Role::Commenter);
 
     // Case: a sub-resource pin only narrows. A child may pin to ONE
     // sub-resource; it may not unpin or repoint.
@@ -100,7 +80,7 @@ fn a_holder_may_attenuate_by_dropping_caps_pinning_or_shortening_expiry() {
     // root) — valid narrowing.
     let pinned = attenuate(
         &root,
-        pinned_to(spec(bob_pub, Role::Editor, EDITOR_CAPS), doc),
+        pinned_to(spec(bob_pub, Role::Editor), doc),
         &alice_sk,
     )
     .expect("pinning an unpinned parent is a narrowing");
@@ -108,7 +88,7 @@ fn a_holder_may_attenuate_by_dropping_caps_pinning_or_shortening_expiry() {
     // Bob cannot repoint his pinned token to a DIFFERENT artifact.
     let err = attenuate(
         &pinned,
-        pinned_to(spec(carol_pub, Role::Editor, EDITOR_CAPS), other),
+        pinned_to(spec(carol_pub, Role::Editor), other),
         &bob_sk,
     )
     .unwrap_err();
@@ -119,30 +99,25 @@ fn a_holder_may_attenuate_by_dropping_caps_pinning_or_shortening_expiry() {
     // Keeping the SAME pin is fine.
     let same = attenuate(
         &pinned,
-        pinned_to(spec(carol_pub, Role::Commenter, COMMENT_CAPS), doc),
+        pinned_to(spec(carol_pub, Role::Commenter), doc),
         &bob_sk,
     )
-    .expect("keeping the same pin + dropping caps is a narrowing");
+    .expect("keeping the same pin + lowering the role is a narrowing");
     assert_eq!(same.sub_resource, Some(doc));
 
     // Case: a child that tightens the window (earlier expiry) is fine.
     let (root_sk, _root_pub) = generate_keypair();
-    let root = mint_root(
-        expiring(spec(alice_pub, Role::Editor, EDITOR_CAPS), t(100)),
-        &root_sk,
-    )
-    .unwrap();
+    let root = mint_root(expiring(spec(alice_pub, Role::Editor), t(100)), &root_sk).unwrap();
     let ok = attenuate(
         &root,
-        expiring(spec(bob_pub, Role::Editor, EDITOR_CAPS), t(80)),
+        expiring(spec(bob_pub, Role::Editor), t(80)),
         &alice_sk,
     )
     .expect("earlier expiry is a narrowing");
     assert_eq!(ok.not_after, Some(t(80)));
 }
 
-/// Attenuation that widens — adding a cap the parent lacks, raising the
-/// role, or outliving the parent's window — is rejected at mint, and only
+/// Attenuation that widens — raising the role, or outliving the parent's window — is rejected at mint, and only
 /// the holder may attenuate at all.
 #[test]
 fn attenuation_rejects_every_widening_and_every_non_holder() {
@@ -150,28 +125,17 @@ fn attenuation_rejects_every_widening_and_every_non_holder() {
         collab_types::Ed25519PublicKey,
         collab_types::Ed25519PublicKey,
     ) -> (InviteSpec, InviteSpec);
-    // Root grants Alice comment-only (no Write); Alice tries to hand Bob a
-    // token that ADDS Write — a widening.
-    let adds_write: Specs = |alice, bob| {
-        (
-            spec(alice, Role::Commenter, COMMENT_CAPS),
-            spec(bob, Role::Editor, EDITOR_CAPS),
-        )
-    };
-    // Raising the ROLE above the parent is a widening too: same caps, but
-    // role label raised to Owner.
-    let raises_role: Specs = |alice, bob| {
-        (
-            spec(alice, Role::Commenter, COMMENT_CAPS),
-            spec(bob, Role::Owner, COMMENT_CAPS),
-        )
-    };
+    // Root admits Alice as a Commenter; Alice tries to hand Bob the Editor
+    // role — a widening.
+    let adds_write: Specs = |alice, bob| (spec(alice, Role::Commenter), spec(bob, Role::Editor));
+    // Raising the role to Owner is a widening too.
+    let raises_role: Specs = |alice, bob| (spec(alice, Role::Commenter), spec(bob, Role::Owner));
     // A child may not outlive its parent's window: the child claims a LATER
     // expiry than the parent.
     let later_expiry: Specs = |alice, bob| {
         (
-            expiring(spec(alice, Role::Editor, EDITOR_CAPS), t(100)),
-            expiring(spec(bob, Role::Editor, EDITOR_CAPS), t(500)),
+            expiring(spec(alice, Role::Editor), t(100)),
+            expiring(spec(bob, Role::Editor), t(500)),
         )
     };
     for (why, specs) in [
@@ -194,13 +158,8 @@ fn attenuation_rejects_every_widening_and_every_non_holder() {
     let (_alice_sk, alice_pub) = generate_keypair();
     let (mallory_sk, _mallory_pub) = generate_keypair();
     let (_bob_sk, bob_pub) = generate_keypair();
-    let root = mint_root(spec(alice_pub, Role::Editor, EDITOR_CAPS), &root_sk).unwrap();
-    let err = attenuate(
-        &root,
-        spec(bob_pub, Role::Commenter, COMMENT_CAPS),
-        &mallory_sk,
-    )
-    .unwrap_err();
+    let root = mint_root(spec(alice_pub, Role::Editor), &root_sk).unwrap();
+    let err = attenuate(&root, spec(bob_pub, Role::Commenter), &mallory_sk).unwrap_err();
     assert_eq!(err, InviteError::NotHolder);
 }
 
@@ -212,11 +171,7 @@ fn verify_chain_rejects_expired_untrusted_or_forged_wider_chains() {
     // t=100.
     let (root_sk, root_pub) = generate_keypair();
     let (_alice_sk, alice_pub) = generate_keypair();
-    let root = mint_root(
-        expiring(spec(alice_pub, Role::Editor, EDITOR_CAPS), t(100)),
-        &root_sk,
-    )
-    .unwrap();
+    let root = mint_root(expiring(spec(alice_pub, Role::Editor), t(100)), &root_sk).unwrap();
     // Before expiry: verifies.
     verify_chain(std::slice::from_ref(&root), t(50), &[root_pub])
         .expect("token valid before expiry");
@@ -233,7 +188,7 @@ fn verify_chain_rejects_expired_untrusted_or_forged_wider_chains() {
     let (root_sk, _root_pub) = generate_keypair();
     let (_alice_sk, alice_pub) = generate_keypair();
     let (_stranger_sk, stranger_pub) = generate_keypair();
-    let root = mint_root(spec(alice_pub, Role::Editor, EDITOR_CAPS), &root_sk).unwrap();
+    let root = mint_root(spec(alice_pub, Role::Editor), &root_sk).unwrap();
     assert_eq!(
         verify_chain(std::slice::from_ref(&root), t(1), &[stranger_pub]).unwrap_err(),
         InviteError::UntrustedRoot
@@ -245,19 +200,14 @@ fn verify_chain_rejects_expired_untrusted_or_forged_wider_chains() {
     let (root_sk, root_pub) = generate_keypair();
     let (alice_sk, alice_pub) = generate_keypair();
     let (_bob_sk, bob_pub) = generate_keypair();
-    let root = mint_root(spec(alice_pub, Role::Commenter, COMMENT_CAPS), &root_sk).unwrap();
-    // Alice mints a legitimately-narrow child (read-only)...
-    let mut forged = attenuate(
-        &root,
-        spec(bob_pub, Role::Commenter, &[Verb::Read]),
-        &alice_sk,
-    )
-    .unwrap();
-    // ...then widens its caps and re-signs with her REAL key so the
+    let root = mint_root(spec(alice_pub, Role::Commenter), &root_sk).unwrap();
+    // Alice mints a legitimately-narrow child (Viewer)...
+    let mut forged = attenuate(&root, spec(bob_pub, Role::Viewer), &alice_sk).unwrap();
+    // ...then raises its role and re-signs with her REAL key so the
     // signature is valid. `attenuate` would refuse this, so we mutate +
     // re-sign directly to prove verify_chain is the second line of
     // defence.
-    forged.caps = verbs(EDITOR_CAPS);
+    forged.role = Role::Editor;
     forged.sign_with(&alice_sk).unwrap();
     forged
         .verify_signature()

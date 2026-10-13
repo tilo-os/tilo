@@ -196,9 +196,8 @@ impl Block {
     /// text around it went. Returns whether anything changed and whether
     /// the change reshapes the block (kind, depth or fence).
     fn present(&mut self, content: &BlockContent) -> (bool, bool) {
-        let mut changed = false;
-        let mut reshaped = false;
-        if self.kind != content.kind {
+        let kind_changed = self.kind != content.kind;
+        if kind_changed {
             let focused = self.line.is_focused();
             let caret = self.line.cursor_pos();
             let marks = self.line.marks().to_vec();
@@ -209,9 +208,9 @@ impl Block {
             self.line.set_cursor_pos(caret);
             self.line.set_focus(focused);
             self.kind = content.kind.clone();
-            changed = true;
-            reshaped = true;
         }
+        let mut changed = kind_changed;
+        let mut reshaped = kind_changed;
         if self.text() != content.text {
             let caret = self.line.cursor_pos();
             let carried = carry_byte(self.text(), &content.text, caret);
@@ -351,7 +350,7 @@ impl BlockEditor {
             self.formula_chrome.clear();
             self.visual_formulas.clear();
             self.visual_formula_focus = None;
-            self.structure_dirty = true;
+            self.restack();
         }
         self.reconcile_block_selection();
         self.dirty = true;
@@ -446,7 +445,7 @@ impl BlockEditor {
             self.formula_chrome.clear();
             self.visual_formulas.clear();
             self.visual_formula_focus = None;
-            self.structure_dirty = true;
+            self.restack();
         }
         self.reconcile_block_selection();
         self.dirty = true;

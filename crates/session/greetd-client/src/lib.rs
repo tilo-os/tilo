@@ -30,11 +30,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -43,8 +39,13 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 
+pub use greetd_ipc::AuthMessageType;
 use greetd_ipc::codec::SyncCodec;
-use greetd_ipc::{AuthMessageType, ErrorType, Request, Response};
+use greetd_ipc::{ErrorType, Request, Response};
+use zeroize::Zeroize;
+
+mod conversation;
+pub use conversation::{ConversationControl, authenticate_conversation};
 
 /// Why an authentication attempt did not result in a started session.
 ///
@@ -54,6 +55,8 @@ use greetd_ipc::{AuthMessageType, ErrorType, Request, Response};
 /// never says *which* field was wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthError {
+    /// The caller cancelled the configured session before it started.
+    Cancelled,
     /// PAM refused the attempt. greetd reports every PAM failure as an
     /// authentication error; `reason` is what the PAM result code means and
     /// `detail` is greetd's raw description (`pam_authenticate: AUTH_ERR`).
@@ -112,6 +115,7 @@ impl AuthError {
     /// Never a raw PAM or greetd string.
     pub fn user_message(&self) -> String {
         match self {
+            AuthError::Cancelled => "Sign-in cancelled".to_string(),
             AuthError::Denied { reason, .. } => match reason {
                 Denial::Credentials => "Incorrect username or passcode",
                 Denial::Locked => "Too many failed attempts. Try again later",
@@ -132,6 +136,7 @@ impl AuthError {
     /// beyond the classification.
     pub fn detail(&self) -> Option<String> {
         let d = match self {
+            AuthError::Cancelled => return None,
             AuthError::Denied { detail, .. } => detail,
             AuthError::SessionStart(d) | AuthError::Greetd(d) | AuthError::Transport(d) => d,
         };
@@ -261,81 +266,135 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
     cmd: &[String],
     env: &[String],
     mut on_prompt: F,
-    mut on_accepted: G,
+    on_accepted: G,
 ) -> Result<(), AuthError> {
-    Request::CreateSession {
-        username: username.to_string(),
-    }
-    .write_to(stream)
-    .map_err(|e| AuthError::Transport(format!("CreateSession: {e}")))?;
+    exchange(
+        &mut StreamExchange(stream),
+        username,
+        cmd,
+        env,
+        move |kind, text| {
+            Ok(match kind {
+                AuthMessageType::Secret => Some(password.to_string()),
+                AuthMessageType::Visible => Some(username.to_string()),
+                AuthMessageType::Info | AuthMessageType::Error => {
+                    on_prompt(AuthPrompt {
+                        text,
+                        is_error: matches!(kind, AuthMessageType::Error),
+                    });
+                    None
+                }
+            })
+        },
+        on_accepted,
+    )
+}
 
+trait ExchangeIo {
+    fn send(&mut self, request: Request) -> Result<(), AuthError>;
+    fn receive(&mut self) -> Result<Response, AuthError>;
+    fn check_cancelled(&mut self) -> Result<(), AuthError> {
+        Ok(())
+    }
+    fn prepare_start(&mut self) -> Result<(), AuthError> {
+        Ok(())
+    }
+    fn terminal_failure(&mut self) -> Result<(), AuthError> {
+        Ok(())
+    }
+    fn cancel(&mut self) {
+        if self.send(Request::CancelSession).is_ok() {
+            let _ = self.receive();
+        }
+    }
+}
+
+struct StreamExchange<'a, S>(&'a mut S);
+
+impl<S: Read + Write> ExchangeIo for StreamExchange<'_, S> {
+    fn send(&mut self, request: Request) -> Result<(), AuthError> {
+        write_request(request, self.0)
+            .map_err(|error| AuthError::Transport(format!("write request: {error}")))
+    }
+
+    fn receive(&mut self) -> Result<Response, AuthError> {
+        Response::read_from(self.0)
+            .map_err(|error| AuthError::Transport(format!("read response: {error}")))
+    }
+}
+
+fn write_request<S: Write>(
+    mut request: Request,
+    stream: &mut S,
+) -> Result<(), greetd_ipc::codec::Error> {
+    let result = request.write_to(stream);
+    if let Request::PostAuthMessageResponse {
+        response: Some(response),
+    } = &mut request
+    {
+        response.zeroize();
+    }
+    result
+}
+
+fn exchange<I: ExchangeIo, F, G>(
+    stream: &mut I,
+    username: &str,
+    cmd: &[String],
+    env: &[String],
+    mut response: F,
+    mut on_accepted: G,
+) -> Result<(), AuthError>
+where
+    F: FnMut(AuthMessageType, String) -> Result<Option<String>, AuthError>,
+    G: FnMut(),
+{
+    stream.send(Request::CreateSession {
+        username: username.to_owned(),
+    })?;
     loop {
-        let response = Response::read_from(stream)
-            .map_err(|e| AuthError::Transport(format!("read response: {e}")))?;
-        match response {
+        stream.check_cancelled()?;
+        let message = stream.receive()?;
+        stream.check_cancelled()?;
+        match message {
             Response::AuthMessage {
                 auth_message_type,
                 auth_message,
             } => {
-                let reply = match auth_message_type {
-                    AuthMessageType::Secret => Some(password.to_string()),
-                    AuthMessageType::Visible => Some(username.to_string()),
-                    AuthMessageType::Info => {
-                        on_prompt(AuthPrompt {
-                            text: auth_message.clone(),
-                            is_error: false,
-                        });
-                        tracing::info!(prompt = %auth_message, "greetd auth info");
-                        None
-                    }
-                    AuthMessageType::Error => {
-                        // A PAM_ERROR_MSG conversation message. NOT a
-                        // terminal failure (the authoritative outcome is a
-                        // top-level Response::Error/Success) — fprintd
-                        // emits these on a mis-swipe and then re-prompts.
-                        // Surface as a warning and continue.
-                        on_prompt(AuthPrompt {
-                            text: auth_message.clone(),
-                            is_error: true,
-                        });
-                        tracing::warn!(prompt = %auth_message, "greetd auth message (error type)");
-                        None
+                let reply = match response(auth_message_type, auth_message) {
+                    Ok(reply) => reply,
+                    Err(error) => {
+                        stream.cancel();
+                        return Err(error);
                     }
                 };
-                Request::PostAuthMessageResponse { response: reply }
-                    .write_to(stream)
-                    .map_err(|e| AuthError::Transport(format!("PostAuthMessageResponse: {e}")))?;
+                stream.check_cancelled()?;
+                stream.send(Request::PostAuthMessageResponse { response: reply })?;
             }
             Response::Success => {
-                // Authentication complete. Tell the caller before issuing
-                // StartSession, so the UI can show that the attempt
-                // succeeded rather than sitting on a spinner until the
-                // process exits.
+                // Seal start against cancellation before exposing acceptance;
+                // the ordinary acceptance hook still precedes StartSession.
+                stream.prepare_start()?;
                 on_accepted();
-                Request::StartSession {
+                stream.send(Request::StartSession {
                     cmd: cmd.to_vec(),
                     env: env.to_vec(),
-                }
-                .write_to(stream)
-                .map_err(|e| AuthError::Transport(format!("StartSession: {e}")))?;
-
-                match Response::read_from(stream)
-                    .map_err(|e| AuthError::Transport(format!("read start response: {e}")))?
-                {
+                })?;
+                match stream.receive()? {
                     Response::Success => return Ok(()),
                     Response::Error {
                         error_type,
                         description,
                     } => {
-                        cancel_session(stream);
-                        tracing::warn!(?error_type, %description, "greetd could not start the session");
+                        stream.cancel();
+                        tracing::warn!(?error_type, "greetd could not start the session");
                         return Err(AuthError::SessionStart(description));
                     }
-                    Response::AuthMessage { auth_message, .. } => {
-                        cancel_session(stream);
-                        return Err(AuthError::SessionStart(format!(
-                            "unexpected auth prompt after StartSession: {auth_message}"
-                        )));
+                    Response::AuthMessage { .. } => {
+                        stream.cancel();
+                        return Err(AuthError::SessionStart(
+                            "unexpected auth prompt after StartSession".into(),
+                        ));
                     }
                 }
             }
@@ -343,10 +402,9 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
                 error_type,
                 description,
             } => {
-                // Reset greetd's session slot so the user can retry without
-                // a stuck half-open session.
-                cancel_session(stream);
-                tracing::warn!(?error_type, %description, "greetd auth error");
+                stream.terminal_failure()?;
+                stream.cancel();
+                tracing::warn!(?error_type, "greetd auth error");
                 return Err(map_error(&error_type, description));
             }
         }
@@ -430,7 +488,7 @@ pub fn verify_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
                 description,
             } => {
                 cancel_session(stream);
-                tracing::warn!(?error_type, %description, "greetd verify error");
+                tracing::warn!(?error_type, "greetd verify error");
                 return Err(map_error(&error_type, description));
             }
         }

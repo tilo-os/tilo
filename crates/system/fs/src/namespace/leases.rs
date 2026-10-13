@@ -19,7 +19,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-use collab_types::FileRecordId;
+use fs_protocol::FileRecordId;
 use serde::{Deserialize, Serialize};
 
 use super::Namespace;
@@ -276,10 +276,6 @@ mod tests {
     const TTL: u64 = 60_000;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn lease_takes_resolve_by_epoch_grant_and_holder_with_exact_fences() {
         // Phase `a_free_or_lapsed_lease_is_taken_with_a_new_epoch`.
         {

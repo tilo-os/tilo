@@ -31,18 +31,20 @@ const NOTES: &str = "so.tilo.notes";
 fn version(number: &str) -> RegistryVersion {
     RegistryVersion {
         version: number.into(),
-        tapp_url: format!("https://apps.tilo.so/artifacts/notes-{number}.tapp"),
-        tapp_root_hash_hex: "ab".repeat(32),
-        tapp_size_bytes: 1,
         released_at_unix: 1,
-        tapp_blake3_hex: "cd".repeat(32),
-        target: RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: "x86_64".into(),
-            isa: "x86_64-v3".into(),
-            runtime: None,
-            interfaces: Vec::new(),
-        },
+        artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+            tapp_url: format!("https://apps.tilo.so/artifacts/notes-{number}.tapp"),
+            tapp_root_hash_hex: "ab".repeat(32),
+            tapp_size_bytes: 1,
+            tapp_blake3_hex: "cd".repeat(32),
+            target: RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: None,
+                interfaces: Vec::new(),
+            },
+        }),
     }
 }
 
@@ -50,6 +52,7 @@ fn entry(package_id: &str, versions: &[&str], updated_at: u64) -> RegistryEntry 
     let publisher = SigningKey::from_bytes(&[52; 32]);
     let mut entry = RegistryEntry {
         package_id: package_id.into(),
+        kind: registry_types::EntryKind::App,
         name: "Notes".into(),
         description: "A test app".into(),
         tagline: "Test on Tilo OS".into(),
@@ -283,7 +286,7 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
     );
 
     // The native client reads the compact form, and the index for every
-    // version; the browser client verifies both forms against one checkpoint.
+    // version.
     let config = RegistryConfig {
         name: "test".into(),
         base_url: base_url.clone(),
@@ -300,22 +303,6 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
     let listed = native(&config, native_dir.path(), app_cli::client::fetch_entries).unwrap();
     assert_eq!(listed[0].entry.versions.len(), 1);
     assert_eq!(listed[0].version_index.as_ref(), Some(index));
-    let now = tilo_clock::unix_now();
-    let web = registry_web::verify_snapshot(&full_bytes, &registry.owner_hex, None, now).unwrap();
-    let web = registry_web::verify_snapshot(
-        &compact_bytes,
-        &registry.owner_hex,
-        Some(web.checkpoint()),
-        now,
-    )
-    .unwrap();
-    registry_web::verify_snapshot(
-        &full_bytes,
-        &registry.owner_hex,
-        Some(web.checkpoint()),
-        now,
-    )
-    .unwrap();
 
     // A tampered index on disk is never served.
     let index_path = registry
@@ -345,19 +332,6 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
             app_cli::client::fetch_all_versions(config, NOTES)
         }),
         Err(RegistryError::Rollback)
-    ));
-    let replayed_bytes = serde_json::to_vec(&old_compact).unwrap();
-    assert!(matches!(
-        registry_web::verify_snapshot(
-            &replayed_bytes,
-            &registry.owner_hex,
-            Some(web.checkpoint()),
-            now
-        ),
-        Err(registry_web::VerifyError::Rollback {
-            checkpoint: 2,
-            sequence: 1
-        })
     ));
 
     // Without a compact form of the current snapshot, compact requests get

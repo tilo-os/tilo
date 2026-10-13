@@ -15,7 +15,10 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tilo_relay_client::DeviceSigner;
-use tilo_relay_protocol::certify::CertifyReply;
+use tilo_relay_protocol::certify::{
+    ApproverDecision, ApproverReply, ApproverRequest, CertifyReply, MemberApproval,
+    PendingCertification,
+};
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
     DeviceCert, RevocationList, verify_device_cert_at, verify_issued_cert,
@@ -280,7 +283,7 @@ pub async fn issue_device_cert(
             "the root certifies devices, never itself".into(),
         ));
     }
-    let now = crate::clock::now_ns();
+    let now = tilo_clock::unix_now_ns();
     let mut cert = DeviceCert {
         user_public_key,
         device_public_key,
@@ -298,6 +301,105 @@ pub async fn issue_device_cert(
         .map_err(|error| CertifyError::Request(error.0))?;
     verify_device_cert_at(&cert, now).map_err(|e| request(&e))?;
     Ok(cert)
+}
+
+/// `approval` of `request`, signed by the member's `root`.
+async fn member_approval(
+    root: &dyn DeviceSigner,
+    request: ApproverRequest,
+) -> Result<MemberApproval, CertifyError> {
+    let user_public_key = root.device_public_key();
+    let issued_at_ns = tilo_clock::unix_now_ns();
+    let message = MemberApproval::signed_message(&user_public_key, issued_at_ns, &request)
+        .map_err(|error| CertifyError::Request(error.to_string()))?;
+    let signature = root
+        .sign(message)
+        .await
+        .map_err(|error| CertifyError::Request(error.0))?;
+    Ok(MemberApproval {
+        user_public_key,
+        issued_at_ns,
+        request,
+        signature,
+    })
+}
+
+async fn approve(
+    client: &dyn crate::HttpClient,
+    root: &dyn DeviceSigner,
+    request: ApproverRequest,
+) -> Result<ApproverReply, CertifyError> {
+    let approval = member_approval(root, request).await?;
+    match crate::carrier::certify_approve(client, &approval).await? {
+        ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
+        reply => Ok(reply),
+    }
+}
+
+/// The requests of new devices waiting at the host at `client` for `root`
+/// (a member's root the page holds) to answer: a new device of theirs asked
+/// to be certified there, showing its pairing code.
+///
+/// # Errors
+///
+/// Returns [`CertifyError::Transport`] when the host is not reached, or
+/// [`CertifyError::Denied`] when it refuses.
+pub async fn pending_pairings(
+    client: &dyn crate::HttpClient,
+    root: &dyn DeviceSigner,
+) -> Result<Vec<PendingCertification>, CertifyError> {
+    match approve(client, root, ApproverRequest::ListPending).await? {
+        ApproverReply::Pending(pending) => Ok(pending),
+        _ => Err(CertifyError::Denied(
+            "the host answered something else".into(),
+        )),
+    }
+}
+
+/// Answer the pending request `request_digest` at the host at `client`:
+/// approved, `root` certifies the device it names as a browser of that root.
+///
+/// # Errors
+///
+/// Returns [`CertifyError::Denied`] when the request is gone or the host
+/// refuses the answer, [`CertifyError::Transport`] when it is not reached.
+pub async fn answer_pairing(
+    client: &dyn crate::HttpClient,
+    root: &dyn DeviceSigner,
+    request_digest: [u8; 32],
+    approved: bool,
+) -> Result<(), CertifyError> {
+    let decision = if approved {
+        let pending = pending_pairings(client, root).await?;
+        let Some(found) = pending
+            .iter()
+            .find(|entry| entry.request_digest == request_digest)
+        else {
+            return Err(CertifyError::Denied("that device no longer waits".into()));
+        };
+        let request = &found.request;
+        ApproverDecision::Issue(
+            issue_device_cert(
+                root,
+                request.device_public_key,
+                &request.device_label,
+                IssuedRole::Browser,
+            )
+            .await?,
+        )
+    } else {
+        ApproverDecision::Deny
+    };
+    approve(
+        client,
+        root,
+        ApproverRequest::Decide {
+            request_digest,
+            decision,
+        },
+    )
+    .await
+    .map(drop)
 }
 
 /// Certify the device behind `signer` with the root the page holds, for the
@@ -324,7 +426,7 @@ pub async fn certify_with_root(
 }
 
 fn check_host(host_cert: &DeviceCert, user_public_key: [u8; 32]) -> Result<(), CertifyError> {
-    verify_device_cert_at(host_cert, crate::clock::now_ns())
+    verify_device_cert_at(host_cert, tilo_clock::unix_now_ns())
         .map_err(|error| CertifyError::Denied(format!("host certificate refused: {error}")))?;
     if host_cert.user_public_key != user_public_key || !host_cert.capabilities.can_act_as_host {
         return Err(CertifyError::Denied(
@@ -339,7 +441,7 @@ async fn signed_request(
     label: &str,
     signer: &dyn DeviceSigner,
 ) -> Result<CertificationRequest, CertifyError> {
-    let now = crate::clock::now_ns();
+    let now = tilo_clock::unix_now_ns();
     let unsigned = CertificationRequest {
         version: CERTIFICATION_SCHEMA_VERSION,
         user_public_key,
@@ -383,7 +485,7 @@ fn check_issued(
     cert: &DeviceCert,
     host_cert: &DeviceCert,
 ) -> Result<(), CertifyError> {
-    let now = crate::clock::now_ns();
+    let now = tilo_clock::unix_now_ns();
     let refused = |reason: String| CertifyError::Denied(reason);
     verify_issued_cert(
         request,
@@ -393,7 +495,14 @@ fn check_issued(
         checked_at(now, cert.issued_at_ns),
     )
     .map_err(|error| refused(format!("issued certificate refused: {error}")))?;
-    check_host(host_cert, request.user_public_key)
+    // A member pairs through any host they share, so the host may be
+    // another person's: it must be a host, not necessarily this root's.
+    verify_device_cert_at(host_cert, now)
+        .map_err(|error| refused(format!("host certificate refused: {error}")))?;
+    if !host_cert.capabilities.can_act_as_host {
+        return Err(refused("host certificate is not a host's".into()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

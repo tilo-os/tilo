@@ -13,7 +13,7 @@ use crate::Theme;
 use crate::headless::{self, FrameHarness};
 
 mod shot_frame;
-pub use shot_frame::{ShotFrame, ShotLayout};
+pub use shot_frame::ShotFrame;
 // Writing a PNG needs the offscreen renderer's blocking GPU readback, which
 // the browser has not got; laying out and drawing a frame is portable.
 #[cfg(not(target_arch = "wasm32"))]
@@ -65,7 +65,7 @@ type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 
 /// Parsed common launch arguments. Extra flags are retained for an app's
 /// screenshot factory after being explicitly allow-listed by [`LaunchSpec`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LaunchArgs {
     pub shots: Option<PathBuf>,
     /// `--shots-dir DIR`: one capture of every declared scenario, written to
@@ -79,6 +79,28 @@ pub struct LaunchArgs {
     pub native_audit: bool,
     pub pseudo_locale: bool,
     pub text_scale: Option<f32>,
+    /// `--theme NAME`: the shipped theme a capture renders in
+    /// ([`Theme::named`]), over `TILO_SHOTS_THEME`.
+    pub theme: Option<String>,
+    /// `--workspace-hue DEGREES` and `--your-colour NAME`: what the shell
+    /// would tell the captured window about where and for whom it is shown
+    /// ([`crate::theme::WindowAppearance`]). Without them a capture is what
+    /// a window without a shell shows: neutral, in the default colour.
+    pub window: crate::theme::WindowAppearance,
+    /// `--history`: a capture shows History open, where the app has
+    /// History.
+    pub history: bool,
+    /// `--search QUERY`: a capture shows this window's search open with
+    /// `QUERY` typed, as the app's search launcher opens it.
+    pub search: Option<String>,
+    /// `--device-scale N`: a capture is drawn at N device pixels per
+    /// logical pixel (1 to [`MAX_SHOT_DEVICE_SCALE`]), as a HiDPI display
+    /// draws the same window.
+    pub device_scale: Option<u32>,
+    /// `--distinct-letters on|off`: a capture renders with "Always
+    /// distinguish similar letters" on or off, whatever the theme's face
+    /// would choose.
+    pub distinct_letters: Option<bool>,
     extras: Vec<String>,
     values: Vec<(String, String)>,
     positionals: Vec<String>,
@@ -88,20 +110,7 @@ impl LaunchArgs {
     /// The arguments of a component mounted by an in-process host: no
     /// screenshot, headless or audit mode and no app-specific arguments.
     pub fn component() -> Self {
-        Self {
-            shots: None,
-            shots_dir: None,
-            responsive_matrix: None,
-            viewport: None,
-            scenario: None,
-            headless: None,
-            native_audit: false,
-            pseudo_locale: false,
-            text_scale: None,
-            extras: Vec::new(),
-            values: Vec::new(),
-            positionals: Vec::new(),
-        }
+        Self::default()
     }
 
     pub fn has(&self, flag: &str) -> bool {
@@ -131,17 +140,23 @@ impl LaunchArgs {
     pub fn positionals(&self) -> &[String] {
         &self.positionals
     }
+
+    /// This process's arguments, for a binary that runs its own live loop
+    /// (the greeter, the installer) yet takes the standard capture options,
+    /// plus its own capture-only `options`.
+    ///
+    /// # Errors
+    /// The same refusals as [`run`]: an unknown, malformed or duplicate
+    /// argument, or a capture option outside a capture.
+    #[cfg(feature = "native")]
+    pub fn from_env(options: &[&str]) -> Result<Self, LaunchError> {
+        let args: Vec<String> = std::env::args().collect();
+        parse_args_extended(&args, &[], options, &[], &[], 0)
+    }
 }
 
 /// How the standard lifecycle launches one application definition: its
 /// component host, capture scenarios, commands and accepted arguments.
-#[cfg_attr(
-    not(feature = "native"),
-    allow(
-        dead_code,
-        reason = "some fields are read only by the native event-loop runner"
-    )
-)]
 #[derive(Clone)]
 pub struct LaunchSpec {
     definition: &'static crate::application::ApplicationDefinition,
@@ -581,12 +596,6 @@ impl LaunchRecovery {
         std::thread::current().id() == self.owner
     }
 
-    /// Whether the owners are reachable from this thread.
-    #[must_use]
-    pub fn is_reachable(&self) -> bool {
-        self.here()
-    }
-
     /// How many close reports this recovery carries, on any thread.
     #[must_use]
     pub fn report_count(&self) -> usize {
@@ -707,6 +716,7 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("app-launch-start");
+    tilo_process::raise_open_file_limit();
     let _ = tracing_subscriber::fmt::try_init();
     let args: Vec<String> = std::env::args().collect();
     run_with_args(spec, &args)
@@ -738,6 +748,16 @@ fn run_with_args_with_attachment(
         spec.max_positionals,
     )?;
     validate_spec_args(&args, spec)?;
+    // A capture shows the same date and time on every run.
+    if args.shots.is_some() || args.responsive_matrix.is_some() {
+        crate::clock::freeze_for_capture();
+    }
+    if let Some(scale) = args.device_scale {
+        crate::offscreen::set_capture_device_scale(scale);
+    }
+    if let Some(on) = args.distinct_letters {
+        let _ = CAPTURE_DISTINCT_LETTERS.set(on);
+    }
     crate::i18n::I18nManager::set_pseudo_locale(if args.pseudo_locale {
         crate::i18n::PseudoLocale::Expanded
     } else {
@@ -788,6 +808,16 @@ fn capture_directory(directory: &std::path::Path, option: &str) -> Result<(), La
     })
 }
 
+/// Whether these arguments run the app in a live native window, rather than
+/// headless, as captures or as an audit.
+#[cfg(feature = "native")]
+fn opens_native_window(args: &LaunchArgs) -> bool {
+    args.headless.is_none()
+        && args.shots.is_none()
+        && args.responsive_matrix.is_none()
+        && !args.native_audit
+}
+
 #[allow(
     clippy::exit,
     reason = "the --headless-drive path reports the harness's pass/fail \
@@ -807,29 +837,35 @@ fn run_parsed(
     {
         return Ok(());
     }
-    if args.headless.is_none()
-        && args.shots.is_none()
-        && args.responsive_matrix.is_none()
-        && !args.native_audit
-        && (spec.runtime_attachment)(&args)
-    {
+    // Attachment can exec the runtime host in this process's place, and marks
+    // the inherited launch guard close-on-exec: it finishes before the
+    // renderer preparation below starts a thread.
+    if opens_native_window(&args) && (spec.runtime_attachment)(&args) {
         attach(spec.app_id).map_err(|error| {
             LaunchError::Operation(format!("native runtime attachment failed: {error}"))
         })?;
     }
-    #[cfg(windows)]
-    let renderer = if args.shots.is_none()
-        && args.responsive_matrix.is_none()
-        && args.headless.is_none()
-        && !args.native_audit
-    {
+    // Threads may start from here on; startup marks are written from their
+    // own, never by the thread that marks.
+    tilo_startup_metrics::start_writer();
+    // A window's GPU device and vello's pipelines are prepared on their own
+    // thread while the app constructs, so its first redraw takes them ready
+    // instead of starting them after the compositor's first configure. Never
+    // inside the event loop's `resumed`: see `prepare_native_renderer`.
+    #[cfg(any(windows, target_os = "linux"))]
+    let renderer = if opens_native_window(&args) {
         crate::app::prepare_native_renderer()
     } else {
         None
     };
+    // The font database likewise, so the app's first text renderer finds
+    // the catalog verified and the fonts read.
+    if opens_native_window(&args) {
+        prepare_font_database_beside();
+    }
     match dispatch_definition(spec, &args)? {
         DefinitionDispatch::Native(app) => {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             let app = Box::new((*app).with_startup_renderer(renderer));
             (*app).run();
         }
@@ -856,6 +892,20 @@ fn run_parsed(
         }
     }
     Ok(())
+}
+
+/// Start building the process's font database in the background
+/// (`text_render::prepare_font_database`): only the database, so it neither
+/// shapes text nor touches the GPU the renderer preparation is opening. Where
+/// no background work can run, the first text renderer builds it as before.
+#[cfg(feature = "native")]
+fn prepare_font_database_beside() {
+    let _ = crate::background::Background::current().spawn("font-database-prepare", || {
+        tilo_startup_metrics::span(
+            "font-database-prepare",
+            crate::text_render::prepare_font_database,
+        );
+    });
 }
 
 #[cfg(feature = "native")]
@@ -1006,7 +1056,7 @@ fn dispatch_definition_with_manager(
         )?);
         // The host prepared the component's presentation; a capture that
         // names a palette is drawn in it, as every other `--shots` path is.
-        if std::env::var_os("TILO_SHOTS_THEME").is_some() {
+        if args.theme.is_some() || std::env::var_os("TILO_SHOTS_THEME").is_some() {
             driver.set_theme(shot_theme(args));
         }
         if !args.native_audit
@@ -1020,6 +1070,15 @@ fn dispatch_definition_with_manager(
             });
         }
         driver.enable_document_history_chrome();
+        if !args.native_audit
+            && let Err(source) = show_history_for_capture(&mut driver, args)
+        {
+            driver.close_components();
+            return Err(LaunchError::ComponentCapture {
+                source: Box::new(source),
+                recovery: LaunchRecovery::reports(driver.take_component_close_reports()),
+            });
+        }
         return Ok(if args.native_audit {
             DefinitionDispatch::Audit(driver)
         } else {
@@ -1036,6 +1095,28 @@ fn dispatch_definition_with_manager(
     .map_err(LaunchError::Operation)??;
     crate::collaboration::native_initial::check_current().map_err(LaunchError::Operation)?;
     Ok(DefinitionDispatch::Native(Box::new(app)))
+}
+
+/// `--history` and `--search`: open History or this window's search before
+/// the capture settles, so the shot shows it as a person sees it.
+#[cfg(feature = "native")]
+fn show_history_for_capture(
+    driver: &mut FrameHarness,
+    args: &LaunchArgs,
+) -> Result<(), LaunchError> {
+    if args.history {
+        driver
+            .open_history()
+            .map_err(|error| LaunchError::Operation(format!("--history: {error}")))?;
+    }
+    // `--search`: the window's search, opened as the app's own launcher
+    // opens it.
+    if let Some(query) = &args.search {
+        driver
+            .open_search(&crate::search::SearchRequest::this_app().with_query(query.clone()))
+            .map_err(|error| LaunchError::Operation(format!("--search: {error}")))?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "native")]
@@ -1056,7 +1137,8 @@ fn native_launch_manager(
     if !(spec.runtime_attachment)(args) {
         return Ok(crate::collaboration::CollaborationManager::disabled());
     }
-    crate::collaboration::CollaborationManager::for_native_launch().map_err(LaunchError::Operation)
+    crate::collaboration::CollaborationManager::for_native_launch(&spec.definition.record_kind)
+        .map_err(LaunchError::Operation)
 }
 
 fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
@@ -1066,16 +1148,49 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     if let Some(scenario) = args.scenario.as_deref()
         && !spec.scenarios.contains(&scenario)
     {
-        return Err(LaunchError::Scenario(format!(
-            "unknown screenshot scenario {scenario:?}; expected one of {}",
-            spec.scenarios
+        return Err(LaunchError::Scenario(unknown_scenario(
+            scenario,
+            spec.scenarios,
+        )));
+    }
+    Ok(())
+}
+
+/// The refusal of an undeclared `--scenario`, listing the declared ones.
+fn unknown_scenario(name: &str, declared: &[&str]) -> String {
+    if declared.is_empty() {
+        format!("unknown screenshot scenario {name:?}; this app declares no scenarios")
+    } else {
+        format!(
+            "unknown screenshot scenario {name:?}; expected one of {}",
+            declared
                 .iter()
                 .map(|name| format!("{name:?}"))
                 .collect::<Vec<_>>()
                 .join(", ")
-        )));
+        )
     }
-    Ok(())
+}
+
+/// How long a capture waits for the window to settle (animations finished,
+/// thumbnails loaded) before it writes anyway.
+pub const CAPTURE_SETTLE_BOUND: crate::time::Duration = crate::time::Duration::from_secs(3);
+
+/// The largest `--device-scale`: a 1280 x 800 window at 4x is 5120 x 3200.
+pub const MAX_SHOT_DEVICE_SCALE: u32 = 4;
+
+/// `--distinct-letters` for the capture this process writes: every capture
+/// theme ([`shot_theme`], [`shot_theme_from_env`]) takes it.
+static CAPTURE_DISTINCT_LETTERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Pin "Always distinguish similar letters" on a capture theme when the
+/// capture asked for it (`--distinct-letters`).
+fn with_capture_letters(mut theme: Theme, explicit: Option<bool>) -> Theme {
+    if let Some(on) = explicit.or_else(|| CAPTURE_DISTINCT_LETTERS.get().copied()) {
+        theme.document.type_.distinct_letters = Some(on);
+        theme.tokens.typography.distinct_letters = on;
+    }
+    theme
 }
 
 /// Resolve the palette, text scale, and motion policy used by screenshot
@@ -1083,51 +1198,30 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
 /// `TILO_SHOTS_TEXT_SCALE` environment variable.
 #[must_use]
 pub fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .or_else(|_| std::env::var("TILO_SHOTS_THEME"))
-        .ok()
+    let theme = args
+        .theme
+        .clone()
+        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);
     // `TILO_SHOTS_ACCENT=#RRGGBB` stands in for the host accent a standalone
-    // app follows.
+    // app takes as the person's own colour: the presence hue nearest it.
     let theme = match std::env::var("TILO_SHOTS_ACCENT")
         .ok()
         .and_then(|hex| crate::color::parse_hex(&hex))
+        .and_then(crate::tokens::PresenceHue::nearest)
     {
-        Some(accent) => {
-            use crate::color_compat::ColorCompat;
-            theme.with_accent([accent.r(), accent.g(), accent.b()])
-        }
+        Some(hue) => theme.with_your_colour(hue),
         None => theme,
     };
-    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
-        .or_else(|_| std::env::var("TILO_SHOTS_TEXT_SCALE"))
-        .ok();
+    let theme = with_capture_letters(theme.in_window(&args.window), args.distinct_letters);
+    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
     let theme = theme.with_text_scale(shot_text_scale(
         args.text_scale,
         environment_scale.as_deref(),
     ));
     // Screenshot review must use the same motion policy as a real app.  The
     // headless harness does not construct `ui::App`, where this environment
-    // preference is normally read, so thread it onto the shot theme here.
-    theme.with_reduce_motion(shot_motion_reduced())
-}
-
-/// The same capture presentation for app-specific fixture drivers.
-#[must_use]
-pub fn capture_theme(text_scale: Option<f32>) -> Theme {
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let theme = if let Some(scale) = text_scale {
-        theme.with_text_scale(scale)
-    } else {
-        theme
-    };
-    // Screenshot review must use the same motion policy as a real app.  The
-    // headless harness does not construct `tilo_ui::App`, where this environment
     // preference is normally read, so thread it onto the shot theme here.
     theme.with_reduce_motion(shot_motion_reduced())
 }
@@ -1145,7 +1239,7 @@ pub fn shot_theme_from_env() -> Result<Theme, String> {
         Err(_) => Theme::dark(),
     };
     let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
-    Ok(theme
+    Ok(with_capture_letters(theme, None)
         .with_text_scale(shot_text_scale(None, environment_scale.as_deref()))
         .with_reduce_motion(shot_motion_reduced()))
 }
@@ -1215,20 +1309,7 @@ fn parse_args_extended(
     allowed_live_options: &[&str],
     max_positionals: usize,
 ) -> Result<LaunchArgs, LaunchError> {
-    let mut parsed = LaunchArgs {
-        shots: None,
-        shots_dir: None,
-        responsive_matrix: None,
-        viewport: None,
-        scenario: None,
-        headless: None,
-        native_audit: false,
-        pseudo_locale: false,
-        text_scale: None,
-        extras: Vec::new(),
-        values: Vec::new(),
-        positionals: Vec::new(),
-    };
+    let mut parsed = LaunchArgs::default();
     let mut index: usize = 1;
     while let Some(arg) = args.get(index) {
         let (flag, inline) = arg
@@ -1263,9 +1344,77 @@ fn parse_args_extended(
                 let viewport = parse_viewport(value)?;
                 set_once(&mut parsed.viewport, viewport, flag)?;
             }
+            "--device-scale" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let max = MAX_SHOT_DEVICE_SCALE;
+                let scale = value
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|scale| (1..=max).contains(scale))
+                    .ok_or_else(|| {
+                        LaunchError::Scenario(format!(
+                            "{flag}: expected a whole number from 1 to {max}, got {value:?}"
+                        ))
+                    })?;
+                set_once(&mut parsed.device_scale, scale, flag)?;
+            }
+            "--distinct-letters" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let on = match value.trim() {
+                    "on" => true,
+                    "off" => false,
+                    other => {
+                        return Err(LaunchError::Scenario(format!(
+                            "{flag}: expected on or off, got {other:?}"
+                        )));
+                    }
+                };
+                set_once(&mut parsed.distinct_letters, on, flag)?;
+            }
             "--scenario" => {
                 let value = take_value(args, &mut index, flag, inline)?;
                 set_once(&mut parsed.scenario, value.to_owned(), flag)?;
+            }
+            "--theme" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                if Theme::named(value).is_none() {
+                    return Err(LaunchError::Scenario(format!(
+                        "{flag}: no shipped theme is called {value:?} (one of {})",
+                        Theme::ALL.join(", ")
+                    )));
+                }
+                set_once(&mut parsed.theme, value.to_owned(), flag)?;
+            }
+            "--workspace-hue" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let hue = value
+                    .trim()
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|hue| hue.is_finite())
+                    .ok_or_else(|| {
+                        LaunchError::Scenario(format!(
+                            "{flag}: {value:?} is not a hue in OKLCH degrees"
+                        ))
+                    })?;
+                set_once(
+                    &mut parsed.window.workspace_hue,
+                    hue.rem_euclid(360.0),
+                    flag,
+                )?;
+            }
+            "--your-colour" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let hue = crate::tokens::PresenceHue::from_id(value).ok_or_else(|| {
+                    LaunchError::Scenario(format!(
+                        "{flag}: no presence colour is called {value:?} (one of {})",
+                        crate::tokens::PresenceHue::ALL
+                            .map(crate::tokens::PresenceHue::id)
+                            .join(", ")
+                    ))
+                })?;
+                set_once(&mut parsed.window.your_colour, hue, flag)?;
             }
             "--headless-drive" => {
                 let value = take_value(args, &mut index, flag, inline)?;
@@ -1278,6 +1427,16 @@ fn parse_args_extended(
                     return Err(LaunchError::Duplicate(flag.to_owned()));
                 }
                 parsed.native_audit = true;
+            }
+            "--search" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                set_once(&mut parsed.search, value.to_owned(), flag)?;
+            }
+            "--history" if inline.is_none() => {
+                if parsed.history {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.history = true;
             }
             // A Jump List task: run this host command once the window exists.
             #[cfg(all(windows, feature = "native"))]
@@ -1324,6 +1483,20 @@ fn parse_args_extended(
     if parsed.shots_dir.is_some() && parsed.scenario.is_some() {
         return Err(LaunchError::ConflictingModes);
     }
+    if parsed.history
+        && parsed.shots.is_none()
+        && parsed.shots_dir.is_none()
+        && parsed.responsive_matrix.is_none()
+    {
+        return Err(LaunchError::ShotsOnly("--history".to_owned()));
+    }
+    if parsed.search.is_some()
+        && parsed.shots.is_none()
+        && parsed.shots_dir.is_none()
+        && parsed.responsive_matrix.is_none()
+    {
+        return Err(LaunchError::ShotsOnly("--search".to_owned()));
+    }
     if parsed.shots.is_none()
         && parsed.shots_dir.is_none()
         && parsed.responsive_matrix.is_none()
@@ -1331,6 +1504,21 @@ fn parse_args_extended(
     {
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));
+        }
+        if parsed.theme.is_some() {
+            return Err(LaunchError::ShotsOnly("--theme".to_owned()));
+        }
+        if parsed.device_scale.is_some() {
+            return Err(LaunchError::ShotsOnly("--device-scale".to_owned()));
+        }
+        if parsed.distinct_letters.is_some() {
+            return Err(LaunchError::ShotsOnly("--distinct-letters".to_owned()));
+        }
+        if parsed.window.workspace_hue.is_some() {
+            return Err(LaunchError::ShotsOnly("--workspace-hue".to_owned()));
+        }
+        if parsed.window.your_colour.is_some() {
+            return Err(LaunchError::ShotsOnly("--your-colour".to_owned()));
         }
         // A headless drive may name a scenario: it dumps that fixture's
         // geometry, the counterpart of `--shots --scenario`.
@@ -1408,6 +1596,8 @@ fn parse_text_scale(value: &str) -> Result<f32, LaunchError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(unix, feature = "broker-transport"))]
+    include!("launch/native_construction_owner_tests.rs");
     use super::*;
 
     /// The launcher's environment contract, pointed at a scratch data home.
@@ -1434,6 +1624,16 @@ mod tests {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
+    /// `run_parsed` starts the renderer preparation thread (Windows and Linux)
+    /// and the runtime attachment exactly for these arguments.
+    #[test]
+    fn only_a_live_window_prepares_its_renderer_ahead() {
+        let live = parse_args(&strings(&["app"]), &[], &[]).unwrap();
+        assert!(opens_native_window(&live));
+        let capture = parse_args(&strings(&["app", "--shots=/tmp/shot.png"]), &[], &[]).unwrap();
+        assert!(!opens_native_window(&capture));
+    }
+
     #[test]
     fn cli_parses_every_common_mode_and_preference() {
         // Case `parses_both_common_argument_forms`.
@@ -1451,6 +1651,43 @@ mod tests {
             assert_eq!(parsed.viewport, Some((640, 480)));
             assert_eq!(parsed.scenario.as_deref(), Some("wide"));
             assert!(parsed.has("--empty"));
+            assert_eq!(
+                parsed.window,
+                crate::theme::WindowAppearance::default(),
+                "a capture without a shell is neutral"
+            );
+        }
+
+        // Case `a_capture_can_stand_in_a_workspace_for_a_person`.
+        {
+            let args = strings(&[
+                "app",
+                "--shots=/tmp/shot.png",
+                "--workspace-hue=400",
+                "--your-colour",
+                "violet",
+            ]);
+            let parsed = parse_args(&args, &[], &[]).unwrap();
+            assert_eq!(
+                parsed.window,
+                crate::theme::WindowAppearance {
+                    workspace_hue: Some(40.0),
+                    your_colour: Some(crate::tokens::PresenceHue::Violet),
+                }
+            );
+            let theme = shot_theme(&LaunchArgs {
+                theme: Some("light".into()),
+                ..parsed
+            });
+            assert_eq!(theme.document.palette.hue, Some(40.0));
+            assert_eq!(theme.tokens.colors.you, crate::tokens::PresenceHue::Violet);
+            for bad in [
+                &["app", "--shots=/tmp/s.png", "--workspace-hue=warm"][..],
+                &["app", "--shots=/tmp/s.png", "--your-colour=chartreuse"][..],
+                &["app", "--workspace-hue=40"][..],
+            ] {
+                assert!(parse_args(&strings(bad), &[], &[]).is_err(), "{bad:?}");
+            }
         }
 
         // Case `parses_responsive_matrix_and_pseudo_locale_as_common_audit_modes`.
@@ -1471,6 +1708,53 @@ mod tests {
             assert!(parsed.pseudo_locale);
             assert_eq!(parsed.text_scale, Some(2.0));
             assert_eq!(parsed.scenario.as_deref(), Some("wide"));
+        }
+
+        // Case `a_capture_takes_a_device_scale_and_the_distinct_letters_setting`.
+        {
+            let parsed = parse_args(
+                &strings(&[
+                    "app",
+                    "--shots=/tmp/s.png",
+                    "--device-scale=4",
+                    "--distinct-letters",
+                    "on",
+                ]),
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert_eq!(parsed.device_scale, Some(4));
+            assert_eq!(parsed.distinct_letters, Some(true));
+            let theme = shot_theme(&LaunchArgs {
+                theme: Some("light".into()),
+                ..parsed.clone()
+            });
+            assert!(theme.tokens.typography.distinct_letters);
+            let off = shot_theme(&LaunchArgs {
+                distinct_letters: Some(false),
+                ..parsed
+            });
+            assert!(!off.tokens.typography.distinct_letters);
+            for bad in [
+                &["app", "--shots=/tmp/s.png", "--device-scale=0"][..],
+                &["app", "--shots=/tmp/s.png", "--device-scale=5"][..],
+                &["app", "--shots=/tmp/s.png", "--distinct-letters=yes"][..],
+            ] {
+                assert!(matches!(
+                    parse_args(&strings(bad), &[], &[]),
+                    Err(LaunchError::Scenario(_))
+                ));
+            }
+            for live in [
+                &["app", "--device-scale=2"][..],
+                &["app", "--distinct-letters=on"][..],
+            ] {
+                assert!(matches!(
+                    parse_args(&strings(live), &[], &[]),
+                    Err(LaunchError::ShotsOnly(_))
+                ));
+            }
         }
 
         // Case `shots_dir_captures_every_scenario_and_names_none`.
@@ -1612,6 +1896,32 @@ mod tests {
             assert!(matches!(
                 parse_args(&strings(&["app", "--scenario=a", "--scenario=b"]), &[], &[],),
                 Err(LaunchError::Duplicate(_))
+            ));
+        }
+
+        // Case `history_is_a_capture_option`.
+        {
+            let shot = parse_args(
+                &strings(&["app", "--shots", "/tmp/a.png", "--history"]),
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert!(shot.history);
+            assert!(matches!(
+                parse_args(&strings(&["app", "--history"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(flag)) if flag == "--history"
+            ));
+            let shot = parse_args(
+                &strings(&["app", "--shots", "/tmp/a.png", "--search", "café"]),
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert_eq!(shot.search.as_deref(), Some("café"));
+            assert!(matches!(
+                parse_args(&strings(&["app", "--search", "café"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(flag)) if flag == "--search"
             ));
         }
 
@@ -2170,134 +2480,17 @@ mod tests {
     #[test]
     #[cfg(unix)]
     #[serial_test::serial]
-    fn native_initial_launch_file_record_retains_required_bridge_without_writer() {
-        use automerge::{ReadDoc, transaction::Transactable};
-        let environment = LaunchFixtureEnv::new();
-        let room = uuid::Uuid::new_v4();
-        let mut _env_override = tilo_test_env::ScopedEnv::new();
-        _env_override.set("TILO_WORKSPACE_ID", room.to_string());
-        let want = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_file(environment._directory.path().join("selected.md")),
-            crate::record::RecordKind::new("document"),
-        );
-        let mut history = automerge::AutoCommit::new();
-        assert!(crate::record::init_scoped(
-            &mut history,
-            &want.id,
-            &want.kind,
-            &room.to_string(),
-            Some(&room.to_string())
-        ));
-        history
-            .put(automerge::ROOT, "retained", "file history")
-            .unwrap();
-        history.commit();
-        let heads = history.get_heads();
-        let (manager, _) =
-            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
-                "so.tilo.launch-fixture",
-                room,
-                history.save(),
-            );
-        let construction =
-            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
-        let records = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture").unwrap();
-        let reader = records.file_history_reader().unwrap();
-        assert!(
-            reader.require_local_creation().is_err(),
-            "Required file creation needs governor admission"
-        );
-        let capture = reader
-            .read(&want)
-            .unwrap()
-            .expect("actual Required Existing history");
-        let mut installed = automerge::AutoCommit::new();
-        capture.install_into(&mut installed).unwrap();
-        assert_eq!(
-            installed
-                .get(automerge::ROOT, "retained")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("file history")
-        );
-        for head in heads {
-            assert!(installed.get_change_by_hash(&head).is_some());
-        }
-        let package_document =
-            app_state::DocStore::legacy_package_document_path("so.tilo.launch-fixture").unwrap();
-        let data_home = package_document
-            .parent()
-            .and_then(std::path::Path::parent)
-            .unwrap();
-        let local_cache = app_state::DocStore::room_record_dir_at(
-            data_home,
-            "so.tilo.launch-fixture",
-            &room.to_string(),
-            &want.id.storage_key(),
-        )
-        .unwrap();
-        assert!(
-            !local_cache.exists(),
-            "file-owned history must not create a second canonical writer"
-        );
-        drop(construction);
-        assert!(
-            reader.read(&want).is_err(),
-            "closed Required worker must never become local None"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    #[serial_test::serial]
-    fn native_initial_launch_file_record_local_mode_is_explicit() {
-        let environment = LaunchFixtureEnv::new();
-        let want = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_file(environment._directory.path().join("local.md")),
-            crate::record::RecordKind::new("document"),
-        );
-        let records = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture").unwrap();
-        assert!(records.initial_file_history(&want).unwrap().is_none());
-        records
-            .file_history_reader()
-            .unwrap()
-            .require_local_creation()
-            .unwrap();
-    }
-
-    #[test]
-    fn native_initial_launch_file_record_unresolved_set_is_not_local() {
-        let want = crate::record::RecordCheckout::new(
-            crate::record::RecordId::minted(),
-            crate::record::RecordKind::new("document"),
-        );
-        assert!(
-            crate::record::RecordSet::in_memory()
-                .initial_file_history(&want)
-                .is_err(),
-            "missing private mode selection cannot authorize local genesis"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    #[serial_test::serial]
     fn native_initial_launch_missing_configured_service_never_selects_local() {
         let _environment = LaunchFixtureEnv::new();
         let mut env_override = tilo_test_env::ScopedEnv::new();
         env_override.set("TILO_SVC_COLLAB_FD", "-1");
-        let manager = crate::collaboration::CollaborationManager::for_native_launch();
-        let files = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture");
+        let manager = crate::collaboration::CollaborationManager::for_native_launch(
+            &crate::record::RecordKind::new("launch-fixture.document"),
+        );
         drop(env_override);
         assert!(
             manager.is_err(),
             "configured but missing native service is unavailable, not a local launch"
-        );
-        assert!(
-            files.is_err(),
-            "missing native bridge cannot silently authorize a local file genesis"
         );
     }
 }

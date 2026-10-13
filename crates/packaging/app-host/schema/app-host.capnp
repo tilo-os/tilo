@@ -24,6 +24,8 @@ enum FlatpakAction {
 enum RemoteAction {
     add    @0;
     remove @1;
+    enable @2;
+    disable @3;
 }
 
 struct PackageEntry {
@@ -100,5 +102,15 @@ interface AppHost {
     flatpakCatalogue @15 (remote :Text, userManaged :Bool) -> (rows :Text);
     # Install only from an existing repository in this account's Flatpak scope.
     flatpakInstallRemote @16 (remote :Text, appId :Text, branch :Text) -> (status :Text);
+    # Verified entries from one enabled host-configured Tilo repository. The
+    # host owns durable rollback checkpoints; callers cannot supply keys/URLs.
+    registryCatalogue @17 (registry :Text) -> (entries :Text);
+
+    # Review using this person's existing scoped attestors and revocations.
+    # No caller publisher, trust key, host path or download source is accepted.
+    reviewLocal @18 (tappBytes :Data) -> (reviewJson :Text);
+    # Exact archive/root from review, reverified against current host trust.
+    installLocal @19 (tappBytes :Data, reviewedRoot :Text,
+                      reviewedArchiveHash :Text) -> (id :Data);
 
 }

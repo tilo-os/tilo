@@ -9,10 +9,10 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # Stacked PRs (a PR whose base is another task branch) get the
     # same gate; affected-package selection diffs against that base, so each
     # layer tests its own change.
-    branches: ["main", "pr/sdk-*"]
+    branches: ["main", "pr/sdk-*", "codex/**"]
   workflow_dispatch:
     inputs:
       builder_image:
@@ -53,7 +53,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -75,7 +75,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       clippy_matrix: ${{ steps.plan.outputs.clippy_matrix }}
@@ -99,6 +99,8 @@ jobs:
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
       estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
       shard_count: ${{ steps.plan.outputs.shard_count }}
+      tapp_required: ${{ steps.plan.outputs.tapp_required }}
+      tapp_apps: ${{ steps.plan.outputs.tapp_apps }}
     steps:
       # A pull request merges onto main below, which deepens its shallow
       # checkout as far as the merge needs; a merge cannot work in a blob-less
@@ -157,8 +159,10 @@ jobs:
 
   # Shell, image-configuration, and workflow policy cannot be selected through
   # Cargo's dependency graph. Run these checks beside selection so they do not
-  # delay the affected-package matrix. Pull requests containing only audited
-  # prose or self-tested quality helpers may omit this independent suite.
+  # delay selection. Native pull-request work waits for this boundary to pass;
+  # pushes retain every selected native result even when this boundary fails.
+  # Pull requests containing only audited prose or self-tested quality helpers
+  # may omit this independent suite.
   security:
     if: needs.select.outputs.security_required == 'true'
     needs: [select]
@@ -168,7 +172,7 @@ jobs:
       # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
       CARGO_BUILD_JOBS: '2'
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     steps:
       - name: Checkout security boundary inputs
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -195,12 +199,14 @@ jobs:
   # Hermetic test suites outside Cargo (tools/ci/suites.toml), selected by the
   # paths they read. They need no builder image and run beside the Rust jobs.
   suites:
-    if: needs.select.outputs.suites_required == 'true'
+    # Keep admission tied to the completed selector, even when unrelated
+    # native jobs are intentionally skipped for non-compiling inputs.
+    if: ${{ !cancelled() && needs.select.result == 'success' && needs.select.outputs.suites_required == 'true' }}
     needs: [select]
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -212,6 +218,25 @@ jobs:
         with:
           main: ${{ needs.select.outputs.main }}
 
+      - name: Prepare fonts for offline suites
+        uses: ./.forgejo/actions/prepare-font-assets
+
+      - name: Prepare pinned NTFS source for offline suites
+        run: |
+          python3 crates/session/tilo-ntfs-helper/source_artifact.py
+          printf 'TILO_NTFS_SOURCE_CACHE=%s/target/ntfs-source\nTILO_NTFS_SOURCE_OFFLINE=1\n' "$PWD" >> "$GITHUB_ENV"
+
+      # The live transport suites import the MoQ library, generated from the
+      # @moq/net pinned in scripts/moq-browser/package-lock.json as the
+      # browser runtime build does; it is never committed. ci-fast ships node
+      # without npm.
+      - name: Prepare pinned MoQ library for offline suites
+        if: contains(needs.select.outputs.suites, 'live-fake-relay.test.mjs') || contains(needs.select.outputs.suites, 'live-transport.test.mjs')
+        run: |
+          dnf install -y --setopt=install_weak_deps=False npm
+          npm ci --prefix scripts/moq-browser --no-audit --no-fund --silent
+          node scripts/moq-browser/build.mjs
+
       - name: Run selected suites
         id: suites-run
         env:
@@ -222,6 +247,11 @@ jobs:
           bash tools/ci/measure.sh "path-selected suites" -- \
             python3 tools/ci/suites.py run --jobs 2 $SUITES
 
+  # Admit native PR work only after the required security boundary passes.
+  # A failed boundary already fails the aggregate; do not spend native slots
+  # on that invalid PR. Explicit cancellation and builder/selector predicates
+  # allow main diagnostics after a failed boundary without running a bad plan.
+  # No new admission job or runner reservation is introduced.
   # Tests and the Clippy gate run as parallel jobs rather than one after
   # another on one runner. Test jobs are sharded by recorded test time, Clippy
   # by structural cost (tools/ci/affected_packages.py). Clippy type-checks
@@ -230,10 +260,12 @@ jobs:
   # instead. The jobs share compiler outputs through sccache; each keeps its
   # own target tree. The `checks` aggregate below requires all of them.
   test:
-    if: needs.select.outputs.rust_required == 'true'
-    needs: [builder, select]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
+    needs: [builder, select, security]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    outputs:
+      cleanup-shared-libraries: ${{ steps.cleanup.outputs.shared-libraries }}
     env:
       # The native ARM runner has enough memory for one of the largest test
       # links, but not four simultaneously. Most compile work is served by
@@ -321,15 +353,15 @@ jobs:
           # tests consume this dedicated location.
           printf 'TILO_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
 
-      # app-cli's registry integration tests execute the installer;
+      # app-cli registry and app-host local trust integration tests execute the installer;
       # it is deliberately not a Rust dependency, so an affected-only Cargo
       # invocation does not otherwise produce that binary.
-      - name: Build installer used by app-cli integration tests
-        if: contains(matrix.test_packages, '-p app-cli')
+      - name: Build installer used by app-cli and app-host integration tests
+        if: contains(matrix.test_packages, '-p app-cli') || contains(matrix.test_packages, '-p app-host')
         run: >-
           bash tools/ci/measure.sh "build tilo-install test fixture" --
           bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
-          cargo build --locked -p install
+          cargo build --locked -p install --bin tilo-install
 
       # `--tests` builds the targets whose tests run: libraries, binaries and
       # integration tests. Examples are type-checked by Clippy and built by
@@ -354,7 +386,19 @@ jobs:
           bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
           bash tools/test-env.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
-          -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
+          -E "not ($GOLDEN_FILTER) and not ($QUARANTINE_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
+
+      # Each nextest phase writes the same ci-profile JUnit path. Preserve
+      # its report before a later phase starts, including on test failure.
+      - name: Report affected tests of shard ${{ matrix.shard }}
+        if: always() && matrix.test_packages != ''
+        run: |
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/affected.xml
+          fi
+          python3 tools/ci/nextest_report.py \
+            --label "affected shard ${{ matrix.shard }} (${{ matrix.arch }})" target/ci/junit/affected.xml
 
       # The shard's visual goldens, run after its suite has drained so the
       # software renderer is idle, as nightly does. They compare only on the
@@ -381,18 +425,33 @@ jobs:
             bash tools/test-env.sh cargo nextest run --locked --profile ci --tests \
             ${{ matrix.test_packages }} --no-tests=pass -E "$GOLDEN_FILTER"
 
+      - name: Report visual goldens of shard ${{ matrix.shard }}
+        if: always() && matrix.test_packages != ''
+        run: |
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/visual-goldens.xml
+          fi
+          python3 tools/ci/nextest_report.py \
+            --label "visual goldens shard ${{ matrix.shard }} (${{ matrix.arch }})" target/ci/junit/visual-goldens.xml
+
       # The shard's test executables are done with; Certify links the apps'
       # own binaries from the same rlibs, and a wide shard does not fit both
-      # in a runner's store.
+      # in a runner's store. Shared libraries can also have executable mode:
+      # keep procedural macros and native dylibs for the later Cargo steps.
       - name: Free the test executables of shard ${{ matrix.shard }}
+        id: cleanup
         if: matrix.test_packages != ''
-        run: find target/debug/deps -maxdepth 1 -type f -perm -u+x -delete
+        run: |
+          libraries=$(find target/debug/deps -maxdepth 1 -type f -perm -u+x \( -name '*.so' -o -name '*.so.*' \) -printf '.' | wc -c)
+          printf 'shared-libraries=%s\n' "$libraries" >> "$GITHUB_OUTPUT"
+          find target/debug/deps -maxdepth 1 -type f -perm -u+x ! -name '*.so' ! -name '*.so.*' -delete
 
       # The shard's affected graphical apps through the same production-root
       # native audit the nightly runs for every app, so a change that breaks
       # an app's Tilo-native contract fails here, not overnight.
       - name: Certify affected apps of shard ${{ matrix.shard }}
-        if: matrix.test_packages != ''
+        if: matrix.test_packages != '' && matrix.certify == true
         env:
           TILO_REQUIRE_GPU: "1"
         run: >-
@@ -414,7 +473,7 @@ jobs:
 
       # A package reached only through outside inputs its manifest entry
       # scopes (tools/ci/suites.toml) runs just the tests that read them, with
-      # the same environment; their JUnit report joins the shard's.
+      # the same environment; preserve their report alongside the shard's.
       - name: Scoped reader tests of shard ${{ matrix.shard }}
         if: matrix.scoped_tests != ''
         env:
@@ -429,14 +488,15 @@ jobs:
           bash scripts/ci-run.sh "cargo nextest (scoped reader tests, shard ${{ matrix.shard }})" --
           python3 tools/ci/run_scoped_tests.py
 
-      # The ci profile does not retry. List slow tests, and any retried
-      # case if a profile turns retries back on, and keep the JUnit report.
-      - name: Report retried tests in shard ${{ matrix.shard }}
-        if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
-        run: >-
-          python3 tools/ci/nextest_report.py
-          --label "affected shard ${{ matrix.shard }} (${{ matrix.arch }})"
-          target/nextest/ci/junit.xml
+      - name: Report scoped reader tests of shard ${{ matrix.shard }}
+        if: always() && matrix.scoped_tests != ''
+        run: |
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/scoped.xml
+          fi
+          python3 tools/ci/nextest_report.py \
+            --label "scoped reader tests shard ${{ matrix.shard }} (${{ matrix.arch }})" target/ci/junit/scoped.xml
 
       - name: Save test results of shard ${{ matrix.shard }}
         if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
@@ -444,13 +504,13 @@ jobs:
         uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: nextest-junit-${{ matrix.arch }}-${{ matrix.shard }}
-          path: target/nextest/ci/junit.xml
+          path: target/ci/junit
           retention-days: 14
           if-no-files-found: warn
 
   check:
-    if: needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true'
-    needs: [builder, select]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' }}
+    needs: [builder, select, security]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
@@ -520,12 +580,15 @@ jobs:
           if-no-files-found: warn
 
   clippy:
-    if: needs.select.outputs.rust_required == 'true'
-    needs: [builder, select]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
+    needs: [builder, select, security]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: '8'
+    outputs:
+      cargo-download-cache-hit: ${{ steps.rust-build.outputs.cargo-cache-hit }}
+      cargo-download-cache-key: ${{ steps.rust-build.outputs.cargo-cache-key }}
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -597,7 +660,7 @@ jobs:
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ${{ steps.rust-build.outputs.cargo-cache-paths }}
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          key: ${{ steps.rust-build.outputs.cargo-cache-key }}
 
   # Apps with an Android host example (docs/android.md), linted for both
   # Android ABIs whenever they are selected, which includes every change to
@@ -605,8 +668,8 @@ jobs:
   # platform and build tools, and the host code paths it would add run only on
   # a device. The NDK's host tools are x86_64-only.
   android:
-    if: needs.select.outputs.android_required == 'true'
-    needs: [builder, select]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.android_required == 'true' }}
+    needs: [builder, select, security]
     runs-on: runner
     timeout-minutes: 90
     env:
@@ -659,9 +722,11 @@ jobs:
   # web-capable examples, built for the web. The browser bundle build and its
   # tests run elsewhere.
   wasm:
-    if: needs.select.outputs.wasm_required == 'true'
-    needs: [builder, select]
-    runs-on: runner
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.wasm_required == 'true' }}
+    needs: [builder, select, security]
+    # wasm32 output is host-independent; main still qualifies it on x86.
+    # The portable label admits only qualified x86 general and ARM large slots.
+    runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-native-portable' }}
     timeout-minutes: 90
     env:
       CARGO_BUILD_JOBS: '4'
@@ -678,6 +743,11 @@ jobs:
         uses: ./.forgejo/actions/merge-main
         with:
           main: ${{ needs.select.outputs.main }}
+
+      - name: Verify native wasm-check runner architecture
+        env:
+          EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || runner.arch }}
+        run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
@@ -747,13 +817,118 @@ jobs:
           read -r -a pins <<< "$PINS"
           ./os/dev/verify-snapshot-pins.sh "${pins[@]}"
 
+  # The tapps of the apps a pull request affects, against their size budgets
+  # (tools/perf/tapp-size-budget/; docs/measurements/app-package-size.md).
+  # Release / apps holds every main commit to the same budgets, but only after
+  # the merge, where an app over its budget stops every app from publishing.
+  # The select job picks at most a few affected apps, those closest
+  # to a budget, so a toolkit change does not package the whole collection.
+  # Each architecture packages them exactly as Release / apps does, with its
+  # profile and compiler-cache namespace, so an unchanged runtime is a cache hit.
+  tapps:
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.tapp_required == 'true' }}
+    needs: [builder, select, security]
+    name: tapps / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner-large
+          - arch: aarch64
+            runner: runner-large-arm64
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      # As Release / apps: sccache must not download an unused +stable
+      # toolchain while identifying the image's pinned rustup proxy.
+      RUSTUP_AUTO_INSTALL: "0"
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      # Release / apps' compiler-cache namespace (its TILO_SCCACHE_KEY_PREFIX,
+      # which tools/ci/sccache.sh turns into these), read by the runner's
+      # sccache server when this job's first compile starts it.
+      SCCACHE_GHA_VERSION: tilo/apps/v2/${{ matrix.arch }}
+      SCCACHE_DIRECT: "false"
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
+
+      - name: Validate native architecture
+        run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Package the selected tapps
+        env:
+          TILO_RELEASE_APPS: ${{ needs.select.outputs.tapp_apps }}
+          # Cargo records unit/rmeta/codegen timing without changing compile flags.
+          EXTRA_CARGO_ARGS: --timings
+        run: |
+          # A failed build must not upload a previous command's timing report.
+          rm -f target/cargo-timings/cargo-timing.html
+          # As Release / apps: every core, bounded by 2 GiB of memory per job.
+          cpus=$(nproc)
+          if read -r quota period 2>/dev/null < /sys/fs/cgroup/cpu.max && [[ $quota != max ]]; then
+            cpus=$(( (quota + period - 1) / period ))
+          fi
+          memory=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) << 10 ))
+          if read -r limit 2>/dev/null < /sys/fs/cgroup/memory.max && [[ $limit =~ ^[0-9]+$ ]]; then
+            (( limit < memory )) && memory=$limit
+          fi
+          jobs=$(( memory / (2 << 30) ))
+          (( jobs > cpus )) && jobs=$cpus
+          (( jobs < 1 )) && jobs=1
+          export CARGO_BUILD_JOBS=$jobs
+          # sccache hashes every CARGO_* variable rustc sees. This workflow's
+          # own (warnings as errors, test-profile debuginfo, colour) are not
+          # Release / apps' and would miss every entry its main builds wrote.
+          unset CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG CARGO_TERM_COLOR \
+            CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS
+          bash tools/ci/measure.sh "package tapps ${{ matrix.arch }}" -- \
+            bash scripts/ci-run.sh "package-apps.sh ($TILO_RELEASE_APPS)" -- \
+            dist/apps/package-apps.sh
+
+      - name: Report package compiler cache
+        if: always()
+        run: |
+          if [[ -n ${RUSTC_WRAPPER:-} && -x $RUSTC_WRAPPER ]]; then
+            "$RUSTC_WRAPPER" --show-stats || echo 'compiler cache statistics unavailable'
+          else
+            echo 'compiler cache disabled; no hit rate established'
+          fi
+
+      - name: Selected tapps within their size budget
+        run: >-
+          python3 tools/perf/tapp_size_ratchet.py measure dist/app-release
+          --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Save package compiler timings
+        if: always()
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: package-compiler-timings-${{ matrix.arch }}
+          path: target/cargo-timings/cargo-timing.html
+          retention-days: 7
+          if-no-files-found: error
+
   checks:
     if: always()
-    needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins]
+    needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins, tapps]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     steps:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate
@@ -773,6 +948,8 @@ jobs:
           ANDROID_REQUIRED: ${{ needs.select.outputs.android_required }}
           WASM_RESULT: ${{ needs.wasm.result }}
           WASM_REQUIRED: ${{ needs.select.outputs.wasm_required }}
+          TAPPS_RESULT: ${{ needs.tapps.result }}
+          TAPPS_REQUIRED: ${{ needs.select.outputs.tapp_required }}
           EVENT_NAME: ${{ github.event_name }}
           SECURITY_REQUIRED: ${{ needs.select.outputs.security_required }}
           RUST_REQUIRED: ${{ needs.select.outputs.rust_required }}
@@ -827,6 +1004,14 @@ jobs:
               exit 1
               ;;
           esac
+          case "$TAPPS_REQUIRED:$TAPPS_RESULT" in
+            true:success) ;;
+            false:skipped) ;;
+            *)
+              echo '::error::Affected tapps are over their size budgets, failed to package, or applicability is invalid.'
+              exit 1
+              ;;
+          esac
           case "$EVENT_NAME:$PINS_REQUIRED:$PINS_RESULT" in
             pull_request:true:success)
               echo 'Snapshot pins verified: signed and bound to this source; Rust and security suites run on main after the merge.' >> "$GITHUB_STEP_SUMMARY"
@@ -869,8 +1054,12 @@ jobs:
           # checkout keeps the write-capable repository token. Every other
           # checkout reads this public repository with the job token.
           token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 0
-          filter: blob:none
+          # Recording needs the tested commit and the receipt script, not
+          # ancestry or other branches. receipt.sh fetches its notes ref.
+          fetch-depth: 1
+          fetch-tags: false
+          sparse-checkout: tools/ci/receipt.sh
+          sparse-checkout-cone-mode: false
       - name: Record an observable CI receipt without touching a branch
         if: always() && steps.receipt-checkout.outcome == 'success'
         continue-on-error: true

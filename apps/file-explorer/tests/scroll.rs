@@ -1,5 +1,8 @@
 //! Driven scrolling tests for the file list + grid.
 //!
+//! The list is the framework's table, which scrolls itself; the grid scrolls
+//! under a `Scrollable`.
+//!
 //! A directory with far more entries than fit on screen must scroll. These
 //! tests build the *real* composed widget tree, lay it out at a fixed
 //! viewport, then drive scrolling through the genuine winit event path
@@ -15,23 +18,18 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use file_explorer::FileExplorerWidget;
-use file_explorer::files_app::STATUS_BUBBLE_SAFE_INSET_PX;
+use file_explorer::files_app::status_bubble_safe_inset;
 use file_explorer::model::ViewMode;
 use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Rect;
-use winit::event::{
-    ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
-};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 /// A temp dir with `n` uniformly-named files (sorted, so index maps to a
 /// predictable row).
@@ -90,28 +88,17 @@ impl Harness {
     fn wheel(&mut self, notches_down: f32) {
         // winit y-positive = scroll up; the Scrollable negates, so a negative
         // y scrolls DOWN (reveals content below).
-        let ev = WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
-            delta: MouseScrollDelta::LineDelta(0.0, -notches_down),
-            phase: TouchPhase::Moved,
-        };
+        let ev = ui::synthetic_input::mouse_wheel(0.0, -notches_down);
         self.dispatch(&ev, Modifiers::default());
     }
 
     fn cursor(&mut self, x: f64, y: f64) {
-        let ev = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        };
+        let ev = ui::synthetic_input::cursor_moved(x, y);
         self.dispatch(&ev, Modifiers::default());
     }
 
     fn mouse(&mut self, state: ElementState) -> bool {
-        let ev = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state,
-            button: MouseButton::Left,
-        };
+        let ev = ui::synthetic_input::mouse_input(state, MouseButton::Left);
         self.dispatch(&ev, Modifiers::default())
     }
 
@@ -133,12 +120,46 @@ impl Harness {
     }
 }
 
+/// The lowest row index the list's table has mounted: it grows as the list
+/// scrolls. Read through the file view's accessibility export, the same
+/// semantics an assistive technology sees.
+fn first_mounted_row(h: &Harness) -> u64 {
+    fn find(w: &dyn Widget) -> Option<u64> {
+        if w.name() == "FileView" {
+            return w.accessibility().and_then(|node| {
+                node.children
+                    .iter()
+                    .filter_map(|row| row.pos_in_set)
+                    .min()
+                    .map(|position| (position as u64).saturating_sub(1))
+            });
+        }
+        w.children().into_iter().find_map(find)
+    }
+    find(&*h.widget).expect("the file view exposes its rows")
+}
+
 /// The offset the Scrollable has applied to its content = how far the content's
 /// top sits above the viewport's top.
 fn applied_offset(h: &Harness) -> f64 {
     let viewport = h.rect_of("Scrollable");
     let content = h.rect_of("FileView");
     viewport.y0 - content.y0
+}
+
+fn assert_list_scrolls_via_wheel() {
+    let dir = dir_with_files(160);
+    let mut h = Harness::new(dir.path(), ViewMode::List, 1000.0, 600.0);
+    let table = h.rect_of("FileView");
+    assert_eq!(first_mounted_row(&h), 0, "starts unscrolled");
+    h.cursor(table.center().x, table.center().y);
+    h.wheel(1000.0);
+    h.relayout();
+    assert!(
+        first_mounted_row(&h) > 100,
+        "flinging to the bottom scrolls the list to its last rows, got {}",
+        first_mounted_row(&h)
+    );
 }
 
 fn assert_scrolls_via_wheel(mode: ViewMode) {
@@ -186,7 +207,7 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
     h.wheel(1000.0);
     h.relayout();
     let content_after = h.rect_of("FileView");
-    let safe_inset = f64::from(STATUS_BUBBLE_SAFE_INSET_PX);
+    let safe_inset = f64::from(status_bubble_safe_inset(&ui::Theme::dark()));
     let max_offset = (content_before.height() - (viewport.height() - safe_inset)).max(0.0);
     let bottom = applied_offset(&h);
     assert!(
@@ -217,7 +238,7 @@ fn long_directories_scroll_by_wheel_and_thumb_with_optional_shots() {
 }
 
 fn list_scrolls_with_the_mouse_wheel() {
-    assert_scrolls_via_wheel(ViewMode::List);
+    assert_list_scrolls_via_wheel();
 }
 
 fn grid_scrolls_with_the_mouse_wheel() {
@@ -245,10 +266,11 @@ fn scroll_before_after_shots() {
         h.shot(&out.join(format!("{tag}-after.png")));
 
         // The two frames must genuinely differ (the list moved).
-        assert!(
-            applied_offset(&h) > 50.0,
-            "{mode:?}: shot pair captured a real scroll"
-        );
+        let moved = match mode {
+            ViewMode::List => first_mounted_row(&h) > 50,
+            ViewMode::Grid => applied_offset(&h) > 50.0,
+        };
+        assert!(moved, "{mode:?}: shot pair captured a real scroll");
     }
 }
 
@@ -256,10 +278,11 @@ fn list_scrolls_by_dragging_the_scrollbar_thumb() {
     let dir = dir_with_files(160);
     let mut h = Harness::new(dir.path(), ViewMode::List, 1000.0, 600.0);
 
-    let viewport = h.rect_of("Scrollable");
-    // The vertical bar hugs the right edge; its thumb centre near the top.
-    let bar_x = viewport.x1 - 6.0;
-    let start_y = viewport.y0 + 8.0;
+    let table = h.rect_of("FileView");
+    // The vertical bar hugs the table's right edge; its thumb starts below
+    // the header band.
+    let bar_x = table.x1 - 6.0;
+    let start_y = table.y0 + 64.0;
 
     // Hover the thumb, press it (begins a drag), drag down, release — all
     // through the real event routing.
@@ -268,28 +291,14 @@ fn list_scrolls_by_dragging_the_scrollbar_thumb() {
         h.mouse(ElementState::Pressed),
         "press on the scrollbar thumb must be handled (bar is present)",
     );
-    assert!(
-        applied_offset(&h).abs() < 0.5,
-        "no movement before the drag"
-    );
+    assert_eq!(first_mounted_row(&h), 0, "no movement before the drag");
 
-    h.cursor(bar_x, viewport.y0 + 250.0);
+    h.cursor(bar_x, table.y0 + 300.0);
     h.relayout();
-    let dragged = applied_offset(&h);
     assert!(
-        dragged > 0.5,
-        "dragging the thumb down scrolls the list; got {dragged}"
+        first_mounted_row(&h) > 0,
+        "dragging the thumb down scrolls the list"
     );
 
     h.mouse(ElementState::Released);
-
-    // The content actually moved under the viewport: an entry that was at the
-    // top is now above it.
-    let content = h.rect_of("FileView");
-    assert!(
-        content.y0 < viewport.y0 - 0.5,
-        "content top scrolled above the viewport (content.y0={} viewport.y0={})",
-        content.y0,
-        viewport.y0,
-    );
 }

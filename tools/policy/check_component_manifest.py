@@ -33,6 +33,18 @@ WHY = ("the image and dev layers are both assembled from os/components.toml, so 
        "build output that bypasses it ships in one and not the other, and they drift")
 PAYLOAD_STAGE = "native-builder-payload"
 INSTALL_STAGE = "component-files"
+# The baked runtime with the font catalog's other two names hard-linked to its
+# fonts, assembled under /image so the rootfs copies it in one COPY and the
+# fonts' bytes land in one layer. It installs `direct` trees written
+# at their final paths, each named in the stage's RUN as /image<path>.
+ASSEMBLED_STAGE = "runtime-image-payload"
+ASSEMBLED_COPY = ("/image/usr/", "/usr/")
+# The app store as the rootfs takes it: the payload stage's store, copied whole
+# and with the env-runtime's host-identical files left out. Its one
+# COPY installs the `direct` store tree the payload stage carries.
+SEEDED_STAGE = "app-store"
+SEEDED_TREE = "/usr/share/tilo-apps/"
+SEEDED_COPY = ("/out" + SEEDED_TREE, SEEDED_TREE)
 
 
 def load_installer(repo: Path):
@@ -179,6 +191,15 @@ def snippet(name: str, output: str, destination: str, *, direct: bool = False) -
 def check_manifest_against_workspace(report: Report, manifest, packages: dict[str, Package]) -> None:
     for component in manifest.components:
         where = report.manifest_line(component.name)
+        if component.name == "shell":
+            companion = next((entry for entry in component.files
+                              if entry.to == "/usr/libexec/tilo-session"), None)
+            if (companion is None or companion.source != "@manifest/usr/libexec/tilo-session"
+                    or companion.optional or str(companion.mode) != "0755"):
+                report.error(where, "shell must ship its matching mandatory PAM session wrapper",
+                             'add { from = "@manifest/usr/libexec/tilo-session", '
+                             'to = "/usr/libexec/tilo-session", mode = "0755" } to shell files; '
+                             'shell-only swaps can otherwise recover locked under an older wrapper.')
         if component.scenario and not (report.repo / component.scenario).is_file():
             report.error(where, f"boot component {component.name!r} names scenario {component.scenario!r}, "
                          "which does not exist",
@@ -294,6 +315,32 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                                  f"use a layer the manifest declares ({', '.join(sorted(layers))}) or "
                                  "set `layer` on the components that belong in it.")
                 consumed.setdefault(match.group(1), []).append(instruction.line)
+            continue
+        if source_stage == ASSEMBLED_STAGE and instruction.stage != ASSEMBLED_STAGE:
+            assembled = " ".join(i.text for i in parsed if i.stage == ASSEMBLED_STAGE
+                                 and i.words and i.words[0].upper() == "RUN")
+            if pairs != [ASSEMBLED_COPY]:
+                report.error(where, f"COPY --from={ASSEMBLED_STAGE} copies {pairs}",
+                             f"copy the assembled tree whole: COPY --from={ASSEMBLED_STAGE} "
+                             f"{ASSEMBLED_COPY[0]} {ASSEMBLED_COPY[1]}")
+                continue
+            for key in direct:
+                source, destination = key
+                if source == destination and destination.startswith(ASSEMBLED_COPY[1]) \
+                        and "/image" + destination.rstrip("/") in assembled:
+                    matched_direct.add(key)
+            continue
+        if source_stage == SEEDED_STAGE and instruction.stage != SEEDED_STAGE:
+            seeded = " ".join(i.text for i in parsed if i.stage == SEEDED_STAGE
+                              and i.words and i.words[0].upper() == "RUN")
+            mount = f"from={PAYLOAD_STAGE},source={SEEDED_TREE.rstrip('/')},"
+            if pairs != [SEEDED_COPY] or mount not in seeded:
+                report.error(where, f"COPY --from={SEEDED_STAGE} copies {pairs}",
+                             f"copy the seeded store whole, from a {SEEDED_STAGE} stage that mounts "
+                             f"{PAYLOAD_STAGE}'s {SEEDED_TREE}: COPY --from={SEEDED_STAGE} "
+                             f"{SEEDED_COPY[0]} {SEEDED_COPY[1]}")
+                continue
+            matched_direct.add((SEEDED_TREE, SEEDED_TREE))
             continue
         # The image stages take build outputs from the payload stage, an exact
         # copy of the builder's outputs.

@@ -18,12 +18,7 @@
 //! on restart — or finds the entire filesystem bound in.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -66,12 +61,11 @@ fn plan_for(store: &GrantStoreHandle, ws: WorkspaceId, app: &str) -> CapabilityP
             .iter()
             .find(|w| w.id == ws)
             .expect("workspace")
-            .capabilities
-            .clone()
+            .launch_grants(tilo_clock::unix_now())
     };
     shell_launcher::set_workspace_capabilities(caps);
     let published = shell_launcher::capabilities_for_app(app);
-    CapabilityPlan::for_app(app, &published, None)
+    CapabilityPlan::for_app(app, &published.sandbox, None)
 }
 
 #[test]

@@ -608,17 +608,9 @@ impl LegacyWindows {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion"
-)]
 mod tests {
     use super::*;
-    use tilo_moq::live::{
-        Admission, AuthorizationStatus, LiveAuthority, LiveSession, LoopbackLive,
-    };
+    use tilo_moq::live::{AuthorizationStatus, Denied, LiveAuthority, LiveSession, LoopbackLive};
 
     const WORKSPACE: u64 = 0x5eed;
     const SESSION: [u8; 32] = [7; 32];
@@ -647,11 +639,11 @@ mod tests {
     }
     struct Authority;
     impl LiveAuthority for Authority {
-        fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission> {
+        fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied> {
             if token == b"viewer" {
                 Ok(Arc::new(Viewer(live_room(WORKSPACE))))
             } else {
-                Err(Admission::Denied)
+                Err(Denied)
             }
         }
         fn presence_seq(&self, _: &[u8]) -> Option<u64> {

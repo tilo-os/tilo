@@ -38,11 +38,9 @@ impl PageMenu {
             self.menu
                 .push(MenuItem::action(label.replace('&', ""), || {}));
         }
-        let height = self.items.len() as f64 * 32.0 + 16.0;
-        self.menu.open_at([
-            (surface.x0 + x).clamp(viewport.x0, (viewport.x1 - 220.0).max(viewport.x0)) as f32,
-            (surface.y0 + y).clamp(viewport.y0, (viewport.y1 - height).max(viewport.y0)) as f32,
-        ]);
+        let (px, py) = (surface.x0 + x, surface.y0 + y);
+        self.menu
+            .open_anchored(Rect::new(px, py, px + 1.0, py + 1.0), viewport);
     }
     pub fn dismiss(&mut self, id: u32) {
         if id == self.id {
@@ -83,10 +81,7 @@ impl PageMenu {
                             AccessNode::new(Role::MenuItem)
                                 .with_name(label.replace('&', ""))
                                 .with_action_target(format!("browser.context:{}:{index}", self.id))
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                         })
                         .collect(),
                 )

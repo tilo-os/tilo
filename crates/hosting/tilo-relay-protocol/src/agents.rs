@@ -3,8 +3,8 @@
 //!
 //! An agent is a device of the user. It holds its own device key and a
 //! root-signed `DeviceCert` issued through ordinary device certification
-//! (with no capabilities), and a root-signed [`AgentDelegation`] naming it an
-//! agent, its label and cursor colour, and the rooms and apps it may act in.
+//! (with no capabilities), and a root-signed
+//! [`crate::delegation::Delegation`] naming it an agent, its label and cursor colour, and the rooms and apps it may act in.
 //! The host refuses an agent device outside its rooms; browsers verify the
 //! delegation against the user root before drawing the agent as "yours".
 //!
@@ -29,11 +29,11 @@
 //!
 //! A grant is requested by a person in the page and approved on a
 //! root-holding device in one step: the host queues a certification request
-//! for a fresh agent key carrying the [`AgentProposal`], and the approver
+//! for a fresh agent key carrying the
+//! [`crate::delegation::DelegateProposal`], and the approver
 //! answers with the agent's certificate and the delegation together
-//! ([`crate::certify::ApproverDecision::IssueAgent`]).
+//! ([`crate::certify::ApproverDecision::IssueDelegate`]).
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// Provider token of the host's agent supervisor in remote-action targets.
@@ -65,297 +65,10 @@ pub const REQUEST_GRANT_ACTION: &str = "request-grant";
 /// Withdraw a grant: its agent stops and the host refuses its device.
 pub const REVOKE_ACTION: &str = "revoke";
 
-/// Largest agent id and label.
-pub const MAX_AGENT_TEXT_BYTES: usize = 64;
-/// Rooms one delegation may name.
-pub const MAX_DELEGATED_ROOMS: usize = 16;
-/// Apps one delegation may name.
-pub const MAX_DELEGATED_APPS: usize = 64;
-
-const DELEGATION_DOMAIN: &[u8] = b"tilo-agent-delegation-v1\0";
-
 /// The resource id of agent `agent_id`.
 #[must_use]
 pub fn agent_resource(agent_id: &str) -> String {
     format!("{AGENT_RESOURCE_PREFIX}{agent_id}")
-}
-
-/// Where an agent may act.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentScope {
-    /// Room uuids, 1..=[`MAX_DELEGATED_ROOMS`].
-    pub rooms: Vec<String>,
-    /// App ids; empty means every app in those rooms.
-    pub apps: Vec<String>,
-    /// Whether the agent may satisfy an action's confirmation step itself.
-    /// Without it, an action that asks a person to confirm is refused.
-    pub may_confirm: bool,
-}
-
-/// A root-signed statement that `agent_device_public_key` is an agent of
-/// `user_public_key`, how it is shown, and where it may act.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentDelegation {
-    /// The delegating user's root.
-    pub user_public_key: [u8; 32],
-    /// The agent's certified device key.
-    pub agent_device_public_key: [u8; 32],
-    /// Stable id, 1..=[`MAX_AGENT_TEXT_BYTES`] bytes.
-    pub agent_id: String,
-    /// Display name, 1..=[`MAX_AGENT_TEXT_BYTES`] bytes.
-    pub label: String,
-    /// Cursor colour, sRGB.
-    pub color: [u8; 3],
-    /// What it may touch.
-    pub scope: AgentScope,
-    /// Issue time, ns since the epoch.
-    pub issued_at_ns: u64,
-    /// Expiry, ns since the epoch. Delegations always expire.
-    pub expires_at_ns: u64,
-    /// Root signature over everything above.
-    #[serde(with = "crate::sig64")]
-    pub signature: [u8; 64],
-}
-
-/// Why a delegation is not usable.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum DelegationError {
-    /// Signed by another root than the one expected.
-    #[error("the delegation names another user")]
-    WrongUser,
-    /// The signature does not verify.
-    #[error("the delegation signature does not verify")]
-    Signature,
-    /// Outside its validity window.
-    #[error("the delegation has expired")]
-    Expired,
-    /// A field is out of bounds.
-    #[error("invalid delegation: {0}")]
-    Invalid(&'static str),
-}
-
-#[derive(Serialize)]
-struct Unsigned<'a> {
-    user_public_key: &'a [u8; 32],
-    agent_device_public_key: &'a [u8; 32],
-    agent_id: &'a str,
-    label: &'a str,
-    color: &'a [u8; 3],
-    scope: &'a AgentScope,
-    issued_at_ns: u64,
-    expires_at_ns: u64,
-}
-
-impl AgentDelegation {
-    /// Sign a delegation of `agent_device_public_key` with the user's `root`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DelegationError::Invalid`] for out-of-bounds fields.
-    pub fn sign(
-        root: &SigningKey,
-        agent_device_public_key: [u8; 32],
-        agent_id: impl Into<String>,
-        label: impl Into<String>,
-        color: [u8; 3],
-        scope: AgentScope,
-        issued_at_ns: u64,
-        expires_at_ns: u64,
-    ) -> Result<Self, DelegationError> {
-        let mut delegation = Self {
-            user_public_key: root.verifying_key().to_bytes(),
-            agent_device_public_key,
-            agent_id: agent_id.into(),
-            label: label.into(),
-            color,
-            scope,
-            issued_at_ns,
-            expires_at_ns,
-            signature: [0; 64],
-        };
-        delegation.validate()?;
-        delegation.signature = root.sign(&delegation.signing_bytes()).to_bytes();
-        Ok(delegation)
-    }
-
-    fn signing_bytes(&self) -> Vec<u8> {
-        let unsigned = Unsigned {
-            user_public_key: &self.user_public_key,
-            agent_device_public_key: &self.agent_device_public_key,
-            agent_id: &self.agent_id,
-            label: &self.label,
-            color: &self.color,
-            scope: &self.scope,
-            issued_at_ns: self.issued_at_ns,
-            expires_at_ns: self.expires_at_ns,
-        };
-        let mut bytes = DELEGATION_DOMAIN.to_vec();
-        bytes.extend(postcard::to_allocvec(&unsigned).unwrap_or_default());
-        bytes
-    }
-
-    fn validate(&self) -> Result<(), DelegationError> {
-        let text = |value: &str| !value.is_empty() && value.len() <= MAX_AGENT_TEXT_BYTES;
-        if !text(&self.agent_id) || !text(&self.label) {
-            return Err(DelegationError::Invalid("agent id or label"));
-        }
-        if self.scope.rooms.is_empty()
-            || self.scope.rooms.len() > MAX_DELEGATED_ROOMS
-            || self
-                .scope
-                .rooms
-                .iter()
-                .any(|room| crate::room_workspace_id(room).is_err())
-        {
-            return Err(DelegationError::Invalid("rooms"));
-        }
-        if self.scope.apps.len() > MAX_DELEGATED_APPS
-            || self
-                .scope
-                .apps
-                .iter()
-                .any(|app| app.is_empty() || app.len() > 128)
-        {
-            return Err(DelegationError::Invalid("apps"));
-        }
-        if self.expires_at_ns <= self.issued_at_ns {
-            return Err(DelegationError::Invalid("validity window"));
-        }
-        Ok(())
-    }
-
-    /// Check the delegation was signed by `user_public_key` and is valid at
-    /// `now_ns`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first reason it is not usable.
-    pub fn verify(&self, user_public_key: &[u8; 32], now_ns: u64) -> Result<(), DelegationError> {
-        if &self.user_public_key != user_public_key {
-            return Err(DelegationError::WrongUser);
-        }
-        self.validate()?;
-        let key =
-            VerifyingKey::from_bytes(user_public_key).map_err(|_| DelegationError::Signature)?;
-        key.verify(
-            &self.signing_bytes(),
-            &Signature::from_bytes(&self.signature),
-        )
-        .map_err(|_| DelegationError::Signature)?;
-        if now_ns < self.issued_at_ns || now_ns >= self.expires_at_ns {
-            return Err(DelegationError::Expired);
-        }
-        Ok(())
-    }
-
-    /// Whether the agent may be in relay workspace `workspace_id`.
-    #[must_use]
-    pub fn permits_workspace(&self, workspace_id: u64) -> bool {
-        self.scope
-            .rooms
-            .iter()
-            .any(|room| crate::room_workspace_id(room).is_ok_and(|id| id == workspace_id))
-    }
-
-    /// Whether the agent may act in `app_id`.
-    #[must_use]
-    pub fn permits_app(&self, app_id: &str) -> bool {
-        self.scope.apps.is_empty() || self.scope.apps.iter().any(|app| app == app_id)
-    }
-
-    /// Canonical encoding, for carrying the delegation to a browser.
-    #[must_use]
-    pub fn encode(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).unwrap_or_default()
-    }
-
-    /// Decode [`Self::encode`] output. The caller still verifies it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DelegationError::Invalid`] for undecodable bytes.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DelegationError> {
-        postcard::from_bytes(bytes).map_err(|_| DelegationError::Invalid("encoding"))
-    }
-}
-
-/// What a person asks an agent to be allowed, before the approver signs it:
-/// everything an [`AgentDelegation`] states except the device and times.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentProposal {
-    /// Stable id the delegation will carry.
-    pub agent_id: String,
-    /// Display name.
-    pub label: String,
-    /// Cursor colour, sRGB.
-    pub color: [u8; 3],
-    /// Rooms, apps and whether it may confirm.
-    pub scope: AgentScope,
-    /// Latest expiry the person asked for, ns since the epoch.
-    pub expires_at_ns: u64,
-}
-
-impl AgentProposal {
-    /// The delegation of this proposal for `agent_device_public_key`,
-    /// signed with the user's `root`: what an approver sends back.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DelegationError::Invalid`] for out-of-bounds fields.
-    pub fn sign(
-        &self,
-        root: &SigningKey,
-        agent_device_public_key: [u8; 32],
-        now_ns: u64,
-    ) -> Result<AgentDelegation, DelegationError> {
-        AgentDelegation::sign(
-            root,
-            agent_device_public_key,
-            self.agent_id.clone(),
-            self.label.clone(),
-            self.color,
-            self.scope.clone(),
-            now_ns,
-            self.expires_at_ns,
-        )
-    }
-
-    /// Whether `delegation` grants no more than this proposal: same agent,
-    /// label and colour, rooms and apps within it, confirmation only if
-    /// asked, and an expiry no later.
-    ///
-    /// # Errors
-    ///
-    /// Returns what is wider than proposed.
-    pub fn admits(&self, delegation: &AgentDelegation) -> Result<(), &'static str> {
-        if delegation.agent_id != self.agent_id
-            || delegation.label != self.label
-            || delegation.color != self.color
-        {
-            return Err("the delegation names another agent than proposed");
-        }
-        let scope = &delegation.scope;
-        if !scope
-            .rooms
-            .iter()
-            .all(|room| self.scope.rooms.contains(room))
-        {
-            return Err("the delegation names a room that was not proposed");
-        }
-        if !self.scope.apps.is_empty()
-            && (scope.apps.is_empty()
-                || !scope.apps.iter().all(|app| self.scope.apps.contains(app)))
-        {
-            return Err("the delegation names an app that was not proposed");
-        }
-        if scope.may_confirm && !self.scope.may_confirm {
-            return Err("the delegation may confirm, which was not proposed");
-        }
-        if delegation.expires_at_ns > self.expires_at_ns {
-            return Err("the delegation outlasts the proposal");
-        }
-        Ok(())
-    }
 }
 
 /// The argument of [`REQUEST_GRANT_ACTION`].
@@ -374,9 +87,6 @@ pub struct GrantRequest {
     pub apps: Vec<String>,
     /// How long the grant lasts, in seconds.
     pub expires_in_secs: u64,
-    /// Whether the agent may satisfy confirmation steps.
-    #[serde(default)]
-    pub may_confirm: bool,
 }
 
 /// Parse `#rrggbb`.
@@ -544,9 +254,6 @@ pub struct AgentGrant {
     /// Expiry, ms since the epoch.
     #[serde(default)]
     pub expires_at_ms: u64,
-    /// Whether its agent may satisfy confirmation steps.
-    #[serde(default)]
-    pub may_confirm: bool,
     /// The code the approving device shows while pending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pairing_code: Option<String>,
@@ -579,71 +286,6 @@ pub fn color_hex(color: [u8; 3]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
-
-    fn delegation(root: &SigningKey) -> AgentDelegation {
-        AgentDelegation::sign(
-            root,
-            [7; 32],
-            "writer",
-            "Writer helper",
-            [0x7c, 0x3a, 0xed],
-            AgentScope {
-                rooms: vec![ROOM.into()],
-                apps: vec!["so.tilo.scratchpad".into()],
-                may_confirm: false,
-            },
-            10,
-            1_000,
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn a_delegation_verifies_against_its_root_only() {
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let other = SigningKey::from_bytes(&[2; 32]);
-        let signed = delegation(&root);
-        let user = root.verifying_key().to_bytes();
-        assert_eq!(signed.verify(&user, 500), Ok(()));
-        assert_eq!(
-            signed.verify(&other.verifying_key().to_bytes(), 500),
-            Err(DelegationError::WrongUser)
-        );
-        assert_eq!(signed.verify(&user, 1_000), Err(DelegationError::Expired));
-        let mut widened = signed.clone();
-        widened.scope.apps.clear();
-        assert_eq!(
-            widened.verify(&user, 500),
-            Err(DelegationError::Signature),
-            "a scope cannot be widened after signing"
-        );
-        assert_eq!(AgentDelegation::decode(&signed.encode()), Ok(signed));
-    }
-
-    #[test]
-    fn scope_names_rooms_and_apps() {
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let signed = delegation(&root);
-        assert!(signed.permits_workspace(crate::room_workspace_id(ROOM).unwrap()));
-        assert!(!signed.permits_workspace(1));
-        assert!(signed.permits_app("so.tilo.scratchpad"));
-        assert!(!signed.permits_app("so.tilo.notes"));
-        assert!(matches!(
-            AgentDelegation::sign(
-                &root,
-                [7; 32],
-                "a",
-                "A",
-                [0; 3],
-                AgentScope::default(),
-                1,
-                2
-            ),
-            Err(DelegationError::Invalid("rooms"))
-        ));
-    }
 
     #[test]
     fn status_uses_the_browser_spelling() {
@@ -685,48 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn an_approver_signs_no_more_than_was_proposed() {
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let proposal = AgentProposal {
-            agent_id: "writer".into(),
-            label: "Writer helper".into(),
-            color: [0x7c, 0x3a, 0xed],
-            scope: AgentScope {
-                rooms: vec![ROOM.into()],
-                apps: vec!["so.tilo.notes".into(), "so.tilo.sheets".into()],
-                may_confirm: false,
-            },
-            expires_at_ns: 1_000,
-        };
-        let signed = proposal.sign(&root, [7; 32], 10).unwrap();
-        assert_eq!(proposal.admits(&signed), Ok(()));
-        let mut narrower = proposal.clone();
-        narrower.scope.apps.pop();
-        assert_eq!(
-            proposal.admits(&narrower.sign(&root, [7; 32], 10).unwrap()),
-            Ok(())
-        );
-        let mut wider = proposal.clone();
-        wider.scope.apps.clear();
-        assert!(
-            proposal
-                .admits(&wider.sign(&root, [7; 32], 10).unwrap())
-                .is_err()
-        );
-        let mut longer = proposal.clone();
-        longer.expires_at_ns = 2_000;
-        assert!(
-            proposal
-                .admits(&longer.sign(&root, [7; 32], 10).unwrap())
-                .is_err()
-        );
-        let mut confirming = proposal.clone();
-        confirming.scope.may_confirm = true;
-        assert!(
-            proposal
-                .admits(&confirming.sign(&root, [7; 32], 10).unwrap())
-                .is_err()
-        );
+    fn colors_use_the_css_hex_spelling() {
         assert_eq!(parse_color_hex("#7c3aed"), Some([0x7c, 0x3a, 0xed]));
         assert_eq!(parse_color_hex("7c3aed"), None);
     }

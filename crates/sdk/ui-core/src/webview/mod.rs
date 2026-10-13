@@ -26,6 +26,7 @@ pub use credentials::{
 };
 pub mod page;
 pub mod paint;
+pub mod text_input;
 pub use page::{PageFailure, PageKey, PageReply, PageRequest};
 pub mod profile;
 pub mod test_engine;
@@ -135,6 +136,33 @@ impl NavigationDirection {
     }
 }
 
+/// An owned main-frame navigation. Its final URL may differ after redirects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavigationCommand {
+    Navigate { url: String },
+    Back,
+    Forward,
+    Reload,
+    HistoryEntry { history_request_id: u32, id: u32 },
+}
+
+impl NavigationCommand {
+    pub(crate) fn valid(&self) -> bool {
+        match self {
+            Self::Navigate { url } => !url.is_empty() && url.len() <= 8192,
+            Self::HistoryEntry {
+                history_request_id,
+                id,
+            } => navigation_request_id(*history_request_id) && navigation_request_id(*id),
+            Self::Back | Self::Forward | Self::Reload => true,
+        }
+    }
+}
+
+pub(crate) fn navigation_request_id(id: u32) -> bool {
+    id > 0 && i32::try_from(id).is_ok()
+}
+
 /// Bounded snapshot for one committed top-level origin and document generation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SiteStatus {
@@ -172,6 +200,15 @@ pub enum WebViewCommand {
     },
     /// Load the given (already normalised) URL.
     Navigate(String),
+    /// Transport representation only: use `WebViewEngine::navigate_owned`
+    /// to observe admission before relying on an owned outcome.
+    ScopedNavigation {
+        request_id: u32,
+        command: NavigationCommand,
+    },
+    CancelScopedNavigation {
+        request_id: u32,
+    },
     RequestNavigationHistory {
         request_id: u32,
         direction: NavigationDirection,
@@ -423,6 +460,12 @@ pub enum WebViewEvent {
     /// Load progress in `0.0..=1.0`.
     LoadProgress(f64),
     LoadFinished,
+    /// A terminal outcome for an admitted request, independent of visual load events.
+    NavigationOutcome {
+        request_id: u32,
+        uri: String,
+        error: Option<String>,
+    },
     /// Completion tagged with its document URL, so stale startup loads can be ignored.
     LoadFinishedAt {
         uri: String,
@@ -497,6 +540,30 @@ pub struct MediaElementInfo {
 /// the widget, the host app, and the engine's own thread can share one
 /// handle.
 pub trait WebViewEngine: Send + Sync {
+    fn supports_text_input(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.supports_text_input())
+    }
+
+    /// Whether original-field acknowledged Undo/Redo is supported.
+    fn supports_guarded_edit_history(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.supports_guarded_edit_history())
+    }
+
+    /// Offer system Undo/Redo to this page's native editing history.
+    /// True means the backend consumed the request, not that a history entry
+    /// existed or that an asynchronous edit has already completed.
+    fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.handle_undo_request(request))
+    }
+
+    /// Private text transactions never enter the app event or page-agent stream.
+    fn text_input(&self, request: text_input::Request) -> Option<text_input::Receipt> {
+        self.wrapped()?.text_input(request)
+    }
+
     /// Create an independent document in the same runtime/profile.
     ///
     /// # Errors
@@ -509,7 +576,11 @@ pub trait WebViewEngine: Send + Sync {
     /// Suspend painting without discarding the document or its session history.
     fn set_visible(&self, _visible: bool) {}
     /// Keep pointer modifiers current even when no key event reaches the page.
-    fn set_modifiers(&self, _modifiers: KeyModifiers) {}
+    fn set_modifiers(&self, modifiers: KeyModifiers) {
+        if let Some(engine) = self.wrapped() {
+            engine.set_modifiers(modifiers);
+        }
+    }
     /// Native new-window intents, delivered to browser chrome as tab requests.
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
         Vec::new()
@@ -522,6 +593,23 @@ pub trait WebViewEngine: Send + Sync {
 
     /// Enqueue a command. Must never block on engine work.
     fn send(&self, cmd: WebViewCommand);
+
+    /// Admit a navigation and reserve its terminal outcome. IDs must increase
+    /// strictly within this engine's lifetime and fit a positive CEF signed integer.
+    ///
+    /// # Errors
+    /// Returns an error without admission if the backend, request or capacity
+    /// cannot support the operation. A successful admission completes only with
+    /// the matching `NavigationOutcome`, or is invalidated by cancellation.
+    fn navigate_owned(&self, request_id: u32, command: NavigationCommand) -> Result<(), String> {
+        if !navigation_request_id(request_id) || !command.valid() {
+            return Err("Invalid owned navigation request".into());
+        }
+        if let Some(engine) = self.wrapped() {
+            return engine.navigate_owned(request_id, command);
+        }
+        Err("This engine does not support owned navigation".into())
+    }
 
     fn frames(&self) -> FrameSlot;
 

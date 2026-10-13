@@ -10,16 +10,6 @@
 //! The event reaches the app through the typed action subscription, drained by the same
 //! `App::pump_collab_presence` a running window calls every frame.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc};
 use tilo_ui::widget::{AppModel, ModelPath};
@@ -167,7 +157,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
         // And presses Ctrl+Z once. This is verbatim what the keybinding calls.
         let state = app.state_mut_for_test();
         state
-            .undo_as(Some(&me), None, None)
+            .undo_as(Some(&me), None, None, None)
             .expect("the keystroke is undoable");
 
         assert!(
@@ -193,8 +183,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
         let entry = app
             .state_mut_for_test()
             .peek_last_undo()
-            .expect("the agent's action is on the undo stack at all")
-            .clone();
+            .expect("the agent's action is on the undo stack at all");
         assert_eq!(
             entry.author,
             Some(UserId(AGENT.into())),
@@ -204,7 +193,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
         // And it is reversible under that name.
         let state = app.state_mut_for_test();
         state
-            .undo_as(Some(&UserId(AGENT.into())), None, None)
+            .undo_as(Some(&UserId(AGENT.into())), None, None, None)
             .expect("the agent's own action can be reverted as the agent");
         assert!(
             state.doc.get(&ROOT, "agent").unwrap().is_none(),

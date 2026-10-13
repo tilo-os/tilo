@@ -21,7 +21,6 @@
 //! [`DataTable`]: crate::widget::data_table::DataTable
 //! [`DocumentViewport`]: crate::widget::DocumentViewport
 
-use crate::color_compat::ColorCompat;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
@@ -40,31 +39,207 @@ pub const PAGE_FRACTION: f64 = 0.9;
 /// "fits" and the bar should be hidden entirely.
 pub const FIT_EPS: f64 = 0.5;
 
-/// Alpha of an idle thumb, derived against the theme's base surface (HIG
-/// §9.5). A declared `border_standard` thumb is three shades off the dark
-/// base and vanishes; a derived wash registers on every palette, and on a
-/// near-black one it takes the tier gain (`data_table::tier_on`).
-pub const THUMB_IDLE_ALPHA: u8 = 72;
-
 /// Alpha of the track behind a pinned or expanded bar — the faintest
 /// derived tier, so the track reads as a groove and not a second thumb.
 pub const TRACK_ALPHA: u8 = 13;
 
-/// The thumb's fill: `text_dim` while hovered, dragged or focused, else a
-/// derived wash on the base surface. One answer for every scroll owner.
+/// The thumb's fill: the secondary ink while hovered, dragged or focused,
+/// stepped out until it clears the non-text floor (3:1) against the ground
+/// it scrolls over. At rest it is the quiet tertiary ink on a dark ground;
+/// on a light ground the same ink reads as a heavy dark bar, so it rests a
+/// third of the way back toward the ground (it still clears the floor once
+/// the pointer is on it). One answer for every scroll owner.
 #[must_use]
 pub fn thumb_color(theme: &Theme, active: bool) -> Color {
+    let colors = &theme.tokens.colors;
+    let ground = colors.surfaces.content;
     if active {
-        theme.tokens.colors.text_dim
-    } else {
-        tier_on(theme.tokens.colors.surfaces.base, THUMB_IDLE_ALPHA)
+        return colors.ink_on(
+            ground,
+            colors.text_dim,
+            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
     }
+    let rest = colors.ink_on(
+        ground,
+        colors.text_tertiary,
+        crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    );
+    if crate::color::relative_luminance(ground) >= LIGHT_GROUND_LUMINANCE {
+        crate::tokens::colors::over(rest, ground, LIGHT_REST_TOWARD_GROUND)
+    } else {
+        rest
+    }
+}
+
+/// Relative luminance from which a ground counts as light for the thumb.
+const LIGHT_GROUND_LUMINANCE: f64 = 0.179;
+/// How far a resting thumb on a light ground steps back toward it.
+const LIGHT_REST_TOWARD_GROUND: f32 = 0.35;
+
+/// How long an overlay bar stays fully visible after the last scroll.
+pub(crate) const BAR_HOLD_MS: u64 = 900;
+/// How long it then takes to fade out.
+pub(crate) const BAR_FADE_MS: u64 = 320;
+
+/// The idle fade of an overlay scroll bar: fully visible for a moment after
+/// scrolling, then fading out, unless something holds it (the pointer near
+/// the bar, a drag, keyboard focus, reduced motion, an always-visible bar).
+/// One timer for `Scrollable` and painted [`super::ScrollRegion`]s, so every
+/// bar in the system appears and fades alike.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BarFade {
+    pub(crate) last_activity: Option<crate::time::Instant>,
+}
+
+impl BarFade {
+    /// Scrolling (or anything that should show the bar) happened at `now`.
+    pub fn wake(&mut self, now: crate::time::Instant) {
+        self.last_activity = Some(now);
+    }
+
+    /// Whether the bar has never been woken.
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        self.last_activity.is_none()
+    }
+
+    /// The bar's opacity at `now`; `held` keeps it fully visible.
+    #[must_use]
+    pub fn opacity_at(&self, now: crate::time::Instant, held: bool) -> f32 {
+        Self::opacity(self.last_activity, now, held)
+    }
+
+    pub(crate) fn opacity(
+        last_activity: Option<crate::time::Instant>,
+        now: crate::time::Instant,
+        held: bool,
+    ) -> f32 {
+        use crate::time::Duration;
+        if held {
+            return 1.0;
+        }
+        let Some(t) = last_activity else {
+            return 0.0;
+        };
+        let elapsed = now.saturating_duration_since(t);
+        let hold = Duration::from_millis(BAR_HOLD_MS);
+        let fade = Duration::from_millis(BAR_FADE_MS);
+        // `checked_sub` doubles as the "still within the hold window" test:
+        // `None` means `elapsed < hold`.
+        let Some(since_hold) = elapsed.checked_sub(hold) else {
+            return 1.0;
+        };
+        if since_hold >= fade {
+            return 0.0;
+        }
+        1.0 - since_hold.as_secs_f32() / fade.as_secs_f32()
+    }
+
+    /// Whether the bar is fading at `now` (the owner needs frames).
+    #[must_use]
+    pub fn fading_at(&self, now: crate::time::Instant, held: bool) -> bool {
+        Self::fading(self.last_activity, now, held)
+    }
+
+    pub(crate) fn fading(
+        last_activity: Option<crate::time::Instant>,
+        now: crate::time::Instant,
+        held: bool,
+    ) -> bool {
+        use crate::time::Duration;
+        !held
+            && last_activity.is_some_and(|activity| {
+                let elapsed = now.saturating_duration_since(activity);
+                elapsed >= Duration::from_millis(BAR_HOLD_MS)
+                    && elapsed < Duration::from_millis(BAR_HOLD_MS + BAR_FADE_MS)
+            })
+    }
+
+    /// When the fade starts, if it is still ahead at `now`: the owner's
+    /// next wake deadline.
+    #[must_use]
+    pub fn fade_deadline_at(
+        &self,
+        now: crate::time::Instant,
+        held: bool,
+    ) -> Option<crate::time::Instant> {
+        Self::fade_deadline(self.last_activity, now, held)
+    }
+
+    pub(crate) fn fade_deadline(
+        last_activity: Option<crate::time::Instant>,
+        now: crate::time::Instant,
+        held: bool,
+    ) -> Option<crate::time::Instant> {
+        if held {
+            return None;
+        }
+        last_activity?
+            .checked_add(crate::time::Duration::from_millis(BAR_HOLD_MS))
+            .filter(|deadline| *deadline > now)
+    }
+
+    /// Whether the fade has run its course at `now`.
+    pub(crate) fn finished(
+        last_activity: Option<crate::time::Instant>,
+        now: crate::time::Instant,
+    ) -> bool {
+        last_activity.is_some_and(|activity| {
+            now.saturating_duration_since(activity)
+                >= crate::time::Duration::from_millis(BAR_HOLD_MS + BAR_FADE_MS)
+        })
+    }
+}
+
+/// One annotation along a scroll track: where a search hit, a change or a
+/// diagnostic sits in the content, painted as a short mark across the
+/// track so the person sees where to scroll.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrackMark {
+    /// Where the annotated content starts, in content coordinates.
+    pub at: f64,
+    /// How long it is, in content coordinates (a mark is at least a
+    /// hairline long on the track).
+    pub len: f64,
+    /// What the mark means: `Tone::Neutral` for a search hit, a status
+    /// tone for a diagnostic, a presence tone for a collaborator.
+    pub tone: crate::widget::Tone,
 }
 
 /// The track's fill behind an expanded bar, derived against the base surface.
 #[must_use]
 pub fn track_color(theme: &Theme) -> Color {
     tier_on(theme.tokens.colors.surfaces.base, TRACK_ALPHA)
+}
+
+/// The track of a vertical bar along the trailing edge of `rect`, centred in
+/// the `gutter` column (`metrics.scrollbar_gutter`) a scroll owner keeps
+/// free for it: two thirds of the gutter thick, a sixth of it clear on each
+/// side and at both ends.
+#[must_use]
+pub fn vertical_track(rect: Rect, gutter: f64) -> Rect {
+    let thickness = gutter * 2.0 / 3.0;
+    let margin = (gutter - thickness) / 2.0;
+    Rect::new(
+        rect.x1 - margin - thickness,
+        rect.y0 + margin,
+        rect.x1 - margin,
+        rect.y1 - margin,
+    )
+}
+
+/// [`vertical_track`] across the bottom edge of `rect`.
+#[must_use]
+pub fn horizontal_track(rect: Rect, gutter: f64) -> Rect {
+    let thickness = gutter * 2.0 / 3.0;
+    let margin = (gutter - thickness) / 2.0;
+    Rect::new(
+        rect.x0 + margin,
+        rect.y1 - margin - thickness,
+        rect.x1 - margin,
+        rect.y1 - margin,
+    )
 }
 
 /// The scroll geometry along one axis, all lengths in logical px.
@@ -181,13 +356,6 @@ impl Scrollbar {
         self
     }
 
-    /// Override the page fraction (default [`PAGE_FRACTION`]).
-    #[must_use]
-    pub fn with_page_fraction(mut self, frac: f64) -> Self {
-        self.page_fraction = frac;
-        self
-    }
-
     pub fn is_vertical(&self) -> bool {
         self.vertical
     }
@@ -223,16 +391,7 @@ impl Scrollbar {
             return;
         };
         let radius = thumb.width().min(thumb.height()) / 2.0;
-        let color =
-            theme
-                .tokens
-                .colors
-                .text_dim
-                .with_alpha_factor(if self.is_active() || focused {
-                    0.85
-                } else {
-                    0.55
-                });
+        let color = thumb_color(theme, self.is_active() || focused);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -244,10 +403,41 @@ impl Scrollbar {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.border_focus,
+                theme.tokens.colors.intent.you,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(thumb.inflate(2.0, 2.0), radius + 2.0),
             );
+        }
+    }
+
+    /// The track this bar takes in `lane`, the strip a scroll owner keeps
+    /// free on its trailing (or bottom) edge (`metrics.scrollbar_gutter`
+    /// wide): the thumb thickness (`metrics.scroll_thumb`) centred across
+    /// the lane, inset by the same margin at both ends. Painted hosts use it
+    /// so their bars sit where a `Scrollable`'s do.
+    #[must_use]
+    pub fn track_in(&self, lane: Rect, theme: &Theme) -> Rect {
+        let thumb = f64::from(theme.tokens.metrics.scroll_thumb);
+        let across = if self.vertical {
+            lane.width()
+        } else {
+            lane.height()
+        };
+        let margin = ((across - thumb) / 2.0).max(0.0);
+        if self.vertical {
+            Rect::new(
+                lane.x0 + margin,
+                lane.y0 + margin,
+                lane.x0 + margin + thumb.min(lane.width()),
+                (lane.y1 - margin).max(lane.y0 + margin),
+            )
+        } else {
+            Rect::new(
+                lane.x0 + margin,
+                lane.y0 + margin,
+                (lane.x1 - margin).max(lane.x0 + margin),
+                lane.y0 + margin + thumb.min(lane.height()),
+            )
         }
     }
 
@@ -376,9 +566,76 @@ impl Scrollbar {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_resting_thumb_is_lighter_on_a_light_ground_and_reads_once_active() {
+        use crate::a11y::contrast_ratio;
+        let light = Theme::light();
+        let ground = light.tokens.colors.surfaces.content;
+        let rest = thumb_color(&light, false);
+        let active = thumb_color(&light, true);
+        assert!(contrast_ratio(rest, ground) < contrast_ratio(active, ground));
+        assert!(contrast_ratio(active, ground) >= 3.0);
+        assert!(contrast_ratio(rest, ground) >= 1.5, "still visible at rest");
+        let dark = Theme::dark();
+        assert!(
+            contrast_ratio(
+                thumb_color(&dark, false),
+                dark.tokens.colors.surfaces.content
+            ) >= 3.0
+        );
+    }
+
+    #[test]
+    fn a_track_in_a_lane_is_the_thumb_centred_with_equal_margins() {
+        let theme = Theme::dark();
+        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let thumb = f64::from(theme.tokens.metrics.scroll_thumb);
+        let lane = Rect::new(100.0, 0.0, 100.0 + gutter, 300.0);
+        let track = Scrollbar::vertical().track_in(lane, &theme);
+        assert!((track.width() - thumb).abs() < 1e-9);
+        let margin = (gutter - thumb) / 2.0;
+        assert!((track.x0 - lane.x0 - margin).abs() < 1e-9);
+        assert!((lane.x1 - track.x1 - margin).abs() < 1e-9);
+        assert!((track.y0 - margin).abs() < 1e-9 && (300.0 - track.y1 - margin).abs() < 1e-9);
+        let lane = Rect::new(0.0, 200.0, 400.0, 200.0 + gutter);
+        let track = Scrollbar::horizontal().track_in(lane, &theme);
+        assert!((track.height() - thumb).abs() < 1e-9);
+    }
+
     /// A 300-px-tall vertical track spanning x∈[92,100], y∈[0,300].
     fn v_track() -> Rect {
         Rect::new(92.0, 0.0, 100.0, 300.0)
+    }
+
+    /// The thumb clears the non-text floor against the ground it scrolls
+    /// over once the pointer is on it, on every material, and at rest on a
+    /// dark one; a resting thumb on a light ground is lighter but still
+    /// shows. Active is the stronger.
+    #[test]
+    fn the_thumb_clears_the_non_text_floor_on_every_material() {
+        use crate::a11y::contrast_ratio;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = theme.tokens.colors.surfaces.content;
+            let idle = contrast_ratio(thumb_color(&theme, false), ground);
+            let active = contrast_ratio(thumb_color(&theme, true), ground);
+            let light = crate::color::relative_luminance(ground) >= LIGHT_GROUND_LUMINANCE;
+            let floor = if light {
+                1.5
+            } else {
+                crate::tokens::colors::NON_TEXT_MIN_CONTRAST
+            };
+            assert!(idle >= floor, "{}: idle thumb {idle:.2}:1", theme.name);
+            assert!(
+                active >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                "{}: active thumb {active:.2}:1",
+                theme.name
+            );
+            assert!(
+                active >= idle,
+                "{}: active {active:.2} < idle {idle:.2}",
+                theme.name
+            );
+        }
     }
 
     #[test]
@@ -605,6 +862,35 @@ impl PrimaryScrollAction {
             _ => return None,
         };
         next.is_finite().then(|| next.clamp(0.0, m.max_scroll()))
+    }
+
+    /// Apply the action to `target`, whose primary region `region` reads:
+    /// `set` moves it to the clamped offset only when that differs, and the
+    /// result reports the region as it reads afterwards.
+    #[expect(
+        clippy::float_cmp,
+        reason = "the clamped target is compared exactly: identical means the scroll did not move"
+    )]
+    pub fn apply_to<T: ?Sized>(
+        self,
+        target: &mut T,
+        region: impl Fn(&T) -> Option<PrimaryScrollRegion>,
+        set: impl FnOnce(&mut T, &PrimaryScrollRegion, f64),
+    ) -> PrimaryScrollResult {
+        let Some(before) = region(target) else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        let Some(next) = self.offset(before.metrics) else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        if next == before.metrics.offset {
+            return PrimaryScrollResult::Unchanged(before);
+        }
+        set(target, &before, next);
+        region(target).map_or(
+            PrimaryScrollResult::Unsupported,
+            PrimaryScrollResult::Changed,
+        )
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]

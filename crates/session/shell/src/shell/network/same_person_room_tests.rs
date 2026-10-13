@@ -3,13 +3,6 @@
 //! room list and receives that workspace over the direct connection: its
 //! name and the apps opened in it, and later edits.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
@@ -28,6 +21,7 @@ fn device(
     ShellNetwork::spawn_with(
         tree,
         &dir.join("device-private/keypair.bin"),
+        &dir.join("peer-sync"),
         Reach::Loopback,
         move |secret, _| {
             let key = SigningKey::from_bytes(&secret.to_bytes());

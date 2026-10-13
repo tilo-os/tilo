@@ -17,12 +17,14 @@
 //! every path mutation against them so the user can't `..` out of the
 //! sandbox boundary.
 
+pub mod semantic;
+
 use crate::widget::ModelPath;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
@@ -31,10 +33,11 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
 use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::tokens::{Metrics, Spacing};
+use crate::widget::ButtonRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, Widget};
 
@@ -112,8 +115,6 @@ const REPLACE_CARD_HEIGHT: f64 = 140.0; // a dialog card's size, not spacing
 /// What Replace does, under the replace prompt's question.
 const REPLACE_PROMPT_DETAIL: &str = "Replacing it overwrites its contents.";
 const BUTTON_GAP: f64 = 8.0;
-const HEADER_ICON_PX: f64 = 18.0;
-const ROW_ICON_PX: f64 = 16.0;
 
 /// The file chooser is an immediate-mode modal, so its controls do not each
 /// have a retained Taffy node.  Keep their keyboard order in the toolkit's
@@ -973,13 +974,13 @@ impl FilePicker {
     /// the painted glyphs — and stay matched when an event handler rebuilds
     /// the layout without a renderer. Runs once per paint.
     fn measure_crumbs(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
-        let size = theme.tokens.typography.scale.sm;
+        let style = theme.text(TextRole::Caption);
         let labels: Vec<String> = (0..self.crumb_rects.len())
             .filter_map(|idx| self.crumb_label_for(idx))
             .collect();
         let mut changed = false;
         for label in labels {
-            let (tw, _) = text_renderer.measure(&label, size, None);
+            let (tw, _) = text_renderer.measure_style(&label, None, &style);
             let measured = f64::from(tw);
             if self.crumb_widths.get(&label) != Some(&measured) {
                 self.crumb_widths.insert(label, measured);
@@ -1227,26 +1228,16 @@ impl Widget for FilePicker {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.adopt_theme(theme);
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+        let style = Style {
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.apply_layout_helper();
     }
 
@@ -1262,7 +1253,7 @@ impl Widget for FilePicker {
         self.apply_layout_helper();
         self.measure_crumbs(text_renderer, theme);
         let tokens = &theme.tokens;
-        let radius = f64::from(tokens.radii.md);
+        let radius = f64::from(tokens.radii.control);
         let frame = RoundedRect::from_rect(self.rect, radius);
         // Panel role (HIG §9.1): panel ground + the derived panel edge as
         // a crisp 1 px inset stroke; the declared `border_standard` sat
@@ -1303,7 +1294,7 @@ impl Widget for FilePicker {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.on_cursor_moved(p, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -1369,11 +1360,11 @@ impl Widget for FilePicker {
                         .with_name("Up")
                         .with_key(control.id())
                         .with_bounds(self.up_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.has_keyboard_focus && self.focus == Some(control),
-                            ..Default::default()
-                        }),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.has_keyboard_focus && self.focus == Some(control)),
+                        ),
                     PickerFocus::List => {
                         let total = self.entries.len();
                         let rows = self
@@ -1409,11 +1400,11 @@ impl Widget for FilePicker {
                             })
                             .with_key(control.id())
                             .with_bounds(self.list_rect())
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: self.has_keyboard_focus && self.focus == Some(control),
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new().focusable(true).focused(
+                                    self.has_keyboard_focus && self.focus == Some(control),
+                                ),
+                            )
                             .with_children(rows)
                     }
                     PickerFocus::Filter => AccessNode::new(Role::ComboBox)
@@ -1421,23 +1412,23 @@ impl Widget for FilePicker {
                         .with_value(self.active_filter_label())
                         .with_key(control.id())
                         .with_bounds(self.filter_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.has_keyboard_focus && self.focus == Some(control),
-                            expanded: Some(false),
-                            ..Default::default()
-                        }),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.has_keyboard_focus && self.focus == Some(control))
+                                .expanded(false),
+                        ),
                     PickerFocus::Filename => AccessNode::new(Role::TextInput)
                         .with_name("Filename")
                         .with_value(self.filename().to_owned())
                         .with_text_selection(filename_anchor, filename_cursor)
                         .with_key(control.id())
                         .with_bounds(self.filename_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.has_keyboard_focus && self.focus == Some(control),
-                            ..Default::default()
-                        }),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.has_keyboard_focus && self.focus == Some(control)),
+                        ),
                     PickerFocus::Cancel | PickerFocus::Confirm => {
                         let (label, rect, enabled) = if control == PickerFocus::Cancel {
                             ("Cancel", self.cancel_rect, true)
@@ -1448,14 +1439,16 @@ impl Widget for FilePicker {
                             .with_name(label)
                             .with_key(control.id())
                             .with_bounds(rect)
-                            .with_state(AccessState {
-                                focusable: enabled,
-                                focused: enabled
-                                    && self.has_keyboard_focus
-                                    && self.focus == Some(control),
-                                disabled: !enabled,
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(enabled)
+                                    .focused(
+                                        enabled
+                                            && self.has_keyboard_focus
+                                            && self.focus == Some(control),
+                                    )
+                                    .disabled(!enabled),
+                            )
                     }
                     // Only on the replace prompt, which replaces this list.
                     PickerFocus::KeepExisting | PickerFocus::Replace => return None,
@@ -1471,12 +1464,12 @@ impl Widget for FilePicker {
         Some(
             AccessNode::new(Role::Dialog)
                 .with_name(self.title.clone())
-                .with_state(AccessState {
-                    modal: true,
-                    focusable: true,
-                    focused: self.has_keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .modal(true)
+                        .focusable(true)
+                        .focused(self.has_keyboard_focus),
+                )
                 .with_children(controls),
         )
     }
@@ -1490,6 +1483,7 @@ impl Widget for FilePicker {
         if focused {
             self.ensure_valid_focus();
         }
+        self.sync_filename_focus();
     }
 
     fn is_focused(&self) -> bool {
@@ -1502,6 +1496,15 @@ impl Widget for FilePicker {
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
         Widget::ime_cursor_rect(&self.filename)
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.filename.ime_purpose()
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.filename.ime_cursor_rect()?;
+        self.filename.ime_edit_fingerprint(key)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
@@ -1568,19 +1571,14 @@ impl Widget for FilePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        matches!(action, crate::a11y::Action::Activate) && self.activate_focus()
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
+        if key_path.is_empty() {
+            return matches!(action, crate::a11y::Action::Activate) && self.activate_focus();
+        }
+
         use crate::a11y::{Action, hash_key};
         if self.replace_prompt.is_some() {
             let control = match key_path {
@@ -1669,11 +1667,11 @@ impl FilePicker {
                 .with_name(label)
                 .with_key(control.id())
                 .with_bounds(rect)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.has_keyboard_focus && self.focus == Some(control),
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.has_keyboard_focus && self.focus == Some(control)),
+                )
         };
         Some(
             AccessNode::new(Role::Dialog)
@@ -1683,12 +1681,12 @@ impl FilePicker {
                 .with_description(REPLACE_PROMPT_DETAIL)
                 .with_key(REPLACE_PROMPT_KEY)
                 .with_bounds(self.replace_card_rect)
-                .with_state(AccessState {
-                    modal: true,
-                    focusable: true,
-                    focused: self.has_keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .modal(true)
+                        .focusable(true)
+                        .focused(self.has_keyboard_focus),
+                )
                 .with_children(vec![
                     button(PickerFocus::KeepExisting, "Cancel", self.keep_existing_rect),
                     button(PickerFocus::Replace, "Replace", self.replace_rect),
@@ -1708,7 +1706,7 @@ impl FilePicker {
             return;
         };
         let tokens = &theme.tokens;
-        let radius = f64::from(tokens.radii.md);
+        let radius = f64::from(tokens.radii.panel);
         let frame = RoundedRect::from_rect(self.rect, radius);
         scene.push_layer(
             Fill::NonZero,
@@ -1717,13 +1715,7 @@ impl FilePicker {
             transform,
             &frame,
         );
-        crate::chrome::fill_scrim(
-            scene,
-            transform,
-            self.rect,
-            crate::widget::modal_frame::MODAL_SCRIM_ALPHA,
-            theme,
-        );
+        crate::chrome::fill_scrim(scene, transform, self.rect, 1.0, theme);
         scene.pop_layer();
 
         let card = self.replace_card_rect;
@@ -1748,45 +1740,39 @@ impl FilePicker {
             reason = "a card a few hundred logical pixels wide fits f32 exactly enough for wrapping"
         )]
         let text_w = (card.width() - 2.0 * PADDING).max(0.0) as f32;
-        let heading_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
+        let heading_style = theme.text(TextRole::Heading);
         let heading = format!("Replace \u{201c}{name}\u{201d}?");
-        let (_, heading_h) = text_renderer.measure(&heading, heading_size, Some(text_w));
-        text_renderer.draw_text(
+        let (_, heading_h) = text_renderer.measure_style(&heading, Some(text_w), &heading_style);
+        text_renderer.draw_style(
             scene,
             &heading,
-            heading_size,
             tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(card.x0 + PADDING, card.y0 + PADDING)),
             Some(text_w),
+            &heading_style,
         );
-        let body_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let body_style = theme.text(TextRole::Body);
         let body = format!(
             "A file named \u{201c}{name}\u{201d} already exists here. {REPLACE_PROMPT_DETAIL}"
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &body,
-            body_size,
             tokens.colors.text_dim,
             transform.pre_translate(Vec2::new(
                 card.x0 + PADDING,
                 card.y0 + PADDING + f64::from(heading_h) + f64::from(tokens.spacing.s2),
             )),
             Some(text_w),
+            &body_style,
         );
 
-        let keep = footer_button(
-            text_renderer,
-            theme,
-            self.keep_existing_rect,
-            "Cancel",
-            false,
-        )
-        .hovered(self.hover_prompt == Some(PickerFocus::KeepExisting))
-        .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::KeepExisting));
+        let keep = footer_button(self.keep_existing_rect, "Cancel", false)
+            .hovered(self.hover_prompt == Some(PickerFocus::KeepExisting))
+            .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::KeepExisting));
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &keep);
-        let replace = footer_button(text_renderer, theme, self.replace_rect, "Replace", false)
-            .style(crate::widget::ButtonStyle::Danger)
+        let replace = footer_button(self.replace_rect, "Replace", false)
+            .role(ButtonRole::Destructive)
             .hovered(self.hover_prompt == Some(PickerFocus::Replace))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Replace));
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &replace);
@@ -1802,26 +1788,32 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let title_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
-        text_renderer.draw_text(
+        let title_style = tokens.typography.style(TextRole::Body);
+        text_renderer.draw_style(
             scene,
             &self.title,
-            title_size,
             tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(
                 self.rect.x0 + PADDING,
                 self.rect.y0 + self.metrics.header_inset_y,
             )),
             None,
+            &title_style,
         );
         if self.can_go_up() {
             let up_hovered = self.up_rect.contains(self.last_cursor);
             if up_hovered {
-                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.sm));
-                scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &s);
+                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.detail));
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    tokens.colors.intent.selection_hover,
+                    None,
+                    &s,
+                );
             }
             if self.has_keyboard_focus && self.focus == Some(PickerFocus::Up) {
-                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.sm));
+                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.detail));
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -1830,9 +1822,16 @@ impl FilePicker {
                     &s,
                 );
             }
-            let ix = self.up_rect.x0 + (self.up_rect.width() - HEADER_ICON_PX) / 2.0;
-            let iy = self.up_rect.y0 + (self.up_rect.height() - HEADER_ICON_PX) / 2.0;
-            let icon_rect = Rect::new(ix, iy, ix + HEADER_ICON_PX, iy + HEADER_ICON_PX);
+            let ix =
+                self.up_rect.x0 + (self.up_rect.width() - f64::from(tokens.metrics.icon_md)) / 2.0;
+            let iy =
+                self.up_rect.y0 + (self.up_rect.height() - f64::from(tokens.metrics.icon_md)) / 2.0;
+            let icon_rect = Rect::new(
+                ix,
+                iy,
+                ix + f64::from(tokens.metrics.icon_md),
+                iy + f64::from(tokens.metrics.icon_md),
+            );
             draw_icon(
                 scene,
                 transform,
@@ -1842,31 +1841,31 @@ impl FilePicker {
                 LUCIDE_DEFAULT_STROKE_PX,
             );
         }
-        let crumb_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let crumb_style = tokens.typography.style(TextRole::Caption);
         let crumb_count = self.crumb_rects.len();
         for (idx, (_target, r)) in self.crumb_rects.iter().enumerate() {
             let label = self.crumb_label_for(idx).unwrap_or_default();
             let hovered = r.contains(self.last_cursor);
             let color = if hovered {
-                theme.accent_primary
+                tokens.colors.text_primary
             } else {
                 tokens.colors.text_dim
             };
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                crumb_size,
                 color,
                 transform
                     .pre_translate(Vec2::new(r.x0 + self.metrics.crumb_label_inset, r.y0 + 2.0)),
                 None,
+                &crumb_style,
             );
             if idx.saturating_add(1) < crumb_count {
                 let sep_rect = Rect::new(
                     r.x1 - self.metrics.crumb_separator_w,
                     r.y0,
                     r.x1,
-                    r.y0 + ROW_ICON_PX,
+                    r.y0 + f64::from(tokens.metrics.icon_sm),
                 );
                 draw_icon(
                     scene,
@@ -1890,7 +1889,7 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let row_style = tokens.typography.style(TextRole::Caption);
         for (i, rect) in &self.entry_rows {
             let i = *i;
             let is_selected = self.selection.is_selected(i);
@@ -1903,7 +1902,7 @@ impl FilePicker {
             // fill was invisible on the old `raised` panel and read as a
             // stack of bands once the panel took its own ground.
             let bg = if is_selected {
-                Some(tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX])
+                Some(tokens.colors.lift_on(tokens.colors.surfaces.overlay, 1.0))
             } else if is_hover {
                 Some(crate::tokens::Colors::hairline_on(
                     crate::chrome::panel_ground(theme),
@@ -1912,7 +1911,7 @@ impl FilePicker {
             } else {
                 None
             };
-            let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.sm));
+            let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.detail));
             if let Some(bg) = bg {
                 scene.fill(Fill::NonZero, transform, bg, None, &row_shape);
             }
@@ -1934,20 +1933,14 @@ impl FilePicker {
             }
 
             if let Some(entry) = self.entries.get(i) {
-                let fg = if is_selected {
-                    tokens
-                        .colors
-                        .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
-                } else {
-                    tokens.colors.text_primary
-                };
+                let fg = tokens.colors.text_primary;
                 let inset_x = self.metrics.inset_x;
-                let icon_y = rect.y0 + (ROW_HEIGHT - ROW_ICON_PX) / 2.0;
+                let icon_y = rect.y0 + (ROW_HEIGHT - f64::from(tokens.metrics.icon_sm)) / 2.0;
                 let icon_rect = Rect::new(
                     rect.x0 + inset_x,
                     icon_y,
-                    rect.x0 + inset_x + ROW_ICON_PX,
-                    icon_y + ROW_ICON_PX,
+                    rect.x0 + inset_x + f64::from(tokens.metrics.icon_sm),
+                    icon_y + f64::from(tokens.metrics.icon_sm),
                 );
                 draw_icon(
                     scene,
@@ -1959,17 +1952,17 @@ impl FilePicker {
                 );
                 // Centre on the measured line, not the font size, so the
                 // name shares the icon's vertical centre.
-                let (_, name_h) = text_renderer.measure(&entry.name, row_size, None);
-                text_renderer.draw_text(
+                let (_, name_h) = text_renderer.measure_style(&entry.name, None, &row_style);
+                text_renderer.draw_style(
                     scene,
                     &entry.name,
-                    row_size,
                     fg,
                     transform.pre_translate(Vec2::new(
-                        rect.x0 + inset_x + ROW_ICON_PX + inset_x,
+                        rect.x0 + inset_x + f64::from(tokens.metrics.icon_sm) + inset_x,
                         rect.y0 + (ROW_HEIGHT - f64::from(name_h)) / 2.0,
                     )),
                     None,
+                    &row_style,
                 );
             }
         }
@@ -1986,28 +1979,22 @@ impl FilePicker {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let row_style = tokens.typography.style(TextRole::Body);
         if self.mode == FilePickerMode::Save {
             self.draw_filename_field(scene, transform, text_renderer, theme, presence);
         }
         if self.mode != FilePickerMode::Directory && self.filters.len() > 1 {
-            self.draw_filter_chip(scene, transform, text_renderer, theme, row_size);
+            self.draw_filter_chip(scene, transform, text_renderer, theme, &row_style);
         }
 
-        let cancel = footer_button(text_renderer, theme, self.cancel_rect, "Cancel", false)
+        let cancel = footer_button(self.cancel_rect, "Cancel", false)
             .hovered(self.hover_button == Some(0))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Cancel));
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &cancel);
-        let confirm = footer_button(
-            text_renderer,
-            theme,
-            self.open_rect,
-            self.confirm_label(),
-            true,
-        )
-        .hovered(self.hover_button == Some(1))
-        .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm))
-        .disabled(!self.can_commit_open());
+        let confirm = footer_button(self.open_rect, self.confirm_label(), true)
+            .hovered(self.hover_button == Some(1))
+            .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm))
+            .disabled(!self.can_commit_open());
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &confirm);
     }
 
@@ -2023,7 +2010,7 @@ impl FilePicker {
     ) {
         let tokens = &theme.tokens;
         let field = self.filename_rect;
-        let s = RoundedRect::from_rect(field, f64::from(tokens.radii.sm));
+        let s = RoundedRect::from_rect(field, f64::from(tokens.radii.detail));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2072,15 +2059,15 @@ impl FilePicker {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        row_size: f32,
+        row_style: &TextStyle,
     ) {
         let tokens = &theme.tokens;
         let hovered = self.filter_rect.contains(self.last_cursor);
-        let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.sm));
+        let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.detail));
         let fill = if hovered {
-            theme.bg_hover
+            tokens.colors.lift_on(tokens.colors.surfaces.raised, 0.5)
         } else {
-            tokens.colors.surfaces.base
+            tokens.colors.surfaces.raised
         };
         scene.fill(Fill::NonZero, transform, fill, None, &s);
         // Rest edge derived from the face actually painted (HIG §9.5).
@@ -2101,17 +2088,18 @@ impl FilePicker {
             );
         }
         // Centre on the measured line, not the font size.
-        let (_, filter_h) = text_renderer.measure(self.active_filter_label(), row_size, None);
-        text_renderer.draw_text(
+        let (_, filter_h) =
+            text_renderer.measure_style(self.active_filter_label(), None, row_style);
+        text_renderer.draw_style(
             scene,
             self.active_filter_label(),
-            row_size,
             tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(
                 self.filter_rect.x0 + self.metrics.inset_x,
                 self.filter_rect.y0 + (self.filter_rect.height() - f64::from(filter_h)) / 2.0,
             )),
             None,
+            row_style,
         );
     }
 
@@ -2313,7 +2301,7 @@ impl FilePicker {
         use winit::keyboard::{Key, NamedKey};
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 let hover = if self.keep_existing_rect.contains(p) {
                     Some(PickerFocus::KeepExisting)
@@ -2387,75 +2375,27 @@ impl FilePicker {
 /// A footer button in the canonical immediate-mode button face, so the
 /// picker footer stays visually locked to the retained widget and every
 /// converted app. Callers add the hover, focus and disabled state.
-fn footer_button<'a>(
-    text_renderer: &TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    label: &'a str,
-    is_primary: bool,
-) -> crate::widget::ButtonFace<'a> {
-    crate::widget::ButtonFace::new(rect, label)
-        .radius(f64::from(theme.tokens.radii.md))
-        .text_size(renderer_type_size(
-            text_renderer,
-            theme.tokens.typography.scale.sm,
-        ))
-        .weight(crate::text_render::TextWeight::Regular)
-        .style(if is_primary {
-            crate::widget::ButtonStyle::Primary
-        } else {
-            crate::widget::ButtonStyle::Neutral
-        })
+fn footer_button(rect: Rect, label: &str, is_primary: bool) -> crate::widget::ButtonFace<'_> {
+    crate::widget::ButtonFace::new(rect, label).role(if is_primary {
+        ButtonRole::Primary
+    } else {
+        ButtonRole::Secondary
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use automerge::AutoCommit;
     use std::fs;
-    use winit::event::{DeviceId, ElementState, MouseButton};
-
-    fn synth_device() -> DeviceId {
-        // Same pattern as `permission_prompt::tests` and `slider`.
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::ElementState;
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: synth_device(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(picker: &mut FilePicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        picker.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_press;
 
     /// Exercises the real `std::fs::read_dir` path rather than a mock.
     fn temp_tree() -> (tempfile::TempDir, PathBuf) {
@@ -2591,7 +2531,9 @@ mod tests {
             for index in [0, 1] {
                 let center = single.entry_rect(index).unwrap().center();
                 dispatch(&mut single, &cursor_at(center));
-                dispatch_mods(&mut single, &left_press(), ctrl());
+                Dispatch::new()
+                    .modifiers(ctrl())
+                    .send(&mut single, &mouse_press());
             }
             assert_eq!(single.selected_indices(), vec![1]);
 
@@ -2602,7 +2544,9 @@ mod tests {
             for index in [0, 1] {
                 let center = multiple.entry_rect(index).unwrap().center();
                 dispatch(&mut multiple, &cursor_at(center));
-                dispatch_mods(&mut multiple, &left_press(), ctrl());
+                Dispatch::new()
+                    .modifiers(ctrl())
+                    .send(&mut multiple, &mouse_press());
             }
             assert_eq!(multiple.selected_indices(), vec![0, 1]);
 
@@ -2614,10 +2558,9 @@ mod tests {
                 &mut keyboard_single,
                 &key_named(winit::keyboard::NamedKey::ArrowDown),
             );
-            dispatch_mods(
+            Dispatch::new().modifiers(shift()).send(
                 &mut keyboard_single,
                 &key_named(winit::keyboard::NamedKey::ArrowDown),
-                shift(),
             );
             assert_eq!(keyboard_single.selected_indices(), vec![1]);
         }
@@ -2662,7 +2605,9 @@ mod tests {
             for index in [1, 2] {
                 let center = single.entry_rect(index).unwrap().center();
                 dispatch(&mut single, &cursor_at(center));
-                dispatch_mods(&mut single, &left_press(), ctrl());
+                Dispatch::new()
+                    .modifiers(ctrl())
+                    .send(&mut single, &mouse_press());
             }
             assert_eq!(single.selected_indices(), vec![2]);
 
@@ -2671,7 +2616,9 @@ mod tests {
             for index in [1, 2] {
                 let center = default_multiple.entry_rect(index).unwrap().center();
                 dispatch(&mut default_multiple, &cursor_at(center));
-                dispatch_mods(&mut default_multiple, &left_press(), ctrl());
+                Dispatch::new()
+                    .modifiers(ctrl())
+                    .send(&mut default_multiple, &mouse_press());
             }
             assert_eq!(default_multiple.selected_indices(), vec![1, 2]);
         }
@@ -2694,11 +2641,11 @@ mod tests {
             let center = picker.entry_rect(0).unwrap().center();
             dispatch(&mut picker, &cursor_at(center));
 
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.current_dir(), root.as_path());
             assert_eq!(picker.selection(), Some(0));
 
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.current_dir(), child.as_path());
         }
 
@@ -2711,10 +2658,10 @@ mod tests {
 
             let row = picker.entry_rect(0).unwrap().center();
             dispatch(&mut picker, &cursor_at(row));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             let confirm = picker.open_rect().center();
             dispatch(&mut picker, &cursor_at(confirm));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
 
             assert_eq!(
                 picker.take_outcome(),
@@ -2923,7 +2870,7 @@ mod tests {
             // Row 0 is the `nested` directory (dirs sort first).
             let center = picker.entry_rect(0).expect("row 0").center();
             dispatch(&mut picker, &cursor_at(center));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.current_dir(), root.join("nested").as_path());
         }
 
@@ -2933,7 +2880,7 @@ mod tests {
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
             let center = picker.entry_rect(1).expect("row 1").center();
             dispatch(&mut picker, &cursor_at(center));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.selection(), Some(1));
         }
 
@@ -2943,7 +2890,7 @@ mod tests {
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
             let center = picker.cancel_rect().center();
             dispatch(&mut picker, &cursor_at(center));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.take_outcome(), Some(FilePickerOutcome::Cancelled));
         }
 
@@ -2955,7 +2902,7 @@ mod tests {
             picker.select_by_path(&target);
             let center = picker.open_rect().center();
             dispatch(&mut picker, &cursor_at(center));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(
                 picker.take_outcome(),
                 Some(FilePickerOutcome::Selected(vec![target]))
@@ -2969,10 +2916,14 @@ mod tests {
             // entries: [nested(dir), alpha.txt(1), beta.txt(2)]. Select both files.
             let r1 = picker.entry_rect(1).unwrap().center();
             dispatch(&mut picker, &cursor_at(r1));
-            dispatch_mods(&mut picker, &left_press(), ctrl());
+            Dispatch::new()
+                .modifiers(ctrl())
+                .send(&mut picker, &mouse_press());
             let r2 = picker.entry_rect(2).unwrap().center();
             dispatch(&mut picker, &cursor_at(r2));
-            dispatch_mods(&mut picker, &left_press(), ctrl());
+            Dispatch::new()
+                .modifiers(ctrl())
+                .send(&mut picker, &mouse_press());
             assert_eq!(picker.selected_indices(), vec![1, 2]);
             picker.click_open();
             match picker.take_outcome() {
@@ -2991,8 +2942,8 @@ mod tests {
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
             let center = picker.entry_rect(1).unwrap().center();
             dispatch(&mut picker, &cursor_at(center));
-            dispatch(&mut picker, &left_press()); // first click selects
-            dispatch(&mut picker, &left_press()); // second click opens
+            dispatch(&mut picker, &mouse_press()); // first click selects
+            dispatch(&mut picker, &mouse_press()); // second click opens
             assert_eq!(
                 picker.take_outcome(),
                 Some(FilePickerOutcome::Selected(vec![root.join("alpha.txt")]))
@@ -3083,18 +3034,22 @@ mod tests {
             let mut picker =
                 FilePicker::new("Save", &root, vec![root.clone()]).with_mode(FilePickerMode::Save);
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+            Widget::set_focus(&mut picker, true);
+            assert!(crate::ime::ImeWindowState::from_widget(&picker).is_some());
+            let original = picker.ime_edit_fingerprint(&[7; 32]).unwrap();
             // Save starts on Filename. Tab leaves it for the next modal control;
             // Shift+Tab returns to the exact editable target.
             dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::Cancel));
-            dispatch_mods(
-                &mut picker,
-                &key_named(winit::keyboard::NamedKey::Tab),
-                shift(),
-            );
+            assert!(crate::ime::ImeWindowState::from_widget(&picker).is_none());
+            Dispatch::new()
+                .modifiers(shift())
+                .send(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::Filename));
             dispatch(&mut picker, &key_char("x"));
             assert_eq!(picker.filename(), "x");
+            assert_ne!(picker.ime_edit_fingerprint(&[7; 32]).unwrap(), original);
+            assert!(crate::ime::ImeWindowState::from_widget(&picker).is_some());
             let node = Widget::accessibility(&picker).expect("dialog semantics");
             let filename = node
                 .children
@@ -3227,7 +3182,9 @@ mod tests {
             dispatch(&mut picker, &key_named(NamedKey::Enter));
             dispatch(&mut picker, &key_named(NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::Replace));
-            dispatch_mods(&mut picker, &key_named(NamedKey::Tab), shift());
+            Dispatch::new()
+                .modifiers(shift())
+                .send(&mut picker, &key_named(NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::KeepExisting));
             dispatch(&mut picker, &key_named(NamedKey::ArrowRight));
             assert_eq!(picker.focus, Some(PickerFocus::Replace));
@@ -3243,23 +3200,23 @@ mod tests {
             let mut picker = save_picker(&root, "alpha.txt");
             let at = picker.open_rect().center();
             dispatch(&mut picker, &cursor_at(at));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert!(picker.replace_prompt().is_some(), "Save asks first");
             // The picker's own Save button is behind the prompt now.
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.take_outcome(), None);
             let at = picker.keep_existing_rect.center();
             dispatch(&mut picker, &cursor_at(at));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.replace_prompt(), None);
             assert_eq!(picker.take_outcome(), None);
 
             let at = picker.open_rect().center();
             dispatch(&mut picker, &cursor_at(at));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             let at = picker.replace_rect.center();
             dispatch(&mut picker, &cursor_at(at));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(
                 picker.take_outcome(),
                 Some(FilePickerOutcome::Selected(vec![root.join("alpha.txt")]))
@@ -3271,7 +3228,7 @@ mod tests {
             let mut picker = save_picker(&root, "alpha.txt");
             let mut doc = AutoCommit::new();
             let path = automerge::ROOT;
-            assert!(Widget::perform_action_at(
+            assert!(Widget::perform_action(
                 &mut picker,
                 &Action::Activate,
                 &[PickerFocus::Confirm.id()],
@@ -3280,7 +3237,7 @@ mod tests {
             ));
             assert!(picker.replace_prompt().is_some());
             assert!(
-                !Widget::perform_action_at(
+                !Widget::perform_action(
                     &mut picker,
                     &Action::Activate,
                     &[PickerFocus::Confirm.id()],
@@ -3291,7 +3248,7 @@ mod tests {
             );
             let prompt = prompt_node(&picker);
             let replace = prompt.children[1].key.expect("Replace key");
-            assert!(Widget::perform_action_at(
+            assert!(Widget::perform_action(
                 &mut picker,
                 &Action::Activate,
                 &[prompt.key.expect("prompt key"), replace],
@@ -3325,8 +3282,8 @@ mod tests {
             let mut picker = save_picker(&root, "");
             let row = picker.entry_rect(1).expect("alpha.txt row").center();
             dispatch(&mut picker, &cursor_at(row));
-            dispatch(&mut picker, &left_press());
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.take_outcome(), None);
             assert_eq!(
                 picker.replace_prompt(),
@@ -3352,7 +3309,9 @@ mod tests {
         picker.set_rect(Rect::new(0.0, 0.0, 600.0, 420.0));
         Widget::set_focus(&mut picker, true);
 
-        dispatch_mods(&mut picker, &key_char("a"), ctrl());
+        Dispatch::new()
+            .modifiers(ctrl())
+            .send(&mut picker, &key_char("a"));
         dispatch(&mut picker, &key_char("x"));
         assert_eq!(
             picker.filename(),
@@ -3365,8 +3324,8 @@ mod tests {
         let field = picker.filename_rect().center();
         dispatch(&mut picker, &cursor_at(field));
         for _ in 0..3 {
-            dispatch(&mut picker, &left_press());
-            dispatch(&mut picker, &left_release());
+            dispatch(&mut picker, &mouse_press());
+            dispatch(&mut picker, &mouse_release());
         }
         dispatch(&mut picker, &key_char("y"));
         assert_eq!(
@@ -3379,35 +3338,7 @@ mod tests {
         assert!(!picker.filename.autocorrect_enabled());
     }
 
-    fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch_mods(picker: &mut FilePicker, event: &WindowEvent, mods: winit::event::Modifiers) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        picker.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_release;
 
     fn ctrl() -> winit::event::Modifiers {
         let mut s = winit::keyboard::ModifiersState::empty();
@@ -3416,14 +3347,14 @@ mod tests {
     }
 
     fn key_named(named: winit::keyboard::NamedKey) -> WindowEvent {
-        crate::synthetic_input::key_event(
+        crate::synthetic_input::key_input(
             &winit::keyboard::Key::Named(named),
             ElementState::Pressed,
         )
     }
 
     fn key_char(s: &str) -> WindowEvent {
-        crate::synthetic_input::key_event(
+        crate::synthetic_input::key_input(
             &winit::keyboard::Key::Character(s.into()),
             ElementState::Pressed,
         )
@@ -3454,14 +3385,7 @@ mod tests {
             // Short dialog: only a handful of rows fit.
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 240.0));
             assert!(picker.entry_rect(0).is_some());
-            dispatch(
-                &mut picker,
-                &WindowEvent::MouseWheel {
-                    device_id: synth_device(),
-                    delta: winit::event::MouseScrollDelta::LineDelta(0.0, -5.0),
-                    phase: winit::event::TouchPhase::Moved,
-                },
-            );
+            dispatch(&mut picker, &crate::synthetic_input::mouse_wheel(0.0, -5.0));
             assert!(picker.entry_rect(0).is_none(), "row 0 scrolled out of view");
             assert!(picker.entry_rect(6).is_some(), "a later row is now visible");
         }
@@ -3615,11 +3539,9 @@ mod tests {
             // button that cannot act.
             dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::Cancel));
-            dispatch_mods(
-                &mut picker,
-                &key_named(winit::keyboard::NamedKey::Tab),
-                shift(),
-            );
+            Dispatch::new()
+                .modifiers(shift())
+                .send(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::List));
 
             picker.set_selection(1);

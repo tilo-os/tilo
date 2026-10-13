@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! `render` answers with what the window shows, however much it draws: a
 //! fresh renderer's first frame of a dense view is not handed back blank.
@@ -6,6 +6,7 @@
 use std::rc::Rc;
 
 use serde_json::json;
+use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
 use tilo_app::prelude::*;
 use tilo_app::vello::kurbo::{BezPath, Stroke};
 use tilo_app::vello::peniko::Color;

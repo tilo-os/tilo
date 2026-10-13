@@ -2,7 +2,8 @@
 //! folders shown at the top of the sidebar. The XDG home folder is a distinct,
 //! specially-styled "Home" entry; the rest are ordinary folders the user can
 //! add, remove and reorder. The list itself is the Files document's
-//! ([`crate::doc::PlacesDoc`]), stored as [`crate::places`] names them.
+//! ([`crate::resource::FileExplorer::places`]), stored as [`crate::places`]
+//! names them.
 //!
 //! The standard entries follow the user's **real, localized XDG user
 //! directories** (`~/.config/user-dirs.dirs`) — so a German desktop shows
@@ -204,10 +205,6 @@ mod tests {
     }
 
     /// Favourite defaults fall back to English or localised XDG dirs, keep their kind through persistence, dedup, pin home and persist reorders.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
     #[test]
     fn favourites_default_localise_edit_and_persist() {
         // --- phase: defaults_fall_back_to_english_when_no_xdg_dirs ---

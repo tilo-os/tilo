@@ -14,6 +14,7 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
     let remote = DeviceId::new("certified-laptop").unwrap();
     (
         DeviceFabricView {
+            displays: Vec::new(),
             bluetooth_authorizations: Vec::new(),
             bluetooth_handoffs: Vec::new(),
             gamepad_authorizations: Vec::new(),
@@ -942,5 +943,60 @@ fn device_pane_lists_microphones_and_switches_and_levels_them() {
     assert!(
         !actions.contains(&DeviceFabricUiAction::SelectLocalInput { node_id: 70 }),
         "the current microphone is not re-selected"
+    );
+}
+
+#[test]
+fn display_move_requires_settings_owner_and_an_unlocked_session() {
+    let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+    let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+    host.chrome = Some(chrome.clone());
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let received = calls.clone();
+    host.set_device_fabric_bridge(Rc::new(move |action| {
+        received.borrow_mut().push(action);
+        Ok(DeviceFabricView::default())
+    }));
+    let request = settings_store::device_displays::DeviceDisplayMove {
+        screen: settings_store::device_displays::DeviceDisplay {
+            device: "peer".into(),
+            device_label: "Peer".into(),
+            connector: "eDP-1".into(),
+            output_id: None,
+            label: "Panel".into(),
+            online: true,
+            local: false,
+            x: 1920,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale_milli: 1250,
+            revision: 7,
+        },
+        x: 0,
+        y: 1080,
+    };
+    chrome.borrow_mut().test_only_owner_override = Some(false);
+    assert!(
+        host.request_device_display_move("so.tilo.settings", request.clone())
+            .is_err()
+    );
+    chrome.borrow_mut().test_only_owner_override = Some(true);
+    assert!(
+        host.request_device_display_move("so.tilo.terminal", request.clone())
+            .is_err()
+    );
+    chrome.borrow_mut().set_session_locked(true);
+    assert!(
+        host.request_device_display_move("so.tilo.settings", request.clone())
+            .is_err()
+    );
+    assert!(calls.borrow().is_empty());
+    chrome.borrow_mut().set_session_locked(false);
+    host.request_device_display_move("so.tilo.settings", request.clone())
+        .unwrap();
+    assert_eq!(
+        calls.borrow().as_slice(),
+        &[DeviceFabricUiAction::MoveDisplay(request)]
     );
 }

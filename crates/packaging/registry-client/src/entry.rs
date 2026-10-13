@@ -20,8 +20,6 @@ pub enum Platform {
     /// Native Tilo OS thin app (`x86_64` or `aarch64`).
     #[default]
     TiloOs,
-    /// WebAssembly side module for the browser toolkit core (`wasm32`).
-    Web,
     /// Self-contained executable for Linux desktops other than Tilo OS
     /// (`x86_64` or `aarch64`).
     Linux,
@@ -40,7 +38,6 @@ impl Platform {
     pub fn wire(self) -> &'static str {
         match self {
             Self::TiloOs => registry_types::TILO_OS_PLATFORM,
-            Self::Web => registry_types::WEB_PLATFORM,
             Self::Linux => registry_types::LINUX_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
@@ -55,15 +52,9 @@ impl Platform {
         let Some(target) = &manifest.target else {
             return Some(Self::TiloOs);
         };
-        [
-            Self::Web,
-            Self::Linux,
-            Self::Windows,
-            Self::Macos,
-            Self::Android,
-        ]
-        .into_iter()
-        .find(|platform| platform.wire() == target.platform)
+        [Self::Linux, Self::Windows, Self::Macos, Self::Android]
+            .into_iter()
+            .find(|platform| platform.wire() == target.platform)
     }
 }
 
@@ -268,11 +259,9 @@ fn entry_for_checked(
 ) -> Result<registry_types::RegistryEntry> {
     let binding = match platform {
         Platform::TiloOs => native_binding(tapp_bytes, checked, arch)?,
-        Platform::Web
-        | Platform::Linux
-        | Platform::Windows
-        | Platform::Macos
-        | Platform::Android => signed_target_binding(tapp_bytes, checked, platform, arch)?,
+        Platform::Linux | Platform::Windows | Platform::Macos | Platform::Android => {
+            signed_target_binding(tapp_bytes, checked, platform, arch)?
+        }
     };
     let package = &checked.manifest.package;
     let now = std::env::var("SOURCE_DATE_EPOCH")
@@ -281,15 +270,23 @@ fn entry_for_checked(
         .unwrap_or_else(tilo_clock::unix_now);
     let version = registry_types::RegistryVersion {
         version: package.version.clone(),
-        tapp_url: url.to_string(),
-        tapp_root_hash_hex: binding.package_id.to_hex(),
-        tapp_size_bytes: tapp_bytes.len() as u64,
         released_at_unix: now,
-        tapp_blake3_hex: binding.tapp_blake3_hex,
-        target: binding.target,
+        artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+            tapp_url: url.to_string(),
+            tapp_root_hash_hex: binding.package_id.to_hex(),
+            tapp_size_bytes: tapp_bytes.len() as u64,
+            tapp_blake3_hex: binding.tapp_blake3_hex,
+            target: binding.target,
+        }),
     };
     let mut artifact_exists = false;
     if let Some(previous) = previous {
+        if previous.kind != registry_types::EntryKind::App {
+            bail!(
+                "{} is a bot entry; publish bot versions with bot-entry",
+                previous.package_id
+            );
+        }
         if previous.package_id != package.id
             || !previous
                 .publisher_pubkey_hex
@@ -306,8 +303,12 @@ fn entry_for_checked(
                 bail!(
                     "version {} for target {}/{} already exists with different package bytes or metadata",
                     version.version,
-                    version.target.platform,
-                    version.target.architecture,
+                    version
+                        .target()
+                        .map_or("", |target| target.platform.as_str()),
+                    version
+                        .target()
+                        .map_or("", |target| target.architecture.as_str()),
                 );
             }
             if metadata.is_none() {
@@ -327,30 +328,26 @@ fn entry_for_checked(
     if !artifact_exists {
         versions.push(version);
     }
-    versions.sort_by(compare_registry_versions);
-    let mut versions = retention.retain(&versions);
-    keep_newest_versions(&mut versions);
+    let versions = retain_versions(versions, retention);
     let display_name = package.name.clone().unwrap_or_else(|| package.id.clone());
     let mut entry = registry_types::RegistryEntry {
         package_id: package.id.clone(),
+        kind: registry_types::EntryKind::App,
         name: previous.map_or_else(|| display_name.clone().into(), |entry| entry.name.clone()),
         description: previous.map_or_else(
             || match platform {
                 Platform::TiloOs => {
                     format!("{display_name} is a native Tilo OS application.").into()
                 }
-                Platform::Web
-                | Platform::Linux
-                | Platform::Windows
-                | Platform::Macos
-                | Platform::Android => format!("{display_name} is a Tilo application.").into(),
+                Platform::Linux | Platform::Windows | Platform::Macos | Platform::Android => {
+                    format!("{display_name} is a Tilo application.").into()
+                }
             },
             |entry| entry.description.clone(),
         ),
         tagline: previous.map_or_else(
             || match platform {
                 Platform::TiloOs => format!("{display_name} for Tilo OS").into(),
-                Platform::Web => format!("{display_name} on Tilo").into(),
                 Platform::Linux => format!("{display_name} for Linux").into(),
                 Platform::Windows => format!("{display_name} for Windows").into(),
                 Platform::Macos => format!("{display_name} for macOS").into(),
@@ -449,7 +446,7 @@ fn arch_wire(arch: Arch) -> &'static str {
     }
 }
 
-/// A web, Linux, Windows, macOS or Android build binds the `[target]` its signed manifest
+/// A Linux, Windows, macOS or Android build binds the `[target]` its signed manifest
 /// records; the tapp passes the same verification a native one does before
 /// anything is signed.
 fn signed_target_binding(
@@ -458,11 +455,6 @@ fn signed_target_binding(
     platform: Platform,
     arch: Option<&str>,
 ) -> Result<ArtifactBinding> {
-    if platform == Platform::Web
-        && arch.is_some_and(|arch| arch != registry_types::WASM32_ARCHITECTURE)
-    {
-        bail!("web builds target wasm32");
-    }
     let target = checked.manifest.target.as_ref().ok_or_else(|| {
         anyhow!(
             "the tapp has no [target]; it is a Tilo OS build, not a {} build",
@@ -500,14 +492,17 @@ fn same_version_identity(
     right: &registry_types::RegistryVersion,
 ) -> bool {
     tilo_app_package::version::compare(&left.version, &right.version).is_eq()
-        && left.target.platform == right.target.platform
-        && left.target.architecture == right.target.architecture
+        && left.tapp().is_some()
+        && left.group() == right.group()
 }
 
 fn same_artifact(
     left: &registry_types::RegistryVersion,
     right: &registry_types::RegistryVersion,
 ) -> bool {
+    let (Some(left), Some(right)) = (left.tapp(), right.tapp()) else {
+        return false;
+    };
     left.tapp_root_hash_hex == right.tapp_root_hash_hex
         && left.tapp_size_bytes == right.tapp_size_bytes
         && left.tapp_blake3_hex == right.tapp_blake3_hex
@@ -519,10 +514,23 @@ fn candidate_is_older_than_published(
     candidate: &registry_types::RegistryVersion,
 ) -> bool {
     previous.versions.iter().any(|existing| {
-        existing.target.platform == candidate.target.platform
-            && existing.target.architecture == candidate.target.architecture
+        existing.tapp().is_some()
+            && existing.group() == candidate.group()
             && tilo_app_package::version::compare(&candidate.version, &existing.version).is_lt()
     })
+}
+
+/// Order `versions` newest first and keep what `retention` and the
+/// registry's version cap allow; every builder of entries shares this so
+/// apps and bots age out the same way.
+pub(crate) fn retain_versions(
+    mut versions: Vec<registry_types::RegistryVersion>,
+    retention: &registry_types::retention::RetentionPolicy,
+) -> Vec<registry_types::RegistryVersion> {
+    versions.sort_by(compare_registry_versions);
+    let mut versions = retention.retain(&versions);
+    keep_newest_versions(&mut versions);
+    versions
 }
 
 /// Bound `versions` (sorted newest first) to the registry's limit by dropping
@@ -559,8 +567,7 @@ fn same_target(
     left: &registry_types::RegistryVersion,
     right: &registry_types::RegistryVersion,
 ) -> bool {
-    left.target.platform == right.target.platform
-        && left.target.architecture == right.target.architecture
+    left.group() == right.group()
 }
 
 fn compare_registry_versions(
@@ -568,7 +575,10 @@ fn compare_registry_versions(
     right: &registry_types::RegistryVersion,
 ) -> std::cmp::Ordering {
     let semantic = tilo_app_package::version::compare(&right.version, &left.version);
-    semantic.then_with(|| left.target.architecture.cmp(&right.target.architecture))
+    let architecture = |version: &registry_types::RegistryVersion| {
+        version.target().map(|t| t.architecture.clone())
+    };
+    semantic.then_with(|| architecture(left).cmp(&architecture(right)))
 }
 
 #[cfg(test)]
@@ -579,18 +589,20 @@ mod tests {
     fn version(value: &str) -> registry_types::RegistryVersion {
         registry_types::RegistryVersion {
             version: value.into(),
-            tapp_url: String::new(),
-            tapp_root_hash_hex: String::new(),
-            tapp_size_bytes: 0,
             released_at_unix: 0,
-            tapp_blake3_hex: String::new(),
-            target: registry_types::RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-                interfaces: Vec::new(),
-            },
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: String::new(),
+                tapp_root_hash_hex: String::new(),
+                tapp_size_bytes: 0,
+                tapp_blake3_hex: String::new(),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                    interfaces: Vec::new(),
+                },
+            }),
         }
     }
 
@@ -619,6 +631,7 @@ mod tests {
             let current = version("0.1.42+gnew");
             let entry = registry_types::RegistryEntry {
                 package_id: "so.tilo.browser".into(),
+                kind: registry_types::EntryKind::App,
                 name: "Browser".into(),
                 description: "Browser".into(),
                 tagline: "Browse".into(),
@@ -642,8 +655,8 @@ mod tests {
                 &version("0.1.43+gnext")
             ));
             let mut arm = version("0.1.1+gold");
-            arm.target.architecture = "aarch64".into();
-            arm.target.isa = "aarch64-v8.2".into();
+            arm.tapp_mut().unwrap().target.architecture = "aarch64".into();
+            arm.tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
             assert!(!candidate_is_older_than_published(&entry, &arm));
         }
     }
@@ -714,7 +727,7 @@ module = "{module}"
             panic!("one version: {:?}", entry.versions);
         };
         assert_eq!(
-            version.target,
+            version.target().unwrap().clone(),
             registry_types::RegistryTarget {
                 platform: registry_types::ANDROID_PLATFORM.into(),
                 architecture: "aarch64".into(),
@@ -725,12 +738,7 @@ module = "{module}"
         );
         assert!(registry_types::verify_entry_signature(&entry));
 
-        for platform in [
-            Platform::TiloOs,
-            Platform::Linux,
-            Platform::Web,
-            Platform::Macos,
-        ] {
+        for platform in [Platform::TiloOs, Platform::Linux, Platform::Macos] {
             assert!(
                 build_entry(
                     &bytes,
@@ -766,7 +774,7 @@ module = "{module}"
     fn versions_beyond_the_limit_drop_the_oldest_superseded_ones() {
         let limit = registry_types::entry::MAX_ENTRY_VERSIONS;
         let mut arm = version("1.0.0");
-        arm.target.architecture = "aarch64".into();
+        arm.tapp_mut().unwrap().target.architecture = "aarch64".into();
         let mut versions: Vec<_> = (1..=limit)
             .map(|n| version(&format!("1.0.{n}")))
             .chain(std::iter::once(arm))
@@ -776,7 +784,11 @@ module = "{module}"
         assert_eq!(versions.len(), limit);
         // The x86_64 release 1.0.1 left; aarch64's only release stayed.
         assert!(versions.iter().all(|v| v.version != "1.0.1"));
-        assert!(versions.iter().any(|v| v.target.architecture == "aarch64"));
+        assert!(
+            versions
+                .iter()
+                .any(|v| v.target().unwrap().architecture == "aarch64")
+        );
         assert_eq!(
             versions.first().map(|v| v.version.as_str()),
             Some(&*format!("1.0.{limit}"))

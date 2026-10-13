@@ -93,10 +93,7 @@ mod tests {
 
     /// The editor's search source over `symbols`, as the framework builds it.
     fn source(symbols: &[SymbolRef]) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<crate::resource::CodeEditor>(code_entries(
-            symbols,
-            &[],
-        ))
+        ui::framework::testing::search_source::<crate::project::Project>(code_entries(symbols, &[]))
     }
 
     fn symbol(index: usize, name: &str, path: &str) -> SymbolRef {
@@ -187,25 +184,30 @@ mod tests {
         let provider = source(&symbols);
         assert!(
             provider
-                .search_page("needle", None, 0, 1)
+                .search_page(&ui::search::SearchQuery::new("needle"), None, 0, 1)
                 .results
                 .is_empty()
         );
-        let first = provider.search_page("common", None, 3, 1);
+        let first = provider.search_page(&ui::search::SearchQuery::new("common"), None, 3, 1);
         assert!(first.inspected <= 3);
         assert!(first.next.is_some());
 
         let mut cursor = None;
         let mut saw_late = false;
         for _ in 0..600 {
-            let page = provider.search_page("common", cursor.as_ref(), 2, 1);
+            let page = provider.search_page(
+                &ui::search::SearchQuery::new("common"),
+                cursor.as_ref(),
+                2,
+                1,
+            );
             assert!(page.inspected <= 2);
             cursor = page.next;
             if cursor.is_none() {
                 break;
             }
         }
-        let needle = provider.search_page("late/needle", None, 1, 1);
+        let needle = provider.search_page(&ui::search::SearchQuery::new("late/needle"), None, 1, 1);
         saw_late |= needle.results.iter().any(|hit| hit.title == "needle");
         assert!(saw_late, "a late corpus row must remain discoverable");
     }
@@ -216,11 +218,12 @@ mod tests {
             symbol(2, "beta", "src/beta.rs"),
         ]);
         let stale = provider
-            .search_page(".rs", None, 1, 1)
+            .search_page(&ui::search::SearchQuery::new(".rs"), None, 1, 1)
             .next
             .expect("continuation");
         let fresh = source(&[symbol(3, "fresh", "src/fresh.rs")]);
-        let restarted = fresh.search_page("fresh", Some(&stale), 1, 1);
+        let restarted =
+            fresh.search_page(&ui::search::SearchQuery::new("fresh"), Some(&stale), 1, 1);
         assert_eq!(restarted.results[0].title, "fresh");
     }
 }

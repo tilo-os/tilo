@@ -25,22 +25,13 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use shell::shell::chrome_state::{ChromeState, WsTab};
 use shell::shell::quick_settings::QsLevel;
+use shell::shell::state::StripId;
+use ui::widget::GroupRow;
 
 use super::driver::ShellDriver;
 
 /// One step in a scenario.
-///
-/// `ClickNamed`, `Modifiers`, `SetWsSettings` and `PushQsLevel` are
-/// currently unconstructed: `run_action` implements all four, but no
-/// scenario in `catalogue()` reaches for them yet. They are the DSL's
-/// surface, not dead branches — deleting them would take
-/// `resolve_named_rect`-based click targeting out of reach of the next
-/// scenario that needs it.
 #[derive(Debug, Clone)]
-#[allow(
-    dead_code,
-    reason = "the scenario DSL retains implemented actions that the current catalogue does not construct"
-)]
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).
     ClickAt(Point),
@@ -398,13 +389,15 @@ pub enum Action {
     /// screen, and the default width is the whole display.
     SetWindowWidths(u16),
     SwitchWorkspace(usize),
-    SetWsSettings(WsTab),
     PushQsLevel(QsLevel),
     /// Open the production host-session first-login chrome with an isolated,
     /// nonexistent identity path so screenshot tests cannot mutate user data.
     ShowHostDesktopOnboarding,
     SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState),
     SetLockVisual(super::driver::LockVisualState),
+    /// Turn the reduced-transparency setting on or off: floating chrome is
+    /// then the opaque material instead of the blurred one.
+    ReduceTransparency(bool),
     /// Create the person's "Research" workspace on the shown device, the way
     /// the laptop has it, and look at it.
     SeedOwnWorkspace,
@@ -610,7 +603,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.set_modifiers(ModifiersState::empty());
         }
         Action::OpenPalette => {
-            // Drive the default Super+K binding through the host's keyboard branch instead
+            // Drive the default Super+Space binding through the host's keyboard branch instead
             // of `set_palette_visible(true)` directly — the hotkey path
             // calls `toggle_palette()` which also focuses the palette
             // input + clears the residual query (see ShellOverlayHost::
@@ -618,7 +611,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             // actions would fall through because the palette ignores
             // characters when `!is_focused`.
             driver.set_modifiers(ModifiersState::SUPER);
-            driver.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
+            driver.press_key(&Key::Named(winit::keyboard::NamedKey::Space));
             driver.set_modifiers(ModifiersState::empty());
         }
         Action::CaptureRecordingActive(active) => {
@@ -676,6 +669,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::ShowHostDesktopOnboarding => driver.show_host_desktop_onboarding(),
         Action::SetOnboardingVisual(state) => driver.set_onboarding_visual_state(*state),
         Action::SetLockVisual(state) => driver.set_lock_visual_state(*state),
+        Action::ReduceTransparency(on) => driver.set_reduce_transparency(*on),
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
@@ -992,37 +986,59 @@ fn apply_wheel_and_reveal_samples<S: SnapshotSink>(
                 // curve, then freeze it before a render's worth of wall time
                 // can retire it.
                 driver.relayout();
-                let strips: Vec<_> = {
-                    let st = driver.chrome();
-                    let tree = st.tree();
-                    tree.desktop
-                        .active_workspace()
-                        .map(|ws| ws.strips.iter().map(|s| s.id).collect())
-                        .unwrap_or_default()
-                };
-                for ms in *at_ms {
-                    let mut any = false;
-                    for sid in &strips {
-                        if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
-                            for g in &mut row.groups {
-                                any |= g
-                                    .bar_mut_for_tests()
-                                    .hold_reveal_at(std::time::Duration::from_millis(*ms));
-                            }
-                        }
-                    }
-                    if !any {
-                        eprintln!("scenario: no tab reveal in flight to sample at {ms} ms");
-                    }
-                    driver.relayout();
-                    let name: &'static str =
-                        Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
-                    sink.capture(driver, name);
-                }
+                sample_held(
+                    driver,
+                    sink,
+                    prefix,
+                    at_ms,
+                    "tab reveal in flight",
+                    |row, at| {
+                        row.groups.iter_mut().fold(false, |any, g| {
+                            g.bar_mut_for_tests().hold_reveal_at(at) | any
+                        })
+                    },
+                );
             }
         }
         _ => {}
     }
+}
+
+/// Capture `{prefix}-{ms}ms` at each of `at_ms`, with every strip's row
+/// animation frozen there by `hold`, which reports whether it found one in
+/// flight. Returns the strips it held, so the caller can release them.
+fn sample_held<S: SnapshotSink>(
+    driver: &mut ShellDriver,
+    sink: &mut S,
+    prefix: &str,
+    at_ms: &[u64],
+    what: &str,
+    mut hold: impl FnMut(&mut GroupRow, std::time::Duration) -> bool,
+) -> Vec<StripId> {
+    let strips: Vec<_> = {
+        let st = driver.chrome();
+        let tree = st.tree();
+        tree.desktop
+            .active_workspace()
+            .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+            .unwrap_or_default()
+    };
+    for ms in at_ms {
+        let at = std::time::Duration::from_millis(*ms);
+        let mut any = false;
+        for sid in &strips {
+            if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                any |= hold(row, at);
+            }
+        }
+        if !any {
+            eprintln!("scenario: no {what} to sample at {ms} ms");
+        }
+        driver.relayout();
+        let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+        sink.capture(driver, name);
+    }
+    strips
 }
 
 /// `Action::SampleMakeSpace`, `Action::SampleSiblingFade` and
@@ -1036,28 +1052,9 @@ fn apply_make_space_sample_and_widths<S: SnapshotSink>(
     match action {
         Action::SampleSiblingFade { prefix, at_ms } => {
             driver.relayout();
-            let strips: Vec<_> = {
-                let st = driver.chrome();
-                let tree = st.tree();
-                tree.desktop
-                    .active_workspace()
-                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
-                    .unwrap_or_default()
-            };
-            for ms in *at_ms {
-                let mut any = false;
-                for sid in &strips {
-                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
-                        any |= row.hold_sibling_fade_at(std::time::Duration::from_millis(*ms));
-                    }
-                }
-                if !any {
-                    eprintln!("scenario: no sibling fade to sample at {ms} ms");
-                }
-                driver.relayout();
-                let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
-                sink.capture(driver, name);
-            }
+            let strips = sample_held(driver, sink, prefix, at_ms, "sibling fade", |row, at| {
+                row.hold_sibling_fade_at(at)
+            });
             for sid in &strips {
                 if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
                     row.clear_sibling_fade_hold();
@@ -1071,28 +1068,14 @@ fn apply_make_space_sample_and_widths<S: SnapshotSink>(
             // a render's worth of wall time can retire it.
             driver.step_frames(1);
             driver.relayout();
-            let strips: Vec<_> = {
-                let st = driver.chrome();
-                let tree = st.tree();
-                tree.desktop
-                    .active_workspace()
-                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
-                    .unwrap_or_default()
-            };
-            for ms in *at_ms {
-                let mut any = false;
-                for sid in &strips {
-                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
-                        any |= row.hold_shift_at(std::time::Duration::from_millis(*ms));
-                    }
-                }
-                if !any {
-                    eprintln!("scenario: no make-space slide in flight to sample at {ms} ms");
-                }
-                driver.relayout();
-                let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
-                sink.capture(driver, name);
-            }
+            sample_held(
+                driver,
+                sink,
+                prefix,
+                at_ms,
+                "make-space slide in flight",
+                GroupRow::hold_shift_at,
+            );
         }
         Action::SetWindowWidths(permille) => {
             let permille = *permille;
@@ -1227,12 +1210,14 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                         ssid: "Cafe WiFi".into(),
                         signal: 3,
                         secure: true,
+                        security: os_actions::WifiSecurity::Wpa2,
                         connected: false,
                     },
                     WifiNetwork {
                         ssid: "Airport Free".into(),
                         signal: 2,
                         secure: false,
+                        security: os_actions::WifiSecurity::Open,
                         connected: false,
                     },
                 ];
@@ -1290,9 +1275,8 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
     }
 }
 
-/// `Action::LoneWindow`, `Action::SwitchWorkspace`, `Action::SetWsSettings`
-/// and `Action::PushQsLevel` — split out of [`apply`] to keep that
-/// dispatcher short.
+/// `Action::LoneWindow`, `Action::SwitchWorkspace` and `Action::PushQsLevel`,
+/// split out of [`apply`] to keep that dispatcher short.
 fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action) {
     match action {
         Action::LoneWindow(idx) => {
@@ -1365,13 +1349,6 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                     drop(tree);
                     st.bump();
                 }
-            });
-        }
-        Action::SetWsSettings(tab) => {
-            let tab_copy = *tab;
-            driver.with_chrome(|st| {
-                st.overlays.ws_settings = true;
-                st.ws_settings_tab = tab_copy;
             });
         }
         Action::PushQsLevel(level) => {
@@ -2507,6 +2484,36 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "tab_drag_cancel",
+            description: "Cancel a lifted tab with Escape before releasing the pointer.",
+            actions: vec![
+                Action::Snapshot("01-desktop"),
+                Action::MoveCursorNamed("tab:Files"),
+                Action::MousePress,
+                Action::MoveCursor(Point::new(600.0, 300.0)),
+                Action::Snapshot("02-tab-dragging"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Snapshot("03-tab-cancelled"),
+                Action::MouseRelease,
+                Action::Snapshot("04-pointer-released"),
+            ],
+        },
+        Scenario {
+            name: "tab_menu_keyboard",
+            description: "Open the focused tab menu with Super+F10, navigate and cancel.",
+            actions: vec![
+                Action::Snapshot("01-desktop"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Named(NamedKey::F10)),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Snapshot("02-tab-menu-focused"),
+                Action::Key(Key::Named(NamedKey::ArrowDown)),
+                Action::Snapshot("03-tab-menu-next"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Snapshot("04-tab-menu-cancelled"),
+            ],
+        },
+        Scenario {
             name: "palette_typing",
             description: "Open the command palette, type 'h', then close with Esc.",
             actions: vec![
@@ -3095,6 +3102,32 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickAt(Point::new(744.0, 103.0)),
                 Action::Wait(2),
                 Action::Snapshot("04-browser-active"),
+            ],
+        },
+        Scenario {
+            name: "floating_material",
+            description: "Quick settings, then the palette, over a long note: floating chrome is the blurred material.",
+            actions: vec![
+                Action::SeedLongNotes(0),
+                Action::Wait(2),
+                Action::Relayout,
+                Action::Snapshot("01-document"),
+                Action::PushQsLevel(QsLevel::Root),
+                Action::Wait(30),
+                Action::Snapshot("02-quick-settings"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(30),
+                Action::OpenPalette,
+                Action::Wait(30),
+                Action::Snapshot("03-palette"),
+                // The same two surfaces under reduced transparency: opaque.
+                Action::ReduceTransparency(true),
+                Action::Snapshot("04-palette-opaque"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(30),
+                Action::PushQsLevel(QsLevel::Root),
+                Action::Wait(30),
+                Action::Snapshot("05-quick-settings-opaque"),
             ],
         },
         Scenario {
@@ -4167,7 +4200,7 @@ mod tests {
                     self.pending_invite_is_durable = ada.is_some_and(|person| {
                         person.invited
                             && person.active_tab.is_none()
-                            && workspace.role_of(&"ada".to_string()).is_some()
+                            && workspace.role_of("ada").is_some()
                     });
                 }
                 "04-attributed-history" => {

@@ -7,7 +7,7 @@
 
 use crate::time::Instant;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 
@@ -93,28 +93,16 @@ impl Widget for Spinner {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::length(self.size),
-                height: Dimension::length(self.size),
-            },
+        let style = Style {
+            size: Size::from_lengths(self.size, self.size),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -139,7 +127,7 @@ impl Widget for Spinner {
             (elapsed_ms / ROTATION_PERIOD_MS).fract()
         };
 
-        let accent = theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX];
+        let accent = theme.tokens.colors.intent.inverted;
 
         // Evenly spaced offsets so the chain covers a quarter of the orbit.
         for (i, &alpha) in DOT_ALPHAS.iter().enumerate() {
@@ -166,16 +154,9 @@ impl Widget for Spinner {
         "Spinner"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        Some(AccessNode::new(Role::Spinner).with_state(AccessState {
-            busy: true,
-            ..Default::default()
-        }))
+        Some(AccessNode::new(Role::Spinner).with_state(AccessState::new().busy(true)))
     }
 
     /// In the normal presentation the default would freeze the orbit at the

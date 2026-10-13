@@ -43,29 +43,34 @@ on:
       - "crates/system/cloud-source-icloud/**"
       - "crates/system/cloud-source-onedrive/**"
       - "crates/system/cloud-source/**"
+      - "crates/system/endpoint-reachability/**"
       - "crates/system/content/**"
       - "crates/system/fs-content/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-protocol/**"
       - "crates/system/fs/**"
       - "crates/system/power/**"
-      - "crates/system/private-fs/**"
       - "crates/system/sandbox-core/**"
       - "crates/system/secret-vault/**"
       - "crates/system/settings-store/**"
       - "crates/platform/tilo-clock/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
+      - "crates/system/tilo-nm/**"
       - "crates/platform/tilo-net/**"
       - "crates/platform/tilo-files/**"
       - "crates/platform/tilo-paths/**"
+      - "crates/platform/tilo-platform-caps/**"
       - "crates/platform/tilo-secrets/**"
       - "crates/system/tilo-seal/**"
       - "crates/system/wire-frame/**"
-      - "crates/system/xdg-paths/**"
       - "crates/workspace-hack/**"
       - "apps/file-explorer/**"
       - "vendor/automerge/**"
+      - "vendor/iroh/**"
+      - "vendor/iroh-gossip/**"
       - "vendor/genawaiter-proc-macro/**"
+      - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
       - "os/containers/tilo-relay/**"
       - "os/tests/tilo-session-lifecycle.sh"
@@ -84,10 +89,10 @@ on:
       - ".forgejo/workflows/ci-filesystem.yml"
       - ".forgejo/workflows/resolve-builder.yml"
   pull_request:
-    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # Stacked PRs (a PR whose base is another task branch) get the
     # same gate; affected-package selection diffs against that base, so each
     # layer tests its own change.
-    branches: ["main", "pr/sdk-*"]
+    branches: ["main", "pr/sdk-*", "codex/**"]
     paths:
       - ".cargo/**"
       - "crates/collab/**"
@@ -126,29 +131,34 @@ on:
       - "crates/system/cloud-source-icloud/**"
       - "crates/system/cloud-source-onedrive/**"
       - "crates/system/cloud-source/**"
+      - "crates/system/endpoint-reachability/**"
       - "crates/system/content/**"
       - "crates/system/fs-content/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-protocol/**"
       - "crates/system/fs/**"
       - "crates/system/power/**"
-      - "crates/system/private-fs/**"
       - "crates/system/sandbox-core/**"
       - "crates/system/secret-vault/**"
       - "crates/system/settings-store/**"
       - "crates/platform/tilo-clock/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
+      - "crates/system/tilo-nm/**"
       - "crates/platform/tilo-net/**"
       - "crates/platform/tilo-files/**"
       - "crates/platform/tilo-paths/**"
+      - "crates/platform/tilo-platform-caps/**"
       - "crates/platform/tilo-secrets/**"
       - "crates/system/tilo-seal/**"
       - "crates/system/wire-frame/**"
-      - "crates/system/xdg-paths/**"
       - "crates/workspace-hack/**"
       - "apps/file-explorer/**"
       - "vendor/automerge/**"
+      - "vendor/iroh/**"
+      - "vendor/iroh-gossip/**"
       - "vendor/genawaiter-proc-macro/**"
+      - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
       - "os/containers/tilo-relay/**"
       - "os/tests/tilo-session-lifecycle.sh"
@@ -213,6 +223,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Prepare verified fonts for offline builds
+        uses: ./.forgejo/actions/prepare-font-assets
+
       - name: Require a real kernel FUSE environment
         run: bash scripts/ci-fuse-preflight.sh
 
@@ -270,7 +283,7 @@ jobs:
       - name: Enforce named delivery and governed identity
         run: |
           bash scripts/ci-run.sh "authenticated named-share delivery" -- cargo test --locked -p tilo-fs named_share_delivery --lib -- --nocapture
-          bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p collab-types share_control --lib -- --nocapture
+          bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p fs-protocol share_control --lib -- --nocapture
           bash scripts/ci-run.sh "governed identity projection schema" -- cargo test --locked -p tilo-user-identity projection --lib -- --nocapture
           bash scripts/ci-run.sh "governed room identity projection" -- cargo test --locked -p shell root_signed_governance_projects_identity_and_additive_revocation --lib -- --nocapture
 
@@ -286,7 +299,14 @@ jobs:
         run: |
           bash scripts/ci-run.sh "collaborative-files corruption matrix" -- cargo test --locked -p tilo-fs --test corruption_matrix -- --nocapture --test-threads=1
           bash scripts/ci-run.sh "bounded durable backup policy" -- cargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture
-          bash scripts/ci-run.sh "signed repository known-good recovery and tamper refusal" -- cargo test --locked -p tilo-fs record_repository::tests::restart_verifies_signed_state_and_recovers_valid_generations --lib -- --nocapture
+          # An absent libtest filter succeeds with zero tests. The focused runner
+          # resolves these exact names and requires one executed pass per case.
+          TEST_NAMES='[
+            "record_repository::tests::signed_transactions_merges_and_batches_project_whole_and_survive_restart",
+            "record_repository::tests::a_received_changeset_applies_whole_or_not_at_all",
+            "durable_backup::tests::backups_retain_generations_and_recover_from_the_newest_valid_one"
+          ]' SOURCE_SHA="$(git rev-parse HEAD)" PACKAGE=tilo-fs TEST_TARGET= OPERATION=test-lib \
+            bash scripts/ci-run.sh "signed repository known-good recovery and tamper refusal" -- python3 -I tools/ci/focused_test.py run --root .
           bash scripts/ci-run.sh "legacy byte-name migration" -- cargo test --locked -p tilo-fs namespace::tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture
           bash scripts/ci-run.sh "history ancestry corruption refusal" -- cargo test --locked -p tilo-fs history::tests::history_logs_read_legacy_and_fail_closed_on_damage --lib -- --nocapture
           bash scripts/ci-run.sh "transaction journal partial-batch refusal" -- cargo test --locked -p tilo-fs record_transaction::tests::journal_restarts_exactly_with_monotonic_phases_and_whole_batches --lib -- --nocapture
@@ -320,9 +340,6 @@ jobs:
       TILO_TEST_NEXTCLOUD_PASSWORD: conformance-password
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     services:
       webdav:
         image: docker.io/bytemark/webdav:latest
@@ -384,9 +401,6 @@ jobs:
       TILO_LIVE_NEXTCLOUD_PASSWORD: ${{ secrets.TILO_LIVE_NEXTCLOUD_PASSWORD }}
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -419,9 +433,6 @@ jobs:
       TILO_REQUIRE_FUSE: "0"
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
       # Privilege applies inside the disposable guest only: loop devices,
       # Btrfs mounts, fanotify filesystem marks and pre-content groups.
       options: --privileged

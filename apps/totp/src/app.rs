@@ -1,91 +1,69 @@
-//! The Authenticator's surface over the [`Totp`] resource.
+//! The Authenticator's surface over the [`Totp`] resource: the account list,
+//! its status surfaces and the add sheet.
 //!
 //! The document holds account metadata (names, order and lifecycle
 //! collaborate without credentials entering history); this device's secret
 //! store holds each account's seed ([`Seeds`]). The surface joins the two into
-//! the accounts it shows, submits every metadata change as a [`TotpAction`]
-//! through the framework's dispatcher, and composes the three surfaces:
+//! the accounts it shows and submits every metadata change as a field edit or verb
+//! through the framework's dispatcher. The window's header row, with its
+//! search and add buttons, belongs to the framework's navigation shell around
+//! this widget (see [`crate::resource`]); this widget paints what stands under
+//! it:
 //!
-//!  * a header (title, account count, search field, **+ Add** button),
-//!  * the scrollable [`AccountList`] (main screen),
-//!  * the [`AddAccountPanel`] modal (second screen).
+//!  * the [`AccountList`] (main screen), with a banner above it when a
+//!    secret could not be saved on this device,
+//!  * a [`Notice`] for what just happened, which the shell shows as a toast,
+//!  * the [`AddAccountPanel`] sheet (second screen), in the window's top layer.
 //!
-//! Layout is done by hand from the root rect rather than through the
-//! taffy tree: the app registers a single full-window node and positions
-//! its children with rect maths, forwarding events to them directly.
-//! This keeps the rich, mixed-size composition pixel-exact and decoupled
-//! from the global focus order (the modal manages its own field focus).
+//! The list is painted from the root rect rather than through the taffy tree:
+//! the codes and their countdown rings change every frame and the rows are
+//! faces of the toolkit's list row, ring and button.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::framework::Dispatcher;
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::secrets::SecretStore;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::spacing::Spacing;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{Banner, BannerContent, BannerKind, Button, ButtonFace, TextInput, Widget};
+use ui::widget::toast::ToastKind;
+use ui::widget::{Banner, BannerContent, BannerKind, TaffyTreeExt, Widget};
 
-use crate::actions::TotpAction;
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
 use crate::list::{AccountList, ListEvent};
-use crate::model::{Account, AccountId, Vault};
+use crate::model::{Account, AccountId, StoredAccount, Vault};
 use crate::resource::{Totp, TotpEffect};
 use crate::secrets::Seeds;
 use crate::totp;
+use ui::framework::Submit;
+use ui::tilo_resource::Edit;
 
-const OUTER_PAD: f64 = 24.0;
-const ADD_BTN_W: f64 = 168.0;
-const COMPACT_ADD_BTN_W: f64 = 112.0;
-const EDIT_BTN_W: f64 = 94.0;
-const COMPACT_EDIT_BTN_W: f64 = 64.0;
-const ADD_BTN_H: f64 = 40.0;
-const SEARCH_H: f64 = 44.0;
-const HEADER_H: f64 = 150.0;
-/// The unsaved-vault banner: an `s2` breath under the header hairline, the
-/// 32 px band itself, then an `s4` section gap before the first card (which
-/// the list pads by its own `s2`, so the band the list reserves is `s4 - s2`
-/// shorter than the visible gap). Spelled from `Spacing::BASE` because
-/// layout runs without a theme.
-const BANNER_TOP_GAP: f64 = Spacing::BASE.s2 as f64;
-/// The shared `Banner`'s pinned 1× band (its own content-height floor).
-const BANNER_H: f64 = 44.0;
-const BANNER_BOTTOM_GAP: f64 = (Spacing::BASE.s4 - Spacing::BASE.s2) as f64;
-const PERSISTENCE_BANNER_BAND: f64 = BANNER_TOP_GAP + BANNER_H + BANNER_BOTTOM_GAP;
-/// Gap between the banner's message and its Retry button (`s2`): the two
-/// used to share an edge.
-const BANNER_RETRY_GAP: f64 = Spacing::BASE.s2 as f64;
-const BANNER_RETRY_W: f64 = 92.0;
-/// The header actions, the search field, the persistence banner and the
-/// account list share one centred content column no wider than this at
-/// normal type. A row is an identity on the left and a code on the right; an
-/// unbounded row on a wide window put those ~1400px apart. This is a
-/// composition choice for this app (validated with 8-digit codes and long
-/// identities), not a framework width rule.
-const READABLE_CONTENT_W: f64 = 760.0;
-/// Top inset of the header's action row.
-const HEADER_BTN_TOP: f64 = 18.0;
-/// Gap between the Edit and Add buttons — siblings, so the `s3` step.
-const HEADER_BTN_GAP: f64 = Spacing::BASE.s3 as f64;
-/// Horizontal padding inside a header button around its measured label (the
-/// `s4` spacing step, spelled out because layout runs without a theme).
-const HEADER_BTN_PAD: f64 = 16.0;
-const TOAST_TTL: Duration = Duration::from_millis(1800);
+/// Seconds into a thirty-second period at which a capture shows its codes: the
+/// rings are about two thirds full.
+const CAPTURE_ELAPSED: u64 = 11;
+/// Seconds into the period at which the expiring capture shows them: the last
+/// few, when the rings turn to their warning tone.
+const CAPTURE_EXPIRING_ELAPSED: u64 = 27;
+
+/// What the window's toast should do next, for the shell around the
+/// surface.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Notice {
+    Show(String, ToastKind),
+    Clear,
+}
 
 fn qr_image_request() -> PickRequest {
     PickRequest::open("Choose a QR image", "Open")
@@ -101,6 +79,11 @@ fn qr_image_request() -> PickRequest {
         .all_files()
 }
 
+/// The banner's wording when a secret could not be saved on this device: the
+/// headline, and what the person can do about it.
+const UNSAVED_TITLE: &str = "Changes aren\u{2019}t saved";
+const UNSAVED_DETAIL: &str = "Restore keyring or storage access on this device, then retry.";
+
 #[allow(clippy::struct_excessive_bools, reason = "independent UI/frame flags")]
 pub struct AuthenticatorApp {
     /// The accounts as the document holds them: metadata, no secrets.
@@ -110,7 +93,6 @@ pub struct AuthenticatorApp {
     /// The accounts joined with this device's seeds: what the list shows and
     /// codes are computed from.
     vault: Vault,
-    search: TextInput,
     list: AccountList,
     add_panel: AddAccountPanel,
     /// An in-flight XDG-portal file-open for QR-image import. When the user
@@ -121,26 +103,20 @@ pub struct AuthenticatorApp {
     portal_rx: Option<PortalChannel>,
 
     rect: Rect,
+    /// The readable column the banner and rows stand in, from the last paint.
+    column: Rect,
+    banner_rect: Rect,
+    retry_rect: Rect,
     root_node: Option<NodeId>,
-    header_rect: Rect,
-    /// The centred readable column (see [`READABLE_CONTENT_W`]) the header
-    /// actions, search, banner and list are laid out in.
-    content_rect: Rect,
-    search_rect: Rect,
-    add_btn_rect: Rect,
-    edit_btn_rect: Rect,
-    persistence_retry_rect: Rect,
-    list_rect: Rect,
-    /// Measured widths of the Add and Edit button labels, captured by the
-    /// draw pass so `apply_layout` can size the buttons from the text they
-    /// carry (a larger text scale widens the button rather than spilling the
-    /// caption past it). `None` until the first paint, when the authored
-    /// widths stand in.
-    header_label_w: Option<(f64, f64)>,
+    /// This tree's node of each of the open sheet's text fields, in tree order.
+    field_nodes: Vec<NodeId>,
+    /// The open sheet changed the layout tree (it opened or closed).
+    structure_dirty: bool,
 
     last_mouse: Point,
     selected: Option<AccountId>,
-    toast: Option<(String, Instant, ToastKind)>,
+    /// Where the surface raises its notices; the shell shows them.
+    notice: ui::LocalState<Option<Notice>>,
     /// The exact code string most recently written to the clipboard by a copy
     /// action. Lets callers (and tests) observe what was copied without
     /// round-tripping the system clipboard, which is unavailable headless.
@@ -148,8 +124,8 @@ pub struct AuthenticatorApp {
     /// An account this view asked to delete, confirmed once it leaves the
     /// document.
     pending_delete: Option<AccountId>,
-    /// The visible (filtered/ordered) list must be recomputed — set when the
-    /// vault or the search query changes.
+    /// The visible (ordered) list must be recomputed — set when the vault
+    /// changes.
     list_dirty: bool,
     /// Effective host motion preference. Normal mode uses a smooth countdown;
     /// reduced motion sleeps between whole-second updates.
@@ -160,6 +136,12 @@ pub struct AuthenticatorApp {
     persistence_message: Option<String>,
     /// Where account metadata changes go.
     dispatch: Option<Dispatcher<Totp>>,
+    /// Whether the list has accounts, for the window's header row to follow.
+    has_accounts: Option<ui::LocalState<bool>>,
+    /// How many accounts the list has, for the header row's count.
+    account_count: Option<ui::LocalState<usize>>,
+    /// A capture's clock was moved to its scenario's step already.
+    clock_staged: bool,
 }
 
 impl Default for AuthenticatorApp {
@@ -169,41 +151,65 @@ impl Default for AuthenticatorApp {
 }
 
 impl AuthenticatorApp {
+    #[cfg(test)]
+    pub(crate) fn test_panel(&mut self) -> &mut AddAccountPanel {
+        &mut self.add_panel
+    }
+
     /// The surface before the framework attaches it to its resource and this
     /// device's secret store.
     pub fn new() -> Self {
+        crate::i18n::ensure();
         Self {
             accounts: Rc::default(),
             seeds: Seeds::new(SecretStore::memory("so.tilo.totp"), false),
             vault: Vault::new(),
-            // The shared field owns its placeholder so the hint shares the
-            // typed text's font, gutter and centre line.
-            search: TextInput::local()
-                .with_kind(ui::widget::TextInputKind::Search)
-                .with_placeholder("Search accounts\u{2026}"),
             list: AccountList::new(),
             add_panel: AddAccountPanel::new(),
             portal_rx: None,
             rect: Rect::ZERO,
+            column: Rect::ZERO,
+            banner_rect: Rect::ZERO,
+            retry_rect: Rect::ZERO,
             root_node: None,
-            header_rect: Rect::ZERO,
-            content_rect: Rect::ZERO,
-            search_rect: Rect::ZERO,
-            add_btn_rect: Rect::ZERO,
-            edit_btn_rect: Rect::ZERO,
-            persistence_retry_rect: Rect::ZERO,
-            list_rect: Rect::ZERO,
-            header_label_w: None,
+            field_nodes: Vec::new(),
+            structure_dirty: false,
             last_mouse: Point::ZERO,
             selected: None,
-            toast: None,
+            notice: ui::LocalState::new(None),
             last_copied: None,
             pending_delete: None,
             list_dirty: false,
             reduce_motion: false,
             persistence_message: None,
             dispatch: None,
+            has_accounts: None,
+            account_count: None,
+            clock_staged: false,
         }
+    }
+
+    /// Report through `signal` whether the list has accounts, so the header
+    /// row's actions can step aside for the empty state.
+    #[must_use]
+    pub(crate) fn with_account_signal(mut self, signal: ui::LocalState<bool>) -> Self {
+        self.has_accounts = Some(signal);
+        self
+    }
+
+    /// Report through `signal` how many accounts the list has, for the
+    /// header row's count.
+    #[must_use]
+    pub(crate) fn with_count_signal(mut self, signal: ui::LocalState<usize>) -> Self {
+        self.account_count = Some(signal);
+        self
+    }
+
+    /// Raise notices through `signal`, for the shell's toast.
+    #[must_use]
+    pub(crate) fn with_notice_signal(mut self, signal: ui::LocalState<Option<Notice>>) -> Self {
+        self.notice = signal;
+        self
     }
 
     /// Edit through `dispatch`, with the seeds in `store`. A view that is not
@@ -219,10 +225,10 @@ impl AuthenticatorApp {
     }
 
     /// Submit one account change through the framework: checked, applied,
-    /// undoable and replicated like the same action from the palette.
-    fn apply(&self, action: &TotpAction) {
+    /// undoable and replicated like the same edit or verb from the palette.
+    fn submit(&self, submit: impl Submit<Totp>) {
         if let Some(dispatch) = &self.dispatch {
-            dispatch.apply(action);
+            dispatch.submit(submit);
         }
     }
 
@@ -234,12 +240,10 @@ impl AuthenticatorApp {
         if self.persistence_message.is_none() {
             if self.seeds.unreadable() {
                 self.describe_persistence_failure(
-                    "This device's secrets couldn't be read. Unlock the keyring or restore access, then retry.",
+                    "This device\u{2019}s keys couldn\u{2019}t be read. Unlock the keyring or restore access, then retry.",
                 );
             } else if self.seeds.pending() {
-                self.describe_persistence_failure(
-                    "Secret changes aren't saved on this device. Restore keyring or storage access, then retry.",
-                );
+                self.describe_persistence_failure(UNSAVED_DETAIL);
             }
         }
         self.join_seeds();
@@ -250,7 +254,7 @@ impl AuthenticatorApp {
             self.toast("Account removed", ToastKind::Success);
         }
         if self.selected.is_none_or(|id| !ids.contains(&id)) {
-            self.selected = ids.first().copied();
+            self.selected = self.vault.ordered().first().map(|account| account.id);
         }
     }
 
@@ -286,10 +290,10 @@ impl AuthenticatorApp {
         // A durable, actionable banner supersedes the transient toast. Keeping
         // both is noisy and obscures the account list, especially on narrow
         // windows.
-        self.toast = None;
+        self.notice.set(Some(Notice::Clear));
     }
 
-    /// Try this device's secret store again, as the user asked.
+    /// Try this device's secret store again, as the person asked.
     fn retry_persist(&mut self) -> bool {
         if !self.persistence_pending() {
             return true;
@@ -298,12 +302,10 @@ impl AuthenticatorApp {
         if self.seeds.retry(&ids) {
             self.persistence_message = None;
             self.join_seeds();
-            self.toast("Secrets saved on this device", ToastKind::Success);
+            self.toast("Keys saved on this device", ToastKind::Success);
             true
         } else {
-            self.describe_persistence_failure(
-                "Secrets still aren't saved on this device. Restore keyring or storage access, then retry.",
-            );
+            self.describe_persistence_failure(UNSAVED_DETAIL);
             false
         }
     }
@@ -318,33 +320,27 @@ impl AuthenticatorApp {
         saved
     }
 
-    /// Recompute the filtered/ordered visible set and push it to the list.
+    /// Recompute the ordered visible set and push it to the list.
     fn refresh_list(&mut self) {
-        let query = self.search.value().to_string();
-        let visible = self.vault.search(&query);
-        if visible.is_empty() {
-            if query.trim().is_empty() {
-                self.list.set_empty_message("No accounts yet");
-            } else {
-                self.list.set_empty_message(format!(
-                    "No accounts match \u{201c}{}\u{201d}",
-                    query.trim()
-                ));
-            }
-        }
         self.list.set_selected(self.selected);
-        self.list.set_accounts(visible);
+        self.list.set_accounts(self.vault.ordered());
+        if let Some(signal) = &self.has_accounts {
+            signal.set(!self.list.is_empty());
+        }
+        if let Some(signal) = &self.account_count {
+            signal.set(self.list.len());
+        }
     }
 
-    fn toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
-        self.toast = Some((msg.into(), ui::time::now(), kind));
+    fn toast(&self, msg: impl Into<String>, kind: ToastKind) {
+        self.notice.set(Some(Notice::Show(msg.into(), kind)));
     }
 
     fn copy_account(&mut self, id: AccountId) {
         if let Some(acc) = self.vault.get(id).cloned() {
             if !acc.secret_is_valid() {
                 self.toast(
-                    format!("No local secret for {}", acc.title()),
+                    format!("No key for {} on this device", acc.title()),
                     ToastKind::Error,
                 );
                 return;
@@ -375,138 +371,37 @@ impl AuthenticatorApp {
             .is_some_and(crate::model::Account::secret_is_valid)
     }
 
-    /// Apply one list interaction. Reorder and delete are document mutations,
-    /// submitted as the same [`TotpAction`] the published account actions
-    /// build; copy and select are presentation and never touch the document.
-    fn apply_list_event(&mut self, ev: ListEvent) {
-        match ev {
-            ListEvent::Copy(id) => {
-                self.selected = Some(id);
-                self.copy_account(id);
-                self.list_dirty = true;
-            }
-            ListEvent::Select(id) => {
-                self.selected = Some(id);
-                self.list_dirty = true;
-            }
-            ListEvent::MoveUp(id) => self.apply(&crate::actions::move_up_action(id)),
-            ListEvent::MoveDown(id) => self.apply(&crate::actions::move_down_action(id)),
-            ListEvent::Delete(id) => {
-                // Deleting asks first; the account (and with it this device's
-                // secret) goes once the document drops it.
-                self.pending_delete = Some(id);
-                self.apply(&crate::actions::delete_account_action(id));
-            }
-        }
+    /// Show the add sheet.
+    fn open_add(&mut self) {
+        self.add_panel.open();
+        self.structure_dirty = true;
     }
 
-    /// Act on one outcome drained from the Add-account modal. The secret goes
-    /// to this device's store; only metadata goes to the document, with the
-    /// colour slot and list order pinned at authoring time so replay is
-    /// deterministic.
-    fn apply_add_panel_event(&mut self, ev: AddPanelEvent) {
-        match ev {
-            AddPanelEvent::Cancel => {}
-            AddPanelEvent::PickImageForQr => self.import_qr_from_image(),
-            AddPanelEvent::Save(mut acc) => {
-                acc.color = (self.vault.len() % 7) as u8;
-                let order = self.vault.next_order();
-                acc.order = order;
-                let id = acc.id;
-                let saved = self.keep_seed(
-                    id,
-                    &acc.secret,
-                    "Account was added, but its secret isn't saved on this device. Keep this session open, restore access, then retry.",
-                );
-                self.apply(&crate::actions::add_account_action(&acc, order));
-                self.selected = Some(id);
-                if saved {
-                    self.toast("Account added", ToastKind::Success);
-                }
-            }
-            AddPanelEvent::Edit(mut acc) => {
-                let Some(before) = self.vault.get(acc.id).cloned() else {
-                    self.toast("Account is no longer available", ToastKind::Error);
-                    self.list_dirty = true;
-                    return;
-                };
-                // The form edits identity, secret and code parameters; the
-                // list owns colour and order.
-                acc.color = before.color;
-                acc.order = before.order;
-                let saved = acc.secret == before.secret
-                    || self.keep_seed(
-                        acc.id,
-                        &acc.secret,
-                        "Account changed, but its new secret isn't saved on this device. Restore access, then retry.",
-                    );
-                let edits = crate::actions::edit_actions(&before, &acc);
-                if let Some(dispatch) = &self.dispatch {
-                    dispatch.group(|| {
-                        for edit in &edits {
-                            dispatch.apply(edit);
-                        }
-                    });
-                }
-                self.join_seeds();
-                self.selected = Some(acc.id);
-                if saved {
-                    self.toast("Account updated", ToastKind::Success);
-                }
-            }
-            AddPanelEvent::Provision(acc) => {
-                if self.vault.get(acc.id).is_none() {
-                    self.toast("Account is no longer available", ToastKind::Error);
-                    self.list_dirty = true;
-                    return;
-                }
-                // Only the local secret is installed; the shared identity,
-                // order and colour stay as the document has them, and the
-                // form checked the code parameters against them.
-                let saved = self.keep_seed(
-                    acc.id,
-                    &acc.secret,
-                    "Secret is available only for this session; it isn't saved on this device. Restore access, then retry.",
-                );
-                self.join_seeds();
-                if saved {
-                    self.toast("Secret set up on this device", ToastKind::Success);
-                }
-            }
-        }
-        self.list_dirty = true;
-    }
-
-    /// Copy the selected account (or the first visible one) — the Enter
-    /// shortcut.
-    fn copy_focused(&mut self) {
-        let target = self
-            .selected
-            .filter(|id| self.vault.get(*id).is_some())
-            .or_else(|| self.vault.search(self.search.value()).first().map(|a| a.id));
-        if let Some(id) = target {
-            self.copy_account(id);
-        }
-    }
-
-    fn open_selected_for_edit(&mut self) -> bool {
-        let Some(account) = self.selected.and_then(|id| self.vault.get(id)).cloned() else {
+    /// Open the sheet for `id`: its details when the key is here, the key's
+    /// setup when it is not.
+    fn open_for(&mut self, id: AccountId) -> bool {
+        let Some(account) = self.vault.get(id).cloned() else {
             return false;
         };
+        self.selected = Some(id);
         if account.secret_is_valid() {
             self.add_panel.open_for_edit(&account);
         } else {
             self.add_panel.open_for_provision(&account);
         }
-        self.add_panel.layout(self.rect);
+        self.structure_dirty = true;
         true
     }
 
-    /// Move the selected account through the same visible, filtered order the
-    /// pointer list paints. This keeps keyboard selection in step with the
-    /// list rather than introducing a second focus model.
+    fn open_selected_for_edit(&mut self) -> bool {
+        self.selected.is_some_and(|id| self.open_for(id))
+    }
+
+    /// Move the selected account through the same ordered list the pointer
+    /// paints. This keeps keyboard selection in step with the list rather
+    /// than introducing a second focus model.
     fn move_selection(&mut self, delta: isize) -> bool {
-        let visible = self.vault.search(self.search.value());
+        let visible = self.vault.ordered();
         if visible.is_empty() {
             return false;
         }
@@ -517,8 +412,9 @@ impl AuthenticatorApp {
         let next = (current as isize + delta).clamp(0, visible.len() as isize - 1) as usize;
         if let Some(account) = visible.get(next) {
             self.selected = Some(account.id);
+            self.list.set_selected(self.selected);
+            self.list.reveal(account.id);
         }
-        self.list.set_selected(self.selected);
         true
     }
 
@@ -530,28 +426,131 @@ impl AuthenticatorApp {
         }
     }
 
+    /// Copy the selected account (or the first one) — the Enter shortcut.
+    fn copy_focused(&mut self) {
+        let target = self
+            .selected
+            .filter(|id| self.vault.get(*id).is_some())
+            .or_else(|| self.vault.ordered().first().map(|a| a.id));
+        if let Some(id) = target {
+            self.copy_account(id);
+        }
+    }
+
+    /// Apply one list interaction. Reorder and delete are document mutations,
+    /// submitted as the vault's verbs the published accounts offer; copy and select are presentation and never touch the document.
+    fn apply_list_event(&mut self, ev: ListEvent) {
+        match ev {
+            ListEvent::Copy(id) => {
+                self.selected = Some(id);
+                self.copy_account(id);
+                self.list_dirty = true;
+            }
+            ListEvent::Select(id) => {
+                self.selected = Some(id);
+                self.list_dirty = true;
+            }
+            ListEvent::Edit(id) | ListEvent::SetUp(id) => {
+                self.open_for(id);
+            }
+            ListEvent::Add => self.open_add(),
+            ListEvent::MoveUp(id) => self.submit(Totp::MOVE_UP.with(Totp::item(id))),
+            ListEvent::MoveDown(id) => self.submit(Totp::MOVE_DOWN.with(Totp::item(id))),
+            ListEvent::Delete(id) => {
+                // Deleting asks first; the account (and with it this device's
+                // key) goes once the document drops it.
+                self.pending_delete = Some(id);
+                self.submit(Totp::DELETE.with(Totp::item(id)));
+            }
+        }
+    }
+
+    /// Act on one outcome drained from the add sheet. The key goes to this
+    /// device's store; only metadata goes to the document, with the colour
+    /// slot and list order pinned at authoring time so replay is
+    /// deterministic.
+    fn apply_add_panel_event(&mut self, ev: AddPanelEvent) {
+        self.structure_dirty = true;
+        match ev {
+            AddPanelEvent::Cancel => {}
+            AddPanelEvent::PickImageForQr => self.import_qr_from_image(),
+            AddPanelEvent::Save(mut acc) => {
+                acc.color = (self.vault.len() % 7) as u8;
+                let order = self.vault.next_order();
+                acc.order = order;
+                let id = acc.id;
+                let saved = self.keep_seed(
+                    id,
+                    &acc.secret,
+                    "The account was added, but its key isn\u{2019}t saved. Keep this window open, restore access, then retry.",
+                );
+                self.submit(Totp::paths().accounts.insert_as(
+                    &Totp::item(id),
+                    usize::MAX,
+                    &StoredAccount::of(&acc),
+                ));
+                self.selected = Some(id);
+                if saved {
+                    self.toast("Account added", ToastKind::Success);
+                }
+            }
+            AddPanelEvent::Edit(mut acc) => {
+                let Some(before) = self.vault.get(acc.id).cloned() else {
+                    self.toast("That account is no longer available", ToastKind::Error);
+                    self.list_dirty = true;
+                    return;
+                };
+                // The form edits identity, key and code parameters; the list
+                // owns colour and order.
+                acc.color = before.color;
+                acc.order = before.order;
+                let saved = acc.secret == before.secret
+                    || self.keep_seed(
+                        acc.id,
+                        &acc.secret,
+                        "The account changed, but its new key isn\u{2019}t saved on this device. Restore access, then retry.",
+                    );
+                let edits = account_edits(&before, &acc);
+                if let Some(dispatch) = &self.dispatch {
+                    dispatch.group(|| {
+                        for edit in edits {
+                            dispatch.submit(edit);
+                        }
+                    });
+                }
+                self.join_seeds();
+                self.selected = Some(acc.id);
+                if saved {
+                    self.toast("Account updated", ToastKind::Success);
+                }
+            }
+            AddPanelEvent::Provision(acc) => {
+                if self.vault.get(acc.id).is_none() {
+                    self.toast("That account is no longer available", ToastKind::Error);
+                    self.list_dirty = true;
+                    return;
+                }
+                // Only the local key is installed; the shared identity, order
+                // and colour stay as the document has them, and the form
+                // checked the code parameters against them.
+                let saved = self.keep_seed(
+                    acc.id,
+                    &acc.secret,
+                    "The key works for this session, but it isn\u{2019}t saved on this device. Restore access, then retry.",
+                );
+                self.join_seeds();
+                if saved {
+                    self.toast("Key set up on this device", ToastKind::Success);
+                }
+            }
+        }
+        self.list_dirty = true;
+    }
+
     /// Resolve a published canvas target to the existing list/app action.
     /// Keeping this beside `apply_list_event` ensures assistive activation
     /// cannot acquire a separate mutation path from pointer input.
     fn perform_a11y_target(&mut self, target: &str, action: &A11yAction) -> bool {
-        if target == "totp.add" {
-            if matches!(action, A11yAction::Activate) {
-                self.add_panel.open();
-                self.add_panel.layout(self.rect);
-                return true;
-            }
-            return false;
-        }
-        if target == "totp.edit" {
-            return matches!(action, A11yAction::Activate) && self.open_selected_for_edit();
-        }
-        if target == "totp.search" {
-            if matches!(action, A11yAction::Activate | A11yAction::Focus) {
-                self.search.set_focus(true);
-                return true;
-            }
-            return false;
-        }
         let Some((verb, raw_id)) = target.rsplit_once(':') else {
             return false;
         };
@@ -573,20 +572,18 @@ impl AuthenticatorApp {
             return false;
         }
         if verb == "totp.setup" {
-            let Some(account) = self.vault.get(id).cloned() else {
+            let Some(account) = self.vault.get(id) else {
                 return false;
             };
             if account.secret_is_valid() {
                 return false;
             }
-            self.selected = Some(id);
-            self.add_panel.open_for_provision(&account);
-            self.add_panel.layout(self.rect);
-            return true;
+            return self.open_for(id);
         }
         let event = match verb {
             "totp.select" => ListEvent::Select(id),
             "totp.copy" => ListEvent::Copy(id),
+            "totp.edit" => ListEvent::Edit(id),
             "totp.move-up" => ListEvent::MoveUp(id),
             "totp.move-down" => ListEvent::MoveDown(id),
             "totp.delete" => ListEvent::Delete(id),
@@ -597,12 +594,11 @@ impl AuthenticatorApp {
         true
     }
 
-    /// Global keyboard shortcuts available whenever the add-panel modal
-    /// isn't open: Ctrl/Cmd+N (add), Ctrl/Cmd+F and `/` (focus search),
-    /// Escape (clear + unfocus search) and Enter (copy the focused code).
-    /// Returns `true` when the event was fully consumed here — `handled`
-    /// is already set in that case, so [`Widget::handle_event`] should stop
-    /// routing further.
+    /// Keyboard shortcuts available whenever the add sheet isn't open:
+    /// Ctrl/Cmd+N (add), Ctrl/Cmd+E (edit the selected account), the arrow keys
+    /// (move the selection) and Enter (copy the selected code). Searching
+    /// belongs to the platform (Ctrl+K and `/`). Returns `true` when the event
+    /// was fully consumed here.
     fn handle_global_shortcut(
         &mut self,
         event: &WindowEvent,
@@ -622,106 +618,38 @@ impl AuthenticatorApp {
             return false;
         };
 
-        // Ctrl/Cmd+N → add account.
         if let Key::Character(c) = logical_key {
             let lc = c.to_lowercase();
-            if (mods.control_key() || mods.super_key()) && lc == "n" {
-                self.add_panel.open();
-                self.add_panel.layout(self.rect);
+            let command = mods.control_key() || mods.super_key();
+            if command && lc == "n" {
+                self.open_add();
                 *handled = true;
                 return true;
             }
-            if (mods.control_key() || mods.super_key()) && lc == "f" {
-                self.search.set_focus(true);
-                *handled = true;
-                return true;
-            }
-            if (mods.control_key() || mods.super_key())
-                && lc == "e"
-                && self.open_selected_for_edit()
-            {
-                *handled = true;
-                return true;
-            }
-            // "/" focuses search when not already typing there.
-            if c.as_str() == "/" && !self.search.is_focused() {
-                self.search.set_focus(true);
+            if command && lc == "e" && self.open_selected_for_edit() {
                 *handled = true;
                 return true;
             }
         }
         match logical_key {
-            Key::Named(NamedKey::ArrowDown) if !self.search.is_focused() => {
-                if self.move_selection(1) {
-                    *handled = true;
-                    return true;
-                }
+            Key::Named(NamedKey::ArrowDown) if self.move_selection(1) => {
+                *handled = true;
+                true
             }
-            Key::Named(NamedKey::ArrowUp) if !self.search.is_focused() => {
-                if self.move_selection(-1) {
-                    *handled = true;
-                    return true;
-                }
-            }
-            Key::Named(NamedKey::Escape) => {
-                if self.search.is_focused() {
-                    self.search.set_focus(false);
-                    if !self.search.value().is_empty() {
-                        self.search.set_text("");
-                        self.refresh_list();
-                    }
-                    *handled = true;
-                    return true;
-                }
+            Key::Named(NamedKey::ArrowUp) if self.move_selection(-1) => {
+                *handled = true;
+                true
             }
             Key::Named(NamedKey::Enter) => {
                 self.copy_focused();
                 *handled = true;
-                return true;
+                true
             }
-            _ => {}
+            _ => false,
         }
-        false
     }
 
-    /// Add-button + search-field focus management on a left click. Returns
-    /// `true` when the click opened the add modal — fully consumed, so
-    /// [`Widget::handle_event`] should stop routing further; a click that
-    /// only moves search focus returns `false` so the event still reaches
-    /// the search field and list below.
-    fn handle_add_and_search_focus_click(
-        &mut self,
-        event: &WindowEvent,
-        handled: &mut bool,
-    ) -> bool {
-        let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        else {
-            return false;
-        };
-        if self.add_btn_rect.contains(self.last_mouse) {
-            self.add_panel.open();
-            self.add_panel.layout(self.rect);
-            *handled = true;
-            return true;
-        }
-        if self.persistence_retry_rect.contains(self.last_mouse) && self.retry_persist() {
-            *handled = true;
-            return true;
-        }
-        if self.edit_btn_rect.contains(self.last_mouse) && self.open_selected_for_edit() {
-            *handled = true;
-            return true;
-        }
-        let on_search = self.search_rect.contains(self.last_mouse);
-        self.search.set_focus(on_search);
-        false
-    }
-
-    /// Import a QR code from an image file into the open add panel.
+    /// Import a QR code from an image file into the open add sheet.
     ///
     /// Choosing the screenshot/photo goes through the **host** file chooser
     /// (the XDG Desktop Portal, [`ui::portal`]) — the app never draws its
@@ -729,7 +657,7 @@ impl AuthenticatorApp {
     /// the chosen path is drained each frame and decoded by the pure-Rust,
     /// offline QR reader in [`crate::qr`]. A `TOTP_QR_IMAGE` environment
     /// variable short-circuits the chooser with a fixed path — the seam the
-    /// headless `--shots` and test flows drive.
+    /// headless captures and test flows drive.
     fn import_qr_from_image(&mut self) {
         if let Some(path) = std::env::var_os("TOTP_QR_IMAGE") {
             self.decode_qr_path(std::path::Path::new(&path));
@@ -752,7 +680,7 @@ impl AuthenticatorApp {
     }
 
     /// Drain a completed portal request, if any. Called once per frame from
-    /// [`Widget::sync`]: decodes the chosen image into the open add panel,
+    /// [`Widget::sync`]: decodes the chosen image into the open add sheet,
     /// surfaces a decode/cancel/failure via the toast, and clears the
     /// in-flight channel. Never blocks — a still pending picker leaves the
     /// channel installed for the next frame.
@@ -765,11 +693,11 @@ impl AuthenticatorApp {
                 self.portal_rx = None;
                 match outcome {
                     PortalOutcome::Opened(path) => self.decode_qr_path(&path),
-                    // A cancel is a no-op — the add panel is left as it was.
+                    // A cancel is a no-op — the sheet is left as it was.
                     PortalOutcome::Cancelled => {}
                     PortalOutcome::Failed(reason) => {
                         self.toast(
-                            format!("Couldn't open the file chooser: {reason}"),
+                            format!("Couldn\u{2019}t open the file chooser: {reason}"),
                             ToastKind::Error,
                         );
                     }
@@ -783,7 +711,7 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Decode a QR image at `path` into the open add panel, or surface why
+    /// Decode a QR image at `path` into the open add sheet, or surface why
     /// it couldn't be read.
     fn decode_qr_path(&mut self, path: &std::path::Path) {
         match crate::qr::decode_image_file(path) {
@@ -795,35 +723,80 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Stage the view state a screenshot scenario shows.
+    /// Open the add sheet straight away. Used by captures (and any caller that
+    /// wants to land on the add flow).
+    pub fn seed_open_add(&mut self) {
+        self.open_add();
+    }
+
+    /// Open the add sheet with Advanced options expanded.
+    pub fn seed_open_add_advanced(&mut self) {
+        self.add_panel.open_with_advanced();
+        self.structure_dirty = true;
+    }
+
+    pub(crate) fn seed_open_selected_setup(&mut self) {
+        self.selected = self.vault.ordered().first().map(|account| account.id);
+        let _ = self.open_selected_for_edit();
+    }
+
+    /// Move a capture's pinned clock into the step of the codes' period the
+    /// scenario shows, so the countdown rings are part-way round (and, for
+    /// the expiring scenario, in their last seconds). The capture pins the
+    /// clock to the top of a minute, where every thirty-second period has just
+    /// begun; a live window and a test run on the real clock and are left alone.
+    fn stage_clock(&mut self, scenario: Option<&str>) {
+        if !ui::time::wall_frozen() || self.clock_staged {
+            return;
+        }
+        self.clock_staged = true;
+        let elapsed = if scenario == Some("expiring") {
+            CAPTURE_EXPIRING_ELAPSED
+        } else {
+            CAPTURE_ELAPSED
+        };
+        if let Some(at) = ui::time::wall().checked_add(Duration::from_secs(elapsed)) {
+            ui::time::freeze_wall(at);
+        }
+    }
+
+    /// Stage the view state a capture scenario shows. The scenario's accounts
+    /// reached the document through its actions, and the capture's own store
+    /// holds their keys (all but the first for "provision" and
+    /// "missing-secret"). Never called in a live window.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        self.stage_clock(scenario);
         match scenario {
-            // The QR import hands off to the host's file chooser (HIG §5),
-            // which the app never draws: its scenario is the add screen the
-            // import starts from.
-            Some("add" | "add-picker") => self.add_panel.open(),
-            Some("add-advanced") => self.add_panel.open_with_advanced(),
-            Some("provision") => {
-                self.selected = self.vault.ordered().first().map(|account| account.id);
-                let _ = self.open_selected_for_edit();
-            }
-            Some("persistence-error") => self.describe_persistence_failure(
-                "Secrets on this device aren't saved. Restore keyring or storage access, then retry.",
-            ),
+            Some("add") => self.seed_open_add(),
+            Some("add-advanced") => self.seed_open_add_advanced(),
+            Some("provision") => self.seed_open_selected_setup(),
+            Some("persistence-error") => self.describe_persistence_failure(UNSAVED_DETAIL),
             _ => {}
         }
-        self.add_panel.layout(self.rect);
+        self.refresh_list();
+        // The states a pointer causes: a hovered row shows its actions, a
+        // hovered code is where a click copies.
+        let account_at = |index: usize| self.vault.ordered().get(index).map(|a| a.id);
+        match scenario {
+            Some("hover") => self.list.stage_hover(2, false),
+            Some("copied") => {
+                if let Some(id) = account_at(1) {
+                    self.selected = Some(id);
+                    self.list.set_selected(self.selected);
+                    self.list.stage_hover(1, true);
+                    self.copy_account(id);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Answer an effect invoked by a control, the palette, an agent or a
     /// script.
     pub(crate) fn perform_effect(&mut self, effect: TotpEffect) -> Result<(), String> {
         match effect {
-            TotpEffect::AddAccount => {
-                self.add_panel.open();
-                self.add_panel.layout(self.rect);
-            }
-            TotpEffect::Open { account } => {
+            TotpEffect::AddAccount => self.open_add(),
+            TotpEffect::OpenAccount { account } => {
                 let id = self.known_account(&account)?;
                 self.reveal(id);
             }
@@ -837,12 +810,7 @@ impl AuthenticatorApp {
             }
             TotpEffect::SetUpLocal { account } => {
                 let id = self.known_account(&account)?;
-                let Some(account) = self.vault.get(id).cloned() else {
-                    return Err("Authenticator account is no longer available".into());
-                };
-                self.selected = Some(id);
-                self.add_panel.open_for_provision(&account);
-                self.add_panel.layout(self.rect);
+                self.open_for(id);
             }
             TotpEffect::RetrySave => {
                 if !self.retry_persist() {
@@ -863,186 +831,117 @@ impl AuthenticatorApp {
         Ok(id)
     }
 
-    /// Select `id` and clear the search so its row shows.
+    /// Select `id` and scroll its row into view.
     fn reveal(&mut self, id: AccountId) {
         self.selected = Some(id);
-        self.search.set_text("");
+        self.list.reveal(id);
         self.list_dirty = true;
     }
 
-    // ---- header drawing ----------------------------------------------
+    // ---- painting --------------------------------------------------------
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the header uses shared rects for drawing and hit testing"
-    )]
-    fn draw_header(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        // The OS owns the window title/app-name — the header shows only the
-        // contextual account count (functional status, not an app wordmark).
-        let count = self.vault.len();
-        let subtitle = match count {
-            0 => "No accounts".to_string(),
-            1 => "1 account".to_string(),
-            n => format!("{n} accounts"),
-        };
-
-        // Measure both button labels first and re-place the buttons from
-        // them, so the rects painted below are the rects the pointer hits.
-        let compact = self.rect.width() < 420.0;
-        let selected_has_secret = self
-            .selected
-            .and_then(|id| self.vault.get(id))
-            .is_some_and(crate::model::Account::secret_is_valid);
-        let edit_label = if selected_has_secret {
-            if compact { "Edit" } else { "Edit selected" }
-        } else if compact {
-            "Set up"
-        } else {
-            "Set up selected"
-        };
-        let add_label = if compact { "+ Add" } else { "+  Add account" };
-        let (edit_w, _) =
-            text_renderer.measure_weighted(edit_label, 14.0, None, TextWeight::Medium);
-        let (tw, _) = text_renderer.measure_weighted(add_label, 14.0, None, TextWeight::Semibold);
-        self.header_label_w = Some((f64::from(tw), f64::from(edit_w)));
-        self.layout_header_buttons();
-
-        // The caption sits on the action row's centre line, measured with the
-        // style it is painted with, instead of at a fixed offset.
-        let (_, sub_h) = text_renderer.measure_weighted(&subtitle, 15.0, None, TextWeight::Medium);
-        text_renderer.draw_text_weighted(
-            scene,
-            &subtitle,
-            15.0,
-            theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((
-                    self.content_rect.x0 + OUTER_PAD,
-                    self.add_btn_rect.center().y - f64::from(sub_h) / 2.0,
-                )),
-            None,
-            TextWeight::Medium,
-        );
-
-        // Edit and Add are the shared button face (HIG §8): the neutral rest
-        // edge, the disabled treatment, the primary fill and the label's
-        // centring all come from `Button::paint` rather than a local copy
-        // that stroked `border_standard` over a raised fill (invisible on the
-        // dark preset) and painted its label literal white.
-        let can_edit = self.selected.is_some_and(|id| self.vault.get(id).is_some());
-        let edit_hovered = can_edit && self.edit_btn_rect.contains(self.last_mouse);
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(self.edit_btn_rect, edit_label)
-                .text_size(14.0)
-                .hovered(edit_hovered)
-                .disabled(!can_edit),
-        );
-        let hovered = self.add_btn_rect.contains(self.last_mouse);
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(self.add_btn_rect, add_label)
-                .primary()
-                .text_size(14.0)
-                .weight(TextWeight::Semibold)
-                .hovered(hovered),
-        );
-
-        // Search field (TextInput draws its own chrome, focus ring and
-        // placeholder).
-        self.search.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &PresenceCtx::empty(),
-        );
+    /// The readable strip the banner and rows stand in: the window less its
+    /// gutters, no wider than a sheet carrying a form, and centred.
+    fn readable_column(rect: Rect, theme: &Theme) -> Rect {
+        let gutter = f64::from(theme.tokens.spacing.s6);
+        let width = (rect.width() - 2.0 * gutter)
+            .min(f64::from(theme.tokens.metrics.panel_width_sheet) + 2.0 * gutter)
+            .max(0.0);
+        let x0 = rect.x0 + (rect.width() - width) / 2.0;
+        Rect::new(x0, rect.y0, x0 + width, rect.y1)
     }
 
-    /// The centred readable column the header actions, search, banner and
-    /// list share: the full window when it is narrower than
-    /// [`READABLE_CONTENT_W`], else that width centred in the window.
-    fn readable_column(rect: Rect) -> Rect {
-        let w = rect.width().min(READABLE_CONTENT_W);
-        let x0 = rect.x0 + (rect.width() - w) / 2.0;
-        Rect::new(x0, rect.y0, x0 + w, rect.y1)
+    /// Place the banner and the list for this frame, from the theme's tokens.
+    fn place(&mut self, ctx: &mut PaintCtx<'_>) {
+        let theme = ctx.theme;
+        let spacing = &theme.tokens.spacing;
+        self.column = Self::readable_column(self.rect, theme);
+        let mut top = self.rect.y0;
+        self.banner_rect = Rect::ZERO;
+        self.retry_rect = Rect::ZERO;
+        if self.persistence_pending() {
+            // The banner spans the column the rows stand in and holds Retry:
+            // beside its text when it fits, under it inside the box when not.
+            let content = self.banner_content();
+            let banner_h = Banner::height(&content, self.column.width(), ctx.text, theme);
+            let y0 = top + f64::from(spacing.s2);
+            let banner = Rect::new(self.column.x0, y0, self.column.x1, y0 + banner_h);
+            let retry = Banner::layout(&content, banner, ctx.text, theme)
+                .action
+                .unwrap_or(Rect::ZERO);
+            self.banner_rect = banner;
+            self.retry_rect = retry;
+            top = self.banner_rect.y1 + f64::from(spacing.s2);
+        }
+        let list_rect = Rect::new(self.rect.x0, top, self.rect.x1, self.rect.y1);
+        self.list.set_viewport(list_rect, self.column);
     }
 
-    /// Place the Add and Edit buttons on the header's action row inside the
-    /// readable column. Widths come from the measured labels once the draw
-    /// pass has supplied them and from the authored fallbacks before that.
-    /// Both `apply_layout` and `draw_header` route through here, so the rect
-    /// that is hit-tested is always the rect that was painted.
-    fn layout_header_buttons(&mut self) {
-        let compact = self.rect.width() < 420.0;
-        let (add_w, edit_w) = match self.header_label_w {
-            Some((add_lw, edit_lw)) => (
-                add_lw + 2.0 * HEADER_BTN_PAD,
-                edit_lw + 2.0 * HEADER_BTN_PAD,
-            ),
-            None if compact => (COMPACT_ADD_BTN_W, COMPACT_EDIT_BTN_W),
-            None => (ADD_BTN_W, EDIT_BTN_W),
-        };
-        let c = self.content_rect;
-        let top = self.rect.y0 + HEADER_BTN_TOP;
-        self.add_btn_rect = Rect::new(
-            c.x1 - OUTER_PAD - add_w,
-            top,
-            c.x1 - OUTER_PAD,
-            top + ADD_BTN_H,
-        );
-        self.edit_btn_rect = Rect::new(
-            self.add_btn_rect.x0 - HEADER_BTN_GAP - edit_w,
-            top,
-            self.add_btn_rect.x0 - HEADER_BTN_GAP,
-            top + ADD_BTN_H,
-        );
+    /// The unsaved-changes banner, with Retry inside it.
+    fn banner_content(&self) -> BannerContent<'_> {
+        BannerContent::new(BannerKind::Warning, UNSAVED_TITLE)
+            .with_message(Some(
+                self.persistence_message
+                    .as_deref()
+                    .unwrap_or(UNSAVED_DETAIL),
+            ))
+            .action(RETRY_LABEL)
     }
 
-    fn draw_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some((msg, when, kind)) = &self.toast else {
-            return;
-        };
-        if when.elapsed() > TOAST_TTL {
+    fn paint_banner(&self, ctx: &mut PaintCtx<'_>) {
+        if !self.persistence_pending() {
             return;
         }
-        paint_transient(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.rect,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, *kind),
+        Banner::paint(
+            ctx,
+            self.banner_rect,
+            &self.banner_content(),
+            self.last_mouse,
         );
     }
 }
 
+/// The banner's retry button.
+const RETRY_LABEL: &str = "Retry";
+
+impl AuthenticatorApp {
+    /// Hand the sheet's outcome, if any, to the app.
+    fn drain_add_panel(&mut self) {
+        self.add_panel.pump();
+        while let Some(event) = self.add_panel.take_event() {
+            self.apply_add_panel_event(event);
+        }
+        if !self.add_panel.is_open() && self.add_panel.widget().is_some() {
+            self.add_panel.close();
+            self.structure_dirty = true;
+        }
+    }
+}
+
 impl Widget for AuthenticatorApp {
-    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        // Hosted controls can enqueue a local request after event routing.
+        // Settle the retained sheet first, then consume those requests in
+        // the same frame even when no document action changed the vault.
+        if let Some(sheet) = self.add_panel.widget_mut() {
+            sheet.settle(edits, path);
+        }
+        self.drain_add_panel();
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // Pull in any QR image the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal();
-
-        // Recompute the visible set only when the vault or query changed.
+        // Sheets that left the tree last frame can go now.
+        if self.add_panel.reap() {
+            self.structure_dirty = true;
+        }
+        self.drain_add_panel();
+        if let Some(sheet) = self.add_panel.widget_mut() {
+            sheet.sync(state, path);
+        }
+        // Recompute the visible set only when the vault changed.
         if self.list_dirty {
             self.refresh_list();
             self.list_dirty = false;
@@ -1052,80 +951,43 @@ impl Widget for AuthenticatorApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+        // The sheet draws in the window's top layer, but its fields join the
+        // window's tree here: an absolute layer over the list.
+        let mut layers = Vec::new();
+        if let Some(sheet) = self.add_panel.widget_mut() {
+            let layer = sheet.build_layout(taffy, theme, node_map);
+            let mut style = taffy.style(layer).cloned().unwrap_or_default();
+            style.position = taffy::Position::Absolute;
+            let _ = taffy.set_style(layer, style);
+            layers.push(layer);
+        }
+        // The sheet lays its content out apart from this tree too; keep this
+        // tree's node of each text field to answer a click's focus request.
+        self.field_nodes = self.add_panel.host_field_nodes(node_map);
+        let node = taffy.parent_node(
+            Style {
+                size: Size::from_percent(1.0, 1.0),
                 flex_grow: 1.0,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+            &layers,
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.root_node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(layout.location.x);
-        let y0 = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x0,
-            y0,
-            x0 + f64::from(layout.size.width),
-            y0 + f64::from(layout.size.height),
-        );
-
-        self.header_rect = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y0 + HEADER_H,
-        );
-        // Everything the user reads or acts on lives in one readable column;
-        // the header band and its hairline still span the whole window.
-        self.content_rect = Self::readable_column(self.rect);
-        let c = self.content_rect;
-        self.layout_header_buttons();
-        let sy = self.rect.y0 + 88.0;
-        self.search_rect = Rect::new(c.x0 + OUTER_PAD, sy, c.x1 - OUTER_PAD, sy + SEARCH_H);
-        self.search.apply_layout_external(self.search_rect);
-
-        self.list_rect = Rect::new(
-            c.x0 + 12.0,
-            self.rect.y0
-                + HEADER_H
-                + if self.persistence_pending() {
-                    PERSISTENCE_BANNER_BAND
-                } else {
-                    0.0
-                },
-            c.x1 - 12.0,
-            self.rect.y1 - 12.0,
-        );
-        self.persistence_retry_rect = if self.persistence_pending() {
-            let banner_top = self.rect.y0 + HEADER_H + BANNER_TOP_GAP;
-            Rect::new(
-                c.x1 - OUTER_PAD - BANNER_RETRY_W,
-                banner_top,
-                c.x1 - OUTER_PAD,
-                banner_top + BANNER_H,
-            )
-        } else {
-            Rect::ZERO
-        };
-        self.list.set_viewport(self.list_rect);
-
-        self.add_panel.layout(self.rect);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        self.add_panel
+            .set_window_height(taffy.layout(node).map_or(0.0, |layout| layout.size.height));
+        let layers = taffy.children(node).unwrap_or_default();
+        if let (Some(sheet), Some(layer)) = (self.add_panel.widget_mut(), layers.first()) {
+            sheet.apply_layout(taffy, *layer, self.rect.origin());
+        }
     }
 
     fn draw(
@@ -1134,106 +996,46 @@ impl Widget for AuthenticatorApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        presence: &PresenceCtx,
+        _presence: &PresenceCtx,
     ) {
-        // Window background.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-        self.draw_header(scene, transform, text_renderer, theme);
-        if self.persistence_pending() {
-            // The banner stops an `s2` short of Retry (they used to share an
-            // edge) and is the shared `Banner` face (HIG §8): semantic tint,
-            // edge, leading bar and icon from the toolkit, with the app's
-            // Retry beside it.
-            let banner = Rect::new(
-                self.content_rect.x0 + OUTER_PAD,
-                self.persistence_retry_rect.y0,
-                self.persistence_retry_rect.x0 - BANNER_RETRY_GAP,
-                self.persistence_retry_rect.y1,
-            );
-            let banner_message = if self.rect.width() < 480.0 {
-                "Vault not saved — retry"
-            } else {
-                self.persistence_message
-                    .as_deref()
-                    .unwrap_or("Local vault changes aren't saved — restore access, then retry.")
-            };
-            Banner::paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                banner,
-                &BannerContent {
-                    kind: BannerKind::Error,
-                    icon: BannerKind::Error.default_icon(),
-                    title: banner_message,
-                    message: None,
-                    dismissible: false,
-                },
-                self.last_mouse,
-            );
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(self.persistence_retry_rect, "Retry")
-                    .primary()
-                    .text_size(13.0)
-                    .weight(TextWeight::Semibold)
-                    .radius(f64::from(theme.tokens.radii.sm)),
-            );
-        }
-        // Hairline under the header: derived against the base it is drawn on
-        // (HIG §9.5) — a half-alpha `border_standard` vanished on dark.
-        let line = Rect::new(
-            self.rect.x0,
-            self.header_rect.y1 - 1.0,
-            self.rect.x1,
-            self.header_rect.y1,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::surface::edge_on(theme.tokens.colors.surfaces.base),
-            None,
-            &line,
-        );
-
-        self.list
-            .draw(scene, transform, text_renderer, theme, presence);
-        self.draw_toast(scene, transform, text_renderer, theme);
-        self.add_panel.draw(scene, transform, text_renderer, theme);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // Root rect is the whole window — always paint.
-        self.draw(scene, transform, text_renderer, theme, presence);
+        // The window ground is the framework's; this paints what stands on it.
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        self.place(&mut ctx);
+        self.paint_banner(&mut ctx);
+        self.list.draw(&mut ctx);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse = ctx.logical(position);
         }
 
-        // Modal owns all input while open.
+        // The sheet owns all input while it is open.
         if self.add_panel.is_open() {
-            self.add_panel.handle_event(event, ctx);
-            if let Some(ev) = self.add_panel.take_event() {
-                self.apply_add_panel_event(ev);
+            let path = ctx.path;
+            let node = ctx.node_id;
+            if matches!(event, WindowEvent::MouseWheel { .. }) {
+                self.add_panel
+                    .handle_wheel(event, &mut ctx.reborrow(path, node));
+            } else if let Some(sheet) = self.add_panel.widget_mut() {
+                sheet.handle_event(event, &mut ctx.reborrow(path, node));
             }
+            // A press on a text field puts the caret in it: the window owns
+            // focus, so it is asked for the field's node in its own tree.
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            ) && let Some(field) = self.add_panel.field_under(self.last_mouse)
+                && let Some(node) = self.field_nodes.get(field)
+            {
+                *ctx.focus_target = Some(*node);
+            }
+            self.drain_add_panel();
+            *ctx.handled = true;
             return;
         }
 
@@ -1241,48 +1043,32 @@ impl Widget for AuthenticatorApp {
             return;
         }
 
-        if self.handle_add_and_search_focus_click(event, ctx.handled) {
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        ) && self.retry_rect.contains(self.last_mouse)
+            && self.retry_persist()
+        {
+            *ctx.handled = true;
             return;
         }
 
-        // Route to the search field (caret placement + typing) when it
-        // is focused or being clicked.
-        let mut throwaway = None;
-        let route_to_search = self.search.is_focused()
-            || matches!(
-                event,
-                WindowEvent::MouseInput { .. } if self.search_rect.contains(self.last_mouse)
-            )
-            || matches!(event, WindowEvent::CursorMoved { .. });
-        if route_to_search {
-            self.search.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    focus_target: &mut throwaway,
-                    ..ctx.reborrow(ctx.path, ctx.node_id)
-                },
-            );
-            if self.search.take_dirty().is_some() {
-                // A query change reshapes the visible list but not the vault,
-                // so only the list needs refreshing — no CRDT rewrite.
-                self.list_dirty = true;
-            }
-        }
-
         // Route to the list (hover / click-to-copy / reorder / scroll).
-        self.list.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                focus_target: &mut throwaway,
-                ..ctx.reborrow(ctx.path, ctx.node_id)
-            },
-        );
+        self.list.handle_event(event, ctx);
         let events = self.list.take_events();
         for ev in events {
             self.apply_list_event(ev);
         }
         // Keep the list's selection mirror current.
         self.list.set_selected(self.selected);
+        if self.list_dirty {
+            self.refresh_list();
+            self.list_dirty = false;
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -1293,78 +1079,59 @@ impl Widget for AuthenticatorApp {
         self.rect
     }
 
+    fn take_structure_dirty(&mut self) -> bool {
+        let sheet = self.add_panel.take_structure_dirty();
+        std::mem::take(&mut self.structure_dirty) | sheet
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.add_panel.widget().into_iter().collect()
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if let Some(sheet) = self.add_panel.widget() {
+            visitor(sheet);
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.add_panel.widget_mut().into_iter().collect()
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the root publishes one coherent semantic tree"
     )]
     fn accessibility(&self) -> Option<AccessNode> {
+        // Omit the virtual account actions while the sheet owns the window.
+        // This ancestor remains visible so its retained ModalDialog and focus
+        // trap are reachable; hiding it would prune the sheet's fields too.
         if self.add_panel.is_open() {
             return Some(
-                AccessNode::new(Role::Window)
+                AccessNode::new(Role::Group)
                     .with_name("Authenticator")
-                    .with_bounds(self.rect)
-                    .with_children(vec![self.add_panel.accessibility()]),
+                    .with_bounds(self.rect),
             );
         }
-        let visible = self.vault.search(self.search.value());
+        let visible = self.vault.ordered();
         let total = visible.len();
-        let controls = vec![
-            AccessNode::new(Role::Button)
-                .with_name("Add account")
-                .with_description("Add an authenticator account")
-                .with_state(AccessState::new().focusable(true))
-                .with_bounds(self.add_btn_rect)
-                .with_action_target("totp.add"),
-            AccessNode::new(Role::Button)
-                .with_name(
-                    if self.selected.is_some_and(|id| self.has_local_secret(id)) {
-                        "Edit selected account"
-                    } else {
-                        "Set up selected account"
-                    },
-                )
-                .with_description(
-                    if self.selected.is_some_and(|id| self.has_local_secret(id)) {
-                        "Edit the selected account; shortcut Control+E"
-                    } else {
-                        "Set up the selected account's local secret; shortcut Control+E"
-                    },
-                )
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .disabled(self.selected.is_none()),
-                )
-                .with_bounds(self.edit_btn_rect)
-                .with_action_target("totp.edit"),
-            AccessNode::new(Role::TextInput)
-                .with_name("Search accounts")
-                .with_value(self.search.value())
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .focused(self.search.is_focused()),
-                )
-                .with_bounds(self.search_rect)
-                .with_action_target("totp.search"),
-        ];
-        let mut children = vec![
-            AccessNode::new(Role::Toolbar)
-                .with_name("Authenticator actions")
-                .with_children(controls),
-        ];
+        let mut children = Vec::new();
         if self.persistence_pending() {
             children.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Retry saving secrets")
-                    .with_description(
-                        self.persistence_message
-                            .as_deref()
-                            .unwrap_or("Retry saving this device's secrets"),
-                    )
-                    .with_state(AccessState::new().focusable(true))
-                    .with_bounds(self.persistence_retry_rect)
-                    .with_action_target("totp.retry-persist"),
+                AccessNode::new(Role::Toolbar)
+                    .with_name("Key status")
+                    .with_children(vec![
+                        AccessNode::new(Role::Button)
+                            .with_name("Retry saving keys")
+                            .with_description(
+                                self.persistence_message
+                                    .as_deref()
+                                    .unwrap_or("Retry saving this device\u{2019}s keys"),
+                            )
+                            .with_state(AccessState::new().focusable(true))
+                            .with_bounds(self.retry_rect)
+                            .with_action_target("totp.retry-persist"),
+                    ]),
             );
         }
 
@@ -1381,7 +1148,7 @@ impl Widget for AuthenticatorApp {
                         .with_description(if account.secret_is_valid() {
                             "Copies the current one-time code to the clipboard"
                         } else {
-                            "Set up this account's secret on this device before copying a code"
+                            "Set up this account's key on this device before copying a code"
                         })
                         .with_state(
                             AccessState::new()
@@ -1389,6 +1156,10 @@ impl Widget for AuthenticatorApp {
                                 .disabled(!account.secret_is_valid()),
                         )
                         .with_action_target(format!("totp.copy:{id}")),
+                    AccessNode::new(Role::Button)
+                        .with_name(format!("Edit {name}"))
+                        .with_state(AccessState::new().focusable(true))
+                        .with_action_target(format!("totp.edit:{id}")),
                     AccessNode::new(Role::Button)
                         .with_name(format!("Move {name} up"))
                         .with_state(AccessState::new().focusable(true).disabled(index == 0))
@@ -1411,7 +1182,7 @@ impl Widget for AuthenticatorApp {
                         AccessNode::new(Role::Button)
                             .with_name(format!("Set up {name} on this device"))
                             .with_description(
-                                "Paste or scan the local secret without sharing it with collaborators",
+                                "Paste or scan the key without sharing it with collaborators",
                             )
                             .with_state(AccessState::new().focusable(true))
                             .with_action_target(format!("totp.setup:{id}")),
@@ -1440,24 +1211,15 @@ impl Widget for AuthenticatorApp {
             AccessNode::new(Role::List)
                 .with_name("Authenticator accounts")
                 .with_description(if total == 0 {
-                    "No matching accounts".to_string()
+                    "No accounts".to_string()
                 } else {
-                    format!("{total} visible accounts. Arrow keys change the selected account.")
+                    format!("{total} accounts. Arrow keys change the selected account.")
                 })
-                .with_bounds(self.list_rect)
+                .with_bounds(self.rect)
                 .with_children(account_rows),
         );
-        if let Some((message, when, _)) = &self.toast
-            && when.elapsed() <= TOAST_TTL
-        {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(message)
-                    .with_live(Politeness::Polite),
-            );
-        }
         Some(
-            AccessNode::new(Role::Window)
+            AccessNode::new(Role::Group)
                 .with_name("Authenticator")
                 .with_bounds(self.rect)
                 .with_children(children),
@@ -1471,13 +1233,6 @@ impl Widget for AuthenticatorApp {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if self.add_panel.is_open() {
-            let handled = self.add_panel.perform_a11y_target(target, action);
-            if let Some(event) = self.add_panel.take_event() {
-                self.apply_add_panel_event(event);
-            }
-            return handled;
-        }
         if target == "totp.retry-persist" {
             return matches!(action, A11yAction::Activate) && self.retry_persist();
         }
@@ -1488,19 +1243,25 @@ impl Widget for AuthenticatorApp {
     /// one-second deadline instead, so the app remains current without a vsync
     /// loop.
     fn needs_animation_frame(&self) -> bool {
-        !self.reduce_motion
+        !self.reduce_motion || self.list.needs_animation_frame()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         if !self.reduce_motion {
             return None;
         }
-        let now = ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        let until_next_second =
-            Duration::from_nanos(1_000_000_000_u64.saturating_sub(u64::from(now.subsec_nanos())));
-        Some(ui::time::now() + until_next_second)
+        let subsec_nanos = ui::time::unix_now_ns() % 1_000_000_000;
+        let until_next_second = Duration::from_nanos(1_000_000_000 - subsec_nanos);
+        let tick = ui::time::now() + until_next_second;
+        Some(
+            self.list
+                .next_wake_deadline()
+                .map_or(tick, |fade| fade.min(tick)),
+        )
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.list.is_dragging()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -1508,11 +1269,40 @@ impl Widget for AuthenticatorApp {
     }
 }
 
+/// The field edits that turn `before` into `after`: identity, colour and
+/// code parameters, each at its path.
+fn account_edits(before: &Account, after: &Account) -> Vec<Edit<Totp>> {
+    let account = Totp::paths().accounts.item(&Totp::item(after.id));
+    let mut edits = Vec::new();
+    if before.issuer != after.issuer {
+        edits.push(account.issuer.replace(after.issuer.clone()));
+    }
+    if before.label != after.label {
+        edits.push(account.label.replace(after.label.clone()));
+    }
+    if before.color != after.color {
+        edits.push(account.color.set(after.color));
+    }
+    if before.algorithm != after.algorithm {
+        edits.push(account.algorithm.set(after.algorithm));
+    }
+    if before.digits != after.digits {
+        edits.push(account.digits.set(after.digits));
+    }
+    if before.period != after.period {
+        edits.push(account.period.set(after.period));
+    }
+    edits
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::add_panel::tests::{click, hosted, nodes, panel, rect, settle, type_into};
     use crate::model::demo_accounts;
-    use crate::test_events::{char_press, ctrl, cursor_at, left_press, named_press, no_mods};
+    use crate::resource::{Totp, TotpEffect};
+    use crate::test_events::{named_press, no_mods};
+    use ui::a11y::Politeness;
     use ui::headless::Framed;
 
     /// The surface over the demo accounts, every seed on this device, as the
@@ -1549,13 +1339,6 @@ mod tests {
         h: u32,
     ) -> Framed<AuthenticatorApp> {
         Framed::new(state, app, (w, h), Theme::dark())
-    }
-
-    /// Run the next frame at a concrete window size.
-    fn layout_at(app: &mut Framed<AuthenticatorApp>, w: u32, h: u32) {
-        Framed::harness_mut(app)
-            .relayout_at((w, h))
-            .expect("layout settles");
     }
 
     /// Route one event through the app's real `handle_event`, returning
@@ -1613,10 +1396,9 @@ mod tests {
             app.apply_list_event(ListEvent::Copy(id));
             let after = totp::current_code(&acc);
             assert_eq!(app.selected, Some(id), "the copied row becomes selected");
-            let (msg, _, kind) = app
-                .toast
-                .clone()
-                .expect("copying shows a confirmation toast");
+            let Some(Notice::Show(msg, kind)) = app.notice.with(Clone::clone) else {
+                panic!("copying shows a confirmation toast");
+            };
             assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
             assert_eq!(kind, ToastKind::Success);
             // The copied string is the account's live TOTP code. It equals the
@@ -1647,7 +1429,9 @@ mod tests {
                 copied == before || copied == after,
                 "Enter copies the account's live TOTP code ({copied:?} vs {before:?}/{after:?})"
             );
-            let (msg, _, kind) = app.toast.clone().expect("Enter shows a copy toast");
+            let Some(Notice::Show(msg, kind)) = app.notice.with(Clone::clone) else {
+                panic!("Enter shows a copy toast");
+            };
             assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
             assert_eq!(kind, ToastKind::Success);
         }
@@ -1658,236 +1442,221 @@ mod tests {
             let id = app.vault.ordered()[0].id;
             app.apply_list_event(ListEvent::Copy(id));
             assert!(app.last_copied().is_none(), "no secret, no code");
-            assert_eq!(app.toast.as_ref().map(|t| t.2), Some(ToastKind::Error));
+            assert!(matches!(
+                app.notice.with(Clone::clone),
+                Some(Notice::Show(_, ToastKind::Error))
+            ));
         }
     }
 
     /// The accessibility tree names accounts without codes and keeps the add modal protected and complete.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
+
     fn accessibility_names_accounts_and_protects_the_modal() {
-        // Case `accessibility_tree_names_accounts_without_exposing_codes`.
-        {
-            let app = framed(app_with_state(), 640, 700);
-            let tree = app.accessibility().expect("root has semantic window");
-            assert_eq!(tree.role, Role::Window);
-            assert_eq!(tree.name.as_deref(), Some("Authenticator"));
-            let list = tree
-                .children
+        let mut app = hosted((640, 700), None);
+        let tree = nodes(&mut app);
+        let account = tree
+            .iter()
+            .find(|n| {
+                n.role == Role::ListItem && n.name.as_deref().is_some_and(|s| s.contains("GitHub"))
+            })
+            .expect("named account row");
+        assert!(
+            account.value.is_none(),
+            "credential is never exported as value"
+        );
+        assert!(tree.iter().any(|n| {
+            n.name
+                .as_deref()
+                .is_some_and(|s| s.starts_with("Copy code for"))
+        }));
+        app.effect(&TotpEffect::AddAccount).unwrap();
+        settle(&mut app);
+        let actual = app.harness().a11y_nodes();
+        assert!(
+            actual
                 .iter()
-                .find(|node| node.role == Role::List)
-                .expect("named account list");
-            assert!(!list.children.is_empty(), "demo accounts are exported");
-            let account = &list.children[0];
-            assert_eq!(account.role, Role::ListItem);
-            assert!(account.name.as_deref().is_some_and(|name| !name.is_empty()));
-            assert!(
-                account.value.is_none(),
-                "a TOTP credential is never a value"
-            );
-            assert!(account.children.iter().any(|node| {
-                node.name
-                    .as_deref()
-                    .is_some_and(|name| name.starts_with("Copy code for"))
-            }));
-            assert!(
-                tree.children.iter().all(|node| node.semantic_key.is_none()),
-                "root regions are consistently position-addressed"
-            );
-            let toolbar = tree
-                .children
+                .any(|(_, n)| format!("{:?}", n.role()) == "Dialog")
+        );
+        assert!(
+            !actual
                 .iter()
-                .find(|node| node.role == Role::Toolbar)
-                .expect("authenticator actions toolbar");
-            assert!(
-                toolbar
-                    .children
-                    .iter()
-                    .all(|node| node.semantic_key.is_some())
-            );
-        }
-
-        // Case `modal_accessibility_is_modal_protected_and_routes_text_actions`.
-        {
-            let mut framed = framed(app_with_state(), 640, 700);
-            let (app, state) = Framed::split(&mut framed);
-            app.add_panel.open();
-            app.add_panel.layout(app.rect);
-            let tree = app.accessibility().expect("semantic root");
-            assert_eq!(tree.children.len(), 1, "background controls are inert");
-            let dialog = &tree.children[0];
-            assert_eq!(dialog.role, Role::Dialog);
-            assert!(dialog.state.modal);
-            let secret = dialog
-                .children
+                .any(|(_, n)| n.label().is_some_and(|s| s.starts_with("Copy code for"))),
+            "modal removes background actions"
+        );
+        let focus_order = app.harness().focus_access_nodes();
+        assert!(
+            focus_order.iter().any(|node| node.role == Role::TextInput),
+            "the visible modal exposes its fields to keyboard focus: {focus_order:?}"
+        );
+        assert!(
+            !focus_order.iter().any(|node| matches!(
+                node.semantic_key.as_deref(),
+                Some(
+                    "search-open" | "add-account" | "nav-shell-more-content" | "nav-shell-history"
+                )
+            )),
+            "the modal trap excludes background header controls: {focus_order:?}"
+        );
+        let secret = nodes(&mut app)
+            .into_iter()
+            .find(|n| n.role == Role::TextInput && n.state.protected)
+            .expect("protected secret field");
+        assert!(secret.value.is_none());
+        type_into(&mut app, "totp-issuer", "Acme");
+        assert_eq!(panel(&mut app, |p| p.field_snapshot().0), "Acme");
+        app.harness().key("Enter");
+        settle(&mut app);
+        assert!(
+            panel(&mut app, |p| p.is_open()),
+            "validation failure keeps form open"
+        );
+        assert!(
+            panel(&mut app, |p| p.problem().is_some()),
+            "validation communicates failure"
+        );
+        assert!(
+            nodes(&mut app)
                 .iter()
-                .find(|node| node.name.as_deref() == Some("Secret key"))
-                .expect("protected secret field");
-            assert!(secret.state.protected);
-            assert!(secret.value.is_none());
-            assert!(app.perform_semantic_action(
-                "totp.dialog.issuer",
-                &A11yAction::SetValue("Acme".into()),
-                &mut ui::widget::Edits::lend(&mut state.doc),
-                &state.root
-            ));
-            assert_eq!(app.add_panel.field_snapshot().0, "Acme");
-            assert!(app.perform_semantic_action(
-                "totp.dialog.save",
-                &A11yAction::Activate,
-                &mut ui::widget::Edits::lend(&mut state.doc),
-                &state.root
-            ));
-            let dialog = &app
-                .accessibility()
-                .expect("still open on validation failure")
-                .children[0];
-            assert!(
-                dialog
-                    .children
-                    .iter()
-                    .any(|node| node.live == Some(Politeness::Assertive))
-            );
-        }
-
-        // Case `modal_a11y_exposes_advanced_algorithm_and_digit_choices`.
-        {
-            let mut framed = framed(app_with_state(), 640, 700);
-            let (app, state) = Framed::split(&mut framed);
-            app.add_panel.open();
-            app.add_panel.layout(app.rect);
-            for target in [
-                "totp.dialog.advanced",
-                "totp.dialog.algorithm:1",
-                "totp.dialog.digits:8",
-            ] {
-                assert!(app.perform_semantic_action(
-                    target,
-                    &A11yAction::Activate,
-                    &mut ui::widget::Edits::lend(&mut state.doc),
-                    &state.root
-                ));
-            }
-            let dialog = &app.accessibility().expect("dialog tree").children[0];
-            assert!(
-                dialog
-                    .children
-                    .iter()
-                    .any(|node| { node.name.as_deref() == Some("SHA256") && node.state.selected })
-            );
-            assert!(
-                dialog.children.iter().any(|node| {
-                    node.name.as_deref() == Some("8 digits") && node.state.selected
-                })
-            );
-        }
+                .any(|node| node.live == Some(Politeness::Assertive)),
+            "invalid Save announces its validation error immediately"
+        );
+        click(&mut app, "Advanced options");
+        click(&mut app, "SHA256");
+        click(&mut app, "8");
+        let selected = nodes(&mut app);
+        assert!(
+            selected
+                .iter()
+                .any(|n| n.name.as_deref() == Some("SHA256") && n.state.checked == Some(true))
+        );
+        assert!(
+            selected
+                .iter()
+                .any(|n| n.name.as_deref() == Some("8") && n.state.checked == Some(true))
+        );
     }
 
     /// Narrow, missing-key and resized layouts keep targets inside one centred column.
     #[test]
     fn narrow_and_resized_layouts_keep_one_readable_column() {
-        // Case `narrow_header_keeps_the_add_target_inside_the_window`.
-        {
-            let app = framed(app_with_state(), 320, 640);
-            assert!(app.add_btn_rect.width() <= COMPACT_ADD_BTN_W);
-            assert!(app.add_btn_rect.x0 >= app.rect.x0);
-            assert!(app.add_btn_rect.x1 <= app.rect.x1);
-        }
-
-        // Case `missing_key_narrow_root_starts_at_top_with_an_accessible_first_row`.
-        {
-            let app = framed(app_with_seeds(1), 390, 844);
-            assert!(
-                app.list.scroll_offset().abs() <= f64::EPSILON,
-                "a fresh view starts at the top"
-            );
-            let tree = app.accessibility().expect("narrow root has semantics");
-            let list = tree
-                .children
-                .iter()
-                .find(|node| node.role == Role::List)
-                .expect("account list stays exposed at the initial scroll position");
-            assert!(
-                list.children
-                    .first()
-                    .is_some_and(|row| row.bounds.is_some()),
-                "the first shared account is both visible and reachable to AT"
-            );
-        }
-
-        // Case `app_reflows_from_the_current_size_not_the_first_frame`.
-        {
-            // The same instance must re-derive its layout from the live
-            // window width on every pass, wide → narrow → wide.
-            let mut app = framed(app_with_state(), 1280, 720);
-            let wide_list_w = app.list_rect.width();
-            let wide_btn_x0 = app.add_btn_rect.x0;
-            assert!(
-                (wide_list_w - (READABLE_CONTENT_W - 24.0)).abs() < 0.5,
-                "wide window gives the readable-column list, got {wide_list_w}"
-            );
-
-            layout_at(&mut app, 560, 720);
-            assert!(
-                app.list_rect.width() < wide_list_w,
-                "list reflows narrower on resize"
-            );
-            assert!(
-                app.add_btn_rect.x0 < wide_btn_x0,
-                "the add button re-anchors to the narrower right edge"
-            );
-            assert!(
-                app.add_btn_rect.x1 <= app.rect.x1,
-                "add button stays inside the window"
-            );
-
-            layout_at(&mut app, 1280, 720);
-            assert!(
-                (app.list_rect.width() - wide_list_w).abs() < 0.5,
-                "list widens back to the wide layout"
-            );
-        }
-
-        // Case `header_search_and_list_share_one_centred_readable_column`.
-        {
-            let mut app = framed(app_with_state(), 1920, 1080);
-            let c = app.content_rect;
-            assert!((c.width() - READABLE_CONTENT_W).abs() < 0.5);
-            assert!(
-                (c.center().x - app.rect.center().x).abs() < 0.5,
-                "the column is centred in the window"
-            );
-            assert!((app.add_btn_rect.x1 - (c.x1 - OUTER_PAD)).abs() < 0.5);
-            assert!((app.search_rect.x0 - (c.x0 + OUTER_PAD)).abs() < 0.5);
-            assert!((app.search_rect.x1 - (c.x1 - OUTER_PAD)).abs() < 0.5);
-            assert!((app.list_rect.x1 - (c.x1 - 12.0)).abs() < 0.5);
-            assert!(app.edit_btn_rect.x1 < app.add_btn_rect.x0);
-
-            layout_at(&mut app, 640, 800);
-            assert!((app.content_rect.width() - 640.0).abs() < 0.5);
-            assert!((app.search_rect.x1 - (640.0 - OUTER_PAD)).abs() < 0.5);
-        }
+        let mut app = hosted((320, 640), None);
+        let add = rect(&mut app, "Add account");
+        assert!(
+            add.x0 >= 0.0 && add.x1 <= 320.0,
+            "shared header target inside narrow window"
+        );
+        let mut missing = hosted((390, 844), Some("missing-secret"));
+        let tree = nodes(&mut missing);
+        assert!(
+            tree.iter()
+                .any(|n| n.role == Role::ListItem && n.bounds.is_some()),
+            "initial row is accessible with missing key"
+        );
+        app.harness().resize((1920, 1080)).unwrap();
+        settle(&mut app);
+        let wide = app
+            .harness()
+            .with_widget_mut(|w: &mut AuthenticatorApp| w.column)
+            .unwrap();
+        let expected =
+            AuthenticatorApp::readable_column(Rect::new(0.0, 0.0, 1920.0, 1080.0), &Theme::dark());
+        assert!((wide.width() - expected.width()).abs() < 0.5);
+        assert!(
+            (wide.center().x - 960.0).abs() < 0.5,
+            "readable content centered"
+        );
+        let wide_add = rect(&mut app, "Add account");
+        app.harness().resize((560, 720)).unwrap();
+        settle(&mut app);
+        let narrow = app
+            .harness()
+            .with_widget_mut(|w: &mut AuthenticatorApp| w.column)
+            .unwrap();
+        assert!(narrow.width() < wide.width(), "same live instance reflows");
+        let narrow_add = rect(&mut app, "Add account");
+        assert!(narrow_add.x0 < wide_add.x0 && narrow_add.x1 <= 560.0);
+        app.harness().resize((1920, 1080)).unwrap();
+        settle(&mut app);
+        let restored = app
+            .harness()
+            .with_widget_mut(|w: &mut AuthenticatorApp| w.column)
+            .unwrap();
+        assert!(
+            (restored.width() - wide.width()).abs() < 0.5,
+            "recovers wide geometry"
+        );
     }
 
     /// Search filtering, including the contextual empty message.
     #[test]
     fn search_filters_the_visible_accounts() {
-        let (mut app, _state) = app_with_state();
-        app.search.set_text("github");
-        app.refresh_list();
-        assert_eq!(app.list.len(), 1);
-        assert_eq!(app.list.account_at(0).unwrap().issuer, "GitHub");
-
-        app.search.set_text("zzz-no-such-service");
-        app.refresh_list();
-        assert!(app.list.is_empty(), "no demo account matches the query");
-        let msg = app.list.empty_message();
+        use ui::search::SearchProvider as _;
+        use ui::tilo_resource::Resource as _;
+        let mut app = hosted((1000, 800), None);
+        let count = app.state().list().len();
+        let entries = Totp::search(&app.state());
+        let provider = ui::framework::testing::search_source::<Totp>(entries);
+        let matches = provider.search_page(&ui::search::SearchQuery::new("github"), None, 100, 100);
+        assert_eq!(
+            matches.results.len(),
+            1,
+            "canonical provider returns matching account"
+        );
+        assert_eq!(
+            matches.results.first().expect("one canonical match").title,
+            "GitHub"
+        );
+        let empty = provider.search_page(
+            &ui::search::SearchQuery::new("zzz-no-such-service"),
+            None,
+            100,
+            100,
+        );
         assert!(
-            msg.contains("zzz-no-such-service"),
-            "the empty state names the unmatched query, got: {msg}"
+            empty.results.is_empty(),
+            "canonical provider reports no matches"
+        );
+        app.harness()
+            .open_search(&ui::search::SearchRequest::this_app())
+            .unwrap();
+        settle(&mut app);
+        assert_eq!(
+            app.harness()
+                .focused_access_node()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some("Search"))
+                .expect("the hosted palette exposes its query")
+                .role,
+            ui::a11y::Role::TextInput,
+            "platform search owns its query field"
+        );
+        app.harness().type_text("github");
+        settle(&mut app);
+        assert_eq!(
+            app.harness()
+                .focused_access_node()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some("Search"))
+                .expect("query child")
+                .value
+                .as_deref(),
+            Some("github")
+        );
+        assert_eq!(
+            app.state().list().len(),
+            count,
+            "system search does not filter or rewrite the shared vault"
+        );
+        app.harness().key("Escape");
+        settle(&mut app);
+        assert!(
+            app.harness().inspection_json().unwrap().contains("GitHub"),
+            "closing search restores account content"
         );
     }
 
@@ -1899,45 +1668,39 @@ mod tests {
         let mut framed = Framed::new(state, app, (390, 720), Theme::dark());
         let (app, state) = Framed::split(&mut framed);
         assert!(
-            app.toast.is_none(),
-            "the durable banner replaces a duplicate toast"
+            app.notice.with(|notice| notice == &Some(Notice::Clear)),
+            "durable banner replaces duplicate toast"
         );
-        assert!(app.persistence_retry_rect.x0 >= app.rect.x0);
-        assert!(app.persistence_retry_rect.x1 <= app.rect.x1);
-        assert!(app.persistence_retry_rect.y0 >= app.header_rect.y1);
+        assert!(app.retry_rect.x0 >= app.rect.x0 && app.retry_rect.x1 <= app.rect.x1);
         assert!(
-            app.list_rect.y0 > app.header_rect.y1,
+            app.banner_rect.contains_rect(app.retry_rect),
+            "retry is inside banner"
+        );
+        assert!(
+            app.list
+                .account_bounds(app.vault.ordered().first().expect("seeded account").id)
+                .expect("first row painted")
+                .y0
+                >= app.banner_rect.y1,
             "banner reserves list space"
         );
-
-        let tree = app
-            .accessibility()
-            .expect("persistence state has semantics");
-        let toolbar = tree
-            .children
-            .iter()
-            .find(|node| node.role == Role::Toolbar)
-            .expect("toolbar remains available");
-        assert!(toolbar.children.iter().any(|node| {
-            node.name.as_deref() == Some("Edit selected account")
-                && node.semantic_key.as_deref() == Some("totp.edit")
-        }));
+        let tree = app.accessibility().unwrap();
         let retry = tree
             .children
             .iter()
-            .find(|node| node.semantic_key.as_deref() == Some("totp.retry-persist"))
-            .expect("retry is a separate semantic control");
+            .flat_map(|n| &n.children)
+            .find(|n| n.action_target.as_deref() == Some("totp.retry-persist"))
+            .expect("separate accessible retry");
         assert_eq!(
             retry.bounds.map(ui::a11y::AccessBounds::to_rect),
-            Some(app.persistence_retry_rect)
+            Some(app.retry_rect)
         );
         assert!(retry.state.focusable);
-
         assert!(app.perform_semantic_action(
             "totp.retry-persist",
             &A11yAction::Activate,
             &mut ui::widget::Edits::lend(&mut state.doc),
-            &state.root,
+            &state.root
         ));
         assert!(!app.persistence_pending());
     }
@@ -2031,71 +1794,69 @@ mod tests {
         }
     }
 
-    /// Add button, Ctrl+N, slash/Ctrl+F, Escape and the modal's gating of global search.
+    /// Add button, Ctrl+N, Escape and the modal's gating of platform search.
     #[test]
     fn shortcuts_and_clicks_open_the_modal_and_focus_search() {
-        // Case `clicking_the_add_button_opens_the_modal`.
-        {
-            let mut app = framed(app_with_state(), 1000, 800);
-            assert!(!app.add_panel.is_open(), "starts on the list, modal closed");
-            let btn = app.add_btn_rect.center();
-            dispatch(&mut app, &cursor_at(btn), no_mods());
-            dispatch(&mut app, &left_press(), no_mods());
-            assert!(
-                app.add_panel.is_open(),
-                "clicking the + Add account button opens the add modal"
-            );
-        }
-
-        // Case `ctrl_n_opens_the_add_modal`.
-        {
-            let mut app = framed(app_with_state(), 1000, 800);
-            let handled = dispatch(&mut app, &char_press("n"), ctrl());
-            assert!(handled, "Ctrl+N is consumed");
-            assert!(app.add_panel.is_open(), "Ctrl+N opens the add modal");
-        }
-
-        // Case `slash_and_ctrl_f_focus_the_search_field`.
-        {
-            let mut app = framed(app_with_state(), 1000, 800);
-            assert!(!app.search.is_focused());
-            dispatch(&mut app, &char_press("/"), no_mods());
-            assert!(app.search.is_focused(), "'/' focuses the search field");
-            app.search.set_focus(false);
-            dispatch(&mut app, &char_press("f"), ctrl());
-            assert!(app.search.is_focused(), "Ctrl+F focuses the search field");
-        }
-
-        // Case `escape_clears_a_nonempty_search_query`.
-        {
-            let mut app = framed(app_with_state(), 1000, 800);
-            app.search.set_focus(true);
-            app.search.set_text("github");
-            let handled = dispatch(&mut app, &named_press(NamedKey::Escape), no_mods());
-            assert!(handled, "Escape is consumed while clearing the query");
-            assert!(
-                app.search.value().is_empty(),
-                "Escape clears the search text"
-            );
-            assert!(!app.search.is_focused(), "Escape also drops search focus");
-        }
-
-        // Case `open_modal_gates_the_global_search_shortcut`.
-        {
-            // While the add modal is open it owns all input: a key that would be a
-            // global shortcut on the list must not focus the underlying search.
-            let mut app = framed(app_with_state(), 1000, 800);
-            app.add_panel.open();
-            let rect = app.rect;
-            app.add_panel.layout(rect);
-            assert!(!app.search.is_focused());
-            dispatch(&mut app, &char_press("/"), no_mods());
-            assert!(
-                !app.search.is_focused(),
-                "the open modal gates the '/' shortcut from reaching the list"
-            );
-            assert!(app.add_panel.is_open(), "the modal stays open");
-        }
+        let mut app = hosted((1000, 800), None);
+        assert!(!panel(&mut app, |p| p.is_open()));
+        click(&mut app, "Add account");
+        assert!(panel(&mut app, |p| p.is_open()));
+        app.harness().key("Escape");
+        settle(&mut app);
+        assert!(!panel(&mut app, |p| p.is_open()));
+        app.harness().set_modifiers(&["ctrl".into()]);
+        app.harness().key("n");
+        app.harness().set_modifiers(&[]);
+        settle(&mut app);
+        assert!(
+            panel(&mut app, |p| p.is_open()),
+            "Ctrl+N opens canonical add flow"
+        );
+        assert!(
+            app.harness()
+                .open_search(&ui::search::SearchRequest::this_app())
+                .is_err(),
+            "modal isolates platform search"
+        );
+        assert!(panel(&mut app, |p| p.is_open()));
+        app.harness().key("Escape");
+        settle(&mut app);
+        app.harness()
+            .open_search(&ui::search::SearchRequest::this_app())
+            .unwrap();
+        settle(&mut app);
+        assert_eq!(
+            app.harness()
+                .focused_access_node()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some("Search"))
+                .expect("the hosted palette exposes its query")
+                .role,
+            ui::a11y::Role::TextInput
+        );
+        app.harness().type_text("github");
+        settle(&mut app);
+        assert_eq!(
+            app.harness()
+                .focused_access_node()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some("Search"))
+                .expect("query child")
+                .value
+                .as_deref(),
+            Some("github")
+        );
+        app.harness().key("Escape");
+        settle(&mut app);
+        app.harness()
+            .open_search(&ui::search::SearchRequest::this_app())
+            .expect("Escape dismissed the preceding search");
+        app.harness().key("Escape");
+        settle(&mut app);
     }
 
     /// Rasterise `data` as a QR code into a greyscale PNG on disk, scaling

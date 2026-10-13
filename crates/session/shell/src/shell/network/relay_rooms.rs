@@ -3,8 +3,8 @@
 //! invitation, admits whoever redeems one and publishes the room's
 //! governance; this device holds the room like any member does.
 use super::{
-    NetCmd, PendingInvitation, ShellNetwork, now_unix_seconds, persist_pending_invitations,
-    registered_home_peer_addrs, room_topic_id,
+    NetCmd, PendingInvitation, RegisteredHomePeer, ShellNetwork, persist_pending_invitations,
+    registered_home_peer_addrs, relay_topics_for_home_peers, room_topic_id,
 };
 use crate::network::invite::InviteRole;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
@@ -13,7 +13,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_peer_state::join::{self, MemberRole};
-use tilo_relay::rooms::{CancelInvitationRequest, IssueInvitationRequest, RoomCommand, RoomReply};
+use tilo_relay_session::rooms::{
+    CancelInvitationRequest, IssueInvitationRequest, RoomCommand, RoomReply,
+};
 use tilo_user_identity::DeviceCert;
 
 /// How long one exchange with a relay's room authority may take.
@@ -23,6 +25,16 @@ const ADMIN_TIMEOUT: Duration = Duration::from_secs(15);
 const OWN_INVITATION_SECONDS: u64 = 600;
 /// The longest room name a relay accepts.
 const ROOM_NAME_CHARS: usize = 80;
+
+fn home_for_workspace(user: [u8; 32], room: RoomId) -> Result<Option<RegisteredHomePeer>, String> {
+    // A fresh local workspace has never been registered on the relay. Its
+    // person's continuity topic locates the enrolled home before Create;
+    // the authenticated room commands still govern admission.
+    let topics = relay_topics_for_home_peers([room], Some(user));
+    Ok(registered_home_peer_addrs(Some(user), &topics)?
+        .into_iter()
+        .next())
+}
 
 /// Set where the session holds every workspace that a configured host of
 /// its person governs (a company node's own session, which nobody sits at):
@@ -106,6 +118,140 @@ impl ShellNetwork {
             .map_err(|_| "the relay did not answer in time")?
     }
 
+    /// A host governor answers namespace claims through its existing room
+    /// authority, not a private action subscriber that the host does not run.
+    /// None retains the native-device governor's ordinary semantic action path.
+    pub(super) fn claim_namespace_at_host(
+        &self,
+        room: RoomId,
+        salt: u16,
+    ) -> Option<tilo_actions::remote::Pending<Result<serde_json::Value, String>>> {
+        let owner = self.native_owner().ok()?;
+        let route = owner.with_current(room, |view| {
+            if !view.governor().capabilities.can_act_as_host {
+                return Ok(None);
+            }
+            let identity = self
+                .host_identity
+                .as_ref()
+                .ok_or("native identity unavailable")?;
+            let (certificate, _) = identity.current_native_material(view.workspace())?;
+            if view.device() != &certificate {
+                return Err("topology caller differs from admitted native custody".into());
+            }
+            let (hint, _) =
+                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                    .map_err(|error| error.to_string())?;
+            if hint.room != room.to_string()
+                || &hint.governing_authority != view.governor()
+                || &hint.host_device_certificate != view.governor()
+            {
+                return Err("topology host differs from current admitted governor".into());
+            }
+            Ok(Some((hint.endpoint_addr, certificate)))
+        });
+        let (completer, answer) = tilo_actions::remote::pending();
+        let (relay, certificate) = match route {
+            Ok(None) => return None,
+            Ok(Some(route)) => route,
+            Err(error) => {
+                completer.complete(Err(error));
+                return Some(answer);
+            }
+        };
+        let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+        let queued = self.cmd_tx.try_send(NetCmd::RoomAdmin {
+            relay,
+            certificate,
+            command: Box::new(RoomCommand::ClaimTopologyNamespace {
+                room: room.to_string(),
+                salt,
+            }),
+            reply,
+        });
+        if queued.is_err() || self.runtime.is_none() {
+            completer.complete(Err("topology authority queue is unavailable".into()));
+            return Some(answer);
+        }
+        drop(queued);
+        self.runtime.as_ref()?.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || receiver.recv_timeout(ADMIN_TIMEOUT))
+                .await
+                .map_err(|_| "topology reply worker stopped".to_owned())
+                .and_then(|reply| {
+                    reply.map_err(|_| "topology governor did not answer in time".to_owned())
+                })
+                .and_then(std::convert::identity)
+                .and_then(|reply| match reply {
+                    RoomReply::Governance { generation } => {
+                        Ok(serde_json::json!({"generation": generation}))
+                    }
+                    _ => Err("topology governor returned an unexpected answer".into()),
+                });
+            completer.complete(result);
+        });
+        Some(answer)
+    }
+
+    /// Send a person's own bounded terminal audit to the exact signed governor.
+    /// Room administration retains its independent same-person owner checks.
+    pub(crate) async fn record_governed_effect_receipt(
+        &self,
+        room: RoomId,
+        invocation: uuid::Uuid,
+        redacted: Vec<u8>,
+    ) -> Result<(), String> {
+        let owner = self.native_owner()?;
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or("native identity unavailable")?;
+        let (relay, certificate, governor_lane) = owner.with_current(room, |view| {
+            let (certificate, _) = identity.current_native_material(view.workspace())?;
+            if view.device() != &certificate {
+                return Err("effect caller differs from admitted native custody".into());
+            }
+            let (hint, _) =
+                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                    .map_err(|error| error.to_string())?;
+            if hint.room != room.to_string() || &hint.governing_authority != view.governor() {
+                return Err("effect host differs from current admitted governor".into());
+            }
+            Ok((
+                hint.endpoint_addr,
+                certificate,
+                !view.governor().capabilities.can_act_as_host
+                    || &hint.host_device_certificate != view.governor(),
+            ))
+        })?;
+        if governor_lane {
+            return self
+                .record_effect_at_governor(room, invocation, redacted)
+                .await;
+        }
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        self.cmd_tx
+            .try_send(NetCmd::RoomAdmin {
+                relay,
+                certificate,
+                command: Box::new(RoomCommand::RecordEffectReceipt {
+                    room: room.to_string(),
+                    invocation,
+                    redacted,
+                }),
+                reply,
+            })
+            .map_err(|_| "the network queue is unavailable")?;
+        let response = tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
+            .await
+            .map_err(|_| "effect reply worker stopped")?
+            .map_err(|_| "effect governor did not answer in time; outcome unknown")??;
+        match response {
+            RoomReply::Governance { .. } => Ok(()),
+            _ => Err("effect governor returned an unexpected answer".into()),
+        }
+    }
+
     /// Have the relay issue an invitation to `target`. Answers the
     /// invitation's text, its id and when it expires.
     fn invite_to_relay_room(
@@ -116,7 +262,7 @@ impl ShellNetwork {
         invitee: Option<&str>,
         expiry_seconds_from_now: u64,
     ) -> Result<(String, [u8; 32], u64), String> {
-        let expiry = now_unix_seconds().saturating_add(expiry_seconds_from_now);
+        let expiry = tilo_clock::unix_now().saturating_add(expiry_seconds_from_now);
         let reply = self.room_admin(
             target.relay.clone(),
             target.certificate.clone(),
@@ -176,6 +322,7 @@ impl ShellNetwork {
             persist_pending_invitations(path, &pending);
         }
         drop(pending);
+        self.note_session_reachability(true);
         Ok(token)
     }
 
@@ -228,12 +375,7 @@ impl ShellNetwork {
         } else {
             name
         };
-        let Some(home) = registered_home_peer_addrs(
-            Some(certificate.user_public_key),
-            &std::collections::BTreeSet::from([room_topic_id(room)]),
-        )?
-        .into_iter()
-        .next() else {
+        let Some(home) = home_for_workspace(certificate.user_public_key, room)? else {
             return Ok(None);
         };
         let RoomReply::Room(summary) = self.room_admin(
@@ -334,7 +476,7 @@ impl ShellNetwork {
         &self,
         relay: &iroh::EndpointAddr,
         certificate: &DeviceCert,
-        summary: &tilo_relay::rooms::RoomSummary,
+        summary: &tilo_relay_session::rooms::RoomSummary,
     ) -> Result<(), String> {
         let room = RoomId::parse(&summary.room).ok_or("the host named an invalid room")?;
         let tree = self
@@ -434,6 +576,53 @@ impl ShellNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn fresh_workspace_finds_its_enrolled_home_on_the_person_topic() {
+        let temp = tempfile::tempdir().expect("temp");
+        let registry = temp.path().join("home-peers.json");
+        let user = super::super::decode_lower_hex_32(
+            "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241",
+        )
+        .expect("public person key");
+        let room = RoomId::parse("3291bed4-ee10-492a-877c-dbe6b8027a94").expect("fresh workspace");
+        let service = iroh::SecretKey::from_bytes(&[0x22; 32]).public();
+        let device = iroh::SecretKey::from_bytes(&[0x33; 32]).public();
+        let registered_topics = [
+            12_552_341_473_564_032_145_u64,
+            7_702_587_935_360_457_883,
+            4_296_909_156_967_491_521,
+        ];
+        assert!(!registered_topics.contains(&room_topic_id(room)));
+        assert!(registered_topics.contains(&super::super::personal_continuity_topic_id(&user)));
+        std::fs::write(
+            &registry,
+            serde_json::to_vec(&serde_json::json!([{
+                "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+                "device_node_id": hex::encode(device.as_bytes()),
+                "relay_service_node_id": hex::encode(service.as_bytes()),
+                "label": "Enrolled home",
+                "user_public_key": hex::encode(user),
+                "relay_workspace_ids": registered_topics,
+            }]))
+            .expect("registry"),
+        )
+        .expect("write registry");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
+        let home = home_for_workspace(user, room)
+            .expect("lookup")
+            .expect("enrolled home exists before the room is created");
+        assert_eq!(home.addr.id, service);
+        assert_eq!(home.expectation.user_public_key, user);
+        assert_eq!(home.expectation.device_public_key, *device.as_bytes());
+        assert!(
+            home_for_workspace([0x44; 32], room)
+                .expect("other person")
+                .is_none()
+        );
+    }
 
     #[test]
     fn invitation_roles_map_to_the_room_roles_the_relay_grants() {

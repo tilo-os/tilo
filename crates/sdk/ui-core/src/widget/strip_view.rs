@@ -6,7 +6,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::{MouseScrollDelta, WindowEvent};
 
 pub const STRIP_COOLDOWN_MS: u64 = 600;
@@ -95,26 +95,17 @@ impl Widget for StripView {
         // Zero-height leaf — this widget's job is scroll-wheel pagination,
         // not rendering; visible strip UI lives on the real window-groups
         // the shell tiles next to it.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(0.0),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
+    crate::rect_geometry!();
     fn draw(
         &mut self,
         _scene: &mut Scene,
@@ -142,8 +133,5 @@ impl Widget for StripView {
     }
     fn name(&self) -> &'static str {
         "StripView"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }

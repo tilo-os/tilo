@@ -3,22 +3,22 @@
 //! and a ground with its medium, each shown as the sheet it makes.
 
 use std::collections::HashMap;
+use ui::tilo_resource::Invoke;
 
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use ui::widget::{AppModel, ListRow, ModelPath, Widget};
+use ui::vello::kurbo::{Affine, Point, Rect};
+use ui::widget::{AppModel, ModelPath, Widget};
 use ui::{PresenceCtx, TextRenderer, Theme};
 
 use super::caption;
-use crate::actions::{CanvasAction, NewArtwork};
+use crate::actions::NewArtwork;
 use crate::document::{self, RecentArtworks, SIZES, STARTS};
 use crate::model::{Artwork, Ground};
 use crate::render::{Options, Renderer};
-use crate::resource::ArtworkResource;
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
 
 /// The size chosen when it is none of the presets.
@@ -78,10 +78,10 @@ impl Choices {
     }
 
     /// The action starting the artwork chosen.
-    pub fn action(&self) -> Option<CanvasAction> {
+    pub fn action(&self) -> Option<Invoke<Artwork>> {
         let (width, height) = self.dimensions()?;
         let title = self.title.get().trim().to_owned();
-        Some(CanvasAction::NewArtwork(NewArtwork {
+        Some(Artwork::NEW_ARTWORK.with(NewArtwork {
             title: Some(title).filter(|title| !title.is_empty()),
             width: Some(width),
             height: Some(height),
@@ -105,11 +105,25 @@ fn turned(width: f64, height: f64, landscape: bool) -> (f64, f64) {
 }
 
 /// Start the artwork the dialog is set to, and show it whole.
-pub fn create(dispatch: &Dispatcher<ArtworkResource>, tools: &Tools) -> bool {
+pub fn create(dispatch: &Dispatcher<Artwork>, tools: &Tools) -> bool {
     let Some(action) = tools.new.action() else {
         return false;
     };
-    dispatch.apply(&action);
+    dispatch.submit(action);
+    if tools.new.size.get().starts_with("pixel-") {
+        tools.workspace.set(crate::tools::Workspace::Pixel);
+        tools.choose_preset(crate::brushes::Preset::Pixel);
+        tools.tool.set(crate::tools::Tool::Brush);
+    } else {
+        tools.workspace.set(crate::tools::Workspace::Auto);
+        tools.choose_preset(crate::brushes::Preset::Round);
+        let start = document::start(&tools.new.start.get()).unwrap_or(STARTS[0]);
+        tools.tool.set(if start.medium.is_empty() {
+            crate::tools::Tool::Select
+        } else {
+            crate::tools::Tool::Brush
+        });
+    }
     tools.file.set(None);
     tools.selection.set(Vec::new());
     tools.layer.set("layer-1".to_owned());
@@ -125,23 +139,20 @@ pub fn create(dispatch: &Dispatcher<ArtworkResource>, tools: &Tools) -> bool {
 /// A sheet of the artwork's proportions in a ground, as a choice shows it.
 pub struct Swatch {
     rect: Rect,
-    side: f32,
     sheet: Box<dyn Fn() -> (f64, f64)>,
     ground: Box<dyn Fn() -> Ground>,
     renderer: Renderer,
 }
 
 impl Swatch {
-    /// A swatch `side` points square, drawing a sheet of the proportions
+    /// A swatch with a Theme-sized thumbnail, drawing a sheet of the proportions
     /// `sheet` gives, in the ground `ground` gives.
     pub fn new(
-        side: f32,
         sheet: impl Fn() -> (f64, f64) + 'static,
         ground: impl Fn() -> Ground + 'static,
     ) -> Self {
         Self {
             rect: Rect::ZERO,
-            side,
             sheet: Box::new(sheet),
             ground: Box::new(ground),
             renderer: Renderer::default(),
@@ -151,39 +162,26 @@ impl Swatch {
 
 /// The long side of the small artwork a swatch draws, in units: enough
 /// for the ground's tooth to read, few enough cells to make at once.
-const SWATCH_UNITS: f64 = 240.0; // artwork units of a swatch, not on-screen spacing
+use crate::content_geometry::SWATCH_UNITS;
 
 impl Widget for Swatch {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         use ui::widget::TaffyTreeExt as _;
-        let node = taffy.leaf_node(Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(self.side),
-                height: taffy::Dimension::length(self.side),
-            },
+        let side = theme.tokens.metrics.min_pointer_target;
+        let style = Style {
+            size: taffy::Size::from_lengths(side, side),
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
-    }
+    ui::rect_geometry!();
 
     #[allow(
         clippy::arithmetic_side_effects,
@@ -208,23 +206,22 @@ impl Widget for Swatch {
             ground: (self.ground)(),
             ..Artwork::default()
         };
-        let room = self.rect.inset(-3.0);
+        let room = self
+            .rect
+            .inset(-f64::from(theme.tokens.spacing.rhythm.tight));
         let scale = (room.width() / art.width).min(room.height() / art.height);
         let origin = Point::new(
             room.center().x - art.width * scale / 2.0,
             room.center().y - art.height * scale / 2.0,
         );
         let to_screen = transform * Affine::translate(origin.to_vec2()) * Affine::scale(scale);
+        let edge = Rect::from_origin_size(origin, (art.width * scale, art.height * scale));
+        ui::widget::card::CardFace::new().paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+            edge,
+        );
         self.renderer
             .draw(&art, scene, to_screen, text, &Options::default());
-        let edge = Rect::from_origin_size(origin, (art.width * scale, art.height * scale));
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::surface::edge_on(theme.bg_primary),
-            None,
-            &RoundedRect::from_rect(edge, 1.0),
-        );
     }
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
@@ -232,16 +229,12 @@ impl Widget for Swatch {
     fn name(&self) -> &'static str {
         "Swatch"
     }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 }
 
 /// A choice tile: a swatch above its name and a detail, chosen into
 /// `state`.
 fn tile(
-    width: f32,
+    measure: fn(&ui::tokens::Metrics) -> f32,
     state: &LocalState<String>,
     value: &str,
     id: &str,
@@ -260,39 +253,34 @@ fn tile(
         ));
     let content = Row::new()
         .no_wrap()
-        .with_padding(6.0, 6.0)
-        .with_gap(8.0)
+        .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
+        .with_rhythm(ui::tokens::Rhythm::Related)
         .with_align_items(ui::taffy::AlignItems::Center)
         .push(Box::new(swatch))
         .push(Box::new(text));
-    Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_width(width)
-            .with_child(Box::new(
-                ListRow::new(content)
+    super::layout::width(
+        Box::new(
+            Container::new().with_no_padding().with_child(Box::new(
+                ui::widget::ControlRow::new(content)
                     .choosing(state, value.to_owned())
                     .with_id(id)
                     .with_accessible_name(said),
             )),
+        ),
+        measure,
     )
 }
-
-/// A size tile's width: four to a row in the dialog.
-const SIZE_TILE: f32 = 150.0; // a quarter of the dialog's body: a layout width, not spacing
-/// A ground tile's width: three to a row in the dialog.
-const START_TILE: f32 = 202.0; // a third of the dialog's body: a layout width, not spacing
-/// A swatch's side in a tile.
-const SWATCH: f32 = 40.0; // a thumbnail's side: a layout size, not spacing
 
 fn rows(tiles: Vec<Element>, per_row: usize) -> Element {
     let mut grid = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(6.0);
+        .with_rhythm(ui::tokens::Rhythm::Related);
     let mut tiles = tiles.into_iter().peekable();
     while tiles.peek().is_some() {
-        let mut row = Row::new().no_wrap().with_gap(6.0);
+        let mut row = Row::new()
+            .no_wrap()
+            .with_rhythm(ui::tokens::Rhythm::Related);
         for tile in tiles.by_ref().take(per_row) {
             row = row.push(tile);
         }
@@ -303,7 +291,7 @@ fn rows(tiles: Vec<Element>, per_row: usize) -> Element {
 
 /// "1920 × 1080".
 fn sides(width: f64, height: f64) -> String {
-    format!("{width:.0} × {height:.0}")
+    format!("{width:.0} by {height:.0}")
 }
 
 /// The size tiles: the presets turned as the dialog says, and any size.
@@ -319,11 +307,11 @@ fn size_tiles(choices: &Choices) -> Vec<Element> {
             let turned = std::rc::Rc::new(turned);
             let shown = std::rc::Rc::clone(&turned);
             tile(
-                SIZE_TILE,
+                |metrics| metrics.panel_width_sheet / 4.0,
                 &choices.size,
                 size.id,
                 &format!("canvas-new-size-{}", size.id),
-                Swatch::new(SWATCH, move || turned(), move || ground.ground()),
+                Swatch::new(move || turned(), move || ground.ground()),
                 &lookup(size.label),
                 move || {
                     let (width, height) = shown();
@@ -336,12 +324,11 @@ fn size_tiles(choices: &Choices) -> Vec<Element> {
         let custom = choices.clone();
         let ground = choices.clone();
         sizes.push(tile(
-            SIZE_TILE,
+            |metrics| metrics.panel_width_sheet / 4.0,
             &choices.size,
             CUSTOM,
             "canvas-new-size-custom",
             Swatch::new(
-                SWATCH,
                 move || {
                     let side = |text: String| text.trim().parse::<f64>().unwrap_or(1.0).max(1.0);
                     (side(custom.width.get()), side(custom.height.get()))
@@ -372,12 +359,11 @@ fn start_tiles(choices: &Choices) -> Vec<Element> {
             };
             let sheet = choices.clone();
             tile(
-                START_TILE,
+                |metrics| metrics.panel_width_sheet / 3.0,
                 &choices.start,
                 start.id,
                 &format!("canvas-new-start-{}", start.id),
                 Swatch::new(
-                    SWATCH,
                     move || sheet.dimensions().unwrap_or((4.0, 3.0)),
                     move || ground.clone(),
                 ),
@@ -390,7 +376,7 @@ fn start_tiles(choices: &Choices) -> Vec<Element> {
 }
 
 /// Portrait or landscape, and for any size its sides.
-fn orientation(cx: &ViewCx<ArtworkResource>, choices: &Choices) -> Element {
+fn orientation(cx: &ViewCx<Artwork>, choices: &Choices) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let choices = choices.clone();
     cx.switch(&choices.size.clone(), move |_, size| {
@@ -401,7 +387,7 @@ fn orientation(cx: &ViewCx<ArtworkResource>, choices: &Choices) -> Element {
         if document::size(size)
             .is_some_and(|preset| (preset.width - preset.height).abs() < f64::EPSILON)
         {
-            return Box::new(Spacer::fixed(0.0)) as Element;
+            return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
         }
         Box::new(
             ui::widget::ToggleGroup::from_state(
@@ -427,35 +413,39 @@ fn custom_sides(choices: &Choices) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let width = TextInput::from_state(&choices.width)
         .with_id("canvas-new-width")
-        .with_accessible_name(lookup("canvas-artwork-width"));
+        .with_accessible_name(lookup("canvas-label-artwork-width"));
     let height = TextInput::from_state(&choices.height)
         .with_id("canvas-new-height")
-        .with_accessible_name(lookup("canvas-artwork-height"));
+        .with_accessible_name(lookup("canvas-label-artwork-height"));
     Box::new(
         Row::new()
             .no_wrap()
-            .with_gap(8.0)
+            .with_rhythm(ui::tokens::Rhythm::Related)
             .with_align_items(ui::taffy::AlignItems::Center)
-            .push(caption(&lookup("canvas-artwork-width")))
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_width(SIDE_FIELD)
-                    .with_child(Box::new(width)),
+            .push(caption(&lookup("canvas-label-artwork-width")))
+            .push(super::layout::width(
+                Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_child(Box::new(width)),
+                ),
+                |metrics| metrics.panel_row_height * 2.0,
             ))
-            .push(caption(&lookup("canvas-artwork-height")))
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_width(SIDE_FIELD)
-                    .with_child(Box::new(height)),
+            .push(caption(&lookup("canvas-label-artwork-height")))
+            .push(super::layout::width(
+                Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_child(Box::new(height)),
+                ),
+                |metrics| metrics.panel_row_height * 2.0,
             ))
             .push(caption(&lookup("canvas-units"))),
     )
 }
 
 /// What creating the artwork does to the one in the window.
-fn replacing(cx: &ViewCx<ArtworkResource>) -> Element {
+fn replacing(cx: &ViewCx<Artwork>) -> Element {
     let replacing = {
         let live = cx.live().clone();
         Text::dynamic(move || {
@@ -478,57 +468,59 @@ fn replacing(cx: &ViewCx<ArtworkResource>) -> Element {
 }
 
 /// The new-artwork dialog's body.
-pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+pub fn body(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let choices = tools.new.clone();
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let title = TextInput::from_state(&choices.title)
         .with_id("canvas-new-title")
-        .with_placeholder(&lookup("canvas-untitled"))
-        .with_accessible_name(lookup("canvas-artwork-title"));
+        .with_placeholder(lookup("canvas-untitled"))
+        .with_accessible_name(lookup("canvas-label-artwork-title"));
+    let starts = {
+        let choices = choices.clone();
+        cx.switch(&choices.size.clone(), move |_cx, size| {
+            if size.starts_with("pixel-") && choices.start.get() == "paper" {
+                choices.start.set("transparent".into());
+            }
+            rows(start_tiles(&choices), 3)
+        })
+    };
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(10.0)
+            .with_rhythm(ui::tokens::Rhythm::Related)
             .push(super::heading("canvas-new-size"))
             .push(rows(size_tiles(&choices), 4))
             .push(orientation(cx, &choices))
             .push(super::heading("canvas-new-start"))
-            .push(rows(start_tiles(&choices), 3))
-            .push(super::heading("canvas-artwork-title"))
+            .push(starts)
+            .push(super::heading("canvas-label-artwork-title"))
             .push(Box::new(title))
             .push(replacing(cx)),
     )
 }
 
-/// A side field's width.
-const SIDE_FIELD: f32 = 72.0; // "8192" in the body face with its insets: a text width, not spacing
-
 /// The welcome over a blank artwork: what a person can do here, that an
 /// agent can paint here too, and the artworks worked on lately.
-pub fn welcome(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
-    // Shown while the artwork is blank and the welcome was not put away.
+pub fn welcome(cx: &ViewCx<Artwork>, tools: &Tools, compact: bool) -> Element {
     let blank = cx.value(|art: &Artwork| art.marks.is_empty());
     let tools = tools.clone();
     cx.switch(&blank, move |cx, blank| {
         if !*blank {
-            return Box::new(Spacer::fixed(0.0)) as Element;
+            return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
         }
         let tools = tools.clone();
         cx.switch(&tools.welcomed.clone(), move |cx, welcomed| {
             if *welcomed {
-                return Box::new(Spacer::fixed(0.0)) as Element;
+                return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
             }
-            let tools = tools.clone();
-            cx.switch(&tools.sidebar.clone(), move |cx, shown| {
-                placed(card(cx, &tools), *shown)
-            })
+            placed(card(cx, &tools), compact)
         })
     })
 }
 
 /// The welcome's card.
-fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+fn card(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let button = |id: &str, icon: Icon, then: Box<dyn Fn()>| -> Element {
         let name = lookup(id);
@@ -556,10 +548,10 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         Box::new(
             Button::new("canvas-welcome-close", "")
                 .with_icon(Icon::X)
-                .ghost()
+                .role(ui::widget::ButtonRole::Plain)
                 .with_accessible_name(&name)
                 .tooltip(name.clone())
-                .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+                .control_size(ui::widget::ControlSize::Small)
                 .on_view(move || welcomed.set(true)),
         )
     };
@@ -567,9 +559,9 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         Box::new(
             Row::new()
                 .no_wrap()
-                .with_gap(10.0)
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .with_align_items(ui::taffy::AlignItems::Center)
-                .push(Box::new(ui::widget::IconWidget::new(icon, 16.0).dim()))
+                .push(Box::new(ui::widget::IconWidget::new(icon).dim()))
                 .push(Box::new(Text::new(id))),
         )
     };
@@ -577,11 +569,11 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let body = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(12.0)
+        .with_rhythm(ui::tokens::Rhythm::Sibling)
         .push(Box::new(
             Row::new()
                 .no_wrap()
-                .with_gap(8.0)
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .with_align_items(ui::taffy::AlignItems::Center)
                 .push(Box::new(
                     Container::new()
@@ -598,64 +590,97 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         .push(tip(Icon::Bot, "canvas-welcome-agent"))
         .push(tip(Icon::Keyboard, "canvas-welcome-keys"))
         .push(Box::new(
-            Row::new().no_wrap().with_gap(8.0).push(new).push(open),
+            Row::new()
+                .no_wrap()
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(new)
+                .push(open),
         ))
         .push(recents);
     let card = Container::new()
         .with_no_padding()
-        .with_width(WELCOME)
         .with_child(Box::new(Welcome(Box::new(ui::widget::Card::new(
             Box::new(body),
         )))));
-    Box::new(card)
+    super::layout::themed(Box::new(card), |theme, style| {
+        // A cap is a comfortable wide measure, never a minimum wider than
+        // the space between the rail and the window's trailing gutter.
+        style.size.width = ui::taffy::Dimension::auto();
+        style.min_size.width = ui::taffy::Dimension::length(0.0);
+        style.max_size.width = ui::taffy::Dimension::length(theme.tokens.metrics.panel_width_list);
+        style.flex_basis = ui::taffy::Dimension::length(0.0);
+        style.flex_grow = 1.0;
+        style.flex_shrink = 1.0;
+    })
 }
 
-/// The card centred over the canvas: inset by the rail, the header and
-/// the sidebar when it is shown. Everywhere else the canvas stays the
-/// artwork's.
-fn placed(card: Element, sidebar: bool) -> Element {
-    let right = if sidebar { crate::SIDEBAR } else { 0.0 };
+/// The welcome is a child of the actual artwork viewport, so the shell's
+/// header, inspector and tools retain their full measured space. Phones get
+/// a scrolling page; desktop cards stay centred over the artwork.
+fn placed(card: Element, compact: bool) -> Element {
+    if compact {
+        return super::layout::themed(
+            Box::new(
+                Container::new().filling().with_child(Box::new(
+                    Scrollable::new_vertical()
+                        .fill_parent_height()
+                        .with_child(card),
+                )),
+            ),
+            |theme, style| {
+                style.padding = ui::taffy::Rect {
+                    left: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                    right: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                    top: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                    bottom: ui::taffy::LengthPercentage::length(theme.tokens.spacing.s3),
+                };
+            },
+        );
+    }
     Box::new(
         Container::new()
             .with_no_padding()
             .filling()
-            .with_child(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_horizontal_padding(crate::RAIL, right)
-                    .with_extra_top_padding(HEADER)
-                    .with_fill_remaining_height()
-                    .with_gap(0.0)
-                    .push(Box::new(
-                        Row::new()
-                            .no_wrap()
-                            .with_fill_remaining_height()
-                            .with_justify(ui::taffy::JustifyContent::Center)
-                            .with_align_items(ui::taffy::AlignItems::Center)
-                            .push(card),
-                    )),
+            .with_child(super::layout::themed(
+                Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_fill_remaining_height()
+                        .with_gap(0.0)
+                        .push(Box::new(
+                            Row::new()
+                                .no_wrap()
+                                .with_fill_remaining_height()
+                                .with_justify(ui::taffy::JustifyContent::Center)
+                                .with_align_items(ui::taffy::AlignItems::Center)
+                                .push(card),
+                        )),
+                ),
+                move |theme, style| {
+                    let gutter = ui::taffy::LengthPercentage::length(theme.tokens.spacing.s4);
+                    style.padding = ui::taffy::Rect {
+                        left: gutter,
+                        right: gutter,
+                        top: gutter,
+                        bottom: gutter,
+                    };
+                },
             )),
     )
 }
 
-/// The header's height, which the welcome is centred below.
-const HEADER: f32 = 52.0; // the header strip's height: a layout size, not spacing
-
-/// The welcome card's width.
-const WELCOME: f32 = 420.0; // a readable measure for its lines: a layout width, not spacing
-
 /// The artworks worked on lately, each opened by a click.
-fn recent_list(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+fn recent_list(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let files = tools.files.clone();
     cx.switch(&tools.recents, move |_, recents: &RecentArtworks| {
         let recents = &recents.artworks;
         if recents.is_empty() {
-            return Box::new(Spacer::fixed(0.0)) as Element;
+            return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
         }
         let mut list = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(2.0)
+            .with_rhythm(ui::tokens::Rhythm::Tight)
             .push(super::heading("canvas-recent"));
         for recent in recents.iter().take(4) {
             let name = if recent.title.is_empty() {
@@ -670,27 +695,23 @@ fn recent_list(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 .map_or_else(String::new, |parent| parent.display().to_string());
             let content = Row::new()
                 .no_wrap()
-                .with_padding(8.0, 4.0)
-                .with_gap(10.0)
+                .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Tight)
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .with_align_items(ui::taffy::AlignItems::Center)
-                .push(Box::new(
-                    ui::widget::IconWidget::new(Icon::Image, 16.0).dim(),
-                ))
+                .push(Box::new(ui::widget::IconWidget::new(Icon::Image).dim()))
                 .push(Box::new(
                     Column::new()
                         .with_no_padding()
                         .with_intrinsic_height()
                         .with_gap(0.0)
                         .push(Box::new(Text::new(&name)))
-                        .push(caption(&format!(
-                            "{} · {place}",
-                            sides(recent.width, recent.height)
-                        ))),
+                        .push(caption(&sides(recent.width, recent.height)))
+                        .push(caption(&place)),
                 ));
             // Choosing the row asks Files for it; the file desk takes the
             // request and clears it.
             list = list.push(Box::new(
-                ListRow::new(content)
+                ui::widget::ControlRow::new(content)
                     .choosing(&files, Some(FileRequest::OpenRecent(recent.path.clone())))
                     .with_id(format!("canvas-recent-{}", recent.at_ms))
                     .with_accessible_name(format!("{name}, {place}")),

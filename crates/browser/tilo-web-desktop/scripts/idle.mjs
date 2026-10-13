@@ -47,7 +47,7 @@ async function chrome() {
   // Paused and never continued: every request to another origin (the bundle
   // is served over plain HTTP, the apps' services over HTTPS) pends.
   if (stall) await tab.send('Fetch.enable', {patterns: [{urlPattern: 'https://*'}]});
-  await tab.navigate(`${server.url}/index.html`);
+  await tab.navigate(`${server.url}/`);
   return {evaluate: tab.evaluate, errors: () => tab.log.filter(line => line.startsWith('EXC')), close: () => browser.close(),
     memory: () => null};
 }
@@ -60,7 +60,7 @@ async function playwrightWebkit() {
   if (stall) await page.route(url => url.origin !== local, () => {});
   const errors = [];
   page.on('pageerror', error => errors.push(`EXC ${error.message}`));
-  await page.goto(`${server.url}/index.html`);
+  await page.goto(`${server.url}/`);
   return {evaluate: expression => page.evaluate(expression), errors: () => errors,
     close: async () => { await context.close(); rmSync(profile, {recursive: true, force: true}); },
     memory: webkitMemory};

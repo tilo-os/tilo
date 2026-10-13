@@ -1,13 +1,5 @@
 //! The per-strip active-group pointer and the persisted shape of groups.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
-
 use std::collections::HashMap;
 
 use tilo_desktop_model::{
@@ -32,7 +24,7 @@ fn tree_with_n_groups(n: u64) -> (DesktopTree, StripId, Vec<GroupId>) {
         })
         .collect();
     let mut ws = Workspace::new(ws_id, "Test");
-    ws.room = RoomId::new();
+    ws.set_room(RoomId::new());
     ws.strips.push(strip);
     let mut active_strip = HashMap::new();
     active_strip.insert(ws_id, strip_id);

@@ -10,7 +10,7 @@ use ui::tilo_resource::Effect as _;
 use super::{AutoCommit, CodeApp, Command, PanelTab, Staging, TreeId, explorer};
 use crate::actions;
 use crate::effects::CodeEditorEffect;
-use crate::resource::CodeEditor;
+use crate::project::Project;
 
 /// How many files, symbols and search hits the published tree carries; the
 /// rest resolve by id.
@@ -20,17 +20,39 @@ const ROW_LIMIT: usize = actions::EAGER_RESOURCE_SNAPSHOT_LIMIT;
 const SHELL_ANSWER: ui::time::Duration = ui::time::Duration::from_millis(1500);
 
 impl CodeApp {
+    fn answer_text_read(
+        effect: &CodeEditorEffect,
+        cx: &EffectCx<Project, Self>,
+    ) -> Option<EffectAnswer> {
+        let answer = || match effect {
+            CodeEditorEffect::ReadText {
+                file,
+                start_chars,
+                max_chars,
+            } => {
+                let document = cx.document().ok_or("current document is unavailable")?;
+                crate::text_operations::read(&document, file, *start_chars, *max_chars)
+                    .map(Effected::value)
+            }
+            _ => Err("effect is not a text read".into()),
+        };
+        matches!(effect, CodeEditorEffect::ReadText { .. }).then(answer)
+    }
+
     /// Answer one of the published effects.
     pub(crate) fn answer_effect(
         &mut self,
         effect: CodeEditorEffect,
-        cx: &mut EffectCx<CodeEditor, Self>,
+        cx: &mut EffectCx<Project, Self>,
     ) -> EffectAnswer {
+        if let Some(answer) = Self::answer_text_read(&effect, cx) {
+            return answer;
+        }
         if let Some(command) = effect.command() {
             return self.answer_command(command, cx);
         }
         match effect {
-            CodeEditorEffect::Open { file } => {
+            CodeEditorEffect::ShowFile { file } => {
                 let node = self.file_node(&file)?;
                 self.open_node(node);
             }
@@ -124,8 +146,11 @@ impl CodeApp {
     fn answer_command(
         &mut self,
         command: Command,
-        cx: &mut EffectCx<CodeEditor, Self>,
+        cx: &mut EffectCx<Project, Self>,
     ) -> EffectAnswer {
+        if command == Command::NextTheme {
+            return Err("Appearance is controlled by the operating system; choose it in Appearance settings".into());
+        }
         match command {
             Command::OpenFolder | Command::OpenFile | Command::SaveAs => {
                 self.ensure_no_file_effect()?;
@@ -205,7 +230,11 @@ impl CodeApp {
 
     /// What the file effects can do right now.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
-        let mut statuses = Vec::new();
+        let mut statuses = vec![EffectStatus::unavailable(
+            CodeEditorEffect::NEXT_THEME,
+            "code_editor.os_appearance",
+            "Appearance is controlled by the OS; choose a theme in Theme Studio",
+        )];
         if self.file_reply.is_some() || self.portal.is_some() {
             const CODE: &str = "code_editor.busy";
             const REASON: &str = "Another file operation is still running";
@@ -260,11 +289,13 @@ impl CodeApp {
 
     /// The live row `id`, beyond the ones [`Self::live_rows`] publishes.
     pub(crate) fn live_row(&self, id: &str) -> Option<LiveRow> {
-        if let Some(file) = id.strip_prefix("code_editor.file:") {
+        if let Some((_, file)) =
+            ui::tilo_resource::items::item_of_resource::<crate::project::Project>(id)
+        {
             return self
                 .session
                 .project
-                .node_for_resource(file)
+                .node_for_resource(file.as_str())
                 .and_then(|node| self.file_row(node));
         }
         if let Some(symbol) = self
@@ -289,12 +320,23 @@ impl CodeApp {
         }
         let mut row = LiveRow::new(
             actions::file_resource_id(&item.resource_id),
-            "code_editor.file",
+            crate::actions::FILE_KIND,
             item.name.clone(),
         )
-        .effect(&CodeEditorEffect::Open {
+        .effect(&CodeEditorEffect::ShowFile {
             file: item.resource_id.clone(),
-        });
+        })
+        .operation(
+            CodeEditorEffect::ReadText {
+                file: item.resource_id.clone(),
+                start_chars: 0,
+                max_chars: 1024,
+            }
+            .bound_asking(&["start_chars", "max_chars"]),
+        );
+        row = row.operation(crate::text_operations::snapshot_spec(
+            item.resource_id.clone(),
+        ));
         if self
             .session
             .buffer_of(node)
@@ -329,6 +371,15 @@ impl CodeApp {
         self.staging = Some(Staging {
             scenario: scenario.map(str::to_owned),
         });
+        if scenario == Some("hardware")
+            && let Some(root) = self.project_root()
+        {
+            let path = crate::disk::canonical(&root.join(crate::sample_project::HARDWARE_FILE));
+            if let Some(node) = self.session.project.reveal_path(&path) {
+                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.open_node(node);
+            }
+        }
     }
 
     /// Set the staged scenario's view state once the editor holds its file.
@@ -347,6 +398,16 @@ impl CodeApp {
             return;
         }
         match scenario.as_deref() {
+            // A missing fixture must leave capture staging incomplete instead
+            // of silently capturing the default Rust file.
+            Some("hardware")
+                if self
+                    .session
+                    .active_buffer()
+                    .is_none_or(|buffer| buffer.name != "signed_mac.sv") =>
+            {
+                return;
+            }
             Some("terminal") => {
                 self.shots_terminal_input(terminal::demo_session_input());
                 self.staging_until = Some(ui::time::now() + SHELL_ANSWER);
@@ -354,8 +415,7 @@ impl CodeApp {
             }
             Some("selection") => self.shots_select_words(),
             Some("completion") => self.shots_completion_demo(doc),
-            Some("find") => self.shots_open_find("primes", true, false, doc),
-            Some("find-options") => self.shots_open_find("primes", true, true, doc),
+            Some("find" | "find-options") => self.shots_open_find("primes", doc),
             Some("search") => self.shots_project_search("fn main"),
             Some("conflict") => self.shots_conflict(),
             Some("indexing") => self.shots_indexing(),
@@ -439,6 +499,13 @@ impl CodeApp {
     }
 
     pub(crate) fn find_options_shown_for_test(&self) -> bool {
-        self.find.options_shown()
+        ui::widget::Widget::accessibility(&self.find).is_some_and(|node| {
+            node.children.iter().any(|child| {
+                child.action_target.as_deref() == Some("find-MatchCase")
+                    && child
+                        .bounds
+                        .is_some_and(|bounds| bounds.x1 > bounds.x0 && bounds.y1 > bounds.y0)
+            })
+        })
     }
 }

@@ -1,23 +1,21 @@
 //! `MailApp` — the root widget.
 //!
-//! It composes the HIG §1 navigation primitive [`ui::widget::NavShell`] with a
-//! genuine three-panel layout —
+//! It is the toolkit's window shell, [`ui::widget::NavShell`], with three
+//! columns —
 //!
 //! ```text
 //! [ sidebar (accounts + folders) | list (overview) | message (detail) ]
 //! ```
 //!
-//! Wide: all three abreast, only the sidebar collapses (via the shell's own
-//! chevron/hamburger — never an `X`). Narrow: the sidebar becomes an overlay
-//! drawer, the list is full-screen, and opening a message slides the detail in
-//! from the right with a Back affordance. The shell owns the breakpoint,
-//! collapse/push animations, the scrim, and Back/Esc routing; the three
-//! [`Pane`]s (all sharing one [`MailState`]) supply the content and raise
-//! [`Intent`]s for cross-pane effects.
+//! The shell owns the header row, the sidebar toggle, the widths, the drawer
+//! and the push stack. The sidebar is a followed [`NavList`](ui::widget::NavList), the list a
+//! [`MessageList`] and the message a [`MessageReader`]; they share one
+//! [`MailState`] and raise [`Intent`]s and [`Command`]s for effects that
+//! reach past their own column.
 //!
 //! On top of the shell the app layers the transient overlays it owns directly:
-//! the movable [`ComposeWindow`], the row context menu, the account-setup
-//! sheet, and a status toast.
+//! the movable [`ComposeWindow`], the row context menu and the account-setup
+//! sheet. Status messages show as the shell's toast.
 //!
 //! A live window loads the [`AccountStore`] of its host's profile and drives
 //! the account [`crate::engine`] worker (IMAP fetch / SMTP submit). It does
@@ -36,67 +34,53 @@ use automerge::AutoCommit;
 use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use accounts::person::PersonAccounts;
 use tilo_content::ContentStore;
 use ui::framework::PersonRecord;
 use ui::icons::Icon;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::search::{ScopeDecl, SearchOpener, SearchRequest};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
-    Button, ButtonFace, EmptyState, NavPane, NavShell, SegmentedFace, TextInput, Toggle,
-    ToggleFace, ToggleGroup, Widget,
+    Button, ContextMenu, EmptyState, MenuItem, ModalDialog, NavPane, NavShell, SidebarPlacement,
+    TaffyTreeExt, Text, Widget,
 };
-use ui::{ColorCompat, ImageStore};
+use ui::{ImageStore, TextRole};
 
 use crate::account::{Account, AccountStore};
-use crate::actions::{MailAction, Outgoing, ServerUpdate};
-use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
-use crate::doc::MailDoc;
-use ui::surface::pill;
+use crate::actions::{DraftData, Outgoing, ServerUpdate};
+#[path = "contact_recipients.rs"]
+mod contact_recipients;
 
-use crate::draw::fill_rect;
-use crate::draw::{elide, fill_round, stroke_round};
+use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
+use crate::header::{BarSpec, header_actions, list_bar, reader_bar};
+use crate::list::MessageList;
 use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
 };
-use crate::pane::{Pane, Role};
+use crate::reader::MessageReader;
+use crate::resource::{Mail, mailbox, read_mail};
 use crate::shortcuts_overlay::MailShortcutsOverlay;
-use crate::state::{BulkAction, CtxAction, Intent, MailState, Shared};
+use crate::sidebar;
+use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, Shared};
 use crate::util::format_absolute;
 
-/// Width (logical px) at/above which the shell is wide (docked sidebar +
-/// three panes abreast); below it the sidebar is an overlay drawer and the
-/// content is a single push page. Shared with the [`NavShell`].
-const BREAKPOINT: f64 = 860.0;
-const SIDEBAR_W: f64 = 260.0;
-const OVERVIEW_W: f64 = 340.0;
 /// How often the app auto-refreshes the current folder from the server while in
 /// use. Checked each active frame; a manual refresh (the `r` shortcut) forces
 /// one immediately regardless.
 const AUTO_REFRESH_MIN: i64 = 5;
-/// How long a status toast ("Synced N messages", "Account saved", …) stays on
-/// screen before it fades out on its own, like any normal transient toast.
-const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(3500);
 /// A loaded mail body can be huge, but Mail refuses to turn a resource action
 /// into an unbounded filesystem write. Larger attachments can be downloaded
 /// through Files after Mail exposes a proper streamed handoff.
 const MAX_ATTACHMENT_SAVE_BYTES: usize = crate::attachment_store::MAX_ATTACHMENT_BYTES;
-/// Popup actions keep a generous target even in a desktop menu, and their
-/// geometry follows the host text scale so enlarged text cannot clip or spill.
-const CONTEXT_MENU_W: f64 = 248.0;
-const CONTEXT_MENU_HEADER_H: f64 = 42.0;
-const CONTEXT_MENU_ROW_H: f64 = 36.0;
-const CONTEXT_MENU_PAD: f64 = 6.0;
 
 struct EventContext<'a> {
     scale_factor: f64,
@@ -109,32 +93,18 @@ struct EventContext<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
-/// An open row context menu.
-struct ContextMenu {
-    target: MessageId,
-    pos: Point,
+/// What the open row menu acts on: the message and its actions, in the
+/// menu's order.
+struct MenuTarget {
+    message: MessageId,
     items: Vec<CtxAction>,
-    /// Persisted focus target for the native arrow-key menu model.
-    active: usize,
 }
 
-/// A hit region in one of the app-owned overlays (setup sheet / context menu /
-/// first-run onboarding).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum OverlayHit {
-    SetupField(usize),
-    ToggleImapTls,
-    ToggleSmtpTls,
-    SetupSave,
-    CancelSetup,
-    /// Remove the account being edited (only shown when editing an existing one).
-    RemoveAccount,
-    CtxItem(usize),
-    /// Pick the account's sign-in method (password vs OAuth).
-    AuthPassword,
-    AuthOAuth,
-    /// Trigger the OAuth authorization flow for the detected provider.
-    OAuthSignIn,
+/// The confirmation before trashed messages are deleted for good.
+struct PurgeConfirmation {
+    dialog: ModalDialog<Text>,
+    /// `Some(true)` once confirmed, `Some(false)` once dismissed.
+    answer: Rc<Cell<Option<bool>>>,
 }
 
 /// The engine worker channel pair (live app only).
@@ -150,22 +120,26 @@ struct PendingSend {
     outgoing: Outgoing,
     /// The copy Sent shows once it is delivered.
     message: Message,
-    done: ServerUpdateDone,
+    done: DeliveryDone,
 }
 
 /// How the drain that asked for a server update hears how it went.
 type ServerUpdateDone = Box<dyn FnOnce(Result<(), String>)>;
 
+/// How the outbox drain hears how a delivery went: delivered, or refused
+/// for good with the server's reason; an error leaves it to try again.
+type DeliveryDone = Box<dyn FnOnce(Result<ui::tilo_resource::Settled, String>)>;
+
 /// The server updates the document's projection asked for: queued until the
 /// next sync hands them to the engine, then carried out by it. Whichever
 /// device's drain asked, the engine's acknowledgement records the update as
-/// applied in the document ([`crate::actions::MailAction::ServerApplied`]).
+/// applied in the document ([`Mail::SERVER_APPLIED`](crate::resource::Mail::SERVER_APPLIED)).
 #[derive(Default)]
 pub(crate) struct ServerOutbox {
     queued: Vec<(ServerUpdate, ServerUpdateDone)>,
     sent: HashMap<EngineRequestId, (ServerUpdate, ServerUpdateDone)>,
     /// Messages from the document's outbox, waiting for the engine.
-    deliveries: Vec<(Outgoing, ServerUpdateDone)>,
+    deliveries: Vec<(Outgoing, DeliveryDone)>,
 }
 
 impl ServerOutbox {
@@ -175,7 +149,7 @@ impl ServerOutbox {
     }
 
     /// Deliver `outgoing`, then tell `done` how it went.
-    pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+    pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: DeliveryDone) {
         self.deliveries.push((outgoing, done));
     }
 }
@@ -282,18 +256,20 @@ impl Drop for PendingSetupValidation {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "the bools split across three unrelated concerns (shell layout flags, the setup-sheet's own transient UI state, and engine-request bookkeeping); grouping them would need a real design pass (e.g. a SetupSheetState sub-struct), left for a follow-up rather than forced here"
+    reason = "the bools split across unrelated concerns (shell layout flags and engine-request bookkeeping); grouping them would need a real design pass"
 )]
 pub struct MailApp {
-    shared: Shared,
+    pub(crate) shared: Shared,
     /// Where draft attachment bytes live; drafts carry only their content id.
     /// The engine worker holds a clone to build outgoing MIME.
     content: ContentStore,
     nav: NavShell,
-    /// The theme the host last handed to `build_layout` / `draw`. The nav
-    /// shell resolves its breakpoint and pane widths from the theme (F1,
-    /// round two), so it is laid out against this — never a stock theme.
-    shell_theme: Theme,
+    nav_node: Option<NodeId>,
+    /// The title the list's header shows.
+    overview_title: String,
+    /// The list's and the open message's header actions as last built.
+    list_bar: BarSpec,
+    reader_bar: BarSpec,
     /// Retained first-run surface so the primary action uses the shared
     /// pointer, focus, keyboard and accessibility contract.
     first_run: EmptyState,
@@ -305,38 +281,28 @@ pub struct MailApp {
     /// The Drafts-folder message the open composer is editing, if any. On save
     /// the same message is updated (not duplicated); on send it is removed.
     editing_draft: Option<MessageId>,
-    context_menu: Option<ContextMenu>,
+    /// Retained projection of the canonical CRDT draft; preserves its metadata
+    /// when the Drafts-folder row reopens and reuses that row across frames.
+    projected_draft: RefCell<Option<(MessageId, Draft)>>,
+    /// The row menu, and the message it acts on while open.
+    menu: ContextMenu,
+    menu_target: Option<MenuTarget>,
+    /// A row menu to open once the list has been laid out (a capture).
+    pending_menu: Option<MessageId>,
+    /// Open the sidebar drawer once the window has its size (a capture).
+    pending_drawer: bool,
     /// An explicit destructive confirmation for the selection toolbar. This
     /// is local presentation state; the actual purge remains one canonical
-    /// `MailAction` only after the person confirms.
-    bulk_purge_confirmation: Option<usize>,
+    /// verb of the mailbox, only after the person confirms.
+    bulk_purge_confirmation: Option<PurgeConfirmation>,
+    /// Opens the platform search from the app's own input handling.
+    search: SearchOpener,
 
-    // account-setup sheet (Settings owns this in production; offered in-app too)
-    setup_open: bool,
-    setup_inputs: Vec<TextInput>,
-    /// Sizes the account sheet is laid out with, measured on paint with the
-    /// styles the sheet paints with (the authored 1× rules until then), so
-    /// a larger text scale grows labels, fields and buttons instead of
-    /// painting them over each other.
-    setup_metrics: SetupMetrics,
-    /// `(renderer scale, theme scale, catalogue revision, OAuth label)` the
-    /// metrics were measured for; unchanged means the measurement is skipped.
-    setup_metrics_key: Option<(u32, u32, u64, String)>,
-    /// Scroll offset of the sheet's row band when the window is too short
-    /// for every row, and the largest offset that still shows the last row.
-    setup_scroll: f64,
-    setup_scroll_max: f64,
-    setup_imap_tls: bool,
-    setup_smtp_tls: bool,
+    /// The account sheet while it is open, and its node in the window's
+    /// tree once laid out there.
+    setup: Option<crate::setup_sheet::SetupSheet>,
+    setup_node: Option<NodeId>,
     setup_editing: Option<usize>,
-    setup_focus: Option<usize>,
-    /// The account's chosen sign-in method in the setup sheet.
-    setup_auth: crate::model::AuthMethod,
-    /// The OAuth provider detected from the typed email domain, if any.
-    setup_provider: Option<crate::oauth::OAuthProvider>,
-    /// The most recent validation message from a save attempt (shown inline in
-    /// the sheet); cleared when the sheet is (re)opened.
-    setup_error: Option<String>,
     setup_validation: Option<PendingSetupValidation>,
     setup_discovery: Option<PendingSetupDiscovery>,
 
@@ -366,6 +332,8 @@ pub struct MailApp {
     /// The person's accounts, which Settings keeps and every device of theirs
     /// shares, followed in a live window; and the revision last shown.
     person_accounts: Option<(PersonRecord<PersonAccounts>, Option<u64>)>,
+    pub(crate) contact_directory: Option<PersonRecord<tilo_contact_directory::ContactDirectory>>,
+    pub(crate) has_contact_draft_conflict: bool,
     /// The person's Mail preferences, followed in a live window: the compose
     /// format and the folded account sidebars.
     preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
@@ -391,36 +359,30 @@ pub struct MailApp {
     compose_attachment_rx: Option<OpenFileChannel>,
     /// What effects asked to show that needs the document, for the next sync.
     reveals: Vec<Reveal>,
+    /// What search hits and agents asked to open, taken up on the next
+    /// settle.
+    opens: std::rc::Rc<std::cell::RefCell<Vec<crate::actions::MailTarget>>>,
     /// Callers waiting for a refresh to settle.
     effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
     /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
 
-    /// The status text currently being shown as a toast, and the instant it
-    /// should auto-dismiss. Any code path may set `shared.status`; the app
-    /// notices the change each frame, (re)arms the deadline, and clears the
-    /// status once [`TOAST_TTL`] elapses — so a "Synced N messages" toast fades
-    /// on its own instead of lingering forever.
-    toast_text: Option<String>,
-    toast_deadline: Option<ui::time::Instant>,
-
-    overlay_hits: Vec<(Rect, OverlayHit)>,
     rect: Rect,
-    /// The host theme captured during the outer layout pass.  Mail owns a
-    /// small inner layout tree for its navigation shell; retaining this makes
-    /// that second pass use the exact same text scale as the host renderer.
-    /// Without it, 200% text painted correctly but was measured as 100%,
-    /// causing the custom mail chrome to collide with its enlarged labels.
+    /// The host theme captured during layout, for the overlays laid out
+    /// outside the taffy tree.
     layout_theme: Theme,
-    /// The shell's reveal flap starts fully open (its docked default); the
-    /// first real layout snaps it to the resting state for the current width so
-    /// a narrow launch doesn't flash the drawer open before easing it closed.
+    /// The shell starts docked; the first real layout snaps it to its
+    /// resting state for the window's width so a narrow launch does not
+    /// animate the drawer closed.
     first_layout: bool,
     /// The screenshot scenario the framework asked to stage, until the next
     /// sync stages it with the document.
     pending_stage: Option<String>,
     dirty: bool,
+    /// The layout tree a test laid the app out in, for routing events.
+    #[cfg(test)]
+    test_layout: Option<(TaffyTree<()>, NodeId)>,
 }
 
 impl MailApp {
@@ -528,54 +490,38 @@ impl MailApp {
         engine: Option<EngineHandle>,
         accounts_persist: AccountsPersist,
     ) -> Self {
-        let sidebar = Pane::boxed(Role::Sidebar, shared.clone());
-        let overview = Pane::boxed(Role::List, shared.clone());
-        let detail = Pane::boxed(Role::Reader, shared.clone());
-        let nav = NavShell::new(overview, detail)
-            .with_sidebar(sidebar)
-            .with_breakpoint(BREAKPOINT)
-            .with_sidebar_width(SIDEBAR_W)
-            .with_overview_width(OVERVIEW_W);
-
-        let (cfg, persisted_active_account) = {
+        let overview_title = shared.borrow().folder.title().to_owned();
+        let nav = Self::build_shell(&shared, &overview_title);
+        let (list_bar, reader_bar) = {
             let state = shared.borrow();
-            (
-                state.accounts.active_config(),
-                state
-                    .accounts
-                    .active_account()
-                    .map(|account| account.id.clone()),
-            )
+            (list_bar(&state), reader_bar(&state))
         };
         Self {
             shared,
             content,
             nav,
-            shell_theme: Theme::dark(),
-            first_run: EmptyState::new("Welcome to Mail")
+            nav_node: None,
+            overview_title,
+            list_bar,
+            reader_bar,
+            first_run: EmptyState::new("No email account yet")
                 .with_icon(Icon::Mail)
-                .with_message("Add your email account to start reading and sending mail.")
                 .with_action("Add account")
                 .with_action_id("mail.add-account"),
             first_run_node: None,
             compose: ComposeWindow::new(ComposeFormat::default()),
             shortcuts: MailShortcutsOverlay::new(),
             editing_draft: None,
-            context_menu: None,
+            projected_draft: RefCell::new(None),
+            menu: ContextMenu::new(),
+            menu_target: None,
+            pending_menu: None,
+            pending_drawer: false,
             bulk_purge_confirmation: None,
-            setup_open: false,
-            setup_inputs: build_setup_inputs(&cfg),
-            setup_metrics: SetupMetrics::default(),
-            setup_metrics_key: None,
-            setup_scroll: 0.0,
-            setup_scroll_max: 0.0,
-            setup_imap_tls: cfg.imap_tls,
-            setup_smtp_tls: cfg.smtp_tls,
+            search: SearchOpener::new(),
+            setup: None,
+            setup_node: None,
             setup_editing: None,
-            setup_focus: None,
-            setup_auth: cfg.auth,
-            setup_provider: None,
-            setup_error: None,
             setup_validation: None,
             setup_discovery: None,
             engine,
@@ -585,8 +531,10 @@ impl MailApp {
             pending_send: HashMap::new(),
             resending: None,
             accounts_persist,
-            persisted_active_account,
+            persisted_active_account: None,
             person_accounts: None,
+            contact_directory: None,
+            has_contact_draft_conflict: false,
             preferences: None,
             followed_preferences: crate::resource::MailPreferences::default(),
             connect_requested: false,
@@ -597,16 +545,16 @@ impl MailApp {
             resource_refresh_result: None,
             compose_attachment_rx: None,
             reveals: Vec::new(),
+            opens: std::rc::Rc::default(),
             effect_replies: Vec::new(),
             last_auto_refresh_min: 0,
-            toast_text: None,
-            toast_deadline: None,
-            overlay_hits: Vec::new(),
             rect: Rect::ZERO,
             layout_theme: Theme::dark(),
             first_layout: true,
             pending_stage: None,
             dirty: true,
+            #[cfg(test)]
+            test_layout: None,
         }
     }
 
@@ -620,12 +568,12 @@ impl MailApp {
         match scenario {
             "compose" | "compose_narrow" => self.compose.open_demo(),
             "narrow_detail" => {
-                self.nav.show_detail();
+                self.nav.show(NavPane::Content);
                 self.nav.snap();
             }
             "narrow_drawer" => {
                 self.nav.open_sidebar();
-                self.nav.snap_sidebar(true);
+                self.nav.snap();
             }
             "setup" | "setup_narrow" => {
                 let active = self.shared.borrow().accounts.active;
@@ -638,16 +586,12 @@ impl MailApp {
                 self.set_setup_input(1, "grace.hopper@gmail.com");
                 // The built-in provider table only: a capture opens no socket.
                 self.maybe_autofill_live_typing();
-                self.focus_setup(Some(1));
+                self.setup.as_mut().map(|sheet| sheet.focus_field(1));
             }
             "html_mail" => self.stage_html_mail(doc),
-            "search" => {
-                let mut st = self.shared.borrow_mut();
-                st.search = "spatial".into();
-                st.search_focused = true;
-                st.selected = st.list_rows().first().map(|(id, _)| *id);
-                st.dirty = true;
-            }
+            "search" => self
+                .search
+                .open(SearchRequest::this_app().with_query("spatial")),
             "preview" => self.stage_preview(),
             "bulk" => self.stage_bulk(),
             "bulk_purge_confirmation" => self.stage_bulk_purge_confirmation(doc),
@@ -655,9 +599,11 @@ impl MailApp {
             "context_menu" => {
                 let selected = self.shared.borrow().selected;
                 if let Some(id) = selected {
-                    self.shared
-                        .borrow_mut()
-                        .push_intent(Intent::ContextMenu(id, Point::new(790.0, 206.0)));
+                    self.shared.borrow_mut().push_intent(Intent::ContextMenu(
+                        id,
+                        Point::new(790.0, 206.0),
+                        Rect::new(760.0, 180.0, 820.0, 230.0),
+                    ));
                     self.process_intents();
                 }
             }
@@ -671,10 +617,10 @@ impl MailApp {
             }
             "error" => {
                 self.stage_setup_add();
-                self.setup_error = Some(
+                self.set_setup_error(Some(
                     "Couldn’t connect to IMAP. Check the server, port, and TLS settings, then try again."
                         .into(),
-                );
+                ));
             }
             _ => {}
         }
@@ -685,11 +631,11 @@ impl MailApp {
     /// filled in, focus on a server field so its focus ring shows.
     fn stage_setup_add(&mut self) {
         self.open_setup_edit(None);
-        self.set_setup_input(0, "Grace Hopper");
+        self.set_setup_input(0, "Alex Morgan");
         self.set_setup_input(1, "grace@fastmail.com");
         // The built-in provider table only: a capture opens no socket.
         self.maybe_autofill_live_typing();
-        self.focus_setup(Some(4));
+        self.setup.as_mut().map(|sheet| sheet.focus_field(4));
     }
 
     /// The bundled HTML newsletter open in the reader (it is starred, so the
@@ -704,7 +650,7 @@ impl MailApp {
                 .map(|m| m.id)
         };
         if let Some(id) = id {
-            self.shared.borrow_mut().select_message(doc, id);
+            self.shared.borrow_mut().open_message(doc, id);
             self.process_intents();
         }
     }
@@ -759,6 +705,7 @@ impl MailApp {
         for id in &ids {
             state.move_message(doc, *id, Folder::Trash);
         }
+        state.reveal_folder(Folder::Trash);
         state.set_bulk_selecting(true);
         for id in ids {
             state.toggle_bulk_selection(id);
@@ -781,6 +728,7 @@ impl MailApp {
             self.shared.borrow_mut().push_intent(Intent::Reply(id));
             self.process_intents();
         }
+        self.dirty = true;
     }
 
     /// Queue one worker request and account for it exactly once.  Every engine
@@ -793,7 +741,7 @@ impl MailApp {
         let request_id = request.request_id();
         let request_kind = request.kind();
         if engine.tx.send(request).is_err() {
-            self.shared.borrow_mut().status = Some("Mail worker is unavailable".into());
+            self.shared.borrow_mut().status = Some("Mail couldn’t reach the mail server".into());
             self.dirty = true;
             return None;
         }
@@ -810,107 +758,76 @@ impl MailApp {
         self.pending_engine_requests.get(&request_id) == Some(&kind)
     }
 
-    // ---- nav layout -------------------------------------------------------
-
-    /// Adopt the host theme when its scales change; the layout below reads
-    /// `shell_theme`, so the shell and the panes judge narrow/wide the way
-    /// the host does at every text scale.
-    fn remember_shell_theme(&mut self, theme: &Theme) {
-        if self.shell_theme.text_scale.to_bits() != theme.text_scale.to_bits()
-            || self.shell_theme.ui_scale.to_bits() != theme.ui_scale.to_bits()
-        {
-            self.shell_theme = theme.clone();
-            self.dirty = true;
-        }
+    /// Open the sidebar drawer once the window has its size (narrow drawer
+    /// shot).
+    pub fn prime_drawer_shot(&mut self) {
+        self.pending_drawer = true;
+        self.dirty = true;
     }
 
-    /// Publish the shell's collapse chip (if it shows one) so pane headers
-    /// centre on and clear the chip the shell actually laid out.
-    fn publish_shell_chip(&self) {
-        let chip = self.nav.collapse_button_rect();
-        self.shared.borrow_mut().shell_chip =
-            (chip.width() > 0.0 && chip.height() > 0.0).then_some(chip);
+    // ---- window shell -----------------------------------------------------
+
+    /// The window shell: the sidebar of accounts and folders, the message
+    /// list and the open message, with each column's header actions.
+    fn build_shell(shared: &Shared, overview_title: &str) -> NavShell {
+        let add_account = {
+            let shared = shared.clone();
+            Button::icon_only("mail-add-account", ui::icons::Icon::Plus, "Add account").on_view(
+                move || {
+                    shared
+                        .borrow_mut()
+                        .push_command(Command::AccountSettings(None));
+                },
+            )
+        };
+        NavShell::new()
+            .with_id("mail-shell")
+            .sidebar(Box::new(sidebar::sidebar(shared)))
+            .overview(Box::new(MessageList::new(shared.clone())))
+            .content(Box::new(MessageReader::new(shared.clone())))
+            .sidebar_header("", vec![Box::new(add_account)])
+            .overview_header(
+                overview_title,
+                header_actions(&list_bar(&shared.borrow()), shared, "list"),
+            )
+            .content_header(
+                "",
+                header_actions(&reader_bar(&shared.borrow()), shared, "reader"),
+            )
     }
 
+    /// Tell the columns what the shell laid out: whether the list and the
+    /// message are separate screens, and which one is in front.
     fn publish_shell_flags(&self) {
-        // The shell's breakpoint is the authored value resolved under the
-        // theme it was last built with; compare against that, not the
-        // constant, so the panes and the shell agree at every text scale.
-        let narrow = self.rect.width() < self.nav.breakpoint();
-        let detail = self.nav.is_detail_shown();
-        let sidebar_open = self.nav.is_sidebar_open();
+        let geometry = self.nav.geometry();
+        let narrow = !geometry.stack.is_empty();
+        let detail = narrow && self.nav.front_pane() == NavPane::Content;
         let mut st = self.shared.borrow_mut();
         st.narrow = narrow;
         st.detail_pushed = detail;
-        st.sidebar_open = sidebar_open;
     }
 
-    /// Lay the shell out into the app's rect via a throwaway sub-taffy, the
-    /// same shape the offscreen renderer uses for the whole tree.
-    fn layout_nav(&mut self) {
-        // Reflow to the narrow, one-task-at-a-time shell before 200% type can
-        // squeeze three desktop panes into unreadable slivers.  The selected
-        // pane remains local and Back still restores the list, exactly as on a
-        // physically narrow window.
-        self.nav
-            .set_breakpoint(BREAKPOINT * f64::from(self.layout_theme.text_scale));
-        self.publish_shell_flags();
-        let (w, h) = (self.rect.width() as f32, self.rect.height() as f32);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = self
-            .nav
-            .build_layout(&mut taffy, &self.shell_theme, &mut map);
-        let Ok(root) = taffy.new_with_children(
-            Style {
-                size: TSize {
-                    width: Dimension::length(w),
-                    height: Dimension::length(h),
-                },
-                ..Default::default()
-            },
-            &[child],
-        ) else {
-            // The tree was just created and holds a single freshly-built
-            // child, so this can't realistically fail — but skip the layout
-            // pass rather than panic if the taffy internals ever surprise us.
-            return;
-        };
-        // The throwaway renderer measures at the theme's scale, as the host's
-        // does, so the shell's measured bands match what will be painted.
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(self.shell_theme.text_scale);
-        let measure_map = map.clone();
-        let _ = taffy.compute_layout_with_measure(
-            root,
-            TSize {
-                width: taffy::AvailableSpace::Definite(w),
-                height: taffy::AvailableSpace::Definite(h),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    TSize::ZERO
-                }
-            },
-        );
-        self.nav
-            .apply_layout(&taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        // Resolve the shell to its resting state for this width on the first
-        // layout (no entry animation), then re-place the children with the
-        // settled rects so a single frame renders deterministically.
-        if self.first_layout {
-            self.nav.snap();
-            self.first_layout = false;
-            self.publish_shell_flags();
-            self.nav
-                .apply_layout(&taffy, child, Point::new(self.rect.x0, self.rect.y0));
+    /// The list's header title: the open folder, or how many messages are
+    /// selected.
+    fn overview_title(state: &MailState) -> String {
+        if state.bulk_selecting {
+            match state.selected_bulk_ids().len() {
+                0 => "Select messages".to_owned(),
+                1 => "1 selected".to_owned(),
+                n => format!("{n} selected"),
+            }
+        } else {
+            state.folder.title().to_owned()
         }
-        self.publish_shell_chip();
-        // Compose + overlays sit within the whole app rect.
-        self.compose.layout(self.rect);
-        self.rebuild_overlay_hits();
+    }
+
+    /// The platform search, narrowed to the open folder.
+    fn folder_search(&self) -> SearchRequest {
+        let folder = self.shared.borrow().folder;
+        SearchRequest::within(ScopeDecl::new(
+            format!("mail.folder:{}", folder.as_key()),
+            folder.title(),
+        ))
     }
 
     // ---- intent processing ------------------------------------------------
@@ -1011,35 +928,29 @@ impl MailApp {
         let intents = self.shared.borrow_mut().take_intents();
         for intent in intents {
             match intent {
-                Intent::ShowDetail => self.nav.show_detail(),
-                Intent::ShowOverview => self.nav.show_overview(),
-                Intent::CloseDrawer => self.nav.close_sidebar(),
+                Intent::ShowDetail => self.nav.show(NavPane::Content),
+                Intent::ShowOverview => self.nav.show(NavPane::Overview),
+                Intent::CloseDrawer => {
+                    if self.nav.geometry().sidebar == SidebarPlacement::Drawer {
+                        self.nav.close_sidebar();
+                    }
+                }
                 Intent::Compose => {
                     self.editing_draft = None;
                     self.compose.open_blank();
-                    self.context_menu = None;
+                    self.close_menu();
                 }
                 Intent::Reply(id) => self.open_reply(id),
                 Intent::ReplyAll(id) => self.open_reply_all(id),
                 Intent::Forward(id) => self.open_forward(id),
                 Intent::EditDraft(id) => self.open_draft(id),
-                Intent::ContextMenu(id, pt) => {
-                    let items = self.shared.borrow().context_items_for(id);
-                    self.context_menu = (!items.is_empty()).then_some(ContextMenu {
-                        target: id,
-                        pos: pt,
-                        items,
-                        active: 0,
-                    });
-                }
-                Intent::Settings(idx) => self.open_setup_edit(idx),
+                Intent::ContextMenu(id, at, row) => self.open_menu(id, at, Some(row)),
                 Intent::SaveAttachment(message_id, index) => {
                     self.request_attachment_save(message_id, index);
                 }
                 Intent::Engine(req) => {
                     self.post_engine(req);
                 }
-                Intent::Toast(msg) => self.shared.borrow_mut().status = Some(msg),
                 Intent::ConfirmBulkPurge => {
                     let count = self.shared.borrow().selected_bulk_ids().len();
                     if count == 0 {
@@ -1052,7 +963,7 @@ impl MailApp {
                             .get(*id)
                             .is_some_and(|message| message.folder == Folder::Trash)
                     }) {
-                        self.bulk_purge_confirmation = Some(count);
+                        self.open_purge_confirmation(count);
                     } else {
                         self.shared.borrow_mut().status =
                             Some("Permanent deletion requires an all-Trash selection".into());
@@ -1061,6 +972,237 @@ impl MailApp {
             }
         }
         self.dirty = true;
+    }
+
+    /// Apply the commands the window's chrome queued while routing an event.
+    fn apply_commands(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let commands = self.shared.borrow_mut().take_commands();
+        for command in commands {
+            match command {
+                Command::OpenFolder(account, folder) => {
+                    let mut state = self.shared.borrow_mut();
+                    state.set_active_account(account);
+                    state.select_folder(doc, folder);
+                }
+                Command::AccountSettings(account) => self.open_setup_edit(account),
+                Command::Compose => {
+                    self.shared.borrow_mut().push_intent(Intent::Compose);
+                }
+                Command::ContactRecipients => {
+                    self.open_contact_recipients();
+                }
+                Command::OpenSearch => {
+                    let request = self.folder_search();
+                    self.search.open(request);
+                }
+                Command::Refresh => {
+                    let _ = self.refresh_active_folder();
+                }
+                Command::ToggleBulk => {
+                    let selecting = self.shared.borrow().bulk_selecting;
+                    self.shared.borrow_mut().set_bulk_selecting(!selecting);
+                }
+                Command::SelectAllVisible => self.shared.borrow_mut().select_all_visible(),
+                Command::Bulk(BulkAction::Purge) => {
+                    self.shared
+                        .borrow_mut()
+                        .push_intent(Intent::ConfirmBulkPurge);
+                }
+                Command::Bulk(action) => {
+                    let affected = self.shared.borrow_mut().apply_bulk_action(doc, action);
+                    if affected > 0 {
+                        let noun = if affected == 1 { "message" } else { "messages" };
+                        self.shared.borrow_mut().status = Some(match action {
+                            BulkAction::Archive => format!("Archived {affected} {noun}"),
+                            BulkAction::Delete => format!("Moved {affected} {noun} to Trash"),
+                            BulkAction::MarkRead => format!("Marked {affected} {noun} read"),
+                            BulkAction::MarkUnread => {
+                                format!("Marked {affected} {noun} unread")
+                            }
+                            BulkAction::Purge => format!("Deleted {affected} {noun}"),
+                        });
+                    }
+                }
+                Command::Message(action) => {
+                    let selected = self.shared.borrow().selected;
+                    if let Some(id) = selected {
+                        self.shared
+                            .borrow_mut()
+                            .apply_message_action(doc, id, action);
+                    }
+                }
+                Command::MessageMenu => {
+                    let selected = self.shared.borrow().selected;
+                    if let Some(id) = selected {
+                        // The menu hangs from the trailing end of the
+                        // message's header, where the button that asked
+                        // for it stands.
+                        let geometry = self.nav.geometry();
+                        let column = geometry.content_column;
+                        let at = Point::new(column.x1, column.y0 + geometry.header_height);
+                        self.open_menu(id, at, None);
+                    }
+                }
+            }
+        }
+        self.process_intents();
+    }
+
+    // ---- row menu ---------------------------------------------------------
+
+    /// Open the row menu for `id` at `at`, beside `row` when known.
+    fn open_menu(&mut self, id: MessageId, at: Point, row: Option<Rect>) {
+        let (items, read, starred) = {
+            let state = self.shared.borrow();
+            let Some(message) = state.mailbox.get(id) else {
+                return;
+            };
+            (state.context_items_for(id), message.read, message.starred)
+        };
+        if items.is_empty() {
+            return;
+        }
+        let mut menu = ContextMenu::new();
+        for item in &items {
+            let label = item.label(read, starred);
+            let entry = if *item == CtxAction::Delete {
+                MenuItem::destructive_selection(label)
+            } else {
+                MenuItem::selection(label)
+            };
+            menu.push(entry.with_icon(item.icon(read)));
+        }
+        if let Some(row) = row {
+            menu.anchor_row(row);
+        }
+        menu.set_viewport(Some(self.rect));
+        menu.open_at_clamped(
+            [ui::num::f32_of_f64(at.x), ui::num::f32_of_f64(at.y)],
+            self.rect,
+        );
+        menu.focus_first_action();
+        self.menu = menu;
+        self.menu_target = Some(MenuTarget { message: id, items });
+        self.dirty = true;
+    }
+
+    fn close_menu(&mut self) {
+        self.menu.close();
+        self.menu_target = None;
+        self.dirty = true;
+    }
+
+    /// Apply the row menu's chosen action, if one was chosen.
+    fn take_menu_choice(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let Some(index) = self.menu.take_selection() else {
+            if !self.menu.is_open() {
+                self.menu_target = None;
+            }
+            return;
+        };
+        let Some(target) = self.menu_target.take() else {
+            return;
+        };
+        self.menu.close();
+        let Some(action) = target.items.get(index).copied() else {
+            return;
+        };
+        self.apply_menu_action(target.message, action, doc);
+    }
+
+    fn apply_menu_action(
+        &mut self,
+        message: MessageId,
+        action: CtxAction,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
+        if self.shared.borrow().mailbox.get(message).is_none() {
+            self.shared.borrow_mut().status = Some("That message is no longer available.".into());
+            self.dirty = true;
+            return;
+        }
+        self.shared
+            .borrow_mut()
+            .apply_message_action(doc, message, action);
+        self.process_intents();
+    }
+
+    /// Open the row menu on `id`'s row in the list as last laid out.
+    fn open_menu_on_row(&mut self, id: MessageId, text: &mut TextRenderer, theme: &Theme) {
+        let index = self
+            .shared
+            .borrow()
+            .list_rows()
+            .iter()
+            .position(|(row, _)| *row == id);
+        let Some(index) = index else {
+            return;
+        };
+        let geometry = self.nav.geometry();
+        let column = geometry.overview_column;
+        if column.width() <= 0.0 {
+            return;
+        }
+        let row_h = ui::widget::ListRowFace::new("Ag")
+            .secondary("Ag")
+            .two_line_secondary()
+            .height(text, theme);
+        let list = Rect::new(
+            column.x0,
+            column.y0 + geometry.header_height,
+            column.x1,
+            column.y1,
+        );
+        let row = crate::list::RowFrame::new(list, row_h, false, theme).row(index, 0.0);
+        let at = Point::new(column.x0 + column.width() * 0.6, row.center().y);
+        self.open_menu(id, at, Some(row));
+    }
+
+    // ---- permanent deletion -----------------------------------------------
+
+    fn open_purge_confirmation(&mut self, count: usize) {
+        let answer = Rc::new(Cell::new(None));
+        let noun = if count == 1 { "message" } else { "messages" };
+        let body = Text::new(&format!(
+            "{count} {noun} in Trash will be deleted from this mailbox and the server. This can’t be undone."
+        ))
+        .with_role(TextRole::Body);
+        let confirm = Rc::clone(&answer);
+        let cancel = Rc::clone(&answer);
+        let dismiss = Rc::clone(&answer);
+        let dialog = ModalDialog::new(
+            if count == 1 {
+                "Delete message permanently?".to_owned()
+            } else {
+                format!("Delete {count} messages permanently?")
+            },
+            body,
+        )
+        .with_test_id("mail-purge-confirmation")
+        .with_destructive(true)
+        .primary_action("Delete permanently", move || confirm.set(Some(true)))
+        .secondary_action("Cancel", move || cancel.set(Some(false)))
+        .on_dismiss(move || dismiss.set(Some(false)))
+        .open(true);
+        self.bulk_purge_confirmation = Some(PurgeConfirmation { dialog, answer });
+        self.dirty = true;
+    }
+
+    /// Act on the confirmation's answer, once.
+    fn settle_purge_confirmation(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let Some(answer) = self
+            .bulk_purge_confirmation
+            .as_ref()
+            .and_then(|confirmation| confirmation.answer.take())
+        else {
+            return;
+        };
+        if answer {
+            self.confirm_bulk_purge(doc);
+        } else {
+            self.bulk_purge_confirmation = None;
+            self.dirty = true;
+        }
     }
 
     fn reply_subject(msg: &Message) -> String {
@@ -1088,7 +1230,7 @@ impl MailApp {
         let subj = Self::reply_subject(&msg);
         let quote = Self::reply_quote(&msg);
         self.compose.open_reply(&msg.from.rfc5322(), &subj, &quote);
-        self.context_menu = None;
+        self.close_menu();
         self.dirty = true;
     }
 
@@ -1122,19 +1264,25 @@ impl MailApp {
         }
         self.compose
             .open_reply_all(&msg.from.rfc5322(), &cc.join(", "), &subj, &quote);
-        self.context_menu = None;
+        self.close_menu();
         self.dirty = true;
     }
 
     /// Reopen a Drafts-folder message in the composer for further editing.
     fn open_draft(&mut self, id: MessageId) {
-        let draft = match self.shared.borrow().mailbox.get(id) {
-            Some(m) => draft_from_message(m),
-            None => return,
+        let draft = self
+            .projected_draft
+            .borrow()
+            .as_ref()
+            .filter(|(projected, _)| *projected == id)
+            .map(|(_, draft)| draft.clone())
+            .or_else(|| self.shared.borrow().mailbox.get(id).map(draft_from_message));
+        let Some(draft) = draft else {
+            return;
         };
         self.editing_draft = Some(id);
         self.compose.open_with_draft(&draft);
-        self.context_menu = None;
+        self.close_menu();
         self.dirty = true;
     }
 
@@ -1150,8 +1298,8 @@ impl MailApp {
             msg.subject,
             msg.body
         );
-        self.compose.open_reply("", &subj, &quote);
-        self.context_menu = None;
+        self.compose.open_forward(&subj, &quote);
+        self.close_menu();
         self.dirty = true;
     }
 
@@ -1162,6 +1310,11 @@ impl MailApp {
         self.store_preferences_if_changed();
         let draft = self.compose.to_draft(doc);
         let acct = self.shared.borrow().accounts.active_config();
+        if !self.contact_sender_matches(&draft) {
+            self.shared.borrow_mut().status = Some(crate::i18n::t("mail-contact-sender-changed"));
+            self.dirty = true;
+            return;
+        }
         if acct.email.trim().is_empty() {
             self.shared.borrow_mut().status =
                 Some("Add a sending account before sending this message".into());
@@ -1188,9 +1341,19 @@ impl MailApp {
         {
             let st = self.shared.borrow();
             if let Some(refused) = self.resending.take() {
-                st.dispatch_external(doc, &MailAction::CancelSend { id: refused });
+                st.submit(
+                    doc,
+                    Mail::CANCEL_SEND.with(mailbox::CancelSend { id: refused }),
+                );
             }
-            st.dispatch_external(doc, &MailAction::Send(Outgoing::new(&acct.email, &draft)));
+            st.submit(
+                doc,
+                Mail::SEND_MESSAGE.with(mailbox::SendMessage {
+                    account: acct.email,
+                    message: DraftData::from_draft(&draft),
+                    in_reply_to: draft.in_reply_to.map(|id| id.to_string()),
+                }),
+            );
         }
         // The message is in the outbox now; the draft it was written in is
         // done with.
@@ -1227,9 +1390,29 @@ impl MailApp {
         let (from, now) = {
             let st = self.shared.borrow();
             let acct = st.accounts.active_config();
-            (Addr::new(acct.display_name.clone(), acct.email), st.now_min)
+            let from = draft.sender.as_ref().map_or_else(
+                || Addr::new(acct.display_name.clone(), acct.email),
+                |sender| {
+                    Addr::new(
+                        st.accounts
+                            .accounts
+                            .iter()
+                            .find(|account| {
+                                account.id == sender.account && account.config.email == sender.email
+                            })
+                            .map_or_else(String::new, |account| {
+                                account.config.display_name.clone()
+                            }),
+                        sender.email.clone(),
+                    )
+                },
+            );
+            (from, st.now_min)
         };
-        let id = self.editing_draft.unwrap_or_else(uuid::Uuid::new_v4);
+        let id = self
+            .editing_draft
+            .or_else(|| self.projected_draft.borrow().as_ref().map(|(id, _)| *id))
+            .unwrap_or_else(uuid::Uuid::new_v4);
         let msg = Message {
             id,
             rfc_message_id: None,
@@ -1256,6 +1439,7 @@ impl MailApp {
             st.mailbox.insert(msg);
             st.register_message_target(doc, &id.to_string());
         }
+        *self.projected_draft.borrow_mut() = Some((id, draft.clone()));
         id
     }
 
@@ -1276,243 +1460,139 @@ impl MailApp {
             None => AccountConfig::default(),
         };
         self.setup_editing = idx;
-        self.setup_inputs = build_setup_inputs(&cfg);
-        self.setup_imap_tls = cfg.imap_tls;
-        self.setup_smtp_tls = cfg.smtp_tls;
-        self.setup_auth = cfg.auth;
-        self.setup_provider = cfg
-            .email
-            .split_once('@')
-            .and_then(|(_, d)| crate::oauth::OAuthProvider::from_domain(d));
-        self.setup_error = None;
-        self.setup_open = true;
-        self.focus_setup(Some(1));
-        self.context_menu = None;
+        self.setup = Some(crate::setup_sheet::SetupSheet::open(
+            &cfg,
+            idx.is_some(),
+            f64::from(self.layout_theme.tokens.metrics.panel_width_sheet),
+        ));
+        self.close_menu();
         self.dirty = true;
     }
 
     fn close_setup(&mut self) {
         self.setup_validation = None;
         self.setup_discovery = None;
-        self.setup_open = false;
-        self.setup_error = None;
-        self.focus_setup(None);
+        self.setup = None;
         self.dirty = true;
+    }
+
+    /// Whether the account sheet is open.
+    fn setup_open(&self) -> bool {
+        self.setup.is_some()
     }
 
     /// Whether the app is at first run (no account configured) and should show
     /// the onboarding screen rather than an empty mailbox.
     fn is_first_run(&self) -> bool {
-        self.shared.borrow().accounts.is_empty() && !self.setup_open
+        self.shared.borrow().accounts.is_empty() && !self.setup_open()
     }
 
-    /// The ordered field indices the Tab key walks. The password field is
-    /// dropped from the order when the account uses OAuth (there is no
-    /// password to type).
-    fn setup_tab_order(&self) -> Vec<usize> {
-        let mut order = vec![0usize, 1, 2];
-        if self.setup_auth == crate::model::AuthMethod::Password {
-            order.push(3);
-        }
-        order.extend([4, 5, 6, 7]);
-        order
+    /// What the open sheet shows; `None` while it is closed.
+    fn setup_fields(&self) -> Option<&crate::setup_sheet::SetupFields> {
+        self.setup.as_ref().map(|sheet| &sheet.fields)
     }
 
-    /// Advance focus to the next (`+1`) / previous (`-1`) setup field, wrapping.
-    fn focus_setup_step(&mut self, delta: i32) {
-        let order = self.setup_tab_order();
-        let cur = self
-            .setup_focus
-            .and_then(|f| order.iter().position(|&i| i == f))
-            .unwrap_or(0) as i32;
-        let n = order.len() as i32;
-        let next = (((cur + delta) % n + n) % n) as usize;
-        let Some(&next_field) = order.get(next) else {
-            // `next` is always in `0..order.len()` by construction; bail
-            // rather than panic if that invariant is ever violated.
-            return;
-        };
-        // Leaving the email field triggers autoconfig, same as a click-away.
-        let leaving_email = self.setup_focus == Some(1) && next_field != 1;
-        self.focus_setup(Some(next_field));
-        if leaving_email {
-            self.maybe_autofill();
-        }
+    /// Field `i` of the open sheet (see [`crate::setup_sheet`] for the
+    /// indices); empty while the sheet is closed.
+    fn setup_value(&self, i: usize) -> String {
+        self.setup_fields()
+            .map(|fields| fields.value(i))
+            .unwrap_or_default()
     }
 
-    fn focus_setup(&mut self, which: Option<usize>) {
-        self.setup_focus = which;
-        for (i, inp) in self.setup_inputs.iter_mut().enumerate() {
-            inp.set_focus(which == Some(i));
-        }
-        // Keyboard focus reaches every row: when the row band scrolls, bring
-        // the focused field into it (its rect is where the last layout put it,
-        // offset by the current scroll).
-        if self.setup_scroll_max > 0.0
-            && let Some(rect) = which
-                .and_then(|i| self.setup_input(i))
-                .map(TextInput::get_rect)
-        {
-            let p = self.overlay_panel_rect();
-            let band_top = p.y0 + self.setup_metrics.fields_top();
-            let band_bottom = p.y1 - self.setup_metrics.footer_band_h();
-            if rect.y0 < band_top {
-                self.setup_scroll -= band_top - rect.y0;
-            } else if rect.y1 > band_bottom {
-                self.setup_scroll += rect.y1 - band_bottom;
-            }
-            self.setup_scroll = self.setup_scroll.clamp(0.0, self.setup_scroll_max);
-            self.rebuild_overlay_hits();
+    /// Set field `i`'s text, a silent no-op while the sheet is closed.
+    fn set_setup_input(&mut self, i: usize, text: &str) {
+        if let Some(fields) = self.setup_fields() {
+            fields.set_value(i, text);
         }
         self.dirty = true;
     }
 
-    /// One of the fixed setup-sheet fields, addressed by its position in
-    /// [`build_setup_inputs`] (0 = display name, 1 = email, 2 = username,
-    /// 3 = password, 4 = IMAP host, 5 = IMAP port, 6 = SMTP host, 7 = SMTP
-    /// port). `None` only if the input list is ever shorter than that fixed
-    /// layout; every caller treats it as a no-op read/write rather than a
-    /// panic.
-    fn setup_input(&self, i: usize) -> Option<&TextInput> {
-        self.setup_inputs.get(i)
+    /// The sheet's sign-in method (the default one while it is closed).
+    fn setup_auth(&self) -> crate::model::AuthMethod {
+        self.setup_fields()
+            .map(crate::setup_sheet::SetupFields::auth)
+            .unwrap_or_default()
     }
 
-    fn setup_input_mut(&mut self, i: usize) -> Option<&mut TextInput> {
-        self.setup_inputs.get_mut(i)
-    }
-
-    /// Set field `i`'s text, a silent no-op if the index is out of range.
-    fn set_setup_input(&mut self, i: usize, text: &str) {
-        if let Some(inp) = self.setup_input_mut(i) {
-            inp.set_text(text);
+    fn set_setup_auth(&mut self, auth: crate::model::AuthMethod) {
+        if let Some(fields) = self.setup_fields() {
+            fields.set_auth(auth);
         }
+        self.dirty = true;
     }
 
-    /// The OAuth sign-in button's label for the selected provider. One source
-    /// for the button painter and the measurement that sizes the button.
-    fn oauth_button_label(&self) -> String {
-        let prov = self.setup_provider.map_or_else(
-            || crate::i18n::t("mail-setup-oauth-provider-fallback"),
-            |p| super::oauth::OAuthProvider::label(p).to_string(),
-        );
-        crate::i18n::t_args(
-            "mail-setup-oauth-sign-in",
-            &[("provider", ui::i18n::ArgValue::from(prov))],
-        )
+    #[cfg(test)]
+    fn setup_tls(&self, server: crate::setup_sheet::Server) -> bool {
+        self.setup_fields().is_some_and(|fields| fields.tls(server))
     }
 
-    /// Record a setup-sheet hit for `rect` only when the whole rect lies in
-    /// the scrolling row `band`; a row scrolled past the band's edge is not
-    /// clickable (and is not painted), so it can never overlap the footer.
-    fn push_setup_hit(hits: &mut Vec<(Rect, OverlayHit)>, band: Rect, rect: Rect, hit: OverlayHit) {
-        if rect.y0 >= band.y0 - 0.5 && rect.y1 <= band.y1 + 0.5 {
-            hits.push((rect, hit));
+    fn set_setup_tls(&mut self, server: crate::setup_sheet::Server, on: bool) {
+        if let Some(fields) = self.setup_fields() {
+            fields.set_tls(server, on);
         }
+        self.dirty = true;
     }
 
-    /// Lay field `i` out into `rect`, a silent no-op if the index is out of
-    /// range.
-    fn layout_setup_input(&mut self, i: usize, rect: Rect) {
-        if let Some(inp) = self.setup_input_mut(i) {
-            inp.apply_layout_external(rect);
+    fn setup_provider(&self) -> Option<crate::oauth::OAuthProvider> {
+        self.setup_fields()
+            .and_then(crate::setup_sheet::SetupFields::provider)
+    }
+
+    /// The sheet's error line: why the last save, sign-in or discovery
+    /// failed.
+    #[cfg(test)]
+    fn setup_error(&self) -> Option<String> {
+        self.setup_fields()
+            .and_then(crate::setup_sheet::SetupFields::error)
+    }
+
+    fn set_setup_error(&mut self, error: Option<String>) {
+        if let Some(fields) = self.setup_fields() {
+            fields.set_error(error);
         }
-    }
-
-    /// Lay out the IMAP and SMTP server rows (host | port | TLS toggle) of
-    /// the setup sheet, starting at `y`, and register their hit regions.
-    /// Part of [`Self::rebuild_overlay_hits`].
-    fn layout_server_rows(&mut self, fx: f64, rx: f64, mut y: f64, field_h: f64, band: Rect) {
-        // The port field holds up to five digits and follows the text
-        // scale; the TLS control is the toggle pill plus its measured label.
-        let (scale, tls_w) = (self.setup_metrics.scale, self.setup_metrics.tls_w);
-        let port_w = SETUP_PORT_W * scale;
-        let host_w = (rx - fx) - 12.0 - port_w - 12.0 - tls_w;
-
-        let imap_host = Rect::new(fx, y, fx + host_w, y + field_h);
-        self.layout_setup_input(4, imap_host);
-        Self::push_setup_hit(
-            &mut self.overlay_hits,
-            band,
-            imap_host,
-            OverlayHit::SetupField(4),
-        );
-        let port_imap = Rect::new(
-            imap_host.x1 + 12.0,
-            y,
-            imap_host.x1 + 12.0 + port_w,
-            y + field_h,
-        );
-        self.layout_setup_input(5, port_imap);
-        Self::push_setup_hit(
-            &mut self.overlay_hits,
-            band,
-            port_imap,
-            OverlayHit::SetupField(5),
-        );
-        let imap_tls = Rect::new(port_imap.x1 + 12.0, y, rx, y + field_h);
-        Self::push_setup_hit(
-            &mut self.overlay_hits,
-            band,
-            imap_tls,
-            OverlayHit::ToggleImapTls,
-        );
-        y += field_h + SETUP_ROW_GAP;
-
-        let smtp_host = Rect::new(fx, y, fx + host_w, y + field_h);
-        self.layout_setup_input(6, smtp_host);
-        Self::push_setup_hit(
-            &mut self.overlay_hits,
-            band,
-            smtp_host,
-            OverlayHit::SetupField(6),
-        );
-        let port_smtp = Rect::new(
-            smtp_host.x1 + 12.0,
-            y,
-            smtp_host.x1 + 12.0 + port_w,
-            y + field_h,
-        );
-        self.layout_setup_input(7, port_smtp);
-        Self::push_setup_hit(
-            &mut self.overlay_hits,
-            band,
-            port_smtp,
-            OverlayHit::SetupField(7),
-        );
-        let smtp_tls = Rect::new(port_smtp.x1 + 12.0, y, rx, y + field_h);
-        Self::push_setup_hit(
-            &mut self.overlay_hits,
-            band,
-            smtp_tls,
-            OverlayHit::ToggleSmtpTls,
-        );
+        self.dirty = true;
     }
 
     fn read_setup_config(&self) -> AccountConfig {
-        let g = |i: usize| {
-            self.setup_input(i)
-                .map(|inp| inp.value().to_string())
-                .unwrap_or_default()
+        self.setup_fields()
+            .map(crate::setup_sheet::SetupFields::config)
+            .unwrap_or_default()
+    }
+
+    /// Act on what the person did in the sheet: fill the servers in as a
+    /// known address is typed or when the address field is left, save,
+    /// cancel, remove or sign in, and keep the shown errors and the Save
+    /// action current.
+    fn settle_setup(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let Some(sheet) = self.setup.as_mut() else {
+            return;
         };
-        AccountConfig {
-            display_name: g(0),
-            email: g(1),
-            username: g(2),
-            // An OAuth account authenticates with a vault-sealed token, never a
-            // password — keep the field empty so persist doesn't overwrite the
-            // sealed token with a password secret.
-            password: if self.setup_auth == crate::model::AuthMethod::OAuth {
-                String::new()
-            } else {
-                g(3)
-            },
-            imap_host: g(4),
-            imap_port: g(5).trim().parse().unwrap_or(993),
-            smtp_host: g(6),
-            smtp_port: g(7).trim().parse().unwrap_or(465),
-            imap_tls: self.setup_imap_tls,
-            smtp_tls: self.setup_smtp_tls,
-            auth: self.setup_auth,
+        let requests = sheet.take_requests();
+        let email_changed = sheet.take_email_changed();
+        let email_left = sheet.take_email_left();
+        if email_changed {
+            self.maybe_autofill_live_typing();
+        }
+        if email_left {
+            self.maybe_autofill();
+        }
+        for request in requests {
+            match request {
+                crate::setup_sheet::SetupRequest::Save => self.save_setup(doc),
+                crate::setup_sheet::SetupRequest::Cancel => self.close_setup(),
+                crate::setup_sheet::SetupRequest::Remove => self.remove_editing_account(doc),
+                crate::setup_sheet::SetupRequest::SignIn => self.start_oauth(),
+            }
+            if self.setup.is_none() {
+                return;
+            }
+        }
+        let label = self.setup_save_label();
+        let busy = self.setup_validation.is_some() || self.setup_discovery.is_some();
+        if let Some(sheet) = self.setup.as_mut() {
+            sheet.refresh_field_errors();
+            sheet.set_busy(&label, busy);
         }
     }
 
@@ -1539,10 +1619,7 @@ impl MailApp {
     /// offline), then — only when `network` and nothing matched — the real
     /// Mozilla autoconfig lookup (`live`), then the generic heuristic.
     fn apply_autofill(&mut self, network: bool) {
-        let email = self
-            .setup_input(1)
-            .map(|inp| inp.value().trim().to_string())
-            .unwrap_or_default();
+        let email = self.setup_value(1).trim().to_string();
         if self
             .setup_discovery
             .as_ref()
@@ -1559,17 +1636,16 @@ impl MailApp {
             .unwrap_or_default();
 
         // Provider detection → OAuth for the providers that block passwords.
-        self.setup_provider = crate::oauth::OAuthProvider::from_domain(&domain);
-        if self.setup_provider.is_some() {
-            self.setup_auth = crate::model::AuthMethod::OAuth;
+        let provider = crate::oauth::OAuthProvider::from_domain(&domain);
+        if let Some(fields) = self.setup_fields() {
+            fields.set_provider(provider);
+        }
+        if provider.is_some() {
+            self.set_setup_auth(crate::model::AuthMethod::OAuth);
         }
 
-        let imap_blank = self
-            .setup_input(4)
-            .is_none_or(|inp| inp.value().trim().is_empty());
-        let smtp_blank = self
-            .setup_input(6)
-            .is_none_or(|inp| inp.value().trim().is_empty());
+        let imap_blank = self.setup_value(4).trim().is_empty();
+        let smtp_blank = self.setup_value(6).trim().is_empty();
         if !imap_blank && !smtp_blank {
             self.setup_discovery = None;
             self.dirty = true;
@@ -1578,15 +1654,9 @@ impl MailApp {
 
         let mut cfg = AccountConfig {
             email: email.clone(),
-            username: self
-                .setup_input(2)
-                .map(|inp| inp.value().to_string())
-                .unwrap_or_default(),
-            display_name: self
-                .setup_input(0)
-                .map(|inp| inp.value().to_string())
-                .unwrap_or_default(),
-            auth: self.setup_auth,
+            username: self.setup_value(2),
+            display_name: self.setup_value(0),
+            auth: self.setup_auth(),
             ..Default::default()
         };
         // Built-in table first (instant, offline). Network discovery only for
@@ -1616,27 +1686,21 @@ impl MailApp {
         if imap_blank {
             self.set_setup_input(4, &cfg.imap_host);
             self.set_setup_input(5, &cfg.imap_port.to_string());
-            self.setup_imap_tls = cfg.imap_tls;
+            self.set_setup_tls(crate::setup_sheet::Server::Incoming, cfg.imap_tls);
         }
         if smtp_blank {
             self.set_setup_input(6, &cfg.smtp_host);
             self.set_setup_input(7, &cfg.smtp_port.to_string());
-            self.setup_smtp_tls = cfg.smtp_tls;
+            self.set_setup_tls(crate::setup_sheet::Server::Outgoing, cfg.smtp_tls);
         }
-        if self
-            .setup_input(2)
-            .is_some_and(|inp| inp.value().trim().is_empty())
-        {
+        if self.setup_value(2).trim().is_empty() {
             self.set_setup_input(2, &cfg.username);
         }
-        if self
-            .setup_input(0)
-            .is_some_and(|inp| inp.value().trim().is_empty())
-        {
+        if self.setup_value(0).trim().is_empty() {
             self.set_setup_input(0, &cfg.display_name);
         }
         // Autoconfig may have upgraded the auth method (OAuth2 in the XML).
-        self.setup_auth = cfg.auth;
+        self.set_setup_auth(cfg.auth);
         self.dirty = true;
     }
 
@@ -1656,7 +1720,7 @@ impl MailApp {
                 let _ = sender.send(result);
             })
         {
-            self.setup_error = Some(format!("Couldn’t start provider discovery: {error}"));
+            self.set_setup_error(Some(format!("Couldn’t start provider discovery: {error}")));
             self.dirty = true;
             return;
         }
@@ -1678,10 +1742,10 @@ impl MailApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
                 self.setup_discovery = None;
-                self.setup_error = Some(
+                self.set_setup_error(Some(
                     "Provider discovery ended without a result; enter server details manually"
                         .into(),
-                );
+                ));
                 self.dirty = true;
                 return;
             }
@@ -1691,7 +1755,7 @@ impl MailApp {
         };
         self.dirty = true;
         let current = self.read_setup_config();
-        if !self.setup_open
+        if !self.setup_open()
             || self.setup_editing != pending.editing
             || current.email != pending.config.email
         {
@@ -1711,7 +1775,7 @@ impl MailApp {
         {
             self.set_setup_input(4, &discovered.imap_host);
             self.set_setup_input(5, &discovered.imap_port.to_string());
-            self.setup_imap_tls = discovered.imap_tls;
+            self.set_setup_tls(crate::setup_sheet::Server::Incoming, discovered.imap_tls);
         }
         if current.smtp_host.trim().is_empty()
             && current.smtp_port == pending.config.smtp_port
@@ -1719,7 +1783,7 @@ impl MailApp {
         {
             self.set_setup_input(6, &discovered.smtp_host);
             self.set_setup_input(7, &discovered.smtp_port.to_string());
-            self.setup_smtp_tls = discovered.smtp_tls;
+            self.set_setup_tls(crate::setup_sheet::Server::Outgoing, discovered.smtp_tls);
         }
         if current.username.trim().is_empty() {
             self.set_setup_input(2, &current.email);
@@ -1733,7 +1797,7 @@ impl MailApp {
             self.set_setup_input(0, name);
         }
         if current.auth == pending.config.auth {
-            self.setup_auth = discovered.auth;
+            self.set_setup_auth(discovered.auth);
         }
         self.dirty = true;
     }
@@ -1769,7 +1833,9 @@ impl MailApp {
                 let _ = sender.send(outcome);
             })
         {
-            self.setup_error = Some(format!("Couldn’t start account verification: {error}"));
+            self.set_setup_error(Some(format!(
+                "Couldn’t start account verification: {error}"
+            )));
             self.dirty = true;
             return;
         }
@@ -1779,7 +1845,7 @@ impl MailApp {
             receiver,
             cancellation,
         });
-        self.setup_error = None;
+        self.set_setup_error(None);
         self.dirty = true;
     }
 
@@ -1797,12 +1863,13 @@ impl MailApp {
         let Some(pending) = self.setup_validation.take() else {
             return;
         };
-        if !self.setup_open {
+        if !self.setup_open() {
             return;
         }
         if self.setup_editing != pending.editing || self.read_setup_config() != pending.config {
-            self.setup_error =
-                Some("Account settings changed; verify them again before saving".into());
+            self.set_setup_error(Some(
+                "Account settings changed; verify them again before saving".into(),
+            ));
             self.dirty = true;
             return;
         }
@@ -1832,13 +1899,18 @@ impl MailApp {
         outcome: &crate::validate::ValidationState,
     ) {
         if !outcome.persisted() {
+            if matches!(outcome, crate::validate::ValidationState::Invalid(_))
+                && let Some(sheet) = self.setup.as_mut()
+            {
+                sheet.show_field_errors();
+            }
             let msg = outcome.message();
-            self.setup_error = Some(msg.clone());
+            self.set_setup_error(Some(msg.clone()));
             self.shared.borrow_mut().status = Some(msg);
             self.dirty = true;
             return;
         }
-        self.setup_error = None;
+        self.set_setup_error(None);
         {
             let mut st = self.shared.borrow_mut();
             let mut account = match self.setup_editing.and_then(|i| st.accounts.accounts.get(i)) {
@@ -1861,7 +1933,9 @@ impl MailApp {
             // builds keep it in a store of their own.
             if let Err(error) = self.persist_accounts(&updated) {
                 let message = format!("Couldn’t save account: {error}");
-                self.setup_error = Some(message.clone());
+                if let Some(fields) = self.setup_fields() {
+                    fields.set_error(Some(message.clone()));
+                }
                 st.status = Some(message);
                 self.dirty = true;
                 return;
@@ -1895,7 +1969,9 @@ impl MailApp {
             updated.remove(&id);
             if let Err(error) = self.persist_accounts(&updated) {
                 let message = format!("Couldn’t remove account: {error}");
-                self.setup_error = Some(message.clone());
+                if let Some(fields) = self.setup_fields() {
+                    fields.set_error(Some(message.clone()));
+                }
                 st.status = Some(message);
                 self.dirty = true;
                 return;
@@ -1924,11 +2000,8 @@ impl MailApp {
     /// a clear note when a registered client id has not been provisioned (the
     /// flow can't complete without one).
     fn start_oauth(&mut self) {
-        let email = self
-            .setup_input(1)
-            .map(|inp| inp.value().trim().to_string())
-            .unwrap_or_default();
-        let Some(provider) = self.setup_provider else {
+        let email = self.setup_value(1).trim().to_string();
+        let Some(provider) = self.setup_provider() else {
             self.shared.borrow_mut().status =
                 Some("Enter a Gmail or Outlook address to sign in".into());
             self.dirty = true;
@@ -1940,21 +2013,24 @@ impl MailApp {
             return;
         }
         if !provider.is_configured() {
-            self.setup_error = Some(format!(
+            self.set_setup_error(Some(format!(
                 "{} sign-in isn’t available here yet. Choose Password to continue with an app password.",
                 provider.label()
-            ));
+            )));
             self.dirty = true;
             return;
         }
         match self.engine.as_ref() {
             Some(_) => {
+                if let Some(fields) = self.setup_fields() {
+                    fields.expect_oauth();
+                }
                 self.post_engine(EngineRequest::oauth_authorize(
                     email.clone(),
                     provider,
                     email,
                 ));
-                self.setup_error = None;
+                self.set_setup_error(None);
                 self.shared.borrow_mut().status = Some(format!(
                     "Opening {} sign-in in your browser…",
                     provider.label()
@@ -1968,134 +2044,16 @@ impl MailApp {
         self.dirty = true;
     }
 
-    fn overlay_panel_rect(&self) -> Rect {
-        let r = self.rect;
-        let w = 660.0_f64.min(r.width() - 48.0);
-        // The account form is as tall as its measured rows need (500 px at
-        // 1×); the first-run welcome is shorter.
-        let target_h: f64 = if self.setup_open {
-            self.setup_metrics.panel_h()
+    /// The label of the sheet's primary action, which says what is
+    /// happening while the account is checked.
+    fn setup_save_label(&self) -> String {
+        crate::i18n::t(if self.setup_validation.is_some() {
+            "mail-setup-verifying"
+        } else if self.setup_discovery.is_some() {
+            "mail-setup-finding-provider"
         } else {
-            440.0
-        };
-        let h = target_h.min(r.height() - 48.0);
-        let cx = f64::midpoint(r.x0, r.x1);
-        let y0 = r.y0 + (r.height() - h) / 2.0;
-        Rect::new(cx - w / 2.0, y0, cx + w / 2.0, y0 + h)
-    }
-
-    fn rebuild_overlay_hits(&mut self) {
-        self.overlay_hits.clear();
-        if self.setup_open {
-            // Every band is its measured text plus token pads (the authored
-            // 1× band before the first paint), so 200% text grows the sheet
-            // instead of stacking labels, fields and buttons over each other.
-            let m = self.setup_metrics.clone();
-            let p = self.overlay_panel_rect();
-            let lx = p.x0 + SETUP_PAD;
-            let rx = p.x1 - SETUP_PAD;
-            let field_h = m.field_h;
-            let fx = lx + m.label_col_w; // field left edge
-
-            // The rows live in the band between the subtitle and the footer.
-            // When the window is too short for the sheet's natural height the
-            // band scrolls (`setup_scroll`, wheel and focus driven) and a row
-            // outside it gets no hit rect, so a field can never share pixels
-            // with Save / Cancel — the footer resolves last in the hit list,
-            // and an overlap there would fire the wrong control.
-            let rows_top = p.y0 + m.fields_top();
-            let rows_bottom = p.y1 - m.footer_band_h();
-            let visible_h = (rows_bottom - rows_top).max(0.0);
-            self.setup_scroll_max = (m.rows_h() - visible_h).max(0.0);
-            self.setup_scroll = self.setup_scroll.clamp(0.0, self.setup_scroll_max);
-            let band = Rect::new(p.x0, rows_top, p.x1, rows_bottom);
-            let mut y = rows_top - self.setup_scroll;
-
-            // Identity fields: Display name (0), Email (1), Username (2).
-            for i in [0usize, 1, 2] {
-                let fr = Rect::new(fx, y, rx, y + field_h);
-                self.layout_setup_input(i, fr);
-                Self::push_setup_hit(&mut self.overlay_hits, band, fr, OverlayHit::SetupField(i));
-                y += field_h + SETUP_ROW_GAP;
-            }
-
-            // Sign-in method pills, each sized from the wider label.
-            let pill_w = m.pill_w;
-            // The two pills of one segmented control sit an `s2` apart.
-            let pill_gap = SETUP_PILL_GAP;
-            let pw_pill = Rect::new(fx, y, fx + pill_w, y + field_h);
-            let oauth_pill = Rect::new(
-                fx + pill_w + pill_gap,
-                y,
-                fx + pill_w * 2.0 + pill_gap,
-                y + field_h,
-            );
-            Self::push_setup_hit(
-                &mut self.overlay_hits,
-                band,
-                pw_pill,
-                OverlayHit::AuthPassword,
-            );
-            Self::push_setup_hit(
-                &mut self.overlay_hits,
-                band,
-                oauth_pill,
-                OverlayHit::AuthOAuth,
-            );
-            y += field_h + SETUP_ROW_GAP;
-
-            // Password field (3) OR the OAuth sign-in button.
-            if self.setup_auth == crate::model::AuthMethod::Password {
-                let fr = Rect::new(fx, y, rx, y + field_h);
-                self.layout_setup_input(3, fr);
-                Self::push_setup_hit(&mut self.overlay_hits, band, fr, OverlayHit::SetupField(3));
-            } else {
-                let btn = Rect::new(fx, y, fx + m.oauth_w, y + field_h + 4.0);
-                Self::push_setup_hit(&mut self.overlay_hits, band, btn, OverlayHit::OAuthSignIn);
-            }
-            y += field_h + m.section_gap();
-
-            // Server rows: host | port | TLS.
-            self.layout_server_rows(fx, rx, y, field_h, band);
-
-            // Footer: Save (and Remove, when editing) from the left, Cancel
-            // at the right, every button sized from its measured label.
-            let by = p.y1 - SETUP_FOOTER_PAD - m.btn_h;
-            self.overlay_hits.push((
-                Rect::new(lx, by, lx + m.save_w, by + m.btn_h),
-                OverlayHit::SetupSave,
-            ));
-            self.overlay_hits.push((
-                Rect::new(rx - m.cancel_w, by, rx, by + m.btn_h),
-                OverlayHit::CancelSetup,
-            ));
-            // A destructive "Remove" affordance, only when editing an existing
-            // account (never on the add flow).
-            if self.setup_editing.is_some() {
-                let x0 = lx + m.save_w + SETUP_ROW_GAP;
-                self.overlay_hits.push((
-                    Rect::new(x0, by, x0 + m.remove_w, by + m.btn_h),
-                    OverlayHit::RemoveAccount,
-                ));
-            }
-        }
-        if let Some(menu) = &self.context_menu {
-            let scale = f64::from(self.layout_theme.text_scale);
-            let mr = context_menu_rect(menu, self.rect, scale);
-            let mut y = mr.y0 + (CONTEXT_MENU_HEADER_H + CONTEXT_MENU_PAD) * scale;
-            for (i, _a) in menu.items.iter().enumerate() {
-                self.overlay_hits.push((
-                    Rect::new(
-                        mr.x0 + CONTEXT_MENU_PAD * scale,
-                        y,
-                        mr.x1 - CONTEXT_MENU_PAD * scale,
-                        y + CONTEXT_MENU_ROW_H * scale,
-                    ),
-                    OverlayHit::CtxItem(i),
-                ));
-                y += CONTEXT_MENU_ROW_H * scale;
-            }
-        }
+            "mail-setup-save"
+        })
     }
 
     // ---- sync / refresh ---------------------------------------------------
@@ -2156,31 +2114,34 @@ impl MailApp {
 
     // ---- transient status toast ------------------------------------------
 
-    /// Notice a newly-set status toast, arm its dismiss deadline, and clear the
-    /// status once the deadline passes. Parameterised on `now` so the timing is
-    /// unit-testable without a real sleep.
-    fn expire_toast_at(&mut self, now: ui::time::Instant) {
-        let current = self.shared.borrow().status.clone();
-        if current != self.toast_text {
-            // The status changed (or was cleared): (re)arm the timer.
-            self.toast_text.clone_from(&current);
-            self.toast_deadline = current.as_ref().map(|_| now + TOAST_TTL);
-        }
-        if let Some(deadline) = self.toast_deadline
-            && now >= deadline
-        {
-            let mut st = self.shared.borrow_mut();
-            st.status = None;
-            st.dirty = true;
-            self.toast_text = None;
-            self.toast_deadline = None;
-        }
+    /// Hand a newly-set status to the shell, which shows it as a toast and
+    /// lets it fade on its own.
+    fn show_status(&mut self) {
+        let Some(msg) = self.shared.borrow_mut().status.take() else {
+            return;
+        };
+        let kind = Self::status_kind(&msg);
+        self.nav.toast(msg, kind);
     }
 
-    /// Whether a toast is currently on screen and still counting down — used to
-    /// keep the frame pump alive so the auto-dismiss fires even with no input.
-    fn toast_pending(&self) -> bool {
-        self.toast_deadline.is_some()
+    fn status_kind(msg: &str) -> ToastKind {
+        let lower = msg.to_ascii_lowercase();
+        if lower.contains("failed")
+            || lower.contains("couldn’t")
+            || lower.contains("couldn't")
+            || lower.contains("error")
+        {
+            ToastKind::Error
+        } else if lower.contains("offline") || lower.contains("isn't available") {
+            ToastKind::Warning
+        } else if lower.contains("sync")
+            || lower.contains("connecting")
+            || lower.contains("opening")
+        {
+            ToastKind::Info
+        } else {
+            ToastKind::Success
+        }
     }
 
     // ---- engine drain -----------------------------------------------------
@@ -2237,7 +2198,6 @@ impl MailApp {
         doc: &mut ui::widget::Edits<'_>,
         st: &mut MailState,
         request_id: EngineRequestId,
-        wire_bytes: usize,
     ) {
         let Some(pending) = self.pending_send.remove(&request_id) else {
             return;
@@ -2245,19 +2205,14 @@ impl MailApp {
         // A message joins Sent only after SMTP has accepted its bytes.
         st.ingest_messages(doc, std::slice::from_ref(&pending.message));
         st.mailbox.insert(pending.message);
-        st.dispatch_external(
-            doc,
-            &MailAction::Delivered {
-                id: pending.outgoing.id,
-            },
-        );
-        (pending.done)(Ok(()));
-        st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
+        (pending.done)(Ok(ui::tilo_resource::Settled::Done(())));
+        st.status = Some("Delivered".into());
+        self.editing_draft = None;
+        self.compose.close();
     }
 
     fn apply_engine_error(
         &mut self,
-        doc: &mut ui::widget::Edits<'_>,
         st: &mut MailState,
         request_id: EngineRequestId,
         context: &str,
@@ -2283,18 +2238,11 @@ impl MailApp {
         if let Some(pending) = self.pending_send.remove(&request_id) {
             // The server refused it: it stays in the outbox with the reason,
             // and comes back to the composer to be fixed and sent again.
-            st.dispatch_external(
-                doc,
-                &MailAction::SendFailed {
-                    id: pending.outgoing.id.clone(),
-                    reason: detail.clone(),
-                },
-            );
             if !self.compose.open {
                 self.compose.open_with_draft(&pending.outgoing.to_draft());
-                self.resending = Some(pending.outgoing.id);
+                self.resending = Some(pending.outgoing.id.clone());
             }
-            (pending.done)(Err(detail.clone()));
+            (pending.done)(Ok(ui::tilo_resource::Settled::failed(detail.clone())));
         }
         if self
             .resource_refresh_invocation
@@ -2347,16 +2295,18 @@ impl MailApp {
             } if self.expects_engine_event(request_id, EngineRequestKind::Fetch) => {
                 self.apply_fetched_messages(doc, st, request_id, &account_id, folder, messages);
             }
-            EngineEvent::Sent {
-                request_id,
-                wire_bytes,
-            } if self.expects_engine_event(request_id, EngineRequestKind::Send) => {
-                self.apply_sent_message(doc, st, request_id, wire_bytes);
+            EngineEvent::Sent { request_id, .. }
+                if self.expects_engine_event(request_id, EngineRequestKind::Send) =>
+            {
+                self.apply_sent_message(doc, st, request_id);
             }
             EngineEvent::Authorized {
                 request_id,
                 account_id,
             } if self.expects_engine_event(request_id, EngineRequestKind::OAuthAuthorize) => {
+                if let Some(fields) = self.setup_fields() {
+                    fields.complete_oauth(&account_id);
+                }
                 st.status = Some(format!("Signed in as {account_id}"));
                 report_account_sync(
                     &account_id,
@@ -2371,7 +2321,7 @@ impl MailApp {
                 context,
                 message,
             } if self.expects_engine_event(request_id, kind) => {
-                self.apply_engine_error(doc, st, request_id, &context, &message);
+                self.apply_engine_error(st, request_id, &context, &message);
             }
             EngineEvent::Completed { request_id, kind }
                 if self.expects_engine_event(request_id, kind) =>
@@ -2381,7 +2331,10 @@ impl MailApp {
                 self.pending_engine_requests.remove(&request_id);
                 let sent = self.server_outbox.borrow_mut().sent.remove(&request_id);
                 if let Some((update, done)) = sent {
-                    st.dispatch_external(doc, &MailAction::ServerApplied(update));
+                    st.submit(
+                        doc,
+                        Mail::SERVER_APPLIED.with(mailbox::ServerApplied { update }),
+                    );
                     done(Ok(()));
                 }
             }
@@ -2438,14 +2391,19 @@ impl MailApp {
     /// Hand an outbox message to the engine on the account it is sent from.
     /// One whose account this device does not hold is left for a device
     /// that does.
-    fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+    fn deliver(&mut self, outgoing: Outgoing, done: DeliveryDone) {
         let account = self
             .shared
             .borrow()
             .accounts
             .accounts
             .iter()
-            .find(|account| account.config.email == outgoing.account)
+            .find(|account| {
+                account.config.email == outgoing.account
+                    && outgoing.draft.sender.as_ref().is_none_or(|sender| {
+                        account.id == sender.account && account.config.email == sender.email
+                    })
+            })
             .map(|account| account.config.clone());
         let Some(account) = account else {
             done(Err(format!(
@@ -2722,15 +2680,18 @@ impl MailApp {
     /// Apply collaborative domain state to the local hydrated corpus. Folder,
     /// selection, search, and composer format remain local to this window.
     fn hydrate_domain_state(&self, doc: &mut ui::widget::Edits<'_>) {
+        let mail = read_mail(doc.doc()).unwrap_or_default();
         {
             let mut st = self.shared.borrow_mut();
-            MailDoc::apply_flags(doc, &mut st.mailbox);
+            mail.apply_flags(&mut st.mailbox);
         }
         // A persisted draft becomes a local Drafts projection, but does not
         // force another collaborator's composer open.
-        let draft = MailDoc::load_draft(doc);
-        if !draft.to.is_empty() || !draft.subject.is_empty() || !draft.body.is_empty() {
+        let draft = mail.draft.draft();
+        if !draft.is_empty() {
             self.upsert_draft_message(doc, &draft);
+        } else if let Some((id, _)) = self.projected_draft.borrow_mut().take() {
+            self.shared.borrow_mut().mailbox.purge(id);
         }
     }
 
@@ -2772,816 +2733,72 @@ impl MailApp {
                 .message_ids
                 .into_iter()
                 .filter_map(|id| state.mailbox.get(id))
-                .take(crate::actions::OPEN_MESSAGE_LIMIT)
+                .take(crate::resource::OPEN_MESSAGE_LIMIT)
                 .map(crate::actions::message_row)
                 .collect(),
         ))
     }
 
-    // ---- drawing the app-owned overlays ----------------------------------
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the popup frame, context header, focus treatment and command bounds use one geometry source so pointer, keyboard and AT cannot drift"
-    )]
-    fn draw_context_menu(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(menu) = &self.context_menu else {
-            return;
-        };
-        let c = &theme.tokens.colors;
-        let scale = f64::from(theme.text_scale);
-        let mr = context_menu_rect(menu, self.rect, scale);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(mr, 10.0),
-        );
-        let (read, starred) = self
-            .shared
-            .borrow()
-            .mailbox
-            .get(menu.target)
-            .map_or((false, false), |m| (m.read, m.starred));
-        let subject = self.shared.borrow().mailbox.get(menu.target).map_or_else(
-            || "Message actions".to_string(),
-            |message| {
-                elide(
-                    tr,
-                    &message.subject,
-                    11.0,
-                    TextWeight::Medium,
-                    mr.width() - 48.0 * scale,
-                )
-            },
-        );
-        let last_mouse = self.shared.borrow().last_mouse;
-        Icon::MoreHorizontal.draw(
-            scene,
-            t,
-            Rect::new(
-                mr.x0 + 14.0 * scale,
-                mr.y0 + 11.0 * scale,
-                mr.x0 + 30.0 * scale,
-                mr.y0 + 27.0 * scale,
-            ),
-            c.text_dim,
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Message actions",
-            12.5,
-            c.text_primary,
-            t * Affine::translate((mr.x0 + 38.0 * scale, mr.y0 + 10.0 * scale)),
-            None,
-            TextWeight::Semibold,
-        );
-        tr.draw_text(
-            scene,
-            &subject,
-            10.5,
-            c.text_dim,
-            t * Affine::translate((mr.x0 + 38.0 * scale, mr.y0 + 25.0 * scale)),
-            None,
-        );
-        fill_rect(
-            scene,
-            t,
-            Rect::new(
-                mr.x0 + 10.0 * scale,
-                mr.y0 + (CONTEXT_MENU_HEADER_H - 1.0) * scale,
-                mr.x1 - 10.0 * scale,
-                mr.y0 + CONTEXT_MENU_HEADER_H * scale,
-            ),
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-        );
-        let menu_row_at = |index: usize| {
-            let y = mr.y0
-                + (CONTEXT_MENU_HEADER_H + CONTEXT_MENU_PAD) * scale
-                + index as f64 * CONTEXT_MENU_ROW_H * scale;
-            Rect::new(
-                mr.x0 + CONTEXT_MENU_PAD * scale,
-                y,
-                mr.x1 - CONTEXT_MENU_PAD * scale,
-                y + CONTEXT_MENU_ROW_H * scale,
-            )
-        };
-        let hovered_index = menu
-            .items
-            .iter()
-            .enumerate()
-            .find_map(|(index, _)| menu_row_at(index).contains(last_mouse).then_some(index));
-        for (index, a) in menu.items.iter().enumerate() {
-            let item = menu_row_at(index);
-            let hovered_item = hovered_index == Some(index);
-            if hovered_item || (hovered_index.is_none() && index == menu.active) {
-                fill_round(
-                    scene,
-                    t,
-                    item,
-                    6.0,
-                    c.accent[5].with_alpha_factor(if hovered_item { 0.22 } else { 0.16 }),
-                );
-            }
-            let danger = matches!(a, CtxAction::Delete);
-            let col = if danger {
-                c.semantic.danger
-            } else {
-                c.text_primary
-            };
-            a.icon().draw(
-                scene,
-                t,
-                Rect::new(
-                    item.x0 + 10.0 * scale,
-                    item.y0 + 9.0 * scale,
-                    item.x0 + 26.0 * scale,
-                    item.y0 + 25.0 * scale,
-                ),
-                col,
-            );
-            tr.draw_text_weighted(
-                scene,
-                &a.label(read, starred),
-                12.5,
-                col,
-                t * Affine::translate((item.x0 + 36.0 * scale, item.y0 + 10.0 * scale)),
-                None,
-                TextWeight::Medium,
-            );
-            if let Some(shortcut) = a.shortcut() {
-                let (w, _) = tr.measure(shortcut, 10.5, None);
-                tr.draw_text(
-                    scene,
-                    shortcut,
-                    10.5,
-                    c.text_dim,
-                    t * Affine::translate((
-                        item.x1 - f64::from(w) - 10.0 * scale,
-                        item.y0 + 11.0 * scale,
-                    )),
-                    None,
-                );
-            }
-        }
-    }
-
-    fn bulk_purge_confirmation_rect(&self) -> Rect {
-        let r = self.rect;
-        let w = 420.0_f64.min(r.width() - 40.0);
-        let h = 206.0_f64.min(r.height() - 40.0);
-        let x0 = f64::midpoint(r.x0, r.x1) - w / 2.0;
-        let y0 = f64::midpoint(r.y0, r.y1) - h / 2.0;
-        Rect::new(x0, y0, x0 + w, y0 + h)
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the compact confirmation is one visual component whose geometry and semantics are easier to audit together"
-    )]
-    fn draw_bulk_purge_confirmation(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(count) = self.bulk_purge_confirmation else {
-            return;
-        };
-        let c = &theme.tokens.colors;
-        let panel = self.bulk_purge_confirmation_rect();
-        fill_rect(scene, t, self.rect, c.surfaces.overlay);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            theme.tokens.elevation.e4.color,
-            None,
-            &RoundedRect::from_rect(
-                Rect::new(panel.x0, panel.y0 + 6.0, panel.x1, panel.y1 + 10.0),
-                16.0,
-            ),
-        );
-        fill_round(scene, t, panel, 16.0, c.surfaces.raised);
-        stroke_round(scene, t, panel, 16.0, c.border_standard, 1.0);
-        Icon::Trash2.draw(
-            scene,
-            t,
-            Rect::new(
-                panel.x0 + 24.0,
-                panel.y0 + 24.0,
-                panel.x0 + 52.0,
-                panel.y0 + 52.0,
-            ),
-            c.semantic.danger,
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Delete permanently?",
-            20.0,
-            c.text_primary,
-            t * Affine::translate((panel.x0 + 64.0, panel.y0 + 27.0)),
-            None,
-            TextWeight::Bold,
-        );
-        let noun = if count == 1 { "message" } else { "messages" };
-        tr.draw_text(
-            scene,
-            &format!("{count} trashed {noun} will be removed from this mailbox."),
-            13.0,
-            c.text_primary,
-            t * Affine::translate((panel.x0 + 24.0, panel.y0 + 76.0)),
-            None,
-        );
-        tr.draw_text(
-            scene,
-            "This cannot be undone or recovered from the server.",
-            13.0,
-            c.text_dim,
-            t * Affine::translate((panel.x0 + 24.0, panel.y0 + 100.0)),
-            None,
-        );
-        let (cancel, confirm) = Self::bulk_purge_confirmation_buttons(panel);
-        for (rect, label, danger) in [
-            (cancel, "Cancel", false),
-            (confirm, "Delete permanently", true),
-        ] {
-            fill_round(
-                scene,
-                t,
-                rect,
-                9.0,
-                if danger {
-                    c.semantic.danger
-                } else {
-                    c.lift(0.55)
-                },
-            );
-            stroke_round(
-                scene,
-                t,
-                rect,
-                9.0,
-                if danger {
-                    c.semantic.danger
-                } else {
-                    c.border_standard
-                },
-                1.0,
-            );
-            let (width, _) = tr.measure_weighted(label, 12.5, None, TextWeight::Semibold);
-            tr.draw_text_weighted(
-                scene,
-                label,
-                12.5,
-                if danger {
-                    c.surfaces.base
-                } else {
-                    c.text_primary
-                },
-                t * Affine::translate((
-                    f64::midpoint(rect.x0, rect.x1) - f64::from(width) / 2.0,
-                    rect.y0 + 11.0,
-                )),
-                None,
-                TextWeight::Semibold,
-            );
-        }
-    }
-
-    fn bulk_purge_confirmation_buttons(panel: Rect) -> (Rect, Rect) {
-        let confirm = Rect::new(
-            panel.x1 - 166.0,
-            panel.y1 - 52.0,
-            panel.x1 - 24.0,
-            panel.y1 - 18.0,
-        );
-        let cancel = Rect::new(confirm.x0 - 96.0, confirm.y0, confirm.x0 - 10.0, confirm.y1);
-        (cancel, confirm)
-    }
-
-    fn draw_setup(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if !self.setup_open {
-            return;
-        }
-        // Measure with this frame's text scale and rebuild the sheet's rects
-        // from those sizes before painting, so what is painted (and hit-tested
-        // until the next layout) is the measured geometry even on a single
-        // headless frame.
-        // The labels and line boxes change only with the renderer's scale,
-        // the catalogue, or the provider (which picks the OAuth label); the
-        // dozen lookups and measures are skipped otherwise.
-        let oauth_label = self.oauth_button_label();
-        let key = (
-            tr.text_scale().to_bits(),
-            theme.text_scale.to_bits(),
-            ui::i18n::I18nManager::revision(),
-            oauth_label.clone(),
-        );
-        if self.setup_metrics_key.as_ref() != Some(&key) {
-            self.setup_metrics_key = Some(key);
-            let measured = SetupMetrics::measure(tr, theme, &oauth_label);
-            if self.setup_metrics != measured {
-                self.setup_metrics = measured;
-                self.rebuild_overlay_hits();
-            }
-        }
-        let c = &theme.tokens.colors;
-        fill_rect(scene, t, self.rect, c.surfaces.overlay);
-        let p = self.overlay_panel_rect();
-        // The sheet floats above the dimmed mailbox on the Panel tier of the
-        // elevation ladder (HIG §9.1 / §9.3): the shadow is the sheet's own
-        // shape, blurred, not a solid rect nudged down (a grey bar on light).
-        ui::surface::shadow(scene, t, p, 16.0, &theme.tokens.elevation.e4);
-        // The sheet is a floating Panel: derived panel border, crisp on the
-        // outermost pixel row (HIG §9.5).
-        pill(scene, t, p, c.surfaces.raised, None, Some(16.0));
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            t,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(p, 16.0),
-        );
-        let lx = p.x0 + SETUP_PAD;
-        let last_mouse = self.shared.borrow().last_mouse;
-        // Editing reads as scoped to a specific account (its address as the
-        // subtitle); adding is its own clearly-separate flow.
-        let editing_email = self.setup_editing.and_then(|i| {
-            let st = self.shared.borrow();
-            st.accounts.accounts.get(i).map(|a| {
-                if a.config.email.is_empty() {
-                    a.label().to_string()
-                } else {
-                    a.config.email.clone()
-                }
-            })
-        });
-        let (heading, subtitle) = match &editing_email {
-            Some(email) => (crate::i18n::t("mail-setup-heading-edit"), email.clone()),
-            None => (
-                crate::i18n::t("mail-setup-heading-add"),
-                crate::i18n::t("mail-setup-subtitle-add"),
-            ),
-        };
-        // Heading and subtitle stack from their measured line boxes — the
-        // same rule `SetupMetrics::fields_top` placed the first field with.
-        let heading_y = p.y0 + SETUP_HEADING_TOP;
-        tr.draw_text_weighted(
-            scene,
-            &heading,
-            SETUP_HEADING_SIZE,
-            c.text_primary,
-            t * Affine::translate((lx, heading_y)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text(
-            scene,
-            &subtitle,
-            SETUP_SUBTITLE_SIZE,
-            c.text_dim,
-            t * Affine::translate((
-                lx,
-                heading_y + self.setup_metrics.heading_h + self.setup_metrics.s1,
-            )),
-            None,
-        );
-
-        // The rows paint inside their band: a row scrolled past its edge is
-        // clipped, exactly as its hit rect was dropped.
-        let band = Rect::new(
-            p.x0,
-            p.y0 + self.setup_metrics.fields_top(),
-            p.x1,
-            p.y1 - self.setup_metrics.footer_band_h(),
-        );
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &band,
-        );
-        self.draw_setup_fields(scene, t, tr, theme, presence, lx);
-        self.draw_setup_auth_method(scene, t, tr, theme, lx, last_mouse);
-        self.draw_setup_tls_toggles(scene, t, tr, theme);
-        scene.pop_layer();
-        self.draw_setup_footer(scene, t, tr, theme, lx, last_mouse, p);
-    }
-
-    /// The identity + server fields (left-column labels, the "Port" caption,
-    /// and each [`TextInput`]'s own drawing). Part of [`Self::draw_setup`];
-    /// returns the bottom edge of the SMTP-host row, which the footer's
-    /// autoconfig hint sits just below.
-    fn draw_setup_fields(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        lx: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.setup_metrics;
-        let labels = &m.labels;
-        let cfg_errs: std::collections::HashSet<&str> = self
-            .read_setup_config()
-            .validate()
-            .into_iter()
-            .map(|(k, _)| k)
-            .collect();
-        let err_for = |i: usize| match i {
-            1 => cfg_errs.contains("email"),
-            2 => cfg_errs.contains("username"),
-            4 => cfg_errs.contains("imap_host"),
-            6 => cfg_errs.contains("smtp_host"),
-            _ => false,
-        };
-
-        // Field labels (left column). The single border + focus ring is drawn
-        // by each TextInput itself — no second app-drawn border stacks on top.
-        let mut shown: Vec<usize> = Vec::new();
-        for (rect, hit) in &self.overlay_hits {
-            let OverlayHit::SetupField(i) = hit else {
-                continue;
-            };
-            let i = *i;
-            shown.push(i);
-            if let Some(label) = labels.get(i).filter(|l| !l.is_empty()) {
-                let col = if err_for(i) {
-                    c.semantic.danger
-                } else {
-                    c.text_dim
-                };
-                // Centred on the field's measured line box, not on a fixed
-                // offset from the field's top.
-                tr.draw_text(
-                    scene,
-                    label,
-                    SETUP_LABEL_SIZE,
-                    col,
-                    t * Affine::translate((lx, rect.center().y - m.label_h / 2.0)),
-                    None,
-                );
-            }
-            if i == 5 {
-                // The "Port" caption's measured box ends one `s1` above its field.
-                tr.draw_text(
-                    scene,
-                    &crate::i18n::t("mail-setup-label-port"),
-                    SETUP_CAPTION_SIZE,
-                    c.text_dim,
-                    t * Affine::translate((
-                        rect.x0,
-                        rect.y0 - m.caption_h - f64::from(theme.tokens.spacing.s1),
-                    )),
-                    None,
-                );
-            }
-        }
-        for i in shown {
-            if let Some(inp) = self.setup_inputs.get_mut(i) {
-                inp.draw(scene, t, tr, theme, presence);
-            }
-        }
-    }
-
-    /// The sign-in method pills (Password / OAuth) and, in place of the
-    /// password field, the OAuth sign-in button. Part of [`Self::draw_setup`].
-    fn draw_setup_auth_method(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        lx: f64,
-        last_mouse: Point,
-    ) {
-        self.draw_setup_auth_pills(scene, t, tr, theme, lx, last_mouse);
-        self.draw_setup_oauth_button(scene, t, tr, theme, last_mouse);
-    }
-
-    /// The sign-in method pills (Password / OAuth) and their "Sign-in"
-    /// label. Part of [`Self::draw_setup_auth_method`].
-    fn draw_setup_auth_pills(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        lx: f64,
-        last_mouse: Point,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.setup_metrics;
-        // The two sign-in pills are one segmented control painted by the
-        // shared `SegmentedFace` (selected fill, hover, labels centred on
-        // their measured line boxes), over the rects the hit list owns.
-        let find = |hit: OverlayHit| {
-            self.overlay_hits
-                .iter()
-                .find(|(_, h)| *h == hit)
-                .map(|(r, _)| *r)
-        };
-        let (Some(pw), Some(oauth)) = (find(OverlayHit::AuthPassword), find(OverlayHit::AuthOAuth))
-        else {
-            return;
-        };
-        let sign_in = crate::i18n::t("mail-setup-label-sign-in");
-        tr.draw_text(
-            scene,
-            &sign_in,
-            SETUP_LABEL_SIZE,
-            c.text_dim,
-            t * Affine::translate((lx, pw.center().y - m.label_h / 2.0)),
-            None,
-        );
-        let segments = [pw, oauth];
-        let labels = [
-            crate::i18n::t("mail-setup-auth-password"),
-            crate::i18n::t("mail-setup-auth-oauth"),
-        ];
-        let label_refs = [labels[0].as_str(), labels[1].as_str()];
-        let selected = usize::from(self.setup_auth == crate::model::AuthMethod::OAuth);
-        let hovered = segments.iter().position(|r| r.contains(last_mouse));
-        ToggleGroup::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &SegmentedFace::new(&segments, &label_refs, selected)
-                .pill()
-                .hovered(hovered)
-                .text_size(SETUP_PILL_SIZE),
-        );
-    }
-
-    /// The OAuth sign-in button shown in place of the password field, with
-    /// its client-id availability note. Part of
-    /// [`Self::draw_setup_auth_method`].
-    fn draw_setup_oauth_button(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        last_mouse: Point,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.setup_metrics;
-        // OAuth sign-in button (shown in place of the password field): the
-        // shared primary button face over the rect the hit list owns. The
-        // label interpolates the provider, so it is resolved here and handed
-        // over as text — a key alone could not carry the argument.
-        for (rect, hit) in &self.overlay_hits {
-            if !matches!(hit, OverlayHit::OAuthSignIn) {
-                continue;
-            }
-            let label = self.oauth_button_label();
-            Button::paint(
-                scene,
-                t,
-                tr,
-                theme,
-                &ButtonFace::new(*rect, &label)
-                    .primary()
-                    .radius(9.0)
-                    .text_size(SETUP_BUTTON_SIZE)
-                    .weight(TextWeight::Semibold)
-                    .hovered(rect.contains(last_mouse)),
-            );
-            // Deployment details never belong in an account form. If this
-            // installation has no OAuth client, explain the usable alternative
-            // in user language and leave the Password choice directly above.
-            let has_client = self
-                .setup_provider
-                .is_some_and(super::oauth::OAuthProvider::is_configured);
-            let note = if has_client {
-                crate::i18n::t("mail-setup-oauth-note-available")
-            } else {
-                crate::i18n::t("mail-setup-oauth-note-unavailable")
-            };
-            tr.draw_text(
-                scene,
-                &note,
-                SETUP_NOTE_SIZE,
-                c.text_dim,
-                t * Affine::translate((
-                    rect.x1 + f64::from(theme.tokens.spacing.s3),
-                    rect.center().y - m.note_h / 2.0,
-                )),
-                None,
-            );
-        }
-    }
-
-    /// The IMAP/SMTP TLS toggle switches. Part of [`Self::draw_setup`].
-    fn draw_setup_tls_toggles(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let c = &theme.tokens.colors;
-        let sp = &theme.tokens.spacing;
-        let m = &self.setup_metrics;
-        let last_mouse = self.shared.borrow().last_mouse;
-        let label = crate::i18n::t("mail-setup-tls");
-        for (rect, hit) in &self.overlay_hits {
-            let on = match hit {
-                OverlayHit::ToggleImapTls => self.setup_imap_tls,
-                OverlayHit::ToggleSmtpTls => self.setup_smtp_tls,
-                _ => continue,
-            };
-            // The toggle pill scales with the text and sits on the row's
-            // centre line; its label centres on the same line from its
-            // measured box.
-            let cy = rect.center().y;
-            let (pill_w, pill_h) = (SETUP_TLS_PILL_W * m.scale, SETUP_TLS_PILL_H * m.scale);
-            let pill = Rect::new(
-                rect.x0,
-                cy - pill_h / 2.0,
-                rect.x0 + pill_w,
-                cy + pill_h / 2.0,
-            );
-            Toggle::paint(
-                scene,
-                t,
-                theme,
-                &ToggleFace::new(pill, on).hovered(rect.contains(last_mouse)),
-            );
-            tr.draw_text(
-                scene,
-                &label,
-                12.0,
-                c.neutral[8],
-                t * Affine::translate((pill.x1 + f64::from(sp.s2), cy - m.tls_h / 2.0)),
-                None,
-            );
-        }
-    }
-
-    /// The autoconfig/validation hint line and the Save / Cancel / Remove
-    /// buttons at the bottom of the sheet. Part of [`Self::draw_setup`].
-    fn draw_setup_footer(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        lx: f64,
-        last_mouse: Point,
-        p: Rect,
-    ) {
-        self.draw_setup_autoconfig_hint(scene, t, tr, theme, lx, p);
-        self.draw_setup_footer_buttons(scene, t, tr, theme, last_mouse);
-    }
-
-    /// The autoconfig hint / validation message between the server rows and
-    /// the button row. Part of [`Self::draw_setup_footer`].
-    fn draw_setup_autoconfig_hint(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        lx: f64,
-        p: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.setup_metrics;
-        // Icon and text share one centre line. The hint is the top of the
-        // footer band (`s6` above the buttons), so it stays put while the row
-        // band above it scrolls; the icon is the small icon token, text-scaled.
-        let icon = f64::from(theme.tokens.metrics.icon_sm) * m.scale;
-        let footer_top = p.y1 - SETUP_FOOTER_PAD - m.btn_h;
-        let hint_cy = footer_top - m.s6 - m.hint_h / 2.0;
-        let icon_rect = Rect::new(lx, hint_cy - icon / 2.0, lx + icon, hint_cy + icon / 2.0);
-        let text_x = icon_rect.x1 + f64::from(theme.tokens.spacing.s2);
-        let text_y = hint_cy - m.hint_h / 2.0;
-        if let Some(msg) = &self.setup_error {
-            Icon::Ban.draw(scene, t, icon_rect, c.semantic.danger);
-            tr.draw_text(
-                scene,
-                msg,
-                SETUP_HINT_SIZE,
-                c.semantic.danger,
-                t * Affine::translate((text_x, text_y)),
-                None,
-            );
-        } else {
-            Icon::Check.draw(scene, t, icon_rect, c.semantic.success);
-            tr.draw_text(
-                scene,
-                &crate::i18n::t("mail-setup-hint-verified"),
-                SETUP_HINT_SIZE,
-                c.text_dim,
-                t * Affine::translate((text_x, text_y)),
-                None,
-            );
-        }
-    }
-
-    /// The Save / Cancel / Remove buttons at the bottom of the setup sheet.
-    /// Part of [`Self::draw_setup_footer`].
-    fn draw_setup_footer_buttons(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        last_mouse: Point,
-    ) {
-        // Save / Remove / Cancel: the shared button faces (primary, danger,
-        // neutral) over the rects the hit list owns — one look, one measured
-        // label centring, at every text scale.
-        for (rect, hit) in &self.overlay_hits {
-            let key = match hit {
-                OverlayHit::SetupSave if self.setup_validation.is_some() => "mail-setup-verifying",
-                OverlayHit::SetupSave if self.setup_discovery.is_some() => {
-                    "mail-setup-finding-provider"
-                }
-                OverlayHit::SetupSave => "mail-setup-save",
-                OverlayHit::CancelSetup => "mail-setup-cancel",
-                OverlayHit::RemoveAccount => "mail-setup-remove",
-                _ => continue,
-            };
-            // The face resolves the key itself; a resolved string would be
-            // translated a second time (and pseudo-expanded twice).
-            let face = ButtonFace::new(*rect, key)
-                .radius(9.0)
-                .text_size(SETUP_BUTTON_SIZE)
-                .weight(TextWeight::Semibold)
-                .hovered(rect.contains(last_mouse));
-            let face = match hit {
-                OverlayHit::SetupSave => face.primary(),
-                OverlayHit::RemoveAccount => face.danger(),
-                _ => face,
-            };
-            Button::paint(scene, t, tr, theme, &face);
-        }
-    }
-
-    fn draw_status(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let st = self.shared.borrow();
-        let Some(msg) = &st.status else { return };
-        let lower = msg.to_ascii_lowercase();
-        let kind = if lower.contains("failed")
-            || lower.contains("couldn’t")
-            || lower.contains("couldn't")
-            || lower.contains("error")
-        {
-            ToastKind::Error
-        } else if lower.contains("offline") || lower.contains("isn't available") {
-            ToastKind::Warning
-        } else if lower.contains("sync")
-            || lower.contains("connecting")
-            || lower.contains("opening")
-        {
-            ToastKind::Info
-        } else {
-            ToastKind::Success
-        };
-        paint_transient(
-            scene,
-            t,
-            tr,
-            theme,
-            self.rect,
-            ToastAnchor::BottomRight,
-            &ToastCard::new(msg, kind),
-        );
-    }
-
     // ---- test / probe accessors ------------------------------------------
 
-    /// The content pane currently fronted (for tests / probes).
+    /// The column in front of a narrow window (for tests / probes).
     pub fn nav_pane(&self) -> NavPane {
-        self.nav.pane()
+        self.nav.front_pane()
     }
 
+    /// Lay the app out at `w`×`h` as the host does (twice, so the shell
+    /// settles for the size), keeping the tree for [`Self::test_layout`].
     #[cfg(test)]
     fn layout_for_test(&mut self, w: f64, h: f64) {
-        self.rect = Rect::new(0.0, 0.0, w, h);
-        self.first_run.apply_layout_external(self.rect);
-        self.layout_nav();
+        for _ in 0..2 {
+            let theme = self.layout_theme.clone();
+            let mut text = TextRenderer::new();
+            text.set_text_scale(theme.text_scale);
+            let mut taffy = TaffyTree::new();
+            let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let child = self.build_layout(&mut taffy, &theme, &mut nodes);
+            let root = taffy.parent_node(
+                Style {
+                    size: TSize {
+                        width: Dimension::length(w as f32),
+                        height: Dimension::length(h as f32),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            );
+            let available = TSize {
+                width: taffy::AvailableSpace::Definite(w as f32),
+                height: taffy::AvailableSpace::Definite(h as f32),
+            };
+            let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+            // SAFETY: every pointer in `nodes` was registered by this app's
+            // own `build_layout` above into this tree, and the app is
+            // borrowed mutably (so neither moved nor rebuilt) for the whole
+            // layout.
+            let laid = unsafe {
+                bindings.rebuild(&*self, &taffy, child, &nodes);
+                ui::widget::compute_widget_layout(
+                    &mut taffy, root, available, &nodes, &bindings, &mut text,
+                )
+            };
+            assert!(laid.is_ok(), "layout: {laid:?}");
+            self.apply_layout(&taffy, child, Point::ZERO);
+            self.test_layout = Some((taffy, child));
+            // A test reads the settled shell, not a frame of its motion.
+            self.nav.snap();
+        }
+        // A frame paints what was laid out, so the columns know their rows.
+        let theme = self.layout_theme.clone();
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        self.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
     }
 
     /// The directory account changes persist into: the real per-user config
@@ -3594,290 +2811,6 @@ impl MailApp {
     }
 }
 
-/// Catalogue keys of the account sheet's field labels, indexed like
-/// [`build_setup_inputs`] (the two port fields carry a "Port" caption above
-/// them instead of a left-column label).
-const SETUP_LABEL_KEYS: [&str; 8] = [
-    "mail-setup-label-display-name",
-    "mail-setup-label-email",
-    "mail-setup-label-username",
-    "mail-setup-label-password",
-    "mail-setup-label-imap-host",
-    "",
-    "mail-setup-label-smtp-host",
-    "",
-];
-
-/// Renderer-relative text sizes of the account sheet, shared by measurement
-/// and paint.
-const SETUP_HEADING_SIZE: f32 = 17.0;
-const SETUP_SUBTITLE_SIZE: f32 = 11.5;
-const SETUP_LABEL_SIZE: f32 = 12.5;
-const SETUP_CAPTION_SIZE: f32 = 11.0;
-const SETUP_PILL_SIZE: f32 = 12.5;
-const SETUP_BUTTON_SIZE: f32 = 13.0;
-const SETUP_NOTE_SIZE: f32 = 10.5;
-const SETUP_HINT_SIZE: f32 = 11.5;
-/// Authored 1× sizes the measured rules never go below.
-const SETUP_FIELD_MIN_H: f64 = 34.0;
-const SETUP_LABEL_COL_MIN_W: f64 = 120.0;
-const SETUP_PILL_MIN_W: f64 = 104.0;
-const SETUP_OAUTH_MIN_W: f64 = 240.0;
-const SETUP_BUTTON_MIN_H: f64 = 38.0;
-const SETUP_PORT_W: f64 = 60.0;
-const SETUP_TLS_PILL_W: f64 = 40.0;
-const SETUP_TLS_PILL_H: f64 = 22.0;
-const SETUP_PAD: f64 = 26.0;
-/// Top inset of the heading, and the gaps between field rows, under the
-/// sign-in row, under the SMTP row and around the hint.
-const SETUP_HEADING_TOP: f64 = 20.0;
-const SETUP_ROW_GAP: f64 = 12.0;
-/// Gap between the two sign-in pills (`s2`; the hit list is rebuilt without
-/// a theme, so the base step is spelled out).
-const SETUP_PILL_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s2 as f64;
-const SETUP_SECTION_GAP: f64 = 20.0;
-const SETUP_HINT_GAP: f64 = 18.0;
-const SETUP_FOOTER_PAD: f64 = 16.0;
-
-/// Sizes the account sheet is laid out with. Measured on paint with the
-/// styles the sheet paints with; `Default` is the authored 1× rule set used
-/// before the first paint and by the geometry tests (which never paint).
-#[derive(Clone, Debug, PartialEq)]
-struct SetupMetrics {
-    scale: f64,
-    /// The theme's spacing steps the bands are padded with. The hit list is
-    /// rebuilt without a theme, so it reads the steps the last paint measured
-    /// against (the base tokens before the first paint) — under a custom
-    /// theme or a UI scale the reserved bands and the painted ones agree.
-    s1: f64,
-    s4: f64,
-    s6: f64,
-    /// The field labels, resolved once per measurement (indexed like
-    /// [`SETUP_LABEL_KEYS`]; empty for the port fields).
-    labels: Vec<String>,
-    heading_h: f64,
-    subtitle_h: f64,
-    label_h: f64,
-    /// Width of the left label column: the widest label plus `s3`.
-    label_col_w: f64,
-    caption_h: f64,
-    /// A field's height: the shared input's line box plus `s2` each side.
-    field_h: f64,
-    /// Sign-in pill width: the wider label plus `s4` each side.
-    pill_w: f64,
-    /// OAuth sign-in button width: its label plus `s4` each side.
-    oauth_w: f64,
-    note_h: f64,
-    hint_h: f64,
-    /// Footer button height and the three button widths (label + `s6` each
-    /// side).
-    btn_h: f64,
-    save_w: f64,
-    cancel_w: f64,
-    remove_w: f64,
-    /// Width of the TLS control: the toggle pill, `s2`, and its label.
-    tls_w: f64,
-    tls_h: f64,
-}
-
-impl Default for SetupMetrics {
-    fn default() -> Self {
-        // 1× line boxes (size × 1.25), base tokens and the authored 1× widths.
-        Self {
-            scale: 1.0,
-            s1: 4.0,
-            s4: 16.0,
-            s6: 24.0,
-            labels: Self::resolve_labels(),
-            heading_h: 21.25,
-            subtitle_h: 14.375,
-            label_h: 15.625,
-            label_col_w: SETUP_LABEL_COL_MIN_W,
-            caption_h: 13.75,
-            field_h: SETUP_FIELD_MIN_H,
-            pill_w: SETUP_PILL_MIN_W,
-            oauth_w: SETUP_OAUTH_MIN_W,
-            note_h: 13.125,
-            hint_h: 14.375,
-            btn_h: SETUP_BUTTON_MIN_H,
-            save_w: 168.0,
-            cancel_w: 92.0,
-            remove_w: 120.0,
-            tls_w: 58.0,
-            tls_h: 15.0,
-        }
-    }
-}
-
-impl SetupMetrics {
-    /// The field labels from the catalogue, indexed like [`SETUP_LABEL_KEYS`].
-    fn resolve_labels() -> Vec<String> {
-        SETUP_LABEL_KEYS
-            .iter()
-            .map(|k| {
-                if k.is_empty() {
-                    String::new()
-                } else {
-                    crate::i18n::t(k)
-                }
-            })
-            .collect()
-    }
-
-    /// Measure every band with the style it paints with. `oauth_label` is
-    /// the current "Sign in with …" label.
-    fn measure(tr: &mut TextRenderer, theme: &Theme, oauth_label: &str) -> Self {
-        let sp = &theme.tokens.spacing;
-        let scale = f64::from(theme.text_scale).max(1.0);
-        let labels = Self::resolve_labels();
-        let line = |tr: &mut TextRenderer, size: f32, weight: TextWeight| {
-            f64::from(tr.measure_weighted("Ag", size, None, weight).1)
-        };
-        let width = |tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight| {
-            f64::from(tr.measure_weighted(text, size, None, weight).0)
-        };
-        let sign_in = crate::i18n::t("mail-setup-label-sign-in");
-        let widest_label = labels
-            .iter()
-            .chain(std::iter::once(&sign_in))
-            .filter(|l| !l.is_empty())
-            .map(|l| width(tr, l, SETUP_LABEL_SIZE, TextWeight::Regular))
-            .fold(0.0_f64, f64::max);
-        let pill_label = [
-            crate::i18n::t("mail-setup-auth-password"),
-            crate::i18n::t("mail-setup-auth-oauth"),
-        ]
-        .iter()
-        .map(|l| width(tr, l, SETUP_PILL_SIZE, TextWeight::Semibold))
-        .fold(0.0_f64, f64::max);
-        let (_, input_line) = tr.measure("Ag", 14.0, None);
-        let btn_w = |tr: &mut TextRenderer, key: &str| {
-            width(
-                tr,
-                &crate::i18n::t(key),
-                SETUP_BUTTON_SIZE,
-                TextWeight::Semibold,
-            ) + 2.0 * f64::from(sp.s6)
-        };
-        let (tls_w, tls_h) = tr.measure(&crate::i18n::t("mail-setup-tls"), 12.0, None);
-        Self {
-            scale,
-            s1: f64::from(sp.s1),
-            s4: f64::from(sp.s4),
-            s6: f64::from(sp.s6),
-            labels,
-            heading_h: line(tr, SETUP_HEADING_SIZE, TextWeight::Bold),
-            subtitle_h: line(tr, SETUP_SUBTITLE_SIZE, TextWeight::Regular),
-            label_h: line(tr, SETUP_LABEL_SIZE, TextWeight::Regular),
-            label_col_w: (widest_label + f64::from(sp.s3)).max(SETUP_LABEL_COL_MIN_W),
-            caption_h: line(tr, SETUP_CAPTION_SIZE, TextWeight::Regular),
-            field_h: (f64::from(input_line) + 2.0 * f64::from(sp.s2)).max(SETUP_FIELD_MIN_H),
-            pill_w: (pill_label + 2.0 * f64::from(sp.s4)).max(SETUP_PILL_MIN_W),
-            oauth_w: (width(tr, oauth_label, SETUP_BUTTON_SIZE, TextWeight::Semibold)
-                + 2.0 * f64::from(sp.s4))
-            .max(SETUP_OAUTH_MIN_W),
-            note_h: line(tr, SETUP_NOTE_SIZE, TextWeight::Regular),
-            hint_h: line(tr, SETUP_HINT_SIZE, TextWeight::Regular),
-            btn_h: (line(tr, SETUP_BUTTON_SIZE, TextWeight::Semibold) + 2.0 * f64::from(sp.s2))
-                .max(SETUP_BUTTON_MIN_H),
-            save_w: btn_w(tr, "mail-setup-save")
-                .max(btn_w(tr, "mail-setup-verifying"))
-                .max(btn_w(tr, "mail-setup-finding-provider"))
-                .max(168.0),
-            cancel_w: btn_w(tr, "mail-setup-cancel").max(92.0),
-            remove_w: btn_w(tr, "mail-setup-remove").max(120.0),
-            tls_w: SETUP_TLS_PILL_W * scale + f64::from(sp.s2) + f64::from(tls_w),
-            tls_h: f64::from(tls_h),
-        }
-    }
-
-    /// Top of the first field row inside the sheet: heading, `s1`, subtitle
-    /// and the `s4` under them.
-    fn fields_top(&self) -> f64 {
-        SETUP_HEADING_TOP + self.heading_h + self.s1 + self.subtitle_h + self.s4
-    }
-
-    /// Gap between the password row and the server rows: the authored 20 px,
-    /// or the "Port" caption's measured box plus the `s1` it sits above its
-    /// field when that is taller (17.75 at 1×, so the authored gap holds;
-    /// 31.5 at 200 %), so the caption never paints under the password field.
-    fn section_gap(&self) -> f64 {
-        SETUP_SECTION_GAP.max(self.caption_h + self.s1)
-    }
-
-    /// Height of every field row the sheet stacks (password sign-in, the
-    /// taller of the two flows).
-    fn rows_h(&self) -> f64 {
-        let row = self.field_h + SETUP_ROW_GAP;
-        3.0 * row // identity fields
-            + row // sign-in pills
-            + self.field_h + self.section_gap() // password / OAuth
-            + row + self.field_h // IMAP + SMTP rows
-    }
-
-    /// Height of the band under the rows: the hint, `s6`, the footer
-    /// buttons and the bottom pad.
-    fn footer_band_h(&self) -> f64 {
-        SETUP_HINT_GAP + self.hint_h + self.s6 + self.btn_h + SETUP_FOOTER_PAD
-    }
-
-    /// The sheet's natural height — every row plus the hint and footer.
-    fn panel_h(&self) -> f64 {
-        self.fields_top() + self.rows_h() + self.footer_band_h()
-    }
-}
-
-fn build_setup_inputs(cfg: &AccountConfig) -> Vec<TextInput> {
-    vec![
-        TextInput::local()
-            .with_kind(ui::widget::TextInputKind::Name)
-            .with_initial_value(&cfg.display_name)
-            .with_placeholder("Your name"),
-        TextInput::local()
-            .with_kind(ui::widget::TextInputKind::Email)
-            .with_initial_value(&cfg.email)
-            .with_placeholder("you@example.com"),
-        TextInput::local()
-            .with_kind(ui::widget::TextInputKind::Username)
-            .with_initial_value(&cfg.username)
-            .with_placeholder("Usually your email"),
-        TextInput::local()
-            .with_kind(ui::widget::TextInputKind::Password)
-            .with_initial_value(&cfg.password)
-            .with_secret(true)
-            .with_placeholder("Account password"),
-        TextInput::local()
-            .with_kind(ui::widget::TextInputKind::Url)
-            .with_initial_value(&cfg.imap_host)
-            .with_placeholder("imap.example.com"),
-        TextInput::local()
-            .with_kind(ui::widget::TextInputKind::Number)
-            .with_initial_value(&cfg.imap_port.to_string()),
-        TextInput::local()
-            .with_kind(ui::widget::TextInputKind::Url)
-            .with_initial_value(&cfg.smtp_host)
-            .with_placeholder("smtp.example.com"),
-        TextInput::local()
-            .with_kind(ui::widget::TextInputKind::Number)
-            .with_initial_value(&cfg.smtp_port.to_string()),
-    ]
-}
-
-fn context_menu_rect(menu: &ContextMenu, bounds: Rect, text_scale: f64) -> Rect {
-    let scale = text_scale.clamp(0.75, 2.0);
-    let w = CONTEXT_MENU_W * scale;
-    let h = (CONTEXT_MENU_HEADER_H
-        + CONTEXT_MENU_PAD * 2.0
-        + menu.items.len() as f64 * CONTEXT_MENU_ROW_H)
-        * scale;
-    let x0 = menu.pos.x.min(bounds.x1 - w - 8.0).max(bounds.x0 + 4.0);
-    let y0 = menu.pos.y.min(bounds.y1 - h - 8.0).max(bounds.y0 + 4.0);
-    Rect::new(x0, y0, x0 + w, y0 + h)
-}
-
-/// Metadata-only [`Attachment`] for a staged file path: real basename + real
-/// size when the file can be stat'd (never fabricated bytes; the bytes are read
-/// from the path at send time by `transport::build_mime`).
 fn attachment_meta(attachment: &crate::model::DraftAttachment) -> Attachment {
     let mut projected = Attachment::projected(
         attachment.filename.clone(),
@@ -3898,6 +2831,7 @@ fn draft_from_message(m: &Message) -> Draft {
             .join(", ")
     };
     Draft {
+        sender: None,
         to: join(&m.to),
         cc: join(&m.cc),
         bcc: String::new(),
@@ -4079,71 +3013,14 @@ impl MailApp {
         self.dirty = true;
     }
 
-    fn handle_bulk_purge_confirmation(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut EventContext<'_>,
-    ) -> bool {
-        if self.bulk_purge_confirmation.is_none() {
+    /// The row menu owns input while open: its accelerators act on the
+    /// message, everything else is the menu's (arrows, Enter, Escape, a click
+    /// outside closes it).
+    fn handle_menu_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
+        if !self.menu.is_open() {
             return false;
         }
-        let confirm_key = matches!(
-            event,
-            WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key: Key::Named(NamedKey::Enter),
-                    state: ElementState::Pressed,
-                    ..
-                },
-                ..
-            }
-        );
-        let cancel_key = matches!(
-            event,
-            WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key: Key::Named(NamedKey::Escape),
-                    state: ElementState::Pressed,
-                    ..
-                },
-                ..
-            }
-        );
-        if confirm_key {
-            self.confirm_bulk_purge(&mut ctx.state);
-        } else if cancel_key {
-            self.bulk_purge_confirmation = None;
-            self.dirty = true;
-        } else if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
-        ) {
-            let panel = self.bulk_purge_confirmation_rect();
-            let (cancel, confirm) = Self::bulk_purge_confirmation_buttons(panel);
-            let point = self.shared.borrow().last_mouse;
-            if confirm.contains(point) {
-                self.confirm_bulk_purge(&mut ctx.state);
-            } else if cancel.contains(point) || !panel.contains(point) {
-                self.bulk_purge_confirmation = None;
-                self.dirty = true;
-            }
-        }
-        *ctx.handled = true;
-        true
-    }
-
-    /// The popup owns keyboard focus while open so its actions cannot fall
-    /// through to the selected message behind it.
-    fn handle_context_menu_keyboard(
-        &mut self,
-        event: &WindowEvent,
-        state: &mut ui::widget::Edits<'_>,
-    ) -> bool {
-        let WindowEvent::KeyboardInput {
+        if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
                     logical_key,
@@ -4152,107 +3029,81 @@ impl MailApp {
                 },
             ..
         } = event
-        else {
-            return matches!(event, WindowEvent::KeyboardInput { .. });
-        };
-        let Some(menu) = self.context_menu.as_mut() else {
-            return false;
-        };
-        let count = menu.items.len();
-        if count == 0 {
-            self.context_menu = None;
-            return true;
-        }
-        let accelerator = match logical_key {
-            Key::Character(ch) if ch.eq_ignore_ascii_case("r") => Some(CtxAction::Reply),
-            Key::Character(ch) if ch.eq_ignore_ascii_case("u") => Some(CtxAction::ToggleRead),
-            Key::Character(ch) if ch.eq_ignore_ascii_case("s") => Some(CtxAction::ToggleStar),
-            Key::Character(ch) if ch.eq_ignore_ascii_case("e") => Some(CtxAction::Archive),
-            Key::Named(NamedKey::Delete | NamedKey::Backspace) => Some(CtxAction::Delete),
-            _ => None,
-        };
-        if let Some(action) = accelerator
-            && let Some(index) = menu.items.iter().position(|item| *item == action)
         {
-            return self.activate_context_menu_item(index, state);
+            let accelerator = match logical_key {
+                Key::Character(ch) if ch.eq_ignore_ascii_case("r") => Some(CtxAction::Reply),
+                Key::Character(ch) if ch.eq_ignore_ascii_case("u") => Some(CtxAction::ToggleRead),
+                Key::Character(ch) if ch.eq_ignore_ascii_case("s") => Some(CtxAction::ToggleStar),
+                Key::Character(ch) if ch.eq_ignore_ascii_case("e") => Some(CtxAction::Archive),
+                Key::Named(NamedKey::Delete | NamedKey::Backspace) => Some(CtxAction::Delete),
+                _ => None,
+            };
+            if let Some(action) = accelerator
+                && let Some(target) = self
+                    .menu_target
+                    .as_ref()
+                    .filter(|target| target.items.contains(&action))
+            {
+                let message = target.message;
+                self.close_menu();
+                self.apply_menu_action(message, action, &mut ctx.state);
+                *ctx.handled = true;
+                return true;
+            }
         }
-        match logical_key {
-            Key::Named(NamedKey::Escape) => self.context_menu = None,
-            Key::Named(NamedKey::ArrowDown | NamedKey::Tab) => {
-                menu.active = if menu.active + 1 == count {
-                    0
-                } else {
-                    menu.active + 1
-                };
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                menu.active = if menu.active == 0 {
-                    count - 1
-                } else {
-                    menu.active - 1
-                };
-            }
-            Key::Named(NamedKey::Home) => menu.active = 0,
-            Key::Named(NamedKey::End) => menu.active = count - 1,
-            Key::Named(NamedKey::Enter) => {
-                let active = menu.active;
-                return self.activate_context_menu_item(active, state);
-            }
-            Key::Character(ch) if ch == " " => {
-                let active = menu.active;
-                return self.activate_context_menu_item(active, state);
-            }
-            _ => {}
+        let mut handled = false;
+        self.menu.handle_event(
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: &ctx.modifiers,
+                state: ctx.state.reborrow(),
+                path: ctx.path,
+                handled: &mut handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
+        );
+        self.take_menu_choice(&mut ctx.state);
+        if !self.menu.is_open() {
+            self.menu_target = None;
         }
         self.dirty = true;
-        true
+        // While open the menu is modal; a press outside it only closes it.
+        let consumed = handled
+            || matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. }
+            );
+        if consumed {
+            *ctx.handled = true;
+        }
+        consumed
     }
 
-    /// One dispatcher for pointer, keyboard and assistive-technology menu
-    /// activation. The message must still be loaded when the command lands.
-    fn activate_context_menu_item(
-        &mut self,
-        index: usize,
-        state: &mut ui::widget::Edits<'_>,
-    ) -> bool {
-        let Some(menu) = self.context_menu.take() else {
+    /// The permanent-deletion confirmation owns all input while open.
+    fn handle_purge_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
+        let Some(confirmation) = self.bulk_purge_confirmation.as_mut() else {
             return false;
         };
-        let Some(action) = menu.items.get(index).copied() else {
-            return false;
-        };
-        if self.shared.borrow().mailbox.get(menu.target).is_none() {
-            self.shared.borrow_mut().status = Some("That message is no longer available.".into());
-            self.dirty = true;
-            return false;
-        }
-        self.shared
-            .borrow_mut()
-            .apply_message_action(state, menu.target, action);
-        self.process_intents();
+        confirmation.dialog.handle_detached(
+            event,
+            ctx.scale_factor,
+            ctx.modifiers,
+            &mut ctx.state,
+            ctx.path,
+        );
+        self.settle_purge_confirmation(&mut ctx.state);
+        *ctx.handled = true;
+        self.dirty = true;
         true
-    }
-
-    /// Activate the clicked context-menu item or dismiss the open menu.
-    fn handle_context_menu_click(&mut self, pt: Point, state: &mut ui::widget::Edits<'_>) {
-        self.rebuild_overlay_hits();
-        let item = self
-            .overlay_hits
-            .iter()
-            .rev()
-            .find(|(rc, h)| matches!(h, OverlayHit::CtxItem(_)) && rc.contains(pt))
-            .copied();
-        if let Some((_, OverlayHit::CtxItem(i))) = item {
-            self.activate_context_menu_item(i, state);
-        } else {
-            self.context_menu = None;
-        }
     }
 
     /// Route app-owned modal surfaces in front-to-back order. Returning true
     /// stops propagation to the navigation shell and global shortcuts.
     fn handle_app_modal_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
-        if self.handle_bulk_purge_confirmation(event, ctx) {
+        if self.handle_purge_event(event, ctx) {
             return true;
         }
         if self.compose.open && self.handle_compose_modal(event, ctx) {
@@ -4261,8 +3112,7 @@ impl MailApp {
             return true;
         }
 
-        if self.context_menu.is_some() && self.handle_context_menu_keyboard(event, &mut ctx.state) {
-            *ctx.handled = true;
+        if self.handle_menu_event(event, ctx) {
             return true;
         }
 
@@ -4289,215 +3139,34 @@ impl MailApp {
             return true;
         }
 
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Named(NamedKey::Escape),
-                    state: ElementState::Pressed,
-                    ..
+        self.handle_setup_event(event, ctx)
+    }
+
+    /// The account sheet owns all input while open. It is laid out in the
+    /// window's tree, so its fields take the window's focus and Tab.
+    fn handle_setup_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
+        let Some(sheet) = self.setup.as_mut() else {
+            return false;
+        };
+        if let Some(node) = self.setup_node {
+            sheet.dialog.handle_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state.reborrow(),
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: node,
+                    taffy: ctx.taffy,
                 },
-            ..
-        } = event
-            && self.setup_open
-        {
-            self.close_setup();
-            *ctx.handled = true;
-            return true;
-        }
-
-        if self.context_menu.is_some()
-            && let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button,
-                ..
-            } = event
-        {
-            if *button == MouseButton::Left {
-                let point = self.shared.borrow().last_mouse;
-                self.handle_context_menu_click(point, &mut ctx.state);
-            } else {
-                self.context_menu = None;
-            }
-            *ctx.handled = true;
-            return true;
-        }
-
-        if self.setup_open {
-            self.handle_setup_event(event, ctx);
-            if *ctx.handled {
-                self.dirty = true;
-                return true;
-            }
-        }
-        false
-    }
-
-    fn setup_accessibility_fields(&self) -> Vec<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-
-        [
-            "Display name",
-            "Email address",
-            "Username",
-            "Password",
-            "IMAP server",
-            "IMAP port",
-            "SMTP server",
-            "SMTP port",
-        ]
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| self.setup_auth == crate::model::AuthMethod::Password || *index != 3)
-        .filter_map(|(index, label)| {
-            let input = self.setup_inputs.get(index)?;
-            let mut node = AccessNode::new(Role::TextInput)
-                .with_name(*label)
-                .with_action_target(format!("mail.setup:field:{index}"))
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.setup_focus == Some(index),
-                    protected: index == 3,
-                    ..Default::default()
-                });
-            if index != 3 {
-                node = node.with_value(input.value());
-            }
-            if let Some(rect) = self.overlay_hits.iter().find_map(|(rect, hit)| {
-                matches!(hit, OverlayHit::SetupField(i) if *i == index).then_some(*rect)
-            }) {
-                node = node.with_bounds(rect);
-            }
-            Some(node)
-        })
-        .collect()
-    }
-
-    fn setup_accessibility_node(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, AccessState, Role};
-
-        let mut controls = self.setup_accessibility_fields();
-        controls.extend([
-            AccessNode::new(Role::RadioButton)
-                .with_name("Password sign-in")
-                .with_action_target("mail.setup:auth-password")
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .checked(self.setup_auth == crate::model::AuthMethod::Password),
-                ),
-            AccessNode::new(Role::RadioButton)
-                .with_name("OAuth sign-in")
-                .with_action_target("mail.setup:auth-oauth")
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .checked(self.setup_auth == crate::model::AuthMethod::OAuth),
-                ),
-        ]);
-        if self.setup_auth == crate::model::AuthMethod::OAuth {
-            controls.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Sign in with provider")
-                    .with_action_target("mail.setup:oauth-sign-in")
-                    .with_state(AccessState::new().focusable(true)),
             );
         }
-        controls.extend([
-            AccessNode::new(Role::ToggleButton)
-                .with_name("IMAP TLS")
-                .with_action_target("mail.setup:imap-tls")
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .checked(self.setup_imap_tls),
-                ),
-            AccessNode::new(Role::ToggleButton)
-                .with_name("SMTP TLS")
-                .with_action_target("mail.setup:smtp-tls")
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .checked(self.setup_smtp_tls),
-                ),
-            AccessNode::new(Role::Button)
-                .with_name("Save and verify")
-                .with_action_target("mail.setup:save")
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .busy(self.setup_validation.is_some() || self.setup_discovery.is_some())
-                        .disabled(self.setup_validation.is_some()),
-                ),
-            AccessNode::new(Role::Button)
-                .with_name("Cancel")
-                .with_action_target("mail.setup:cancel")
-                .with_state(AccessState::new().focusable(true)),
-        ]);
-        if self.setup_editing.is_some() {
-            controls.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Remove account")
-                    .with_action_target("mail.setup:remove")
-                    .with_state(AccessState::new().focusable(true)),
-            );
-        }
-        if let Some(message) = &self.setup_error {
-            controls.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(message.clone())
-                    .with_live(ui::a11y::Politeness::Polite),
-            );
-        }
-        AccessNode::new(Role::Dialog)
-            .with_name("Mail account setup")
-            .with_bounds(self.overlay_panel_rect())
-            .with_state(AccessState::new().modal(true))
-            .with_children(controls)
-    }
-
-    fn folders_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, AccessState, Role};
-
-        let accounts = state
-            .accounts
-            .accounts
-            .iter()
-            .enumerate()
-            .map(|(account_index, account)| {
-                let folders = if account.collapsed {
-                    Vec::new()
-                } else {
-                    AccountStore::folders_for(account)
-                        .into_iter()
-                        .map(|folder| {
-                            AccessNode::new(Role::TreeItem)
-                                .with_name(folder.title())
-                                .with_action_target(format!(
-                                    "mail.folder:{account_index}:{}",
-                                    folder.as_key()
-                                ))
-                                .with_state(AccessState::new().focusable(true).selected(
-                                    state.accounts.active == account_index
-                                        && state.folder == folder,
-                                ))
-                        })
-                        .collect()
-                };
-                AccessNode::new(Role::TreeItem)
-                    .with_name(account.label())
-                    .with_action_target(format!("mail.account:{account_index}"))
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .selected(state.accounts.active == account_index)
-                            .expanded(!account.collapsed),
-                    )
-                    .with_children(folders)
-            })
-            .collect();
-        AccessNode::new(Role::Tree)
-            .with_name("Mail folders")
-            .with_children(accounts)
+        self.settle_setup(&mut ctx.state);
+        *ctx.handled = true;
+        self.dirty = true;
+        true
     }
 
     #[allow(
@@ -4539,11 +3208,7 @@ impl MailApp {
                 Some(node)
             })
             .collect::<Vec<_>>();
-        let name = if state.search.trim().is_empty() {
-            format!("{} messages", state.folder.title())
-        } else {
-            format!("Search results in {}", state.folder.title())
-        };
+        let name = format!("{} messages", state.folder.title());
         let mut children = vec![
             AccessNode::new(Role::Button)
                 .with_name(if state.bulk_selecting {
@@ -4600,11 +3265,7 @@ impl MailApp {
             .with_name(name)
             .with_children(children);
         if total == 0 {
-            list = list.with_description(if state.search.trim().is_empty() {
-                format!("No messages in {}", state.folder.title())
-            } else {
-                "No matching messages".to_string()
-            });
+            list = list.with_description(format!("No messages in {}", state.folder.title()));
         }
         list
     }
@@ -4614,18 +3275,12 @@ impl MailApp {
 
         if state.bulk_selecting {
             let count = state.selected_bulk_ids().len();
-            return AccessNode::new(Role::Group)
-                .with_name(format!("{count} selected"))
-                .with_description(
-                    "Choose a batch action in the message list. Individual message actions are paused while selecting.",
-                );
+            return AccessNode::new(Role::Group).with_name(format!("{count} selected"));
         }
 
         let thread = state.selected_thread_messages();
         let Some(current) = state.selected.and_then(|id| state.mailbox.get(id)) else {
-            return AccessNode::new(Role::Group)
-                .with_name("No conversation selected")
-                .with_description("Select a conversation to read");
+            return AccessNode::new(Role::Group).with_name("No message selected");
         };
         let message_count = thread.len();
         let mut children = vec![
@@ -4692,62 +3347,10 @@ impl MailApp {
             ))
             .with_children(children)
     }
-    fn context_menu_accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-
-        let menu = self.context_menu.as_ref()?;
-        let (read, starred) = self
-            .shared
-            .borrow()
-            .mailbox
-            .get(menu.target)
-            .map_or((false, false), |message| (message.read, message.starred));
-        let scale = f64::from(self.layout_theme.text_scale);
-        let rect = context_menu_rect(menu, self.rect, scale);
-        let total = menu.items.len();
-        let children = menu
-            .items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let y = rect.y0
-                    + (CONTEXT_MENU_HEADER_H + CONTEXT_MENU_PAD) * scale
-                    + index as f64 * CONTEXT_MENU_ROW_H * scale;
-                let mut node = AccessNode::new(Role::MenuItem)
-                    .with_name(item.label(read, starred))
-                    .with_action_target(format!("mail.context:{}:{index}", menu.target))
-                    .with_position(index + 1, total)
-                    .with_bounds(Rect::new(
-                        rect.x0 + CONTEXT_MENU_PAD * scale,
-                        y,
-                        rect.x1 - CONTEXT_MENU_PAD * scale,
-                        y + CONTEXT_MENU_ROW_H * scale,
-                    ))
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .selected(index == menu.active),
-                    );
-                if let Some(key) = item.shortcut() {
-                    node = node.with_description(format!("Shortcut: {key}"));
-                }
-                node
-            })
-            .collect();
-        Some(
-            AccessNode::new(Role::Menu)
-                .with_name("Message actions")
-                .with_description(
-                    "Use Up and Down Arrow to choose an action, Enter to activate, or Escape to close.",
-                )
-                .with_bounds(rect)
-                .with_state(AccessState::new().modal(true))
-                .with_children(children),
-        )
-    }
 }
 
 impl Widget for MailApp {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         self.background_poll_deadline.set(None);
@@ -4762,8 +3365,7 @@ impl Widget for MailApp {
         // before the chosen file is actually written.
         self.drain_compose_attachment();
         self.compose.sync(state, path);
-        // Fade out a transient status toast once its lifetime elapses.
-        self.expire_toast_at(ui::time::now());
+        self.show_status();
 
         let mem_seeded = self.shared.borrow().seeded;
         if !mem_seeded {
@@ -4789,10 +3391,41 @@ impl Widget for MailApp {
         }
         self.persist_active_account_if_changed();
         self.sync_preferences();
+        let (title, list, reader) = {
+            let state = self.shared.borrow();
+            (
+                Self::overview_title(&state),
+                list_bar(&state),
+                reader_bar(&state),
+            )
+        };
+        if list != self.list_bar {
+            let actions = header_actions(&list, &self.shared, "list");
+            self.nav.set_overview_header(title.clone(), actions);
+            self.overview_title = title;
+            self.list_bar = list;
+        } else if title != self.overview_title {
+            self.nav.set_overview_title(title.clone());
+            self.overview_title = title;
+        }
+        if reader != self.reader_bar {
+            let actions = header_actions(&reader, &self.shared, "reader");
+            self.nav.set_content_header("", actions);
+            self.reader_bar = reader;
+        }
         self.nav.sync(state, path);
+        if let Some(sheet) = self.setup.as_mut() {
+            sheet.dialog.sync(state, path);
+        }
     }
 
     fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        let opens = std::mem::take(&mut *self.opens.borrow_mut());
+        for target in opens {
+            if let Err(error) = self.open_target(target) {
+                tracing::warn!(%error, "mail: a hit could not be opened");
+            }
+        }
         self.drain_engine(state);
         self.reveal_requested(state);
         self.deliver_effect_replies();
@@ -4805,6 +3438,7 @@ impl Widget for MailApp {
         if let Some(scenario) = self.pending_stage.take() {
             self.stage_scenario(state, &scenario);
         }
+        self.settle_setup(state);
         self.nav.settle(state, path);
     }
 
@@ -4814,14 +3448,28 @@ impl Widget for MailApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.remember_shell_theme(theme);
-        // `apply_layout` has no theme parameter, yet Mail has an inner
-        // NavShell layout pass after its outer rect is known. Preserve the
-        // host theme so both layout trees and their text measurement agree.
+        // The overlays laid out outside the tree (compose) measure against
+        // the host theme.
         self.layout_theme = theme.clone();
-        // `Widget::build_layout` returns a bare `NodeId`, so the retained
-        // first-run child and its full-size parent are inserted together.
-        let first_run_node = self.first_run.build_layout(taffy, theme, node_map);
+        let mut children = Vec::with_capacity(2);
+        if self.is_first_run() {
+            self.nav_node = None;
+            let first_run_node = self.first_run.build_layout(taffy, theme, node_map);
+            self.first_run_node = Some(first_run_node);
+            children.push(first_run_node);
+        } else {
+            self.first_run_node = None;
+            let nav_node = self.nav.build_layout(taffy, theme, node_map);
+            self.nav_node = Some(nav_node);
+            children.push(nav_node);
+        }
+        // The account sheet stands out of flow over the window, its fields
+        // in the window's tree so they take its focus and Tab.
+        self.setup_node = self.setup.as_mut().map(|sheet| {
+            let node = sheet.dialog.build_layout(taffy, theme, node_map);
+            children.push(node);
+            node
+        });
         let style = Style {
             size: TSize {
                 width: Dimension::percent(1.0),
@@ -4829,45 +3477,36 @@ impl Widget for MailApp {
             },
             ..Default::default()
         };
-        let node = match taffy.new_with_children(style, &[first_run_node]) {
-            Ok(node) => node,
-            Err(error) => {
-                // Keep the valid retained child as the root for this frame. The
-                // onboarding surface remains usable and the next rebuild may
-                // retry, instead of aborting the whole Mail process.
-                tracing::error!(%error, "mail: failed to create root layout node");
-                self.first_run_node = Some(first_run_node);
-                return first_run_node;
-            }
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        self.first_run_node = Some(first_run_node);
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `node` is the id this same widget inserted into this exact tree in
-        // `build_layout` earlier in the same frame (the five-pass contract
-        // guarantees layout was computed for it by now), so `layout` cannot
-        // fail here in practice; `apply_layout`'s `()` return leaves no error
-        // path, and that signature is shared framework-wide.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "node was inserted into this tree by this widget's own build_layout earlier in the same frame; Widget::apply_layout's Result-free signature is shared by every implementor and out of this crate's scope to change"
-        )]
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let inner = Point::new(self.rect.x0, self.rect.y0);
         if let Some(first_run_node) = self.first_run_node {
-            self.first_run.apply_layout(taffy, first_run_node, origin);
+            self.first_run.apply_layout(taffy, first_run_node, inner);
             self.first_run.apply_layout_external(self.rect);
         }
-        self.layout_nav();
+        if let Some(nav_node) = self.nav_node {
+            self.nav.apply_layout(taffy, nav_node, inner);
+            if self.first_layout {
+                // Rest the shell for this width before the first frame.
+                self.nav.snap();
+                self.first_layout = false;
+                if std::mem::take(&mut self.pending_drawer) {
+                    self.nav.open_sidebar();
+                    self.nav.snap();
+                }
+                self.nav.apply_layout(taffy, nav_node, inner);
+            }
+            self.publish_shell_flags();
+        }
+        if let (Some(sheet), Some(node)) = (self.setup.as_mut(), self.setup_node) {
+            sheet.dialog.apply_layout(taffy, node, inner);
+        }
+        self.compose.layout(self.rect);
         self.shortcuts.set_viewport(self.rect);
+        self.menu.set_viewport(Some(self.rect));
     }
 
     fn draw(
@@ -4878,51 +3517,52 @@ impl Widget for MailApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.draw_with_presence(
-            scene,
-            t,
-            tr,
-            theme,
-            presence,
-            &PermissionContext::permissive(),
-        );
+        // No ground of our own: the window paints it, the shell its regions.
+        if self.is_first_run() {
+            self.first_run.draw(scene, t, tr, theme, presence);
+        } else {
+            self.nav.draw(scene, t, tr, theme, presence);
+        }
+        if let Some(id) = self.pending_menu.take() {
+            self.open_menu_on_row(id, tr, theme);
+        }
     }
 
-    fn draw_with_presence(
+    /// The window's top layer: the shell's own floating parts and the
+    /// confirmation dialog, then the composer, the account sheet, the row
+    /// menu and the shortcut list, over the window's chrome.
+    fn draw_overlay(
         &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-        permissions: &PermissionContext,
     ) {
-        self.remember_shell_theme(theme);
-        let c = &theme.tokens.colors;
-        fill_rect(scene, t, self.rect, c.surfaces.base);
-        // The navigation shell (sidebar + list + reader) draws itself, its
-        // dividers, the collapse/back affordance, and the drawer scrim.
-        self.nav
-            .draw_with_presence(scene, t, tr, theme, presence, permissions);
-        // First-run onboarding covers the (empty) mailbox until an account is
-        // added. This is the shared retained component, not a painted lookalike.
         if self.is_first_run() {
-            fill_rect(scene, t, self.rect, c.surfaces.base);
-            self.first_run.draw(scene, t, tr, theme, presence);
+            self.first_run.draw_overlay(scene, t, tr, theme, presence);
+        } else {
+            self.nav.draw_overlay(scene, t, tr, theme, presence);
         }
-        // App-owned overlays on top.
+        if let Some(confirmation) = &mut self.bulk_purge_confirmation {
+            confirmation
+                .dialog
+                .draw_overlay(scene, t, tr, theme, presence);
+        }
         self.compose.draw(scene, t, tr, theme, presence);
         self.compose.draw_inputs(scene, t, tr, theme, presence);
-        self.draw_setup(scene, t, tr, theme, presence);
-        self.draw_context_menu(scene, t, tr, theme);
-        self.draw_bulk_purge_confirmation(scene, t, tr, theme);
-        self.draw_status(scene, t, tr, theme);
+        if let Some(sheet) = &mut self.setup {
+            sheet.dialog.draw_overlay(scene, t, tr, theme, presence);
+        }
+        if self.menu.is_open() {
+            self.menu.draw_overlay(scene, t, tr, theme, presence);
+        }
         self.shortcuts.draw(scene, t, tr, theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let point = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            let point = ctx.logical(position);
             self.shared.borrow_mut().last_mouse = point;
             self.dirty = true;
         }
@@ -4952,7 +3592,12 @@ impl Widget for MailApp {
             return;
         }
 
-        self.nav.handle_event(event, ctx);
+        if let Some(nav_node) = self.nav_node {
+            let path = ctx.path;
+            self.nav
+                .handle_event(event, &mut ctx.reborrow(path, nav_node));
+        }
+        self.apply_commands(&mut ctx.state);
         self.process_intents();
 
         if !*ctx.handled {
@@ -4971,25 +3616,63 @@ impl Widget for MailApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        let mut children: Vec<&dyn Widget> = Vec::with_capacity(3);
         if self.is_first_run() {
-            vec![&self.first_run]
+            children.push(&self.first_run);
         } else {
-            Vec::new()
+            children.push(&self.nav);
         }
+        // Second, as in the layout tree: focus order pairs the two.
+        if let Some(sheet) = &self.setup {
+            children.push(&sheet.dialog);
+        }
+        if self.menu.is_open() {
+            children.push(&self.menu);
+        }
+        if let Some(confirmation) = &self.bulk_purge_confirmation {
+            children.push(&confirmation.dialog);
+        }
+        children
+    }
+
+    /// The tree is rebuilt when the account sheet opens or closes, besides
+    /// whatever the children report.
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut dirty = self.setup.is_some() != self.setup_node.is_some();
+        for child in self.children_mut() {
+            dirty |= child.take_structure_dirty();
+        }
+        dirty
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(3);
         if self.is_first_run() {
-            vec![&mut self.first_run]
+            children.push(&mut self.first_run);
         } else {
-            Vec::new()
+            children.push(&mut self.nav);
         }
+        if let Some(sheet) = &mut self.setup {
+            children.push(&mut sheet.dialog);
+        }
+        if self.menu.is_open() {
+            children.push(&mut self.menu);
+        }
+        if let Some(confirmation) = &mut self.bulk_purge_confirmation {
+            children.push(&mut confirmation.dialog);
+        }
+        children
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.is_first_run()
-            .then(|| self.first_run.cursor_shape(point))
-            .flatten()
+        if self.compose.open {
+            return self.compose.cursor_shape(point);
+        }
+        if self.is_first_run() {
+            self.first_run.cursor_shape(point)
+        } else {
+            self.nav.cursor_shape(point)
+        }
     }
 
     /// The mailbox is painted by three custom panes, so expose their actual
@@ -5005,36 +3688,17 @@ impl Widget for MailApp {
         if self.shortcuts.visible() {
             return Some(self.shortcuts.accessibility());
         }
-        if let Some(count) = self.bulk_purge_confirmation {
-            let noun = if count == 1 { "message" } else { "messages" };
-            return Some(
-                AccessNode::new(Role::Dialog)
-                    .with_name("Delete permanently?")
-                    .with_description(format!(
-                        "{count} trashed {noun} will be removed from this mailbox and cannot be recovered from the server."
-                    ))
-                    .with_bounds(self.bulk_purge_confirmation_rect())
-                    .with_state(AccessState::new().modal(true))
-                    .with_children(vec![
-                        AccessNode::new(Role::Button)
-                            .with_name("Cancel")
-                            .with_action_target("mail.bulk-purge:cancel")
-                            .with_state(AccessState::new().focusable(true)),
-                        AccessNode::new(Role::Button)
-                            .with_name("Delete permanently")
-                            .with_action_target("mail.bulk-purge:confirm")
-                            .with_state(AccessState::new().focusable(true)),
-                    ]),
-            );
+        if let Some(confirmation) = &self.bulk_purge_confirmation {
+            return confirmation.dialog.accessibility();
         }
         if self.compose.open {
             return Some(self.compose.accessibility_node());
         }
-        if self.setup_open {
-            return Some(self.setup_accessibility_node());
+        if let Some(sheet) = &self.setup {
+            return sheet.dialog.accessibility();
         }
-        if self.context_menu.is_some() {
-            return self.context_menu_accessibility();
+        if self.menu.is_open() {
+            return self.menu.accessibility();
         }
         if self.is_first_run() {
             // `first_run` remains a real child widget, which supplies the
@@ -5044,12 +3708,14 @@ impl Widget for MailApp {
 
         let st = self.shared.borrow();
         let compact = st.narrow;
-        let drawer_visible = !compact || st.sidebar_open;
-        // The drawer is an overlay on compact layouts, so the covered message
-        // list must not remain in the AT traversal while it is open.
+        // A drawer covers the columns, so they leave the traversal while it
+        // is open; the sidebar list publishes itself.
+        let drawer_open =
+            self.nav.geometry().sidebar == SidebarPlacement::Drawer && self.nav.is_sidebar_open();
         let overview_visible =
-            !compact || (self.nav.pane() == NavPane::Overview && !st.sidebar_open);
-        let reader_visible = !compact || (self.nav.pane() == NavPane::Detail && !st.sidebar_open);
+            !drawer_open && (!compact || self.nav.front_pane() == NavPane::Overview);
+        let reader_visible =
+            !drawer_open && (!compact || self.nav.front_pane() == NavPane::Content);
         let mut children = Vec::new();
 
         if self.awaiting_engine {
@@ -5059,16 +3725,12 @@ impl Widget for MailApp {
                     .with_state(AccessState::new().busy(true)),
             );
         }
-        if let Some(status) = &st.status {
+        if let Some(status) = self.nav.toast_text() {
             children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name(status.clone())
+                    .with_name(status.to_owned())
                     .with_live(Politeness::Polite),
             );
-        }
-
-        if drawer_visible {
-            children.push(Self::folders_accessibility_node(&st));
         }
 
         if overview_visible {
@@ -5079,10 +3741,10 @@ impl Widget for MailApp {
             children.push(Self::reader_accessibility_node(&st));
         }
 
-        let composition = if compact {
-            if st.sidebar_open {
-                "folder drawer"
-            } else if self.nav.pane() == NavPane::Detail {
+        let composition = if drawer_open {
+            "folder drawer"
+        } else if compact {
+            if self.nav.front_pane() == NavPane::Content {
                 "reading pane"
             } else {
                 "message list"
@@ -5103,55 +3765,24 @@ impl Widget for MailApp {
         target: &str,
         action: &ui::a11y::Action,
         state: &mut ui::widget::Edits<'_>,
-        path: &ModelPath,
+        path: &ui::widget::ModelPath,
     ) -> bool {
         let (state, _) = ui::doc::document(state, path);
-        if let Some(raw) = target.strip_prefix("mail.context:") {
-            let Some((message_raw, index_raw)) = raw.rsplit_once(':') else {
-                return false;
-            };
-            let (Ok(message), Ok(index)) =
-                (message_raw.parse::<MessageId>(), index_raw.parse::<usize>())
-            else {
-                return false;
-            };
-            let Some(menu) = self.context_menu.as_mut() else {
-                return false;
-            };
-            if menu.target != message || index >= menu.items.len() {
-                return false;
-            }
-            match action {
-                ui::a11y::Action::Focus => {
-                    menu.active = index;
-                    self.dirty = true;
-                    return true;
-                }
-                ui::a11y::Action::Activate => return self.activate_context_menu_item(index, state),
-                _ => return false,
-            }
-        }
-        if let Some(control) = target.strip_prefix("mail.bulk-purge:") {
-            if !matches!(action, ui::a11y::Action::Activate)
-                || self.bulk_purge_confirmation.is_none()
-            {
-                return false;
-            }
-            match control {
-                "confirm" => self.confirm_bulk_purge(state),
-                "cancel" => {
-                    self.bulk_purge_confirmation = None;
-                    self.dirty = true;
-                }
-                _ => return false,
-            }
-            return true;
-        }
         if let Some(control) = target.strip_prefix("mail.compose:") {
             return self.perform_compose_semantic_action(control, action, state);
         }
         if let Some(control) = target.strip_prefix("mail.setup:") {
             return self.perform_setup_semantic_action(control, action, state);
+        }
+        // The open sheet's footer, published on the window's own node.
+        if let Some(sheet) = self.setup.as_mut()
+            && (target.starts_with("dialog:") || target.starts_with("modal."))
+        {
+            let handled = sheet
+                .dialog
+                .perform_semantic_action(target, action, state, path);
+            self.settle_setup(state);
+            return handled;
         }
         if let Some(raw) = target.strip_prefix("mail.reader:") {
             return self.perform_reader_semantic_action(raw, action, state);
@@ -5176,12 +3807,12 @@ impl Widget for MailApp {
     fn modal_capture(&self) -> Option<Rect> {
         if self.shortcuts.visible() {
             self.shortcuts.card_rect()
-        } else if self.bulk_purge_confirmation.is_some() {
-            Some(self.bulk_purge_confirmation_rect())
+        } else if let Some(confirmation) = &self.bulk_purge_confirmation {
+            Some(confirmation.dialog.dialog_rect()).filter(|rect| rect.area() > 0.0)
         } else if self.compose.open {
             Some(self.compose.window_rect())
-        } else if self.setup_open {
-            Some(self.overlay_panel_rect())
+        } else if let Some(sheet) = &self.setup {
+            Some(sheet.dialog.dialog_rect()).filter(|rect| rect.area() > 0.0)
         } else if self.is_first_run() {
             Some(self.rect)
         } else {
@@ -5195,7 +3826,10 @@ impl Widget for MailApp {
             || self.nav.needs_redraw()
             || self.compose.needs_redraw()
             || self.shortcuts.needs_redraw()
-            || self.setup_inputs.iter().any(ui::Widget::needs_redraw)
+            || self
+                .setup
+                .as_ref()
+                .is_some_and(|sheet| sheet.dialog.needs_redraw())
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -5213,23 +3847,25 @@ impl Widget for MailApp {
             self.background_poll_deadline.set(Some(deadline));
             deadline
         });
-        background.into_iter().chain(self.toast_deadline).min()
+        background
+            .into_iter()
+            .chain(self.nav.next_wake_deadline())
+            .min()
     }
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping frames while a worker request is in
         // flight so its result (a fetched batch, a send ack, an error) drains
-        // and surfaces promptly instead of waiting for unrelated input, and
-        // while a toast is counting down so it fades on time. Drops back to
-        // idle the moment the reply settles and the toast clears.
-        self.awaiting_engine || self.toast_pending() || self.nav.needs_animation_frame()
+        // and surfaces promptly instead of waiting for unrelated input. Drops
+        // back to idle the moment the reply settles.
+        self.awaiting_engine || self.nav.needs_animation_frame()
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Keep syncing while a connect/fetch reply is outstanding or a toast is
-        // still on screen (so `sync` can expire it), then idle rather than
-        // busy-loop once results have arrived and the toast has cleared.
-        self.awaiting_engine || self.toast_pending() || self.nav.needs_idle_sync()
+        // Keep syncing while a connect/fetch reply is outstanding or a status
+        // waits for `sync` to show it, then idle rather than busy-loop once
+        // results have arrived.
+        self.awaiting_engine || self.shared.borrow().status.is_some() || self.nav.needs_idle_sync()
     }
 
     fn mark_drawn(&mut self) {
@@ -5238,9 +3874,19 @@ impl Widget for MailApp {
         self.nav.mark_drawn();
         self.compose.mark_drawn();
         self.shortcuts.mark_drawn();
-        for i in &mut self.setup_inputs {
-            i.mark_drawn();
+        if let Some(sheet) = &mut self.setup {
+            sheet.dialog.mark_drawn();
         }
+    }
+}
+
+impl ui::widget::controls::ActionControls for MailApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.search.take().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
     }
 }
 
@@ -5253,6 +3899,7 @@ enum Reveal {
     Message(MessageId),
     Draft,
     Invitation(Draft),
+    Contact(Draft),
 }
 
 impl MailApp {
@@ -5272,10 +3919,37 @@ impl MailApp {
         use crate::actions::MailEffect;
         let done = ui::framework::Effected::done();
         match effect {
+            MailEffect::ContactRecipients => {
+                self.open_contact_recipients();
+                Ok(done)
+            }
             MailEffect::Compose => {
                 self.shared.borrow_mut().push_intent(Intent::Compose);
                 self.process_intents();
                 Ok(done)
+            }
+            MailEffect::PrepareContactDraft {
+                person,
+                label,
+                email,
+                sender_account,
+                sender_email,
+            } => {
+                let draft = self.prepare_contact_draft(
+                    &person,
+                    &label,
+                    &email,
+                    &sender_account,
+                    &sender_email,
+                )?;
+                self.reveals.push(Reveal::Contact(draft));
+                self.has_contact_draft_conflict = true;
+                Ok(ui::framework::Effected::Done(tilo_actions::ActionOutput {
+                    value: Some(
+                        serde_json::json!({ "person": person, "recipient": email, "sender_account": sender_account, "sender_email": sender_email }),
+                    ),
+                    resources: vec!["mail.draft".into()],
+                }))
             }
             MailEffect::Refresh => {
                 if self.engine.is_none() {
@@ -5346,6 +4020,40 @@ impl MailApp {
         self.begin_effect(invocation, effect)
     }
 
+    /// What opens the place a search hit or an agent's `open` names: a
+    /// folder, a message the mailbox publishes or one the window loaded.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&str) -> Result<(), ui::tilo_resource::Refusal> + 'static {
+        use crate::actions::MailTarget;
+        let opens = std::rc::Rc::clone(&self.opens);
+        let shared = std::rc::Rc::clone(&self.shared);
+        move |anchor| {
+            let message = anchor
+                .strip_prefix("mail.message:")
+                .or_else(|| anchor.rsplit_once("/message:").map(|(_, id)| id));
+            let target = if let Some(id) = message {
+                let loaded = id
+                    .parse::<MessageId>()
+                    .is_ok_and(|id| shared.borrow().mailbox.get(id).is_some());
+                if !loaded {
+                    return Err(ui::tilo_resource::Refusal::new(
+                        "the message is not loaded here",
+                    ));
+                }
+                MailTarget::Message(id.to_owned())
+            } else {
+                let key = Folder::ALL
+                    .into_iter()
+                    .find(|folder| crate::resource::folder_resource(folder.as_key()) == anchor)
+                    .ok_or_else(|| ui::tilo_resource::Refusal::new("no such folder or message"))?;
+                MailTarget::Folder(key.as_key().to_owned())
+            };
+            opens.borrow_mut().push(target);
+            Ok(())
+        }
+    }
+
     /// Show `target`, once it is still there.
     fn open_target(&mut self, target: crate::actions::MailTarget) -> Result<(), String> {
         use crate::actions::MailTarget;
@@ -5411,9 +4119,16 @@ impl MailApp {
                     }
                 }
                 Reveal::Draft => {
-                    let draft = MailDoc::load_draft(doc);
+                    let draft = read_mail(doc.doc()).unwrap_or_default().draft.draft();
                     self.compose.open_with_draft(&draft);
                     self.editing_draft = None;
+                }
+                Reveal::Contact(draft) => {
+                    self.shared.borrow_mut().save_draft(doc, &draft);
+                    self.compose.open_with_draft(&draft);
+                    self.editing_draft = None;
+                    self.shared.borrow_mut().status =
+                        Some(crate::i18n::t("mail-contact-draft-prepared"));
                 }
                 Reveal::Invitation(draft) => {
                     self.shared.borrow_mut().save_draft(doc, &draft);
@@ -5568,11 +4283,12 @@ impl MailApp {
     pub(crate) fn live_rows(&self) -> Vec<ui::framework::LiveRow> {
         let mut rows: Vec<_> = crate::resource::live_extras(self)
             .into_iter()
-            .map(live_row)
+            .map(ui::framework::LiveRow::from_resource)
             .collect();
-        rows.push(live_row(crate::actions::accounts_collection(
-            &self.accounts_rows(),
-        )));
+        rows.push(ui::framework::LiveRow::from_resource(
+            crate::actions::accounts_collection(&self.accounts_rows()),
+        ));
+        rows.extend(self.contact_recipient_rows());
         rows
     }
 
@@ -5580,21 +4296,24 @@ impl MailApp {
     /// a message the document has no flags for yet, a thread, an attachment,
     /// an account.
     pub(crate) fn live_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        if id.starts_with("mail.contact") {
+            return self.contact_recipient_row(id);
+        }
         if id.starts_with("mail.account") {
             let accounts = crate::actions::accounts_collection(&self.accounts_rows());
             if id == "mail.accounts" {
-                return Some(live_row(accounts));
+                return Some(ui::framework::LiveRow::from_resource(accounts));
             }
             return accounts
                 .children
                 .into_iter()
                 .find(|account| account.id.as_str() == id)
-                .map(live_row);
+                .map(ui::framework::LiveRow::from_resource);
         }
         if let Some(message_id) = id.strip_prefix("mail.message:") {
-            return self
-                .resource_message_row(message_id)
-                .map(|row| live_row(crate::actions::message_resource(&row)));
+            return self.resource_message_row(message_id).map(|row| {
+                ui::framework::LiveRow::from_resource(crate::actions::message_resource(&row))
+            });
         }
         if let Some(rest) = id.strip_prefix("mail.attachment:")
             && let Some((message_id, index)) = rest.rsplit_once(':')
@@ -5605,7 +4324,7 @@ impl MailApp {
                 .children
                 .into_iter()
                 .nth(index)
-                .map(live_row);
+                .map(ui::framework::LiveRow::from_resource);
         }
         if let Some(stable) = id.strip_prefix("mail.thread:") {
             let (subject, messages) = self.resource_thread_rows(stable)?;
@@ -5619,14 +4338,16 @@ impl MailApp {
                 },
             );
             for message in &messages {
-                thread = thread.row(live_row(crate::actions::message_resource(message)));
+                thread = thread.row(ui::framework::LiveRow::from_resource(
+                    crate::actions::message_resource(message),
+                ));
             }
             return Some(thread);
         }
         crate::resource::live_extras(self)
             .into_iter()
             .find(|extra| extra.id.as_str() == id)
-            .map(live_row)
+            .map(ui::framework::LiveRow::from_resource)
     }
 
     /// This device's accounts, `(id, label, active)`.
@@ -5640,28 +4361,12 @@ impl MailApp {
             .map(|(index, account)| {
                 (
                     account.id.clone(),
-                    account.label().to_string(),
+                    account.config.label().to_string(),
                     state.accounts.active == index,
                 )
             })
             .collect()
     }
-}
-
-/// `resource`, an item this window has loaded, as the row it publishes: its
-/// view and effect operations. Its document actions are the mailbox's own,
-/// on the published message the row merges into.
-fn live_row(resource: tilo_actions::Resource) -> ui::framework::LiveRow {
-    let mut row = ui::framework::LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
-    for action in resource.actions {
-        if action.kind != tilo_actions::OperationKind::Document {
-            row = row.operation(action);
-        }
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
 }
 
 fn prepare_calendar_invitation_draft(
@@ -5685,6 +4390,7 @@ fn prepare_calendar_invitation_draft(
         return Err("calendar invitation is not a bounded METHOD:REQUEST VCALENDAR".into());
     }
     Ok(Draft {
+        sender: None,
         to: to.into(),
         cc: String::new(),
         bcc: String::new(),
@@ -5724,62 +4430,72 @@ impl MailApp {
         true
     }
 
+    /// The account sheet's controls by the targets agents address them
+    /// with (`mail.setup:…`), and its footer as the dialog publishes it.
     fn perform_setup_semantic_action(
         &mut self,
         control: &str,
         action: &ui::a11y::Action,
         state: &mut ui::widget::Edits<'_>,
     ) -> bool {
+        use crate::model::AuthMethod;
+        use crate::setup_sheet::{Server, SetupRequest, default_port};
         use ui::a11y::Action;
 
-        if !self.setup_open {
+        let Some(sheet) = self.setup.as_ref() else {
             return false;
-        }
+        };
         if let Some(raw) = control.strip_prefix("field:") {
             let Ok(index) = raw.parse::<usize>() else {
                 return false;
             };
-            if index >= self.setup_inputs.len()
-                || (index == 3 && self.setup_auth != crate::model::AuthMethod::Password)
+            let Action::SetValue(value) = action else {
+                return false;
+            };
+            if index >= crate::setup_sheet::FIELD_COUNT
+                || (index == crate::setup_sheet::PASSWORD
+                    && sheet.fields.auth() != AuthMethod::Password)
             {
                 return false;
             }
-            match action {
-                Action::Focus | Action::Activate => self.focus_setup(Some(index)),
-                Action::SetValue(value) => {
-                    self.set_setup_input(index, value);
-                    if index == 1 {
-                        self.maybe_autofill();
-                    }
-                }
-                _ => return false,
+            sheet.fields.set_value(index, value);
+            if index == crate::setup_sheet::EMAIL {
+                self.maybe_autofill();
             }
             self.dirty = true;
             return true;
         }
-        match (control, action) {
-            ("auth-password", Action::Activate | Action::ToggleCheck) => {
-                self.setup_auth = crate::model::AuthMethod::Password;
+        let toggles = matches!(action, Action::Activate | Action::ToggleCheck);
+        let activates = matches!(action, Action::Activate);
+        match control {
+            "auth-password" if toggles => sheet.fields.set_auth(AuthMethod::Password),
+            "auth-oauth" if toggles => sheet.fields.set_auth(AuthMethod::OAuth),
+            "imap-tls" | "smtp-tls" if toggles => {
+                let server = if control == "imap-tls" {
+                    Server::Incoming
+                } else {
+                    Server::Outgoing
+                };
+                let (port, on) = (
+                    if server == Server::Incoming {
+                        crate::setup_sheet::IMAP_PORT
+                    } else {
+                        crate::setup_sheet::SMTP_PORT
+                    },
+                    !sheet.fields.tls(server),
+                );
+                sheet.fields.set_tls(server, on);
+                sheet.fields.set_value(port, default_port(server, on));
             }
-            ("auth-oauth", Action::Activate | Action::ToggleCheck) => {
-                self.setup_auth = crate::model::AuthMethod::OAuth;
-            }
-            ("oauth-sign-in", Action::Activate) => self.start_oauth(),
-            ("imap-tls", Action::Activate | Action::ToggleCheck) => {
-                self.setup_imap_tls = !self.setup_imap_tls;
-                self.set_setup_input(5, if self.setup_imap_tls { "993" } else { "143" });
-            }
-            ("smtp-tls", Action::Activate | Action::ToggleCheck) => {
-                self.setup_smtp_tls = !self.setup_smtp_tls;
-                self.set_setup_input(7, if self.setup_smtp_tls { "465" } else { "587" });
-            }
-            ("save", Action::Activate) => self.save_setup(state),
-            ("cancel", Action::Activate) => self.close_setup(),
-            ("remove", Action::Activate) if self.setup_editing.is_some() => {
-                self.remove_editing_account(state);
+            "oauth-sign-in" if activates => sheet.request(SetupRequest::SignIn),
+            "save" if activates => sheet.request(SetupRequest::Save),
+            "cancel" if activates => sheet.request(SetupRequest::Cancel),
+            "remove" if activates && self.setup_editing.is_some() => {
+                sheet.request(SetupRequest::Remove);
             }
             _ => return false,
         }
+        self.settle_setup(state);
         self.dirty = true;
         true
     }
@@ -5930,7 +4646,7 @@ impl MailApp {
         if is_draft {
             mail.push_intent(Intent::EditDraft(id));
         } else {
-            mail.select_message(state, id);
+            mail.open_message(state, id);
         }
         drop(mail);
         self.process_intents();
@@ -6006,157 +4722,6 @@ impl MailApp {
         true
     }
 
-    fn handle_setup_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) {
-        // Wheel: scroll the row band when the window is too short for every
-        // row (the footer stays pinned; rows scroll past it are unclickable).
-        if let WindowEvent::MouseWheel { delta, .. } = event {
-            if self.setup_scroll_max > 0.0 {
-                let dy = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, lines) => f64::from(*lines) * 40.0,
-                    winit::event::MouseScrollDelta::PixelDelta(p) => {
-                        p.y / ctx.scale_factor.max(0.01)
-                    }
-                };
-                self.setup_scroll = (self.setup_scroll - dy).clamp(0.0, self.setup_scroll_max);
-                self.rebuild_overlay_hits();
-            }
-            *ctx.handled = true;
-            return;
-        }
-
-        // Keyboard: Tab/Shift+Tab move between fields, Enter advances (or
-        // submits on the last field); everything else routes to the focused
-        // field.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            match logical_key {
-                Key::Named(NamedKey::Tab) => {
-                    let dir = if ctx.modifiers.state().shift_key() {
-                        -1
-                    } else {
-                        1
-                    };
-                    self.focus_setup_step(dir);
-                    *ctx.handled = true;
-                    return;
-                }
-                Key::Named(NamedKey::Enter) => {
-                    let order = self.setup_tab_order();
-                    let is_last = self.setup_focus.is_some_and(|f| order.last() == Some(&f));
-                    if is_last {
-                        self.save_setup(&mut ctx.state);
-                    } else {
-                        self.focus_setup_step(1);
-                    }
-                    *ctx.handled = true;
-                    return;
-                }
-                _ => {}
-            }
-        }
-        if matches!(event, WindowEvent::KeyboardInput { .. }) {
-            let focused = self.setup_focus;
-            if let Some(i) = focused.and_then(|i| self.setup_inputs.get_mut(i)) {
-                i.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: &ctx.modifiers,
-                        state: ctx.state.reborrow(),
-                        path: ctx.path,
-                        handled: ctx.handled,
-                        focus_target: ctx.focus_target,
-                        node_id: ctx.node_id,
-                        taffy: ctx.taffy,
-                    },
-                );
-            }
-            // Typing in the email field pre-fills the server settings from the
-            // built-in provider table the instant the address is recognised —
-            // the user rarely needs to touch the advanced fields.
-            if focused == Some(1) {
-                self.maybe_autofill_live_typing();
-            }
-            return;
-        }
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            let pt = self.shared.borrow().last_mouse;
-            self.handle_setup_click(pt, &mut ctx.state);
-            *ctx.handled = true;
-        }
-    }
-
-    /// The click-routing half of [`Self::handle_setup_event`]: a click at
-    /// `pt` lands on a field / pill / toggle / button, or falls outside the
-    /// panel and cancels the sheet. Every outcome counts as handled, which
-    /// the caller sets unconditionally.
-    fn handle_setup_click(&mut self, pt: Point, state: &mut ui::widget::Edits<'_>) {
-        self.rebuild_overlay_hits();
-        let panel = self.overlay_panel_rect();
-        let hit = self
-            .overlay_hits
-            .iter()
-            .rev()
-            .find(|(rc, _)| rc.contains(pt))
-            .map(|(_, h)| *h);
-        match hit {
-            Some(OverlayHit::SetupField(i)) => {
-                let leaving_email = self.setup_focus == Some(1) && i != 1;
-                self.focus_setup(Some(i));
-                if leaving_email {
-                    self.maybe_autofill();
-                }
-            }
-            Some(OverlayHit::AuthPassword) => {
-                self.setup_auth = crate::model::AuthMethod::Password;
-                self.dirty = true;
-            }
-            Some(OverlayHit::AuthOAuth) => {
-                self.setup_auth = crate::model::AuthMethod::OAuth;
-                self.dirty = true;
-            }
-            Some(OverlayHit::OAuthSignIn) => {
-                self.start_oauth();
-            }
-            Some(OverlayHit::ToggleImapTls) => {
-                self.setup_imap_tls = !self.setup_imap_tls;
-                self.set_setup_input(5, if self.setup_imap_tls { "993" } else { "143" });
-            }
-            Some(OverlayHit::ToggleSmtpTls) => {
-                self.setup_smtp_tls = !self.setup_smtp_tls;
-                self.set_setup_input(7, if self.setup_smtp_tls { "465" } else { "587" });
-            }
-            Some(OverlayHit::SetupSave) => {
-                self.save_setup(state);
-            }
-            Some(OverlayHit::RemoveAccount) => {
-                self.remove_editing_account(state);
-            }
-            Some(OverlayHit::CancelSetup) => {
-                self.close_setup();
-            }
-            _ => {
-                // Click outside the panel cancels.
-                if !panel.contains(pt) {
-                    self.close_setup();
-                }
-            }
-        }
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "mail's discoverable single-key command map is intentionally centralized to keep chord guards consistent"
@@ -6168,10 +4733,6 @@ impl MailApp {
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
-        let search_focused = self.shared.borrow().search_focused;
-        if search_focused {
-            return;
-        }
         let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -6195,7 +4756,8 @@ impl MailApp {
         // is already a modal first-responder, and this extra list-context guard
         // prevents the shell shortcut from ever turning a reader/detail page
         // into a hidden selection operation on narrow layouts.
-        let list_context = !self.shared.borrow().narrow || self.nav.pane() == NavPane::Overview;
+        let list_context =
+            !self.shared.borrow().narrow || self.nav.front_pane() == NavPane::Overview;
         match logical_key {
             // Selection browsing is intentionally harmless (see
             // `move_selection`); Enter is the unmistakable read boundary. It
@@ -6243,10 +4805,13 @@ impl MailApp {
                 self.compose.open_blank();
                 *handled = true;
             }
+            // Searching mail is the platform's search, narrowed to the open
+            // folder; the palette offers the rest of the mailbox from there.
             Key::Character(ch)
                 if (plain && ch == "/") || (command && ch.eq_ignore_ascii_case("f")) =>
             {
-                self.shared.borrow_mut().focus_search_request = true;
+                let request = self.folder_search();
+                self.search.open(request);
                 self.dirty = true;
                 *handled = true;
             }
@@ -6356,85 +4921,59 @@ impl MailApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource::TestMail;
     use automerge::ReadDoc;
-    use winit::event::{DeviceId, Modifiers};
 
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: synth_device(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        ui::synthetic_input::cursor_moved(p.x, p.y)
     }
     fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_press()
     }
     fn esc_event() -> WindowEvent {
         named_key(NamedKey::Escape)
     }
     fn named_key(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Named(k),
+            None,
+            ElementState::Pressed,
+        ))
     }
     fn char_key(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(s.into());
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(s.into());
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Character(s.into()),
+            Some(s.into()),
+            ElementState::Pressed,
+        ))
     }
 
+    /// Route `ev` to the app through the tree it was last laid out in (a
+    /// bare node before any layout).
     fn dispatch(app: &mut MailApp, ev: &WindowEvent, doc: &mut AutoCommit) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let (taffy, node) = app.test_layout.take().unwrap_or_else(|| {
+            let mut taffy = TaffyTree::<()>::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            (taffy, node)
+        });
+        let handled = ui::testing::Dispatch::new()
+            .doc(doc)
+            .layout(&taffy, node)
+            .send(app, ev)
+            .handled;
+        if app.test_layout.is_none() {
+            app.test_layout = Some((taffy, node));
+        }
         handled
+    }
+
+    fn left_release() -> WindowEvent {
+        ui::synthetic_input::mouse_release()
     }
 
     fn app() -> (MailApp, AutoCommit) {
         let mut app = MailApp::new_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -6528,6 +5067,7 @@ mod tests {
         }
 
         let (mut app, mut doc) = app();
+        let configured_email = app.shared.borrow().accounts.active_config().email;
         let (outgoing, outgoing_rx) = std::sync::mpsc::channel();
         let (incoming, incoming_rx) = std::sync::mpsc::channel();
         app.engine = Some(EngineHandle {
@@ -6543,13 +5083,13 @@ mod tests {
         };
         app.shared.borrow().ingest_fetched(
             &mut ui::widget::Edits::lend(&mut doc),
-            "you@example.test",
+            &configured_email,
             std::slice::from_ref(&message),
         );
         app.shared
             .borrow_mut()
             .set_read(&mut ui::widget::Edits::lend(&mut doc), id, !message.read);
-        let [update] = MailDoc::server_updates(&doc).try_into().unwrap();
+        let [update] = TestMail::server_updates(&doc).try_into().unwrap();
 
         let outcome = push(&app, update.clone());
         app.flush_server_outbox();
@@ -6564,7 +5104,7 @@ mod tests {
         else {
             panic!("a flag change is a flag store: {request:?}");
         };
-        assert_eq!(account.email, "you@example.test");
+        assert_eq!(account.email, configured_email);
         assert_eq!(
             located.rfc_message_id.as_deref(),
             Some("launch@example.test")
@@ -6583,7 +5123,7 @@ mod tests {
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Err(_))));
         assert_eq!(
-            MailDoc::server_updates(&doc),
+            TestMail::server_updates(&doc),
             std::slice::from_ref(&update),
             "still to tell"
         );
@@ -6600,7 +5140,7 @@ mod tests {
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Ok(()))));
         assert!(
-            MailDoc::server_updates(&doc).is_empty(),
+            TestMail::server_updates(&doc).is_empty(),
             "the server has it"
         );
 
@@ -6637,10 +5177,10 @@ mod tests {
                 ics,
             )
             .unwrap();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let mut state = MailState::new_sample(avatar_store_offline());
             state.save_draft(&mut ui::widget::Edits::lend(&mut doc), &draft);
-            let stored = MailDoc::load_draft(&doc);
+            let stored = TestMail::load_draft(&doc);
             assert_eq!(stored.to, "guest@example.com");
             assert_eq!(stored.subject, "Invitation: Review");
             assert_eq!(stored.calendar_ics.as_deref(), Some(ics));
@@ -6674,11 +5214,23 @@ mod tests {
 
     fn click_at(app: &mut MailApp, doc: &mut AutoCommit, p: Point) -> bool {
         dispatch(app, &cursor_at(p), doc);
-        dispatch(app, &left_press(), doc)
+        let pressed = dispatch(app, &left_press(), doc);
+        let released = dispatch(app, &left_release(), doc);
+        pressed || released
     }
 
-    /// The mailbox starts with a selection; wide shows three panes, narrow pushes the
-    /// detail and the drawer, and reflowing restores the three panes.
+    /// The first list row's centre, as the shell laid the list out.
+    fn first_row_centre(app: &MailApp) -> Point {
+        let geometry = app.nav.geometry();
+        let column = geometry.overview_column;
+        Point::new(
+            column.center().x,
+            column.y0 + geometry.header_height + f64::from(Theme::dark().tokens.spacing.s6),
+        )
+    }
+
+    /// The mailbox starts with a selection; wide shows three columns, narrow
+    /// pushes the message and the drawer, and reflowing restores the columns.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -6692,130 +5244,114 @@ mod tests {
             assert_eq!(app.shared.borrow().folder, Folder::Inbox);
         }
 
-        // Phase `wide_shows_three_panes_abreast`.
+        // Phase `wide_shows_three_columns_abreast`.
         {
             let (mut app, _doc) = app();
             app.layout_for_test(1280.0, 800.0);
+            let geometry = app.nav.geometry();
             assert!(
-                app.nav.sidebar_rect().width() > 1.0,
+                geometry.sidebar_column.width() > 1.0,
                 "docked sidebar present"
             );
             assert!(
-                app.nav.overview_rect().x0 >= app.nav.sidebar_rect().x1 - 0.5,
+                geometry.overview_column.x0 >= geometry.sidebar_column.x1 - 0.5,
                 "list right of sidebar"
             );
             assert!(
-                app.nav.detail_rect().x0 >= app.nav.overview_rect().x1 - 0.5,
+                geometry.content_column.x0 >= geometry.overview_column.x1 - 0.5,
                 "reader right of list"
             );
+            assert!(!app.shared.borrow().narrow);
+        }
+
+        // Phase `narrow_drawer_opens_over_a_settled_layout`: the header rows
+        // of the columns behind the drawer are laid out hidden, and the
+        // layout still settles (it panics in `layout_for_test` otherwise).
+        {
+            let (mut app, _doc) = app();
+            app.prime_drawer_shot();
+            app.layout_for_test(560.0, 860.0);
+            assert!(app.shared.borrow().narrow);
         }
 
         // Phase `narrow_open_message_pushes_detail_then_back`.
-        // The confirmed-defect verification: at a narrow width, opening a message
-        // pushes the detail pane; Back returns to the list.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(560.0, 860.0);
+            assert!(app.shared.borrow().narrow, "560 separates list and message");
             assert_eq!(app.nav_pane(), NavPane::Overview, "starts on the list");
-
-            // Click the first list row (a message).
-            let row_center = {
-                let st = app.shared.borrow();
-                let first = st.list_rows()[0].0;
-                let _ = first;
-                // First row sits just below the list header — measured from
-                // where the shell actually puts the content, not from the pane
-                // rect. In the narrow layout the sidebar chip floats over the
-                // pane's top-left and the shell reserves a band for it, so the
-                // content starts lower than the pane does; asking
-                // `overview_rect()` here aimed the click into that band and hit
-                // nothing.
-                let content = app.nav.overview_content_rect();
-                Point::new(
-                    content.x0 + 120.0,
-                    content.y0 + crate::draw::HEADER_H + crate::draw::LIST_ROW_H / 2.0,
-                )
-            };
-            assert!(
-                click_at(&mut app, &mut doc, row_center),
-                "row click consumed"
-            );
+            let row = first_row_centre(&app);
+            assert!(click_at(&mut app, &mut doc, row), "row click consumed");
             app.layout_for_test(560.0, 860.0);
             assert_eq!(
                 app.nav_pane(),
-                NavPane::Detail,
-                "opening a message pushes the detail"
+                NavPane::Content,
+                "opening a message pushes it"
             );
+            assert!(app.shared.borrow().detail_pushed);
             assert!(app.shared.borrow().selected.is_some());
 
-            // The Back affordance is present; clicking it returns to the overview.
-            let back = app.nav.back_button_rect();
+            // The shell shows its Back button; Escape goes back too.
+            let back = app.nav.geometry().back;
+            assert!(back.width() > 0.0, "Back shown while the message is pushed");
             assert!(
-                back.width() > 0.0,
-                "Back affordance shown while detail pushed"
-            );
-            assert!(
-                click_at(&mut app, &mut doc, back.center()),
-                "back click consumed"
+                dispatch(&mut app, &esc_event(), &mut doc),
+                "Escape consumed"
             );
             assert_eq!(
                 app.nav_pane(),
                 NavPane::Overview,
-                "Back returns to the list"
+                "Escape returns to the list"
             );
         }
 
-        // Phase `narrow_then_wide_reflows_to_three_panes`.
+        // Phase `narrow_then_wide_reflows_to_three_columns`.
         {
-            // Same instance, resized wide→narrow→wide must re-derive the layout.
             let (mut app, _doc) = app();
             app.layout_for_test(1280.0, 800.0);
-            let wide_detail_x0 = app.nav.detail_rect().x0;
+            let wide_content_x0 = app.nav.geometry().content_column.x0;
             app.layout_for_test(560.0, 860.0);
             assert!(app.shared.borrow().narrow, "narrow flag set at 560");
-            // Overview is full-width in narrow.
+            let geometry = app.nav.geometry();
+            let front = match app.nav_pane() {
+                NavPane::Content => geometry.content_column,
+                _ => geometry.overview_column,
+            };
             assert!(
-                (app.nav.overview_rect().width() - 560.0).abs() < 2.0,
-                "list full-width narrow"
+                (front.width() - 560.0).abs() < 2.0,
+                "the front screen is full-width narrow: {geometry:?}"
             );
             app.layout_for_test(1280.0, 800.0);
             assert!(!app.shared.borrow().narrow, "wide flag re-derived at 1280");
             assert!(
-                (app.nav.detail_rect().x0 - wide_detail_x0).abs() < 2.0,
-                "reflows back to three panes"
+                (app.nav.geometry().content_column.x0 - wide_content_x0).abs() < 2.0,
+                "reflows back to three columns"
             );
         }
 
-        // Phase `wide_sidebar_folder_click_switches_folder`.
+        // Phase `choosing_a_folder_switches_the_list`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
-            // The Sent row of the active account. Resolved from the sidebar's own
-            // laid-out rect rather than a screen literal: the shell reserves a band
-            // at the top of the sidebar for the collapse chip, so the rows sit at an
-            // offset the test should not have to restate.
-            let sidebar = app.nav.sidebar_content_rect();
-            let p = Point::new(sidebar.x0 + 130.0, sidebar.y0 + 250.0);
-            assert!(click_at(&mut app, &mut doc, p), "folder click consumed");
-            assert_eq!(
-                app.shared.borrow().folder,
-                Folder::Sent,
-                "clicking Sent switches the folder"
-            );
+            app.shared
+                .borrow_mut()
+                .push_command(Command::OpenFolder(0, Folder::Sent));
+            app.apply_commands(&mut ui::widget::Edits::lend(&mut doc));
+            assert_eq!(app.shared.borrow().folder, Folder::Sent);
+            app.sync(&doc, &automerge::ROOT);
+            assert_eq!(app.overview_title, "Sent", "the list's header follows");
         }
 
-        // Phase `narrow_hamburger_opens_and_esc_closes_drawer`.
+        // Phase `narrow_toggle_opens_and_esc_closes_drawer`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(560.0, 860.0);
-            let ham = app.nav.collapse_button_rect();
-            assert!(ham.width() > 0.0, "hamburger present on the narrow list");
-            assert!(
-                click_at(&mut app, &mut doc, ham.center()),
-                "hamburger click consumed"
-            );
-            assert!(app.nav.is_sidebar_open(), "hamburger opens the drawer");
-            // Esc dismisses the open overlay drawer.
+            let toggle = app.nav.geometry().toggle;
+            assert!(toggle.width() > 0.0, "sidebar toggle on the narrow list");
+            // The toggle is the shell's own action; the host runs it.
+            app.nav.toggle_sidebar();
+            app.layout_for_test(560.0, 860.0);
+            assert!(app.nav.is_sidebar_open(), "the toggle opens the drawer");
             assert!(dispatch(&mut app, &esc_event(), &mut doc), "Esc consumed");
             assert!(!app.nav.is_sidebar_open(), "Esc closes the drawer");
         }
@@ -6846,8 +5382,8 @@ mod tests {
                 !overview
                     .children
                     .iter()
-                    .any(|node| node.role == A11yRole::Tree || node.role == A11yRole::Document),
-                "covered drawer and reader panes are omitted in compact overview"
+                    .any(|node| node.role == A11yRole::Document),
+                "the covered reader is omitted in the compact overview"
             );
             let message_target = overview
                 .children
@@ -6867,9 +5403,10 @@ mod tests {
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
+            app.layout_for_test(560.0, 860.0);
             assert_eq!(
                 app.nav_pane(),
-                NavPane::Detail,
+                NavPane::Content,
                 "semantic open pushes reader"
             );
             let reader = app.accessibility().expect("reader semantics");
@@ -6889,22 +5426,8 @@ mod tests {
             );
 
             app.layout_for_test(1280.0, 800.0);
-            let wide = app.accessibility().expect("wide mailbox semantics");
-            let archive_target = wide
-                .children
-                .iter()
-                .find(|node| node.role == A11yRole::Tree)
-                .and_then(|tree| tree.children.first())
-                .and_then(|account| {
-                    account.children.iter().find_map(|folder| {
-                        (folder.name.as_deref() == Some("Archive"))
-                            .then(|| folder.action_target.clone())
-                            .flatten()
-                    })
-                })
-                .expect("visible Archive folder has a stable activation target");
             assert!(app.perform_semantic_action(
-                &archive_target,
+                "mail.folder:0:archive",
                 &Action::Activate,
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
@@ -7003,7 +5526,7 @@ mod tests {
                 .expect("second sample message");
             app.shared
                 .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), other);
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), other);
             app.process_intents();
             assert!(
                 !app.perform_semantic_action(
@@ -7039,51 +5562,44 @@ mod tests {
             app.open_setup_edit(None);
             let setup = app.accessibility().expect("setup dialog semantics");
             assert_eq!(setup.role, A11yRole::Dialog);
-            assert!(setup.children.iter().any(|node| {
-                node.role == A11yRole::TextInput
-                    && node.name.as_deref() == Some("Email address")
-                    && node.action_target.as_deref() == Some("mail.setup:field:1")
-            }));
+            let email = keyed(
+                &app.setup.as_ref().expect("sheet open").dialog,
+                "mail.setup:field:1",
+            )
+            .expect("the address field is published");
+            assert_eq!(email.role, A11yRole::TextInput);
+            assert_eq!(email.name.as_deref(), Some("Email"));
             assert!(app.perform_semantic_action(
                 "mail.setup:cancel",
                 &Action::Activate,
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
-            assert!(!app.setup_open, "semantic cancel closes account setup");
+            assert!(!app.setup_open(), "semantic cancel closes account setup");
         }
 
-        // Phase `context_menu_is_a_modal_accessibility_menu_with_routable_items`.
+        // Phase `the_row_menu_is_the_shared_menu_and_applies_its_action`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
             let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
-            app.shared
-                .borrow_mut()
-                .push_intent(Intent::ContextMenu(id, Point::new(400.0, 300.0)));
+            app.shared.borrow_mut().push_intent(Intent::ContextMenu(
+                id,
+                Point::new(400.0, 300.0),
+                Rect::new(280.0, 280.0, 620.0, 320.0),
+            ));
             app.process_intents();
             let menu = app.accessibility().expect("context menu semantics");
             assert_eq!(menu.role, ui::a11y::Role::Menu);
-            assert!(menu.state.modal);
             let archive = menu
                 .children
                 .iter()
-                .find(|item| item.name.as_deref() == Some("Archive"))
+                .position(|item| item.name.as_deref() == Some("Archive"))
                 .expect("Archive is described to assistive technology");
-            let target = archive.action_target.clone().expect("routable menu item");
-            assert!(app.perform_semantic_action(
-                &target,
-                &ui::a11y::Action::Focus,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ));
-            assert!(app.perform_semantic_action(
-                &target,
-                &ui::a11y::Action::Activate,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ));
-            assert!(app.context_menu.is_none());
+            app.menu.click_item(archive);
+            app.take_menu_choice(&mut ui::widget::Edits::lend(&mut doc));
+            assert!(!app.menu.is_open());
+            assert!(app.menu_target.is_none());
             assert_eq!(
                 app.shared
                     .borrow()
@@ -7117,13 +5633,13 @@ mod tests {
             .expect("an unread message");
             app.shared
                 .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
             assert!(app.shared.borrow().mailbox.get(id).unwrap().read);
             let mut fresh = app.shared.borrow().mailbox.clone();
             for m in fresh.messages.values_mut() {
                 m.read = false;
             }
-            MailDoc::apply_flags(&doc, &mut fresh);
+            TestMail::apply_flags(&doc, &mut fresh);
             assert!(
                 fresh.get(id).unwrap().read,
                 "read flag persisted to the CRDT"
@@ -7159,7 +5675,7 @@ mod tests {
                 "Open dispatches the canonical mark-read action"
             );
             assert_eq!(
-                MailDoc::get_read(&doc, &id.to_string()),
+                TestMail::get_read(&doc, &id.to_string()),
                 Some(true),
                 "resource Open writes the same mark-read every on-screen control does"
             );
@@ -7210,6 +5726,53 @@ mod tests {
             }));
         }
 
+        // The removed read-only operation protocol cannot bypass the authoritative door.
+        {
+            let mut hosted =
+                ui::framework::testing::TestApp::<crate::resource::MailShell>::capture(None)
+                    .unwrap();
+            let snapshot = |app: &mut MailApp| {
+                let state = app.shared.borrow();
+                (
+                    state.folder,
+                    state.selected,
+                    state.inspection,
+                    state.status.clone(),
+                    state
+                        .mailbox
+                        .messages
+                        .values()
+                        .map(|m| (m.id, m.read))
+                        .collect::<std::collections::BTreeMap<_, _>>(),
+                )
+            };
+            let before = hosted.with_surface(snapshot).unwrap();
+            let heads_before = hosted.read_document(|doc| doc.clone().get_heads());
+            let instance_id = hosted.harness().component_instance_id().unwrap();
+            let legacy = ui::bound_dispatch::BoundActionAddress {
+                instance_id,
+                address: tilo_actions::ActionAddress::new("mail.mailbox", "mail.operation"),
+            };
+            let error = hosted
+                .harness()
+                .invoke_bound_action(&legacy, &serde_json::Map::new())
+                .expect_err("the removed protocol is not an admitted mutable operation");
+            assert!(
+                !error.to_string().is_empty(),
+                "the host explains its refusal"
+            );
+            hosted.settle();
+            assert_eq!(
+                hosted.read_document(|doc| doc.clone().get_heads()),
+                heads_before
+            );
+            assert_eq!(
+                hosted.with_surface(snapshot).unwrap(),
+                before,
+                "refusal changes neither presentation nor any read flag"
+            );
+        }
+
         // Phase `explicit_resource_preview_keeps_an_unread_message_unread_and_announces_that_fact`.
         {
             let (mut app, mut doc) = app();
@@ -7246,7 +5809,7 @@ mod tests {
                 "unlike Open message, explicit preview never queues mark-read"
             );
             assert_ne!(
-                MailDoc::get_read(&doc, &id.to_string()),
+                TestMail::get_read(&doc, &id.to_string()),
                 Some(true),
                 "a read-state-neutral preview writes no read state"
             );
@@ -7294,7 +5857,7 @@ mod tests {
                     .is_some_and(|mail| mail.read),
                 "Enter uses the normal Open boundary, rather than silently previewing"
             );
-            assert_eq!(MailDoc::get_read(&doc, &unread.to_string()), Some(true));
+            assert_eq!(TestMail::get_read(&doc, &unread.to_string()), Some(true));
             assert_ne!(app.shared.borrow().inspection, Some(unread));
         }
 
@@ -7400,7 +5963,18 @@ mod tests {
             };
             app.compose.reattach(&draft);
             app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
-            let outbox = MailDoc::outbox(&doc);
+            assert!(
+                TestMail::outbox(&doc).is_empty(),
+                "sending asks the person first"
+            );
+            let dispatcher = app
+                .shared
+                .borrow()
+                .dispatcher
+                .clone()
+                .expect("a dispatcher");
+            TestMail::confirm(&mut doc, &dispatcher);
+            let outbox = TestMail::outbox(&doc);
             let [(outgoing, None)] = outbox.as_slice() else {
                 panic!("one message waits in the outbox: {outbox:?}");
             };
@@ -7424,9 +5998,12 @@ mod tests {
                 tx: outgoing_tx,
                 rx: incoming_rx,
             });
-            app.server_outbox()
-                .borrow_mut()
-                .deliver(outgoing.clone(), Box::new(|_| {}));
+            let heard = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let answer = std::rc::Rc::clone(&heard);
+            app.server_outbox().borrow_mut().deliver(
+                outgoing.clone(),
+                Box::new(move |result| *answer.borrow_mut() = Some(result)),
+            );
             app.flush_server_outbox();
             let (&request_id, _) = app
                 .pending_send
@@ -7442,7 +6019,15 @@ mod tests {
                 })
                 .unwrap();
             app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
-            let outbox = MailDoc::outbox(&doc);
+            let settled = heard
+                .borrow_mut()
+                .take()
+                .expect("the delivery answered")
+                .expect("refused for good, not tried again");
+            assert!(!settled.is_done());
+            // The outbox drain records how it settled.
+            TestMail::settle_delivery(&mut doc, &outgoing.id, &settled);
+            let outbox = TestMail::outbox(&doc);
             assert!(
                 matches!(outbox.as_slice(), [(_, Some(reason))] if reason.contains("relay denied")),
                 "{outbox:?}"
@@ -7454,7 +6039,8 @@ mod tests {
 
             // Sending it again replaces the refused one.
             app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
-            let outbox = MailDoc::outbox(&doc);
+            TestMail::confirm(&mut doc, &dispatcher);
+            let outbox = TestMail::outbox(&doc);
             assert!(
                 matches!(outbox.as_slice(), [(again, None)] if again.id != outgoing.id),
                 "{outbox:?}"
@@ -7628,9 +6214,8 @@ mod tests {
                 app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
                 app.sync(&doc, &automerge::ROOT);
                 assert!(app.compose_attachment_rx.is_none());
-                assert_eq!(app.shared.borrow().status.as_deref(), Some(expected));
-                assert_eq!(app.next_wake_deadline(), app.toast_deadline);
-                app.expire_toast_at(app.toast_deadline.unwrap());
+                assert_eq!(app.nav.toast_text(), Some(expected));
+                app.nav.dismiss_toast();
                 assert!(app.next_wake_deadline().is_none());
             }
         }
@@ -7642,9 +6227,23 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn context_swipe_and_bulk_purge_share_confirmed_actions() {
-        // Phase `bulk_purge_requires_an_explicit_modal_confirmation_for_every_input_path`.
+        fn row_menu(app: &mut MailApp, id: MessageId) -> Vec<CtxAction> {
+            app.shared.borrow_mut().push_intent(Intent::ContextMenu(
+                id,
+                Point::new(400.0, 300.0),
+                Rect::new(280.0, 280.0, 620.0, 320.0),
+            ));
+            app.process_intents();
+            assert!(app.menu.is_open(), "menu opened");
+            app.menu_target
+                .as_ref()
+                .map(|target| target.items.clone())
+                .unwrap_or_default()
+        }
+
+        // Phase `bulk_purge_requires_an_explicit_modal_confirmation`.
         {
-            use ui::a11y::{Action, Role};
+            use ui::a11y::Role;
 
             let (mut app, mut doc) = app();
             let ids: Vec<MessageId> = app
@@ -7666,7 +6265,7 @@ mod tests {
                 mail.push_intent(Intent::ConfirmBulkPurge);
             }
             app.process_intents();
-            assert_eq!(app.bulk_purge_confirmation, Some(2));
+            assert!(app.bulk_purge_confirmation.is_some());
             assert!(
                 ids.iter()
                     .all(|id| app.shared.borrow().mailbox.get(*id).is_some()),
@@ -7674,19 +6273,47 @@ mod tests {
             );
             let dialog = app.accessibility().expect("modal accessibility");
             assert_eq!(dialog.role, Role::Dialog);
-            assert!(dialog.state.modal);
+
+            // Escape dismisses without deleting anything.
+            assert!(dispatch(&mut app, &esc_event(), &mut doc));
+            assert!(app.bulk_purge_confirmation.is_none());
             assert!(
-                dialog
-                    .children
-                    .iter()
-                    .any(|node| node.action_target.as_deref() == Some("mail.bulk-purge:confirm"))
+                ids.iter()
+                    .all(|id| app.shared.borrow().mailbox.get(*id).is_some())
             );
-            assert!(app.perform_semantic_action(
-                "mail.bulk-purge:confirm",
-                &Action::Activate,
+
+            // Confirming deletes them.
+            app.shared
+                .borrow_mut()
+                .push_intent(Intent::ConfirmBulkPurge);
+            app.process_intents();
+            // Return is the safe answer in a destructive confirmation.
+            assert!(dispatch(&mut app, &named_key(NamedKey::Enter), &mut doc));
+            assert!(app.bulk_purge_confirmation.is_none());
+            assert!(
+                ids.iter()
+                    .all(|id| app.shared.borrow().mailbox.get(*id).is_some()),
+                "Enter cancels a permanent delete"
+            );
+
+            // Operating "Delete permanently" deletes them.
+            app.shared
+                .borrow_mut()
+                .push_intent(Intent::ConfirmBulkPurge);
+            app.process_intents();
+            let confirmation = app
+                .bulk_purge_confirmation
+                .as_mut()
+                .expect("the confirmation is open");
+            assert!(Widget::perform_semantic_action(
+                &mut confirmation.dialog,
+                "modal.primary",
+                &ui::a11y::Action::Activate,
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
+            app.settle_purge_confirmation(&mut ui::widget::Edits::lend(&mut doc));
+            assert!(app.bulk_purge_confirmation.is_none());
             assert!(
                 ids.iter()
                     .all(|id| app.shared.borrow().mailbox.get(*id).is_none())
@@ -7700,12 +6327,9 @@ mod tests {
             let menu = app.shared.borrow().context_items_for(id);
             assert!(
                 menu.contains(&CtxAction::Archive),
-                "swipe-left action present in menu"
+                "the swipe's action is in the menu"
             );
-            assert!(
-                menu.contains(&CtxAction::Delete),
-                "swipe-right action present in menu"
-            );
+            assert!(menu.contains(&CtxAction::Delete));
         }
 
         // Phase `context_menu_click_applies_the_action`.
@@ -7713,22 +6337,9 @@ mod tests {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
             let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
-            app.shared
-                .borrow_mut()
-                .push_intent(Intent::ContextMenu(id, Point::new(400.0, 300.0)));
-            app.process_intents();
-            assert!(app.context_menu.is_some(), "menu opened");
-            app.rebuild_overlay_hits();
-            let items = app.context_menu.as_ref().unwrap().items.clone();
+            let items = row_menu(&mut app, id);
             let idx = items.iter().position(|a| *a == CtxAction::Archive).unwrap();
-            let rect = app
-                .overlay_hits
-                .iter()
-                .find_map(|(r, h)| match h {
-                    OverlayHit::CtxItem(i) if *i == idx => Some(*r),
-                    _ => None,
-                })
-                .expect("archive item rect");
+            let rect = app.menu.item_rect(idx).expect("archive item rect");
             let before = app.shared.borrow().mailbox.count(Folder::Archive);
             assert!(
                 click_at(&mut app, &mut doc, rect.center()),
@@ -7739,10 +6350,7 @@ mod tests {
                 before + 1,
                 "clicking Archive archived the message"
             );
-            assert!(
-                app.context_menu.is_none(),
-                "menu dismissed after the action"
-            );
+            assert!(!app.menu.is_open(), "menu dismissed after the action");
         }
 
         // Phase `context_menu_keyboard_moves_focus_and_activates_the_visible_action`.
@@ -7750,18 +6358,10 @@ mod tests {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
             let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
-            app.shared
-                .borrow_mut()
-                .push_intent(Intent::ContextMenu(id, Point::new(400.0, 300.0)));
-            app.process_intents();
-            let archive_index = app
-                .context_menu
-                .as_ref()
-                .and_then(|menu| {
-                    menu.items
-                        .iter()
-                        .position(|item| *item == CtxAction::Archive)
-                })
+            let items = row_menu(&mut app, id);
+            let archive_index = items
+                .iter()
+                .position(|item| *item == CtxAction::Archive)
                 .expect("archive is an offered menu command");
             for _ in 0..archive_index {
                 assert!(dispatch(
@@ -7770,17 +6370,27 @@ mod tests {
                     &mut doc
                 ));
             }
-            assert_eq!(
-                app.context_menu.as_ref().map(|menu| menu.active),
-                Some(archive_index)
-            );
             let before = app.shared.borrow().mailbox.count(Folder::Archive);
             assert!(dispatch(&mut app, &named_key(NamedKey::Enter), &mut doc));
             assert_eq!(
                 app.shared.borrow().mailbox.count(Folder::Archive),
                 before + 1
             );
-            assert!(app.context_menu.is_none());
+            assert!(!app.menu.is_open());
+        }
+
+        // Phase `the_menu_accelerators_act_on_its_message`.
+        {
+            let (mut app, mut doc) = app();
+            app.layout_for_test(1280.0, 800.0);
+            let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
+            let _ = row_menu(&mut app, id);
+            assert!(dispatch(&mut app, &char_key("e"), &mut doc));
+            assert_eq!(
+                app.shared.borrow().mailbox.get(id).map(|m| m.folder),
+                Some(Folder::Archive)
+            );
+            assert!(!app.menu.is_open());
         }
     }
 
@@ -7842,7 +6452,7 @@ mod tests {
                     .borrow()
                     .status
                     .as_deref()
-                    .is_none_or(|status| !status.contains("Delivered")),
+                    .is_none_or(|status| !status.contains("sent")),
                 "an unmatched Sent event must not claim delivery"
             );
 
@@ -7898,7 +6508,10 @@ mod tests {
             fixture.drain();
             assert!(fixture.app.pending_send.is_empty());
             assert!(!fixture.app.awaiting_engine);
-            assert_eq!(fixture.app.next_wake_deadline(), fixture.app.toast_deadline);
+            assert_eq!(
+                fixture.app.next_wake_deadline(),
+                fixture.app.nav.next_wake_deadline()
+            );
         }
 
         // Phase `completed_refresh_cannot_be_replaced_before_its_owner_polls`.
@@ -7947,10 +6560,10 @@ mod tests {
         {
             let (mut app, mut doc) = app();
             app.open_setup_edit(None);
-            app.setup_inputs[1].set_text("new@host.example");
-            app.setup_inputs[2].set_text("new@host.example");
-            app.setup_inputs[4].set_text("imap.host.example");
-            app.setup_inputs[6].set_text("smtp.host.example");
+            app.set_setup_input(1, "new@host.example");
+            app.set_setup_input(2, "new@host.example");
+            app.set_setup_input(4, "imap.host.example");
+            app.set_setup_input(6, "smtp.host.example");
             let before = app.shared.borrow().accounts.len();
             // Drive the offline probe explicitly so this offline-save flow is
             // deterministic under both builds (the live probe's connect gating is
@@ -7959,7 +6572,7 @@ mod tests {
                 &mut ui::widget::Edits::lend(&mut doc),
                 &crate::validate::OfflineProbe,
             );
-            assert!(!app.setup_open);
+            assert!(!app.setup_open());
             assert_eq!(app.shared.borrow().accounts.len(), before + 1);
             assert_eq!(
                 app.shared.borrow().accounts.active_config().email,
@@ -8000,10 +6613,10 @@ mod tests {
 
             let (mut app, mut doc) = app(); // new_sample: sandboxed
             app.open_setup_edit(None);
-            app.setup_inputs[1].set_text("guard@example.test");
-            app.setup_inputs[2].set_text("guard@example.test");
-            app.setup_inputs[4].set_text("imap.example.test");
-            app.setup_inputs[6].set_text("smtp.example.test");
+            app.set_setup_input(1, "guard@example.test");
+            app.set_setup_input(2, "guard@example.test");
+            app.set_setup_input(4, "imap.example.test");
+            app.set_setup_input(6, "smtp.example.test");
             app.save_setup_with(
                 &mut ui::widget::Edits::lend(&mut doc),
                 &crate::validate::OfflineProbe,
@@ -8070,14 +6683,14 @@ mod tests {
         {
             let (mut app, _doc) = app(); // sample store: 2 accounts, active = 0
             assert_eq!(app.shared.borrow().accounts.active, 0);
-            // Opening settings for account #1 (you@hooli.example) — reached from that
+            // Opening settings for account #1 (the work account), reached from that
             // account's gear — must populate the form from THAT account, not the
             // active one, so the sheet honestly reads as its settings.
             app.open_setup_edit(Some(1));
             assert_eq!(app.setup_editing, Some(1));
             assert_eq!(
                 app.read_setup_config().email,
-                "you@hooli.example",
+                "sam@northwind.example",
                 "the account-settings form is scoped to the clicked account"
             );
         }
@@ -8091,7 +6704,7 @@ mod tests {
     fn presentation_state_stays_local() {
         // Phase `presentation_state_is_local_and_never_restored_from_a_peer_document`.
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             {
                 let mut app = MailApp::new_sample();
                 app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -8102,7 +6715,6 @@ mod tests {
                     .borrow_mut()
                     .select_folder(&mut ui::widget::Edits::lend(&mut doc), Folder::Sent);
                 app.shared.borrow_mut().set_active_account(1);
-                app.shared.borrow_mut().search = "private query".into();
                 app.compose.set_format(ComposeFormat::Text);
             }
             // A second app sharing the document receives only domain state.
@@ -8116,7 +6728,6 @@ mod tests {
                 Folder::Inbox,
                 "folder is local"
             );
-            assert!(app2.shared.borrow().search.is_empty(), "search is local");
             assert_eq!(
                 app2.shared.borrow().accounts.active,
                 0,
@@ -8165,7 +6776,7 @@ mod tests {
         // Phase `first_run_shows_onboarding_and_add_opens_setup`.
         {
             let mut app = MailApp::new_first_run();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -8176,54 +6787,40 @@ mod tests {
                 "no configured account → first-run onboarding"
             );
             let semantics = app.first_run.accessibility().expect("first-run semantics");
-            assert_eq!(semantics.name.as_deref(), Some("Welcome to Mail"));
+            assert_eq!(semantics.name.as_deref(), Some("No email account yet"));
             assert!(semantics.children.iter().any(|node| {
                 node.role == ui::a11y::Role::Button && node.name.as_deref() == Some("Add account")
             }));
             assert!(
                 app.first_run.perform_action(
                     &ui::a11y::Action::Activate,
+                    &[],
                     &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "assistive activation reaches Add account"
             );
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-            app.sync(&doc, &automerge::ROOT);
-            assert!(app.setup_open, "Add account opens the account setup sheet");
+            assert!(
+                app.setup_open(),
+                "Add account opens the account setup sheet"
+            );
             assert!(
                 !app.is_first_run(),
                 "an open setup sheet supersedes the first-run screen"
             );
         }
 
-        // Phase `status_toast_auto_dismisses_after_its_lifetime`.
+        // Phase `status_shows_as_the_shell_toast`.
         {
-            // A "Synced N messages" toast must fade on its own, not linger forever.
             let (mut app, _doc) = app();
-            let t0 = ui::time::now();
             app.shared.borrow_mut().status = Some("Synced 3 messages".into());
-            app.expire_toast_at(t0); // first observation arms the deadline
-            assert!(
-                app.shared.borrow().status.is_some(),
-                "toast shows immediately"
-            );
-            assert!(app.toast_pending(), "a dismiss deadline is armed");
-            assert_eq!(app.next_wake_deadline(), Some(t0 + TOAST_TTL));
-            app.expire_toast_at(t0 + std::time::Duration::from_secs(1));
-            assert!(
-                app.shared.borrow().status.is_some(),
-                "still visible within its lifetime"
-            );
-            app.expire_toast_at(t0 + std::time::Duration::from_secs(5));
+            app.show_status();
+            assert_eq!(app.nav.toast_text(), Some("Synced 3 messages"));
             assert!(
                 app.shared.borrow().status.is_none(),
-                "toast auto-dismissed past its deadline"
+                "the shell owns it now"
             );
-            assert!(!app.toast_pending(), "the deadline cleared once dismissed");
-            assert!(app.next_wake_deadline().is_none());
         }
     }
 
@@ -8237,66 +6834,29 @@ mod tests {
         {
             let (mut app, _doc) = app();
             app.open_setup_edit(None);
-            app.setup_inputs[1].set_text("person@gmail.com");
+            app.set_setup_input(1, "person@gmail.com");
             app.maybe_autofill();
-            assert_eq!(
-                app.setup_inputs[4].value(),
-                "imap.gmail.com",
-                "IMAP host autofilled"
-            );
-            assert_eq!(
-                app.setup_inputs[6].value(),
-                "smtp.gmail.com",
-                "SMTP host autofilled"
-            );
-        }
-
-        // Phase `setup_tls_toggle_flips_the_port`.
-        {
-            let (mut app, mut doc) = app();
-            app.layout_for_test(1100.0, 780.0);
-            app.open_setup_edit(None);
-            app.rebuild_overlay_hits();
-            assert_eq!(
-                app.setup_inputs[5].value(),
-                "993",
-                "IMAP port starts at the TLS default"
-            );
-            let toggle = app
-                .overlay_hits
-                .iter()
-                .find(|(_, h)| matches!(h, OverlayHit::ToggleImapTls))
-                .map(|(r, _)| *r)
-                .expect("imap tls toggle");
-            assert!(
-                click_at(&mut app, &mut doc, toggle.center()),
-                "tls toggle consumed"
-            );
-            assert!(!app.setup_imap_tls, "TLS turned off");
-            assert_eq!(
-                app.setup_inputs[5].value(),
-                "143",
-                "port switched to the plaintext IMAP port"
-            );
+            assert_eq!(app.setup_value(4), "imap.gmail.com", "IMAP host autofilled");
+            assert_eq!(app.setup_value(6), "smtp.gmail.com", "SMTP host autofilled");
         }
 
         // Phase `gmail_email_presets_oauth_and_still_autofills_hosts`.
         {
             let (mut app, _doc) = app();
             app.open_setup_edit(None);
-            app.setup_inputs[1].set_text("someone@gmail.com");
+            app.set_setup_input(1, "someone@gmail.com");
             app.maybe_autofill();
             assert_eq!(
-                app.setup_auth,
+                app.setup_auth(),
                 crate::model::AuthMethod::OAuth,
                 "Gmail presets to OAuth"
             );
             assert!(
-                app.setup_provider.is_some(),
+                app.setup_provider().is_some(),
                 "provider detected from the domain"
             );
             assert_eq!(
-                app.setup_inputs[4].value(),
+                app.setup_value(4),
                 "imap.gmail.com",
                 "IMAP host still autofilled"
             );
@@ -8308,55 +6868,29 @@ mod tests {
             // the old generic `imap.<domain>` guess got wrong (Outlook → office365).
             let (mut app, _doc) = app();
             app.open_setup_edit(None);
-            app.setup_inputs[1].set_text("person@outlook.de");
+            app.set_setup_input(1, "person@outlook.de");
             app.maybe_autofill();
             assert_eq!(
-                app.setup_inputs[4].value(),
+                app.setup_value(4),
                 "outlook.office365.com",
                 "Outlook → office365, any TLD"
             );
-            assert_eq!(app.setup_inputs[6].value(), "smtp.office365.com");
+            assert_eq!(app.setup_value(6), "smtp.office365.com");
 
             app.open_setup_edit(None);
-            app.setup_inputs[1].set_text("hi@gmx.net");
+            app.set_setup_input(1, "hi@gmx.net");
             app.maybe_autofill();
             assert_eq!(
-                app.setup_inputs[4].value(),
+                app.setup_value(4),
                 "imap.gmx.net",
                 "GMX resolved offline from the table"
             );
 
             app.open_setup_edit(None);
-            app.setup_inputs[1].set_text("me@fastmail.com");
+            app.set_setup_input(1, "me@fastmail.com");
             app.maybe_autofill();
-            assert_eq!(app.setup_inputs[4].value(), "imap.fastmail.com");
-            assert_eq!(
-                app.setup_inputs[5].value(),
-                "993",
-                "port filled from the table too"
-            );
-        }
-
-        // Phase `typing_the_email_fills_servers_without_leaving_the_field`.
-        {
-            // Autofill runs as the address is typed, not only on focus-leave: a key
-            // event in the email field pre-fills the servers.
-            let (mut app, mut doc) = app();
-            app.open_setup_edit(None);
-            app.focus_setup(Some(1));
-            assert!(
-                app.setup_inputs[4].value().is_empty(),
-                "IMAP host starts blank"
-            );
-            app.setup_inputs[1].set_text("me@gmail.com");
-            // A key event routed to the focused email field triggers the live fill.
-            dispatch(&mut app, &named_key(NamedKey::ArrowRight), &mut doc);
-            assert_eq!(
-                app.setup_inputs[4].value(),
-                "imap.gmail.com",
-                "servers fill as the address is typed"
-            );
-            assert_eq!(app.setup_inputs[6].value(), "smtp.gmail.com");
+            assert_eq!(app.setup_value(4), "imap.fastmail.com");
+            assert_eq!(app.setup_value(5), "993", "port filled from the table too");
         }
     }
 
@@ -8373,11 +6907,16 @@ mod tests {
             assert!(dispatch(&mut app, &char_key("?"), &mut doc));
             assert!(app.shortcuts.visible());
             let overlay = app.accessibility().expect("shortcut sheet semantics");
-            assert_eq!(overlay.name.as_deref(), Some("Mail keyboard shortcuts"));
+            assert_eq!(overlay.name.as_deref(), Some("Keyboard shortcuts"));
+            let rows: Vec<&str> = overlay
+                .children
+                .iter()
+                .filter_map(|row| row.name.as_deref())
+                .collect();
+            assert!(rows.contains(&"Open message: Enter"), "{rows:?}");
             assert!(
-                overlay.description.as_deref().is_some_and(
-                    |copy| copy.contains("Open marks") && copy.contains("Preview keeps")
-                )
+                rows.contains(&"Preview without marking read: P"),
+                "{rows:?}"
             );
             assert!(dispatch(&mut app, &esc_event(), &mut doc));
             assert!(!app.shortcuts.visible(), "Escape dismisses the modal sheet");
@@ -8396,7 +6935,7 @@ mod tests {
                 "'e' archived the selection"
             );
             assert_eq!(
-                MailDoc::get_folder_for(&doc, &id.to_string()),
+                TestMail::get_folder_for(&doc, &id.to_string()),
                 Some(Folder::Archive)
             );
         }
@@ -8418,13 +6957,13 @@ mod tests {
                 !was_starred
             );
             assert_eq!(
-                MailDoc::get_starred(&doc, &id.to_string()),
+                TestMail::get_starred(&doc, &id.to_string()),
                 Some(!was_starred)
             );
 
             assert!(dispatch(&mut app, &char_key("u"), &mut doc));
             assert!(!app.shared.borrow().mailbox.get(id).unwrap().read);
-            assert_eq!(MailDoc::get_read(&doc, &id.to_string()), Some(false));
+            assert_eq!(TestMail::get_read(&doc, &id.to_string()), Some(false));
         }
 
         // Phase `shortcut_arrow_down_moves_selection`.
@@ -8453,7 +6992,7 @@ mod tests {
                 "Delete moved the selection to Trash"
             );
             assert_eq!(
-                MailDoc::get_folder_for(&doc, &id.to_string()),
+                TestMail::get_folder_for(&doc, &id.to_string()),
                 Some(Folder::Trash)
             );
         }
@@ -8463,268 +7002,253 @@ mod tests {
 
     // ---- add-account: single-border layout, Tab, autoconfig, OAuth --------
 
+    /// The first accessibility node under `widget` that `matches`.
+    fn find_access(
+        widget: &dyn Widget,
+        matches: &dyn Fn(&ui::a11y::AccessNode) -> bool,
+    ) -> Option<ui::a11y::AccessNode> {
+        widget
+            .accessibility()
+            .filter(|node| matches(node))
+            .or_else(|| {
+                widget
+                    .children()
+                    .into_iter()
+                    .find_map(|child| find_access(child, matches))
+            })
+    }
+
+    /// The accessibility node of the widget under `widget` keyed `key`.
+    fn keyed(widget: &dyn Widget, key: &str) -> Option<ui::a11y::AccessNode> {
+        find_access(widget, &|node| node.semantic_key.as_deref() == Some(key))
+    }
+
+    /// The sample app in a headless window with the account sheet open on
+    /// the account at `editing` (a new one for `None`).
+    fn setup_harness(
+        editing: Option<usize>,
+        viewport: (u32, u32),
+        theme: Theme,
+    ) -> ui::headless::FrameHarness {
+        let mut app = MailApp::new_sample();
+        app.layout_theme = theme.clone();
+        app.open_setup_edit(editing);
+        let mut harness =
+            ui::headless::FrameHarness::for_root(ui::State::new(), app, viewport, theme);
+        harness.relayout();
+        // The window host focuses the sheet's first control when it opens;
+        // the headless one leaves that to the first Tab.
+        if harness.focused().is_none() {
+            harness.key("Tab");
+        }
+        harness
+    }
+
+    fn focused_name(harness: &ui::headless::FrameHarness) -> String {
+        harness
+            .focused_access_node()
+            .and_then(|node| node.name)
+            .unwrap_or_default()
+    }
+
+    /// The focused control and the next `count - 1` Tab stops, by name.
+    fn tab_names(harness: &mut ui::headless::FrameHarness, count: usize) -> Vec<String> {
+        let mut names = vec![focused_name(harness)];
+        for _ in 1..count {
+            harness.key("Tab");
+            names.push(focused_name(harness));
+        }
+        names
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn setup_sheet_geometry_and_tab_order_hold_at_every_scale() {
-        // Phase `setup_sheet_one_x_metrics_reproduce_the_authored_sheet`.
-        {
-            // The pre-paint rule set keeps the sheet at its authored 1× size: a
-            // 34 px field, a 120 px label column, the 500 px card (504 with the
-            // heading and hint measured instead of eyeballed).
-            let m = SetupMetrics::default();
-            assert_eq!(m.field_h, SETUP_FIELD_MIN_H);
-            assert_eq!(m.label_col_w, SETUP_LABEL_COL_MIN_W);
-            assert_eq!(m.btn_h, SETUP_BUTTON_MIN_H);
-            assert!((m.fields_top() - 75.625).abs() < 1e-9, "{}", m.fields_top());
-            assert!((m.panel_h() - 504.0).abs() < 1e-9, "{}", m.panel_h());
-        }
-
-        // Phase `setup_sheet_scaled_metrics_keep_labels_fields_and_buttons_apart`.
-        {
-            // 200% text: labels widen the label column, fields grow, the sheet
-            // grows with them, and the footer buttons hold their labels.
-            let (mut app, _doc) = app();
-            app.layout_for_test(1100.0, 900.0);
-            app.open_setup_edit(None);
-            app.setup_metrics = scaled_setup_metrics();
-            app.rebuild_overlay_hits();
-            let rect_of = |hit: OverlayHit| {
-                app.overlay_hits
-                    .iter()
-                    .find(|(_, h)| *h == hit)
-                    .map(|(r, _)| *r)
-                    .expect("hit present")
-            };
-            let panel = app.overlay_panel_rect();
-            let name = rect_of(OverlayHit::SetupField(0));
-            let email = rect_of(OverlayHit::SetupField(1));
-            let save = rect_of(OverlayHit::SetupSave);
-            let cancel = rect_of(OverlayHit::CancelSetup);
-            assert_eq!(name.height(), 51.0);
-            assert!(email.y0 >= name.y1, "rows stack without overlap");
+    fn setup_sheet_is_a_form_the_keyboard_walks_at_every_scale() {
+        // Phase `the_sheet_opens_on_the_address_and_tab_walks_every_field`.
+        // A short window at 200% holds fewer rows than the sheet; the keyboard
+        // still reaches every one.
+        for (scale, viewport) in [(1.0_f32, (1100, 780)), (2.0, (1100, 560))] {
+            let mut harness = setup_harness(None, viewport, text_scaled(scale));
             assert_eq!(
-                name.x0,
-                panel.x0 + SETUP_PAD + 190.0,
-                "field column clears the labels"
+                tab_names(&mut harness, 11),
+                [
+                    "Email",
+                    "Name",
+                    "Username",
+                    "Sign in with",
+                    "Password",
+                    "IMAP server",
+                    "IMAP port",
+                    "IMAP TLS",
+                    "SMTP server",
+                    "SMTP port",
+                    "SMTP TLS",
+                ],
+                "Tab walks the fields in reading order at {scale}×"
             );
-            assert_eq!(save.width(), 220.0);
-            assert_eq!(cancel.width(), 120.0);
-            assert!(save.x1 <= cancel.x0, "Save and Cancel never overlap");
-            assert!(save.y1 <= panel.y1, "footer stays inside the sheet");
-            assert!(panel.height() > 504.0, "the sheet grew with its rows");
         }
 
-        // Phase `setup_sheet_in_a_short_window_at_200_percent_never_overlaps_its_footer`.
+        // Phase `browser_sign_in_takes_the_password_field_s_place`.
         {
-            // 200% text in a 720 px window: the sheet cannot hold every row, so
-            // the row band scrolls. No row hit may share pixels with Save /
-            // Cancel (the footer resolves last, so an overlap would fire the wrong
-            // control), every visible row lies inside the band, and scrolling
-            // brings the last row into reach.
-            let (mut app, _doc) = app();
-            app.layout_for_test(1100.0, 720.0);
-            app.open_setup_edit(None);
-            app.setup_metrics = scaled_setup_metrics();
-            app.rebuild_overlay_hits();
+            let mut harness = setup_harness(None, (1100, 780), Theme::dark());
+            harness
+                .root_mut::<MailApp>()
+                .set_setup_auth(crate::model::AuthMethod::OAuth);
+            harness.relayout();
+            let names = tab_names(&mut harness, 6);
             assert!(
-                app.setup_scroll_max > 0.0,
-                "the rows do not fit; the band must scroll"
+                !names.iter().any(|name| name == "Password"),
+                "no password field under browser sign-in: {names:?}"
             );
-            let footer_top = app
-                .overlay_hits
-                .iter()
-                .filter(|(_, h)| matches!(h, OverlayHit::SetupSave | OverlayHit::CancelSetup))
-                .map(|(r, _)| r.y0)
-                .fold(f64::MAX, f64::min);
-            let assert_disjoint = |app: &MailApp| {
-                let hits: Vec<(Rect, OverlayHit)> = app.overlay_hits.clone();
-                for (i, (a, ha)) in hits.iter().enumerate() {
-                    for (b, hb) in hits.iter().skip(i + 1) {
-                        let overlap = a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
-                        assert!(!overlap, "{ha:?} {a:?} overlaps {hb:?} {b:?}");
-                    }
-                }
-                for (r, h) in &hits {
-                    if !matches!(h, OverlayHit::SetupSave | OverlayHit::CancelSetup) {
-                        assert!(
-                            r.y1 <= footer_top + 0.5,
-                            "{h:?} {r:?} reaches into the footer"
-                        );
-                    }
-                }
-            };
-            assert_disjoint(&app);
-            // The SMTP row is below the fold until the band scrolls to its end.
             assert!(
-                !app.overlay_hits
-                    .iter()
-                    .any(|(_, h)| matches!(h, OverlayHit::SetupField(6))),
-                "the SMTP row is not reachable before scrolling"
+                names.iter().any(|name| name.starts_with("Sign in with ")),
+                "the browser sign-in button stands in its place: {names:?}"
             );
-            app.setup_scroll = app.setup_scroll_max;
-            app.rebuild_overlay_hits();
-            assert_disjoint(&app);
-            assert!(
-                app.overlay_hits
-                    .iter()
-                    .any(|(_, h)| matches!(h, OverlayHit::SetupField(6))),
-                "scrolling to the end reaches the SMTP row"
-            );
-            // Keyboard focus on the last field scrolls it into the band.
-            app.setup_scroll = 0.0;
-            app.rebuild_overlay_hits();
-            app.focus_setup(Some(7));
-            assert!(
-                app.overlay_hits
-                    .iter()
-                    .any(|(_, h)| matches!(h, OverlayHit::SetupField(7))),
-                "focusing the SMTP port brings its row into the band"
-            );
-            assert_disjoint(&app);
         }
 
-        // Phase `setup_fields_use_single_border_no_wrapper`.
+        // Phase `the_tls_switch_moves_the_port`.
         {
-            let (mut app, _doc) = app();
-            app.layout_for_test(1100.0, 780.0);
-            app.open_setup_edit(None);
-            app.rebuild_overlay_hits();
-            let mut n = 0;
-            for (rect, hit) in &app.overlay_hits {
-                if let OverlayHit::SetupField(i) = hit {
-                    // The input is laid out at exactly the field hit rect, so only
-                    // its own single border draws — no wider app-drawn border rect
-                    // stacks a second outline on top.
-                    assert_eq!(
-                        app.setup_inputs[*i].get_rect(),
-                        *rect,
-                        "field {i}: input rect must equal its hit rect (single border)"
-                    );
-                    n += 1;
-                }
-            }
-            assert_eq!(n, 8, "all eight fields are shown in password mode");
+            let mut harness = setup_harness(None, (1100, 780), Theme::dark());
+            assert_eq!(harness.root::<MailApp>().setup_value(5), "993");
+            let names = tab_names(&mut harness, 8);
+            assert_eq!(names.last().map(String::as_str), Some("IMAP TLS"));
+            harness
+                .perform_named("mail.setup:imap-tls", &ui::a11y::Action::Activate)
+                .expect("the IMAP TLS switch takes activation");
+            harness.relayout();
+            let app = harness.root::<MailApp>();
+            assert!(
+                !app.setup_tls(crate::setup_sheet::Server::Incoming),
+                "TLS turned off"
+            );
+            assert_eq!(
+                app.setup_value(5),
+                "143",
+                "port switched to the plaintext IMAP port"
+            );
         }
 
-        // Phase `setup_tab_key_advances_between_fields`.
+        // Phase `typing_a_known_address_fills_the_servers`.
         {
-            let (mut app, mut doc) = app();
-            app.layout_for_test(1100.0, 780.0);
-            app.open_setup_edit(None);
-            app.focus_setup(Some(0));
-            assert!(
-                dispatch(&mut app, &named_key(NamedKey::Tab), &mut doc),
-                "Tab consumed"
+            let mut harness = setup_harness(None, (1100, 780), Theme::dark());
+            assert_eq!(focused_name(&harness), "Email");
+            harness.type_text("me@gmail.com");
+            harness.relayout();
+            let app = harness.root::<MailApp>();
+            assert_eq!(app.setup_value(1), "me@gmail.com");
+            assert_eq!(
+                app.setup_value(4),
+                "imap.gmail.com",
+                "servers fill as the address is typed"
             );
-            assert_eq!(app.setup_focus, Some(1), "Tab advances to the next field");
-            assert!(dispatch(&mut app, &named_key(NamedKey::Tab), &mut doc));
-            assert_eq!(app.setup_focus, Some(2), "Tab keeps advancing");
-            // Reverse step wraps back.
-            app.focus_setup_step(-1);
-            assert_eq!(app.setup_focus, Some(1), "Shift+Tab moves back a field");
+            assert_eq!(app.setup_value(6), "smtp.gmail.com");
+            assert_eq!(
+                app.setup_auth(),
+                crate::model::AuthMethod::OAuth,
+                "Gmail presets browser sign-in"
+            );
         }
 
-        // Phase `oauth_mode_drops_password_from_tab_order`.
+        // Phase `leaving_an_unknown_address_looks_its_servers_up`.
         {
-            let (mut app, _doc) = app();
-            app.open_setup_edit(None);
-            app.setup_auth = crate::model::AuthMethod::Password;
+            let mut harness = setup_harness(None, (1100, 780), Theme::dark());
+            harness.type_text("me@unknown.invalid");
+            harness.relayout();
             assert!(
-                app.setup_tab_order().contains(&3),
-                "password field is tabbable under password auth"
+                harness.root::<MailApp>().setup_discovery.is_none(),
+                "no lookup while the address is typed"
             );
-            app.setup_auth = crate::model::AuthMethod::OAuth;
+            harness.key("Tab");
+            harness.relayout();
+            let app = harness.root::<MailApp>();
             assert!(
-                !app.setup_tab_order().contains(&3),
-                "no password field to tab to under OAuth"
+                app.setup_discovery.is_some(),
+                "leaving the address starts the lookup"
+            );
+            assert!(
+                !app.setup
+                    .as_ref()
+                    .expect("sheet open")
+                    .dialog
+                    .primary_enabled(),
+                "Save waits while the servers are looked up"
             );
         }
 
-        // Phase `setup_enter_on_last_field_submits`.
-        // The Enter-key save runs through the key handler, which uses the build's
-        // default probe. On the offline (default) build that is the offline probe,
-        // so the account persists; the live build performs a real IMAP/SMTP probe
-        // that this test provides no server for (that path is covered by the
-        // `validate` state-machine tests and the live socket tests).
+        // Phase `saving_an_incomplete_account_marks_its_fields`.
+        {
+            let mut harness = setup_harness(None, (1100, 780), Theme::dark());
+            harness.key("Enter");
+            harness.relayout();
+            let app = harness.root::<MailApp>();
+            assert!(app.setup_open(), "an incomplete account is not saved");
+            let shown = app.setup_fields().expect("sheet open").field_errors();
+            assert!(
+                shown.iter().any(|(key, _)| *key == "email"),
+                "the address is marked: {shown:?}"
+            );
+            assert!(
+                app.setup_error().is_some(),
+                "the error line says why it was not saved"
+            );
+            assert_eq!(
+                focused_name(&harness),
+                "Email",
+                "the field keeps the keyboard while the form shows its marks"
+            );
+            // The marks follow the fields once shown.
+            harness.type_text("me@example.org");
+            harness.relayout();
+            let shown = harness
+                .root::<MailApp>()
+                .setup_fields()
+                .expect("sheet open")
+                .field_errors();
+            assert!(
+                !shown.iter().any(|(key, _)| *key == "email"),
+                "a fixed address loses its mark: {shown:?}"
+            );
+            assert_eq!(harness.root::<MailApp>().setup_value(1), "me@example.org");
+        }
+
+        // Phase `enter_saves_the_account`.
+        // Saving checks the account through the build's default probe. On the
+        // offline (default) build that is the offline probe, so the account
+        // persists; the live build performs a real IMAP/SMTP probe that this
+        // test provides no server for (that path is covered by the `validate`
+        // state-machine tests and the live socket tests).
         #[cfg(not(feature = "live"))]
         {
-            let (mut app, mut doc) = app();
-            app.layout_for_test(1100.0, 780.0);
-            app.open_setup_edit(None);
-            app.setup_inputs[1].set_text("z@host.example");
-            app.setup_inputs[2].set_text("z@host.example");
-            app.setup_inputs[4].set_text("imap.host.example");
-            app.setup_inputs[6].set_text("smtp.host.example");
-            let before = app.shared.borrow().accounts.len();
-            let last = *app.setup_tab_order().last().unwrap();
-            app.focus_setup(Some(last));
-            assert!(
-                dispatch(&mut app, &named_key(NamedKey::Enter), &mut doc),
-                "Enter consumed"
-            );
-            assert_eq!(
-                app.shared.borrow().accounts.len(),
-                before + 1,
-                "Enter on the last field saves the account"
-            );
-        }
-
-        // Phase `setup_tab_traverses_every_field_in_order`.
-        {
-            // Tab must reach every field, in the email → … → IMAP → port → SMTP
-            // order the user expects, wrapping at the end; Shift+Tab steps back.
-            let (mut app, mut doc) = app();
-            app.open_setup_edit(None);
-            app.setup_auth = crate::model::AuthMethod::Password; // password field tabbable
-            app.focus_setup(Some(0));
-            for exp in [1usize, 2, 3, 4, 5, 6, 7, 0] {
-                assert!(
-                    dispatch(&mut app, &named_key(NamedKey::Tab), &mut doc),
-                    "Tab consumed"
-                );
-                assert_eq!(app.setup_focus, Some(exp), "Tab lands on field {exp}");
+            let mut harness = setup_harness(None, (1100, 780), Theme::dark());
+            {
+                let app = harness.root_mut::<MailApp>();
+                app.set_setup_input(1, "z@host.example");
+                app.set_setup_input(2, "z@host.example");
+                app.set_setup_input(4, "imap.host.example");
+                app.set_setup_input(6, "smtp.host.example");
             }
-            // The order genuinely walks email(1) → IMAP host(4) → IMAP port(5) →
-            // SMTP host(6) → SMTP port(7).
-            let order = app.setup_tab_order();
-            let pos = |i: usize| order.iter().position(|&x| x == i).unwrap();
-            assert!(pos(1) < pos(4) && pos(4) < pos(5) && pos(5) < pos(6) && pos(6) < pos(7));
-            // Shift+Tab (the reverse the handler drives) steps back a field.
-            app.focus_setup(Some(4));
-            app.focus_setup_step(-1);
+            harness.relayout();
+            let before = harness.root::<MailApp>().shared.borrow().accounts.len();
+            harness.key("Enter");
+            assert!(
+                harness.wait_until(ui::time::Duration::from_secs(10), |harness| {
+                    !harness.root::<MailApp>().setup_open()
+                }),
+                "Enter saves the account and closes the sheet"
+            );
             assert_eq!(
-                app.setup_focus,
-                Some(3),
-                "Shift+Tab moves back to the previous field"
+                harness.root::<MailApp>().shared.borrow().accounts.len(),
+                before + 1
             );
         }
     }
 
-    /// 200% metrics: every line box doubled, columns and buttons widened.
-    fn scaled_setup_metrics() -> SetupMetrics {
-        SetupMetrics {
-            scale: 2.0,
-            heading_h: 42.5,
-            subtitle_h: 28.75,
-            label_h: 31.25,
-            label_col_w: 190.0,
-            caption_h: 27.5,
-            field_h: 51.0,
-            pill_w: 150.0,
-            oauth_w: 320.0,
-            note_h: 26.25,
-            hint_h: 28.75,
-            btn_h: 50.0,
-            save_w: 220.0,
-            cancel_w: 120.0,
-            remove_w: 150.0,
-            tls_w: 140.0,
-            tls_h: 30.0,
-            ..SetupMetrics::default()
-        }
+    /// The stock dark theme at `scale`× text.
+    fn text_scaled(scale: f32) -> Theme {
+        Theme::dark().with_text_scale(scale)
     }
 
     #[test]
@@ -8838,12 +7362,12 @@ mod tests {
             app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.shared.borrow().accounts.accounts.len(), accounts_before);
             assert!(app.setup_validation.is_none());
-            assert_eq!(app.next_wake_deadline(), app.toast_deadline);
+            assert_eq!(app.next_wake_deadline(), app.nav.next_wake_deadline());
         }
 
         // Phase `edited_setup_cannot_persist_an_earlier_successful_verification`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(Some(0));
             let original = app.shared.borrow().accounts.accounts[0].config.clone();
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -8855,13 +7379,10 @@ mod tests {
             });
             app.set_setup_input(4, "changed-after-verification.example");
             sender.send(crate::validate::ValidationState::Ok).unwrap();
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-            app.sync(&doc, &automerge::ROOT);
-            assert!(app.setup_open);
+            assert!(app.setup_open());
             assert!(
-                app.setup_error
+                app.setup_error()
                     .as_deref()
                     .unwrap()
                     .contains("settings changed")
@@ -8872,7 +7393,7 @@ mod tests {
 
         // Phase `disconnected_setup_worker_keeps_the_sheet_open_without_saving`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(Some(0));
             let original = app.shared.borrow().accounts.accounts[0].config.clone();
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -8883,13 +7404,10 @@ mod tests {
                 cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             drop(sender);
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-            app.sync(&doc, &automerge::ROOT);
-            assert!(app.setup_open);
+            assert!(app.setup_open());
             assert!(
-                app.setup_error
+                app.setup_error()
                     .as_deref()
                     .unwrap()
                     .contains("without a result")
@@ -8900,7 +7418,7 @@ mod tests {
 
         // Phase `successful_setup_worker_persists_only_its_verified_snapshot`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(Some(0));
             app.set_setup_input(0, "Verified fixture account");
             let verified = app.read_setup_config();
@@ -8913,13 +7431,10 @@ mod tests {
                 cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             sender.send(crate::validate::ValidationState::Ok).unwrap();
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-            app.sync(&doc, &automerge::ROOT);
-            assert!(!app.setup_open);
+            assert!(!app.setup_open());
             assert!(app.setup_validation.is_none());
-            assert!(app.setup_error.is_none());
+            assert!(app.setup_error().is_none());
             let restored = AccountStore::load_in(&root);
             assert_eq!(
                 restored
@@ -8936,10 +7451,10 @@ mod tests {
         {
             let (mut app, mut doc) = app();
             app.open_setup_edit(None);
-            app.setup_inputs[1].set_text("new@host.example");
-            app.setup_inputs[2].set_text("new@host.example");
-            app.setup_inputs[4].set_text("imap.host.example");
-            app.setup_inputs[6].set_text("smtp.host.example");
+            app.set_setup_input(1, "new@host.example");
+            app.set_setup_input(2, "new@host.example");
+            app.set_setup_input(4, "imap.host.example");
+            app.set_setup_input(6, "smtp.host.example");
             let before = app.shared.borrow().accounts.len();
 
             // Failing verification: no persist, sheet stays open, error surfaced.
@@ -8953,11 +7468,11 @@ mod tests {
                 "a failed IMAP check must not persist the account"
             );
             assert!(
-                app.setup_open,
+                app.setup_open(),
                 "the sheet stays open on a failed verification"
             );
             assert!(
-                app.setup_error.as_deref().unwrap_or("").contains("IMAP"),
+                app.setup_error().as_deref().unwrap_or("").contains("IMAP"),
                 "a specific IMAP error is shown"
             );
 
@@ -8971,8 +7486,8 @@ mod tests {
                 before + 1,
                 "a verified account persists"
             );
-            assert!(!app.setup_open, "the sheet closes on success");
-            assert!(app.setup_error.is_none());
+            assert!(!app.setup_open(), "the sheet closes on success");
+            assert!(app.setup_error().is_none());
         }
 
         // Phase `setup_verification_failure_is_exposed_to_assistive_technology`.
@@ -8988,11 +7503,16 @@ mod tests {
                 &FixedProbe { imap_ok: false },
             );
             let dialog = app.accessibility().expect("setup dialog stays available");
+            assert_eq!(dialog.role, ui::a11y::Role::Dialog);
+            // The form shows the new error once it syncs.
+            app.sync(&doc, &automerge::ROOT);
+            let sheet = &app.setup.as_ref().expect("sheet stays open").dialog;
             assert!(
-                dialog.children.iter().any(|node| {
+                find_access(sheet, &|node| {
                     node.name.as_deref() == Some("IMAP login failed: 535 auth rejected")
                         && node.live == Some(ui::a11y::Politeness::Polite)
-                }),
+                })
+                .is_some(),
                 "a visible verification error must also be announced in the setup dialog"
             );
         }
@@ -9039,7 +7559,7 @@ mod tests {
     fn discovery_results_apply_only_to_the_current_sheet_and_custody_failures_keep_setup_open() {
         // Phase `discovery_applies_through_sync_without_overwriting_manual_server_edits`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(None);
             app.set_setup_input(1, "fixture@custom.invalid");
             let (sender, _) = pending_discovery(&mut app);
@@ -9050,21 +7570,18 @@ mod tests {
             app.set_setup_input(3, "user-entered-secret");
             let discovered = crate::autoconfig::builtin_autoconfig("fastmail.com").unwrap();
             sender.send(Some(discovered.clone())).unwrap();
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-            app.sync(&doc, &automerge::ROOT);
-            assert_eq!(app.setup_inputs[4].value(), "manual.imap.invalid");
-            assert_eq!(app.setup_inputs[5].value(), "1993");
-            assert_eq!(app.setup_inputs[3].value(), "user-entered-secret");
-            assert_eq!(app.setup_inputs[6].value(), discovered.smtp_host);
+            assert_eq!(app.setup_value(4), "manual.imap.invalid");
+            assert_eq!(app.setup_value(5), "1993");
+            assert_eq!(app.setup_value(3), "user-entered-secret");
+            assert_eq!(app.setup_value(6), discovered.smtp_host);
             assert!(app.setup_discovery.is_none());
-            assert_eq!(app.next_wake_deadline(), app.toast_deadline);
+            assert_eq!(app.next_wake_deadline(), app.nav.next_wake_deadline());
         }
 
         // Phase `discovery_for_a_previous_address_cannot_fill_the_current_sheet`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(None);
             app.set_setup_input(1, "old@custom.invalid");
             let (sender, _) = pending_discovery(&mut app);
@@ -9072,18 +7589,15 @@ mod tests {
             sender
                 .send(crate::autoconfig::builtin_autoconfig("fastmail.com"))
                 .unwrap();
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-            app.sync(&doc, &automerge::ROOT);
-            assert!(app.setup_inputs[4].value().is_empty());
-            assert!(app.setup_inputs[6].value().is_empty());
-            assert_eq!(app.setup_inputs[1].value(), "new@other.invalid");
+            assert!(app.setup_value(4).is_empty());
+            assert!(app.setup_value(6).is_empty());
+            assert_eq!(app.setup_value(1), "new@other.invalid");
         }
 
         // Phase `closing_discovery_cancels_worker_and_reopening_rejects_its_result`.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, doc) = app();
             app.open_setup_edit(None);
             app.set_setup_input(1, "fixture@custom.invalid");
             let (sender, cancellation) = pending_discovery(&mut app);
@@ -9095,11 +7609,8 @@ mod tests {
                     .send(crate::autoconfig::builtin_autoconfig("fastmail.com"))
                     .is_err()
             );
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
-            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-            app.sync(&doc, &automerge::ROOT);
-            assert!(app.setup_inputs[4].value().is_empty());
+            assert!(app.setup_value(4).is_empty());
             assert!(app.setup_discovery.is_none());
         }
 
@@ -9117,17 +7628,17 @@ mod tests {
             std::fs::write(&vault_path, b"damaged fixture vault").unwrap();
 
             app.open_setup_edit(None);
-            app.setup_inputs[1].set_text("new@host.example");
-            app.setup_inputs[2].set_text("new@host.example");
-            app.setup_inputs[4].set_text("imap.host.example");
-            app.setup_inputs[6].set_text("smtp.host.example");
+            app.set_setup_input(1, "new@host.example");
+            app.set_setup_input(2, "new@host.example");
+            app.set_setup_input(4, "imap.host.example");
+            app.set_setup_input(6, "smtp.host.example");
             app.save_setup_with(
                 &mut ui::widget::Edits::lend(&mut doc),
                 &FixedProbe { imap_ok: true },
             );
-            assert!(app.setup_open);
+            assert!(app.setup_open());
             assert!(
-                app.setup_error
+                app.setup_error()
                     .as_deref()
                     .unwrap()
                     .contains("Couldn’t save account")
@@ -9137,9 +7648,9 @@ mod tests {
 
             app.open_setup_edit(Some(0));
             app.remove_editing_account(&mut ui::widget::Edits::lend(&mut doc));
-            assert!(app.setup_open);
+            assert!(app.setup_open());
             assert!(
-                app.setup_error
+                app.setup_error()
                     .as_deref()
                     .unwrap()
                     .contains("Couldn’t remove account")

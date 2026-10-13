@@ -6,10 +6,7 @@
 //! actions, and never carry folder paths or installation authority into the
 //! shared document.
 
-use tilo_actions::{
-    ActionArgs, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-    ResourcePresentation,
-};
+use tilo_actions::{ActionParam, ActionSpec, ParamType, ResourcePresentation};
 use ui::framework::{EffectStatus, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
 
@@ -25,16 +22,31 @@ pub const SETUP_ROW_ID: &str = "imager.setup";
 #[effect(operation = "imager.setup", device_only)]
 pub enum SetupEffect {
     /// Read setup status.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ReadSetupStatus,
+    /// Read this computer's Desktop readiness and current installation phase.
+    #[effect(returns, kind = "read")]
+    ReadDesktopStatus,
+    /// Install the exact reviewed Desktop release after a fresh host probe.
+    #[effect(returns)]
+    InstallDesktop,
+    /// Cancel the current package download; no native transaction is cancelled.
+    #[effect(returns)]
+    CancelDesktopDownload,
+    /// Recheck Desktop availability without installing anything.
+    #[effect(returns, kind = "read")]
+    RecheckDesktop,
+    /// Open the existing USB image writer; writing remains a separate review.
+    #[effect(view, returns, kind = "read")]
+    OpenUsbWizard,
     /// Choose setup experience.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ChooseExperience {
         #[param("Available setup experience: desktop or full_os")]
         experience: String,
     },
     /// Set common folder mode.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     SetCommonMode {
         #[param(
             "Folder behavior applied to folders without an override: copy, connected or later"
@@ -42,7 +54,7 @@ pub enum SetupEffect {
         mode: String,
     },
     /// Set folder mode.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     SetFolderMode {
         #[param("Identity of a selected folder")]
         folder: String,
@@ -50,37 +62,37 @@ pub enum SetupEffect {
         mode: String,
     },
     /// Use the common folder mode.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     UseCommonMode {
         #[param("Identity of a selected folder")]
         folder: String,
     },
     /// Remove folder from setup.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     RemoveFolder {
         #[param("Identity of a selected folder")]
         folder: String,
     },
     /// Add suggested folder.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     AddSuggestedFolder {
         #[param("Identity of a suggested folder, e.g. documents")]
         suggestion: String,
     },
     /// Choose a folder.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ChooseFolder,
     /// Show or hide folder help.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ToggleHelp,
     /// Continue setup.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ContinueSetup,
     /// Go back in setup.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     GoBackInSetup,
     /// Open folder imports.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     OpenImports,
     /// Download Tilo.
     #[effect(returns)]
@@ -139,7 +151,7 @@ pub enum SetupEffect {
     #[effect(returns)]
     InternalDisableFastStartup,
     /// Check this computer again.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     RecheckInternal,
 }
 
@@ -248,6 +260,8 @@ pub struct SetupProjection {
     pub review: ReviewProjection,
     pub availability: AvailabilityProjection,
     pub internal: InternalProjection,
+    pub desktop: super::desktop_journey::DesktopProjection,
+    pub methods: super::desktop_journey::MethodProjection,
 }
 
 impl SetupProjection {
@@ -527,6 +541,15 @@ pub fn blocked(state: &SetupProjection) -> Vec<Blocked> {
         "imports_not_on_page",
         "Folder imports are available on the experience and review pages".into(),
     );
+    for (id, _, open) in super::desktop_journey::commands(&state.desktop, &state.methods) {
+        block(
+            &mut blocked,
+            open,
+            id,
+            "desktop_command_unavailable",
+            super::strings::t("imager-setup-desktop-command-unavailable"),
+        );
+    }
     for (id, _, open, code, reason) in internal_commands(&state.internal) {
         block(&mut blocked, open, id, code, super::strings::t(reason));
     }
@@ -548,6 +571,11 @@ pub fn statuses(state: &SetupProjection) -> Vec<EffectStatus> {
                     EffectStatus::labelled(effect(id), super::strings::t(label))
                 }),
         )
+        .chain(
+            super::desktop_journey::commands(&state.desktop, &state.methods)
+                .into_iter()
+                .map(|(id, label, _)| EffectStatus::labelled(effect(id), super::strings::t(label))),
+        )
         .collect()
 }
 
@@ -566,51 +594,25 @@ fn bound(effect: &SetupEffect, label: impl Into<String>) -> ActionSpec {
     spec
 }
 
-/// The effect `id` offered on a row with what the row knows already bound
-/// by `build`, taking `param` from the caller.
-fn partly_bound(
-    id: &'static str,
-    label: impl Into<String>,
-    placeholder: &str,
-    param: ActionParam,
-    build: impl Fn(&ActionArgs) -> SetupEffect + Send + Sync + 'static,
-) -> ActionSpec {
-    let mut spec = ActionSpec::typed_operation(
-        id,
-        label,
-        placeholder,
-        OperationKind::Effect,
-        SetupEffect::OPERATION,
-        vec![param],
-        move |args| {
-            build(args)
-                .bound()
-                .build_json(&serde_json::Map::new())
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: SetupEffect::OPERATION.to_owned(),
-                    payload: Vec::new(),
-                })
-        },
-    );
-    if let Some(declared) = SetupEffect::specs().into_iter().find(|spec| spec.id == id) {
-        spec.contract = declared.contract;
-    }
+/// `effect` offered on a row as `label`, with what the row knows already
+/// bound and `param` asked of the caller.
+fn asking(effect: &SetupEffect, label: impl Into<String>, param: ActionParam) -> ActionSpec {
+    let mut spec = effect.bound_asking_params(vec![param]);
+    spec.label = label.into();
     spec
 }
 
 fn folder_row(folder: &FolderProjection, mode_choices: &[&'static str], edits: bool) -> LiveRow {
     let closed = "Folder choices are not open on the current setup page";
     let identity = folder.identity.clone();
-    let set_mode = partly_bound(
-        SetupEffect::SET_FOLDER_MODE.id,
+    let set_mode = asking(
+        &SetupEffect::SetFolderMode {
+            folder: identity,
+            mode: String::new(),
+        },
         "Set folder mode",
-        "copy",
         ActionParam::required_owned("mode", ParamType::Text, "Folder behavior")
             .with_choices(mode_choices.iter().copied()),
-        move |args| SetupEffect::SetFolderMode {
-            folder: identity.clone(),
-            mode: args.text("mode").unwrap_or("").to_owned(),
-        },
     );
     let (inherit_code, inherit_reason) = if edits {
         (
@@ -627,12 +629,12 @@ fn folder_row(folder: &FolderProjection, mode_choices: &[&'static str], edits: b
     )
     .presentation(ResourcePresentation {
         detail: Some(format!(
-            "{} · {}",
-            folder.mode,
+            "{}, {}",
+            mode_phrase(folder.mode),
             if folder.overridden {
-                "override"
+                "chosen for this folder"
             } else {
-                "common"
+                "the common choice"
             }
         )),
         badge: Some(format!("Folder {}", folder.index + 1)),
@@ -741,18 +743,14 @@ fn internal_row(state: &InternalProjection) -> LiveRow {
     for (id, label, open, code, reason) in internal_commands(state) {
         let label = super::strings::t(label);
         let spec = match id {
-            id if id == SetupEffect::SET_INTERNAL_TARGET_SIZE.id => partly_bound(
-                id,
+            id if id == SetupEffect::SET_INTERNAL_TARGET_SIZE.id => asking(
+                &SetupEffect::SetInternalTargetSize { gib: -1 },
                 label,
-                "64",
                 ActionParam::required_owned(
                     "gib",
                     ParamType::Integer,
                     super::strings::t("imager-setup-param-internal-target-gib"),
                 ),
-                |args| SetupEffect::SetInternalTargetSize {
-                    gib: args.integer("gib").unwrap_or(-1),
-                },
             ),
             id if id == SetupEffect::INSTALL_INTERNAL.id => bound(
                 &SetupEffect::InstallInternal {
@@ -802,16 +800,25 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     )
     .presentation(ResourcePresentation {
         detail: Some(format!(
-            "experience {} · common {} · {} folders · {} active · help {} · imports {}",
-            state
-                .selection
-                .experience
-                .unwrap_or("no experience selected"),
-            state.selection.common_mode,
-            state.selection.folder_count,
-            state.selection.active_folder_count,
-            open_closed(state.selection.help_open),
-            open_closed(state.selection.imports_open),
+            "{}, {} by default, {}{}. With help {} and imports {}.",
+            experience_phrase(state.selection.experience),
+            mode_phrase(state.selection.common_mode).to_lowercase(),
+            folders_phrase(state.selection.folder_count),
+            if state.selection.folder_count == 0 {
+                String::new()
+            } else {
+                format!(", {} to bring over", state.selection.active_folder_count)
+            },
+            if state.selection.help_open {
+                "open"
+            } else {
+                "closed"
+            },
+            if state.selection.imports_open {
+                "open"
+            } else {
+                "closed"
+            },
         )),
         badge: Some("Selection".into()),
         preview: None,
@@ -838,7 +845,7 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     )
     .presentation(ResourcePresentation {
         detail: Some(format!(
-            "ready {} · current page {}",
+            "Review ready: {}. Current page: {}.",
             yes_no(state.review.ready),
             state.page
         )),
@@ -852,7 +859,7 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     )
     .presentation(ResourcePresentation {
         detail: Some(format!(
-            "Desktop {} · Full OS {} · Connected {} · Next {} · Back {} · Folder policies {} · Folder edits {} · Help {} · Imports {}",
+            "Available experiences: desktop {0}, full OS {1}. Connected: {2}. Navigation: next {3}, back {4}. Folder permissions: policies {5}, edits {6}. Help: {7}. Imports: {8}.",
             yes_no(state.availability.desktop),
             yes_no(state.availability.full_os),
             yes_no(state.availability.connected),
@@ -869,20 +876,15 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     LiveRow::new(SETUP_ROW_ID, "imager.setup", "Guided Tilo setup")
         .presentation(ResourcePresentation {
             detail: Some(format!(
-                "{} · {} · {} · {} folder(s) · review {} · Desktop {} · Full OS {} · Connected {} · Next {} · Back {}",
-                state.page,
-                state
-                    .selection
-                    .experience
-                    .unwrap_or("no experience selected"),
-                state.selection.common_mode,
-                state.selection.folder_count,
-                yes_no(state.review.ready),
-                yes_no(state.availability.desktop),
-                yes_no(state.availability.full_os),
-                yes_no(state.availability.connected),
-                yes_no(state.availability.next),
-                yes_no(state.availability.back),
+                "{} page, {}, {}",
+                match state.page {
+                    "experience" => "Experience",
+                    "folders" => "Folders",
+                    "review" => "Review",
+                    _ => "Setup",
+                },
+                experience_phrase(state.selection.experience),
+                folders_phrase(state.selection.folder_count),
             )),
             badge: Some(
                 match state.page {
@@ -900,19 +902,44 @@ pub fn row(state: &SetupProjection) -> LiveRow {
         .row(review)
         .row(availability)
         .row(internal_row(&state.internal))
+        .row(super::desktop_journey::row(&state.desktop, &state.methods))
 }
 
-const fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+/// A folder mode as people read it.
+fn mode_phrase(mode: &str) -> &'static str {
+    match mode {
+        "connected" => "Connected",
+        "later" => "Decide later",
+        _ => "Copy",
+    }
 }
 
-const fn open_closed(value: bool) -> &'static str {
-    if value { "open" } else { "closed" }
+/// The chosen experience as people read it.
+fn experience_phrase(experience: Option<&str>) -> &'static str {
+    match experience {
+        Some("desktop") => "Tilo Desktop",
+        Some(_) => "Full Tilo",
+        None => "no experience chosen yet",
+    }
+}
+
+/// "1 folder", "3 folders", "no folders".
+fn folders_phrase(count: usize) -> String {
+    match count {
+        0 => "no folders".into(),
+        1 => "1 folder".into(),
+        count => format!("{count} folders"),
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "Yes" } else { "No" }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::OperationKind;
 
     fn projection(internal: InternalProjection) -> SetupProjection {
         SetupProjection {
@@ -941,6 +968,8 @@ mod tests {
                 choose_folder: false,
             },
             internal,
+            desktop: crate::setup::desktop_journey::DesktopProjection::default(),
+            methods: crate::setup::desktop_journey::MethodProjection::default(),
         }
     }
 

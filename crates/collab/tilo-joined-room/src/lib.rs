@@ -9,12 +9,17 @@
 //! standalone runtime keeps it in a file of its own ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
+mod application_record;
 mod bootstrap;
 mod certified;
+mod checkpoint;
 mod document_read;
+mod effect_history;
+mod effect_receipt;
 pub mod enroll;
 mod enrollment;
 mod file_store;
+mod history_content;
 mod limits;
 mod publication;
 mod record;
@@ -24,16 +29,23 @@ pub mod testing;
 #[cfg(test)]
 mod tests;
 pub mod voice;
+mod workspace_membership;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 
+pub use application_record::{ApplicationInitialization, ApplicationRecord};
 pub use bootstrap::NativeBootstrap;
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
-pub use document_read::{CommittedDocument, DocumentRead};
+pub use checkpoint::{
+    CheckpointAcknowledgement, CheckpointCapture, CheckpointEntry, CheckpointRoute,
+    CheckpointSchema, MaterializedCheckpoint, NativeCheckpoint,
+};
+pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
 pub use file_store::open_file;
+pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use publication::{
-    NativeOutgoing, NativeOutgoingEntry, preflight_storage, reserved_file_bytes,
+    NativeOutgoing, NativeOutgoingEntry, authority_limit, preflight_storage, reserved_file_bytes,
     validate_file_layout,
 };
 pub use record::{
@@ -47,13 +59,28 @@ use std::{
     sync::{Arc, Weak},
     time::SystemTime,
 };
-use tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation;
+use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_peer_state::{AdmissionReport, NeighbourMsg, StatePeer, TransportOrigin};
 use tilo_user_identity::DeviceCert;
 
 /// Where an owner's record is durable.
 pub trait Store: std::any::Any + Send + Sync {
+    /// Durably retain immutable owner history through the existing content backend.
+    /// The state publication may reference the returned address only after this succeeds.
+    ///
+    /// # Errors
+    /// Unsupported storage, quota, integrity or durable I/O failure.
+    fn put_history(&self, _bytes: &[u8]) -> Result<[u8; 32], String> {
+        Err("native owner history content is unavailable".into())
+    }
+    /// Read and verify a retained history block. Absence is an error, not UUID absence.
+    ///
+    /// # Errors
+    /// Missing, corrupt, oversized or unavailable content.
+    fn read_history(&self, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        Err("native owner history content is unavailable".into())
+    }
     /// False once a publication may or may not have reached disk; the owner
     /// then stays fenced until it is reopened from what the disk holds.
     fn healthy(&self) -> bool;
@@ -228,6 +255,8 @@ impl SharedOwner {
         for (room, view) in &current.rooms {
             self.notify(*room, view.continuity());
         }
+        drop(current);
+        tilo_identity_host::policy_change::announce();
     }
     fn fenced(&self, current: &Current, room: RoomId) -> bool {
         current.fenced || current.denied.contains(&room) || !self.store.healthy()
@@ -243,6 +272,9 @@ impl SharedOwner {
         if result.is_err() && !self.store.healthy() {
             self.fence_all();
         }
+        // A new publication can change a room's tasks, which the broker
+        // offers as actions: it re-checks on this rather than on a clock.
+        tilo_identity_host::policy_change::announce();
         result
     }
 }
@@ -282,6 +314,8 @@ impl NativeWorkspaceOwner {
         }
         for (room, record) in &authority.rooms {
             let view = enrollment::restore(*room, record, now)?;
+            effect_receipt::validate_history(&view, store.as_ref())?;
+            checkpoint::validate_restore(&view, store.as_ref())?;
             current.rooms.insert(*room, Arc::new(view));
         }
         Ok(Self(Arc::new(SharedOwner {
@@ -401,6 +435,11 @@ impl NativeWorkspaceOwner {
             {
                 return Err("workspace task action lease is stale".into());
             }
+            view.peer().check_task_execution_actor(
+                agent_id,
+                run.approval.as_ref(),
+                std::time::SystemTime::now(),
+            )?;
             Ok(())
         })?;
         admit()
@@ -453,6 +492,8 @@ impl NativeWorkspaceOwner {
         }
         let continuity = current.rooms.get(&room).map_or(0, |view| view.continuity());
         self.0.notify(room, continuity);
+        drop(current);
+        tilo_identity_host::policy_change::announce();
     }
     /// Admits genuine relay provenance; pending document prerequisites are also durable.
     ///
@@ -473,13 +514,41 @@ impl NativeWorkspaceOwner {
             return Err("native owner admits only workspace state messages".into());
         }
         let _turn = self.0.mutation.lock();
+        if matches!(&message, NeighbourMsg::AppDocument { .. })
+            && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })
+            && let Some(report) = self.with_current(room, |view| {
+                let exact = view
+                    .peer
+                    .lookup_exact_document_report(origin, &message, now)
+                    .map_err(|error| error.to_string())?;
+                if exact.is_some() && publication::exact_replay_unchanged(view)? {
+                    Ok(exact)
+                } else {
+                    Ok(None)
+                }
+            })?
+        {
+            return Ok(report);
+        }
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         let report = candidate
             .peer
             .receive_from_report(origin, message, now)
             .map_err(|e| e.to_string())?;
+        let previous_publication = candidate.record.publication.clone();
         publication::retire(&mut candidate)?;
-        candidate.record.peer = candidate.peer.durable()?;
+        publication::refresh_governance_checkpoint(&mut candidate)?;
+        let durable = candidate.peer.durable()?;
+        // Authentication and causal admission still run for every replay.
+        // Reuse the actual committed barrier only when both durable peer
+        // state and outgoing custody are byte-for-byte unchanged. In
+        // particular, newly settled prerequisites or retired obligations
+        // still require publication before they can be observed.
+        if durable == candidate.record.peer && candidate.record.publication == previous_publication
+        {
+            return Ok(report);
+        }
+        candidate.record.peer = durable;
         candidate.record.generation = candidate
             .record
             .generation
@@ -499,6 +568,7 @@ impl NativeWorkspaceOwner {
         mut candidate: NativeCommittedView,
         enrollment: Option<&StoredPendingEnrollment>,
     ) -> Result<(), String> {
+        publication::refresh_governance_checkpoint(&mut candidate)?;
         let candidate_security = candidate.security_digest()?;
         let changed = {
             let current = self.0.current.read();

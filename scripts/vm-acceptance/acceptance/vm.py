@@ -16,6 +16,11 @@ import subprocess
 import time
 from pathlib import Path
 
+# `actions list` pages: rows asked for per page (the desktop's most), and how often a
+# listing that changed under the cursor is read again from its start.
+LISTING_PAGE = 2000
+LISTING_ATTEMPTS = 3
+
 
 class VmError(RuntimeError):
     """A tilo-vm command failed; carries its output for the report."""
@@ -27,11 +32,33 @@ class VmError(RuntimeError):
 
 
 def first_json(text: str):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
     for line in text.splitlines():
         line = line.strip()
         if line.startswith(("{", "[")):
             return json.loads(line)
     raise VmError(f"no JSON in output: {text[:400]!r}")
+
+
+def command_failure(stdout: str, stderr: str) -> str:
+    """Prefer the CLI's structured error over build progress on stderr."""
+    decoder = json.JSONDecoder()
+    for stream in (stdout, stderr):
+        offset = 0
+        for line in stream.splitlines(keepends=True):
+            if line.lstrip().startswith("{"):
+                try:
+                    value, _ = decoder.raw_decode(stream[offset:].lstrip())
+                except json.JSONDecodeError:
+                    pass
+                else:
+                    if isinstance(value, dict) and isinstance(value.get("error"), str):
+                        return value["error"].strip()
+            offset += len(line)
+    return (stderr or stdout).strip()
 
 
 class TiloVm:
@@ -57,7 +84,7 @@ class TiloVm:
         self._log(cmd, proc.returncode, time.monotonic() - started,
                   proc.stdout, proc.stderr)
         if check and proc.returncode != 0:
-            said = (proc.stderr or proc.stdout).strip()
+            said = command_failure(proc.stdout, proc.stderr)
             if len(said) > 1200:
                 said = said[:300] + " […] " + said[-900:]
             raise VmError(f"`tilo-vm {shlex.join(args)[:200]}` exited {proc.returncode}: {said}")
@@ -85,9 +112,30 @@ class TiloVm:
     def state(self) -> dict:
         return self.control_json("state-dump")
 
-    def actions(self, query: str = "") -> list[dict]:
-        args = ["actions", "list", *([query] if query else []), "--json"]
-        return self.control_json(*args)["actions"]
+    def actions(self, query: str = "", *, programmatic: bool = False) -> list[dict]:
+        """Every row the desktop lists for `query`, page after page. A page holds 200 rows
+        unless asked for more, and an open app's own actions can push the window closers
+        past it: a caller reading one page saw a window with no close action and left it
+        open (A15). A listing that changes while paged is read again from its start."""
+        for _ in range(LISTING_ATTEMPTS):
+            rows, cursor = [], None
+            while True:
+                args = ["actions", "list", *([query] if query else []),
+                        *(["--programmatic"] if programmatic else []), "--json",
+                        "--limit", str(LISTING_PAGE)]
+                try:
+                    page = self.control_json(*args, *(["--cursor", cursor] if cursor else []))
+                except VmError as exc:
+                    if "stale_cursor" in str(exc):
+                        break
+                    raise
+                rows += page["actions"]
+                if not page.get("truncated"):
+                    return rows
+                cursor = page.get("next_cursor")
+                if not cursor:
+                    raise VmError("the action listing is truncated but names no next page")
+        raise VmError(f"the action listing changed on each of {LISTING_ATTEMPTS} reads while it was paged")
 
     def invoke(self, provider: str, action_id: str, args: dict | None = None) -> dict:
         cmd = ["actions", "invoke", provider, action_id]
@@ -125,6 +173,30 @@ class TiloVm:
             time.sleep(2)
             self.run("shot", "-o", str(path), timeout=90)
         return path
+
+    def snapshot_once(self, path: Path) -> Path:
+        """One `tilo-vm shot`, no retry: for a caller that expects it to be refused."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.run("shot", "-o", str(path), timeout=90)
+        return path
+
+    # -- the slot's session ---------------------------------------------------
+
+    def restart_session(self, timeout: float = 60) -> None:
+        """Restart the slot's session on its current generation and wait until its control
+        socket answers again: a fresh compositor, unlocked, with no windows open. Counted in
+        `requested_restarts`, so the session-restart guard knows this ending was asked for."""
+        self.requested_restarts = getattr(self, "requested_restarts", 0) + 1
+        self.run("slot", "restart", self.slot, timeout=300, slot=False)
+
+        def answering():
+            try:
+                return self.state()
+            except VmError:
+                return None
+
+        if wait_until(answering, timeout, interval=1.0) is None:
+            raise VmError(f"the restarted session's control socket did not answer within {timeout:.0f}s")
 
     def exec(self, script: str, timeout: float = 120, check: bool = True) -> str:
         """Run a POSIX sh script as the slot's user, in its session's view."""

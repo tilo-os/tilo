@@ -24,8 +24,9 @@
 use std::sync::Arc;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
-use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+use vello::peniko::{Blob, Extend, Fill, ImageBrush};
 
+use ui::TextRole;
 use ui::color_compat::ColorCompat;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -107,8 +108,8 @@ pub fn draw(
 
 /// The carried-item chip: a rounded card with the item's name in it.
 ///
-/// Deliberately not [`ui::widget::Chip::draw_at`]: a chip is a Selector
-/// that sits *inside* a Panel and paints a veneer fill (`surface_white_5`),
+/// Deliberately not [`ui::widget::ChipFace`]: a chip is a Selector
+/// that sits *inside* a Panel and paints a veneer fill (`overlay_subtle`),
 /// which over arbitrary app content would let whatever is being dragged
 /// across show through the label. The carried item is an Object off the
 /// surface — it needs an opaque ground, an elevation shadow and the Control
@@ -123,13 +124,13 @@ fn draw_chip(
     // Control label scale (HIG §9.6), measured with the style it is drawn
     // in so the label is centred on its real line box rather than on a
     // `size * 1.3` guess. The caller has reset the renderer for this pass.
-    let size = theme.tokens.typography.scale.sm;
-    let (tw, th) = text.measure(label, size, None);
+    let style = theme.text(TextRole::Caption);
+    let (tw, th) = text.measure_style(label, None, &style);
     let w = f64::from(tw) + CHIP_PAD * 2.0;
     let x = cursor.x + CHIP_DX;
     let y = cursor.y + CHIP_DY;
     let bounds = Rect::new(x, y, x + w, y + CHIP_H);
-    // Control role: a pressable-looking chip takes `radii.lg`, and a carried
+    // Control role: a pressable-looking chip takes `radii.control`, and a carried
     // object is genuinely lifted, so its shadow comes from the elevation
     // token rather than a literal black offset copy (HIG §9.3).
     let radius = ui::chrome::ChromeRole::Control.radius(theme, CHIP_H);
@@ -138,24 +139,29 @@ fn draw_chip(
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        theme.bg_primary.with_alpha_factor(HANDLE_ALPHA),
+        theme
+            .tokens
+            .colors
+            .surfaces
+            .raised
+            .with_alpha_factor(HANDLE_ALPHA),
         None,
         &rect,
     );
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         Affine::IDENTITY,
-        theme.accent_primary,
+        theme.tokens.colors.intent.inverted,
         None,
         &rect,
     );
-    text.draw_text(
+    text.draw_style(
         scene,
         label,
-        size,
         theme.text_primary,
         Affine::translate((x + CHIP_PAD, y + (CHIP_H - f64::from(th)) / 2.0)),
         None,
+        &style,
     );
 }
 
@@ -188,13 +194,13 @@ fn draw_preview(
     text: &mut TextRenderer,
 ) {
     let rect = preview_rect(cursor, preview);
-    let radius = f64::from(theme.tokens.radii.xl);
+    let radius = f64::from(theme.tokens.radii.tile);
     ui::surface::shadow(
         scene,
         Affine::IDENTITY,
         rect,
         radius,
-        &theme.tokens.elevation.e4,
+        &theme.tokens.elevation.floating,
     );
     let shape = RoundedRect::from_rect(rect, radius);
     scene.push_layer(
@@ -207,7 +213,7 @@ fn draw_preview(
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        theme.tokens.colors.surfaces.window_card,
+        theme.tokens.colors.surfaces.content,
         None,
         &shape,
     );
@@ -217,13 +223,7 @@ fn draw_preview(
             width,
             height,
         } if *width > 0 && *height > 0 => {
-            let image = ImageData {
-                data: Blob::new(rgba.clone()),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: *width,
-                height: *height,
-            };
+            let image = ui::raster::rgba8(Blob::new(rgba.clone()), *width, *height);
             let sx = rect.width() / f64::from(*width);
             let sy = rect.height() / f64::from(*height);
             let brush = ImageBrush::new(image).with_extend(Extend::Pad);
@@ -255,8 +255,8 @@ fn draw_text_preview(
     theme: &Theme,
     text: &mut TextRenderer,
 ) {
-    let size = theme.tokens.typography.scale.sm;
-    let line_h = f64::from(size) * 1.45;
+    let style = theme.text(TextRole::Caption);
+    let line_h = f64::from(style.line_height_px());
     let mut y = rect.y0 + f64::from(theme.tokens.spacing.s3);
     for source_line in value.lines().filter(|line| !line.trim().is_empty()).take(5) {
         let line: String = source_line.chars().take(34).collect();
@@ -265,13 +265,13 @@ fn draw_text_preview(
             reason = "text layout accepts f32 widths and the bounded preview is at most 560 px"
         )]
         let max_width = (rect.width() - 2.0 * f64::from(theme.tokens.spacing.s3)) as f32;
-        text.draw_text(
+        text.draw_style(
             scene,
             &line,
-            size,
             theme.tokens.colors.text_primary,
             Affine::translate((rect.x0 + f64::from(theme.tokens.spacing.s3), y)),
             Some(max_width),
+            &style,
         );
         y += line_h;
         if y + line_h > rect.y1 {
@@ -300,7 +300,7 @@ fn draw_kind_preview(scene: &mut Scene, rect: Rect, kind: DragKind, theme: &Them
             centre.y + side / 2.0,
         ),
         icon,
-        theme.tokens.colors.accent[6],
+        theme.tokens.colors.text_primary,
         ui::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
 }
@@ -367,7 +367,7 @@ fn draw_cursor(scene: &mut Scene, at: Point, theme: &Theme) {
     scene.stroke(
         &vello::kurbo::Stroke::new(1.2),
         Affine::IDENTITY,
-        theme.bg_app,
+        theme.tokens.colors.surfaces.base,
         None,
         &p,
     );

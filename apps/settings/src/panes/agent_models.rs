@@ -12,7 +12,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use agent_provider_config::{
-    EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
+    EndpointLocation, ModelDescriptor, ModelRequestLimits, ProviderConfig, ProviderProfile,
+    ProviderProtocol,
 };
 use serde::{Deserialize, Serialize};
 use ui::LocalState;
@@ -29,14 +30,17 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, hgap, rows, semantic_status_pill, value_row,
+    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, value_row,
 };
 
 /// The person's agent providers, as their settings hold them: the hosted
 /// ones roam with the person, those on this device or its network stay.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(from = "StoredProviders", into = "StoredProviders")]
 pub struct AgentProviders {
+    #[model(readonly)]
     pub config: ProviderConfig,
 }
 
@@ -67,6 +71,9 @@ impl ui::storage::SettingsSchema for AgentProviders {
     const SCOPE: ui::storage::Scope =
         ui::storage::Scope::Shared(agent_provider_config::SETTINGS_SECTION);
 }
+
+#[ui::tilo_resource::resource(kind = "settings.agent-providers", label = "Agent model providers")]
+impl AgentProviders {}
 
 /// Local models on this device and the person's model providers.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -160,6 +167,18 @@ pub enum AgentModelsEffect {
         #[param("The model agents use")]
         model: Option<String>,
     },
+    /// Set this model's request allowance; omit both values to restore defaults.
+    #[effect(row, idempotent)]
+    SetModelRequestLimits {
+        provider: String,
+        model: String,
+        max_output_tokens: Option<u32>,
+        runtime_context_tokens: Option<u32>,
+        plan_timeout_ms: Option<u32>,
+    },
+    /// Read source context and this model's configured deployment limits.
+    #[effect(row, returns, kind = "read")]
+    InspectModelRequestLimits { provider: String, model: String },
     /// Make a provider the one agents use unless told otherwise.
     #[effect(row, idempotent, label = "Use by default")]
     SetDefaultProvider {
@@ -245,6 +264,27 @@ pub(crate) fn answer(
     let mut model = shared.borrow_mut();
     model.changed = true;
     match effect {
+        AgentModelsEffect::InspectModelRequestLimits {
+            provider,
+            model: id,
+        } => {
+            let config = model.providers.get().config.clone();
+            let selected = config
+                .profiles
+                .iter()
+                .find(|item| item.id == provider)
+                .and_then(|profile| profile.models.iter().find(|item| item.id == id))
+                .ok_or_else(|| t("agent-model-gone"))?;
+            Ok(Effected::value(serde_json::json!({
+                "provider":provider, "model":id,
+                "source_context_tokens":selected.context_window,
+                "request_limits":selected.request_limits,
+                "plan_timeout_ceiling_ms":selected.request_limits.as_ref()
+                    .and_then(|limits| limits.plan_timeout_ms).unwrap_or(60_000),
+                "caller_may_request_shorter_deadline":true,
+                "runtime_context_attested":false, "prompt_fit_proven":false
+            })))
+        }
         AgentModelsEffect::ReviewModelDownload { show } => {
             model.reviewing.set(show);
             Ok(Effected::done())
@@ -406,6 +446,91 @@ impl ManagerWork {
 pub struct AgentModelsArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<AgentModelsModel>>,
+    /// The manager's snapshot and the hosted keys, asked off the UI thread
+    /// after the window's first frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<AgentModelsRead>,
+}
+
+/// What the agent models area asks of the device: the model manager's
+/// snapshot, and whether this device's vault holds the key of each hosted
+/// provider configured when it asked. Asked off the UI thread; the model is
+/// built from it on the UI thread ([`AgentModelsModel::from_read`]).
+pub(crate) struct AgentModelsRead {
+    snapshot: Result<LocalModelSnapshot, String>,
+    keys: HashMap<String, Result<bool, String>>,
+}
+
+impl AgentModelsRead {
+    /// Ask `control` for its snapshot and the gateway for the keys of the
+    /// `hosted` providers.
+    fn of(control: &dyn LocalModelControl, hosted: Vec<String>) -> Self {
+        Self {
+            snapshot: control.snapshot(),
+            keys: hosted_keys(hosted),
+        }
+    }
+}
+
+/// The ids of the hosted providers in `providers`, whose keys this
+/// device's vault holds or not.
+fn hosted_profiles(providers: &AgentProviders) -> Vec<String> {
+    providers
+        .config
+        .profiles
+        .iter()
+        .filter(|profile| profile.location == EndpointLocation::Hosted)
+        .map(|profile| profile.id.clone())
+        .collect()
+}
+
+/// Ask the gateway whether this device's vault holds each of `hosted`'s
+/// keys: one blocking request each.
+fn hosted_keys(hosted: Vec<String>) -> HashMap<String, Result<bool, String>> {
+    hosted
+        .into_iter()
+        .map(|id| {
+            let configured =
+                tilo_model_gateway::secret_configured(&id).map_err(|error| error.to_string());
+            (id, configured)
+        })
+        .collect()
+}
+
+fn request_limit_rows(profile: &ProviderProfile) -> Vec<LiveRow> {
+    let mut result = Vec::new();
+    let offer = |effect: AgentModelsEffect| SettingsEffect::from(effect).bound();
+    for selected in &profile.models {
+        result.push(
+            LiveRow::new(
+                format!(
+                    "settings.agent-provider-model:{}:{}",
+                    hex::encode(&profile.id),
+                    hex::encode(&selected.id)
+                ),
+                "settings.agent-provider-model",
+                selected.display_label().to_owned(),
+            )
+            .operation(offer(AgentModelsEffect::InspectModelRequestLimits {
+                provider: profile.id.clone(),
+                model: selected.id.clone(),
+            }))
+            .operation(
+                SettingsEffect::from(AgentModelsEffect::SetModelRequestLimits {
+                    provider: profile.id.clone(),
+                    model: selected.id.clone(),
+                    max_output_tokens: None,
+                    runtime_context_tokens: None,
+                    plan_timeout_ms: None,
+                })
+                .bound_asking(&[
+                    "max_output_tokens",
+                    "runtime_context_tokens",
+                    "plan_timeout_ms",
+                ]),
+            ),
+        );
+    }
+    result
 }
 
 impl AgentModelsArea {
@@ -413,23 +538,55 @@ impl AgentModelsArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            read: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    /// The model manager: this device's, or a sample one for a screenshot.
+    fn control(&self) -> Arc<dyn LocalModelControl> {
+        if self.cx.reaches_devices() {
+            Arc::new(ModelManagerCli)
+        } else {
+            Arc::new(SampleManager)
         }
     }
 
     /// The model, over the model manager, or over a sample one for a
-    /// screenshot.
+    /// screenshot: from the read [`Self::start_read`] started, waiting for
+    /// it if it still runs, else asked here.
     pub fn model(&self) -> &Shared<AgentModelsModel> {
         self.model.get_or_init(|| {
-            let control: Arc<dyn LocalModelControl> = if self.cx.reaches_devices() {
-                Arc::new(ModelManagerCli)
-            } else {
-                Arc::new(SampleManager)
+            let control = self.control();
+            let model = match self.read.take() {
+                Some(read) => AgentModelsModel::from_read(self.cx.clone(), control, read),
+                None => AgentModelsModel::new(self.cx.clone(), control),
             };
-            Rc::new(std::cell::RefCell::new(AgentModelsModel::new(
-                self.cx.clone(),
-                control,
-            )))
+            Rc::new(std::cell::RefCell::new(model))
         })
+    }
+
+    /// Ask the model manager and the gateway off the UI thread; `false`
+    /// when they have been asked or are being asked.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let control = self.control();
+        let hosted = hosted_profiles(self.cx.follow::<AgentProviders>().get());
+        self.read
+            .start(move || AgentModelsRead::of(control.as_ref(), hosted))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
     }
 
     /// One row per installed model, per provider, and the recommendation.
@@ -514,6 +671,7 @@ impl AgentModelsArea {
                 row
             };
             rows.push(row);
+            rows.extend(request_limit_rows(profile));
         }
         rows
     }
@@ -540,6 +698,7 @@ pub struct AgentModelsModel {
     /// accepts or rejects them.
     provider_key_buffers: Mutex<HashMap<String, Arc<Mutex<String>>>>,
     provider_field_buffers: Mutex<HashMap<String, HostedFieldBuffers>>,
+    limit_field_buffers: Mutex<HashMap<(String, String), LimitFieldBuffers>>,
     /// Whether this device's vault holds each hosted provider's key, or why
     /// that could not be told.
     keys: HashMap<String, Result<bool, String>>,
@@ -547,8 +706,18 @@ pub struct AgentModelsModel {
 }
 
 impl AgentModelsModel {
+    /// The model over `control`, asking it and the gateway here.
     fn new(cx: PaneCx, control: Arc<dyn LocalModelControl>) -> Self {
-        let (snapshot, manager_available, notice) = match control.snapshot() {
+        let hosted = hosted_profiles(cx.follow::<AgentProviders>().get());
+        let read = AgentModelsRead::of(control.as_ref(), hosted);
+        Self::from_read(cx, control, read)
+    }
+
+    /// The model over `control`, from what was asked of it and of the
+    /// gateway. Keys asked for a different set of hosted providers than the
+    /// person's settings now hold are asked again.
+    fn from_read(cx: PaneCx, control: Arc<dyn LocalModelControl>, read: AgentModelsRead) -> Self {
+        let (snapshot, manager_available, notice) = match read.snapshot {
             Ok(snapshot) => (snapshot, true, None),
             Err(error) => (
                 fallback_snapshot(),
@@ -573,32 +742,25 @@ impl AgentModelsModel {
             last_poll: ui::time::now(),
             provider_key_buffers: Mutex::new(HashMap::new()),
             provider_field_buffers: Mutex::new(HashMap::new()),
+            limit_field_buffers: Mutex::new(HashMap::new()),
             keys: HashMap::new(),
             changed: false,
         };
         model.sync_local_profile();
-        model.read_keys();
+        let hosted = hosted_profiles(model.providers.get());
+        if hosted.len() == read.keys.len() && hosted.iter().all(|id| read.keys.contains_key(id)) {
+            model.keys = read.keys;
+            model.changed = true;
+        } else {
+            model.read_keys();
+        }
         model
     }
 
     /// Ask the gateway whether this device's vault holds each hosted
     /// provider's key.
     fn read_keys(&mut self) {
-        self.keys = self
-            .providers
-            .get()
-            .config
-            .profiles
-            .iter()
-            .filter(|profile| profile.location == EndpointLocation::Hosted)
-            .map(|profile| {
-                (
-                    profile.id.clone(),
-                    tilo_model_gateway::secret_configured(&profile.id)
-                        .map_err(|error| error.to_string()),
-                )
-            })
-            .collect();
+        self.keys = hosted_keys(hosted_profiles(self.providers.get()));
         self.changed = true;
     }
 
@@ -763,6 +925,24 @@ impl AgentModelsModel {
     fn change_providers(&mut self, effect: AgentModelsEffect) -> Result<(), String> {
         let mut config = self.providers.get().config.clone();
         match effect {
+            AgentModelsEffect::SetModelRequestLimits {
+                provider,
+                model,
+                max_output_tokens,
+                runtime_context_tokens,
+                plan_timeout_ms,
+            } => {
+                set_model_limits(
+                    &mut config,
+                    &provider,
+                    &model,
+                    (max_output_tokens, runtime_context_tokens, plan_timeout_ms),
+                )?;
+                self.limit_field_buffers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&(provider, model));
+            }
             AgentModelsEffect::AddProvider { protocol: slug } => {
                 config.upsert(ProviderProfile::hosted(protocol(&slug)?));
             }
@@ -848,16 +1028,10 @@ impl AgentModelsModel {
                 body.push(caption(&t("agent-accel-available")));
                 body.push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            self.cx.bind_invocation(
-                                Button::new(
-                                    "agent-models-accelerator-setup",
-                                    &t("agent-accel-setup"),
-                                )
-                                .content_sized(),
-                                AgentModelsEffect::SetUpAccelerator,
-                            ),
-                        ))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new("agent-models-accelerator-setup", &t("agent-accel-setup")),
+                            AgentModelsEffect::SetUpAccelerator,
+                        )))
                         .push(Box::new(Spacer::new())),
                 ));
                 (t("agent-accel-ready"), StatusTone::Neutral)
@@ -889,16 +1063,10 @@ impl AgentModelsModel {
                 body.push(caption(&t("agent-accel-error-retry")));
                 body.push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            self.cx.bind_invocation(
-                                Button::new(
-                                    "agent-models-accelerator-retry",
-                                    &t("agent-accel-retry"),
-                                )
-                                .content_sized(),
-                                AgentModelsEffect::SetUpAccelerator,
-                            ),
-                        ))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new("agent-models-accelerator-retry", &t("agent-accel-retry")),
+                            AgentModelsEffect::SetUpAccelerator,
+                        )))
                         .push(Box::new(Spacer::new())),
                 ));
                 (t("agent-status-attention"), StatusTone::Warning)
@@ -956,14 +1124,14 @@ impl AgentModelsModel {
             Box::new(
                 Row::new()
                     .push(Box::new(self.cx.bind_invocation(
-                        Button::new(controls.0, &accept_btn).content_sized(),
+                        Button::new(controls.0, &accept_btn),
                         AgentModelsEffect::InstallModel {
                             model: package.id.clone(),
                             revision: package.revision.clone(),
                         },
                     )))
                     .push(Box::new(self.cx.bind_invocation(
-                        Button::new(controls.1, &cancel).content_sized(),
+                        Button::new(controls.1, &cancel),
                         cancel_effect,
                     )))
                     .push(Box::new(Spacer::new())),
@@ -1004,7 +1172,6 @@ impl AgentModelsModel {
                 Row::new()
                     .push(Box::new(
                         Button::new("agent-models-setup-unavailable", &unavailable)
-                            .content_sized()
                             .with_enabled(false),
                     ))
                     .push(Box::new(Spacer::new())),
@@ -1028,17 +1195,15 @@ impl AgentModelsModel {
                 Row::new()
                     .push(Box::new(
                         self.cx.bind_invocation(
-                            Button::new("agent-models-setup-local", &setup)
-                                .content_sized()
-                                .with_enabled(
-                                    self.manager_available
-                                        && hardware.fit != HardwareFit::Unsupported
-                                        && self
-                                            .snapshot
-                                            .accelerator_setup
-                                            .as_ref()
-                                            .is_none_or(|setup| !setup.status.blocks_model_setup()),
-                                ),
+                            Button::new("agent-models-setup-local", &setup).with_enabled(
+                                self.manager_available
+                                    && hardware.fit != HardwareFit::Unsupported
+                                    && self
+                                        .snapshot
+                                        .accelerator_setup
+                                        .as_ref()
+                                        .is_none_or(|setup| !setup.status.blocks_model_setup()),
+                            ),
                             AgentModelsEffect::ReviewModelDownload { show: true },
                         ),
                     ))
@@ -1132,15 +1297,15 @@ impl AgentModelsModel {
                 }
             }
             let mut row = Row::new();
-            let mut any = false;
-            if model.installable() {
+            let installable = model.installable();
+            let removable = model.removable();
+            if installable {
                 row = row.push(Box::new(
                     self.cx.bind_invocation(
                         Button::new(
                             &format!("agent-models-inprocess-setup-{widget_token}"),
                             &t("agent-setup-device"),
                         )
-                        .content_sized()
                         .with_enabled(self.manager_available),
                         AgentModelsEffect::ReviewLocalModel {
                             model: package.id.clone(),
@@ -1148,24 +1313,19 @@ impl AgentModelsModel {
                         },
                     ),
                 ));
-                any = true;
             }
-            if model.removable() {
-                row = row.push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            &format!("agent-models-inprocess-remove-{widget_token}"),
-                            &action_label(ModelAction::Remove),
-                        )
-                        .content_sized(),
-                        AgentModelsEffect::RemoveModel {
-                            model: package.id.clone(),
-                        },
+            if removable {
+                row = row.push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-inprocess-remove-{widget_token}"),
+                        &action_label(ModelAction::Remove),
                     ),
-                ));
-                any = true;
+                    AgentModelsEffect::RemoveModel {
+                        model: package.id.clone(),
+                    },
+                )));
             }
-            if any {
+            if installable || removable {
                 body.push(Box::new(row.push(Box::new(Spacer::new()))));
             }
         }
@@ -1239,20 +1399,17 @@ impl AgentModelsModel {
         if !actions.is_empty() {
             let mut row = Row::new();
             for action in actions {
-                row = row.push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            &format!(
-                                "agent-models-{}-{}",
-                                action_slug(action),
-                                token(&model.package.id)
-                            ),
-                            &action_label(action),
-                        )
-                        .content_sized(),
-                        model_effect(model, action),
+                row = row.push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!(
+                            "agent-models-{}-{}",
+                            action_slug(action),
+                            token(&model.package.id)
+                        ),
+                        &action_label(action),
                     ),
-                ));
+                    model_effect(model, action),
+                )));
             }
             body.push(Box::new(row.push(Box::new(Spacer::new()))));
         }
@@ -1300,25 +1457,19 @@ impl AgentModelsModel {
         let mut body: Vec<El> = vec![caption(&t("agent-hosted-intro"))];
         body.push(Box::new(
             Row::new()
-                .push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new("agent-models-add-anthropic", &t("agent-add-anthropic"))
-                            .content_sized(),
-                        AgentModelsEffect::AddProvider {
-                            protocol: "anthropic".into(),
-                        },
-                    ),
-                ))
-                .push(hgap(8.0))
-                .push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new("agent-models-add-openai", &t("agent-add-compatible"))
-                            .content_sized(),
-                        AgentModelsEffect::AddProvider {
-                            protocol: "openai-compatible".into(),
-                        },
-                    ),
-                ))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new("agent-models-add-anthropic", &t("agent-add-anthropic")),
+                    AgentModelsEffect::AddProvider {
+                        protocol: "anthropic".into(),
+                    },
+                )))
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new("agent-models-add-openai", &t("agent-add-compatible")),
+                    AgentModelsEffect::AddProvider {
+                        protocol: "openai-compatible".into(),
+                    },
+                )))
                 .push(Box::new(Spacer::new())),
         ));
         for profile in config
@@ -1350,21 +1501,21 @@ impl AgentModelsModel {
                     .with_id(&format!("agent-models-label-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.label))
                     .with_initial_value(&label)
-                    .with_placeholder(&t("agent-placeholder-name")),
+                    .with_placeholder(t("agent-placeholder-name")),
             ));
             body.push(Box::new(
                 TextInput::local()
                     .with_id(&format!("agent-models-url-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.endpoint))
                     .with_initial_value(&endpoint)
-                    .with_placeholder(&t("agent-placeholder-url")),
+                    .with_placeholder(t("agent-placeholder-url")),
             ));
             body.push(Box::new(
                 TextInput::local()
                     .with_id(&format!("agent-models-model-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.model))
                     .with_initial_value(&model)
-                    .with_placeholder(&t("agent-placeholder-model")),
+                    .with_placeholder(t("agent-placeholder-model")),
             ));
             let alternate_protocol = match profile.protocol {
                 ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
@@ -1381,69 +1532,57 @@ impl AgentModelsModel {
             };
             body.push(Box::new(
                 Row::new()
-                    .push(Box::new(
-                        self.cx.bind(
-                            Button::new(
-                                &format!("agent-models-save-provider-{profile_id}"),
-                                &t("agent-save-details"),
-                            )
-                            .content_sized(),
-                            effect(AgentModelsEffect::SET_PROVIDER_DETAILS).map(move |()| {
-                                let model = read(&save_fields.model);
-                                (
-                                    save_id.clone(),
-                                    read(&save_fields.label),
-                                    read(&save_fields.endpoint),
-                                    (!model.trim().is_empty()).then_some(model),
-                                )
-                            }),
+                    .push(Box::new(self.cx.bind(
+                        Button::new(
+                            &format!("agent-models-save-provider-{profile_id}"),
+                            &t("agent-save-details"),
                         ),
-                    ))
-                    .push(hgap(8.0))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-protocol-{profile_id}"),
-                                &alternate_protocol_label,
+                        effect(AgentModelsEffect::SET_PROVIDER_DETAILS).map(move |()| {
+                            let model = read(&save_fields.model);
+                            (
+                                save_id.clone(),
+                                read(&save_fields.label),
+                                read(&save_fields.endpoint),
+                                (!model.trim().is_empty()).then_some(model),
                             )
-                            .content_sized(),
-                            AgentModelsEffect::SetProviderProtocol {
-                                provider: profile_id.clone(),
-                                protocol: protocol_slug(alternate_protocol).into(),
+                        }),
+                    )))
+                    .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-protocol-{profile_id}"),
+                            &alternate_protocol_label,
+                        ),
+                        AgentModelsEffect::SetProviderProtocol {
+                            provider: profile_id.clone(),
+                            protocol: protocol_slug(alternate_protocol).into(),
+                        },
+                    )))
+                    .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-enabled-{profile_id}"),
+                            &if profile.enabled {
+                                t("agent-disable")
+                            } else {
+                                t("agent-enable")
                             },
                         ),
-                    ))
-                    .push(hgap(8.0))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-enabled-{profile_id}"),
-                                &if profile.enabled {
-                                    t("agent-disable")
-                                } else {
-                                    t("agent-enable")
-                                },
-                            )
-                            .content_sized(),
-                            AgentModelsEffect::SetProviderEnabled {
-                                provider: profile_id.clone(),
-                                on: !profile.enabled,
-                            },
+                        AgentModelsEffect::SetProviderEnabled {
+                            provider: profile_id.clone(),
+                            on: !profile.enabled,
+                        },
+                    )))
+                    .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-remove-provider-{profile_id}"),
+                            &t("agent-remove-provider"),
                         ),
-                    ))
-                    .push(hgap(8.0))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-remove-provider-{profile_id}"),
-                                &t("agent-remove-provider"),
-                            )
-                            .content_sized(),
-                            AgentModelsEffect::RemoveProvider {
-                                provider: profile_id.clone(),
-                            },
-                        ),
-                    ))
+                        AgentModelsEffect::RemoveProvider {
+                            provider: profile_id.clone(),
+                        },
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
             let protocol = t("agent-protocol");
@@ -1469,37 +1608,31 @@ impl AgentModelsModel {
                             .with_external_buffer(buffer)
                             .with_initial_value(&initial)
                             .with_secret(true)
-                            .with_placeholder(&t("agent-placeholder-key")),
+                            .with_placeholder(t("agent-placeholder-key")),
                     ))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-set-api-key-{profile_id}"),
-                                &if configured {
-                                    t("agent-replace-key")
-                                } else {
-                                    t("agent-save-key")
-                                },
-                            )
-                            .content_sized(),
-                            AgentModelsEffect::SaveProviderKey {
-                                provider: profile_id.clone(),
-                                key: None,
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-set-api-key-{profile_id}"),
+                            &if configured {
+                                t("agent-replace-key")
+                            } else {
+                                t("agent-save-key")
                             },
                         ),
-                    ))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-remove-api-key-{profile_id}"),
-                                &t("agent-remove-key"),
-                            )
-                            .content_sized(),
-                            AgentModelsEffect::RemoveProviderKey {
-                                provider: profile_id.clone(),
-                            },
+                        AgentModelsEffect::SaveProviderKey {
+                            provider: profile_id.clone(),
+                            key: None,
+                        },
+                    )))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-remove-api-key-{profile_id}"),
+                            &t("agent-remove-key"),
                         ),
-                    ))
+                        AgentModelsEffect::RemoveProviderKey {
+                            provider: profile_id.clone(),
+                        },
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
             body.push(if configured {
@@ -1510,22 +1643,19 @@ impl AgentModelsModel {
                 caption(&t("agent-key-none"))
             });
             if profile.default_model.is_some() {
-                body.push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            &format!("agent-models-default-{profile_id}"),
-                            &if config.default_profile.as_deref() == Some(&profile.id) {
-                                t("agent-default-current")
-                            } else {
-                                t("agent-use-default")
-                            },
-                        )
-                        .content_sized(),
-                        AgentModelsEffect::SetDefaultProvider {
-                            provider: profile_id.clone(),
+                body.push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-default-{profile_id}"),
+                        &if config.default_profile.as_deref() == Some(&profile.id) {
+                            t("agent-default-current")
+                        } else {
+                            t("agent-use-default")
                         },
                     ),
-                ));
+                    AgentModelsEffect::SetDefaultProvider {
+                        provider: profile_id.clone(),
+                    },
+                )));
             }
         }
         for issue in config.validation_errors() {
@@ -1535,6 +1665,127 @@ impl AgentModelsModel {
             )));
         }
         card(&t("agent-hosted-title"), rows(body))
+    }
+
+    fn request_limit_buffers(
+        &self,
+        profile: &ProviderProfile,
+        selected: &ModelDescriptor,
+    ) -> LimitFieldBuffers {
+        let key = (profile.id.clone(), selected.id.clone());
+        let mut buffers = self
+            .limit_field_buffers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fields = buffers
+            .entry(key)
+            .or_insert_with(|| LimitFieldBuffers {
+                output: Arc::new(Mutex::new(
+                    selected
+                        .request_limits
+                        .as_ref()
+                        .map_or_else(String::new, |limits| limits.max_output_tokens.to_string()),
+                )),
+                runtime: Arc::new(Mutex::new(
+                    selected
+                        .request_limits
+                        .as_ref()
+                        .and_then(|limits| limits.runtime_context_tokens)
+                        .map_or_else(String::new, |value| value.to_string()),
+                )),
+                deadline: Arc::new(Mutex::new(
+                    selected
+                        .request_limits
+                        .as_ref()
+                        .and_then(|limits| limits.plan_timeout_ms)
+                        .map_or_else(String::new, |value| value.to_string()),
+                )),
+            })
+            .clone();
+        drop(buffers);
+        fields
+    }
+
+    fn request_limits_card(&self) -> El {
+        let config = self.providers.get().config.clone();
+        let mut body = vec![caption(&t("agent-request-limits-caption"))];
+        for profile in &config.profiles {
+            for selected in &profile.models {
+                body.push(value_row(profile.display_label(), selected.display_label()));
+                body.push(value_row(
+                    &t("agent-source-context"),
+                    &selected
+                        .context_window
+                        .map_or_else(|| t("agent-context-unknown"), |value| value.to_string()),
+                ));
+                let fields = self.request_limit_buffers(profile, selected);
+                let widget_id =
+                    format!("{}-{}", hex::encode(&profile.id), hex::encode(&selected.id));
+                for (name, label, buffer) in [
+                    (
+                        "output",
+                        "agent-output-allowance",
+                        Arc::clone(&fields.output),
+                    ),
+                    (
+                        "runtime",
+                        "agent-runtime-context",
+                        Arc::clone(&fields.runtime),
+                    ),
+                    (
+                        "deadline",
+                        "agent-plan-timeout",
+                        Arc::clone(&fields.deadline),
+                    ),
+                ] {
+                    let initial = buffer.lock().map(|value| value.clone()).unwrap_or_default();
+                    body.push(value_row(&t(label), ""));
+                    body.push(Box::new(
+                        TextInput::local()
+                            .with_id(&format!("agent-model-limit-{name}-{widget_id}"))
+                            .with_accessible_name(t(label))
+                            .with_external_buffer(buffer)
+                            .with_initial_value(&initial)
+                            .with_placeholder(t("agent-context-unknown")),
+                    ));
+                }
+                let provider = profile.id.clone();
+                let model = selected.id.clone();
+                body.push(Box::new(
+                    Row::new()
+                        .push(Box::new(self.cx.bind(
+                            Button::new(
+                                &format!("agent-model-limit-save-{widget_id}"),
+                                &t("agent-save-details"),
+                            ),
+                            effect(AgentModelsEffect::SET_MODEL_REQUEST_LIMITS).map(move |()| {
+                                (
+                                    provider.clone(),
+                                    model.clone(),
+                                    limit_input(&fields.output),
+                                    limit_input(&fields.runtime),
+                                    limit_input(&fields.deadline),
+                                )
+                            }),
+                        )))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new(
+                                &format!("agent-model-limit-clear-{widget_id}"),
+                                &t("agent-request-limits-clear"),
+                            ),
+                            AgentModelsEffect::SetModelRequestLimits {
+                                provider: profile.id.clone(),
+                                model: selected.id.clone(),
+                                max_output_tokens: None,
+                                runtime_context_tokens: None,
+                                plan_timeout_ms: None,
+                            },
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ));
+            }
+        }
+        card(&t("agent-request-limits-title"), rows(body))
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -1557,6 +1808,7 @@ impl AgentModelsModel {
                 caption(&t("agent-service-down-body")),
             ));
             cards.push(self.hosted_profiles());
+            cards.push(self.request_limits_card());
             return crate::widgets::cards(cards);
         }
         if let Some(notice) = &self.notice {
@@ -1591,8 +1843,39 @@ impl AgentModelsModel {
             }
         }
         cards.push(self.hosted_profiles());
+        cards.push(self.request_limits_card());
         crate::widgets::cards(cards)
     }
+}
+
+/// Change only the selected model's policy, retaining other profile metadata.
+fn set_model_limits(
+    config: &mut ProviderConfig,
+    provider: &str,
+    model: &str,
+    tokens: (Option<u32>, Option<u32>, Option<u32>),
+) -> Result<(), String> {
+    let selected = find(config, provider)?
+        .models
+        .iter_mut()
+        .find(|item| item.id == model)
+        .ok_or_else(|| t("agent-model-gone"))?;
+    let limits = match tokens.0 {
+        Some(max_output_tokens) => Some(ModelRequestLimits {
+            max_output_tokens,
+            runtime_context_tokens: tokens.1,
+            plan_timeout_ms: tokens.2,
+        }),
+        None if tokens.1.is_none() && tokens.2.is_none() => None,
+        None => return Err(t("agent-request-limits-invalid")),
+    };
+    if let Some(limits) = &limits {
+        limits
+            .validate(selected.context_window)
+            .map_err(|_| t("agent-request-limits-invalid"))?;
+    }
+    selected.request_limits = limits;
+    Ok(())
 }
 
 /// The provider `id` of `config`.
@@ -1628,7 +1911,7 @@ fn phase_tone(phase: &LocalModelPhase) -> StatusTone {
         LocalModelPhase::Ready { running: true, .. } => StatusTone::Success,
         LocalModelPhase::Ready { running: false, .. } => StatusTone::Neutral,
         LocalModelPhase::Downloading { .. } | LocalModelPhase::Installing { .. } => {
-            StatusTone::Accent
+            StatusTone::Info
         }
         LocalModelPhase::Error { .. } => StatusTone::Warning,
     }
@@ -1653,21 +1936,29 @@ fn manager_run(args: &[&str], timeout: Duration) -> Result<bounded_command::Outp
     })
 }
 
-fn manager_diagnostic(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-        .take(512)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
 #[derive(Clone)]
 struct HostedFieldBuffers {
     label: Arc<Mutex<String>>,
     endpoint: Arc<Mutex<String>>,
     model: Arc<Mutex<String>>,
+}
+
+#[derive(Clone)]
+struct LimitFieldBuffers {
+    output: Arc<Mutex<String>>,
+    runtime: Arc<Mutex<String>>,
+    deadline: Arc<Mutex<String>>,
+}
+
+fn limit_input(buffer: &Arc<Mutex<String>>) -> Option<u32> {
+    let text = buffer
+        .lock()
+        .map_or_else(|_| "0".into(), |value| value.trim().to_owned());
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.parse().unwrap_or(0))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1897,7 +2188,7 @@ impl LocalModelControl for ModelManagerCli {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
         let output = manager_run(&["snapshot", "--format", "json"], Duration::from_secs(10))?;
         if !output.status.success() {
-            return Err(manager_diagnostic(&output.stderr));
+            return Err(output.stderr_diagnostic());
         }
         serde_json::from_slice(&output.stdout)
             .map_err(|error| format!("model service returned invalid status: {error}"))
@@ -2079,7 +2370,16 @@ fn synced_local_profile(
         .map(|model| ModelDescriptor {
             id: model.package.id.clone(),
             label: model.package.name.clone(),
-            context_window: None,
+            context_window: profile
+                .models
+                .iter()
+                .find(|old| old.id == model.package.id)
+                .and_then(|old| old.context_window),
+            request_limits: profile
+                .models
+                .iter()
+                .find(|old| old.id == model.package.id)
+                .and_then(|old| old.request_limits.clone()),
             revision: Some(model.package.revision.clone()),
             vision: model.package.vision,
             face_recognition: model.package.face_recognition,
@@ -2146,7 +2446,7 @@ impl LocalModelControl for SampleManager {
             hardware: HardwareRecommendation {
                 fit: HardwareFit::Good,
                 memory_gib: 32,
-                accelerator: "GPU · 16 GiB".into(),
+                accelerator: "GPU with 16 GiB".into(),
                 accelerator_memory_gib: Some(16),
                 free_storage_gib: Some(120),
                 reason: t("agent-reason-good"),
@@ -2190,6 +2490,7 @@ impl LocalModelControl for SampleManager {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::Mutex;
 
     use super::*;
@@ -2315,6 +2616,7 @@ mod tests {
             let area = AgentModelsArea {
                 cx: model.cx.clone(),
                 model: std::cell::OnceCell::from(Rc::new(std::cell::RefCell::new(model))),
+                read: crate::device_read::DeviceRead::default(),
             };
             let published = area
                 .rows()
@@ -2398,7 +2700,7 @@ mod tests {
             hardware: HardwareRecommendation {
                 fit: HardwareFit::Good,
                 memory_gib: 24,
-                accelerator: "GPU · 12 GiB".into(),
+                accelerator: "GPU with 12 GiB".into(),
                 accelerator_memory_gib: Some(12),
                 free_storage_gib: Some(80),
                 reason: "Balanced for this device".into(),
@@ -2636,6 +2938,118 @@ mod tests {
         assert!(profile.models[0].vision);
         assert!(profile.models[0].face_recognition);
         assert!(profile.enabled);
+        let mut configured = profile;
+        configured.models[0].context_window = Some(262_144);
+        configured.models[0].request_limits = Some(ModelRequestLimits {
+            max_output_tokens: 512,
+            runtime_context_tokens: Some(4096),
+            plan_timeout_ms: Some(120_000),
+        });
+        let refreshed = synced_local_profile(Some(configured.clone()), &models).unwrap();
+        assert_eq!(
+            refreshed.models[0].request_limits,
+            configured.models[0].request_limits
+        );
+        assert_eq!(refreshed.models[0].context_window, Some(262_144));
+    }
+
+    #[test]
+    fn model_request_limits_use_the_published_settings_effects() {
+        use ui::framework::testing::TestApp;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+        profile.models = vec![
+            ModelDescriptor::new("test-model"),
+            ModelDescriptor::new("test_model"),
+        ];
+        profile.models[0].context_window = Some(262_144);
+        let profile_id = profile.id.clone();
+        ProviderConfig {
+            profiles: vec![profile],
+            default_profile: None,
+        }
+        .save_at(&path)
+        .unwrap();
+        let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        app.surface_mut::<SettingsApp>()
+            .attach_host(PaneCx::in_file(path.clone()), None);
+        app.surface_mut::<SettingsApp>()
+            .agent_models()
+            .model()
+            .borrow_mut()
+            .follow_local_profile = false;
+        let open = crate::categories::Category::AgentModels;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
+        app.settle();
+        let resource = format!(
+            "settings.agent-provider-model:{}:{}",
+            hex::encode(&profile_id),
+            hex::encode("test-model")
+        );
+        app.call_on(
+            &resource,
+            "set-model-request-limits",
+            serde_json::json!({"max_output_tokens":512,"runtime_context_tokens":4096,"plan_timeout_ms":120_000}),
+        )
+        .unwrap();
+        app.settle();
+        let value = app
+            .call_on(
+                &resource,
+                "inspect-model-request-limits",
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(value["request_limits"]["max_output_tokens"], 512);
+        assert_eq!(value["request_limits"]["plan_timeout_ms"], 120_000);
+        assert_eq!(value["plan_timeout_ceiling_ms"], 120_000);
+        assert_eq!(value["caller_may_request_shorter_deadline"], true);
+        assert_eq!(value["source_context_tokens"], 262_144);
+        assert_eq!(value["runtime_context_attested"], false);
+        assert_eq!(value["prompt_fit_proven"], false);
+        let other = format!(
+            "settings.agent-provider-model:{}:{}",
+            hex::encode(&profile_id),
+            hex::encode("test_model")
+        );
+        let other_value = app
+            .call_on(
+                &other,
+                "inspect-model-request-limits",
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(other_value["request_limits"].is_null());
+        assert_eq!(other_value["plan_timeout_ceiling_ms"], 60_000);
+        let saved = fs::read(&path).unwrap();
+        for invalid in [
+            serde_json::json!({"max_output_tokens":4096,"runtime_context_tokens":4096}),
+            serde_json::json!({"max_output_tokens":512,"plan_timeout_ms":0}),
+            serde_json::json!({"max_output_tokens":512,"plan_timeout_ms":900_001}),
+            serde_json::json!({"plan_timeout_ms":120_000}),
+            serde_json::json!({"model":"absent-model","max_output_tokens":512}),
+        ] {
+            assert!(
+                app.call_on(&resource, "set-model-request-limits", invalid)
+                    .is_err()
+            );
+            assert_eq!(fs::read(&path).unwrap(), saved);
+        }
+        app.call_on(&resource, "set-model-request-limits", serde_json::json!({}))
+            .unwrap();
+        assert!(
+            ProviderConfig::load_at(&path).profiles[0].models[0]
+                .request_limits
+                .is_none()
+        );
+        assert!(app.harness().component_contract_violations().is_empty());
     }
 
     /// Providers are the person's settings: added, renamed, made default
@@ -2668,6 +3082,74 @@ mod tests {
                 on: true,
             })
             .is_err()
+        );
+    }
+
+    /// Wait for a background read to end, as the warm-up's wake would.
+    fn until_finished(finished: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !finished() {
+            assert!(std::time::Instant::now() < deadline, "the read ends");
+            std::thread::yield_now();
+        }
+    }
+
+    /// The warm-up asks the manager off the UI thread once; the model is
+    /// built from that answer, and nothing is asked again once it is.
+    #[test]
+    fn the_area_builds_its_model_from_the_read_it_started() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = AgentModelsArea::new(&cx);
+        assert!(area.start_read(), "the first read starts");
+        assert!(!area.start_read(), "one read at a time");
+        assert!(!area.is_open(), "a running read publishes nothing yet");
+        until_finished(|| area.read_finished());
+        let installed = area.model().borrow().snapshot.recommendation.clone();
+        assert!(area.is_open());
+        assert_eq!(
+            installed.map(|package| package.id),
+            SampleManager
+                .snapshot()
+                .unwrap()
+                .recommendation
+                .map(|package| package.id),
+            "the model shows what the read asked"
+        );
+        assert!(!area.start_read(), "a built model is not read again");
+    }
+
+    /// What the read asked is what the model shows: the manager's answer,
+    /// or why it could not answer.
+    #[test]
+    fn a_model_shows_what_its_read_asked() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let control = mock(snapshot(None));
+        let read = AgentModelsRead::of(control.as_ref(), Vec::new());
+        let model = AgentModelsModel::from_read(cx.clone(), control.clone(), read);
+        assert!(model.manager_available);
+        assert_eq!(
+            model
+                .snapshot
+                .recommendation
+                .as_ref()
+                .map(|package| package.id.clone()),
+            Some(package().id)
+        );
+        let down = AgentModelsRead {
+            snapshot: Err("the manager is not running".into()),
+            keys: HashMap::new(),
+        };
+        let model = AgentModelsModel::from_read(cx, control, down);
+        assert!(!model.manager_available);
+        assert_eq!(
+            model.notice,
+            Some(t_args(
+                "agent-notice-service-down",
+                &[("error", "the manager is not running".into())]
+            )),
+            "the person is told the manager is down"
         );
     }
 }

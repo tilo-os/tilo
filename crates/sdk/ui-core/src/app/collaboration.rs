@@ -1,6 +1,82 @@
 // Collaboration transport, presence, permissions, and document integration.
 
 impl App {
+    /// Prepare and mount an application on its already admitted collaboration manager.
+    /// Host preparation runs inside the existing native read custody. The original
+    /// record binding is checked before the component factory runs, and the same
+    /// manager and wake scope transfer into the mounted application exactly once.
+    /// Construct the host and its record owners inside `prepare_host`, where
+    /// they retain this construction's native read bridge. Only an existing
+    /// record target is accepted; absence cannot become a default new document.
+    ///
+    /// # Errors
+    /// Returns preparation, current-read, binding, factory or mount failures.
+    /// Binding failures preserve the original record store for recovery.
+    pub fn from_prepared_component_with_collaboration(
+        collaboration: CollaborationManager,
+        prepare_host: impl FnOnce() -> Result<
+            crate::application::PreparedComponentInputs,
+            crate::launch::LaunchError,
+        >,
+        instantiate: impl FnOnce(
+            crate::application::HostContext,
+            crate::application::LaunchTarget,
+            crate::application::RestoreInput,
+        )
+            -> Result<crate::application::AppComponent, crate::launch::LaunchError>,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        use crate::collaboration::native_initial::{self, NativeConstruction};
+        use crate::launch::{LaunchError, LaunchRecovery};
+        let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let construction = NativeConstruction::enter_component(collaboration, scope)
+            .map_err(LaunchError::Operation)?;
+        let prepared = prepare_host()?;
+        let binding = prepared.context.callback_binding();
+        if !matches!(
+            prepared.target,
+            crate::application::LaunchTarget::Record { .. }
+        ) {
+            return Err(LaunchError::ComponentSetup {
+                source: Box::new(LaunchError::Operation(
+                    "cold component construction requires an existing record".into(),
+                )),
+                record: Box::new(binding.checkout),
+                recovery: LaunchRecovery::records(binding.records),
+            });
+        }
+        if let Err(error) = construction.bind_component(&binding) {
+            return Err(LaunchError::ComponentSetup {
+                source: Box::new(LaunchError::Operation(error)),
+                record: Box::new(binding.checkout),
+                recovery: LaunchRecovery::records(binding.records),
+            });
+        }
+        let component = instantiate(prepared.context, prepared.target, prepared.restore)?;
+        let mut app = native_initial::transfer_to_app(|| {
+            Self::from_component_using(component, prepared.runner_inputs, |inputs, binding| {
+                let mut inputs = AppConstructionInputs::component(inputs, binding);
+                // The transfer guard above retains the original worker. This
+                // callback runs after App assembly takes the original wake scope.
+                inputs.collab_manager =
+                    native_initial::take_manager().unwrap_or_else(CollaborationManager::disabled);
+                inputs
+            })
+        })
+        .map_err(LaunchError::Operation)??;
+        if let Err(error) = native_initial::check_current() {
+            app.close_components();
+            return Err(LaunchError::ComponentSetup {
+                source: Box::new(LaunchError::Operation(error)),
+                record: Box::new(binding.checkout),
+                recovery: LaunchRecovery::new(
+                    Some(binding.records),
+                    app.take_component_close_reports(),
+                ),
+            });
+        }
+        Ok(app)
+    }
     /// Called once per event-loop wakeup, so it must be cheap and
     /// non-blocking.
     pub fn set_frame_tick<F>(&mut self, tick: F)
@@ -374,6 +450,7 @@ impl App {
         for event in events {
             self.apply_collab_event_for_test(event);
         }
+        self.collaboration.manager.finish_event_batch();
     }
 
     /// Apply a document envelope received on the unqualified room route.
@@ -527,22 +604,33 @@ impl App {
         if any {
             self.invalidate_widget_resource_cache();
         }
-        let published_snapshot_was_evicted = self.collaboration.manager.is_connected()
-            && self.actions.last_published_actions.is_some()
-            && self.actions.action_directory_snapshot.is_none();
+        let action_surface_needs_publication = self.collaboration.manager.is_connected()
+            && (self.actions.last_published_actions.is_none()
+                || self.actions.action_directory_snapshot.is_none());
         // The broker refused the last surface: republish it now, not on the
         // next unrelated change.
         let refused_surface = self.collaboration.manager.take_action_surface_failed();
         if refused_surface {
             self.actions.last_published_actions = None;
         }
-        if action_surface_may_have_changed || published_snapshot_was_evicted || refused_surface {
+        if action_surface_may_have_changed || action_surface_needs_publication || refused_surface {
             // The normal idle pump also repairs invalidation from a later
             // model sync or a presence-only batch. Neither necessarily brings
             // another action event after a terminal operation was published.
+            // An already-ready transport also needs its first publication;
+            // it will not produce a new connection-state transition.
             // Query/resolve remain bounded reads; this refresh runs even with
             // no directory requests or inbound events, and skips stable idle.
-            self.publish_action_surface();
+            // The same pump already reconciled custody for its document drain.
+            self.publish_action_surface_after_refresh();
+        }
+        // Before-action diagnostics use the existing launcher-owned startup
+        // checkpoint, never a published resource or a document mutation.
+        let diagnostics = &crate::host::environment().diagnostics;
+        // Ordinary launched workers have no synthetic native scenario. Their
+        // explicit timing flag must still export the before-action checkpoint.
+        if diagnostics.presentation_timing || diagnostics.presentation_profile {
+            tilo_startup_metrics::checkpoint_native_admission(self.native_admission_snapshot());
         }
         (any, directory)
     }
@@ -599,6 +687,9 @@ impl App {
                 });
             }
             self.request_checkout_snapshot();
+            self.report_handoff(
+                &crate::collaboration::handoff::HandoffReport::OwnerSubscribe { version: 1 },
+            );
             self.publish_continuation_metadata();
             self.publish_playback_handoff();
             self.broadcast_doc_delta();
@@ -642,6 +733,7 @@ impl App {
                 any = true;
             }
         }
+        self.collaboration.manager.finish_event_batch();
         (any, action_surface_may_have_changed)
     }
 
@@ -715,13 +807,12 @@ impl App {
                 | CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::ActionDirectoryPage { .. }
                 | CollabEvent::PublishedActionResolution { .. }
-                | CollabEvent::EnrolledTask(_)
-                | CollabEvent::EnrolledTaskReply { .. }
-                | CollabEvent::EnrolledTaskDisconnected { .. }
                 | CollabEvent::NativeMediaCommandResult { .. }
                 | CollabEvent::TaskRun(_)
                 | CollabEvent::TaskActionInvocationResult { .. }
                 | CollabEvent::TaskRunCancellation { .. }
+                | CollabEvent::TaskRunControl { .. }
+                | CollabEvent::TaskRunReportResult { .. }
                 | CollabEvent::WorkspaceControl { .. }
                 | CollabEvent::RealtimeCommandResult { .. }
                 | CollabEvent::Realtime(_)
@@ -731,6 +822,9 @@ impl App {
         match event {
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);
+            }
+            CollabEvent::HistoryAgents { cluster_id, agents } => {
+                crate::history_source::set_room_agents(&cluster_id, agents);
             }
             CollabEvent::FollowChanged { peer_id } => match peer_id {
                 Some(peer_id) => self.follow(peer_id),
@@ -811,19 +905,20 @@ impl App {
             // The generic client responses are consumed by widgets such as
             // Agent through their collaboration event hook; an ordinary
             // application has no local state to apply.
-            CollabEvent::ActionCatalogue { .. }
+            CollabEvent::InstalledApplicationLaunchResult { .. }
+            | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::ActionDirectoryPage { .. }
             | CollabEvent::PublishedActionResolution { .. }
-            | CollabEvent::EnrolledTask(_)
-            | CollabEvent::EnrolledTaskReply { .. }
-            | CollabEvent::EnrolledTaskDisconnected { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
+            | CollabEvent::TaskRunControl { .. }
+            | CollabEvent::TaskRunReportResult { .. }
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
+            | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_) => {}
         }
     }
@@ -870,34 +965,6 @@ impl App {
                 self.apply_document_scrollback(ops, &decrypted_payloads);
             }
             _ => {}
-        }
-    }
-
-    /// A history view reports how many loaded ops of `artifact` lie above
-    /// its viewport; older history is fetched as it nears the loaded edge.
-    pub fn document_history_viewport(
-        &mut self,
-        artifact: collab_types::ArtifactId,
-        loaded_ops_above_viewport: usize,
-    ) {
-        if let Some(request) = self
-            .collaboration
-            .history
-            .on_viewport(artifact, loaded_ops_above_viewport)
-        {
-            self.send_history_request(request);
-        }
-    }
-
-    /// Something needs `artifact`'s history back to `seq` (opening an older
-    /// version, a backwards search); pages are fetched until it is loaded.
-    pub fn load_document_history_back_to(&mut self, artifact: collab_types::ArtifactId, seq: u64) {
-        if let Some(request) = self
-            .collaboration
-            .history
-            .ensure_loaded_back_to(artifact, seq)
-        {
-            self.send_history_request(request);
         }
     }
 
@@ -1074,6 +1141,13 @@ impl App {
     /// a locally-derived id is recognised in a room-keyed roster) and the
     /// host-assigned name; it never enters the roster itself.
     fn apply_collab_context(&mut self, collaborators: Vec<crate::collaboration::Collaborator>) {
+        let current = collaborators
+            .iter()
+            .map(|participant| crate::permissions::UserId(participant.id.clone()))
+            .collect::<std::collections::HashSet<_>>();
+        for departed in self.collaboration.context_participants.difference(&current) {
+            self.presence_ctx.unregister_peer(&departed.0);
+        }
         for participant in &collaborators {
             self.presence_ctx.set_participant_kind(
                 crate::permissions::UserId(participant.id.clone()),
@@ -1083,6 +1157,8 @@ impl App {
         if let Some(me) = collaborators.iter().find(|c| c.is_self) {
             self.presence_ctx
                 .set_self_participant(crate::permissions::UserId(me.id.clone()), me.name.clone());
+        } else {
+            self.presence_ctx.clear_self_participant();
         }
         // Filtered to others: letting the self row through would put the
         // local user in every list built from presence.
@@ -1091,6 +1167,11 @@ impl App {
             // is, so it must not mint one at the origin.
             self.presence_ctx
                 .set_display_name(crate::permissions::UserId(c.id.clone()), c.name.clone());
+            // The colour they wear everywhere, once the room has heard it.
+            if let Some(hue) = c.colour {
+                self.presence_ctx
+                    .set_presence_hue(crate::permissions::UserId(c.id.clone()), hue);
+            }
             self.presence_ctx.set_participant_kind(
                 crate::permissions::UserId(c.id),
                 if c.is_agent {
@@ -1100,6 +1181,7 @@ impl App {
                 },
             );
         }
+        self.collaboration.context_participants = current;
     }
 
     /// Every app in the room is handed every action; the one whose registry
@@ -1125,7 +1207,7 @@ impl App {
                 Some(crate::permissions::UserId(from_user_id.to_string())),
             );
             self.needs_sync = true;
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
     }
 
@@ -1189,6 +1271,9 @@ impl App {
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);
             }
+            CollabEvent::HistoryAgents { cluster_id, agents } => {
+                crate::history_source::set_room_agents(&cluster_id, agents);
+            }
             CollabEvent::Invocation {
                 invocation,
                 id,
@@ -1222,3 +1307,7 @@ impl App {
         &self.collaboration.local_author
     }
 }
+
+#[cfg(test)]
+#[path = "cold_construction_tests.rs"]
+mod cold_construction_tests;

@@ -57,12 +57,12 @@ struct Authority {
     b: Arc<AtomicBool>,
 }
 impl LiveAuthority for Authority {
-    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission> {
+    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied> {
         let (publisher, publish, active) = match token {
             b"grant-a" => (A, true, Arc::new(AtomicBool::new(true))),
             b"grant-b" => (B, true, self.b.clone()),
             b"grant-viewer" => (C, false, Arc::new(AtomicBool::new(true))),
-            _ => return Err(Admission::Denied),
+            _ => return Err(Denied),
         };
         Ok(Arc::new(Session {
             publisher,
@@ -155,7 +155,6 @@ async fn open(f: &Fixture, token: &[u8], id: u8) -> ([u8; 16], Stream) {
         .live
         .relay
         .fallback_open(token, [id; 16])
-        .await
         .expect("fallback admitted");
     let mut stream = Stream {
         inner: stream,
@@ -187,7 +186,7 @@ fn frames_round_trip_and_session_ids_are_exact_lowercase_hex() {
 async fn unknown_tokens_and_sessions_are_refused() {
     let f = fixture();
     assert_eq!(
-        f.live.relay.fallback_open(b"forged", [1; 16]).await.err(),
+        f.live.relay.fallback_open(b"forged", [1; 16]).err(),
         Some(FallbackError::Denied)
     );
     assert_eq!(
@@ -475,6 +474,40 @@ async fn resume_keeps_the_session_and_revocation_ends_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_collection_preserves_an_in_flight_namespace() {
+    let f = fixture();
+    let namespace = path(A);
+    let reservation = f.live.relay.0.slot(&namespace, true).unwrap();
+    f.live.relay.maintain();
+    assert!(
+        f.live.relay.0.slot(&namespace, false).is_some(),
+        "maintenance must not withdraw a namespace while its owner is being attached"
+    );
+    drop(reservation);
+    f.live.relay.maintain();
+    assert!(
+        f.live.relay.0.slot(&namespace, false).is_none(),
+        "an abandoned namespace remains collectable"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_collection_rechecks_current_client_ownership() {
+    let f = fixture();
+    let (_id, _stream) = open(&f, b"grant-a", 44).await;
+    let namespace = path(A);
+    // Commit a maintenance candidate collected before this client attached.
+    f.live.relay.0.remove_slot(&namespace, None);
+    assert!(
+        f.live.relay.0.slot(&namespace, false).is_some(),
+        "a stale idle candidate must not withdraw a currently authorized client"
+    );
+    let (_subscriber, mut stream) = open(&f, b"grant-b", 45).await;
+    let member = stream.until(FRAME_MEMBER).await;
+    assert_eq!((&member[..32], member[32]), (&bytes32(A)[..], 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fallback_to_fallback_presence_is_under_ten_milliseconds() {
     let f = fixture();
     let (a, _a_stream) = open(&f, b"grant-a", 6).await;
@@ -498,11 +531,93 @@ async fn fallback_to_fallback_presence_is_under_ten_milliseconds() {
         {
             samples.push(sent.elapsed());
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        // A move after the stream's presence gap goes at once.
+        tokio::time::sleep(PRESENCE_GAP + Duration::from_millis(10)).await;
     }
     samples.sort();
     let median = samples[samples.len() / 2];
     assert!(median < Duration::from_millis(10), "median {median:?}");
+}
+
+/// Sessions watching the same member share one presence subscription, each
+/// still gets every move, and a session that ends gives up its seat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watchers_of_a_member_share_one_presence_feed() {
+    let f = fixture();
+    let (a, _a_stream) = open(&f, b"grant-a", 6).await;
+    let (_b, mut b_stream) = open(&f, b"grant-b", 7).await;
+    let (_viewer, mut viewer_stream) = open(&f, b"grant-viewer", 8).await;
+    b_stream.until(FRAME_MEMBER).await;
+    loop {
+        let member = viewer_stream.until(FRAME_MEMBER).await;
+        if member[..32] == bytes32(A) {
+            break;
+        }
+    }
+    let seated = || {
+        f.live.relay.0.fallback.feeds.lock().unwrap()[&path(A)]
+            .upgrade()
+            .map_or(0, |feed| feed.sessions.lock().unwrap().len())
+    };
+    assert_eq!(seated(), 2);
+    f.live
+        .relay
+        .fallback_send(
+            &a,
+            &encode_frame(FRAME_SEND_PRESENCE, &[&presence(1, b"t")]),
+        )
+        .unwrap();
+    for stream in [&mut b_stream, &mut viewer_stream] {
+        let payload = stream.until(FRAME_PRESENCE).await;
+        assert_eq!(
+            (&payload[..32], &payload[32..]),
+            (&bytes32(A)[..], &presence(1, b"t")[..])
+        );
+    }
+    f.b.store(false, Ordering::SeqCst);
+    assert_eq!(b_stream.until(FRAME_END).await, [END_REVOKED]);
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        while seated() != 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the ended session leaves the feed");
+}
+
+/// A member moving faster than the presence gap reaches a stream at most
+/// once a gap, and its last position always arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fast_presence_is_paced_and_its_latest_value_arrives() {
+    let f = fixture();
+    let (a, _a_stream) = open(&f, b"grant-a", 6).await;
+    let (_b, mut b_stream) = open(&f, b"grant-b", 7).await;
+    b_stream.until(FRAME_MEMBER).await;
+    let begun = Instant::now();
+    let last = 50;
+    for seq in 1..=last {
+        f.live
+            .relay
+            .fallback_send(
+                &a,
+                &encode_frame(FRAME_SEND_PRESENCE, &[&presence(seq, b"t")]),
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(4)).await;
+    }
+    let mut received = 0u32;
+    loop {
+        let payload = b_stream.until(FRAME_PRESENCE).await;
+        received += 1;
+        if payload[32..] == presence(last, b"t")[..] {
+            break;
+        }
+    }
+    let gaps = begun.elapsed().as_millis() / PRESENCE_GAP.as_millis() + 1;
+    assert!(
+        u128::from(received) <= gaps,
+        "{received} presence writes over {gaps} gaps"
+    );
 }
 
 /// Host presence injected into a host-fed namespace (an agent) reaches an

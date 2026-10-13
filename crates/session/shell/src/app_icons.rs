@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use desktop_entry::icon_theme::{self, IconFile, IconFormat, IconLookup};
 use ui::icons::{AppImage, AppImageSource};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::{Blob, ImageData};
 
-use crate::shell::host_apps::{self, HostApp};
+use crate::shell::host_apps::{self};
 
 /// Icon files larger than this are not read: an icon is kilobytes, and a
 /// hostile or broken theme must not make the compositor parse megabytes.
@@ -45,13 +45,7 @@ pub struct Raster {
 
 impl Raster {
     fn image_data(&self) -> ImageData {
-        ImageData {
-            data: Blob::new(self.rgba.clone()),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: self.width,
-            height: self.height,
-        }
+        ui::raster::rgba8(Blob::new(self.rgba.clone()), self.width, self.height)
     }
 }
 
@@ -199,11 +193,6 @@ fn themed_in(lookup: Arc<IconLookup>, name: &str) -> Option<AppImage> {
         name: name.to_string(),
         lookup,
     }))
-}
-
-/// A host application's artwork, from its `Icon=`.
-pub fn for_host_app(app: &HostApp) -> Option<AppImage> {
-    app.icon.as_deref().and_then(themed)
 }
 
 /// Icon names already resolved, keyed by what asked, and valid for one

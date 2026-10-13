@@ -47,6 +47,29 @@ pub fn catalogue() -> AppCatalogue {
     AppCatalogue::new(component_apps())
 }
 
+/// A record's document as JSON: a page's replica, or the copy an agent's
+/// confined record holds.
+pub trait Body {
+    /// The document, as `AutoSerde` writes it.
+    fn body(&self) -> String;
+}
+
+fn json(doc: &automerge::AutoCommit) -> String {
+    serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap()
+}
+
+impl Body for tilo_agent_participant::Replica {
+    fn body(&self) -> String {
+        self.read(json).unwrap()
+    }
+}
+
+impl Body for tilo_agent_participant::ConfinedReplica {
+    fn body(&self) -> String {
+        self.read(json).unwrap()
+    }
+}
+
 /// Something an agent can drive: a replica, or a participant's record.
 pub trait Driveable {
     /// Every operation the record publishes.
@@ -81,6 +104,16 @@ pub fn sample_arguments(
     for param in descriptor.params.iter().filter(|param| param.required) {
         let value = if let Some(choice) = param.choices.first() {
             serde_json::Value::from(choice.as_ref())
+        } else if let Some(example) = param
+            .schema
+            .as_ref()
+            .and_then(|schema| schema.get("examples"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|examples| examples.first())
+        {
+            // A caller reads constrained input from the published contract,
+            // just as a person follows the palette's parameter guidance.
+            example.clone()
         } else {
             match param.ty {
                 ParamType::Text => WRITTEN.into(),
@@ -154,6 +187,26 @@ pub fn find_edit(app: &mut impl Driveable, limit: usize) -> (Option<Edit>, Vec<S
 /// quoted phrase. Deterministic, and bound by the same rule as a model: it
 /// reveals before it plans.
 pub struct KeywordModel;
+
+/// Scratchpad's note field edit: the body replaced by `text`, as the door
+/// takes it (`field-edit` with the edit as JSON).
+pub fn scratchpad_body(
+    text: &str,
+) -> (
+    tilo_actions::door::ActionAddress,
+    serde_json::Map<String, serde_json::Value>,
+) {
+    let edit = scratchpad::Note::paths().body.replace(text.to_owned());
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(
+        ui::tilo_resource::EDIT_PARAM.into(),
+        serde_json::to_value(&edit).expect("a field edit is JSON"),
+    );
+    (
+        tilo_actions::door::ActionAddress::new("scratchpad.note", ui::tilo_resource::FIELD_EDIT),
+        arguments,
+    )
+}
 
 impl PlanModel for KeywordModel {
     fn choose(

@@ -11,10 +11,6 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard; layout tests pin exact computed positions"
     )
@@ -31,5 +27,5 @@ pub mod surface;
 
 pub use surface::{
     AppInbox, AppNotifier, DesktopHandle, DesktopNotifications, DesktopSurface, HistorySource,
-    NotificationOutcome, TileSource, published_selection, seed_tree,
+    HostAction, NotificationOutcome, TileSource, published_selection, seed_tree,
 };

@@ -1,0 +1,199 @@
+{
+  "schema": 1,
+  "reviewed_on": "2026-10-08",
+  "purpose": "Causal initialization and supported CLI control; no production admission or native streaming qualification",
+  "artifacts": {
+    "runtime_revision": "2ae11323dc000f5e70c49f7403efa6af12ba9e67",
+    "runtime_archive_sha256": "8556785e3f3562bb6e402d48770f34c0797f23b9571c07457cdc577928b0b9d3",
+    "runtime_cli_sha256": "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
+    "header_sha256": "914bbd00423939b02fc349f91cdb7c12531b3f5bb7105b743e0e93c7e409d7b1",
+    "model_sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+    "wrapper_revision": "af2654dffa4987f7e2cbbacdf59c2f854fd18302",
+    "shared_runtime_wheel": {
+      "url": "https://huggingface.co/Cactus-Compute/needle3/resolve/2ae11323dc000f5e70c49f7403efa6af12ba9e67/python/cactus_needle-3.2.0-py3-none-manylinux2014_x86_64.whl",
+      "file": "python/cactus_needle-3.2.0-py3-none-manylinux2014_x86_64.whl",
+      "bytes": 684813,
+      "sha256": "0e8a3bce4e52968ee14e8e9d47098e65ed06dd5b7c18cef3a7fa1375756736f9",
+      "installed": false,
+      "imported": false,
+      "library": {
+        "file": "needle/libneedle3.so",
+        "bytes": 1581448,
+        "sha256": "0772130a416cc7a07fe444bfe400239a595195324f595b2139391839874fd030",
+        "soname": "libneedle.so",
+        "needed": [
+          "libm.so.6",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2",
+          "libpthread.so.0",
+          "libdl.so.2"
+        ]
+      },
+      "license": "Repository-root Apache-2.0 notice retained; wheel itself contains no licence member. Private evaluation only, no redistribution or production provenance approval."
+    }
+  },
+  "budget_contract": {
+    "production_compute_threads": "available_parallelism().min(2); tilo_speech_threads accepts only 1 or 2, passed as Whisper params.n_threads",
+    "production_source": [
+      "crates/agent/local-model-service/src/speech/worker.rs",
+      "crates/agent/local-model-service/native/speech.cpp"
+    ],
+    "review_guard": "probe.observe(max_threads=2) counts all native tasks using /proc Threads, not only running compute workers",
+    "scope_cpu": "two admitted CPUs and CPUQuota=200%; independent of thread count",
+    "scope_tasks_max": 64,
+    "changed": false,
+    "interpretation": "The review guard is stricter than a compute setting. Observed extra tasks are the engine compute pool, not independently established support threads; no exemption or limit relaxation."
+  },
+  "causal_findings": {
+    "archive": "Whistle Engine() fallback calls libc++ thread::hardware_concurrency(), then min(result-or-one,12); ThreadPool(count) launches indices 1 through count-1 and the caller participates. Its separate affinity/topology code chooses placement, not this fallback count.",
+    "current_shared_runtime": "Matching Whistle constructor field offset 0xed8 and cap-12 sequence at virtual address 0xc8dd5; target 0x176970 calls sysconf with _SC_NPROCESSORS_ONLN (0x54 on this Linux runtime), reporting 64 online CPUs rather than admitted affinity. No private entry point was invoked.",
+    "host_online_cpus": 64,
+    "namespace_affinity_count": 2,
+    "no_getenv_import_in_archive": true,
+    "no_getenv_import_in_shared_runtime": true,
+    "environment_guesses": "OMP_NUM_THREADS, OPENBLAS_NUM_THREADS and NEEDLE_THREADS were not supported controls and did not constrain this pool",
+    "thread_role": "11 engine compute-pool workers plus the calling thread; worker_loop executes parallel_for jobs, initially spins then sleeps on a condition variable",
+    "supported_cli_configuration": "--threads 2 created exactly one CLONE_THREAD task in a traced full-French-fixture control, pinned to CPU 1; no transient 12-thread CLI pool was observed in the syscall trace",
+    "supported_native_configuration": "No thread-setting function in the exact public header or 11 needle_* exports. Wrapper selects/fetches/loads the shared library but supplies no thread setter."
+  },
+  "startup_snapshot": {
+    "guarded": "native_thread_limit",
+    "native_threads": 12,
+    "wall_seconds": 0.05458439799986081,
+    "native_load_ms": 9.796492,
+    "native_memory_peak": {
+      "VmPeak": 153112,
+      "VmSize": 153112,
+      "VmHWM": 43924,
+      "VmRSS": 43924,
+      "Threads": 12
+    },
+    "scope_peak_bytes": 55009280,
+    "captured_tasks": [
+      {
+        "tid": 3,
+        "state": "R",
+        "user_ticks": 2,
+        "system_ticks": 1,
+        "runtime_ns": 39758549,
+        "runqueue_delay_ns": 3487352,
+        "slices": 4,
+        "wchan": "0"
+      },
+      {
+        "tid": 4,
+        "state": "S",
+        "user_ticks": 0,
+        "system_ticks": 0,
+        "runtime_ns": 1012170,
+        "runqueue_delay_ns": 988871,
+        "slices": 2,
+        "wchan": "futex_do_wait"
+      },
+      {
+        "tid": 5,
+        "state": "S",
+        "user_ticks": 0,
+        "system_ticks": 0,
+        "runtime_ns": 973571,
+        "runqueue_delay_ns": 28310,
+        "slices": 1,
+        "wchan": "futex_do_wait"
+      },
+      {
+        "tid": 6,
+        "state": "S",
+        "user_ticks": 0,
+        "system_ticks": 0,
+        "runtime_ns": 972521,
+        "runqueue_delay_ns": 18550,
+        "slices": 1,
+        "wchan": "futex_do_wait"
+      }
+    ],
+    "interpretation": "Partial snapshot: calling thread plus three idle workers observed before immediate guard termination; the remaining eight tasks were not sampled individually. Worker CPU was about 1 ms each, wchan futex_do_wait. Do not claim all 11 workers were idle or that future inference cannot activate them.",
+    "native_streaming_accuracy_or_first_words": null,
+    "adapter_sha256": "2aa63f5cf950f30b16103a84c1801fc2be3a08bc2a64331d4a1abeab79db8d72",
+    "binary_sha256": "b6c6cc6c24c417394bf9ea98489b0acf6249e5610721c6ce80295f575ad86cc0",
+    "scope_sha256": "c65903dbce73a09313efa59cfbf8c67023bf4476831dc676da3b4881870bd0b9",
+    "earlier_setup_failure": "One diagnostic scope stopped before decoder because its shared-library verification path was stale; corrected without changing any budget. The following snapshot needed per-line flushing; both guard-refused attempts are retained."
+  },
+  "traced_cli_control": {
+    "exit": 0,
+    "guarded": null,
+    "successful_clone_thread_syscalls": 1,
+    "worker_affinity": [
+      1
+    ],
+    "native_memory_peak": {
+      "VmPeak": 168264,
+      "VmSize": 120188,
+      "VmHWM": 40532,
+      "VmRSS": 38916,
+      "Threads": 2
+    },
+    "scope_peak_bytes": 54251520,
+    "interpretation": "strace instrumentation; complete-file decoding. Do not use traced timing or CPU accounting as source-paced latency."
+  },
+  "one_thread_paced_french_control": {
+    "controlled_change": "Supported CLI --threads 2 to --threads 1 only; same public PCM, model, language, single-pass prefix schedule, two-CPU affinity and all admission guards",
+    "decoder_threads": 1,
+    "native_thread_limit": 2,
+    "first_any_lexical_words_seconds": 2.099369948999083,
+    "first_hypothesis": "Merci.",
+    "first_reference_word_matched_seconds_posthoc": 3.105452208001225,
+    "completion_after_audio_end_seconds": 3.288718314998551,
+    "final_raw_word_errors": 0,
+    "reference_words": 20,
+    "cpu_seconds": 7.919999999999999,
+    "prefix_calls": 8,
+    "native_memory_peak": {
+      "VmPeak": 46456,
+      "VmSize": 46456,
+      "VmHWM": 41080,
+      "VmRSS": 38692,
+      "Threads": 1
+    },
+    "scope_peak_bytes": 55111680,
+    "scope_script_sha256": "40912c63749bb6ddadae1730151e20b916ca60e9340e86d4be2c470273d9f834",
+    "observer_sha256": "5339a08a8c152d3da6d83456d7da607f7ffe24b59ea75ca8eed8977b05720c0e",
+    "two_thread_previous_control": {
+      "first_actual_words_seconds": 2.0879747220024,
+      "first_correct_reference_word_seconds_posthoc": 3.0779593949991977,
+      "completion_after_audio_end_seconds": 2.1971680130052853,
+      "cpu_seconds": 12.049999999999999,
+      "final_raw_word_errors": 0,
+      "reference_words": 20
+    },
+    "interpretation": "One builder observation per setting. One thread lowers measured CPU and virtual memory but worsens final delay; early Merci remains incorrect. Not a shipping or resident streaming improvement."
+  },
+  "upstream_fix_required": {
+    "scope": "Exact licensed native runtime source or a publisher-supported API; broader Cactus source is not verified compatible",
+    "proposal": "Add a public pre-load thread option, validated as positive and applied to Whistle Engine/ThreadPool construction. Explicit thread count must be constrained to admitted affinity; fallback should also respect affinity. Applying it only after default construction would still transiently violate the guard.",
+    "validation_needed": [
+      "At most 2 total native tasks from startup through inference; syscall and /proc evidence",
+      "Resident source-paced public streaming: actual lexical first words and accuracy",
+      "Repeat, silence, cancellation and complete model/runtime provenance"
+    ],
+    "performed": "No runtime patch, private ABI invocation, interposer, new signature, installation, deployment, microphone or catalogue grant"
+  },
+  "cleanup": {
+    "tilo-dictation-whistle-startup-tasks-0050-r2-20261008.service": "inactive",
+    "tilo-dictation-whistle-startup-tasks-0050-r3-20261008.service": "inactive",
+    "tilo-dictation-whistle-startup-tasks-0050-r4-20261008.service": "inactive",
+    "tilo-dictation-whistle-prefix-one-thread-0050-20261008.service": "inactive",
+    "tilo-dictation-whistle-cli-thread-trace-0050-20261008.service": "inactive"
+  },
+  "validation": {
+    "startup_cpp": "Compiled remotely against pinned shared runtime; strict guard refusal preserved",
+    "prefix_python": "Ruff and py_compile; one-thread source-paced control passed",
+    "scope_events": "One-thread, traced CLI and captured startup trial recorded unchanged high/max/oom/oom_kill events. The setup failure stopped before decoding.",
+    "source_receipts": {
+      "tools/release/qualify_whistle_prefix_scope.py": "40912c63749bb6ddadae1730151e20b916ca60e9340e86d4be2c470273d9f834",
+      "tools/release/qualify_whistle_cli_scope.py": "b9abfe655f8da2990052d22efab02358c0159f278818bfea24f0a731b59d0984",
+      "tools/release/probe_asr_candidate.py": "5339a08a8c152d3da6d83456d7da607f7ffe24b59ea75ca8eed8977b05720c0e",
+      "tools/release/summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7",
+      "docs/architecture/dictation-whistle-review.json": "adca6666add3ae65c67884d76be974a1e484c529f57acad512e9a50c63c25e92"
+    }
+  }
+}

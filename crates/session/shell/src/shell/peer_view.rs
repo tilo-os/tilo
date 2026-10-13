@@ -23,6 +23,7 @@ use winit::event::{Modifiers, WindowEvent};
 use ui::Theme;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use crate::collab::colorimetry::Colorimetry;
@@ -32,6 +33,7 @@ use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
 use crate::shell::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};
 use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
+use ui::TextRole;
 
 /// Ceiling on the receive-side decode queue depth; once undrawn frames
 /// exceed this, further pushes drop the oldest. Two is the minimum
@@ -405,11 +407,6 @@ impl PeerView {
         });
     }
 
-    /// Compat shim; prefer [`Self::record_key`] for new call sites.
-    pub fn record_key_no_mods(&mut self, keysym: u32, pressed: bool) {
-        self.record_key(keysym, pressed, 0);
-    }
-
     pub fn take_pending_inputs(&mut self) -> Vec<InputEvent> {
         std::mem::take(&mut self.pending_inputs)
     }
@@ -503,13 +500,7 @@ impl PeerView {
                 }
             };
             let blob = vello::peniko::Blob::new(std::sync::Arc::new(rgba));
-            self.cached_image = Some(vello::peniko::ImageData {
-                data: blob,
-                format: vello::peniko::ImageFormat::Rgba8,
-                alpha_type: vello::peniko::ImageAlphaType::Alpha,
-                width: frame.width,
-                height: frame.height,
-            });
+            self.cached_image = Some(ui::raster::rgba8(blob, frame.width, frame.height));
         }
         self.cached_image.as_ref()
     }
@@ -522,37 +513,18 @@ impl Widget for PeerView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = match taffy.new_leaf(taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
+        taffy.widget_leaf(
+            taffy::Style {
+                size: taffy::Size::from_percent(1.0, 1.0),
+                ..Default::default()
             },
-            ..Default::default()
-        }) {
-            Ok(node) => node,
-            Err(err) => {
-                // `TaffyTree::new_leaf` only ever returns `Ok` for a
-                // fresh, unattached leaf; this arm exists so a future
-                // upstream change degrades the peer surface instead of
-                // aborting the whole session.
-                tracing::error!("peer_view: leaf allocation failed: {err}");
-                NodeId::from(0u64)
-            }
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        let new_rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        let new_rect = ui::widget::layout_rect(taffy, node, origin);
         // Rect changed → the placement matrix in `draw` changes too. Exact
         // equality is safe: taffy produces integer-valued logical pixels.
         if new_rect != self.rect {
@@ -611,17 +583,17 @@ impl Widget for PeerView {
             }
         } else {
             let label = crate::shell::i18n::t("peer-view-awaiting");
-            let size = tokens.typography.scale.base;
-            let (lw, lh) = text_renderer.measure(&label, size, None);
+            let style = tokens.typography.style(TextRole::Body);
+            let (lw, lh) = text_renderer.measure_style(&label, None, &style);
             let cx = rect.center().x - f64::from(lw) / 2.0;
             let cy = rect.center().y - f64::from(lh) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                size,
                 tokens.colors.text_dim,
                 transform.pre_translate((cx, cy).into()),
                 None,
+                &style,
             );
         }
     }
@@ -747,10 +719,6 @@ impl AppWidget for PeerView {
     fn app_icon(&self) -> IconDescriptor {
         // Stands in for "remote / peer surface" until a dedicated icon ships.
         IconDescriptor::Glyph("\u{f0ac}")
-    }
-
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
     }
 }
 
@@ -938,32 +906,9 @@ mod tests {
 
         fn wheel_and_composed_text_go_to_the_window_under_focus() {
             let mut view = PeerView::new(42, 9);
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            let send = |view: &mut PeerView, event: WindowEvent| {
-                let mut doc = automerge::AutoCommit::new();
-                let mut handled = false;
-                let mut focus = None;
-                view.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-                handled
-            };
-            let wheel = || WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
-                delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let send =
+                |view: &mut PeerView, event: WindowEvent| ui::testing::dispatch(view, &event);
+            let wheel = || ui::synthetic_input::mouse_wheel(0.0, 1.0);
             let commit = || WindowEvent::Ime(winit::event::Ime::Commit("é".into()));
 
             // Neither reaches a window the pointer is not over or that has

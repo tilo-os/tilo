@@ -23,6 +23,10 @@ pub(crate) struct ReplayTicket {
 impl Drop for ReplayTicket {
     fn drop(&mut self) {
         self.authority.cancelled.store(true, Ordering::SeqCst);
+        // The owner holding this replay's entry can reclaim it now.
+        if let Some(reclaim) = self.authority.reclaim.get() {
+            reclaim.notify_one();
+        }
     }
 }
 pub(crate) struct Authority {
@@ -31,6 +35,9 @@ pub(crate) struct Authority {
     cancelled: AtomicBool,
     connection: Option<Arc<AtomicBool>>,
     session: Mutex<Option<Arc<AtomicBool>>>,
+    /// The wake of the owner whose table took this replay's entry
+    /// ([`Replays::reclaim_wake`]), set when it took it.
+    reclaim: OnceLock<Arc<tokio::sync::Notify>>,
     // The owner keeps admission during abandoned-spool reclamation.
     _permit: OwnedSemaphorePermit,
 }
@@ -83,20 +90,29 @@ impl Authority {
         self.active() && self.session_guard().is_some()
     }
 }
+/// How long a subscription waits for one of the host's replay slots before
+/// its session gives up. A join burst queues behind the replays in flight
+/// instead of ending every session past the slot count.
+const TICKET_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl ReplayTicket {
-    pub(crate) fn reserve(
+    /// A replay slot for `device`, waiting up to [`TICKET_WAIT`] for one to
+    /// free up.
+    pub(crate) async fn reserve(
         device: [u8; 32],
         connection: Option<Arc<AtomicBool>>,
     ) -> Result<Self, StoreError> {
         static TICKETS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-        Self::reserve_from(
-            device,
-            connection,
-            TICKETS
-                .get_or_init(|| Arc::new(Semaphore::new(DEFAULT_REPLAY_TICKETS)))
-                .clone(),
-        )
+        let slots = TICKETS
+            .get_or_init(|| Arc::new(Semaphore::new(DEFAULT_REPLAY_TICKETS)))
+            .clone();
+        let permit = tokio::time::timeout(TICKET_WAIT, slots.acquire_owned())
+            .await
+            .map_err(|_| error("replay ticket backpressure"))?
+            .map_err(|_| error("replay tickets closed"))?;
+        Ok(Self::with_permit(device, connection, permit))
     }
+    #[cfg(test)]
     fn reserve_from(
         device: [u8; 32],
         connection: Option<Arc<AtomicBool>>,
@@ -105,16 +121,24 @@ impl ReplayTicket {
         let permit = slots
             .try_acquire_owned()
             .map_err(|_| error("replay ticket backpressure"))?;
-        Ok(Self {
+        Ok(Self::with_permit(device, connection, permit))
+    }
+    fn with_permit(
+        device: [u8; 32],
+        connection: Option<Arc<AtomicBool>>,
+        permit: OwnedSemaphorePermit,
+    ) -> Self {
+        Self {
             authority: Arc::new(Authority {
                 id: ReplayId(*uuid::Uuid::new_v4().as_bytes()),
                 device,
                 cancelled: AtomicBool::new(false),
                 connection,
                 session: Mutex::new(None),
+                reclaim: OnceLock::new(),
                 _permit: permit,
             }),
-        })
+        }
     }
 }
 // Only the sole writer constructs this after dropping a fully written batch.
@@ -153,10 +177,23 @@ struct Entry {
 pub(super) struct Replays {
     entries: HashMap<[u8; 16], Entry>,
     next_reclaim: usize,
+    /// Notified when a session drops the ticket of an entry here: the entry
+    /// turns reclaimable then, outside the owner, so the owner sleeps on this
+    /// instead of polling its table.
+    reclaim: Arc<tokio::sync::Notify>,
 }
 impl Replays {
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+    /// Whether a session has let go of an entry, so
+    /// [`State::reclaim_replay_step`] has work.
+    pub(super) fn reclaimable(&self) -> bool {
+        self.entries.values().any(|entry| !entry.authority.active())
+    }
+    pub(super) fn reclaim_wake(&self) -> Arc<tokio::sync::Notify> {
+        self.reclaim.clone()
     }
 }
 pub(crate) fn output_budget() -> &'static ReplayBudget {
@@ -165,6 +202,23 @@ pub(crate) fn output_budget() -> &'static ReplayBudget {
 }
 
 impl DetachedReplay {
+    /// [`Self::advance`] for up to a slice while it is still preparing, as
+    /// an owner transaction runs: one quantum per pool round trip made a
+    /// newcomer's replay wait behind every other replay's trips.
+    fn advance_slice(
+        &mut self,
+        authority: &Arc<Authority>,
+        mut written: Option<WrittenBatch>,
+        budget: &ReplayBudget,
+    ) -> Result<ReplayAdvance, StoreError> {
+        let start = std::time::Instant::now();
+        loop {
+            let advance = self.advance(authority, written.take(), budget)?;
+            if !matches!(advance, ReplayAdvance::Preparing) || start.elapsed() >= super::SLICE {
+                return Ok(advance);
+            }
+        }
+    }
     fn advance(
         &mut self,
         authority: &Arc<Authority>,
@@ -255,7 +309,7 @@ impl ReplayHandle {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .as_mut()
                     .ok_or_else(|| error("stale replay handle"))?
-                    .advance(&authority, acknowledged, output_budget())
+                    .advance_slice(&authority, acknowledged, output_budget())
             })
             .await??;
             match advance {
@@ -271,7 +325,7 @@ impl State {
         &mut self,
         authority: &Arc<Authority>,
     ) -> Result<Step<ReplayHandle>, StoreError> {
-        self.capture_replay_at(authority, false, None)
+        self.capture_replay_at(authority, None, None)
     }
     /// A replay that leaves out the retained frames the resuming device
     /// already holds.
@@ -280,22 +334,25 @@ impl State {
         authority: &Arc<Authority>,
         skip: Option<crate::store::replay::ResumeSkip>,
     ) -> Result<Step<ReplayHandle>, StoreError> {
-        self.capture_replay_at(authority, false, skip)
+        self.capture_replay_at(authority, None, skip)
     }
+    /// The final cut of a catch-up: what the workspace committed while it
+    /// ran, held under `held`.
     pub(crate) fn capture_pending_replay(
         &mut self,
         authority: &Arc<Authority>,
+        held: &std::path::Path,
     ) -> Result<Step<ReplayHandle>, StoreError> {
-        self.capture_replay_at(authority, true, None)
+        self.capture_replay_at(authority, Some(held), None)
     }
     fn capture_replay_at(
         &mut self,
         authority: &Arc<Authority>,
-        pending_only: bool,
+        held: Option<&std::path::Path>,
         skip: Option<crate::store::replay::ResumeSkip>,
     ) -> Result<Step<ReplayHandle>, StoreError> {
         #[cfg(test)]
-        if pending_only {
+        if held.is_some() {
             crate::store::test_barrier::pause(self.store.root(), "replay-pending-capture");
         }
         if !authority.active() {
@@ -332,14 +389,17 @@ impl State {
             }
         }
         if !self.replays.entries.contains_key(&authority.id.0) {
-            let build = if pending_only {
+            let build = if let Some(held) = held {
                 self.store
-                    .start_pending_replay_capture(authority.id, authority.device)
+                    .start_pending_replay_capture(authority.id, authority.device, held)
             } else {
                 self.store
                     .start_replay_capture(authority.id, authority.device)
                     .map(|build| build.skipping(skip))
             };
+            // Its ticket's drop wakes this owner to reclaim the entry. One
+            // ticket names one workspace's replay, so it has one owner.
+            let _ = authority.reclaim.set(self.replays.reclaim.clone());
             // Register even a failed start so its known reserved root is reclaimed.
             self.replays.entries.insert(
                 authority.id.0,
@@ -491,24 +551,29 @@ impl State {
         reason = "the entry is a borrow of the owner table, not a lock guard"
     )]
     pub(super) fn reclaim_replay_step(&mut self) -> Result<(), StoreError> {
-        // The process-wide permit bounds this table. Select only one entry per
+        // The process-wide permit bounds this table. Step only one entry per
         // quantum, including idle time; cancellation never queues another job.
+        // Take the next released entry in turn, past any still in use.
         let n = self.replays.entries.len();
         if n == 0 {
             return Ok(());
         }
-        self.replays.next_reclaim = self.replays.next_reclaim.checked_rem(n).unwrap_or(0);
-        let id = *self
+        let start = self.replays.next_reclaim.checked_rem(n).unwrap_or(0);
+        let Some((offset, id)) = self
             .replays
             .entries
-            .keys()
-            .nth(self.replays.next_reclaim)
-            .invariant("next reclaim missing")?;
-        self.replays.next_reclaim = self.replays.next_reclaim.saturating_add(1);
-        let entry = self.replays.entries.get_mut(&id).invariant("id missing")?;
-        if entry.authority.active() {
+            .iter()
+            .cycle()
+            .skip(start)
+            .take(n)
+            .enumerate()
+            .find(|(_, (_, entry))| !entry.authority.active())
+            .map(|(offset, (id, _))| (offset, *id))
+        else {
             return Ok(());
-        }
+        };
+        self.replays.next_reclaim = start.saturating_add(offset).saturating_add(1);
+        let entry = self.replays.entries.get_mut(&id).invariant("id missing")?;
         if !matches!(entry.cursor, Some(Cursor::Discard(_))) {
             let discard = match entry.cursor.take() {
                 Some(Cursor::Capture(build)) => (*build).into_discard(),

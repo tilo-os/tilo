@@ -7,11 +7,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::float_cmp,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -24,14 +20,10 @@ use ui::framework::testing::TestApp;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::WindowEvent;
 
 fn wheel(lines: f32) -> WindowEvent {
-    WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
-        delta: MouseScrollDelta::LineDelta(0.0, lines),
-        phase: TouchPhase::Moved,
-    }
+    ui::synthetic_input::mouse_wheel(0.0, lines)
 }
 
 /// A tall body so the panel content overflows any short viewport.
@@ -80,6 +72,54 @@ fn semantic(app: &mut TestApp<NotesShell>, target: &str, action: &ui::a11y::Acti
             &automerge::ROOT,
         )
     })
+}
+
+#[test]
+fn long_note_thumb_drag_survives_host_routing_and_intermediate_frames() {
+    use winit::event::ElementState::{Pressed, Released};
+
+    let mut markdown = String::new();
+    let paragraph = "Orange Pi real display scrolling workload. ".repeat(6);
+    for index in 0..180 {
+        writeln!(markdown, "## Paragraph {index}\n\n{paragraph}\n").unwrap();
+    }
+    let mut app = note_at(&markdown, 1051, 952, 1.0);
+    let original = panel(&mut app, |panel| panel.editor().to_markdown());
+    app.harness().send(&pointer(Point::new(600.0, 300.0)));
+    app.harness().scroll(0.0, -10.0);
+    let start = scroll_y(&mut app);
+    assert!(start > 0.0, "host-routed wheel must move the document");
+    let thumb = scroll_control(&mut app).bounds.unwrap().to_rect();
+    app.harness().send(&pointer(thumb.center()));
+    app.harness().send(&mouse(Pressed));
+    let mut previous = start;
+    let mut previous_top = panel(&mut app, |panel| panel.editor().get_rect().y0);
+    for step in 1..=24 {
+        app.harness().send(&pointer(Point::new(
+            thumb.center().x,
+            thumb.center().y + f64::from(step) * 8.0,
+        )));
+        let current = scroll_y(&mut app);
+        assert!(
+            current > previous,
+            "drag step {step} must advance: {previous} -> {current}"
+        );
+        let top = panel(&mut app, |panel| panel.editor().get_rect().y0);
+        assert!(
+            top < previous_top,
+            "drag step {step} must move content geometry"
+        );
+        previous = current;
+        previous_top = top;
+    }
+    app.harness().send(&mouse(Released));
+    app.harness()
+        .send(&pointer(Point::new(thumb.center().x, 800.0)));
+    assert_eq!(scroll_y(&mut app), previous, "release ends the drag");
+    assert_eq!(
+        panel(&mut app, |panel| panel.editor().to_markdown()),
+        original
+    );
 }
 
 #[allow(
@@ -136,7 +176,9 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         );
     }
 
-    eprintln!("phase bottom_scroll_reveals_the_last_row_just_above_the_actual_status_pill");
+    eprintln!(
+        "phase bottom_scroll_leaves_one_gutter_under_the_last_row_and_the_page_runs_to_the_window_bottom"
+    );
     {
         for scale in [1.0, 2.0] {
             let mut app = note_at(&tall_body(), 1000, 1000, scale);
@@ -146,15 +188,22 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
                 .unwrap();
             let mut renderer = crate::component_support::renderer();
             renderer.set_text_scale(scale);
-            let (_, pill_height) = ui::status_bubble::pill_size("Saved", &mut renderer, 12.0, 0.0);
+            let (_, pill_height) = ui::status_bubble::pill_size(
+                "Saved",
+                &mut renderer,
+                &Theme::dark().with_text_scale(scale),
+                0.0,
+            );
             let window_bottom = surface(&mut app, |notes| notes.get_rect().y1);
-            let pill_top = window_bottom - 14.0 - pill_height;
+            let pill_top = window_bottom
+                - f64::from(Theme::dark().with_text_scale(scale).tokens.spacing.s4)
+                - pill_height;
             let content_bottom = panel(&mut app, |panel| panel.editor().content_bottom());
             let gap = pill_top - content_bottom;
             let theme = Theme::dark().with_text_scale(scale);
             assert!(
-                (gap - f64::from(theme.tokens.spacing.s2)).abs() <= 1.0,
-                "at {scale}x, last row ends at {content_bottom}, pill starts at {pill_top}: {gap}px gap wastes space or overlaps the status"
+                (gap - f64::from(theme.tokens.spacing.rhythm.group)).abs() <= 1.0,
+                "at {scale}x, last row ends at {content_bottom} of {pill_top}: {gap}px is not one gutter"
             );
         }
     }
@@ -216,19 +265,9 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         ));
         assert!(semantic(&mut app, "notes.scroll-position", &Action::Focus));
         let key = |key| {
-            let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            event.logical_key = winit::keyboard::Key::Named(key);
-            event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            );
-            event.location = winit::keyboard::KeyLocation::Standard;
-            event.state = Pressed;
-            event.text = None;
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event,
-                is_synthetic: false,
-            }
+            let event =
+                ui::synthetic_input::key_event(winit::keyboard::Key::Named(key), None, Pressed);
+            ui::synthetic_input::keyboard_input(event)
         };
         app.harness().relayout_at((1000, 600)).unwrap();
         dispatch(&mut app, &key(winit::keyboard::NamedKey::Home));
@@ -313,19 +352,12 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             "revealing the first block must return to the top"
         );
 
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowDown);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let event = ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowDown),
+            None,
+            winit::event::ElementState::Pressed,
         );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.text = None;
-        let arrow_down = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        };
+        let arrow_down = ui::synthetic_input::keyboard_input(event);
         for _ in 0..last {
             app.harness().relayout_at((1000, 400)).unwrap();
             dispatch(&mut app, &arrow_down);
@@ -359,18 +391,11 @@ fn scroll_control(app: &mut TestApp<NotesShell>) -> ui::a11y::AccessNode {
 }
 
 fn pointer(point: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-    }
+    ui::synthetic_input::cursor_moved(point.x, point.y)
 }
 
 fn mouse(state: winit::event::ElementState) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state,
-        button: winit::event::MouseButton::Left,
-    }
+    ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
 }
 
 #[test]

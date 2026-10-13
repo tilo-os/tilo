@@ -1,30 +1,33 @@
-//! The strip over the canvas: the artwork's title, set like the label
-//! beside a picture on a wall, taking back and bringing back steps, how
-//! near the artwork is, and the sidebar shown or put away.
+//! The header over the canvas: the artwork's title, set like the label
+//! beside a picture on a wall, taking back and bringing back steps and how
+//! near the artwork is; and the strip of what to do with a selection.
 
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::text_render::FontChoice;
+use ui::tilo_resource::Invoke;
 use ui::widget::EditableLabel;
+use ui::widget::{ButtonRole, ControlSize};
 
 use super::icon_button;
-use crate::actions::{Align, CanvasAction};
+use crate::actions::Align;
 use crate::model::Artwork;
-use crate::resource::ArtworkResource;
 use crate::selection::{Combine, Select, UseSelection};
 use crate::tools::{Sheet, Tools, ViewRequest};
 
-/// The least room the title keeps, so it reads as a title, not a field.
-const TITLE: f32 = 96.0; // about ten letters of the title face: a text width, not spacing
-/// The zoom readout's width, so the buttons beside it hold still as it
-/// changes.
-const READOUT: f32 = 52.0; // "6400%" in the caption face: a text width, not spacing
-
-/// The header.
-pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
-    // The title reads as a title until it is clicked; the edit lands as
-    // one step when Enter or a click away ends it, not one per letter.
+/// The editable artwork title and its current zoom occupy an intrinsically
+/// measured header slot beside the individually measured commands.
+pub fn title(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) -> Element {
+    let zoom_tools = tools.clone();
+    let zoom = cx.switch(compact, move |_, compact| {
+        if *compact {
+            Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element
+        } else {
+            zoom_readout(&zoom_tools)
+        }
+    });
+    // Finish editing the title as one resource action and undo step.
     let titled = cx.value(|art: &Artwork| art.title.clone());
     let title = cx.switch(&titled, |cx, title| {
         Box::new(
@@ -33,87 +36,88 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .edits_on_click()
                     .with_placeholder(ui::i18n::I18nManager::lookup_plain("canvas-untitled"))
                     .with_font_family(FontChoice::Serif)
-                    .with_font_size(17.0)
+                    .with_text_role(TextRole::Heading)
                     .with_id("canvas-title")
                     .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-                        "canvas-artwork-title",
-                    ))
-                    .filling(),
-                ArtworkResource::SET_TITLE,
+                        "canvas-label-artwork-title",
+                    )),
+                Artwork::SET_TITLE,
             ),
         ) as Element
     });
-    let lookup = ui::i18n::I18nManager::lookup_plain;
     Box::new(
-        Row::new()
-            .no_wrap()
-            .with_padding(10.0, 6.0)
-            .with_gap(2.0)
-            .with_align_items(ui::taffy::AlignItems::Center)
-            // The title takes the room the controls leave, and holds them
-            // at the far end.
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_width()
+            .with_intrinsic_height()
             .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_flex_grow()
-                    .with_min_width(TITLE)
-                    .with_child(Box::new(
-                        Column::new()
-                            .with_no_padding()
-                            .with_intrinsic_height()
-                            .with_gap(0.0)
-                            .push(title)
-                            .push(notice(cx, tools)),
-                    )),
+                Row::new()
+                    .no_wrap()
+                    .with_align_items(ui::taffy::AlignItems::Center)
+                    .push(title)
+                    .push(zoom),
             ))
-            .push(add_picture(tools))
-            .push(Box::new(Spacer::fixed(6.0)))
-            .push(Box::new(icon_button(
-                cx,
-                Icon::Undo2,
-                &lookup("canvas-undo"),
-                ArtworkResource::UNDO.invoke(),
-            )))
-            .push(Box::new(icon_button(
-                cx,
-                Icon::Redo2,
-                &lookup("canvas-redo"),
-                ArtworkResource::REDO.invoke(),
-            )))
-            .push(Box::new(Spacer::fixed(10.0)))
-            .push(zoom(tools))
-            .push(Box::new(Spacer::fixed(10.0)))
-            .push(Box::new(toggle(
-                &tools.sidebar,
-                "canvas-sidebar",
-                Icon::PanelRight,
-            )))
-            .push(Box::new(sheet_button(
-                tools,
-                "canvas-export-open",
-                Icon::Download,
-                Sheet::Export,
-            )))
-            .push(menu(cx, tools)),
+            .push(notice(cx, tools)),
     )
+}
+
+/// Individual shared controls let the shell move each command into More
+/// without laying a wider private row beneath its inspector and History.
+pub fn header(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) -> Vec<Element> {
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let mut actions = vec![
+        menu(cx, tools),
+        Box::new(icon_button(
+            cx,
+            Icon::Undo2,
+            &lookup("canvas-undo"),
+            Artwork::UNDO.invoke(),
+        )),
+        Box::new(icon_button(
+            cx,
+            Icon::Redo2,
+            &lookup("canvas-redo"),
+            Artwork::REDO.invoke(),
+        )),
+    ];
+    // Files/export remain in the artwork menu on mobile; adding a picture
+    // moves beside the tools. Keep the title readable rather than compressing
+    // every desktop command into a phone's one header row.
+    for command in 0..5 {
+        let tools = tools.clone();
+        actions.push(cx.switch(compact, move |_, compact| {
+            if *compact {
+                return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
+            }
+            match command {
+                0 => add_picture(&tools, ControlSize::Small),
+                1 => Box::new(sheet_button(
+                    &tools,
+                    "canvas-export-title",
+                    Icon::Download,
+                    Sheet::Export,
+                )),
+                2 => view_button(&tools, "canvas-zoom-out", Icon::Minus, ViewRequest::ZoomOut),
+                3 => view_button(&tools, "canvas-zoom-in", Icon::Plus, ViewRequest::ZoomIn),
+                _ => view_button(&tools, "canvas-zoom-fit", Icon::Maximize2, ViewRequest::Fit),
+            }
+        }));
+    }
+    actions
 }
 
 /// Choose a picture to add: on an empty sheet it becomes the artwork, the
 /// sheet taking its size; otherwise it is placed on the artwork. The
 /// canvas takes the answer when the chooser gives it.
-fn add_picture(tools: &Tools) -> Element {
+pub(crate) fn add_picture(tools: &Tools, size: ControlSize) -> Element {
     let picking = tools.picking.clone();
     let name = ui::i18n::I18nManager::lookup_plain("canvas-add-picture");
     let title = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-title");
     let confirm = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-confirm");
     let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
     Box::new(
-        Button::new("canvas-add-picture", "")
-            .with_icon(Icon::Image)
-            .ghost()
-            .with_accessible_name(&name)
-            .tooltip(name.clone())
-            .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+        Button::icon_only("canvas-add-picture", Icon::Image, &name)
+            .control_size(size)
             .on_view(move || {
                 let request = ui::portal::PickRequest::open(&title, &confirm)
                     .filter(
@@ -142,7 +146,7 @@ struct StripFacts {
 /// chosen layer to, clear, invert or drop; shapes to combine into one; the
 /// mask being painted, and the way back to its layer. Nothing otherwise.
 /// One row at any width: what does not fit its label keeps its icon.
-pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+pub fn context_bar(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let facts = cx.value(|art: &Artwork| StripFacts {
         area: art.selection.is_some(),
         masks: art
@@ -173,7 +177,7 @@ pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .find(|(mask, _, _)| mask == layer)
                     .map(|(_, owner, name)| (owner.clone(), name.clone()));
                 if !facts.area && !align && masked.is_none() {
-                    return Box::new(Spacer::fixed(0.0)) as Element;
+                    return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
                 }
                 let area = facts.area;
                 let tools = tools.clone();
@@ -187,10 +191,10 @@ pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 
 /// What a command of the strip does: the artwork's edit it makes, read
 /// when it is chosen (the brush's layer and paint as they are then).
-type Edit = std::sync::Arc<dyn Fn() -> CanvasAction + Send + Sync>;
+type Edit = std::sync::Arc<dyn Fn() -> Invoke<Artwork> + Send + Sync>;
 
 /// How a command's button is bound to its action.
-type Bind = Box<dyn FnOnce(Button, &ViewCx<ArtworkResource>) -> Element>;
+type Bind = Box<dyn FnOnce(Button, &ViewCx<Artwork>) -> Element>;
 
 /// A command of the strip: its icon, its label's string id, and the edit
 /// it makes, through its own action as a button or through the generic
@@ -212,7 +216,7 @@ impl Command {
     fn new(
         icon: Icon,
         id: &str,
-        action: impl ui::tilo_resource::Binds<ArtworkResource, ()>,
+        action: impl ui::tilo_resource::Binds<Artwork, ()>,
         edit: Edit,
     ) -> Self {
         Self {
@@ -227,15 +231,21 @@ impl Command {
 
     /// A command the canvas carries out off the window's thread: `select`,
     /// handed to it when the button is pressed.
-    fn asking(icon: Icon, id: &str, tools: &Tools, select: impl Fn() -> Select + 'static) -> Self {
-        let finding = std::rc::Rc::clone(&tools.finding);
+    fn asking(
+        icon: Icon,
+        id: &str,
+        select: impl Fn() -> crate::resource::FindArea + 'static,
+    ) -> Self {
         Self {
             icon,
             id: id.to_owned(),
-            bind: Box::new(move |button, _| {
-                Box::new(button.on_view(move || finding.borrow_mut().wanted = Some(select())))
+            bind: Box::new(move |button, cx| {
+                let dispatch = cx.dispatcher();
+                Box::new(button.on_effect(move || {
+                    dispatch.effect(&crate::resource::ViewOp::FindArea { area: select() });
+                }))
             }),
-            edit: std::sync::Arc::new(|| CanvasAction::Select(Box::default())),
+            edit: std::sync::Arc::new(|| Artwork::SELECT.with(Select::default())),
             iconic: true,
             local: true,
         }
@@ -253,20 +263,15 @@ impl Command {
 
     /// The command's button: its icon and label, or the icon alone with
     /// the label as its tooltip and spoken name.
-    fn button(self, cx: &ViewCx<ArtworkResource>, labelled: bool) -> Element {
+    fn button(self, cx: &ViewCx<Artwork>, labelled: bool) -> Element {
         let label = self.label();
         let button = if labelled {
             Button::new(&self.id, &label)
                 .with_icon(self.icon)
-                .ghost()
-                .fit_content(super::ICON_BUTTON)
+                .role(ButtonRole::Plain)
+                .control_size(ControlSize::Small)
         } else {
-            Button::new(&self.id, "")
-                .with_icon(self.icon)
-                .ghost()
-                .with_accessible_name(&label)
-                .tooltip(label.clone())
-                .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+            Button::icon_only(&self.id, self.icon, &label).control_size(ControlSize::Small)
         };
         (self.bind)(button, cx)
     }
@@ -290,23 +295,26 @@ fn text_room(text: &str, per_letter: f32) -> f32 {
     letters * per_letter
 }
 
-/// A button's room in the strip, with the gap after it.
-const SLOT: f32 = super::ICON_BUTTON + 2.0;
-
 /// The strip's one row, as wide as `room` lets it be: labels are given in
 /// the commands' order while they fit, every command keeps its icon while
 /// that fits, and the last ones go into a menu when it does not.
 fn strip(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     tools: &Tools,
     (area, combine, masked): (bool, bool, Option<&(String, String)>),
     room: u32,
 ) -> Element {
+    let spacing = ui::tokens::Spacing::BASE;
+    // A button's room in the strip: an icon button is a pointer target
+    // square, and the strip lays its buttons edge to edge. The strip is
+    // laid out before a theme is known, so it reads the stock metrics.
+    let slot = ui::tokens::Metrics::BASE.min_pointer_target;
+    // Less the bar's inset from the canvas and the row's own.
     #[allow(
         clippy::cast_precision_loss,
         reason = "a width in pixels, far below f32's exact range"
     )]
-    let room = room as f32 - 24.0; // the row's insets
+    let room = room as f32 - 2.0 * (spacing.s2 + spacing.s3);
     let mut groups: Vec<Vec<Command>> = Vec::new();
     if area {
         groups.push(area_commands(tools));
@@ -319,21 +327,21 @@ fn strip(
     }
     let count: usize = groups.iter().map(Vec::len).sum();
     #[allow(clippy::cast_precision_loss, reason = "a handful of buttons")]
-    let rules = groups.len().saturating_sub(1) as f32 * 9.0;
+    let rules = groups.len().saturating_sub(1) as f32 * (2.0 * spacing.s1 + 1.0);
     #[allow(clippy::cast_precision_loss, reason = "a handful of buttons")]
-    let icons = count as f32 * SLOT + rules;
+    let icons = count as f32 * slot + rules;
     // Painting a mask is said where the painting happens, with the way
     // back to the layer's own paint, said in full when there is room.
     let lead = masked.map(|(owner, name)| {
         let full =
             ui::i18n::I18nManager::format("canvas-painting-mask", &[("name", name.clone().into())]);
         let short = ui::i18n::I18nManager::lookup_plain("canvas-medium-mask");
-        let said = if text_room(&full, 7.0) + 30.0 + SLOT + 10.0 + icons <= room {
+        let said = if text_room(&full, 7.0) + 30.0 + slot + spacing.s2 + icons <= room {
             full
         } else {
             short
         };
-        let width = text_room(&said, 7.0) + 30.0 + SLOT + 10.0;
+        let width = text_room(&said, 7.0) + 30.0 + slot + spacing.s2;
         (said, owner.clone(), width)
     });
     let mut spare = room - icons - lead.as_ref().map_or(0.0, |(_, _, width)| *width);
@@ -351,33 +359,32 @@ fn strip(
             break;
         };
         let command = group.remove(at);
-        spare += SLOT;
+        spare += slot;
         if menu.is_empty() {
-            spare -= SLOT;
+            spare -= slot;
         }
         menu.insert(0, command);
     }
     groups.retain(|group| !group.is_empty());
     let mut row = Row::new()
         .no_wrap()
-        .with_padding(10.0, 4.0)
-        .with_gap(2.0)
+        .with_padding(spacing.s3, spacing.s1)
+        .with_gap(spacing.s0)
         .with_align_items(ui::taffy::AlignItems::Center);
     if let Some((said, owner, _)) = lead {
         row = row
-            .push(Box::new(ui::widget::Badge::semantic_pill(
-                said,
-                ui::widget::BadgeTone::Accent,
-            )))
+            .push(Box::new(
+                ui::widget::Badge::text(said).style(ui::widget::ChipStyle::Neutral),
+            ))
             .push(mask_back(tools, owner))
-            .push(Box::new(Spacer::fixed(8.0)));
+            .push(Box::new(Spacer::token(ui::tokens::SpacingStep::S2)));
     }
     for (index, group) in groups.into_iter().enumerate() {
         if index > 0 {
             row = row
-                .push(Box::new(Spacer::fixed(3.0)))
+                .push(Box::new(Spacer::token(ui::tokens::SpacingStep::S1)))
                 .push(Box::new(ui::widget::Divider::vertical()))
-                .push(Box::new(Spacer::fixed(3.0)));
+                .push(Box::new(Spacer::token(ui::tokens::SpacingStep::S1)));
         }
         for command in group {
             if command.iconic {
@@ -399,15 +406,17 @@ fn strip(
     if !menu.is_empty() {
         row = row.push(overflow(cx, menu));
     }
-    Box::new(super::pane::Pane::new(
-        Box::new(row),
-        super::pane::Edge::Bottom,
-    ))
+    // Floating a step in from the canvas's edges.
+    Box::new(
+        Container::new()
+            .with_padding(spacing.s2)
+            .with_child(Box::new(super::pane::Band::new(Box::new(row)))),
+    )
 }
 
 /// The commands that did not fit, in a menu that makes each one's edit
 /// through the artwork's generic `apply`.
-fn overflow(cx: &ViewCx<ArtworkResource>, commands: Vec<Command>) -> Element {
+fn overflow(cx: &ViewCx<Artwork>, commands: Vec<Command>) -> Element {
     let options: Vec<(String, String)> = commands
         .iter()
         .map(|command| (command.id.clone(), command.label()))
@@ -422,18 +431,21 @@ fn overflow(cx: &ViewCx<ArtworkResource>, commands: Vec<Command>) -> Element {
         .with_id("canvas-strip-more")
         .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-strip-more"));
     menu.set_value_options(options);
-    let apply: ui::tilo_resource::ActionRef<ArtworkResource, CanvasAction> =
+    // The chosen command's edit, as the one member of a group: the menu is
+    // bound to whichever verb the command makes.
+    let group: ui::tilo_resource::ActionRef<Artwork, serde_json::Value> =
         ui::tilo_resource::ActionRef::new(
-            ui::tilo_resource::APPLY,
-            &[ui::tilo_resource::APPLY_PARAM],
+            ui::tilo_resource::GROUP,
+            &[ui::tilo_resource::GROUP_PARAM],
         );
     Box::new(cx.actions().bind(
         menu,
-        apply.map(move |chosen: String| {
-            edits
-                .iter()
-                .find(|(id, _)| *id == chosen)
-                .map_or_else(|| CanvasAction::Select(Box::default()), |(_, edit)| edit())
+        group.map(move |chosen: String| {
+            let edit = edits.iter().find(|(id, _)| *id == chosen).map_or_else(
+                || Artwork::SELECT.with(Select::default()),
+                |(_, edit)| edit(),
+            );
+            serde_json::json!([{ "action": edit.id, "args": edit.arguments }])
         }),
     ))
 }
@@ -444,12 +456,8 @@ fn mask_back(tools: &Tools, owner: String) -> Element {
     let chosen = tools.layer.clone();
     let label = ui::i18n::I18nManager::lookup_plain("canvas-paint-layer");
     Box::new(
-        Button::new("canvas-paint-layer", "")
-            .with_icon(Icon::Brush)
-            .ghost()
-            .with_accessible_name(&label)
-            .tooltip(label.clone())
-            .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+        Button::icon_only("canvas-paint-layer", Icon::Brush, &label)
+            .control_size(ControlSize::Small)
             .on_view(move || chosen.set(owner.clone())),
     )
 }
@@ -462,10 +470,14 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
         Command::new(
             icon,
             &format!("canvas-area-{what}"),
-            ArtworkResource::USE_SELECTION
-                .map(move |()| (what.to_owned(), loaded.layer(), Some(loaded.paint()))),
+            Artwork::USE_SELECTION.map(move |()| UseSelection {
+                what: what.to_owned(),
+                layer: loaded.layer(),
+                colour: Some(loaded.paint()),
+                ..UseSelection::default()
+            }),
             std::sync::Arc::new(move || {
-                CanvasAction::UseSelection(UseSelection {
+                Artwork::USE_SELECTION.with(UseSelection {
                     what: what.to_owned(),
                     layer: reads.layer(),
                     colour: Some(reads.paint()),
@@ -481,9 +493,11 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
         using(Icon::Eraser, "clear"),
         {
             let zoom = tools.zoom.clone();
-            Command::asking(Icon::Brush, "canvas-area-refine", tools, move || Select {
-                refine: Some(EDGE / zoom.with(|zoom| zoom.max(1e-6))),
-                ..Select::default()
+            Command::asking(Icon::Brush, "canvas-area-refine", move || {
+                crate::resource::FindArea {
+                    refine: Some(EDGE / zoom.with(|zoom| zoom.max(1e-6))),
+                    ..Default::default()
+                }
             })
         },
         refine(tools, Icon::Plus, "canvas-area-grow", Refine::Grow(GROW)),
@@ -502,35 +516,35 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
         Command::new(
             Icon::Contrast,
             "canvas-area-invert",
-            ArtworkResource::SELECT_INVERT.map(|()| true),
+            Artwork::SELECT_INVERT.map(|()| true),
             std::sync::Arc::new(|| {
-                CanvasAction::Select(Box::new(Select {
+                Artwork::SELECT.with(Select {
                     invert: Some(true),
                     ..Select::default()
-                }))
+                })
             }),
         ),
         Command::new(
             Icon::X,
             "canvas-area-none",
-            ArtworkResource::SELECT_MODE.map(|()| "none".to_owned()),
+            Artwork::SELECT_MODE.map(|()| "none".to_owned()),
             std::sync::Arc::new(|| {
-                CanvasAction::Select(Box::new(Select {
+                Artwork::SELECT.with(Select {
                     mode: Some("none".into()),
                     ..Select::default()
-                }))
+                })
             }),
         ),
     ]
 }
 
-/// How far, in screen pixels, a click grows or shrinks the selection.
-const GROW: f64 = 4.0; // a step a person sees at the zoom they work at, not spacing
 /// How far, in screen pixels, a click fits the selection's edge to the
 /// picture.
-const EDGE: f64 = 8.0; // a reach a person sees at the zoom they work at, not spacing
+use crate::content_geometry::EDGE;
 /// How wide, in screen pixels, a click softens the selection's edge.
-const FEATHER: f64 = 8.0; // a step a person sees at the zoom they work at, not spacing
+use crate::content_geometry::FEATHER;
+/// How far, in screen pixels, a click grows or shrinks the selection.
+use crate::content_geometry::GROW;
 
 /// A change of the selection's edge, in screen pixels.
 #[derive(Clone, Copy)]
@@ -550,23 +564,23 @@ fn refine(tools: &Tools, icon: Icon, id: &str, change: Refine) -> Command {
             Refine::Grow(pixels) => (Some(reads(pixels)), None),
             Refine::Feather(pixels) => (None, Some(reads(pixels))),
         };
-        CanvasAction::Select(Box::new(Select {
+        Artwork::SELECT.with(Select {
             feather,
             grow,
             ..Select::default()
-        }))
+        })
     });
     match change {
         Refine::Grow(pixels) => Command::new(
             icon,
             id,
-            ArtworkResource::SELECT_GROW.map(move |()| units(pixels)),
+            Artwork::SELECT_GROW.map(move |()| units(pixels)),
             edit,
         ),
         Refine::Feather(pixels) => Command::new(
             icon,
             id,
-            ArtworkResource::SELECT_FEATHER.map(move |()| units(pixels)),
+            Artwork::SELECT_FEATHER.map(move |()| units(pixels)),
             edit,
         ),
     }
@@ -588,9 +602,9 @@ fn combine_commands(tools: &Tools) -> Vec<Command> {
         Command::new(
             icon,
             &format!("canvas-combine-{op}"),
-            ArtworkResource::COMBINE.map(move |()| (picked.with(Clone::clone), op.to_owned())),
+            Artwork::COMBINE_AS.map(move |()| (picked.with(Clone::clone), op.to_owned())),
             std::sync::Arc::new(move || {
-                CanvasAction::Combine(Combine {
+                Artwork::COMBINE.with(Combine {
                     ids: reads.with(Clone::clone),
                     op: op.to_owned(),
                 })
@@ -621,14 +635,18 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
             Command::new(
                 icon,
                 &format!("canvas-align-{edge}"),
-                ArtworkResource::ALIGN.map(move |()| {
+                Artwork::ALIGN.map(move |()| {
                     let ids = picked.with(Clone::clone);
-                    let to = to(&ids);
-                    (ids, edge.to_owned(), to)
+                    Align {
+                        to: to(&ids),
+                        ids,
+                        edge: Some(edge.to_owned()),
+                        distribute: None,
+                    }
                 }),
                 std::sync::Arc::new(move || {
                     let ids = reads.with(Clone::clone);
-                    CanvasAction::Align(Align {
+                    Artwork::ALIGN.with(Align {
                         to: to(&ids),
                         ids,
                         edge: Some(edge.to_owned()),
@@ -651,10 +669,9 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
                 Command::new(
                     icon,
                     &format!("canvas-distribute-{axis}"),
-                    ArtworkResource::DISTRIBUTE
-                        .map(move |()| (picked.with(Clone::clone), axis.to_owned())),
+                    Artwork::DISTRIBUTE.map(move |()| (picked.with(Clone::clone), axis.to_owned())),
                     std::sync::Arc::new(move || {
-                        CanvasAction::Align(Align {
+                        Artwork::ALIGN.with(Align {
                             ids: reads.with(Clone::clone),
                             edge: None,
                             distribute: Some(axis.to_owned()),
@@ -671,10 +688,10 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
 
 /// What the last open, save or export came to, in a caption under the
 /// title: one line, cut short where it would crowd the header.
-fn notice(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+fn notice(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     cx.switch(&tools.notice, |_, notice| {
         let Some(said) = notice else {
-            return Box::new(Spacer::fixed(0.0)) as Element;
+            return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
         };
         let shown = if said.chars().count() > NOTICE_LETTERS {
             let cut: String = said.chars().take(NOTICE_LETTERS - 1).collect();
@@ -700,15 +717,15 @@ fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
     let name = ui::i18n::I18nManager::lookup_plain(id);
     Button::new(id, "")
         .with_icon(icon)
-        .ghost()
+        .role(ui::widget::ButtonRole::Plain)
         .with_accessible_name(&name)
         .tooltip(name.clone())
-        .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+        .control_size(ui::widget::ControlSize::Small)
         .on_view(move || sheet.set(Some(which)))
 }
 
 /// The artwork's menu: new, open, save, a copy, export, and the keys.
-fn menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+fn menu(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let tools = tools.clone();
     cx.switch(&tools.recents.clone(), move |_, recents| {
         let lookup = ui::i18n::I18nManager::lookup_plain;
@@ -769,9 +786,9 @@ const MENU_RECENTS: usize = 5;
 
 /// Zoom out, how near the artwork is now, zoom in, and fit it to the
 /// window.
-fn zoom(tools: &Tools) -> Element {
-    let readout = {
-        let zoom = tools.zoom.clone();
+fn zoom_readout(tools: &Tools) -> Element {
+    let zoom = tools.zoom.clone();
+    Box::new(
         Text::dynamic(move || {
             let percent = zoom.with(|zoom| zoom * 100.0);
             if percent < 10.0 {
@@ -781,42 +798,7 @@ fn zoom(tools: &Tools) -> Element {
             }
         })
         .with_role(TextRole::Caption)
-        .with_font_feature(ui::text_render::OpenTypeTag(*b"tnum"), 1)
-    };
-    Box::new(
-        Row::new()
-            .no_wrap()
-            .with_gap(0.0)
-            .with_align_items(ui::taffy::AlignItems::Center)
-            .push(view_button(
-                tools,
-                "canvas-zoom-out",
-                Icon::Minus,
-                ViewRequest::ZoomOut,
-            ))
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_width(READOUT)
-                    .with_child(Box::new(
-                        Row::new()
-                            .no_wrap()
-                            .with_justify(ui::taffy::JustifyContent::Center)
-                            .push(Box::new(readout)),
-                    )),
-            ))
-            .push(view_button(
-                tools,
-                "canvas-zoom-in",
-                Icon::Plus,
-                ViewRequest::ZoomIn,
-            ))
-            .push(view_button(
-                tools,
-                "canvas-zoom-fit",
-                Icon::Maximize2,
-                ViewRequest::Fit,
-            )),
+        .numeric(),
     )
 }
 
@@ -826,25 +808,8 @@ fn view_button(tools: &Tools, id: &str, icon: Icon, request: ViewRequest) -> Ele
     let view = tools.view.clone();
     let name = ui::i18n::I18nManager::lookup_plain(id);
     Box::new(
-        Button::new(id, "")
-            .with_icon(icon)
-            .ghost()
-            .with_accessible_name(&name)
-            .tooltip(name.clone())
-            .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+        Button::icon_only(id, icon, &name)
+            .control_size(ControlSize::Small)
             .on_view(move || view.set(Some(request))),
     )
-}
-
-/// An icon button that shows or hides what `state` says, as a view action.
-fn toggle(state: &LocalState<bool>, id: &str, icon: Icon) -> Button {
-    let flip = state.clone();
-    let name = ui::i18n::I18nManager::lookup_plain(id);
-    Button::new(id, "")
-        .with_icon(icon)
-        .ghost()
-        .with_accessible_name(&name)
-        .tooltip(name.clone())
-        .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
-        .on_view(move || flip.set(!flip.with(|on| *on)))
 }

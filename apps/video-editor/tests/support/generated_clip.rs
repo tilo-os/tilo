@@ -17,54 +17,10 @@ const FRAMES: u32 = 4 * FPS;
 /// sound the generator produces change, so no build reuses a stale clip.
 const GENERATION: u32 = 1;
 
-/// Whether this machine has the `GStreamer` elements the footage tests encode,
-/// mux and parse with.
-///
-/// Where one is missing, a test that needs them says so and returns instead of
-/// failing on a developer box without the full plugin set. With
-/// `TILO_REQUIRE_MEDIA=1`, which CI sets because its builder image carries the
-/// stack, the absence fails the test: a check that cannot observe its subject
-/// must not pass there.
-#[allow(
-    dead_code,
-    reason = "the shared helper is included by several test modules; not every one gates on it"
-)]
-pub fn media_stack() -> bool {
-    const REQUIRED: [&str; 8] = [
-        "openh264enc",
-        "h264parse",
-        "mp4mux",
-        "qtdemux",
-        "wavparse",
-        "webmmux",
-        "vp8enc",
-        "opusenc",
-    ];
-    const AAC: [&str; 3] = ["fdkaacenc", "avenc_aac", "voaacenc"];
-    if gst::init().is_err() {
-        return require_media("GStreamer did not initialise");
-    }
-    let mut missing: Vec<&str> = REQUIRED
-        .into_iter()
-        .filter(|name| gst::ElementFactory::find(name).is_none())
-        .collect();
-    if AAC
-        .iter()
-        .all(|name| gst::ElementFactory::find(name).is_none())
-    {
-        missing.push("an AAC encoder");
-    }
-    missing.is_empty() || require_media(&format!("missing {}", missing.join(", ")))
-}
-
-fn require_media(problem: &str) -> bool {
-    assert!(
-        std::env::var_os("TILO_REQUIRE_MEDIA").is_none_or(|value| value != "1"),
-        "TILO_REQUIRE_MEDIA=1 but the media stack is incomplete: {problem}"
-    );
-    eprintln!("footage not checked ({problem}); set TILO_REQUIRE_MEDIA=1 to make this a failure");
-    false
-}
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/support/media_stack.rs"
+));
 
 /// Return a real H.264/AAC MP4 source with deterministic moving imagery and
 /// an audible 440 Hz stereo track.
@@ -100,13 +56,6 @@ pub fn encoded_video_only() -> std::path::PathBuf {
     CLIP.get_or_init(|| encode_fixture(false)).clone()
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test-fixture dimensions are fixed; panics make a missing codec or malformed buffer fail loudly"
-)]
 fn encode_fixture(with_audio: bool) -> std::path::PathBuf {
     // Test binaries live in `target/<profile>/deps`; keep the clip next to
     // that profile's other outputs.
@@ -146,13 +95,6 @@ fn encode_fixture(with_audio: bool) -> std::path::PathBuf {
     path
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test-fixture dimensions are fixed; panics make a missing codec or malformed buffer fail loudly"
-)]
 fn encode_to(path: &std::path::Path, with_audio: bool) {
     gst::init().expect("initialize GStreamer for generated video fixture");
     std::fs::remove_file(path).ok();
@@ -232,9 +174,6 @@ fn encode_to(path: &std::path::Path, with_audio: bool) {
 
 #[allow(
     clippy::arithmetic_side_effects,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
     reason = "test-fixture dimensions are fixed; panics make a missing codec or malformed buffer fail loudly"
 )]
 fn push_video_frames(source: &gst_app::AppSrc) {
@@ -254,11 +193,16 @@ fn push_video_frames(source: &gst_app::AppSrc) {
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
                 let stripe = ((x + phase) / 16).is_multiple_of(2);
-                let mut colour = if stripe { [24, 50, 78] } else { [76, 38, 24] };
-                if i64::from(x) >= block_x && i64::from(x) < block_x + 64 && (56..124).contains(&y)
-                {
-                    colour = [230, 118, 24];
-                }
+                let in_block = i64::from(x) >= block_x
+                    && i64::from(x) < block_x + 64
+                    && (56..124).contains(&y);
+                let colour = if in_block {
+                    [230, 118, 24]
+                } else if stripe {
+                    [24, 50, 78]
+                } else {
+                    [76, 38, 24]
+                };
                 let offset =
                     usize::try_from((y * WIDTH + x) * 4).expect("fixture pixel offset fits usize");
                 rgba[offset..offset + 3].copy_from_slice(&colour);

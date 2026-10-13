@@ -30,6 +30,9 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Screen visible to { $viewers }. Show collaborators
 topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
+topbar-network-offline = Offline
+topbar-tray-open = Open { $app }
+topbar-tray-menu = Menu for { $app }
 topbar-editor-control = Top bar editor control
 topbar-editor-remove-clock = Remove clock from top bar
 topbar-editor-remove-system-monitor = Remove system monitor from top bar
@@ -289,6 +292,7 @@ activity-removed-workspace = a removed workspace
 activity-receipt-completed = Completed
 activity-receipt-failed = Failed
 activity-receipt-cancelled = Cancelled
+activity-receipt-ended = { $status }: { $what }
 activity-replay-pending = Replay is waiting for current edits to finish
 activity-replay-unavailable = Workspace replay is unavailable for these checkpoints
 activity-replay-empty = No replayable workspace checkpoints yet
@@ -330,6 +334,33 @@ activity-task-mark-done = Mark done
 activity-task-cancel = Cancel task
 activity-task-retry-agent = Retry agent
 activity-task-audit-trail = AUDIT TRAIL
+activity-task-audit-noted = { $what }: { $note }
+workspace-create-task = { $manual ->
+    [true] Created the task “{ $title }” to do by hand
+   *[false] Created the task “{ $title }”
+}
+workspace-attach-resource = Attached { $resource } to the task
+workspace-set-execution-budget = Set how long the task may run
+workspace-approve-run = Approved run { $run }
+workspace-start-run = Started run { $run }
+workspace-add-direction = Gave direction { $revision }
+workspace-apply-direction = Followed direction { $revision }
+workspace-finish = { $outcome ->
+    [done] Finished the task
+    [waiting] Stopped to wait
+   *[cancelled] Cancelled the task
+}
+workspace-abandon = Gave up the run
+workspace-retry = Queued the task again
+workspace-cancel = Cancelled the task
+workspace-report = Reported progress
+workspace-set-status = { $status ->
+    [queued] Queued the task
+    [in-progress] Started the task
+    [waiting] Set the task to waiting
+    [done] Marked the task done
+   *[cancelled] Cancelled the task
+}
 activity-task-unassigned-by = Unassigned · created by { $creator }
 activity-task-agent-badge = Agent · { $name }
 activity-task-status-queued = Queued
@@ -399,16 +430,39 @@ activity-capability = { $effect ->
     } on { $scope } to { $subject }
 activity-capability-unknown = a capability
 activity-capability-this-workspace = this workspace
-activity-capability-every-type = every { $kind }
-activity-capability-one-artifact = one artifact
 activity-capability-one-shared-file = one shared file
 activity-capability-network = network { $host }
 activity-capability-role = { $role ->
         [owner] owners
+        [moderator] moderators
         [editor] editors
         [commenter] commenters
-        [viewer] viewers
-       *[denied] blocked members
+       *[viewer] viewers
+    }
+activity-grant = { $answer ->
+        [deny] denied
+        [ask] ask first for
+       *[allow] allowed
+    } { $kinds ->
+        [read] reading
+        [undoable] changes
+        [outside] outside effects
+        [read-undoable] reading and changes
+        [read-outside] reading and outside effects
+        [undoable-outside] changes and outside effects
+        [none] nothing
+       *[all] everything
+    } on { $node } to { $subject }
+activity-grant-task = task { $task }
+activity-grant-shortcut = Shortcut { $shortcut }
+activity-grant-bot = Bot { $bot }
+activity-grant-foreign-device = devices that are not their own
+activity-member = { $person } as { $role ->
+        [owner] owner
+        [moderator] moderator
+        [editor] editor
+        [commenter] commenter
+       *[viewer] viewer
     }
 activity-capability-a-person = a person
 activity-capability-agent = agent { $agent }
@@ -515,11 +569,11 @@ workspace-settings-role-assign-placeholder = Role and collaborator
 workspace-settings-role-assign-description = Assign a saved least-privilege role to a person, application, or agent.
 workspace-settings-role-assign-named = Assign { $role }
 workspace-settings-role-assign-named-placeholder = Collaborator identity
-workspace-settings-app-action-placeholder = App and action
+workspace-settings-app-action-placeholder = App, resource and action
 workspace-settings-app-action-grant = Let an app use another app's action
-workspace-settings-app-action-grant-description = Grant one application the use of one action another application publishes, in this workspace.
+workspace-settings-app-action-grant-description = Grant one application the use of one action on one resource another application publishes, in this workspace.
 workspace-settings-app-action-revoke = Stop an app using another app's action
-workspace-settings-app-action-revoke-description = Take back every grant letting one application use another application's action in this workspace.
+workspace-settings-app-action-revoke-description = Take back every grant letting one application use one action on one of another application's resources in this workspace.
 workspace-settings-ownership-resource = { $workspace } ownership
 workspace-settings-ownership-propose = Propose ownership transfer
 workspace-settings-ownership-propose-placeholder = Recipient identity
@@ -541,6 +595,7 @@ workspace-settings-tab-apps = Apps
 workspace-settings-close-hint = Press Esc to close
 workspace-settings-edit-hint = Enter to save · Esc to cancel
 workspace-settings-role-owner = Owner
+workspace-settings-role-moderator = Moderator
 workspace-settings-role-editor = Editor
 workspace-settings-role-commenter = Commenter
 workspace-settings-role-viewer = Viewer
@@ -548,6 +603,7 @@ workspace-settings-role-blocked = Blocked
 workspace-settings-role-admin = Admin
 workspace-settings-role-guest = Guest
 workspace-settings-role-owner-preview = Can manage people, permissions, and workspace settings.
+workspace-settings-role-moderator-preview = Can edit shared work, remove other people's messages, lock channels, and remove or ban editors and below.
 workspace-settings-role-editor-preview = Can view, comment on, and edit shared work.
 workspace-settings-role-commenter-preview = Can view shared work and add comments, but cannot edit it.
 workspace-settings-role-viewer-preview = Can view shared work, but cannot comment or edit it.
@@ -564,7 +620,8 @@ workspace-settings-scope-screencast = screen capture
 workspace-settings-scope-remote-desktop = remote pointer + keyboard
 workspace-settings-scope-any-host = any network host
 workspace-settings-scope-host = network host { $host }
-workspace-settings-scope-action = “{ $action }” in { $app }
+workspace-settings-scope-action = “{ $action }” on { $resource } in { $app }
+workspace-settings-scope-action-on-kind = “{ $action }” on every { $kind } in { $app }
 workspace-settings-scope-resource-type = { $kind ->
     [note] every note
     [file] every file
@@ -585,7 +642,8 @@ workspace-settings-scope-screencast-object = screen capture
 workspace-settings-scope-remote-desktop-object = remote pointer + keyboard
 workspace-settings-scope-any-host-object = any network host
 workspace-settings-scope-host-object = network host { $host }
-workspace-settings-scope-action-object = “{ $action }” in { $app }
+workspace-settings-scope-action-object = “{ $action }” on { $resource } in { $app }
+workspace-settings-scope-action-on-kind-object = “{ $action }” on every { $kind } in { $app }
 workspace-settings-scope-resource-type-object = { $kind ->
     [note] every note
     [file] every file
@@ -603,6 +661,17 @@ workspace-settings-allows-edit = Edit { $what }
 workspace-settings-allows-comment = Comment on { $what }
 workspace-settings-allows-invite = Invite others to { $what }
 workspace-settings-allows-view = View { $what }
+workspace-settings-grant-allows = Allowed: { $kinds } in { $where }
+workspace-settings-grant-asks = Asks first: { $kinds } in { $where }
+workspace-settings-grant-denies = Refused: { $kinds } in { $where }
+workspace-settings-kind-read = reading
+workspace-settings-kind-undoable = changes
+workspace-settings-kind-outside = outside effects
+workspace-settings-subject-foreign-device = devices that are not their own
+workspace-settings-grant-placeholder = Who, where and what
+workspace-settings-grant-description = Give someone, an agent or an app an answer for kinds of action in part of this workspace.
+workspace-settings-revoke-placeholder = Which grant
+workspace-settings-revoke-description = Take back one grant by its id.
 workspace-settings-expiry-once = Once
 workspace-settings-expiry-session = Session
 workspace-settings-expiry-until = Until
@@ -620,6 +689,7 @@ workspace-settings-section-people = People
 workspace-settings-section-agents = Agents
 workspace-settings-section-roles = Roles
 workspace-settings-section-other = Other
+workspace-settings-subject-bot = Bot { $id }
 workspace-settings-subject-role = everyone with { $role }
 workspace-settings-subject-token = token { $id }
 workspace-settings-subject-workspace = workspace { $id }
@@ -835,11 +905,6 @@ launchpad-activity-detail = See what changed and why
 launchpad-keyboard-hint = Arrow keys move  ·  Enter opens  ·  Super+N shows every app
 
 # Peers arriving in and leaving a workspace, batched into one toast
-peer-toast-joined-one = { $name } joined
-peer-toast-left-one = { $name } left
-peer-toast-joined-many = { $count } peers joined
-peer-toast-left-many = { $count } peers left
-peer-toast-overflow = { $first }, { $second }, { $third }, +{ $rest } more
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-here-now = { $count } here now
@@ -940,3 +1005,79 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Go to
 overview-panel-new-workspace = New workspace
 browser-new-workspace-name = Workspace { $number }
+
+notification-center-read = Read
+notification-center-read-description = Read complete notification
+notification-preview-hidden = Notification preview hidden
+activity-catch-up-goals = Workspace tasks · { $done } completed · { $unfinished } unfinished · updated { $when }
+activity-catch-up-review-description = Review this workspace's waiting tasks, goals and agent work. Reading activity does not resolve a task.
+activity-catch-up-review-goals = Review goals and agent work
+activity-acknowledge-viewed = Acknowledge viewed activity
+activity-acknowledge-description = Mark only the displayed summaries as read. Keep hidden changes and waiting tasks pending.
+activity-catch-up-needs-review = Needs your review · { $count ->
+    [one] one waiting task
+   *[other] { $count } waiting tasks
+    }
+activity-catch-up-waiting-detail = { $task } · { $who }
+
+notification-alarm-snoozed = Snoozed for 5 minutes. Dismiss this entry to cancel the pending snooze.
+notification-alarm-dismiss = Dismiss
+notification-alarm-snooze = Snooze for 5 minutes
+notification-alarm-action-failed = Could not change this alarm
+notification-alarm-action-title = { $action }: { $title }
+notification-alarm-action-subtitle = For this alarm occurrence
+notification-alarm-action-retry = Keep this notification and try again.
+
+activity-task-review-unavailable = Authenticated task controls are unavailable. Existing work history remains readable.
+activity-task-review-history = Review action history
+activity-task-steer = Change instructions
+activity-task-cancel-run = Cancel this run
+activity-task-retry-run = Retry task
+activity-task-direction-send = Send instructions
+activity-task-direction-close = Back to task
+activity-task-direction-label = Public task instructions
+activity-task-direction-placeholder = Describe the change you want the agent to make
+activity-task-direction-observation = Instructions for run { $epoch }, after revision { $revision }. A changed run requires another review.
+activity-task-review-saving = Waiting for the workspace owner to save…
+activity-task-review-saved = Saved by the workspace owner. Agent application is shown separately.
+activity-task-review-refused = Not saved. Your draft is retained. { $detail }
+
+activity-task-next = Next task
+activity-task-previous = Previous task
+activity-task-review-source = Workspace owner · generation { $generation } · sampled { $time }
+activity-task-review-status = { $status } · Agent: { $agent }
+activity-task-review-frontier = Run { $epoch } · instructions { $revision } · agent applied { $applied }
+activity-task-review-direction = { $author }: { $text }
+activity-task-review-missing = This task is no longer available in this workspace.
+
+activity-task-approve-run = Approve run
+activity-task-run-approved = Approved by { $person } · { $time }
+activity-task-awaiting-acceptance = Awaiting agent acceptance · may be offline
+activity-task-run-accepted = Agent accepted this run · last report { $time }
+activity-task-run-planning = Agent is planning this run · last report { $time }
+activity-task-run-executing = Agent is processing this run · last report { $time }
+
+topbar-cpu-reading = CPU { $value }
+topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, temperature { $temperature }
+
+activity-morning-choose = Choose for morning
+activity-morning-remove = Remove morning source
+activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
+activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
+activity-morning-unavailable = Source unavailable in this workspace · no current evidence
+activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
+
+activity-morning-open = Open morning source
+
+activity-morning-payload-unavailable = Provider summary unavailable. Open the source to inspect or refresh it.
+
+activity-morning-refresh = Refresh source
+activity-morning-draft = Draft scheduled refresh…
+activity-morning-draft-description = Opens a draft in Shortcuts. Choose a schedule and review its permissions before saving; nothing is armed yet.
+activity-morning-command-unavailable = Source command unavailable
+activity-morning-command-pending = Request pending
+activity-morning-command-accepted = Request accepted; inspect its result in Actions
+activity-morning-command-refused = Request refused
+activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
+
+activity-morning-next = Next chosen source

@@ -21,6 +21,17 @@ fn draw(app: &mut TestApp<App>, marks: &Value) {
 }
 
 fn view(app: &mut TestApp<App>, action: &str, args: Value) -> Value {
+    let effect = args.as_object().and_then(|args| {
+        <canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(action, args).ok()
+    });
+    if let Some(effect) = effect {
+        return app
+            .effect(&effect)
+            .expect("the view effect finishes")
+            .value
+            .unwrap_or(Value::Null);
+    }
+
     app.call(action, args).unwrap().unwrap()
 }
 
@@ -256,7 +267,7 @@ fn diff_says_what_changed_about_a_mark() {
         .unwrap();
     app.call("edit-marks", json!({"ids": ["b"], "opacity": 0.5}))
         .unwrap();
-    let diff = view(&mut app, "diff", json!({"from": "drawn"}));
+    let diff = view(&mut app, "compare-versions", json!({"from": "drawn"}));
     assert_eq!(
         diff["marks"]["changed"],
         json!({"a": ["stacking"], "b": ["opacity"]}),

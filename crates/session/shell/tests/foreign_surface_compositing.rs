@@ -18,12 +18,8 @@
 //! Set `TILO_SHOT_DIR` to also drop PNGs of every rendered frame.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
@@ -35,33 +31,13 @@ use shell::compositor::foreign::{self, ForeignSurfaceWidget, store};
 use shell::compositor::frame::FrameBuilder;
 use shell::compositor::tab_binding;
 use shell::shell::state::WorkspaceTree;
+use ui::num::{i32_of_f64, u32_of_f64};
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::Widget;
 use vello::peniko::Color;
 
 const W: u32 = 1600;
 const H: u32 = 900;
-
-/// `v as u32`: Rust's float-to-int `as` cast saturates (NaN/negative → 0,
-/// huge → `u32::MAX`), so it can't wrap or panic — this just narrows a rect
-/// coordinate to the pixel index used for sampling/configure math.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "float-to-int `as` saturates in Rust (no UB/wrap/panic); nothing here can misbehave"
-)]
-fn as_u32(v: f64) -> u32 {
-    v as u32
-}
-
-/// Same saturating cast as [`as_u32`], for the wire configure sizes (`i32`).
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "float-to-int `as` saturates in Rust (no UB/wrap/panic); nothing here can misbehave"
-)]
-fn as_i32(v: f64) -> i32 {
-    v as i32
-}
 
 /// Surface ids are the process-wide key into the frame store, so each
 /// test picks its own to stay independent under parallel execution.
@@ -163,14 +139,17 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
             rect.width() > 100.0 && rect.height() > 100.0,
             "the foreign tile must occupy real area; got {rect:?}"
         );
-        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+        let (cx, cy) = (u32_of_f64(rect.center().x), u32_of_f64(rect.center().y));
 
         let viewport = store()
             .viewport(surface_id)
             .expect("apply_layout must publish the tab rect into the frame store");
         assert_eq!(
             viewport,
-            (as_u32(rect.width().round()), as_u32(rect.height().round())),
+            (
+                u32_of_f64(rect.width().round()),
+                u32_of_f64(rect.height().round())
+            ),
             "the published viewport is the tab's on-screen extent"
         );
 
@@ -211,7 +190,7 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
         // opening card is up. Sample the rect painted by this frame, not the
         // pre-commit position captured above.
         let rect = tile_rect(&mut fb, surface_id);
-        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+        let (cx, cy) = (u32_of_f64(rect.center().x), u32_of_f64(rect.center().y));
         let px = OffscreenRenderer::sample(&after, W, cx, cy);
         // The compositor may paint transient collaboration/chrome ink at the
         // exact centre. Prove that the client owns the tile as an area, rather
@@ -224,8 +203,8 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
                     OffscreenRenderer::sample(
                         after_pixels,
                         W,
-                        as_u32(rect.x0 + rect.width() * fx),
-                        as_u32(rect.y0 + rect.height() * fy),
+                        u32_of_f64(rect.x0 + rect.width() * fx),
+                        u32_of_f64(rect.y0 + rect.height() * fy),
                     )
                 })
             })
@@ -245,7 +224,7 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
         );
 
         // A point well outside the tile keeps the shell's own chrome.
-        let outside_y = as_u32(rect.y0).saturating_sub(30).max(1);
+        let outside_y = u32_of_f64(rect.y0).saturating_sub(30).max(1);
         let out = OffscreenRenderer::sample(&after, W, cx, outside_y);
         assert!(
             !(out.0.abs_diff(0xE0) <= 4 && out.1.abs_diff(0x18) <= 4 && out.2.abs_diff(0xA0) <= 4),
@@ -343,7 +322,7 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
         settle(&mut fb);
 
         let rect = tile_rect(&mut fb, front);
-        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+        let (cx, cy) = (u32_of_f64(rect.center().x), u32_of_f64(rect.center().y));
 
         let (bw, bh) = store()
             .viewport(front)
@@ -375,6 +354,110 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
         store().forget(front);
         store().forget(back);
     }
+}
+
+/// Closing the final window must preserve the empty desktop on every produced
+/// frame, including the first frame before any closing animation has settled.
+/// This checks scene production and retained rasterisation, not physical KMS.
+#[test]
+fn last_window_close_keeps_every_produced_frame_nonblack() {
+    let surface_id = 0x70_0000_0031;
+    store().forget(surface_id);
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tab_binding::adopt_toplevel(
+        &mut tree,
+        surface_id,
+        Some("org.example.last-window".into()),
+    );
+    let workspace = tree.desktop.active;
+    let mut fb = FrameBuilder::with_tree(tree, (W, H));
+    create_fixture_tab_records(&fb);
+    settle(&mut fb);
+    let rect = tile_rect(&mut fb, surface_id);
+    let pixels = solid(
+        u32_of_f64(rect.width()),
+        u32_of_f64(rect.height()),
+        (0xE0, 0x18, 0xA0),
+    );
+    store().publish_rgba(
+        surface_id,
+        &pixels,
+        u32_of_f64(rect.width()),
+        u32_of_f64(rect.height()),
+    );
+    quiesce(&mut fb, surface_id);
+
+    let mut retained = OffscreenRenderer::new(W, H);
+    let mut oracle = OffscreenRenderer::new(W, H);
+    fb.relayout();
+    let before = fb.paint_with_damage();
+    let before_pixels = retained.render_resilient(&before.scene, Color::BLACK);
+    let backdrop = OffscreenRenderer::sample(&before_pixels, W, W - 8, H - 8);
+    assert!(backdrop.0 > 0 || backdrop.1 > 0 || backdrop.2 > 0);
+    assert_eq!(backdrop.3, 255);
+    fb.with_chrome(|chrome| {
+        shell::shell::window_actions::close_active_tab(chrome).expect("ordinary close lifecycle");
+    });
+    let mut doc = automerge::AutoCommit::new();
+    for frame_index in 0..16 {
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        let painted = fb.paint_with_damage();
+        {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            assert_eq!(tree.desktop.active, workspace, "close must retain Home");
+            assert_eq!(tree.desktop.workspaces.len(), 1);
+            assert!(
+                tree.desktop.workspaces[0]
+                    .strips
+                    .iter()
+                    .all(|strip| strip.window_groups.is_empty()),
+                "close must not fabricate a replacement window"
+            );
+        }
+        assert!(fb.foreign_surface_rect(surface_id).is_none());
+        if let Some(regions) = &painted.damage_regions {
+            let rectangles = regions
+                .iter()
+                .map(|r| {
+                    vello::kurbo::Rect::new(
+                        f64::from(r.x),
+                        f64::from(r.y),
+                        f64::from(r.x.saturating_add(r.width)),
+                        f64::from(r.y.saturating_add(r.height)),
+                    )
+                })
+                .collect::<Vec<_>>();
+            retained.render_damage_regions_gpu_wait(&painted.scene, Color::BLACK, &rectangles);
+        } else {
+            retained.render_gpu_wait(&painted.scene, Color::BLACK);
+        }
+        let actual = retained.readback_current();
+        let expected = oracle.render_resilient(&painted.scene, Color::BLACK);
+        assert!(
+            actual
+                .iter()
+                .zip(&expected)
+                .all(|(a, b)| a.abs_diff(*b) <= 2),
+            "retained frame {frame_index} must match its exact full-render oracle"
+        );
+        assert_eq!(
+            OffscreenRenderer::sample(&actual, W, W - 8, H - 8),
+            backdrop,
+            "frame {frame_index} must preserve the painted desktop backdrop"
+        );
+        assert!(
+            actual
+                .chunks_exact(4)
+                .filter(|pixel| pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0)
+                .count()
+                > usize::try_from(W * H / 2).expect("viewport fits usize"),
+            "frame {frame_index} must never become a black output"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    store().forget(surface_id);
 }
 
 /// Paint until the widget tree reaches a steady state.
@@ -564,7 +647,10 @@ fn foreign_toplevel_lifecycle_drives_configure_unmap_and_tab_removal() {
         let rect = tile_rect(&mut fb, surface_id);
         assert_eq!(
             first,
-            (as_i32(rect.width().round()), as_i32(rect.height().round())),
+            (
+                i32_of_f64(rect.width().round()),
+                i32_of_f64(rect.height().round())
+            ),
             "the configure carries the tab's laid-out size"
         );
         assert_eq!(
@@ -583,8 +669,8 @@ fn foreign_toplevel_lifecycle_drives_configure_unmap_and_tab_removal() {
         assert_eq!(
             resized,
             (
-                as_i32(rect_after.width().round()),
-                as_i32(rect_after.height().round())
+                i32_of_f64(rect_after.width().round()),
+                i32_of_f64(rect_after.height().round())
             ),
             "the re-configure carries the tab's new laid-out size"
         );
@@ -617,7 +703,7 @@ fn foreign_toplevel_lifecycle_drives_configure_unmap_and_tab_removal() {
         let scene = frame(&mut fb);
         let mapped = shot("foreign-lifecycle-mapped", &mut renderer, &scene);
         let rect = tile_rect(&mut fb, surface_id);
-        let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
+        let (cx, cy) = (u32_of_f64(rect.center().x), u32_of_f64(rect.center().y));
         let px = OffscreenRenderer::sample(&mapped, W, cx, cy);
         assert!(
             px.0.abs_diff(0x22) <= 4 && px.1.abs_diff(0xC0) <= 4 && px.2.abs_diff(0x40) <= 4,

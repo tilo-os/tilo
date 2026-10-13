@@ -8,13 +8,12 @@
 //! * **History** — a commit graph with branch and merge lanes, author and
 //!   date, plus a detail panel showing each commit's message, refs and
 //!   changed files.
-//! * **Branches & Remotes** — cards for branches, tags, stashes and
-//!   remotes, with fetch / pull / push actions and ahead/behind tracking.
+//! * **Branches** — sections for local and remote branches, tags, stashes
+//!   and remotes, with fetch / pull / push and ahead/behind tracking.
 //!
 //! The live binary reads a real repository through [`repo`] (libgit2 via
-//! `git2`): the one the record opens, a path on the command line, else the
-//! one around the working directory. When none is reachable it opens an
-//! empty repository picker. Screenshots use a bundled [`sample`] so they
+//! `git2`): the one the record opens or an explicitly selected launch path.
+//! Until a repository is selected, it opens an empty repository picker. Screenshots use a bundled [`sample`] so they
 //! show a fully populated state offline. All rendering is theme-driven;
 //! durable UI preferences live in the CRDT via [`settings`].
 //!
@@ -36,11 +35,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -51,17 +46,17 @@ pub mod app;
 pub mod changes;
 pub mod diff;
 pub mod diffview;
-mod doc;
-pub mod draw;
 pub mod graph;
 pub mod history;
 mod http_transport;
+pub mod i18n;
 pub mod model;
 pub mod panels;
 pub mod repo;
 pub mod resource;
 pub mod sample;
 pub mod settings;
+pub mod shared;
 mod ssh_transport;
 mod transport;
 
@@ -69,7 +64,7 @@ pub use app::{GitClientApp, Screen};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<GitClientShell>()
+    ui::built_in_definition!(GitClientShell)
 }
 
 pub use resource::{GitClient, GitClientShell, SCENARIOS};

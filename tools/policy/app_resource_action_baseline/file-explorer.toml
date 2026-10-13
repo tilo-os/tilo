@@ -1,0 +1,7 @@
+[ratchets.action_address_new]
+"apps/file-explorer/src/files_app.rs" = 1
+"apps/file-explorer/src/files_app/selection_actions.rs" = 1
+"apps/file-explorer/src/files_app/tests.rs" = 9
+"apps/file-explorer/src/resource.rs" = 3
+"apps/file-explorer/src/search_provider.rs" = 2
+"apps/file-explorer/src/shortcut_menu.rs" = 2

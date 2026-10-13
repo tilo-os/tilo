@@ -269,14 +269,17 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
         // form, and blobs shared across releases.
         for version in &entry.versions {
             let bytes = storage
-                .load_staged_artifact(&version.tapp_blake3_hex)
+                .load_staged_artifact(&version.tapp().unwrap().tapp_blake3_hex)
                 .unwrap();
             assert_eq!(
                 blake3::hash(&bytes).to_hex().as_str(),
-                version.tapp_blake3_hex
+                version.tapp().unwrap().tapp_blake3_hex
             );
             assert_eq!(
-                status(&format!("{base}/thin/{}.tapp", version.tapp_root_hash_hex)),
+                status(&format!(
+                    "{base}/thin/{}.tapp",
+                    version.tapp().unwrap().tapp_root_hash_hex
+                )),
                 reqwest::StatusCode::OK
             );
         }
@@ -291,13 +294,22 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             entry
                 .versions
                 .iter()
-                .map(|version| format!("{}.root", version.tapp_blake3_hex))
+                .map(|version| format!("{}.root", version.tapp().unwrap().tapp_blake3_hex))
                 .collect()
         );
+        let stored = names(&data_dir.join("payload-blobs"));
+        let (twins, blobs): (BTreeSet<String>, BTreeSet<String>) = stored
+            .into_iter()
+            .partition(|name| Path::new(name).extension().is_some_and(|ext| ext == "zst"));
         assert_eq!(
-            names(&data_dir.join("payload-blobs")).len(),
+            blobs.len(),
             MAX_ENTRY_VERSIONS + 1,
             "one binary per listed release plus the shared library"
+        );
+        assert_eq!(
+            twins,
+            blobs.iter().map(|blob| format!("{blob}.zst")).collect(),
+            "every stored blob has its compressed twin"
         );
         let staged_bytes: u64 = std::fs::read_dir(data_dir.join("staged-artifacts"))
             .unwrap()

@@ -777,7 +777,30 @@ impl Hypervisor for Qemu {
 
     fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
         let disk = vm.entry.disk.clone().unwrap_or_default();
-        vec![Self::script(vm, &["boot", "--gl", "--disk", &disk])]
+        let display = if vm.entry.gl { "--gl" } else { "--2d" };
+        let mut command = Self::script(vm, &["boot", display, "--disk", &disk])
+            .env("TILO_MEM", vm.memory().to_string())
+            .env("TILO_SMP", vm.cpus().to_string());
+        if vm.entry.emulated {
+            command = command.env("TILO_ACCEL", "tcg");
+        }
+        if let Some(arch) = &vm.entry.arch {
+            command = command.env("TILO_VM_ARCH", arch);
+        }
+        if let Some((width, height)) = vm
+            .entry
+            .resolution
+            .as_deref()
+            .and_then(|r| r.split_once('x'))
+            && let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>())
+            && width > 0
+            && height > 0
+        {
+            command = command
+                .env("TILO_XRES", width.to_string())
+                .env("TILO_YRES", height.to_string());
+        }
+        vec![command]
     }
 
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
@@ -1461,6 +1484,45 @@ mod tests {
         assert_eq!(memory(&entry), 8192);
     }
 
+    #[test]
+    fn qemu_start_uses_registered_fixture_without_changing_runtime_control() {
+        let mut entry = VmEntry {
+            hypervisor: "qemu".into(),
+            memory_mb: Some(3072),
+            cpus: Some(3),
+            emulated: true,
+            arch: Some("aarch64".into()),
+            resolution: Some("1920x1080".into()),
+            ..entry()
+        };
+        let start = |entry: &VmEntry| Qemu.start(&Vm { name: "dev", entry })[0].display();
+        assert_eq!(
+            start(&entry),
+            "TILO_SSH_PORT=2223 TILO_MEM=3072 TILO_SMP=3 TILO_ACCEL=tcg TILO_VM_ARCH=aarch64 TILO_XRES=1920 TILO_YRES=1080 bash os/dev/vm.sh boot --2d --disk /vms/dev.qcow2"
+        );
+        entry.gl = true;
+        assert!(start(&entry).contains("boot --gl --disk"));
+        entry.emulated = false;
+        assert!(!start(&entry).contains("TILO_ACCEL="));
+        entry.memory_mb = None;
+        entry.cpus = None;
+        assert!(start(&entry).contains("TILO_MEM=8192 TILO_SMP=4"));
+        for invalid in ["invalid", "0x1080", "1920x0", "1920x1080x2"] {
+            entry.resolution = Some(invalid.into());
+            let command = start(&entry);
+            assert!(!command.contains("TILO_XRES="), "{invalid}");
+            assert!(!command.contains("TILO_YRES="), "{invalid}");
+        }
+        assert_eq!(
+            Qemu.stop(&Vm {
+                name: "dev",
+                entry: &entry
+            })[0]
+                .display(),
+            "TILO_SSH_PORT=2223 bash os/dev/vm.sh shutdown"
+        );
+    }
+
     /// WHPX uses a child, fresh vars and hardware acceleration, and headless direct boot preserves an
     /// explicit ESP binding.
     #[test]
@@ -1996,7 +2058,7 @@ mod tests {
             };
             assert_eq!(
                 Qemu.start(&vm)[0].display(),
-                "TILO_SSH_PORT=2223 bash os/dev/vm.sh boot --gl --disk /vms/dev.qcow2"
+                "TILO_SSH_PORT=2223 TILO_MEM=4096 TILO_SMP=2 bash os/dev/vm.sh boot --2d --disk /vms/dev.qcow2"
             );
             assert_eq!(
                 Qemu.reset(&vm).unwrap().display(),

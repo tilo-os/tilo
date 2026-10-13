@@ -9,10 +9,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -25,14 +21,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use capnp::capability::Promise;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use runtime_collab::raw::{
     action_catalogue_stream, action_stream, channel_handle, collab_service, context_stream,
     presence_event, presence_handle, presence_payload, presence_stream, stream,
 };
 use tilo_ui::collaboration::CollaborationManager;
 use tokio::sync::mpsc;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use uuid::Uuid;
 
 const TEST_APP_ID: &str = "ui-integration-test";
@@ -172,15 +166,8 @@ impl TypedBroker {
                     .unwrap();
                 tokio::task::LocalSet::new().block_on(&runtime, async move {
                     let stream = tokio::net::UnixStream::from_std(server).unwrap();
-                    let (read, write) = stream.into_split();
-                    let network = Box::new(twoparty::VatNetwork::new(
-                        read.compat(),
-                        write.compat_write(),
-                        rpc_twoparty_capnp::Side::Server,
-                        capnp::message::ReaderOptions::default(),
-                    ));
                     let bootstrap: collab_service::Client = capnp_rpc::new_client(service);
-                    let _ = RpcSystem::new(network, Some(bootstrap.client)).await;
+                    let _ = runtime_portal::serve_connected_io(stream, bootstrap.client).await;
                 });
             })
             .unwrap();

@@ -57,6 +57,8 @@ impl StoreSource {
 /// Provenance claim the Store can substantiate for an item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StoreTrust {
+    /// Signed local file authorized by this person's existing scoped attestor.
+    TrustedAttestor,
     PublisherSigned,
     Flathub,
     /// Metadata from the device’s configured Flatpak repository.
@@ -66,6 +68,7 @@ pub enum StoreTrust {
 impl StoreTrust {
     pub fn label(self) -> String {
         match self {
+            Self::TrustedAttestor => ui::i18n!("store-package-local-trust"),
             Self::PublisherSigned => "Publisher + registry verified".to_string(),
             Self::Flathub => "Flathub distribution".to_string(),
             Self::ConfiguredRemote => ui::i18n!("store-remote-trust-short"),
@@ -168,6 +171,9 @@ pub enum ActionKind {
     /// Flatpak but the host has no `flatpak` binary — offer a link to
     /// Flathub's install docs instead.
     NeedsFlatpakHost,
+    /// A directory bot → **Add to a room…**. A bot never installs on the
+    /// device; it runs in a room, added through that room's governance.
+    AddBot,
 }
 
 impl ActionKind {
@@ -181,6 +187,7 @@ impl ActionKind {
             ActionKind::Unmark => "Allow cleanup",
             ActionKind::FlatpakInstall => "Install",
             ActionKind::NeedsFlatpakHost => "Install flatpak first",
+            ActionKind::AddBot => "Add to a room…",
         }
     }
 
@@ -197,6 +204,7 @@ impl ActionKind {
             Self::Unmark => "Allowing cleanup",
             Self::FlatpakInstall => "Installing",
             Self::NeedsFlatpakHost => "Preparing Flatpak",
+            Self::AddBot => "Adding",
         }
     }
 
@@ -213,6 +221,19 @@ impl ActionKind {
                 | Self::NeedsFlatpakHost
         )
     }
+}
+
+/// What a directory bot does and needs, from its newest signed version.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotListing {
+    pub version: String,
+    /// Trigger kinds (`connector`, `record_changed`, …).
+    pub triggers: Vec<String>,
+    pub apps: Vec<String>,
+    pub connectors: Vec<registry_types::PackageRequirement>,
+    /// Whether it may post under other names and avatars.
+    pub appearance: bool,
+    pub artifact: registry_types::BotArtifact,
 }
 
 /// One version the source knows about.
@@ -281,9 +302,24 @@ pub struct StoreItem {
     pub publisher_pubkey_hex: Option<String>,
     /// Cross-referenced install state at merge time.
     pub installed: InstalledState,
+    /// Set for a directory bot, which has no downloadable app version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<BotListing>,
 }
 
 impl StoreItem {
+    /// The publisher's short pitch, or the source description when an older
+    /// catalogue does not provide a tagline. Cards and semantic resources
+    /// use the same summary; the details page still shows the full description.
+    pub fn summary(&self) -> &str {
+        let tagline = self.tagline.trim();
+        if tagline.is_empty() {
+            self.description.trim()
+        } else {
+            tagline
+        }
+    }
+
     /// The version the UI advertises as "latest" — the first entry, or
     /// an empty string when the source didn't ship any versions.
     pub fn latest_version(&self) -> &str {
@@ -298,6 +334,9 @@ impl StoreItem {
     /// when a newer version is available. Flatpak apps keep the
     /// legacy Install / Remove semantics.
     pub fn action_kind(&self, flatpak_available: bool) -> ActionKind {
+        if self.bot.is_some() {
+            return ActionKind::AddBot;
+        }
         match (&self.source, &self.installed, flatpak_available) {
             (StoreSource::Tilo { .. }, InstalledState::Not, _) => ActionKind::Open,
             (StoreSource::Tilo { .. }, InstalledState::Installed { .. }, _) => {
@@ -407,7 +446,11 @@ impl StoreItem {
 
     /// The same availability contract for controls, rows and direct invocation.
     pub fn unavailable_action(&self, action: ActionKind) -> Option<(&'static str, String)> {
-        if self.managed_by_device(action) {
+        if action == ActionKind::AddBot {
+            // Adding runs a room's governance action, which needs a room that
+            // offers it to this person; until one does, say where bots go.
+            Some(("bot_needs_room", ui::i18n!("store-bot-add-unavailable")))
+        } else if self.managed_by_device(action) {
             Some((
                 "device_managed_repository",
                 ui::i18n!("store-remote-managed"),
@@ -551,6 +594,7 @@ mod tests {
 
     fn tilo_item(name: &str, installed: InstalledState, latest: &str) -> StoreItem {
         StoreItem {
+            bot: None,
             id: format!("so.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: format!("Some {name} app"),
@@ -580,6 +624,7 @@ mod tests {
 
     fn flatpak_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
+            bot: None,
             id: format!("org.example.{name}"),
             name: name.into(),
             description: format!("{name} on Flathub"),

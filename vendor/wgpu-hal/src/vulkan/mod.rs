@@ -198,7 +198,34 @@ pub struct Surface {
     swapchain: RwLock<Option<Box<dyn swapchain::Swapchain>>>,
 }
 
+/// Framebuffer damage in an untransformed, single-layer presentable image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PresentDamageRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 impl Surface {
+    /// Specify changed framebuffer rectangles for the next presentation only.
+    ///
+    /// Returns false for unsupported, unconfigured or transformed surfaces, or
+    /// invalid rectangles. The caller must include every changed pixel since
+    /// the last successful presentation. Failure clears any previous hint and
+    /// preserves ordinary whole-surface presentation.
+    pub fn set_next_present_damage(&self, rectangles: &[PresentDamageRect]) -> bool {
+        let mut swapchain = self.swapchain.write();
+        let Some(native) = swapchain.as_mut().and_then(|chain| {
+            chain
+                .as_any_mut()
+                .downcast_mut::<swapchain::NativeSwapchain>()
+        }) else {
+            return false;
+        };
+        native.set_next_present_damage(rectangles)
+    }
+
     /// Returns the raw Vulkan surface handle.
     ///
     /// Returns `None` if the surface is a DXGI surface.

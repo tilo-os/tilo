@@ -7,17 +7,16 @@
 //! a create and "changed remotely" for a conditional replace.
 
 use std::fmt::Write as _;
-use std::io::Read;
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use cloud_source::{Credential, CredentialSource, Error, Result};
+use cloud_source::{Credential, CredentialSource, Error, Result, http};
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use serde_json::Value;
 
 /// Largest JSON response read from an RPC endpoint.
-const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 
 /// Where the three Dropbox API hosts are. Tests point all three at fakes.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -114,9 +113,8 @@ pub struct Downloaded {
     pub response: Response,
     /// The `Dropbox-API-Result` header.
     pub result: Value,
-    pub partial: bool,
-    pub content_range: Option<(Range<u64>, Option<u64>)>,
-    pub content_length: Option<u64>,
+    /// What the response said about its body.
+    pub served: http::Served,
 }
 
 /// One account's transport. Cloning shares the connection pool.
@@ -154,36 +152,13 @@ fn header<'a>(response: &'a Response, name: &str) -> Option<&'a str> {
     response.headers().get(name).and_then(|v| v.to_str().ok())
 }
 
-fn retry_after(response: &Response) -> Option<Duration> {
-    header(response, "retry-after")
-        .and_then(|v| v.trim().parse().ok())
-        .map(Duration::from_secs)
-}
-
 fn read_json(response: Response) -> Result<Value> {
-    let mut body = Vec::new();
-    response
-        .take(MAX_JSON_BYTES.saturating_add(1))
-        .read_to_end(&mut body)
-        .map_err(|_| Error::Offline)?;
-    if body.len() as u64 > MAX_JSON_BYTES {
-        return Err(Error::TooLarge);
-    }
+    let declared = response.content_length();
+    let body = http::read_bounded(response, declared, MAX_JSON_BYTES)?;
     if body.is_empty() {
         return Ok(Value::Null);
     }
     serde_json::from_slice(&body).map_err(|_| Error::InvalidResponse("json"))
-}
-
-/// `bytes a-b/total` of a `Content-Range` header, as a half-open range.
-fn content_range(value: &str) -> Option<(Range<u64>, Option<u64>)> {
-    let rest = value.trim().strip_prefix("bytes ")?;
-    let (span, total) = rest.split_once('/')?;
-    let (start, end) = span.split_once('-')?;
-    let start: u64 = start.trim().parse().ok()?;
-    let end: u64 = end.trim().parse().ok()?;
-    let total = total.trim().parse().ok();
-    Some((start..end.checked_add(1)?, total))
 }
 
 impl Api {
@@ -235,12 +210,10 @@ impl Api {
         if response.status().is_success() {
             return Ok(response);
         }
+        let retry_after = header(&response, "retry-after")
+            .and_then(|value| http::parse_retry_after(value, SystemTime::now()));
         Err(match status {
-            401 if authenticated => {
-                self.credentials.rejected();
-                Error::Unauthorized.into()
-            }
-            403 => Error::Forbidden.into(),
+            401 if authenticated => http::unauthorized(self.credentials.as_ref()).into(),
             409 => {
                 let body = read_json(response)?;
                 let summary = body
@@ -251,15 +224,9 @@ impl Api {
                 let error = body.get("error").cloned().unwrap_or(Value::Null);
                 Failure::Route { summary, error }
             }
-            429 => Error::RateLimited {
-                retry_after: retry_after(&response),
-            }
-            .into(),
-            500.. if retry_after(&response).is_some() => Error::RateLimited {
-                retry_after: retry_after(&response),
-            }
-            .into(),
-            status => Error::Status(status).into(),
+            status => http::classify(status, retry_after)
+                .unwrap_or(Error::Status(status))
+                .into(),
         })
     }
 
@@ -300,15 +267,15 @@ impl Api {
         let result = header(&response, "dropbox-api-result")
             .and_then(|v| serde_json::from_str(v).ok())
             .ok_or(Error::InvalidResponse("download result header"))?;
-        let partial = response.status().as_u16() == 206;
-        let content_range = header(&response, "content-range").and_then(content_range);
-        let content_length = response.content_length();
+        let served = http::Served {
+            partial: response.status().as_u16() == 206,
+            content_range: header(&response, "content-range").and_then(http::parse_content_range),
+            declared: response.content_length(),
+        };
         Ok(Downloaded {
             response,
             result,
-            partial,
-            content_range,
-            content_length,
+            served,
         })
     }
 
@@ -342,13 +309,6 @@ mod tests {
         );
         let back: Value = serde_json::from_str(&ascii_json(&arg)).unwrap();
         assert_eq!(back, arg);
-    }
-
-    #[test]
-    fn content_ranges_parse_half_open() {
-        assert_eq!(content_range("bytes 10-19/100"), Some((10..20, Some(100))));
-        assert_eq!(content_range("bytes 0-0/*"), Some((0..1, None)));
-        assert_eq!(content_range("items 0-1/2"), None);
     }
 
     #[test]

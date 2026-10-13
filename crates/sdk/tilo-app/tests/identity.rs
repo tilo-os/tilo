@@ -1,6 +1,5 @@
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::float_cmp,
     reason = "test assertions; levels are whole numbers, exact in f64"
 )]
@@ -14,6 +13,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use tilo_app::advanced::{NodeId, TaffyTree, WindowEvent};
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::Stamped;
 
@@ -66,6 +66,10 @@ impl ResourceApp for BoardApp {
     const ID: &'static str = "so.tilo.test-board";
     const TITLE: &'static str = "Board";
 
+    fn label(_: &Board) -> String {
+        "Studio mixer".into()
+    }
+
     fn view(cx: &mut ViewCx<Board>) -> Element {
         let me = cx.me().map(str::to_owned);
         let signed_in = format!("Signed in as {}", me.as_deref().unwrap_or("nobody"));
@@ -81,7 +85,7 @@ impl ResourceApp for BoardApp {
                     format!("{mine} of yours")
                 })))
                 .push(Box::new(
-                    cx.button("Post", Board::POST.with("from the button".into())),
+                    cx.button("Post", Board::POST.with("from the button")),
                 ))
                 .push(cx.surface(LevelSlider::<Board>::default())),
         )
@@ -188,9 +192,6 @@ impl<R: Resource<Action = LevelAction>> Widget for LevelSlider<R> {
         SLIDER.with(|slider| slider.set(self.rect));
     }
 
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         use tilo_app::winit::event::{ElementState, MouseButton};
         let Some(dispatch) = &self.dispatch else {
@@ -198,14 +199,13 @@ impl<R: Resource<Action = LevelAction>> Widget for LevelSlider<R> {
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if self.dragging {
                     let level = ((self.cursor.x - self.rect.x0) / self.rect.width() * 100.0)
                         .clamp(0.0, 100.0)
                         .round();
                     let action = Stamped {
-                        operation: BoardAction::SetLevel { level },
+                        operation: BoardAction::SetLevel(board::SetLevel { level }),
                         now_ms: 0,
                     };
                     dispatch.apply_now(&mut ctx.edits(), &action).unwrap();
@@ -288,8 +288,7 @@ fn views_surfaces_and_actions_know_who_is_editing() {
     assert!(shown(&mut app).contains("1 of yours"));
 
     // The same through the door an agent or a script uses.
-    app.invoke(Board::POST.with("through the door".into()))
-        .unwrap();
+    app.invoke(Board::POST.with("through the door")).unwrap();
     assert!(
         app.state()
             .notes
@@ -302,7 +301,12 @@ fn views_surfaces_and_actions_know_who_is_editing() {
     drag(&mut app, 10.0, 40.0);
     assert_eq!(app.state().level, 40.0);
     let last = app.versions().pop().unwrap();
-    let invoker = last.context.and_then(|context| context.invoker).unwrap();
+    let context = last.context.unwrap();
+    let resource = context.resource.unwrap();
+    assert_eq!(resource.kind, "test.board");
+    assert_eq!(resource.label, "Studio mixer");
+    assert_ne!(resource.label, <Board as Resource>::LABEL);
+    let invoker = context.invoker.unwrap();
     assert_eq!(invoker.actor, "test-author");
 
     // A past version is read by nobody in particular.
@@ -342,9 +346,8 @@ fn a_new_record_is_seeded_by_its_creator_without_an_undo_step() {
 #[test]
 fn content_from_outside_syncs_but_is_nobodys_undo_step() {
     let mut app = TestApp::<BoardApp>::new().unwrap();
-    app.invoke(Board::POST.with("mine".into())).unwrap();
-    app.invoke(Board::SHOW_HEADLINE.with("Fetched".into()))
-        .unwrap();
+    app.invoke(Board::POST.with("mine")).unwrap();
+    app.invoke(Board::SHOW_HEADLINE.with("Fetched")).unwrap();
     let peer = app.peer_document();
     assert_eq!(
         <Board as Resource>::read(&peer).unwrap().headline,
@@ -360,9 +363,8 @@ fn content_from_outside_syncs_but_is_nobodys_undo_step() {
 
     // The history verb skips it the same way.
     let mut app = TestApp::<BoardApp>::new().unwrap();
-    app.invoke(Board::POST.with("mine".into())).unwrap();
-    app.invoke(Board::SHOW_HEADLINE.with("Fetched".into()))
-        .unwrap();
+    app.invoke(Board::POST.with("mine")).unwrap();
+    app.invoke(Board::SHOW_HEADLINE.with("Fetched")).unwrap();
     app.call("undo", serde_json::json!({})).unwrap();
     assert!(app.state().notes.is_empty());
     assert_eq!(app.state().headline, "Fetched");
@@ -374,11 +376,8 @@ fn two_devices_creating_the_same_record_converge_on_one() {
     // creates it, and each posts into the collection its genesis made.
     let mut here = TestApp::<BoardApp>::new().unwrap();
     let mut there = TestApp::<BoardApp>::new().unwrap();
-    here.invoke(Board::POST.with("written here".into()))
-        .unwrap();
-    there
-        .invoke(Board::POST.with("written there".into()))
-        .unwrap();
+    here.invoke(Board::POST.with("written here")).unwrap();
+    there.invoke(Board::POST.with("written there")).unwrap();
     let mut theirs = there.peer_document();
     here.merge_peer(&mut theirs).unwrap();
     let mut texts: Vec<String> = here

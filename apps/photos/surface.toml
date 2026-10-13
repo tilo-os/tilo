@@ -1,0 +1,120 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "photos.library"
+label = "Photos"
+version = 2
+fields = [
+  { path = "photos", type = "Collection<LibraryPhoto>", stored = "collection" },
+  { path = "photos.*.id", type = "String", readonly = true },
+  { path = "photos.*.name", type = "String", label = true, readonly = true },
+  { path = "photos.*.image", type = "OpenImage", readonly = true, stored = "record" },
+  { path = "photos.*.image.name", type = "String" },
+  { path = "photos.*.image.width", type = "u32" },
+  { path = "photos.*.image.height", type = "u32" },
+  { path = "photos.*.image.content", type = "String" },
+  { path = "photos.*.favorite", type = "bool" },
+  { path = "photos.*.folder", type = "Option<String>" },
+  { path = "photos.*.people", type = "Set<String>" },
+  { path = "photos.*.tags", type = "Set<String>" },
+  { path = "photos.*.captured_at", type = "Option<String>" },
+  { path = "photos.*.location", type = "Option<PhotoLocation>" },
+  { path = "photos.*.ocr", type = "Option<OcrComponent>" },
+  { path = "photos.*.vision", type = "Option<VisionComponent>" },
+  { path = "photos.*.edits", type = "Edits", stored = "record" },
+  { path = "photos.*.edits.crop", type = "Rect01" },
+  { path = "photos.*.edits.rotate_quarters", type = "u8" },
+  { path = "albums", type = "Collection<Album>", stored = "collection" },
+  { path = "albums.*.id", type = "String", readonly = true },
+  { path = "albums.*.name", type = "String", label = true },
+  { path = "albums.*.photo_ids", type = "Set<String>" },
+]
+
+[[resources.verbs]]
+id = "import-photo"
+kind = "undoable"
+params = [
+  { name = "image", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, content = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["name", "width", "height", "content"] } },
+  { name = "captured_at", required = false, schema = { type = ["string", "null"] } },
+  { name = "location", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { label = { type = ["string", "null"] }, latitude = { type = "number" }, longitude = { type = "number" }, provenance = { type = "object", additionalProperties = false, properties = { scope = { type = "string" }, source = { type = "string" } } } }, required = ["latitude", "longitude"] } },
+]
+
+[[resources.verbs]]
+id = "refresh-imported-metadata"
+kind = "undoable"
+params = [
+  { name = "photo", required = true, schema = { type = "string" } },
+  { name = "captured_at", required = false, schema = { type = ["string", "null"] } },
+  { name = "location", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { label = { type = ["string", "null"] }, latitude = { type = "number" }, longitude = { type = "number" }, provenance = { type = "object", additionalProperties = false, properties = { scope = { type = "string" }, source = { type = "string" } } } }, required = ["latitude", "longitude"] } },
+]
+
+[[resources.verbs]]
+id = "remove-photo"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "photo", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "rotate-right"
+kind = "undoable"
+params = [
+  { name = "photo", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "rotate-left"
+kind = "undoable"
+params = [
+  { name = "photo", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "crop"
+kind = "undoable"
+params = [
+  { name = "photo", required = true, schema = { type = "string" } },
+  { name = "region", required = true, schema = { type = "object", additionalProperties = false, properties = { h = { type = "number", maximum = 1, minimum = 0 }, w = { type = "number", maximum = 1, minimum = 0 }, x = { type = "number", maximum = 1, minimum = 0 }, y = { type = "number", maximum = 1, minimum = 0 } }, required = ["x", "y", "w", "h"] } },
+]
+
+[[resources.verbs]]
+id = "merge-image-analysis"
+kind = "undoable"
+params = [
+  { name = "photo", required = true, schema = { type = "string" } },
+  { name = "analysis", required = true, schema = { type = "object", additionalProperties = false, properties = { description = { type = "string" }, objects = { type = "array", items = { type = "string" } }, ocr_provenance = { type = ["object", "null"], additionalProperties = false, properties = { content = { type = "string" }, engine = { type = "string" }, language = { type = "string" }, model_id = { type = "string" }, model_revision = { type = "string" }, scope = { type = "string" }, source = { type = "string" } }, required = ["model_id", "model_revision", "content"] }, ocr_text = { type = "string" }, pets = { type = "array", items = { type = "string" } }, provenance = { type = "object", additionalProperties = false, properties = { content = { type = "string" }, engine = { type = "string" }, language = { type = "string" }, model_id = { type = "string" }, model_revision = { type = "string" }, scope = { type = "string" }, source = { type = "string" } }, required = ["model_id", "model_revision", "content"] }, vision_provenance = { type = ["object", "null"], additionalProperties = false, properties = { content = { type = "string" }, engine = { type = "string" }, language = { type = "string" }, model_id = { type = "string" }, model_revision = { type = "string" }, scope = { type = "string" }, source = { type = "string" } }, required = ["model_id", "model_revision", "content"] } } } },
+]
+
+[[resources.verbs]]
+id = "set-person-membership"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "photos", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "rename-person"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "to", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-person"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-album"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "album", required = true, schema = { type = "string" } },
+]
+

@@ -4,12 +4,11 @@
 
 use std::fmt::Write as _;
 
-use tilo_document::RichTextAction;
 use ui::headless::{FrameHarness, SemanticExpectation};
 use vello::kurbo::{Point, Rect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton};
 
-use crate::actions::{self, NotesAction};
+use crate::actions::{self, Action};
 use crate::main_panel::MainPanel;
 use crate::model::{PageId, TagId};
 
@@ -218,7 +217,7 @@ f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
 
 /// The image the image scenarios show: a checked-in PNG, so the real decoder
 /// draws it without network access.
-const IMAGE: &[u8] = include_bytes!("../../settings/shots/settings.png");
+const IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png"));
 
 /// What the scenario's launch checklist says, when it differs from the
 /// sample's.
@@ -270,7 +269,7 @@ fn launch_body(scenario: Option<&str>) -> String {
 /// a handful of notes in a tree, two tags on the launch checklist, and the
 /// note a typing scenario types into.
 #[must_use]
-pub fn actions(scenario: Option<&str>) -> Vec<NotesAction> {
+pub fn actions(scenario: Option<&str>) -> Vec<Action> {
     if scenario == Some("first_note") {
         return Vec::new();
     }
@@ -297,7 +296,7 @@ pub fn actions(scenario: Option<&str>) -> Vec<NotesAction> {
     }
     let mut out = notes
         .iter()
-        .map(|(id, parent, title)| actions::append_page_action(*id, *parent, title))
+        .map(|(id, parent, title)| actions::create_page_action(*id, *parent, title))
         .collect::<Vec<_>>();
     let titles = notes
         .iter()
@@ -317,18 +316,12 @@ pub fn actions(scenario: Option<&str>) -> Vec<NotesAction> {
     }
     if matches!(scenario, Some("image" | "image_edit")) {
         // The image itself: the body already names it by its digest.
-        out.push(actions::add_image_asset_action(
-            launch,
-            IMAGE.to_vec(),
-            RichTextAction::AppendParagraph {
-                text: "Captured from the settings window.".into(),
-            },
-        ));
+        out.push(actions::keep_image_action(IMAGE.to_vec()));
     }
     if scenario == Some("import_success") {
         // The note a Markdown file became, the moment its import succeeded.
         out.push(actions::import_markdown_action(
-            page(8),
+            Some(page(8)),
             "Project brief",
             "Imported through Notes' semantic Markdown action.\n\n- [x] Preserve headings\n- [x] Preserve lists\n",
             Vec::new(),
@@ -353,9 +346,18 @@ pub fn actions(scenario: Option<&str>) -> Vec<NotesAction> {
 pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), String> {
     match scenario {
         Some("drawer") => {
-            let rect = semantic_target_rect(driver, |target| target == "notes.drawer")
+            let rect = driver
+                .targets()
+                .get("nav-shell-sidebar")
+                .copied()
                 .ok_or("narrow drawer toggle missing")?;
             driver.click_at(rect.center().x, rect.center().y);
+            if !driver.control_failures().is_empty() {
+                return Err(format!(
+                    "drawer control was refused: {:?}",
+                    driver.control_failures()
+                ));
+            }
         }
         Some("drag") => {
             let from = semantic_name_rect(driver, LAUNCH).ok_or("sidebar drag source missing")?;
@@ -641,7 +643,7 @@ fn show_collaborators(driver: &mut FrameHarness) -> Result<(), String> {
 /// Open the narrow drawer when the notes tree is hidden behind it.
 fn reveal_sidebar(driver: &mut FrameHarness) {
     if semantic_name_rect(driver, LAUNCH).is_none()
-        && let Some(toggle) = semantic_target_rect(driver, |target| target == "notes.drawer")
+        && let Some(toggle) = driver.targets().get("nav-shell-sidebar").copied()
     {
         driver.click_at(toggle.center().x, toggle.center().y);
         driver.relayout();
@@ -661,11 +663,7 @@ fn chord(driver: &mut FrameHarness, modifiers: &[&str], key: &str) {
 
 fn pointer(driver: &mut FrameHarness, at: Point, state: ElementState, button: MouseButton) {
     move_pointer(driver, at);
-    driver.send(&WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state,
-        button,
-    });
+    driver.send(&ui::synthetic_input::mouse_input(state, button));
 }
 
 fn press(driver: &mut FrameHarness, at: Point, button: MouseButton) {
@@ -673,10 +671,7 @@ fn press(driver: &mut FrameHarness, at: Point, button: MouseButton) {
 }
 
 fn move_pointer(driver: &mut FrameHarness, at: Point) {
-    driver.send(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-    });
+    driver.send(&ui::synthetic_input::cursor_moved(at.x, at.y));
 }
 
 /// Every accessibility node of the window, depth first.

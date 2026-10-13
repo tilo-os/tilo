@@ -4,16 +4,12 @@
 //! both bridges still connected afterwards.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use crate::support::typed_collab::TypedBroker;
+use collab_types::CommitNamed as _;
 use tilo_ui::collaboration::{CollabRequest, CollaborationManager};
 
 const MIB: usize = 1024 * 1024;
@@ -73,7 +69,7 @@ fn a_late_joiner_onboards_a_document_larger_than_one_frame() {
             automerge::ScalarValue::Bytes(body.clone()),
         )
         .unwrap();
-    holder_state.doc.commit();
+    holder_state.doc.commit_edit("fixture", "fixture");
     assert!(
         holder_state.doc.save().len() > collab_types::MAX_DOCUMENT_MUTATION_BYTES,
         "precondition: the snapshot does not fit one signed frame"

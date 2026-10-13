@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import selectors
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -16,17 +17,22 @@ PERSIST_INTERVAL = 0.25
 
 
 def persist(path: Path, retained: bytearray) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    # `os.replace` installs the temporary inode, including its mode.  Do not
-    # rely on the caller's umask here: compositor/app stderr may contain paths,
-    # account names, document titles, or other session-private diagnostics.
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(descriptor, 0o600)
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(retained)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    # A restarting session can overlap its predecessor. Each publication owns
+    # its staging inode; a shared name lets one recorder consume the other's
+    # file between writing and replacement.
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        # Replacement installs this inode's mode. Diagnostics are private
+        # regardless of the caller's umask.
+        with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(retained)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def main() -> int:

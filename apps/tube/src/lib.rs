@@ -35,11 +35,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -50,8 +46,8 @@ pub mod actions;
 pub mod api;
 pub mod app;
 pub mod backend;
-pub mod contrast;
 pub mod history;
+pub mod i18n;
 pub mod images;
 pub mod model;
 pub mod recommend;
@@ -68,10 +64,10 @@ pub use app::TubeApp;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<TubeShell>()
+    ui::built_in_definition!(TubeShell)
 }
 
-pub use resource::{Tube, TubeShared, TubeShell};
+pub use resource::{Library, TubeShell};
 
 #[cfg(test)]
 mod tests {

@@ -165,6 +165,7 @@ fn signed_entry_version(
         .package_id;
     let mut entry = RegistryEntry {
         package_id: package_id.to_string(),
+        kind: registry_types::EntryKind::App,
         name: "Sheets".into(),
         description: "A spreadsheet".into(),
         tagline: "Native Tilo OS app".into(),
@@ -179,18 +180,20 @@ fn signed_entry_version(
         publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
         versions: vec![RegistryVersion {
             version: version.into(),
-            tapp_url: tapp_url.to_string(),
-            tapp_root_hash_hex: root.to_hex(),
-            tapp_size_bytes: tapp.len() as u64,
             released_at_unix: 1,
-            tapp_blake3_hex: blake3::hash(tapp).to_hex().to_string(),
-            target: registry_types::RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: native_target().0.into(),
-                isa: native_target().2.into(),
-                runtime: None,
-                interfaces: Vec::new(),
-            },
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: tapp_url.to_string(),
+                tapp_root_hash_hex: root.to_hex(),
+                tapp_size_bytes: tapp.len() as u64,
+                tapp_blake3_hex: blake3::hash(tapp).to_hex().to_string(),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: native_target().0.into(),
+                    isa: native_target().2.into(),
+                    runtime: None,
+                    interfaces: Vec::new(),
+                },
+            }),
         }],
         updated_at_unix: 2,
         signature_hex: String::new(),
@@ -208,10 +211,7 @@ fn signed_snapshot(
     owner: &SigningKey,
     previous: Option<&SignedRegistrySnapshot>,
 ) -> SignedRegistrySnapshot {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = tilo_clock::try_unix_now().unwrap();
     let publisher = entry.publisher_pubkey_hex.clone();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: registry_types::SNAPSHOT_PROTOCOL,
@@ -234,6 +234,7 @@ fn signed_snapshot(
         entries: vec![entry],
         owner_signature_hex: String::new(),
         channel_authorization: None,
+        bots_signature_hex: String::new(),
     };
     sign_snapshot(&mut snapshot, owner).unwrap();
     snapshot
@@ -700,7 +701,7 @@ fn installed_apps_keep_exactly_the_services_they_declared() {
         let root = packaged_payload_root(scratch.path(), PKG);
 
         // What the publisher declared, read with the launcher's own reader, so "declared" means what the launcher would act on.
-        let declared = launcher::manifest::read_manifest(&root.join("manifest.toml"))
+        let declared = tilo_app_package::view::read_manifest(&root.join("manifest.toml"))
             .expect("the fixture manifest parses");
         assert!(
             declared.sandbox.services.contains_key("collab"),
@@ -732,7 +733,7 @@ fn installed_apps_keep_exactly_the_services_they_declared() {
             runtime_dir.path(),
         );
 
-        let reached = launcher::manifest::read_manifest(&installed.manifest_path)
+        let reached = tilo_app_package::view::read_manifest(&installed.manifest_path)
             .expect("the installed manifest parses");
         assert_eq!(
             reached.sandbox.services, declared.sandbox.services,

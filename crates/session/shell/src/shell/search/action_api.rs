@@ -81,6 +81,7 @@ pub struct ActionHierarchy {
     pub room: String,
     pub record: String,
     pub resource: String,
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub operation: String,
 }
 
@@ -140,6 +141,7 @@ pub struct ActionCatalog {
     /// accessor works through this.
     visible: Vec<usize>,
     hierarchies: Vec<Option<ActionHierarchy>>,
+    completion: super::QueryCompletion,
 }
 
 impl ActionCatalog {
@@ -166,11 +168,22 @@ impl ActionCatalog {
             doc,
             doc_root,
         };
+        Self::build_query(registry, &args, visibility, false)
+    }
+
+    /// Explicit bounded machine discovery uses the same visibility gate.
+    pub fn build_query(
+        registry: &SearchRegistry,
+        args: &QueryArgs<'_>,
+        visibility: &dyn ActionVisibility,
+        include_programmatic: bool,
+    ) -> Self {
         // Remote callers do not open the palette, which normally maintains
         // retained provider indexes. Start/poll that same asynchronous work
         // here so subsequent requests can discover cold sources too.
-        registry.refresh_indexes(&args);
-        let results = registry.query_exhaustive(&args);
+        registry.begin_catalogue_query();
+        registry.refresh_indexes(args);
+        let (results, completion) = registry.query_catalogue(args, include_programmatic);
         let visible: Vec<usize> = results
             .iter()
             .enumerate()
@@ -182,6 +195,7 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            completion,
         }
     }
 
@@ -228,6 +242,7 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            completion: super::QueryCompletion::default(),
         }
     }
 
@@ -287,13 +302,35 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            completion: super::QueryCompletion::default(),
         }
     }
 
     /// Enumerate the typed descriptors the caller may see. Render-free —
     /// no scene is built, no widget is touched.
+    pub fn completion(&self) -> &super::QueryCompletion {
+        &self.completion
+    }
+
     pub fn enumerate(&self) -> Vec<ExportedAction> {
+        self.enumerate_rows(0..self.visible.len())
+    }
+
+    /// The visible actions' addresses, in [`Self::enumerate`]'s order,
+    /// without describing them.
+    pub fn addresses(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
         self.visible
+            .iter()
+            .filter_map(|&i| self.results.get(i))
+            .map(|r| (r.provider_id.as_str(), r.id.as_str()))
+    }
+
+    /// [`Self::enumerate`]'s rows at `rows`, describing only those — one
+    /// page of a listing costs the page, not the catalogue.
+    pub fn enumerate_rows(&self, rows: std::ops::Range<usize>) -> Vec<ExportedAction> {
+        self.visible
+            .get(rows)
+            .unwrap_or_default()
             .iter()
             .filter_map(|&i| self.results.get(i).map(|result| (i, result)))
             .map(|(i, r)| ExportedAction {
@@ -445,24 +482,6 @@ impl SelectedAction<'_> {
         self.invoke_bound(doc, root, chrome, &bound)
     }
 
-    /// Begin an invocation without fabricating success for a remote action
-    /// whose current authority is still being checked. Agents can retain and
-    /// poll the returned ticket just as the visual palette does.
-    ///
-    /// # Errors
-    ///
-    /// Returns an argument-binding or provider refusal error; callers must
-    /// poll a pending disposition rather than treating it as success.
-    pub fn invoke_disposition(
-        &self,
-        doc: &mut ui::widget::Edits<'_>,
-        root: &ObjId,
-        chrome: &Chrome,
-        args: impl IntoIterator<Item = (String, ArgValue)>,
-    ) -> Result<InvocationDisposition, ActionError> {
-        self.invoke(doc, root, chrome, args)
-    }
-
     /// Invoke from the canonical JSON object used by control sockets and MCP.
     /// Unlike lossy JSON-to-enum guessing, binding consults each declared
     /// parameter, preserving resource/date-time/secret semantics and nested or
@@ -527,9 +546,87 @@ mod tests {
     use crate::shell::search::providers::{ActionsProvider, ApplicationsProvider};
     use crate::shell::state::FreshId as _;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
-    use parking_lot::RwLock;
     use std::rc::Rc;
-    use std::sync::Arc;
+
+    struct DeferredEmptyCatalogue(std::cell::Cell<bool>);
+
+    impl super::super::SearchProvider for DeferredEmptyCatalogue {
+        fn id(&self) -> &'static str {
+            "deferred-empty"
+        }
+        fn name(&self) -> &'static str {
+            "Deferred empty"
+        }
+        fn resource_kinds(&self) -> &[ResourceKind] {
+            &[ResourceKind::Action]
+        }
+        fn query(&self, _: super::super::SearchContext<'_>) -> Vec<SearchResult> {
+            Vec::new()
+        }
+        fn query_incomplete_reason(
+            &self,
+            _ctx: &super::super::SearchContext<'_>,
+        ) -> Option<super::super::QueryIncompleteReason> {
+            (!self.0.get()).then_some(super::super::QueryIncompleteReason::Pending)
+        }
+        fn query_page(
+            &self,
+            _: super::super::SearchContext<'_>,
+            _: Option<&super::super::SearchCursor>,
+            _: super::super::SearchBudget,
+        ) -> super::super::SearchPage {
+            if self.0.get() {
+                super::super::SearchPage::exhausted("ready", Vec::new())
+            } else {
+                super::super::SearchPage {
+                    revision: "pending".into(),
+                    results: Vec::new(),
+                    next_cursor: Some(super::super::SearchCursor {
+                        revision: "pending".into(),
+                        token: "pending".into(),
+                    }),
+                    exhausted: false,
+                    stale_cursor: false,
+                    budget_exhausted: false,
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_catalogue_retains_pending_and_complete_traversal() {
+        let source = Rc::new(DeferredEmptyCatalogue(std::cell::Cell::new(false)));
+        let mut registry = SearchRegistry::new();
+        registry.register(source.clone());
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let pending = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(pending.enumerate().is_empty());
+        assert_eq!(
+            serde_json::to_value(pending.completion()).unwrap(),
+            serde_json::json!({
+                "complete": false, "incomplete": [{"provider": "deferred-empty", "reason": "pending"}],
+            })
+        );
+        source.0.set(true);
+        let complete = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(complete.enumerate().is_empty());
+        assert_eq!(
+            serde_json::to_value(complete.completion()).unwrap(),
+            serde_json::json!({
+                "complete": true, "incomplete": [],
+            })
+        );
+    }
 
     fn chrome_rc() -> Chrome {
         let mut tree = WorkspaceTree::default();
@@ -538,7 +635,7 @@ mod tests {
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.desktop.workspaces.push(workspace);
         tree.desktop.active = id;
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_handle(handle)
     }
 

@@ -5,6 +5,7 @@
 //! performs the network request emitted by [`PeerSyncOverlay::handle_event`]
 //! and returns its result through [`PeerSyncOverlay::finish_request`].
 
+use ui::num::f32_of_f64;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
@@ -15,7 +16,9 @@ use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 
 use crate::shell::i18n::{t, t_args};
+use ui::TextRole;
 use ui::theme::Theme;
+use ui::widget::ButtonRole;
 
 mod accessibility;
 pub use accessibility::is_sheet_target as is_accessibility_target;
@@ -23,7 +26,9 @@ pub use accessibility::is_sheet_target as is_accessibility_target;
 /// A transport request emitted by the overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncRequest {
-    IssueInvite,
+    /// The invite composer opened: an invite is likely, so the network
+    /// starts this device's relays now and the invite can name one.
+    PrepareInvitation,
     ExportIdentity,
     IssueInviteFor {
         name: String,
@@ -36,6 +41,58 @@ pub enum PeerSyncRequest {
     ListPendingInvitations,
     ResendInvitation([u8; 32]),
     CancelInvitation([u8; 32]),
+    /// Mint an invitation on the terms an `invitation.issue` action stated.
+    IssueInvitation(InvitationTerms),
+}
+
+/// What an `invitation.issue` action asks to be minted for the active
+/// workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvitationTerms {
+    pub role: crate::network::invite::InviteRole,
+    pub expires_in_seconds: u64,
+    /// The authority-side name recorded for the invitee once they join.
+    pub invitee_name: Option<String>,
+    /// When set, only a device certified for this person identity can
+    /// redeem the invitation; possessing the token alone is not enough.
+    pub recipient_user_public_key: Option<[u8; 32]>,
+}
+
+/// The JSON output an invitation action returns for `response`. The token
+/// is returned to the authorized caller and is never logged.
+///
+/// # Errors
+///
+/// When `request` is not an invitation action's request, or the bridge
+/// answered with a response that request cannot produce.
+pub fn network_action_output(
+    request: &PeerSyncRequest,
+    response: PeerSyncResponse,
+) -> Result<serde_json::Value, String> {
+    match (request, response) {
+        (
+            PeerSyncRequest::IssueInvitation(_) | PeerSyncRequest::ResendInvitation(_),
+            PeerSyncResponse::Message(token),
+        ) => Ok(serde_json::json!({ "invite": token })),
+        (PeerSyncRequest::CancelInvitation(_), PeerSyncResponse::Message(_)) => {
+            Ok(serde_json::json!({ "canceled": true }))
+        }
+        (PeerSyncRequest::ListPendingInvitations, PeerSyncResponse::PendingInvitations(rows)) => {
+            let invitations: Vec<serde_json::Value> = rows
+                .into_iter()
+                .map(|invite| {
+                    serde_json::json!({
+                        "invite_id": hex::encode(invite.id),
+                        "name": invite.name,
+                        "role": invite.role,
+                        "expires_at": invite.expiry_unix_seconds,
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({ "invitations": invitations }))
+        }
+        _ => Err("peer-sync answered an unexpected response".into()),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,10 +333,6 @@ impl PeerSyncOverlay {
         self.state.status = Some(t("peer-sync-paste-token"));
     }
 
-    pub fn issue_invite_request(&self) -> PeerSyncRequest {
-        PeerSyncRequest::IssueInvite
-    }
-
     /// Apply the host's transport result. Failed named invites retain the
     /// typed name so they can be retried; successful connects close the input.
     pub fn finish_request(
@@ -292,6 +345,10 @@ impl PeerSyncOverlay {
         self.finish_typed_request(request, outcome, copy_result);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per request and response pair keeps every outcome of the card in one table"
+    )]
     pub fn finish_typed_request(
         &mut self,
         request: &PeerSyncRequest,
@@ -322,11 +379,15 @@ impl PeerSyncOverlay {
                 self.enrollment_poll_at = None;
                 self.state.status = Some(format!("Join incomplete: {error}"));
             }
-            (PeerSyncRequest::PollEnrollment(_) | PeerSyncRequest::CancelEnrollment(_), _) => {}
+            // An invitation action answers its caller, not this card.
+            (
+                PeerSyncRequest::PollEnrollment(_)
+                | PeerSyncRequest::CancelEnrollment(_)
+                | PeerSyncRequest::IssueInvitation(_)
+                | PeerSyncRequest::PrepareInvitation,
+                _,
+            ) => {}
 
-            (PeerSyncRequest::IssueInvite, Ok(PeerSyncResponse::Message(token))) => {
-                self.finish_invite(token, None, copy_result);
-            }
             (PeerSyncRequest::ExportIdentity, Ok(PeerSyncResponse::Message(card))) => {
                 ui::text_selection::clipboard_copy(&card);
                 self.state.status = Some(t("peer-sync-identity-copied"));
@@ -337,7 +398,7 @@ impl PeerSyncOverlay {
             ) => {
                 self.finish_invite(token, Some(name.clone()), copy_result);
             }
-            (PeerSyncRequest::IssueInvite | PeerSyncRequest::IssueInviteFor { .. }, Err(error)) => {
+            (PeerSyncRequest::IssueInviteFor { .. }, Err(error)) => {
                 self.state.invite_token = None;
                 self.state.invite_for = None;
                 self.state.status = Some(t_args(
@@ -787,14 +848,14 @@ impl PeerSyncOverlay {
 
         let pad = 20.0;
         let mut y = rect.y0 + pad;
-        let title_size = tokens.typography.scale.base.max(14.0);
-        let body_size = tokens.typography.scale.xs.max(10.0);
+        let title_size = tokens.typography.size(TextRole::Body).max(14.0);
+        let body_size = tokens.typography.size(TextRole::Caption).max(10.0);
         let m = SheetMetrics {
             rect,
             pad,
             avail: rect.width() - pad * 2.0,
             body: body_size,
-            name: tokens.typography.scale.sm.max(12.0),
+            name: tokens.typography.size(TextRole::Caption).max(12.0),
         };
         let title = t(if self.state.invite_review_open {
             "peer-sync-title-review"
@@ -822,7 +883,7 @@ impl PeerSyncOverlay {
         if let Some(status) = self.state.status.as_deref() {
             let status = ctx
                 .text
-                .elide_to_width(status, body_size, f64_to_f32(m.avail));
+                .elide_to_width(status, body_size, f32_of_f64(m.avail));
             ctx.text.draw_text(
                 ctx.scene,
                 &status,
@@ -877,7 +938,7 @@ impl PeerSyncOverlay {
         {
             let row = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 42.0);
             // Control role (HIG §9.1/§9.5): a row card at the Control radius
-            // (`radii.sm` is for details inside a control) with an edge
+            // (`radii.detail` is for details inside a control) with an edge
             // derived from its lift floor, so it registers in light as well.
             ui::surface::card(
                 scene,
@@ -1126,11 +1187,11 @@ impl PeerSyncOverlay {
         ];
         for (index, line) in lines.iter().enumerate() {
             let color = if index == 4 {
-                colors.accent[5]
+                colors.intent.inverted
             } else {
                 colors.text_primary
             };
-            let shown = text.elide_to_width(line, body, f64_to_f32(avail));
+            let shown = text.elide_to_width(line, body, f32_of_f64(avail));
             text.draw_text(
                 scene,
                 &shown,
@@ -1185,7 +1246,7 @@ impl PeerSyncOverlay {
                 &ui::surface::edge_outline(rect, radius),
             );
         }
-        let shown = text.elide_to_width(label, body, f64_to_f32(rect.width() - 16.0));
+        let shown = text.elide_to_width(label, body, f32_of_f64(rect.width() - 16.0));
         let (width, height) = text.measure(&shown, body, None);
         text.draw_text(
             scene,
@@ -1256,10 +1317,9 @@ impl PeerSyncOverlay {
             // The pass paints with the renderer reset to 1× (see `draw`), so
             // the face is handed the theme-scaled label size explicitly.
             let mut face = ui::widget::ButtonFace::new(brect, &label)
-                .radius(ui::chrome::ChromeRole::Control.radius(theme, bh))
-                .text_size(body);
+                .control_size(ui::widget::ControlSize::Large);
             if primary {
-                face = face.primary();
+                face = face.role(ButtonRole::Primary);
             }
             ui::widget::Button::paint(scene, transform, text, theme, &face);
             self.button_rects.push((button, brect));
@@ -1460,16 +1520,16 @@ fn draw_naming(
     );
     y += f64::from(body) + 8.0;
     let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 38.0);
-    let rr = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.sm));
+    let rr = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.detail));
     scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &rr);
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        colors.accent[5],
+        colors.intent.inverted,
         None,
         &rr,
     );
-    let shown = text.elide_to_width(typed, name, f64_to_f32(avail - 40.0));
+    let shown = text.elide_to_width(typed, name, f32_of_f64(avail - 40.0));
     let (tw, th) = text.measure(&shown, name, None);
     let ty = f64::midpoint(field.y0, field.y1) - f64::from(th) / 2.0;
     let caret_w = 1.5;
@@ -1508,7 +1568,7 @@ fn draw_naming(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.accent[5],
+        colors.intent.inverted,
         None,
         &Rect::new(caret_x, field.y0 + 9.0, caret_x + caret_w, field.y1 - 9.0),
     );
@@ -1528,7 +1588,7 @@ fn draw_naming(
             }
         },
     );
-    let note = text.elide_to_width(&identity, body, f64_to_f32(avail));
+    let note = text.elide_to_width(&identity, body, f32_of_f64(avail));
     text.draw_text(
         scene,
         &note,
@@ -1619,7 +1679,7 @@ fn draw_receiving(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64, typed: &
             ],
         )
     };
-    let line = text.elide_to_width(&line, name, f64_to_f32(avail));
+    let line = text.elide_to_width(&line, name, f32_of_f64(avail));
     text.draw_text(
         scene,
         &line,
@@ -1658,19 +1718,14 @@ fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: 
             .next()
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_default();
-        ui::widget::Avatar::draw_at(
-            scene,
-            transform,
+        ui::widget::AvatarFace::new(&initial, who).paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
             Rect::new(
                 center.x - 16.0,
                 center.y - 16.0,
                 center.x + 16.0,
                 center.y + 16.0,
             ),
-            &initial,
-            colors.accent[5],
-            theme,
-            text,
         );
     } else {
         scene.stroke(
@@ -1682,9 +1737,9 @@ fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: 
         );
     }
     let x = center.x + 30.0;
-    let ns = theme.tokens.typography.scale.sm.max(12.0);
-    let ss = theme.tokens.typography.scale.xs.max(10.0);
-    let who = text.elide_to_width(who, ns, f64_to_f32(rect.x1 - x));
+    let ns = theme.tokens.typography.size(TextRole::Caption).max(12.0);
+    let ss = theme.tokens.typography.size(TextRole::Caption).max(10.0);
+    let who = text.elide_to_width(who, ns, f32_of_f64(rect.x1 - x));
     text.draw_text(
         scene,
         &who,
@@ -1693,7 +1748,7 @@ fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: 
         transform.pre_translate((x, rect.y0 + 2.0).into()),
         None,
     );
-    let sub = text.elide_to_width(sub, ss, f64_to_f32(rect.x1 - x));
+    let sub = text.elide_to_width(sub, ss, f32_of_f64(rect.x1 - x));
     text.draw_text(
         scene,
         &sub,
@@ -1709,7 +1764,7 @@ fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
     let (scene, transform, text, theme) =
         (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let colors = &theme.tokens.colors;
-    let size = theme.tokens.typography.scale.lg.max(15.0);
+    let size = theme.tokens.typography.size(TextRole::Heading).max(15.0);
     let (_, fh) = text.measure(code, size, None);
     let field = Rect::new(at.x, at.y, at.x + avail, at.y + f64::from(fh) + 20.0);
     scene.fill(
@@ -1717,7 +1772,7 @@ fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
         transform,
         colors.lift(0.35),
         None,
-        &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md)),
+        &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.control)),
     );
     text.draw_text(
         scene,
@@ -1728,14 +1783,6 @@ fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
         None,
     );
     field.y1
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "Text elision accepts f32 widths; narrowing f64 overlay geometry may round subpixel precision without changing record or identity data."
-)]
-fn f64_to_f32(v: f64) -> f32 {
-    v as f32
 }
 
 #[cfg(test)]
@@ -1954,20 +2001,8 @@ mod tests {
     }
 
     fn key(key: Key) -> WindowEvent {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.logical_key = key;
-        event.text = None;
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+        ui::synthetic_input::keyboard_input(event)
     }
 
     #[test]

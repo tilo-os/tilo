@@ -6,15 +6,6 @@
 //! lives here: which daemon a command talks to, how `virsh domstate` is read,
 //! and the XML of the devices both domains carry.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::ffi::OsString;
 use std::path::Path;
 

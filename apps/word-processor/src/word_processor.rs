@@ -86,7 +86,7 @@ pub struct Heading {
 /// (carries a truthy `toc` attr). Used to find the old TOC for replacement and to
 /// keep TOC lines out of the heading outline.
 pub(crate) fn block_is_toc(b: &tilo_doc::snapshot::BlockView) -> bool {
-    matches!(b.attrs.get("toc"), Some(tilo_doc::AttrVal::Bool(true)))
+    b.flag("toc")
 }
 
 /// Parse the comma-separated `tab_stops` attr into px positions, sorted ascending
@@ -377,18 +377,9 @@ impl WordProcessor {
                     })
                 })
                 .collect();
-            let int = |k: &str| match b.attrs.get(k) {
-                Some(tilo_doc::AttrVal::Int(n)) => Some(*n),
-                _ => None,
-            };
-            let bool_ = |k: &str| match b.attrs.get(k) {
-                Some(tilo_doc::AttrVal::Bool(v)) => Some(*v),
-                _ => None,
-            };
-            let str_ = |k: &str| match b.attrs.get(k) {
-                Some(tilo_doc::AttrVal::Str(v)) => Some(v.clone()),
-                _ => None,
-            };
+            let int = |k: &str| b.int_attr(k);
+            let bool_ = |k: &str| b.bool_attr(k);
+            let str_ = |k: &str| b.str_attr(k).map(str::to_owned);
             blocks.push(ClipBlock {
                 kind: b.kind.clone(),
                 text,
@@ -400,29 +391,6 @@ impl WordProcessor {
             });
         }
         (plain.join("\n"), blocks)
-    }
-
-    /// Replace the character range `[char_start, char_end)` of `block_id` with
-    /// `text` (used by Find & Replace).
-    pub fn splice_block(
-        &mut self,
-        state: &mut ui::widget::Edits<'_>,
-        block_id: &str,
-        char_start: usize,
-        char_end: usize,
-        text: &str,
-    ) {
-        if self.containers.is_none() || self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SpliceText {
-            region: self.action_region(),
-            block: block_id.to_string(),
-            at: char_start,
-            del: char_end.saturating_sub(char_start),
-            ins: text.to_string(),
-        };
-        let _ = self.apply_rich(state, action);
     }
 
     /// Replace the **entire body** with `markdown`, in place, on the live document:
@@ -507,10 +475,11 @@ impl WordProcessor {
         // imported, user-defined, or edited built-ins — overlay them.
         let mut sheet = StyleSheet::default();
         for id in ids {
-            sheet.styles.insert(
-                id.clone(),
-                StyleProps::from_attrs(&tilo_doc::model::style_props(state, c, &id)),
-            );
+            // Typed style actions persist individual fields. Missing fields
+            // keep the resolved base style instead of becoming zero metrics.
+            let mut props = sheet.get(&id).to_attrs();
+            props.extend(tilo_doc::model::style_props(state, c, &id));
+            sheet.styles.insert(id, StyleProps::from_attrs(&props));
         }
         sheet
     }
@@ -551,9 +520,7 @@ impl WordProcessor {
             let fallback_blocks = snap
                 .blocks
                 .iter()
-                .filter(|block| {
-                    matches!(block.attrs.get("style"), Some(tilo_doc::AttrVal::Str(style)) if style == &id)
-                })
+                .filter(|block| block.str_attr("style") == Some(id.as_str()))
                 .map(|block| block.id.clone())
                 .collect();
             let action = crate::actions::RichTextAction::DeleteStyle {
@@ -578,22 +545,6 @@ impl WordProcessor {
             get("page_margin_bottom")?,
             get("page_margin_left")?,
         ])
-    }
-
-    /// Persist the page margins `[top, right, bottom, left]` (px) into the document
-    /// as four meta registers, so they round-trip through save/reopen and merge
-    /// field-by-field across replicas.
-    pub fn set_page_margins(&mut self, state: &mut ui::widget::Edits<'_>, margins: [f64; 4]) {
-        if self.containers.is_none() || self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetPageMargins {
-            top: margins[0],
-            right: margins[1],
-            bottom: margins[2],
-            left: margins[3],
-        };
-        let _ = self.apply_rich(state, action);
     }
 
     /// Assign a style id to every block in the selection (or the caret's block).
@@ -647,9 +598,7 @@ impl WordProcessor {
         let orphans: Vec<String> = tilo_doc::model::materialize(state, &containers)
             .blocks
             .iter()
-            .filter(
-                |b| matches!(b.attrs.get("style"), Some(tilo_doc::AttrVal::Str(s)) if s == style_id),
-            )
+            .filter(|b| b.str_attr("style") == Some(style_id))
             .map(|b| b.id.clone())
             .collect();
         let action = crate::actions::RichTextAction::DeleteStyle {
@@ -675,18 +624,6 @@ impl WordProcessor {
         sheet.styles.insert(new_id.clone(), props);
         self.set_stylesheet(state, &sheet);
         Some(new_id)
-    }
-
-    /// The caret's block id when it is an `image` block (i.e. an image is
-    /// "selected"), else `None`. Drives the panel's image-inspector affordances
-    /// (resize / flip) and the on-page selection handles.
-    pub fn selected_image_block(&self, state: &AutoCommit) -> Option<String> {
-        let c = self.containers.as_ref()?;
-        let snap = tilo_doc::model::materialize(state, c);
-        snap.blocks
-            .iter()
-            .find(|b| b.id == self.caret.block && b.kind == "image")
-            .map(|b| b.id.clone())
     }
 
     /// Set the explicit display size (px) of an `image` block, recording `width`
@@ -732,7 +669,7 @@ impl WordProcessor {
             .blocks
             .iter()
             .find(|b| b.id == block_id)
-            .is_some_and(|b| matches!(b.attrs.get(key), Some(tilo_doc::AttrVal::Bool(true))));
+            .is_some_and(|b| b.flag(key));
         let next = !cur;
         if self.ids.is_none() {
             return next;
@@ -919,8 +856,9 @@ impl WordProcessor {
         let Some(dispatch) = &self.dispatch else {
             return false;
         };
-        let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", &action);
-        dispatch.apply_now_with(state, &action, context).is_ok()
+        dispatch
+            .apply_now(state, &crate::model::action(&action))
+            .is_ok()
     }
 
     fn action_region(&self) -> crate::actions::RegionKind {
@@ -969,24 +907,6 @@ impl WordProcessor {
         let _ = self.apply_rich(state, action);
     }
 
-    /// Whether the caret's block forces a page break before it (the
-    /// `page_break_before` block attr). False for a fresh/legacy block.
-    pub fn caret_page_break_before(&self, state: &AutoCommit) -> bool {
-        let Some(c) = self.containers.as_ref() else {
-            return false;
-        };
-        let snap = tilo_doc::model::materialize(state, c);
-        snap.blocks
-            .iter()
-            .find(|b| b.id == self.caret.block)
-            .is_some_and(|b| {
-                matches!(
-                    b.attrs.get("page_break_before"),
-                    Some(tilo_doc::AttrVal::Bool(true))
-                )
-            })
-    }
-
     /// Set the `page_break_before` attr on the caret's block (forcing pagination
     /// to start that block on a fresh page when `on`). Table cells are skipped —
     /// a cell breaking mid-table would split the grid.
@@ -1005,14 +925,6 @@ impl WordProcessor {
             value: crate::actions::AttrVal::Bool(on),
         };
         let _ = self.apply_rich(state, action);
-    }
-
-    /// Toggle the page break on the caret's block (Ctrl+Enter when the caret
-    /// already starts a paragraph). Returns the new state.
-    pub fn toggle_page_break_before(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
-        let on = !self.caret_page_break_before(state);
-        self.set_page_break_before(state, on);
-        on
     }
 
     /// Insert a manual page break at the caret: split the current block (like
@@ -1175,19 +1087,6 @@ impl WordProcessor {
         self.review_change(state, Some(change_id), false);
     }
 
-    /// Accept every tracked change in the document. Processed in reverse
-    /// document order so an accepted deletion's text removal never shifts the
-    /// anchored range of an earlier-but-not-yet-processed change.
-    pub fn accept_all_changes(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.review_change(state, None, true);
-    }
-
-    /// Reject every tracked change in the document (see [`Self::accept_all_changes`]
-    /// for the ordering rationale).
-    pub fn reject_all_changes(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.review_change(state, None, false);
-    }
-
     fn review_change(&self, state: &mut ui::widget::Edits<'_>, id: Option<&str>, accept: bool) {
         if self.containers.is_none() || self.ids.is_none() {
             return;
@@ -1200,47 +1099,6 @@ impl WordProcessor {
             crate::actions::RichTextAction::RejectChanges {
                 id: id.map(str::to_string),
             }
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
-    /// The tracked-change ids present in the document, sorted by their anchored
-    /// `(block-order, start)` body position (earliest first). Falls back to the
-    /// canonical id order for changes whose anchoring mark is gone.
-    #[allow(
-        dead_code,
-        reason = "review navigation helper kept beside Accept/Reject until wired"
-    )]
-    fn changes_in_doc_order(&self, state: &AutoCommit) -> Vec<String> {
-        let Some(c) = self.containers.as_ref() else {
-            return Vec::new();
-        };
-        let block_order = self.ordered_blocks(state);
-        let pos = |bid: &str| {
-            block_order
-                .iter()
-                .position(|b| b == bid)
-                .unwrap_or(usize::MAX)
-        };
-        let mut ids = tilo_doc::model::change_ids(state, c);
-        ids.sort_by_key(|id| {
-            tilo_doc::model::change_range(state, c, id)
-                .map_or((usize::MAX, usize::MAX), |(b, s, _)| (pos(&b), s))
-        });
-        ids
-    }
-
-    /// Delete a comment by id: remove its anchoring `comment` mark over the body
-    /// range it covers, then drop the comment entry from the `comments`
-    /// container. After this the comment no longer appears in the materialized
-    /// snapshot and its highlight band disappears. No-op for an unknown id or an
-    /// unbound document.
-    pub fn delete_comment(&mut self, state: &mut ui::widget::Edits<'_>, comment_id: &str) {
-        if self.containers.is_none() || self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::ResolveComment {
-            id: comment_id.to_string(),
         };
         let _ = self.apply_rich(state, action);
     }
@@ -1449,12 +1307,6 @@ impl WordProcessor {
         self.block_num_attr(state, block, "indent")
     }
 
-    /// The first-line indent (px) of an arbitrary block — the `first_line_indent`
-    /// attr, `0.0` when unset.
-    pub fn block_first_line_indent(&self, state: &AutoCommit, block: &str) -> f64 {
-        self.block_num_attr(state, block, "first_line_indent")
-    }
-
     /// Set the left / hanging indent (px) on `block`. Clamped non-negative.
     pub fn set_block_indent(&mut self, state: &mut ui::widget::Edits<'_>, block: &str, px: f64) {
         self.set_block_attr(
@@ -1492,10 +1344,7 @@ impl WordProcessor {
             .blocks
             .iter()
             .find(|b| b.id == block)
-            .and_then(|b| match b.attrs.get("tab_stops") {
-                Some(tilo_doc::AttrVal::Str(s)) => Some(s.clone()),
-                _ => None,
-            })
+            .and_then(|b| b.str_attr("tab_stops").map(str::to_owned))
             .unwrap_or_default();
         parse_tab_stops(&raw)
     }
@@ -1530,33 +1379,6 @@ impl WordProcessor {
             "tab_stops",
             crate::actions::AttrVal::Str(encoded),
         );
-    }
-
-    /// Add a tab stop at `px` (from the left text margin) on the caret's block.
-    pub fn add_tab_stop(&mut self, state: &mut ui::widget::Edits<'_>, px: f64) {
-        let block = self.caret.block.clone();
-        let mut stops = self.block_tab_stops(state, &block);
-        // Ignore a stop that coincides with an existing one.
-        if stops.iter().any(|p| (*p - px).abs() < 2.0) {
-            return;
-        }
-        stops.push(px.max(0.0));
-        self.set_block_tab_stops(state, &block, &stops);
-    }
-
-    /// Tab key: advance the caret to the next tab stop on its block, if any.
-    /// Returns `true` when a stop existed and the caret advanced (the caller then
-    /// skips the legacy "insert spaces" fallback). The advance is recorded in the
-    /// document as a single tab character so it survives save/reload and reflows
-    /// with edits — the layout treats the run up to the next stop as the tab's
-    /// width (full per-stop glyph expansion is a v1 limitation).
-    pub fn tab_advance(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
-        let stops = self.block_tab_stops(state, &self.caret.block.clone());
-        if stops.is_empty() {
-            return false;
-        }
-        self.insert_str(state, "\t");
-        true
     }
 
     /// Insert a `rows`×`cols` table after the caret block. Cells are modeled as
@@ -1634,21 +1456,16 @@ impl WordProcessor {
         let containers = self.containers.as_ref()?;
         let snap = tilo_doc::model::materialize(state, containers);
         let cur = snap.blocks.iter().find(|b| b.id == self.caret.block)?;
-        let tid = match cur.attrs.get("table") {
-            Some(tilo_doc::AttrVal::Str(s)) => s.clone(),
-            _ => return None,
-        };
-        let int = |b: &tilo_doc::snapshot::BlockView, k: &str| match b.attrs.get(k) {
-            Some(tilo_doc::AttrVal::Int(n)) if *n >= 0 => num::usize_of_i64(*n),
-            _ => 0,
+        let tid = cur.str_attr("table")?.to_owned();
+        let int = |b: &tilo_doc::snapshot::BlockView, k: &str| {
+            b.int_attr(k)
+                .filter(|n| *n >= 0)
+                .map_or(0, num::usize_of_i64)
         };
         let cells = snap
             .blocks
             .iter()
-            .filter(|b| {
-                b.kind == "cell"
-                    && matches!(b.attrs.get("table"), Some(tilo_doc::AttrVal::Str(s)) if s == &tid)
-            })
+            .filter(|b| b.kind == "cell" && b.str_attr("table") == Some(tid.as_str()))
             .map(|b| (b.id.clone(), int(b, "row"), int(b, "col")))
             .collect();
         Some((tid, cells))
@@ -2012,7 +1829,9 @@ impl WordProcessor {
     /// seat the caret, writing nothing.
     pub fn bind_view_only(&mut self, state: &AutoCommit, root: &ObjId) {
         if self.containers.is_none() {
-            let Ok(c) = tilo_doc::model::open(state, root) else {
+            let Some(c) = crate::model::body_at(state, root)
+                .and_then(|body| tilo_doc::model::open(state, &body).ok())
+            else {
                 return;
             };
             self.containers = Some(c);
@@ -2053,7 +1872,9 @@ impl WordProcessor {
         }
         if self.containers.is_none() {
             // The record's genesis made the document; a view never creates it.
-            let Ok(c) = tilo_doc::model::open(state, root) else {
+            let Some(c) = crate::model::body_at(state, root)
+                .and_then(|body| tilo_doc::model::open(state, &body).ok())
+            else {
                 return;
             };
             // Seed past existing block ids so editing a loaded/imported document
@@ -2180,35 +2001,6 @@ impl WordProcessor {
         let _ = self.apply_rich(state, action);
     }
 
-    #[allow(
-        dead_code,
-        reason = "clear-mark helper kept for region edits not yet on RichTextAction"
-    )]
-    fn region_remove_mark(
-        &self,
-        state: &mut ui::widget::Edits<'_>,
-        block: &str,
-        start: usize,
-        end: usize,
-        name: &str,
-    ) {
-        if start >= end {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetMark {
-            region: self.action_region(),
-            spans: vec![crate::actions::Span {
-                block: block.to_string(),
-                start,
-                end,
-            }],
-            name: name.to_string(),
-            value: None,
-            also_clear: Vec::new(),
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
     /// Insert a page-number field at the caret in the active region. Works in the
     /// body too (renders as a `field` mark; the body renderer substitutes it).
     pub fn insert_page_number(&mut self, state: &mut ui::widget::Edits<'_>) {
@@ -2266,10 +2058,7 @@ impl WordProcessor {
             .iter()
             .filter(|b| b.kind == "heading" && !block_is_toc(b))
             .map(|b| {
-                let level = match b.attrs.get("level") {
-                    Some(tilo_doc::AttrVal::Int(n)) if *n >= 1 => *n,
-                    _ => 1,
-                };
+                let level = b.int_attr("level").filter(|n| *n >= 1).unwrap_or(1);
                 Heading {
                     id: b.id.clone(),
                     level,
@@ -2335,12 +2124,8 @@ impl WordProcessor {
         };
         let b = views.iter().find(|b| b.id == block);
         let kind = b.map_or_else(|| "paragraph".into(), |b| b.kind.clone());
-        let ordered = b
-            .is_some_and(|b| matches!(b.attrs.get("ordered"), Some(tilo_doc::AttrVal::Bool(true))));
-        let level = b.and_then(|b| match b.attrs.get("level") {
-            Some(tilo_doc::AttrVal::Int(n)) => Some(*n),
-            _ => None,
-        });
+        let ordered = b.is_some_and(|b| b.flag("ordered"));
+        let level = b.and_then(|b| b.int_attr("level"));
         (kind, ordered, level)
     }
 
@@ -3728,10 +3513,7 @@ mod tests {
             .blocks
             .iter()
             .find(|b| b.id == id)
-            .and_then(|b| match b.attrs.get("align") {
-                Some(tilo_doc::AttrVal::Str(s)) => Some(s.clone()),
-                _ => None,
-            })
+            .and_then(|b| b.str_attr("align").map(str::to_owned))
     }
 
     /// Table rows and columns add and delete; an inserted table has editable cells; inserted image bytes
@@ -3961,9 +3743,10 @@ mod tests {
     fn table_grid(wp: &WordProcessor, state: &AutoCommit) -> Vec<(usize, usize)> {
         let c = wp.containers.as_ref().unwrap();
         let snap = tilo_doc::model::materialize(state, c);
-        let int = |b: &tilo_doc::snapshot::BlockView, k: &str| match b.attrs.get(k) {
-            Some(tilo_doc::AttrVal::Int(n)) if *n >= 0 => num::usize_of_i64(*n),
-            _ => 0,
+        let int = |b: &tilo_doc::snapshot::BlockView, k: &str| {
+            b.int_attr(k)
+                .filter(|n| *n >= 0)
+                .map_or(0, num::usize_of_i64)
         };
         let mut g: Vec<(usize, usize)> = snap
             .blocks

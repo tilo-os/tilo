@@ -9,6 +9,11 @@ not prove that an edit reached the panel.
 Enable `TILO_PROFILE_PRESENTATION=1` for the normal diagnostic compositor
 launch. The normal launcher forwards exactly that boolean into the sandbox;
 no native scenario, input gate, output path or GPU-profiling variable is forwarded.
+For a greetd login, the greeter forwards the explicit host diagnostic boolean
+into `StartSession`; arbitrary environment, scenarios and input gates are never
+forwarded. The native GPU stage flags are a separate opt-in launch, described in
+[native GPU stage diagnostics](native-gpu-stage-measurement.md). Keep them absent
+for the primary typing acceptance run.
 Do not enable `TILO_NATIVE_SCENARIO`: its scheduled-input logs include characters
 and it does not test physical keyboard delivery.
 

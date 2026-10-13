@@ -26,11 +26,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -38,20 +34,25 @@
 
 pub mod actions;
 pub mod app;
+mod chrome;
 pub mod diff_view;
 pub mod doc;
 pub mod highlight;
+pub mod i18n;
 pub mod merge_view;
 pub mod model;
+mod pane;
 pub mod resource;
 pub mod samples;
+mod scroll;
 
-pub use actions::{DIFFMERGE_ACTION_TYPE, DiffmergeAction, DiffmergeEffect, HunkChoice};
+pub use actions::DiffmergeEffect;
 pub use app::{DiffMergeApp, Mode};
+pub use doc::{HunkChoice, Session};
 pub use model::{DiffModel, MergeModel, Resolution};
-pub use resource::{Diffmerge, DiffmergeShell};
+pub use resource::DiffmergeShell;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<DiffmergeShell>()
+    ui::built_in_definition!(DiffmergeShell)
 }

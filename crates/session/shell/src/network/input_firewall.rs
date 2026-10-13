@@ -137,6 +137,10 @@ impl Denial {
 pub struct ShellView {
     /// Foreign tiles front-to-back, as [`crate::shell::input_policy::foreign_tiles`] enumerates them.
     tiles: Vec<(SurfaceId, Rect)>,
+    /// Compositor grip regions over these surfaces; never remote client input.
+    chrome_regions: Vec<(SurfaceId, Rect)>,
+    /// Optional interactive bounds; the full tile remains the coordinate basis.
+    input_regions: Vec<(SurfaceId, Rect)>,
     /// The surface holding keyboard focus, or `None` when shell chrome owns it.
     keyboard_focus: Option<SurfaceId>,
     /// Shell chrome (overlay, palette, permission prompt) is drawn over the tiles and taking input.
@@ -161,6 +165,8 @@ impl ShellView {
     ) -> Self {
         Self {
             tiles,
+            chrome_regions: Vec::new(),
+            input_regions: Vec::new(),
             keyboard_focus,
             chrome_captures,
             overlay_open,
@@ -168,6 +174,20 @@ impl ShellView {
             observed: true,
             pointer_held: false,
         }
+    }
+
+    /// Preserve surface geometry while excluding compositor-owned pointer grips.
+    #[must_use]
+    pub fn chrome_regions(mut self, regions: Vec<(SurfaceId, Rect)>) -> Self {
+        self.chrome_regions = regions;
+        self
+    }
+
+    /// Restrict pointer hit testing without changing surface-local coordinates.
+    #[must_use]
+    pub fn input_regions(mut self, regions: Vec<(SurfaceId, Rect)>) -> Self {
+        self.input_regions = regions;
+        self
     }
 
     /// Mark the session locked; the lock surface isn't part of the tiled tree, so this stops a remote peer driving what's underneath it directly.
@@ -213,7 +233,18 @@ impl ShellView {
         let p = Point::new(point.0, point.1);
         self.tiles
             .iter()
-            .find(|(_, rect)| rect.contains(p))
+            .find(|(id, rect)| {
+                rect.contains(p)
+                    && self
+                        .input_regions
+                        .iter()
+                        .find(|(owner, _)| owner == id)
+                        .is_none_or(|(_, input)| input.contains(p))
+                    && !self
+                        .chrome_regions
+                        .iter()
+                        .any(|(owner, grip)| owner == id && grip.contains(p))
+            })
             .map(|(id, _)| *id)
     }
 }
@@ -338,11 +369,6 @@ impl RemoteInputFirewall {
     /// Release the kill switch.
     pub fn clear_kill_switch(&mut self) {
         self.kill_switch = false;
-    }
-
-    /// Whether remote input is currently killed.
-    pub fn kill_switch_engaged(&self) -> bool {
-        self.kill_switch
     }
 
     /// Forget a peer's budget and held modifiers — call when it disconnects.
@@ -1341,7 +1367,8 @@ mod tests {
 /// Denials proven through the production injection path, against a real
 /// `State`/`Seat`, asserting both the refusal rule and that the seat didn't
 /// move — a return-value-only check would pass even if the refusal happened after injection.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod production_path {
     use super::*;
     use crate::compositor::state::State;

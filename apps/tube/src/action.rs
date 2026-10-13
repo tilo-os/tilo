@@ -11,8 +11,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::actions::{TubeAction, TubeEffect};
-use crate::model::{ChannelId, PlaylistId, Route, SearchType, Settings, VideoId};
+use crate::actions::TubeEffect;
+use crate::model::{ChannelId, Route, SearchType, Settings, VideoId};
+use crate::resource::Library;
+use ui::tilo_resource::Edit;
 
 /// Everything a click can request.
 #[derive(Clone, Debug, PartialEq)]
@@ -20,7 +22,6 @@ pub enum Action {
     Navigate(Route),
     OpenVideo(VideoId),
     OpenChannel(ChannelId),
-    OpenPlaylist(PlaylistId),
     /// Toggle a type in the multi-select filter; first click narrows to just
     /// that type (see [`crate::model::SearchTypeFilter`]).
     ToggleSearchType(SearchType),
@@ -35,55 +36,15 @@ pub enum Action {
     SkipSegment(f64),
     SubmitSearch,
     Share(VideoId),
-    /// Only visible on a narrow window, where the rail is an overlay flap.
-    ToggleSidebar,
-    /// Ask the host to open its search palette, which finds Tube's videos,
-    /// creators, playlists and watch history among everything else.
-    OpenSearch,
     /// A change to the shared library, submitted as it is through the
     /// framework's door.
-    Edit(TubeAction),
+    Edit(Edit<Library>),
     /// An effect, run through the framework's door, which confirms the ones
     /// that ask for it (clearing the watch history, approving or revoking a
     /// device) first.
     Effect(TubeEffect),
     /// Pair with the Grayjay invite currently held in the local-only input.
     PairDevice,
-}
-
-impl Action {
-    /// Concise, stable fallback used by Tube's custom clickable surfaces for
-    /// screen readers, keyboard focus and hover help. Call sites may render a
-    /// richer visible title, but a control must never become an unnamed box.
-    pub fn accessible_label(&self) -> &'static str {
-        match self {
-            Self::Navigate(Route::Home) => "Open Home",
-            Self::Navigate(Route::Trending) => "Open Trending",
-            Self::Navigate(Route::Subscriptions) => "Open subscriptions",
-            Self::Navigate(Route::History) => "Open watch history",
-            Self::Navigate(Route::Settings) => "Open settings",
-            Self::Navigate(_) => "Open view",
-            Self::OpenVideo(_) => "Open video",
-            Self::OpenChannel(_) => "Open creator",
-            Self::OpenPlaylist(_) => "Open playlist",
-            Self::ToggleSearchType(_) => "Toggle result type",
-            Self::Back => "Go back",
-            Self::Seek(_) => "Seek video",
-            Self::TogglePlay => "Play or pause",
-            Self::SkipSegment(_) => "Skip segment",
-            Self::SubmitSearch => "Search",
-            Self::Share(_) => "Copy share link",
-            Self::ToggleSidebar => "Show or hide navigation",
-            Self::OpenSearch => "Open search",
-            Self::Edit(TubeAction::SetVideoLiked { .. }) => "Like or unlike video",
-            Self::Edit(TubeAction::SetQueueMembership { .. }) => "Add to or remove from queue",
-            Self::Edit(TubeAction::SetSubscription { .. }) => "Subscribe or unsubscribe",
-            Self::Edit(TubeAction::SetCommentLiked { .. }) => "Like or unlike comment",
-            Self::Edit(TubeAction::SetCommentReply { .. }) => "Reply to comment",
-            Self::Effect(effect) => effect.label(),
-            Self::PairDevice => "Pair Grayjay device",
-        }
-    }
 }
 
 /// Named boolean preferences the settings page can flip.

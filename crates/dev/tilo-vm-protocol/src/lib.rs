@@ -7,17 +7,21 @@
 //! other method from a client whose version differs, so an old CLI never
 //! half-drives a new daemon.
 //!
-//! Layer bytes travel as base64 chunks ([`LayerUploadChunk`]) so the stream
-//! stays line-oriented JSON and a truncated upload is detectable.
+//! Layer bytes prefer an optional bounded binary substream ([`LayerUploadBinary`])
+//! with count and SHA-256 verification. Older protocol-8 peers retain base64
+//! chunks ([`LayerUploadChunk`]); all other operations remain ordered JSON-RPC.
 //!
 //! Long jobs that stream output (in-VM builds, CI layer extraction) do not
 //! use the RPC loop: `tilo-vm` runs `ssh <vm> tilo-vmd build` (or
 //! `ci-layer`) with a [`BuildJob`] or [`CiJob`] on stdin. The job's own
 //! output streams on stderr and its outcome is one [`JobLine`] on stdout.
 
+pub mod binary;
 pub mod client;
+pub mod disk_unlock;
 pub mod display;
 pub mod input;
+pub mod layer_hash;
 pub mod manifest;
 
 use std::collections::BTreeMap;
@@ -26,12 +30,13 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub use client::{Client, ClientError};
+pub use disk_unlock::{DeviceActions, DeviceUnlockEnrol, DeviceUnlockEnrolResult};
 pub use display::OutputSpec;
 pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Where in-VM builds keep one synced source tree per host worktree; its
 /// `target/` is the worktree's own, evictable build dir.
@@ -125,14 +130,20 @@ pub enum Request {
     SlotShow(SlotShow),
     #[serde(rename = "layer.upload.begin")]
     LayerUploadBegin(LayerUploadBegin),
+    #[serde(rename = "layer.upload.binary")]
+    LayerUploadBinary(LayerUploadBinary),
     #[serde(rename = "layer.upload.chunk")]
     LayerUploadChunk(LayerUploadChunk),
     #[serde(rename = "layer.import")]
     LayerImport(LayerImport),
     #[serde(rename = "layer.list")]
     LayerList(LayerList),
+    #[serde(rename = "layer.verify")]
+    LayerVerify(LayerVerify),
     #[serde(rename = "swap")]
     Swap(Swap),
+    #[serde(rename = "userspace.apply")]
+    UserspaceApply(UserspaceApply),
     #[serde(rename = "rollback")]
     Rollback(Rollback),
     #[serde(rename = "logs")]
@@ -157,11 +168,17 @@ pub enum Request {
     Awake(Awake),
     #[serde(rename = "network.wake")]
     NetworkWake(NetworkWake),
+    #[serde(rename = "device.unlock.enrol")]
+    DeviceUnlockEnrol(disk_unlock::DeviceUnlockEnrol),
+    #[serde(rename = "device.actions")]
+    DeviceActions(disk_unlock::DeviceActions),
 }
 
 impl Request {
     pub fn method(&self) -> &'static str {
         match self {
+            Self::DeviceUnlockEnrol(_) => "device.unlock.enrol",
+            Self::DeviceActions(_) => "device.actions",
             Self::Hello(_) => "hello",
             Self::Status(_) => "status",
             Self::SlotCreate(_) => "slot.create",
@@ -170,10 +187,13 @@ impl Request {
             Self::SlotRm(_) => "slot.rm",
             Self::SlotShow(_) => "slot.show",
             Self::LayerUploadBegin(_) => "layer.upload.begin",
+            Self::LayerUploadBinary(_) => "layer.upload.binary",
             Self::LayerUploadChunk(_) => "layer.upload.chunk",
             Self::LayerImport(_) => "layer.import",
             Self::LayerList(_) => "layer.list",
+            Self::LayerVerify(_) => "layer.verify",
             Self::Swap(_) => "swap",
+            Self::UserspaceApply(_) => "userspace.apply",
             Self::Rollback(_) => "rollback",
             Self::Logs(_) => "logs",
             Self::SeatClaim(_) => "seat.claim",
@@ -217,10 +237,13 @@ call! {
     SlotRm => SlotRmResult,
     SlotShow => SlotShowResult,
     LayerUploadBegin => LayerUploadBeginResult,
+    LayerUploadBinary => LayerUploadBeginResult,
     LayerUploadChunk => LayerUploadChunkResult,
     LayerImport => LayerImportResult,
     LayerList => Vec<LayerInfo>,
+    LayerVerify => LayerInfo,
     Swap => ApplyResult,
+    UserspaceApply => UserspaceResult,
     Rollback => ApplyResult,
     Logs => LogsResult,
     SeatClaim => SeatResult,
@@ -233,6 +256,8 @@ call! {
     BootConfirm => BootConfirmResult,
     Awake => AwakeLease,
     NetworkWake => NetworkWakeStatus,
+    DeviceUnlockEnrol => DeviceUnlockEnrolResult,
+    DeviceActions => serde_json::Value,
 }
 
 // ---- requests ---------------------------------------------------------------
@@ -290,6 +315,13 @@ pub struct SlotShow {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerUploadBegin {}
 
+/// Optional protocol-8 upgrade: ready response, bounded binary frames, then
+/// a same-id byte-count response. Use `Client::upload` after explicit transport
+/// opt-in; a bare RPC call cannot perform the substream. Older peers reject it
+/// before consuming bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerUploadBinary {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerUploadChunk {
     pub upload: String,
@@ -316,6 +348,13 @@ pub struct LayerImport {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerList {}
 
+/// Verify stored content before reusing a layer. Optional on protocol 8 peers;
+/// clients must stream normally when this method is unavailable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerVerify {
+    pub hash: String,
+}
+
 /// Replace (or add) one component's layer in a slot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Swap {
@@ -326,6 +365,70 @@ pub struct Swap {
     /// the daemon falls back to its own manifest, then to session scope.
     #[serde(default)]
     pub info: Option<ComponentInfo>,
+}
+
+/// The canonical matched session components, in layer precedence order.
+/// VM-wide managers and boot components deliberately remain separate.
+pub const USERSPACE_COMPONENTS: &[&str] = &[
+    "launcher",
+    "install",
+    "apps+runtime",
+    "app-host",
+    "native-runtime-host",
+    "control",
+    "app-cli",
+    "ush",
+    "shell",
+];
+
+/// A build/import receipt from the same frozen source inventory. Historical
+/// provenance of reused content-addressed layer bytes remains independent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserspaceMember {
+    pub component: String,
+    pub layer: String,
+    pub build: Provenance,
+    pub source_inventory: String,
+}
+
+/// Host-observed account and login lifetime, revalidated at activation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserspaceSession {
+    pub user: String,
+    pub unit: String,
+    pub login_session: Option<String>,
+    pub login_wrapper: Option<u32>,
+}
+
+/// All members are imported before this generation-conditional admission.
+/// Older daemons reject this new method before making any side effects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserspaceApply {
+    pub slot: String,
+    pub expected_generation: u64,
+    pub expected_session: UserspaceSession,
+    pub source: Box<Provenance>,
+    pub source_inventory: String,
+    pub members: Vec<UserspaceMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserspacePhase {
+    pub name: String,
+    pub seconds: f64,
+}
+
+/// One aggregate, including partial durable selection and its failure. A
+/// failed selection retains its SDK closure; it never reports success or
+/// silently removes the runtime beneath selected user packages.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserspaceResult {
+    pub apply: ApplyResult,
+    pub source: Provenance,
+    pub source_inventory: String,
+    pub members: Vec<UserspaceMember>,
+    pub phases: Vec<UserspacePhase>,
+    pub failure: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -721,6 +824,9 @@ pub struct HelloResult {
     /// The keep-awake lease, as this hello renewed it.
     #[serde(default)]
     pub awake: Option<AwakeLease>,
+    /// Optional methods, independent of the protocol-v8 request vocabulary.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 /// The logind `sleep` block lock that keeps the machine from suspending
@@ -806,6 +912,8 @@ pub struct SlotInfo {
     /// `SELinux` domain); `None` when it matches or is not running.
     #[serde(default)]
     pub parity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_identity: Option<UserspaceSession>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -845,6 +953,10 @@ pub struct SlotShowResult {
     pub slot: SlotInfo,
     /// Every file and symlink, grouped by component, sorted by path.
     pub files: Vec<SlotFile>,
+    /// Import provenance of the selected layers, keyed by component. Missing
+    /// metadata stays missing; callers must not infer a source from the request.
+    #[serde(default)]
+    pub provenance: std::collections::BTreeMap<String, Provenance>,
 }
 
 /// One file a layer puts into the slot's view of the system.
@@ -928,6 +1040,16 @@ pub struct LayerInfo {
     pub provenance: Provenance,
 }
 
+/// Canonical installer selection, separate from the protocol-v8 action vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CohortSelection {
+    pub id: String,
+    pub root: String,
+    pub runtime: String,
+    pub preserved: bool,
+    pub pinned: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApplyResult {
     pub slot: String,
@@ -936,6 +1058,9 @@ pub struct ApplyResult {
     pub changed: bool,
     pub policy: Policy,
     pub actions: Vec<Action>,
+    /// Signed package selections; older protocol-v8 clients ignore this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cohort_selection: Vec<CohortSelection>,
     /// Non-fatal findings, e.g. a layer built against a different base image.
     #[serde(default)]
     pub warnings: Vec<String>,
@@ -1156,6 +1281,53 @@ pub const INSTALL_TIMEOUT_SECONDS: u64 = 1800;
 mod tests {
     use super::*;
 
+    /// The v8 `ApplyResult` wire shape before optional cohort selection receipts.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct LegacyApplyResult {
+        slot: String,
+        generation: u64,
+        changed: bool,
+        policy: Policy,
+        actions: Vec<Action>,
+        #[serde(default)]
+        warnings: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        boot: Option<BootChange>,
+    }
+
+    #[test]
+    fn cohort_selection_receipts_preserve_protocol_v8_apply_decoding() {
+        let legacy = LegacyApplyResult {
+            slot: "device".into(),
+            generation: 40,
+            changed: true,
+            policy: Policy::SessionRestart,
+            actions: vec![Action::RestartDesktop {
+                user: "owner".into(),
+            }],
+            warnings: vec![],
+            boot: None,
+        };
+        let old_wire = serde_json::to_value(&legacy).unwrap();
+        let mut current: ApplyResult = serde_json::from_value(old_wire.clone()).unwrap();
+        assert!(current.cohort_selection.is_empty());
+        assert_eq!(serde_json::to_value(&current).unwrap(), old_wire);
+        current.cohort_selection.push(CohortSelection {
+            id: "so.tilo.settings".into(),
+            root: "signed-root".into(),
+            runtime: "matched-sdk".into(),
+            preserved: false,
+            pinned: true,
+        });
+        let new_wire = serde_json::to_vec(&current).unwrap();
+        let decoded: LegacyApplyResult = serde_json::from_slice(&new_wire).unwrap();
+        assert_eq!(decoded, legacy);
+        assert_eq!(
+            serde_json::from_slice::<ApplyResult>(&new_wire).unwrap(),
+            current
+        );
+    }
+
     #[test]
     fn package_names_cannot_smuggle_options_or_shell() {
         for good in [
@@ -1337,5 +1509,37 @@ mod tests {
                 Some("rustc 1.97.1 (abc 2026-08-01)")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod userspace_compatibility_tests {
+    use super::*;
+
+    #[derive(Deserialize)]
+    #[serde(tag = "method", content = "params")]
+    enum LegacyRequest {
+        #[serde(rename = "swap")]
+        Swap(Swap),
+    }
+
+    #[test]
+    fn new_userspace_method_is_rejected_by_old_v8_before_any_single_swap() {
+        let value = serde_json::json!({"method":"userspace.apply","params":{}});
+        assert!(serde_json::from_value::<LegacyRequest>(value).is_err());
+        let old = serde_json::json!({"method":"swap","params":{"slot":"owned","component":"shell","layer":"abcd"}});
+        let LegacyRequest::Swap(swap) = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(swap.component, "shell");
+        assert!(matches!(
+            serde_json::from_value::<Request>(old).unwrap(),
+            Request::Swap(_)
+        ));
+    }
+
+    #[test]
+    fn old_daemon_hello_has_no_userspace_capability_and_new_fields_are_optional() {
+        let old = serde_json::json!({"protocol":8,"daemon_version":"0.1.0","root":"/state","arch":"x86_64","tools":{"cargo":true,"rsync":true,"python3":true,"sccache":false,"podman":false}});
+        let hello: HelloResult = serde_json::from_value(old).unwrap();
+        assert!(hello.capabilities.is_empty());
     }
 }

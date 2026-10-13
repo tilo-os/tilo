@@ -1,7 +1,6 @@
 use super::{
-    Affine, AutoCommit, CodeApp, Conflict, ConflictChoice, EditorDoc, ElementState, Key, KeyEvent,
-    ModalAction, ModalFrame, ModalSpec, PortalIntent, Project, Scene, Session, TextRenderer, Theme,
-    TreeId, WindowEvent, disk, explorer, source_filter,
+    AutoCommit, CodeApp, Conflict, ConflictChoice, EditorDoc, PortalIntent, Project, Session,
+    TreeId, disk, explorer, source_filter,
 };
 
 impl CodeApp {
@@ -179,116 +178,6 @@ impl CodeApp {
         }
     }
 
-    /// The conflict prompt's keyboard shortcuts: Escape cancels, Enter takes
-    /// the safe option (reload, which cannot destroy the other writer's work).
-    pub(super) fn conflict_key(event: &WindowEvent) -> Option<ConflictChoice> {
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return None;
-        };
-        match logical_key {
-            Key::Named(winit::keyboard::NamedKey::Escape) => Some(ConflictChoice::Cancel),
-            Key::Named(winit::keyboard::NamedKey::Enter) => Some(ConflictChoice::Reload),
-            _ => None,
-        }
-    }
-
-    /// Draw the "this file changed on disk" prompt over everything.
-    ///
-    /// This is deliberately a decision the user makes, not one the editor makes
-    /// for them: overwriting silently loses whatever rewrote the file, and
-    /// reloading silently loses what they typed. Both are real losses, so both
-    /// are offered by name, and the default (Enter) is the one that cannot
-    /// destroy someone else's work.
-    pub(super) fn draw_conflict(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.conflict_buttons.clear();
-        let Some(conflict) = self.conflict.clone() else {
-            return;
-        };
-        // Shared modal chrome deliberately paints in three ordered stages:
-        // existing editor → backdrop-aware translucent scrim → raised card and
-        // controls. A plain translucent fill in this immediate scene can be
-        // batched after text by the renderer; `ModalFrame` uses isolated layers
-        // for its scrim, so the card never gets dimmed with the editor.
-        let title = format!("{} changed on disk", conflict.name);
-        let base_actions = [
-            ModalAction::primary("Reload").focused(true),
-            ModalAction::danger("Overwrite"),
-            ModalAction::secondary("Cancel"),
-        ];
-        let base_spec = ModalSpec::new(&title)
-            .actions(&base_actions)
-            .body_height(64.0)
-            .max_width(460.0)
-            .closable(false)
-            .dismiss_on_scrim(false);
-        let layout = ModalFrame::layout(self.rect, &base_spec, text_renderer, theme);
-        let actions = [
-            ModalAction::primary("Reload")
-                .hovered(
-                    layout
-                        .actions
-                        .first()
-                        .is_some_and(|bounds| bounds.contains(self.conflict_hover)),
-                )
-                .focused(true),
-            ModalAction::danger("Overwrite").hovered(
-                layout
-                    .actions
-                    .get(1)
-                    .is_some_and(|bounds| bounds.contains(self.conflict_hover)),
-            ),
-            ModalAction::secondary("Cancel").hovered(
-                layout
-                    .actions
-                    .get(2)
-                    .is_some_and(|bounds| bounds.contains(self.conflict_hover)),
-            ),
-        ];
-        let spec = ModalSpec::new(&title)
-            .actions(&actions)
-            .body_height(64.0)
-            .max_width(460.0)
-            .closable(false)
-            .dismiss_on_scrim(false);
-        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
-
-        let (_, dim) = ModalFrame::ink(theme);
-        text_renderer.draw_text(
-            scene,
-            "Something else wrote this file after you opened it. Overwriting \
-             discards their change; reloading discards yours.",
-            13.0,
-            dim,
-            transform * Affine::translate((layout.body.x0, layout.body.y0 + 4.0)),
-            Some(layout.body.width() as f32),
-        );
-        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
-        self.conflict_buttons.extend(
-            [
-                ConflictChoice::Reload,
-                ConflictChoice::Overwrite,
-                ConflictChoice::Cancel,
-            ]
-            .into_iter()
-            .zip(layout.actions),
-        );
-    }
-
     // ---- the file picker --------------------------------------------------
 
     /// Ask the host desktop for a folder to open as the project.
@@ -430,6 +319,8 @@ impl CodeApp {
                 self.editor.unbind();
                 self.reset_language_server();
                 self.clear_search();
+                self.search_symbols.clear();
+                self.symbol_projection_revision = None;
                 self.refresh_header();
                 self.note(format!("Opened {name}"), false);
                 Ok(())

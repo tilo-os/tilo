@@ -42,6 +42,18 @@ impl Fixture {
     fn new() -> Self {
         Self::with_delivery_capacity(32)
     }
+    /// The commits running catch-ups hold for their final cuts.
+    fn count_held(&self) -> usize {
+        let work = self.store.root().join(crate::store::replay::WORK_DIR);
+        std::fs::read_dir(work).map_or(0, |entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("held-"))
+                .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
+                .map(Iterator::count)
+                .sum()
+        })
+    }
     fn with_delivery_capacity(delivery_capacity: usize) -> Self {
         Self::with_delivery_capacity_and_workers(
             delivery_capacity,
@@ -111,6 +123,7 @@ impl Fixture {
                 crate::policy::TrustPolicy::AllowMatchingUser,
             )),
             own_user: user.public_key,
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: None,
         };
@@ -234,19 +247,29 @@ impl Fixture {
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
+            signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
-        write_state_delivery(delivery, &self.recipient, &session, wire)
-            .await
-            .unwrap();
+        write_state_delivery(
+            delivery,
+            &self.recipient,
+            &session,
+            &mut SessionCoding::default(),
+            &crate::presence_mailbox::PresenceMailbox::default(),
+            wire,
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -1232,13 +1255,16 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
-        v2: true,
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        presence: None,
+        signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
         positions: None,
         compactor: None,
+        member_limits: None,
         resumes: Box::leak(Box::default()),
         lag: Box::leak(Box::default()),
     };
@@ -1265,6 +1291,100 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
         .unwrap();
     assert!(matches!(acknowledged, Some(Envelope::Committed { op, .. }) if op == [5; 16]));
     assert_eq!(fixture.store.load_retained().unwrap().len(), 1);
+}
+
+/// Two commits by the fixture's source within one bucket refill, with a
+/// burst of one change, as a relay whose own user is `stranger` or else
+/// the source's own.
+async fn two_commits_with_a_burst_of_one(stranger: Option<[u8; 32]>) -> Vec<Option<Envelope>> {
+    let fixture = Fixture::new();
+    let own_user = stranger.unwrap_or(fixture.source.own_user);
+    let limits =
+        crate::member_limits::MemberLimits::new(crate::member_limits::MemberLimitsConfig {
+            burst: 1,
+            ..Default::default()
+        });
+    let session = SessionCtx {
+        workspaces: &fixture.registry,
+        autobind: None,
+        outbound: &fixture.source.tx,
+        state_outbound: None,
+        connection_live: None,
+        own_user_public_key: &own_user,
+        own_device_cert: &fixture.source.peer.cert,
+        own_device_public_key: &fixture.source.peer.cert.device_public_key,
+        app_serving: None,
+        metrics: &fixture.metrics,
+        trust_policy: &fixture.source.policy,
+        disconnect: &fixture.source.disconnect,
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        presence: None,
+        signed_actions: false,
+        private_tx: &fixture.private,
+        revocations: &fixture.source.revocations,
+        live_bridge: None,
+        agents: Box::leak(Box::default()),
+        positions: None,
+        compactor: None,
+        member_limits: Some(&limits),
+        resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
+    };
+    let mut answers = Vec::new();
+    for (index, op) in [(1, [5; 16]), (2, [6; 16])] {
+        let Envelope::Delta { delta, .. } = fixture.envelope(index) else {
+            unreachable!()
+        };
+        let commit = Envelope::Commit {
+            workspace_id: 7,
+            op,
+            author_device_public_key: fixture.source.peer.device_public_key,
+            authored_at_ns: 1,
+            delta,
+        };
+        let answer = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            handle_commit(&fixture.source.peer, &session, &[7], commit),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        answers.push(answer);
+    }
+    answers
+}
+
+#[tokio::test]
+async fn a_member_over_the_change_limit_is_refused_and_keeps_the_session() {
+    let answers = two_commits_with_a_burst_of_one(Some([0xee; 32])).await;
+    // The budget is spent before admission, so the first commit takes the
+    // one change whatever the fixture's membership then answers.
+    assert!(
+        !matches!(
+            &answers[0],
+            Some(Envelope::CommitRefused { reason, .. }) if reason.contains("slow down")
+        ),
+        "{:?}",
+        answers[0]
+    );
+    // The second commit within the bucket's refill time is refused, and
+    // the session stays open (no error).
+    assert!(matches!(
+        &answers[1],
+        Some(Envelope::CommitRefused { reason, .. }) if reason == "too many changes; slow down"
+    ));
+}
+
+#[tokio::test]
+async fn bots_and_the_host_are_never_limited() {
+    // A public room's bots are delegated by the host-held root, so they
+    // chain to the relay's own user; a burst must not become refusals.
+    let answers = two_commits_with_a_burst_of_one(None).await;
+    assert!(
+        answers
+            .iter()
+            .all(|answer| matches!(answer, Some(Envelope::Committed { .. })))
+    );
 }
 
 #[tokio::test]
@@ -1754,13 +1874,16 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 metrics: &metrics,
                 trust_policy: &source.policy,
                 disconnect: &source.disconnect,
-                v2: true,
+                framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+                presence: None,
+                signed_actions: false,
                 private_tx: &private,
                 revocations: &source.revocations,
                 live_bridge: None,
                 agents: Box::leak(Box::default()),
                 positions: None,
                 compactor: None,
+                member_limits: None,
                 resumes: Box::leak(Box::default()),
                 lag: Box::leak(Box::default()),
             };
@@ -1860,13 +1983,16 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
-        v2: true,
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        presence: None,
+        signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
         positions: None,
         compactor: None,
+        member_limits: None,
         resumes: Box::leak(Box::default()),
         lag: Box::leak(Box::default()),
     };
@@ -1990,13 +2116,16 @@ impl Fixture {
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
+            signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -2105,6 +2234,55 @@ async fn replay_completion_only_classifies_a_valid_replacement_as_superseded() {
             );
         }
     }
+}
+
+/// A device re-dials (its shell follows a changed pin) and drops the old
+/// connection. The old connection's teardown releases its slot while the new
+/// subscription's replay is still running; the new one must take the slot, not
+/// be closed as if it had lost authorization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_completion_takes_a_slot_its_earlier_connection_released() {
+    let fixture = Arc::new(Fixture::new());
+    let device = fixture.recipient.device_public_key;
+    let (earlier, _earlier_rx) = mpsc::channel(32);
+    fixture.workspace.lock().await.add_subscriber(Subscriber {
+        device_public_key: device,
+        role: PeerRole::Device,
+        tx: earlier.clone(),
+        disconnect: fixture.recipient_disconnect.clone(),
+    });
+    let (release, reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "replay-prepare");
+    let subscribing = fixture.clone();
+    let task = tokio::spawn(async move { subscribing.subscribe_result().await });
+    reached.await.unwrap();
+
+    // The earlier connection's teardown: it removes only its own slot.
+    fixture
+        .workspace
+        .lock()
+        .await
+        .remove_subscriber_session(&device, &earlier);
+    drop(release);
+
+    let result = tilo_test_env::within("task to complete", task)
+        .await
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "the re-dialled subscription was refused after its earlier connection ended: {:?}",
+        result.err()
+    );
+    assert!(
+        fixture
+            .workspace
+            .lock()
+            .await
+            .subscribers
+            .get(&device)
+            .is_some_and(|current| current.tx.same_channel(&fixture.recipient_tx)),
+        "the re-dialled subscription holds the device's slot"
+    );
 }
 
 #[test]
@@ -2243,13 +2421,16 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 metrics: &writer.metrics,
                 trust_policy: &writer.source.policy,
                 disconnect: &writer.source.disconnect,
-                v2: true,
+                framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+                presence: None,
+                signed_actions: false,
                 private_tx: &writer.private,
                 revocations: &writer.source.revocations,
                 live_bridge: None,
                 agents: Box::leak(Box::default()),
                 positions: None,
                 compactor: None,
+                member_limits: None,
                 resumes: Box::leak(Box::default()),
                 lag: Box::leak(Box::default()),
             };
@@ -2361,6 +2542,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
     let delivery = PrivateDelivery {
         certified: false,
         action: action.clone(),
+        signed: None,
         source: fixture.source.peer.clone(),
         source_tx: fixture.source.tx.clone(),
         reply,
@@ -2386,13 +2568,16 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             metrics: &writer.metrics,
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
+            signed_actions: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -2520,13 +2705,16 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
             metrics: &writer.metrics,
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
+            signed_actions: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -2687,25 +2875,15 @@ async fn cancelled_before_pending_catchup_preserves_semantic_update_for_reconnec
     drop(prepare_release);
     capture_reached.await.unwrap();
     assert_eq!(
-        fixture
-            .store
-            .count_pending(&fixture.recipient.device_public_key)
-            .unwrap(),
+        fixture.count_held(),
         1,
-        "post-cut retained output was not durable before catch-up"
+        "post-cut retained output was not held for the final cut"
     );
     task.abort();
     assert!(matches!(task.await, Err(error) if error.is_cancelled()));
     drop(capture_release);
     fixture.drained_wait().await;
-    assert_eq!(
-        fixture
-            .store
-            .count_pending(&fixture.recipient.device_public_key)
-            .unwrap(),
-        1,
-        "cancelled catch-up retired an unwritten semantic update"
-    );
+    // The update stays in retained history, which the reconnect replays.
 
     let mut wire = Vec::new();
     Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
@@ -2730,6 +2908,11 @@ async fn cancelled_before_pending_catchup_preserves_semantic_update_for_reconnec
             .count_pending(&fixture.recipient.device_public_key)
             .unwrap(),
         0
+    );
+    assert_eq!(
+        fixture.count_held(),
+        0,
+        "the replaced session's catch-up left its held commits"
     );
 }
 
@@ -2756,7 +2939,9 @@ async fn replay_boundary_cross_workspace_full_live_queue_fences_exact_session() 
                 live: session.live.clone(),
             })
             .unwrap();
-        let catchup = Arc::new(ReplayCatchup::new());
+        let catchup = Arc::new(ReplayCatchup::new(
+            &fixture.store.root().join(crate::store::replay::WORK_DIR),
+        ));
         catchup
             .phase
             .store(ReplayCatchup::BOUNDARY, std::sync::atomic::Ordering::SeqCst);
@@ -2782,7 +2967,9 @@ async fn replay_boundary_live_byte_exhaustion_fences_exact_session() {
             .state_sessions
             .get_mut(&fixture.recipient.device_public_key)
             .unwrap();
-        let catchup = Arc::new(ReplayCatchup::new());
+        let catchup = Arc::new(ReplayCatchup::new(
+            &fixture.store.root().join(crate::store::replay::WORK_DIR),
+        ));
         catchup
             .phase
             .store(ReplayCatchup::BOUNDARY, std::sync::atomic::Ordering::SeqCst);
@@ -2954,13 +3141,16 @@ impl Fixture {
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
+            signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -3304,13 +3494,16 @@ async fn native_sync_refresh_uses_live_subscribed_source_and_rechecks_execution(
             metrics: &fixture.metrics,
             trust_policy: &source.policy,
             disconnect: &source.disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
+            signed_actions: false,
             private_tx: &fixture.private,
             revocations: &source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };

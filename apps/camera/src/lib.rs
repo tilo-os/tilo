@@ -23,11 +23,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -35,7 +31,6 @@
 
 pub mod actions;
 pub mod app;
-pub mod doc;
 pub mod document_scan;
 mod files;
 pub mod frame;
@@ -43,6 +38,7 @@ pub mod library;
 pub mod media;
 pub mod model;
 pub mod paint;
+pub mod record;
 pub mod resource;
 pub mod scan;
 pub mod video;
@@ -52,9 +48,12 @@ pub mod worker;
 pub mod capture;
 
 pub use app::CameraApp;
-pub use resource::{Camera, CameraShell, CameraState};
+pub use record::Record;
+pub use resource::CameraShell;
+
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<CameraShell>()
+    ui::built_in_definition!(CameraShell)
 }

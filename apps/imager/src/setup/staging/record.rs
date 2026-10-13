@@ -147,12 +147,6 @@ pub enum RecordStatus {
     Removed,
 }
 
-fn now() -> u64 {
-    ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// Operation IDs become file names; allow only a UUID-like identifier.
 pub fn valid_operation_id(id: &str) -> bool {
     !id.is_empty()
@@ -206,7 +200,7 @@ impl Record {
         state: StepState,
         detail: serde_json::Map<String, serde_json::Value>,
     ) {
-        let at = now();
+        let at = ui::time::unix_now();
         if let Some(existing) = self.steps.iter_mut().find(|s| s.step == step) {
             existing.state = state;
             existing.at = at;
@@ -791,11 +785,10 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o777))
                     .unwrap();
-                assert!(parent_open.load("op-user").is_err());
             } else {
                 assert!(store.load("op-user").is_err());
-                assert!(parent_open.load("op-user").is_err());
             }
+            assert!(parent_open.load("op-user").is_err());
         }
     }
 }

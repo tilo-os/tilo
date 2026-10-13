@@ -557,6 +557,10 @@ test('httpsPost and the live plane accept a loopback http room for local review'
   assert.deepEqual(liveEndpoints('https://host.example:8443', {webtransportPort: 9700}), {
     endpoint: 'https://host.example:8443/moq/live', fallback: 'https://host.example:8443/moq/live',
   });
+  // Behind an HTTP-only proxy: QUIC goes to the direct origin, the stream stays proxied.
+  assert.deepEqual(liveEndpoints('https://rooms.example', {webtransportPort: 9781, webtransportOrigin: 'https://live.rooms.example'}), {
+    endpoint: 'https://live.rooms.example/moq/live', fallback: 'https://rooms.example/moq/live',
+  });
 });
 
 test('the live grant waits until the room admitted the device', async () => {
@@ -878,4 +882,129 @@ test('an old membership retry cannot replace a rejoined publishers presence subs
   } finally {
     layer.stop();
   }
+});
+
+
+test('resource hydration can be cancelled and leaving the peer refuses pending opens', async () => {
+  const runtime = fakeRuntime();
+  const peer = await connect(options(runtime, memoryStore()));
+  const cancelled = new AbortController();
+  const pending = peer.whenRecord('so.tilo.chat', '', {signal: cancelled.signal});
+  cancelled.abort();
+  await assert.rejects(pending, error => error.name === 'AbortError');
+  const leaving = peer.whenRecord('so.tilo.notes', 'missing');
+  const refused = assert.rejects(leaving, /connection closed/);
+  await peer.dispose();
+  await refused;
+  await assert.rejects(peer.whenRecord('so.tilo.notes', 'missing'), /connection closed/);
+});
+
+test('a member opening a link never certifies or renews a device implicitly', async () => {
+  const runtime = fakeRuntime(), store = memoryStore();
+  await assert.rejects(connect(options(runtime, store, {requireExistingCertificate: true})), /obtain admission/);
+  assert.equal(runtime.calls.certify.length, 0);
+  const prior = JSON.stringify({cert: {device: 'previous'}, hostCert: {host: true}});
+  await store.put('certificate', prior);
+  const peer = await connect(options(runtime, store, {requireExistingCertificate: true}));
+  assert.equal(runtime.calls.certify.length, 0);
+  assert.equal(runtime.peer.config.cert.device, 'previous');
+  await assert.rejects(peer.recover({kind: 'reauthenticate'}), /identity flow/);
+  assert.equal(await store.get('certificate'), prior, 'the saved certificate is preserved');
+  assert.equal(runtime.calls.certify.length, 0);
+  await peer.dispose();
+});
+
+test('leaving, cancelling and timing out pending room admission settle browser navigation', async () => {
+  const runtime = fakeRuntime({phase: 'authenticating'});
+  const peer = await connect(options(runtime, memoryStore()));
+  const controller = new AbortController();
+  const pending = peer.whenReady({signal: controller.signal});
+  controller.abort();
+  await assert.rejects(pending, error => error.name === 'AbortError');
+  await assert.rejects(peer.whenReady({timeoutMs: 1}), /timed out/);
+  const leaving = peer.whenReady();
+  await peer.dispose();
+  await assert.rejects(leaving, /closed/);
+});
+
+
+test('feedback startup waits for owner admission and never joins another room', async () => {
+  const runtime = fakeRuntime();
+  const peer = await connect(options(runtime, memoryStore(), {live: false, voice: false}));
+  runtime.peer.hasRecord = () => true;
+  let status = 'awaiting authenticated admission';
+  let configured;
+  runtime.peer.configureFeedback = value => { configured = JSON.parse(value); };
+  runtime.peer.feedbackStatus = () => status;
+  const destination = {room: ROOM, provider: 'record:so.tilo.chat:', channel: 'feedback'};
+  const waiting = peer.configureFeedback(destination);
+  await settle();
+  assert.deepEqual(configured, destination);
+  assert.equal(peer.feedbackStatus(), 'awaiting authenticated admission');
+  status = 'ready';
+  runtime.peer.emit();
+  await waiting;
+  assert.equal(runtime.peer.room, ROOM);
+  await assert.rejects(peer.configureFeedback({...destination, room: 'another-room'}), /existing room/);
+  status = 'owner refused current certified admission';
+  await assert.rejects(peer.configureFeedback(destination), /owner refused/);
+});
+
+for (const attachSignal of [false, true]) test(`leaving a page joins peer storage release (signal=${attachSignal})`, async () => {
+  const runtime = fakeRuntime();
+  const values = new Map();
+  runtime.profile_value = (profile, device, key) => values.get(`${profile}/${device}/${key}`);
+  runtime.set_profile_value = (profile, device, key, bytes) => values.set(`${profile}/${device}/${key}`, bytes);
+  let release, begun, reentered, releases = 0;
+  const gate = new Promise(resolve => {release = resolve;});
+  const started = new Promise(resolve => {begun = resolve;});
+  const controller = new AbortController();
+  const desktop = {
+    async openProfileStorage() {
+      return {
+        async flush() {},
+        async release() { releases++; begun(); reentered = peer.dispose(); await gate; },
+      };
+    },
+  };
+  const peer = await connect(options(runtime, undefined, {profile: 'overlap', device: 'owned', desktop,
+    vaultStorage: vaultMemory(),...(attachSignal ? {signal: controller.signal} : {})}));
+  let completed = false;
+  controller.abort();
+  const closing = peer.dispose().then(() => { completed = true; });
+  try {
+    await started;
+    const repeated = peer.dispose();
+    assert.equal(peer.dispose(), repeated, 'repeated disposal shares one completion');
+    assert.equal(reentered, repeated, 'reentrant disposal joins the installed completion');
+    await settle();
+    assert.equal(completed, false, 'leaving must await storage release');
+  } finally {
+    release();
+    await closing;
+  }
+  await peer.dispose();
+  assert.equal(releases, 1, 'storage is released exactly once');
+});
+
+
+test('every disposal caller observes storage release failure', async () => {
+  const runtime = fakeRuntime();
+  runtime.profile_value = () => undefined;
+  runtime.set_profile_value = () => {};
+  const failure = new Error('storage release refused');
+  let releases = 0;
+  const desktop = {async openProfileStorage() { return {
+    async flush() {}, async release() { releases++; throw failure; },
+  }; }};
+  const peer = await connectPeer(options(runtime, undefined, {
+    profile: 'release-failure', device: 'owned', desktop, vaultStorage: vaultMemory(), live: false,
+  }));
+  const first = peer.dispose(), second = peer.dispose();
+  assert.equal(first, second);
+  const outcomes = await Promise.allSettled([first, second]);
+  assert.deepEqual(outcomes, [{status: 'rejected', reason: failure}, {status: 'rejected', reason: failure}]);
+  await assert.rejects(peer.dispose(), error => error === failure);
+  assert.equal(releases, 1);
+  assert.equal(runtime.peer.disposed, true);
 });

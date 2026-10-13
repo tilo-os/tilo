@@ -1,5 +1,7 @@
 //! Byte custody for immutable native reads. Reservations precede capture work.
-use runtime_collab::committed_document::{CHUNK_BYTES, MAX_DOCUMENT_BYTES};
+use runtime_collab::committed_document::{
+    CHANGES_FIRST_BYTES, CHUNK_BYTES, MAX_CHANGES_BASE, MAX_DOCUMENT_BYTES,
+};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -40,6 +42,12 @@ pub(super) struct Capture {
     _reservation: Reservation,
     pub(super) id: u64,
     pub(super) revision: [u8; 32],
+    /// The heads `revision` names, when the owner said; what a later read
+    /// on this channel may hand out the changes since.
+    heads: Vec<[u8; 32]>,
+    /// Set for changes rather than a whole document: the heads they apply
+    /// to. The first piece is then a `Changes` reply.
+    base: Option<Vec<[u8; 32]>>,
     next: usize,
     token: [u8; 16],
     deadline: std::time::Instant,
@@ -62,6 +70,8 @@ impl Capture {
             _reservation: reservation,
             id,
             revision,
+            heads: Vec::new(),
+            base: None,
             next: 0,
             token: [0; 16],
             deadline: now
@@ -69,6 +79,30 @@ impl Capture {
                 .unwrap_or(now),
             expired: false,
         })
+    }
+    /// The heads `revision` names, for a later changes read on this channel.
+    pub(super) fn naming(mut self, heads: Vec<[u8; 32]>) -> Self {
+        self.heads = heads;
+        self
+    }
+    /// These bytes are the changes since the document with heads `base`.
+    pub(super) fn changes_since(mut self, base: Vec<[u8; 32]>) -> Result<Self, String> {
+        if base.is_empty() || base.len() > MAX_CHANGES_BASE {
+            return Err("invalid native document changes base".into());
+        }
+        self.base = Some(base);
+        Ok(self)
+    }
+    /// The revision, with its heads, this capture hands out once its last
+    /// piece is acknowledged; `None` when the owner did not name its heads
+    /// or they are too many to start changes from.
+    pub(super) fn delivers(&self) -> Option<super::HeldRevision> {
+        (self.finished() && !self.heads.is_empty() && self.heads.len() <= MAX_CHANGES_BASE).then(
+            || super::HeldRevision {
+                revision: self.revision,
+                heads: self.heads.clone(),
+            },
+        )
     }
     pub(super) fn chunk(
         &mut self,
@@ -86,7 +120,12 @@ impl Capture {
         if self.next >= total {
             return Err("committed document capture finished".into());
         }
-        let end = total.min(self.next.saturating_add(CHUNK_BYTES));
+        let first = self.next == 0;
+        let piece = match &self.base {
+            Some(_) if first => CHANGES_FIRST_BYTES,
+            _ => CHUNK_BYTES,
+        };
+        let end = total.min(self.next.saturating_add(piece));
         let bytes = self
             .body
             .bytes()
@@ -97,6 +136,16 @@ impl Capture {
             u32::try_from(total).map_err(|_| "committed document exceeds the wire limit")?;
         self.next = end;
         self.token = uuid::Uuid::new_v4().into_bytes();
+        if let Some(base) = self.base.as_ref().filter(|_| first) {
+            return Ok(runtime_collab::committed_document::Reply::Changes {
+                capture: self.id,
+                revision: self.revision,
+                base: base.clone(),
+                total,
+                bytes,
+                token: self.token,
+            });
+        }
         Ok(runtime_collab::committed_document::Reply::Chunk {
             capture: self.id,
             revision: self.revision,
@@ -117,7 +166,6 @@ impl Capture {
     pub(super) fn acknowledges(&self, token: [u8; 16]) -> bool {
         self.token == token
     }
-    #[cfg(test)]
     pub(super) fn finished(&self) -> bool {
         self.next == self.body.bytes().len()
     }
@@ -134,6 +182,102 @@ mod tests {
         fn bytes(&self) -> &[u8] {
             &self.0
         }
+    }
+
+    #[test]
+    fn actual_empty_record_passes_the_broker_capture_and_creation_wire_codec() {
+        use automerge::ReadDoc as _;
+        use runtime_collab::committed_document::{
+            CreationChunk, CreationReceipt, CreationWorkspace, Reply,
+        };
+        use tilo_peer_state::{BoundedStatePeer, PeerLimits, SeedDocument, SeedState, StatePeer};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
+        let person = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[22; 32]);
+        let mut certificate = DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Empty record fixture".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &person).unwrap();
+        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let roster = vec![certificate.clone()];
+        let now = std::time::SystemTime::now();
+        let mut source = StatePeer::new(
+            room,
+            certificate.clone(),
+            roster.clone(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        source
+            .install_seed(
+                SeedState {
+                    room_changes: tilo_peer_state::seed_room(room, &certificate, &roster).unwrap(),
+                    documents: vec![SeedDocument {
+                        app_id: "test.app".into(),
+                        record_id: String::new(),
+                        kind: "test.record".into(),
+                        bytes: automerge::AutoCommit::new().save(),
+                    }],
+                },
+                &device,
+                now,
+            )
+            .unwrap();
+        let bounded = BoundedStatePeer::restore(
+            &source.durable().unwrap(),
+            room,
+            &certificate,
+            &roster,
+            &RevocationList::new(),
+            now,
+            &PeerLimits::default(),
+        )
+        .unwrap();
+        let record = bounded
+            .read()
+            .capture_document(
+                certificate.device_public_key,
+                ("test.app", ""),
+                now,
+                64 * 1024,
+                &mut |_| Err("empty plaintext record has no epoch opener".into()),
+            )
+            .unwrap();
+        let reservation = Arc::new(Budget::default()).reserve().unwrap();
+        let mut stream = Capture::new(
+            Box::new(Bytes(record.into_bytes())),
+            reservation,
+            1,
+            [3; 32],
+        )
+        .unwrap();
+        let reply = Reply::Created {
+            receipt: CreationReceipt {
+                token: [7; 16],
+                workspace: CreationWorkspace {
+                    id: room.into(),
+                    name: "Empty fixture room".into(),
+                },
+            },
+            chunk: CreationChunk::from_reply(stream.chunk(0, [0; 16]).unwrap()).unwrap(),
+        };
+        assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
+        let Reply::Created { chunk, .. } = reply else {
+            panic!("actual creation chunk")
+        };
+        let document = automerge::AutoCommit::load(&chunk.bytes).unwrap();
+        assert_eq!(
+            document.keys(automerge::ROOT).count(),
+            0,
+            "capturing never seeds app content"
+        );
     }
     #[test]
     fn committed_capture_reserves_before_work_and_releases_on_drop() {
@@ -187,6 +331,69 @@ mod tests {
         assert!(budget.reserve().is_ok());
         drop(second);
     }
+    #[test]
+    fn changes_start_with_a_bounded_changes_piece_and_continue_in_chunks() {
+        use runtime_collab::committed_document::Reply;
+        let budget = Arc::new(Budget::default());
+        let original = (0..CHUNK_BYTES + 99)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect::<Vec<_>>();
+        let mut capture = Capture::new(
+            Box::new(Bytes(original.clone())),
+            budget.reserve().unwrap(),
+            3,
+            [6; 32],
+        )
+        .unwrap()
+        .naming(vec![[1; 32]])
+        .changes_since(vec![[2; 32]])
+        .unwrap();
+        assert!(capture.delivers().is_none(), "nothing is handed out unread");
+        let Reply::Changes {
+            capture: id,
+            base,
+            bytes,
+            token,
+            total,
+            ..
+        } = capture.chunk(0, [0; 16]).unwrap()
+        else {
+            panic!("the first piece of changes names its base");
+        };
+        assert_eq!(
+            (id, base, total as usize),
+            (3, vec![[2; 32]], original.len())
+        );
+        assert_eq!(bytes.len(), CHANGES_FIRST_BYTES);
+        let mut output = bytes;
+        let mut continuation = token;
+        while output.len() < original.len() {
+            let Reply::Chunk { bytes, token, .. } =
+                capture.chunk(output.len() as u32, continuation).unwrap()
+            else {
+                panic!("changes continue in chunks");
+            };
+            output.extend(bytes);
+            continuation = token;
+        }
+        assert_eq!(output, original);
+        let held = capture
+            .delivers()
+            .expect("an entirely read capture hands out its revision");
+        assert_eq!((held.revision, held.heads), ([6; 32], vec![[1; 32]]));
+        assert!(
+            Capture::new(
+                Box::new(Bytes(vec![1])),
+                budget.reserve().unwrap(),
+                4,
+                [6; 32]
+            )
+            .unwrap()
+            .changes_since(Vec::new())
+            .is_err()
+        );
+    }
+
     #[test]
     fn committed_capture_is_ordered_bounded_and_keeps_exact_bytes() {
         let budget = Arc::new(Budget::default());

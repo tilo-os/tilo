@@ -4,8 +4,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -19,6 +17,38 @@ use accounts::{
 use cloud_source::CredentialSource as _;
 
 const HELPER: &str = env!("CARGO_BIN_EXE_tilo-account-credential");
+
+#[test]
+fn approved_bearer_retains_provider_expiry() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tilo");
+    let id = AccountId::from("music.spotify.streaming");
+    let tokens = tilo_oauth::TokenSet {
+        access_token: "fixture-approved-access".into(),
+        refresh_token: "fixture-refresh-stays-in-vault".into(),
+        expires_in: 3600,
+        obtained_at: tilo_clock::unix_now(),
+        scope: Some("streaming".into()),
+    };
+    save(
+        &root,
+        &id,
+        "spotify",
+        Some(&account_custody::oauth_secret(&tokens)),
+    );
+    let (bearer, expiry) = account_custody::Custodian::for_root(Some(root))
+        .oauth_access_token_with_expiry(
+            &id,
+            account_custody::OAuthUse::new(
+                account_custody::OAuthIssuer::Spotify,
+                account_custody::Capability::MusicStreaming,
+            ),
+            false,
+        )
+        .unwrap();
+    assert_eq!(bearer.as_str(), "fixture-approved-access");
+    assert_eq!(expiry, tokens.expires_at());
+}
 
 fn save(root: &Path, id: &AccountId, type_id: &str, secret: Option<&Secret>) {
     if let Some(secret) = secret {
@@ -51,6 +81,7 @@ fn helper_publishes_a_valid_access_token_but_never_the_refresh_token() {
         refresh_token: "long-lived-refresh".into(),
         expires_in: 3600,
         obtained_at: tilo_clock::unix_now(),
+        scope: None,
     };
     save(
         &root,

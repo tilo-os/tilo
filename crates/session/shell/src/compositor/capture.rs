@@ -16,8 +16,9 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use ui::num::f64_of_usize;
 
-use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
+use ui::floating_surface::{FloatingSource, FloatingSurfaceRequest};
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
@@ -509,10 +510,7 @@ impl CaptureExecutor {
             // Calls use the exact app widget in the shell's second paint pass,
             // retaining controls and pointer capture. Other app-region/media
             // sources use the generic live mirror host below.
-            if matches!(
-                request.role,
-                FloatingRole::ActiveCall | FloatingRole::Navigation
-            ) {
+            if request.role.uses_app_owned_host() {
                 frame_builder.on_floating_surface_host_message(
                     &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
                         id: public_id,
@@ -546,10 +544,12 @@ impl CaptureExecutor {
         for command in frame_builder.host_mut().take_screenshot_markup_commands() {
             let outcome = match command {
                 ui::widget::ScreenshotMarkupCommand::Save(export) => {
-                    let path = next_screenshot_path(self.sequence);
+                    let saved = next_screenshot_path(self.sequence).and_then(|path| {
+                        write_png(&path, export.width, export.height, &export.rgba).map(|()| path)
+                    });
                     self.sequence = self.sequence.saturating_add(1);
-                    match write_png(&path, export.width, export.height, &export.rgba) {
-                        Ok(()) => {
+                    match saved {
+                        Ok(path) => {
                             self.last_screenshot = Some(path.clone());
                             frame_builder.host_mut().close_screenshot_markup();
                             CaptureOutcome::Saved(path)
@@ -887,7 +887,7 @@ impl CaptureExecutor {
         let encoder =
             super::mp4_recording::recording_encoder(width, height, 30, 8_000_000, 60, true)?;
         let codec = encoder.codec();
-        let path = next_recording_path(self.sequence, intent.audio != AudioCaptureMode::None);
+        let path = next_recording_path(self.sequence, intent.audio != AudioCaptureMode::None)?;
         self.sequence = self.sequence.saturating_add(1);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| {
@@ -994,13 +994,7 @@ impl CaptureExecutor {
         let folder = path
             .parent()
             .ok_or_else(|| format!("recording path has no parent: {}", path.display()))?;
-        std::process::Command::new("xdg-open")
-            .arg(folder)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("show recording in Files: {error}"))?;
+        xdg_open(folder).map_err(|error| format!("show recording in Files: {error}"))?;
         Ok(CaptureOutcome::RecordingRevealed(path.clone()))
     }
 
@@ -1009,13 +1003,7 @@ impl CaptureExecutor {
             .last_recording
             .as_ref()
             .ok_or_else(|| "there is no completed recording to play".to_string())?;
-        std::process::Command::new("xdg-open")
-            .arg(path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("play recording {}: {error}", path.display()))?;
+        xdg_open(path).map_err(|error| format!("play recording {}: {error}", path.display()))?;
         Ok(CaptureOutcome::RecordingOpened(path.clone()))
     }
 
@@ -1080,7 +1068,7 @@ impl CaptureExecutor {
             return Err("recent capture is still warming up".into());
         }
         let include_audio = !replay.audio_tracks.is_empty();
-        let path = next_replay_path(sequence, include_audio);
+        let path = next_replay_path(sequence, include_audio)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("create replay folder {}: {error}", parent.display()))?;
@@ -1141,13 +1129,7 @@ impl CaptureExecutor {
         let folder = path
             .parent()
             .ok_or_else(|| format!("screenshot path has no parent: {}", path.display()))?;
-        std::process::Command::new("xdg-open")
-            .arg(folder)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("show screenshot in Files: {error}"))?;
+        xdg_open(folder).map_err(|error| format!("show screenshot in Files: {error}"))?;
         Ok(CaptureOutcome::ScreenshotRevealed(path.clone()))
     }
 
@@ -1156,13 +1138,7 @@ impl CaptureExecutor {
             .last_screenshot
             .as_ref()
             .ok_or_else(|| "there is no saved screenshot to open".to_string())?;
-        std::process::Command::new("xdg-open")
-            .arg(path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("open screenshot {}: {error}", path.display()))?;
+        xdg_open(path).map_err(|error| format!("open screenshot {}: {error}", path.display()))?;
         Ok(CaptureOutcome::ScreenshotOpened(path.clone()))
     }
 
@@ -1287,7 +1263,7 @@ impl CaptureExecutor {
                 }
             }
             CaptureDestination::File | CaptureDestination::FileAndClipboard => {
-                let path = next_screenshot_path(self.sequence);
+                let path = next_screenshot_path(self.sequence)?;
                 self.sequence = self.sequence.saturating_add(1);
                 write_png(&path, width, height, &rgba)?;
                 self.last_screenshot = Some(path.clone());
@@ -1788,8 +1764,8 @@ fn compose_scene(
     }
     match layout {
         PipLayout::Auto => compose_spatial(source, &regions),
-        PipLayout::Grid => compose_grid(source, &regions),
-        PipLayout::Stack => compose_stack(source, &regions),
+        PipLayout::Grid => compose_placed(source, &regions, grid_geometry(&regions)),
+        PipLayout::Stack => compose_placed(source, &regions, stack_geometry(&regions)),
     }
 }
 
@@ -1804,23 +1780,24 @@ fn compose_spatial(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32)
     Ok((scene, width, height))
 }
 
-fn compose_grid(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), String> {
-    let (raw_w, raw_h, placements) = grid_geometry(regions);
-    let (width, height, global_scale) = output_dimensions(raw_w, raw_h)?;
-    let mut scene = Scene::new();
-    for (region, placement) in regions.iter().zip(placements) {
-        let local_scale = placement.width() / region.width();
-        let transform = Affine::scale(global_scale)
-            * Affine::translate((placement.x0, placement.y0))
-            * Affine::scale(local_scale)
-            * Affine::translate((-region.x0, -region.y0));
-        append_clipped(&mut scene, source, *region, transform);
-    }
-    Ok((scene, width, height))
+/// Hand `target` to the desktop's default handler, detached from the
+/// compositor's stdio.
+fn xdg_open(target: &std::path::Path) -> std::io::Result<std::process::Child> {
+    std::process::Command::new("xdg-open")
+        .arg(target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
 }
 
-fn compose_stack(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), String> {
-    let (raw_w, raw_h, placements) = stack_geometry(regions);
+/// Draw each region scaled into its placement from `geometry`, which is
+/// the laid-out size and one placement per region.
+fn compose_placed(
+    source: &Scene,
+    regions: &[Rect],
+    (raw_w, raw_h, placements): (f64, f64, Vec<Rect>),
+) -> Result<(Scene, u32, u32), String> {
     let (width, height, global_scale) = output_dimensions(raw_w, raw_h)?;
     let mut scene = Scene::new();
     for (region, placement) in regions.iter().zip(placements) {
@@ -1836,24 +1813,15 @@ fn compose_stack(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), 
 
 // Widget counts are bounded by the visible capture selection, far below the
 // integer range where conversion to layout-space f64 can lose meaningful data.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "visible capture-region counts stay far below f64's exact-integer range"
-)]
-fn region_count_to_f64(count: usize) -> f64 {
-    count as f64
-}
 
 fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
     let count = regions.len();
-    let cols = region_count_to_f64(count).sqrt().ceil().max(1.0) as usize;
+    let cols = f64_of_usize(count).sqrt().ceil().max(1.0) as usize;
     let rows = count.div_ceil(cols);
     let cell_w = regions.iter().map(Rect::width).fold(1.0_f64, f64::max);
     let cell_h = regions.iter().map(Rect::height).fold(1.0_f64, f64::max);
-    let raw_w =
-        region_count_to_f64(cols) * cell_w + region_count_to_f64(cols.saturating_sub(1)) * GRID_GAP;
-    let raw_h =
-        region_count_to_f64(rows) * cell_h + region_count_to_f64(rows.saturating_sub(1)) * GRID_GAP;
+    let raw_w = f64_of_usize(cols) * cell_w + f64_of_usize(cols.saturating_sub(1)) * GRID_GAP;
+    let raw_h = f64_of_usize(rows) * cell_h + f64_of_usize(rows.saturating_sub(1)) * GRID_GAP;
     let placements = regions
         .iter()
         .enumerate()
@@ -1863,8 +1831,8 @@ fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
             let local_scale = (cell_w / region.width()).min(cell_h / region.height());
             let draw_w = region.width() * local_scale;
             let draw_h = region.height() * local_scale;
-            let x = region_count_to_f64(col) * (cell_w + GRID_GAP) + (cell_w - draw_w) / 2.0;
-            let y = region_count_to_f64(row) * (cell_h + GRID_GAP) + (cell_h - draw_h) / 2.0;
+            let x = f64_of_usize(col) * (cell_w + GRID_GAP) + (cell_w - draw_w) / 2.0;
+            let y = f64_of_usize(row) * (cell_h + GRID_GAP) + (cell_h - draw_h) / 2.0;
             Rect::new(x, y, x + draw_w, y + draw_h)
         })
         .collect();
@@ -1874,13 +1842,13 @@ fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
 fn stack_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
     let card_w = regions.iter().map(Rect::width).fold(1.0_f64, f64::max);
     let card_h = regions.iter().map(Rect::height).fold(1.0_f64, f64::max);
-    let depth = region_count_to_f64(regions.len().saturating_sub(1)) * STACK_OFFSET;
+    let depth = f64_of_usize(regions.len().saturating_sub(1)) * STACK_OFFSET;
     let placements = regions
         .iter()
         .enumerate()
         .map(|(index, region)| {
             let local_scale = (card_w / region.width()).min(card_h / region.height());
-            let offset = region_count_to_f64(index) * STACK_OFFSET;
+            let offset = f64_of_usize(index) * STACK_OFFSET;
             Rect::new(
                 offset,
                 offset,
@@ -1916,38 +1884,38 @@ fn output_dimensions(width: f64, height: f64) -> Result<(u32, u32, f64), String>
     Ok((width, height, scale))
 }
 
-fn next_screenshot_path(sequence: u64) -> PathBuf {
-    let root = xdg_paths::picture_dir()
-        .or_else(xdg_paths::home)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Screenshots");
+/// The person's own folder for captures. Without one a capture fails rather
+/// than landing in the shared temp directory, where other users could read it.
+fn capture_folder(user_dir: Option<PathBuf>, name: &str) -> Result<PathBuf, String> {
+    user_dir
+        .or_else(tilo_paths::home)
+        .map(|root| root.join(name))
+        .ok_or_else(|| format!("no home folder to save {name} in"))
+}
+
+fn next_screenshot_path(sequence: u64) -> Result<PathBuf, String> {
+    let root = capture_folder(tilo_paths::picture_dir(), "Screenshots")?;
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let suffix = if sequence == 0 {
         String::new()
     } else {
         format!("-{sequence}")
     };
-    root.join(format!("Tilo Screenshot {stamp}{suffix}.png"))
+    Ok(root.join(format!("Tilo Screenshot {stamp}{suffix}.png")))
 }
 
-fn next_recording_path(sequence: u64, include_audio: bool) -> PathBuf {
-    let root = xdg_paths::video_dir()
-        .or_else(xdg_paths::home)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Screen Recordings");
+fn next_recording_path(sequence: u64, include_audio: bool) -> Result<PathBuf, String> {
+    let root = capture_folder(tilo_paths::video_dir(), "Screen Recordings")?;
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let extension = if include_audio { "mov" } else { "mp4" };
-    root.join(format!("Tilo Recording {stamp}-{sequence}.{extension}"))
+    Ok(root.join(format!("Tilo Recording {stamp}-{sequence}.{extension}")))
 }
 
-fn next_replay_path(sequence: u64, include_audio: bool) -> PathBuf {
-    let root = xdg_paths::video_dir()
-        .or_else(xdg_paths::home)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Screen Recordings");
+fn next_replay_path(sequence: u64, include_audio: bool) -> Result<PathBuf, String> {
+    let root = capture_folder(tilo_paths::video_dir(), "Screen Recordings")?;
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let extension = if include_audio { "mov" } else { "mp4" };
-    root.join(format!("Tilo Recent {stamp}-{sequence}.{extension}"))
+    Ok(root.join(format!("Tilo Recent {stamp}-{sequence}.{extension}")))
 }
 
 // The fixed 6-by-4 preview grid takes four sub-samples per cell. Dimensions
@@ -2031,7 +1999,6 @@ fn read_png_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
 mod tests {
     #![allow(
         clippy::field_reassign_with_default,
-        clippy::too_many_lines,
         reason = "capture integration tests keep their full scenario setup explicit"
     )]
     #![allow(
@@ -2042,6 +2009,7 @@ mod tests {
     use super::*;
     use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
     use ui::Widget;
+    use ui::widget::TaffyTreeExt;
     use vello::kurbo::RoundedRect;
     use vello::peniko::{Color, Fill};
 
@@ -2074,17 +2042,11 @@ mod tests {
             _theme: &ui::theme::Theme,
             node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
-            let node = taffy
-                .new_leaf(taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..taffy::Style::default()
-                })
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = taffy::Style {
+                size: taffy::Size::from_percent(1.0, 1.0),
+                ..taffy::Style::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(
@@ -2093,15 +2055,7 @@ mod tests {
             node: taffy::NodeId,
             origin: Point,
         ) {
-            let layout = taffy.layout(node).unwrap();
-            let x = origin.x + f64::from(layout.location.x);
-            let y = origin.y + f64::from(layout.location.y);
-            self.rect = Rect::new(
-                x,
-                y,
-                x + f64::from(layout.size.width),
-                y + f64::from(layout.size.height),
-            );
+            self.rect = ui::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -2153,9 +2107,6 @@ mod tests {
         }
         fn app_icon(&self) -> ui::widget::IconDescriptor {
             ui::widget::IconDescriptor::Glyph("L")
-        }
-        fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-            None
         }
     }
 

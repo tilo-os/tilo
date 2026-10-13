@@ -9,7 +9,6 @@
 //! exists it refuses as a device does for a machine without the grant.
 #![allow(
     clippy::unwrap_used,
-    clippy::panic,
     clippy::too_many_lines,
     reason = "one end-to-end scenario; helpers fail the test on setup errors"
 )]
@@ -87,6 +86,7 @@ fn a_device_beyond_the_lan_is_driven_over_the_peer_network() {
     let run = |args: &[&str]| {
         let mut app = App {
             json: false,
+            target: None,
             worktree: None,
             registry_path: registry_path.clone(),
             runner: SystemRunner { cwd: None },
@@ -96,7 +96,9 @@ fn a_device_beyond_the_lan_is_driven_over_the_peer_network() {
         };
         let cli =
             Cli::try_parse_from(std::iter::once("tilo-vm").chain(args.iter().copied())).unwrap();
-        app.run(cli.normalized().command)
+        let cli = cli.normalized();
+        app.target = cli.target;
+        app.run(cli.command)
     };
 
     // Phase: status names the route, and slots work through it.

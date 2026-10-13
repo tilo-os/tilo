@@ -6,7 +6,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 
@@ -14,6 +14,13 @@ use crate::shell::i18n::t;
 use crate::shell::overlay_host::layers::{
     LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
 };
+use ui::TextRole;
+use ui::paint::PaintCtx;
+use ui::widget::Interaction;
+use ui::widget::tooltip::{
+    TooltipHost, TooltipSide, chip_rect_on, chip_size_in_viewport, draw_chip,
+};
+use ui::widget::{ListRowFace, RowLeading};
 
 /// A Panel opens and closes over the motion token's `base` (HIG §9.7). The
 /// default token: `open`/`close` have no theme in hand, and the menu is
@@ -33,15 +40,23 @@ pub(crate) enum PowerMenuClick {
     Execute(os_actions::SessionAction),
 }
 
+#[derive(Clone, Copy)]
+enum DetailInput {
+    None,
+    Keyboard,
+    Pointer(Point),
+}
+
 pub(crate) struct PowerMenu {
     open: bool,
     transition: ui::Transition,
     selected: usize,
-    /// The user's text scale as of the last draw. Rows hold a label and a
-    /// detail line, so their height — and with it the panel's — follows
-    /// the type; hit-testing has no theme, so the scale is remembered here
-    /// and the same geometry serves paint, clicks and keyboard focus.
-    text_scale: f32,
+    detail_tip: TooltipHost,
+    detail_rect: Option<Rect>,
+    detail_input: DetailInput,
+    /// Theme-resolved row geometry from the last frame, shared by paint,
+    /// pointer targets and accessibility.
+    resolved_metrics: PowerMenuMetrics,
     /// Whether the display manager can open a greeter beside this session.
     /// Without it, Switch user is not offered at all rather than failing.
     user_switching: bool,
@@ -59,9 +74,8 @@ impl Default for PowerMenu {
     }
 }
 
-/// The menu's rhythm, resolved from the density and spacing tokens and the
-/// user's text scale (HIG §9.6). Unscaled `BASE` tokens: the menu paints in
-/// logical pixels like the rest of the compositor chrome.
+/// The menu's rhythm. Before the first frame, base tokens provide semantic
+/// targets; drawing resolves shared face metrics from the actual theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PowerMenuMetrics {
     /// Panel padding and the gap between the title band and the rows.
@@ -77,20 +91,24 @@ pub(crate) struct PowerMenuMetrics {
     label_h: f64,
     /// Single-line height of the Control sub-line (`scale.xs`).
     detail_h: f64,
+    /// Width needed for the longest localized action name and shared leading slot.
+    min_row_width: f64,
 }
 
 impl PowerMenuMetrics {
     pub(crate) fn for_text_scale(text_scale: f32) -> Self {
         let spacing = ui::tokens::Spacing::BASE;
         let metrics = ui::tokens::Metrics::BASE;
-        let type_scale = ui::tokens::TypeScale::default();
-        let line =
-            |px: f32| f64::from(ui::text_render::TextStyle::new(px * text_scale).line_height_px());
+        let typography = ui::tokens::Typography::default();
+        let line = |role: ui::TextRole| {
+            f64::from(typography.style(role).line_height_px()) * f64::from(text_scale)
+        };
         let pad = f64::from(spacing.s4);
-        let title_h = line(type_scale.lg);
-        let label_h = line(type_scale.sm);
-        let detail_h = line(type_scale.xs);
-        let inner = f64::from(spacing.s2);
+        let title_h = line(ui::TextRole::Heading);
+        let label_h = line(ui::TextRole::Label);
+        let detail_h = line(ui::TextRole::Caption);
+        // A row's two lines keep at least `s1` above and below them.
+        let inner = f64::from(spacing.s1);
         Self {
             pad,
             row_h: f64::from(metrics.panel_row_height).max(inner + label_h + detail_h + inner),
@@ -98,6 +116,49 @@ impl PowerMenuMetrics {
             rows_top: pad + title_h + pad,
             label_h,
             detail_h,
+            min_row_width: 180.0,
+        }
+    }
+    fn for_theme(theme: &Theme, text: &mut TextRenderer) -> Self {
+        let pad = f64::from(theme.tokens.spacing.s4);
+        let label_h = f64::from(
+            text.measure_style("Mg", None, &theme.text(TextRole::Body))
+                .1,
+        );
+        let detail_h = f64::from(
+            text.measure_style("Mg", None, &theme.text(TextRole::Caption))
+                .1,
+        );
+        let title_h = f64::from(
+            text.measure_style("Mg", None, &theme.text(TextRole::Heading))
+                .1,
+        );
+        let row_h = ListRowFace::new("Mg")
+            .secondary("Mg")
+            .leading(RowLeading::Icon(ui::icons::Icon::Shield))
+            .height(text, theme);
+        let title_width = ACTIONS
+            .iter()
+            .map(|(action, _)| {
+                f64::from(
+                    text.measure_style(&action.label(), None, &theme.text(TextRole::Body))
+                        .0,
+                )
+            })
+            .fold(0.0_f64, f64::max);
+        let min_row_width = (title_width
+            + 2.0 * ui::chrome::row_bleed(theme)
+            + f64::from(theme.tokens.metrics.icon_md + theme.tokens.spacing.s3)
+            + 2.0)
+            .ceil();
+        Self {
+            pad,
+            row_h,
+            row_gap: f64::from(theme.tokens.spacing.s2),
+            rows_top: pad + title_h + pad,
+            label_h,
+            detail_h,
+            min_row_width: min_row_width.max(180.0),
         }
     }
 }
@@ -108,7 +169,10 @@ impl PowerMenu {
             open: false,
             transition: ui::Transition::closed(),
             selected: 0,
-            text_scale: 1.0,
+            detail_tip: TooltipHost::new(),
+            detail_rect: None,
+            detail_input: DetailInput::None,
+            resolved_metrics: PowerMenuMetrics::for_text_scale(1.0),
             user_switching,
             owns_host_power: true,
         }
@@ -120,6 +184,7 @@ impl PowerMenu {
         self.user_switching = false;
         self.owns_host_power = false;
         self.selected = 0;
+        self.clear_detail_tip();
     }
 
     /// The rows this session offers, in paint order. Paint, clicks, keys,
@@ -175,6 +240,7 @@ impl PowerMenu {
                         .map(|(index, (action, _))| {
                             AccessNode::new(Role::Button)
                                 .with_name(action.label())
+                                .with_action_target(action.semantic_name())
                                 .with_description(action.detail())
                                 .with_state(
                                     AccessState::new()
@@ -210,12 +276,14 @@ impl PowerMenu {
             return false;
         }
         self.selected = *index;
+        self.detail_input = DetailInput::Keyboard;
         true
     }
 
     pub(crate) fn open(&mut self) {
         self.open = true;
         self.selected = 0;
+        self.clear_detail_tip();
         self.transition
             .set_open(true, panel_open_duration(), ui::Curve::EaseOut);
     }
@@ -223,6 +291,7 @@ impl PowerMenu {
     pub(crate) fn close(&mut self) -> bool {
         let was_open = self.open;
         self.open = false;
+        self.clear_detail_tip();
         if was_open {
             self.transition
                 .set_open(false, panel_open_duration(), ui::Curve::EaseOut);
@@ -231,7 +300,7 @@ impl PowerMenu {
     }
 
     pub(crate) fn is_animating(&self, now: Instant) -> bool {
-        self.transition.is_animating(now)
+        self.transition.is_animating(now) || (self.open && self.detail_tip.needs_frame())
     }
 
     /// Pin the production modal at its resting state for deterministic visual
@@ -245,6 +314,9 @@ impl PowerMenu {
     pub(crate) fn click(&mut self, viewport: Rect, point: Point) -> PowerMenuClick {
         if !self.open {
             return PowerMenuClick::Ignored;
+        }
+        if self.detail_rect.is_some_and(|rect| rect.contains(point)) {
+            return PowerMenuClick::Consumed;
         }
         let stable_point = point;
         let painted_point = self.untransform_pointer(viewport, point, Instant::now());
@@ -272,7 +344,7 @@ impl PowerMenu {
     }
 
     pub(crate) fn metrics(&self) -> PowerMenuMetrics {
-        PowerMenuMetrics::for_text_scale(self.text_scale)
+        self.resolved_metrics
     }
 
     /// The flyout, anchored under the top-right status area it was opened
@@ -310,6 +382,18 @@ impl PowerMenu {
             return PowerMenuClick::Ignored;
         }
         let count = self.row_count();
+        if matches!(
+            key,
+            Key::Named(
+                NamedKey::ArrowDown
+                    | NamedKey::ArrowUp
+                    | NamedKey::Tab
+                    | NamedKey::Home
+                    | NamedKey::End
+            )
+        ) {
+            self.detail_input = DetailInput::Keyboard;
+        }
         match key {
             Key::Named(NamedKey::Escape) => {
                 self.close();
@@ -373,13 +457,15 @@ impl PowerMenu {
             self.transition
                 .set_open(self.open, Duration::ZERO, ui::Curve::Linear);
         }
-        // Geometry follows the type: remember the scale so the click path,
-        // which has no theme, hit-tests the rows exactly where they paint.
-        self.text_scale = theme.text_scale;
         let now = Instant::now();
         if !self.transition.is_visible(now) {
             return;
         }
+        // Shared faces consume resolved theme type. Measure with the same
+        // renderer scale as paint, then retain that geometry for input.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+        self.resolved_metrics = PowerMenuMetrics::for_theme(theme, text_renderer);
         let (alpha, dy, scale) = self.transition.modal_curve(now, 0.94);
         let panel = self.panel_rect(viewport);
         scene.push_layer(
@@ -407,17 +493,64 @@ impl PowerMenu {
         // panel paints with those resolved sizes; the renderer must not
         // scale them again (HIG §7a) — reset for this pass, as the shell's
         // immediate-mode chrome passes do, and restored afterwards.
-        let renderer_scale = text_renderer.text_scale();
-        text_renderer.set_text_scale(1.0);
         self.draw_panel(scene, modal_transform, text_renderer, theme, viewport);
+        self.draw_detail_tip(
+            viewport,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+        );
         text_renderer.set_text_scale(renderer_scale);
         scene.pop_layer();
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
-    )]
+    fn clear_detail_tip(&mut self) {
+        self.detail_tip.dismiss();
+        self.detail_rect = None;
+        self.detail_input = DetailInput::None;
+    }
+
+    fn draw_detail_tip(&mut self, viewport: Rect, ctx: &mut PaintCtx<'_>) {
+        let now = ui::time::now();
+        let target = if !self.open {
+            None
+        } else if matches!(self.detail_input, DetailInput::Pointer(point)
+            if self.detail_rect.is_some_and(|rect| rect.contains(point)))
+        {
+            self.detail_tip
+                .visible()
+                .map(|(label, anchor)| (anchor, label.to_owned()))
+        } else {
+            let index = match self.detail_input {
+                DetailInput::Keyboard => Some(self.selected),
+                DetailInput::Pointer(point) => (0..self.row_count())
+                    .find(|index| self.action_rect(viewport, *index).contains(point)),
+                DetailInput::None => None,
+            };
+            index.and_then(|index| {
+                self.rows()
+                    .nth(index)
+                    .map(|(action, _)| (self.action_rect(viewport, index), action.detail()))
+            })
+        };
+        self.detail_tip.on_pointer(target, now);
+        self.detail_tip.tick(now);
+        self.detail_rect = None;
+        if let Some((label, anchor)) = self.detail_tip.visible() {
+            let size = chip_size_in_viewport(label, ctx.text, ctx.theme, viewport);
+            // Keep the hint outside the action panel whenever the output has room.
+            // Compact outputs still use the shared clamped placement and inert hit area.
+            let panel = self.panel_rect(viewport);
+            let gap = f64::from(ctx.theme.tokens.spacing.s4);
+            let placement_anchor = if panel.x0 - viewport.x0 >= size.0 + gap {
+                Rect::new(panel.x0, anchor.y0, panel.x1, anchor.y1)
+            } else {
+                anchor
+            };
+            let rect = chip_rect_on(TooltipSide::Beside, placement_anchor, size, viewport);
+            self.detail_rect = Some(rect);
+            draw_chip(ctx.scene, ctx.transform, ctx.text, ctx.theme, rect, label);
+        }
+    }
+
     fn draw_panel(
         &self,
         scene: &mut Scene,
@@ -436,38 +569,18 @@ impl PowerMenu {
         // Panel role (HIG §9.1/§9.2): the flyout is the same material as
         // every other Panel — `panel_ground` at the Panel radius, with the
         // derived Panel border — rather than a ramp slot and a literal 24.
-        let panel_radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
-        let card = RoundedRect::from_rect(panel, panel_radius);
-        ui::chrome::shell::panel_shadow(scene, transform, panel, panel_radius, theme, 1.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::shell::panel_ground(theme),
-            None,
-            &card,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &card,
-        );
+        ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         // Theme-resolved sizes, painted once: `draw` has reset the renderer
         // for this pass.
-        let title_size = theme.tokens.typography.scale.lg;
-        let label_size = theme.tokens.typography.scale.sm;
-        let detail_size = theme.tokens.typography.scale.xs;
+        let title_style = theme.text(TextRole::Heading);
         // Panel title on the padding line (HIG §9.6), centred on the band
         // the metrics reserved for it.
         let title = t("power-menu-title");
-        let (_, title_h) =
-            text_renderer.measure_weighted(&title, title_size, None, TextWeight::Semibold);
+        let (_, title_h) = text_renderer.measure_style(&title, None, &title_style);
         let title_band_h = m.rows_top - 2.0 * m.pad;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &title,
-            title_size,
             colors.text_primary,
             at(
                 transform,
@@ -477,98 +590,40 @@ impl PowerMenu {
                 ),
             ),
             None,
-            TextWeight::Semibold,
+            &title_style,
         );
-        let inset = f64::from(theme.tokens.spacing.s3);
-        let icon_px = f64::from(theme.tokens.metrics.icon_md);
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         for (index, (action, icon)) in self.rows().enumerate() {
             let (label, detail) = (action.label(), action.detail());
             let row = self.action_rect(viewport, index);
             let selected = self.selected == index;
-            // Control role: the chosen row is a lift (HIG §9.3), never an
-            // accent wash; idle rows sit on a quiet lift so the list reads
-            // as rows rather than as bare text on the panel.
+            // Keep the flyout's quiet row floor. The shared face owns the
+            // selected lift, type, glyph, elision and keyboard focus ring.
             let shape = RoundedRect::from_rect(
                 row,
                 ui::chrome::ChromeRole::Control.radius(theme, row.height()),
             );
-            let tier =
-                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(selected));
-            let fill = if selected {
-                tier.fill
-            } else {
-                colors.lift(0.35)
-            };
-            scene.fill(Fill::NonZero, transform, fill, None, &shape);
-            if let Some(border) = tier.border {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    border,
-                    None,
-                    &shape,
-                );
-            }
-            // The standard glyph on the row's inset, centred on the row.
-            let icon_rect = Rect::new(
-                row.x0 + inset,
-                row.center().y - icon_px / 2.0,
-                row.x0 + inset + icon_px,
-                row.center().y + icon_px / 2.0,
-            );
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                icon_rect,
-                *icon,
-                colors.text_primary,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            // Label over detail as one stack centred in the row, each line
-            // measured and elided to the room left of the glyph; the row
-            // itself was sized for these two lines, so at 200 % the stack
-            // grows the row rather than painting through its neighbour.
-            let text_x = icon_rect.x1 + inset;
-            let avail = (row.x1 - inset - text_x).max(1.0);
-            let label = text_renderer.elide_to_width_weighted(
-                &label,
-                label_size,
-                text_width(avail),
-                TextWeight::Semibold,
-            );
-            let detail = text_renderer.elide_to_width(&detail, detail_size, text_width(avail));
-            let (_, label_h) =
-                text_renderer.measure_weighted(&label, label_size, None, TextWeight::Semibold);
-            let (_, detail_h) = text_renderer.measure(&detail, detail_size, None);
-            // A row the viewport squeezed below its two lines keeps the
-            // label and drops the detail, rather than painting the detail
-            // through the next row.
-            let show_detail = f64::from(label_h) + f64::from(detail_h) <= row.height();
-            let stack_h = f64::from(label_h)
-                + if show_detail {
-                    f64::from(detail_h)
-                } else {
-                    0.0
-                };
-            let label_y = row.y0 + ((row.height() - stack_h) / 2.0).max(0.0);
-            text_renderer.draw_text_weighted(
-                scene,
-                &label,
-                label_size,
-                colors.text_primary,
-                at(transform, (text_x, label_y)),
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                colors.lift(0.35),
                 None,
-                TextWeight::Semibold,
+                &shape,
             );
-            if show_detail {
-                text_renderer.draw_text(
-                    scene,
-                    &detail,
-                    detail_size,
-                    colors.text_dim,
-                    at(transform, (text_x, label_y + f64::from(label_h))),
-                    None,
-                );
+            let face = ListRowFace::new(&label)
+                .leading(RowLeading::Icon(*icon))
+                .selected(selected)
+                .interaction(Interaction {
+                    focused: selected,
+                    ..Interaction::default()
+                });
+            // A short viewport can squeeze the row: retain its action label
+            // and accessible detail without painting across its neighbour.
+            let full = face.clone().secondary(&detail);
+            if full.height(ctx.text, theme) <= row.height() {
+                full.paint(&mut ctx, row);
+            } else {
+                face.paint(&mut ctx, row);
             }
         }
     }
@@ -606,6 +661,16 @@ impl ShellLayer for PowerMenu {
                 Some(point) => self.click(cx.geometry.viewport, point),
                 None => return Routed::Pass,
             },
+            WindowEvent::CursorMoved { .. } => {
+                self.detail_input = cx.cursor.map_or(DetailInput::None, DetailInput::Pointer);
+                cx.request(LayerIntent::Repaint);
+                return Routed::Consumed;
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.clear_detail_tip();
+                cx.request(LayerIntent::Repaint);
+                return Routed::Consumed;
+            }
             _ => return Routed::Pass,
         };
         match outcome {
@@ -641,6 +706,20 @@ impl ShellLayer for PowerMenu {
         self.focus_accessibility_path(path)
     }
 
+    fn semantic_intent(&self, target: &str) -> Option<LayerIntent> {
+        if !self.open {
+            return None;
+        }
+        self.rows()
+            .find(|(action, _)| action.semantic_name() == target)
+            .map(|(action, _)| {
+                LayerIntent::Session(match action {
+                    PowerMenuAction::Lock => os_actions::SessionAction::Lock,
+                    PowerMenuAction::External(action) => *action,
+                })
+            })
+    }
+
     fn dismiss(&mut self) -> bool {
         self.close()
     }
@@ -648,15 +727,6 @@ impl ShellLayer for PowerMenu {
     fn is_animating(&self, now: Instant) -> bool {
         PowerMenu::is_animating(self, now)
     }
-}
-
-/// Width for the text shaper; panel widths are far inside `f32`.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "a chrome panel is a few hundred logical pixels wide; f32 is exact enough for text wrapping"
-)]
-fn text_width(width: f64) -> f32 {
-    width as f32
 }
 
 #[derive(Clone, Copy)]
@@ -748,7 +818,7 @@ fn action_rect(viewport: Rect, index: usize) -> Rect {
 }
 
 fn layout_metrics(viewport: Rect, m: PowerMenuMetrics) -> (usize, f64, f64, f64) {
-    let columns = action_columns(viewport);
+    let columns = columns_for_metrics(viewport, m);
     let base = PowerMenuMetrics::for_text_scale(1.0);
     let top = 52.0 + (m.rows_top - base.rows_top).max(0.0);
     let row_h = action_height(viewport, columns) + (m.row_h - base.row_h).max(0.0);
@@ -758,7 +828,11 @@ fn layout_metrics(viewport: Rect, m: PowerMenuMetrics) -> (usize, f64, f64, f64)
 fn panel_rect_with(viewport: Rect, m: PowerMenuMetrics, count: usize) -> Rect {
     let (columns, top, row_h, gap) = layout_metrics(viewport, m);
     let rows = count.div_ceil(columns);
-    let preferred_width: f64 = if columns == 2 { 424.0 } else { 336.0 };
+    let preferred_width = if columns == 2 {
+        424.0_f64.max(2.0 * m.min_row_width + 32.0)
+    } else {
+        336.0_f64.max(m.min_row_width + 24.0)
+    };
     let width = preferred_width.min((viewport.width() - 16.0).max(1.0));
     let height = top
         + small_count_to_f64(rows) * row_h
@@ -792,6 +866,20 @@ fn action_rect_with(viewport: Rect, index: usize, m: PowerMenuMetrics, count: us
     let x0 = panel.x0 + 12.0 + small_count_to_f64(index % columns) * (width + gap);
     let y0 = panel.y0 + top + small_count_to_f64(index / columns) * (row_h + gap);
     Rect::new(x0, y0, x0 + width, y0 + row_h)
+}
+
+fn columns_for_metrics(viewport: Rect, metrics: PowerMenuMetrics) -> usize {
+    let columns = action_columns(viewport);
+    // Keep every action visible on short outputs. When there is vertical
+    // room, prefer one column over truncating the action names at large type.
+    if columns == 2
+        && viewport.height() >= 400.0
+        && 2.0 * metrics.min_row_width + 32.0 > viewport.width() - 16.0
+    {
+        1
+    } else {
+        columns
+    }
 }
 
 fn action_columns(viewport: Rect) -> usize {
@@ -851,6 +939,7 @@ fn at(transform: Affine, xy: (f64, f64)) -> Affine {
 mod tests {
     use super::*;
     use ui::ColorCompat;
+    use winit::keyboard::{Key, NamedKey};
 
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
@@ -1264,7 +1353,7 @@ mod tests {
         fn large_text_grows_the_rows_and_the_panel_holds_them() {
             let one = PowerMenuMetrics::for_text_scale(1.0);
             let two = PowerMenuMetrics::for_text_scale(2.0);
-            let inner = f64::from(ui::tokens::Spacing::BASE.s2);
+            let inner = f64::from(ui::tokens::Spacing::BASE.s1);
             assert!(two.row_h >= two.label_h + two.detail_h + 2.0 * inner);
             assert!(two.row_h > one.row_h);
             for viewport in [VIEWPORT, Rect::new(0.0, 0.0, 800.0, 700.0)] {
@@ -1297,11 +1386,13 @@ mod tests {
             tr.set_text_scale(2.0);
             let mut scene = Scene::new();
             menu.draw(VIEWPORT, &mut scene, Affine::IDENTITY, &mut tr, &theme);
-            let painted = action_rect_with(
-                VIEWPORT,
-                3,
-                PowerMenuMetrics::for_text_scale(2.0),
-                ACTIONS.len(),
+            let painted = menu.action_rect(VIEWPORT, 3);
+            assert!(
+                painted.height()
+                    >= ListRowFace::new("Mg")
+                        .secondary("Mg")
+                        .height(&mut TextRenderer::new(), &theme),
+                "paint and input reserve the shared face's measured height"
             );
             assert!(
                 !PowerMenu::default()
@@ -1332,16 +1423,60 @@ mod tests {
         power_flyout_surface_is_opaque_on_every_shipped_contrast_mode();
     }
 
+    #[test]
+    fn power_menu_scaled_theme_resize_keeps_focus_and_semantic_hit_targets_aligned() {
+        use winit::keyboard::{Key, NamedKey};
+        let mut menu = PowerMenu::default();
+        menu.open();
+        menu.force_settled_for_visual_test();
+        assert!(menu.focus_accessibility_path(&[3]));
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        let theme = Theme::dark().with_ui_scale(1.5).with_text_scale(1.3);
+        for viewport in [VIEWPORT, Rect::new(0.0, 0.0, 480.0, 600.0)] {
+            menu.draw(viewport, &mut scene, Affine::IDENTITY, &mut text, &theme);
+            let full_height = ListRowFace::new("Mg")
+                .secondary("Mg")
+                .height(&mut text, &theme);
+            assert!(menu.metrics().row_h >= full_height);
+            assert!(
+                menu.metrics().row_h > PowerMenuMetrics::for_text_scale(theme.text_scale).row_h
+            );
+            let tree = menu.accessibility_snapshot().expect("open power menu");
+            assert!(tree.children[3].state.focused);
+            let targets = menu.action_rects(viewport);
+            for (index, (_, rect)) in targets.iter().enumerate() {
+                assert_eq!(
+                    menu.accessibility_rect_for_path(viewport, &[index]),
+                    Some(*rect)
+                );
+                assert!(menu.panel_rect(viewport).contains(rect.center()));
+            }
+        }
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Escape), false),
+            PowerMenuClick::Consumed
+        );
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Enter), false),
+            PowerMenuClick::Ignored
+        );
+        menu.open();
+        menu.force_settled_for_visual_test();
+        menu.draw(VIEWPORT, &mut scene, Affine::IDENTITY, &mut text, &theme);
+        assert_eq!(
+            menu.click(VIEWPORT, menu.action_rect(VIEWPORT, 0).center()),
+            PowerMenuClick::Lock
+        );
+        assert_eq!(menu.click(VIEWPORT, Point::ZERO), PowerMenuClick::Ignored);
+    }
+
     /// Review fixtures: the ux-bench cannot open the power menu on macOS,
     /// so it is photographed from its paint path at 1× and 200 % text, on a
     /// laptop viewport, and on the light and high-contrast palettes. The
     /// rendered pixels are asserted, not just the file: the title band is
     /// the Panel ground and an idle row's interior is its lift floor.
     #[test]
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "menu metrics and sampled colour channels read best as m and r/g/b/e"
-    )]
     fn power_menu_review_fixtures_are_written() {
         use crate::shell::osd::review_offscreen::OffscreenRenderer;
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1349,7 +1484,8 @@ mod tests {
         // One wgpu device per viewport size, shared by every variant of it.
         let mut desktop = OffscreenRenderer::new(1280, 800);
         let mut laptop = OffscreenRenderer::new(800, 700);
-        let variants = [
+        let mut narrow = OffscreenRenderer::new(480, 600);
+        let variants = vec![
             (
                 "dark-1x-1280x800",
                 Theme::dark(),
@@ -1369,6 +1505,18 @@ mod tests {
                 (800, 700),
             ),
             ("light-1x-1280x800", Theme::light(), 1.0, (1280, 800)),
+            (
+                "dark-ui-1.5-text-1.3-1280x800",
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+                1.3,
+                (1280, 800),
+            ),
+            (
+                "dark-2x-480x600",
+                Theme::dark().with_text_scale(2.0),
+                2.0,
+                (480, 600),
+            ),
             (
                 "high-contrast-1x-1280x800",
                 Theme::high_contrast(),
@@ -1391,7 +1539,11 @@ mod tests {
                 scale,
                 "the pass restores the renderer's scale"
             );
-            let renderer = if w == 1280 { &mut desktop } else { &mut laptop };
+            let renderer = match w {
+                1280 => &mut desktop,
+                800 => &mut laptop,
+                _ => &mut narrow,
+            };
             let ground = theme.tokens.colors.surfaces.base;
             let path = out.join(format!("{name}.png"));
             renderer.render_png(&scene, ground, &path);
@@ -1400,40 +1552,284 @@ mod tests {
                 "power menu fixture missing: {}",
                 path.display()
             );
-            let rgba = renderer.render_resilient(&scene, ground);
-            let panel = menu.panel_rect(viewport);
-            let m = menu.metrics();
-            let probes = [
-                (
-                    Point::new(panel.center().x, panel.y0 + m.pad / 2.0),
-                    ui::chrome::shell::panel_ground(&theme),
-                    "title band is the Panel ground",
-                ),
-                (
-                    {
-                        let row = menu.action_rect(viewport, 0);
-                        Point::new(row.x1 - m.pad, row.center().y)
-                    },
-                    theme.tokens.colors.lift(0.35),
-                    "an idle row's interior is its lift floor",
-                ),
-            ];
-            for (at, expected, what) in probes {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "probe points are inside a positive viewport"
-                )]
-                let (r, g, b, _) = OffscreenRenderer::sample(&rgba, w, at.x as u32, at.y as u32);
-                let e = expected.to_rgba8();
-                assert!(
-                    r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
-                    "{name}: {what}: got ({r},{g},{b}) expected ({},{},{})",
-                    e.r,
-                    e.g,
-                    e.b
-                );
-            }
+            assert_power_menu_review_pixels(
+                renderer,
+                (&scene, ground, w),
+                &menu,
+                viewport,
+                &theme,
+                name,
+            );
         }
+    }
+
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "menu metrics and sampled colour channels read best as m and r/g/b/e"
+    )]
+    fn assert_power_menu_review_pixels(
+        renderer: &mut crate::shell::osd::review_offscreen::OffscreenRenderer,
+        paint: (&Scene, vello::peniko::Color, u32),
+        menu: &PowerMenu,
+        viewport: Rect,
+        theme: &Theme,
+        name: &str,
+    ) {
+        use crate::shell::osd::review_offscreen::OffscreenRenderer;
+        let (scene, ground, width) = paint;
+        let rgba = renderer.render_resilient(scene, ground);
+        let panel = menu.panel_rect(viewport);
+        let m = menu.metrics();
+        let probes = [
+            (
+                Point::new(panel.center().x, panel.y0 + m.pad / 2.0),
+                ui::chrome::shell::panel_ground(theme),
+                "title band is the Panel ground",
+            ),
+            (
+                {
+                    let row = menu.action_rect(viewport, 0);
+                    Point::new(row.x1 - m.pad, row.center().y)
+                },
+                theme.tokens.colors.lift(0.35),
+                "an idle row's interior is its lift floor",
+            ),
+        ];
+        for (at, expected, what) in probes {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "probe points are inside a positive viewport"
+            )]
+            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, width, at.x as u32, at.y as u32);
+            let e = expected.to_rgba8();
+            assert!(
+                r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
+                "{name}: {what}: got ({r},{g},{b}) expected ({},{},{})",
+                e.r,
+                e.g,
+                e.b
+            );
+        }
+    }
+    #[test]
+    fn power_menu_detail_capture_matrix_is_written() {
+        use crate::shell::osd::review_offscreen::OffscreenRenderer;
+        use ui::widget::{Tooltip, Widget as _};
+        let out = std::env::var_os("TILO_POWER_DETAIL_SHOTS").map_or_else(
+            || std::path::PathBuf::from("target/power-menu-details"),
+            std::path::PathBuf::from,
+        );
+        std::fs::create_dir_all(&out).expect("capture output");
+        for (name, theme, width, height) in [
+            ("dark", Theme::dark(), 1280_u32, 800_u32),
+            ("light", Theme::light(), 1280, 800),
+            ("high-contrast", Theme::high_contrast(), 1280, 800),
+            ("large-text", Theme::dark().with_text_scale(2.0), 800, 700),
+            (
+                "ui-text-scaled",
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+                1280,
+                800,
+            ),
+            ("narrow", Theme::dark().with_text_scale(2.0), 320, 480),
+        ] {
+            let viewport = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let mut text = TextRenderer::new();
+            let mut menu = PowerMenu::default();
+            menu.open();
+            menu.force_settled_for_visual_test();
+            menu.key(
+                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowDown),
+                false,
+            );
+            menu.draw(
+                viewport,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+            );
+            std::thread::sleep(ui::widget::tooltip::HOVER_DWELL + Duration::from_millis(20));
+            let mut scene = Scene::new();
+            menu.draw(viewport, &mut scene, Affine::IDENTITY, &mut text, &theme);
+            let mut renderer = OffscreenRenderer::new(width, height);
+            renderer.render_png(
+                &scene,
+                theme.tokens.colors.surfaces.base,
+                out.join(format!("{name}-keyboard-description.png")),
+            );
+            let label = "Close applications and end this session, then return to the login screen.";
+            let mut tooltip =
+                Tooltip::new(label)
+                    .with_delay(Duration::ZERO)
+                    .with_anchor(Rect::new(
+                        viewport.x1 - 60.0,
+                        100.0,
+                        viewport.x1 - 20.0,
+                        132.0,
+                    ));
+            tooltip.on_hover_enter(Duration::ZERO);
+            let presence = ui::presence::PresenceCtx::default();
+            presence.viewport.set(Some(viewport));
+            scene.reset();
+            tooltip.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            renderer.render_png(
+                &scene,
+                theme.tokens.colors.surfaces.base,
+                out.join(format!("{name}-tooltip-wrap.png")),
+            );
+        }
+    }
+    fn paint_detail(menu: &mut PowerMenu, viewport: Rect, theme: &Theme) {
+        menu.draw(
+            viewport,
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+        );
+    }
+
+    #[test]
+    fn power_menu_complete_details_follow_focus_cancel_and_resize() {
+        let mut menu = PowerMenu {
+            detail_tip: TooltipHost::new().with_dwell(ui::time::Duration::ZERO),
+            ..PowerMenu::default()
+        };
+        menu.open();
+        menu.force_settled_for_visual_test();
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::ArrowDown), false),
+            PowerMenuClick::Consumed
+        );
+        let theme = Theme::dark().with_text_scale(2.0);
+        paint_detail(&mut menu, VIEWPORT, &theme);
+        let expected = PowerMenuAction::External(os_actions::SessionAction::Logout).detail();
+        assert_eq!(
+            menu.detail_tip.visible().map(|(label, _)| label),
+            Some(expected.as_str())
+        );
+        let wide_hint = menu.detail_rect.expect("wide-output description");
+        assert!(
+            wide_hint.x1 <= menu.panel_rect(VIEWPORT).x0,
+            "a wide-output hint must not cover another action"
+        );
+        let small = Rect::new(0.0, 0.0, 320.0, 480.0);
+        paint_detail(&mut menu, small, &theme);
+        let rect = menu.detail_rect.expect("complete focused description");
+        assert!(small.contains(rect.origin()) && rect.x1 <= small.x1 && rect.y1 <= small.y1);
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Escape), false),
+            PowerMenuClick::Consumed
+        );
+        assert!(menu.detail_tip.visible().is_none());
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Enter), false),
+            PowerMenuClick::Ignored
+        );
+        menu.open();
+        menu.force_settled_for_visual_test();
+        paint_detail(&mut menu, small, &theme);
+        assert!(
+            menu.detail_tip.visible().is_none(),
+            "reopening must clear the previous hint"
+        );
+    }
+
+    fn route_detail_pointer(
+        menu: &mut PowerMenu,
+        event: &WindowEvent,
+        cursor: Point,
+        viewport: Rect,
+    ) -> Vec<LayerIntent> {
+        let mut doc = automerge::AutoCommit::new();
+        let mut taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy.new_leaf(taffy::Style::default()).expect("leaf");
+        let modifiers = winit::event::Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let mut event_cx = ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: ui::widget::Edits::lend(&mut doc),
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        };
+        let mut cx = LayerCx::new(
+            LayerGeometry {
+                viewport,
+                outputs: &[],
+                focused_output: None,
+            },
+            Some(cursor),
+            &mut event_cx,
+        );
+        assert_eq!(menu.handle_event(event, &mut cx), Routed::Consumed);
+        cx.into_intents()
+    }
+    #[test]
+    fn power_menu_hover_description_is_inert_and_preserves_semantic_actions() {
+        let mut menu = PowerMenu {
+            detail_tip: TooltipHost::new().with_dwell(ui::time::Duration::ZERO),
+            ..PowerMenu::default()
+        };
+        menu.open();
+        menu.force_settled_for_visual_test();
+        let viewport = Rect::new(0.0, 0.0, 320.0, 480.0);
+        let theme = Theme::dark().with_text_scale(2.0);
+        paint_detail(&mut menu, viewport, &theme);
+        let cursor = menu.action_rect(viewport, 1).center();
+        let hover = ui::synthetic_input::cursor_moved(cursor.x, cursor.y);
+        assert_eq!(
+            route_detail_pointer(&mut menu, &hover, cursor, viewport),
+            [LayerIntent::Repaint]
+        );
+        paint_detail(&mut menu, viewport, &theme);
+        let rect = menu.detail_rect.expect("hover hint");
+        assert_eq!(
+            route_detail_pointer(&mut menu, &hover, rect.center(), viewport),
+            [LayerIntent::Repaint]
+        );
+        paint_detail(&mut menu, viewport, &theme);
+        assert!(
+            menu.detail_tip.visible().is_some(),
+            "reading the hint keeps it visible"
+        );
+        let press = ui::synthetic_input::mouse_press();
+        for _ in 0..2 {
+            assert!(route_detail_pointer(&mut menu, &press, rect.center(), viewport).is_empty());
+        }
+        assert!(
+            menu.open,
+            "a hint click must not execute the row underneath"
+        );
+        assert!(matches!(
+            menu.semantic_intent("power_logout"),
+            Some(LayerIntent::Session(os_actions::SessionAction::Logout))
+        ));
+        let node = menu.accessibility_snapshot().expect("visible menu");
+        assert!(
+            node.children
+                .iter()
+                .any(|child| child.action_target.as_deref() == Some("power_logout"))
+        );
+        let leave = WindowEvent::CursorLeft {
+            device_id: winit::event::DeviceId::dummy(),
+        };
+        assert_eq!(
+            route_detail_pointer(&mut menu, &leave, rect.center(), viewport),
+            [LayerIntent::Repaint]
+        );
+        paint_detail(&mut menu, viewport, &theme);
+        assert!(menu.detail_tip.visible().is_none());
+        menu.detach_from_host();
+        assert!(menu.semantic_intent("power_restart").is_none());
+        assert!(menu.semantic_intent("power_switch_user").is_none());
+        menu.close();
+        assert!(menu.semantic_intent("power_logout").is_none());
     }
 }

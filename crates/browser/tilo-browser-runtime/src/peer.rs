@@ -323,12 +323,15 @@ async fn post_decoded<T: serde::de::DeserializeOwned>(
 #[serde(rename_all = "camelCase")]
 struct JsHostInfo {
     host_cert: DeviceCert,
-    webtransport_port: u16,
+    webtransport_port: Option<u16>,
     certificate_sha256: Option<String>,
+    webtransport_origin: Option<String>,
 }
 
 /// What the host publishes before certification: its certificate, the
-/// WebTransport port and, for a development certificate, its SHA-256 for
+/// WebTransport port (absent behind an HTTPS-only proxy without a direct
+/// origin), the origin to dial WebTransport at when it is not the page's
+/// and, for a development certificate, its SHA-256 for
 /// `serverCertificateHashes`. Resolves to JSON.
 ///
 /// # Errors
@@ -342,6 +345,7 @@ pub async fn host_info(post: Function) -> Result<String, JsError> {
         host_cert: info.host_cert,
         webtransport_port: info.webtransport_port,
         certificate_sha256: info.certificate_sha256,
+        webtransport_origin: info.webtransport_origin,
     })
     .map_err(js_error)
 }
@@ -512,35 +516,90 @@ pub async fn ask_to_join(
         &root,
         signer.device_public_key(),
         &label,
-        web_time::SystemTime::now()
-            .duration_since(web_time::UNIX_EPOCH)
-            .ok()
-            .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
-            .unwrap_or_default(),
+        ui::time::unix_now_ns(),
     )
     .await
     .map_err(js_error)?;
-    let request_id = request_id(&request_id_hex)?;
+    ask_as(
+        post,
+        &invitation,
+        cert,
+        &signer,
+        &request_id_hex,
+        &name,
+        admission_token,
+    )
+    .await
+}
+
+/// [`ask_to_join`] as a device already certified elsewhere (`certificate`,
+/// `{cert}` JSON as `certifyDevice` resolves to: a device a person paired
+/// from another of theirs) rather than by a root the page holds.
+///
+/// # Errors
+///
+/// As [`ask_to_join`], and when `custody` does not hold the certified key.
+#[wasm_bindgen(js_name = askToJoinAs)]
+pub async fn ask_to_join_as(
+    post: Function,
+    invitation: Vec<u8>,
+    certificate: String,
+    custody: JsValue,
+    request_id_hex: String,
+    name: String,
+    admission_token: Option<Vec<u8>>,
+) -> Result<String, JsError> {
+    #[derive(Deserialize)]
+    struct Stored {
+        cert: DeviceCert,
+    }
+    let Stored { cert } = serde_json::from_str(&certificate).map_err(js_error)?;
+    let signer = PageSigner::from_js(&custody)?;
+    if signer.device_public_key() != cert.device_public_key {
+        return Err(js_error("custody does not hold the certified device key"));
+    }
+    ask_as(
+        post,
+        &invitation,
+        cert,
+        &signer,
+        &request_id_hex,
+        &name,
+        admission_token,
+    )
+    .await
+}
+
+async fn ask_as(
+    post: Function,
+    invitation: &[u8],
+    cert: DeviceCert,
+    signer: &PageSigner,
+    request_id_hex: &str,
+    name: &str,
+    admission_token: Option<Vec<u8>>,
+) -> Result<String, JsError> {
+    let request_id = request_id(request_id_hex)?;
     let reply = match admission_token {
         None => {
             tilo_browser_peer::invite::ask_to_join(
                 &PageHttp(post),
-                &invitation,
+                invitation,
                 &cert,
-                &signer,
+                signer,
                 request_id,
-                &name,
+                name,
             )
             .await
         }
         Some(token) => {
             tilo_browser_peer::invite::ask_to_join_pre_admitted(
                 &PageHttp(post),
-                &invitation,
+                invitation,
                 &cert,
-                &signer,
+                signer,
                 request_id,
-                &name,
+                name,
                 &token,
             )
             .await
@@ -611,6 +670,58 @@ pub async fn certify_with_root(
         host_cert: &host_cert,
     })
     .map_err(js_error)
+}
+
+/// The new devices waiting at the host at `post` for the member root the
+/// page holds (`root`) to pair them: `[{digest, pairingCode, label,
+/// device}]` JSON, keys and digest as hex.
+///
+/// # Errors
+///
+/// Rejects when the host is unreachable or refuses.
+#[wasm_bindgen(js_name = pendingPairings)]
+pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, JsError> {
+    let root = PageSigner::from_js(&root)?;
+    let pending = tilo_browser_peer::pending_pairings(&PageHttp(post), &root)
+        .await
+        .map_err(js_error)?;
+    Ok(serde_json::Value::Array(
+        pending
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "digest": hex::encode(entry.request_digest),
+                    "pairingCode": entry.pairing_code,
+                    "label": entry.request.device_label,
+                    "device": hex::encode(entry.request.device_public_key),
+                })
+            })
+            .collect(),
+    )
+    .to_string())
+}
+
+/// Pair (`approved`) or turn away the waiting device `digest_hex` at the
+/// host at `post`, with the member root the page holds.
+///
+/// # Errors
+///
+/// Rejects when the request is gone, or the host is unreachable or refuses.
+#[wasm_bindgen(js_name = answerPairing)]
+pub async fn answer_pairing(
+    post: Function,
+    root: JsValue,
+    digest_hex: String,
+    approved: bool,
+) -> Result<(), JsError> {
+    let root = PageSigner::from_js(&root)?;
+    let digest: [u8; 32] = hex::decode(&digest_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| JsError::new("a request digest is 64 hex characters"))?;
+    tilo_browser_peer::answer_pairing(&PageHttp(post), &root, digest, approved)
+        .await
+        .map_err(js_error)
 }
 
 // ---- Live frames as the JavaScript shape of `web/live-presence.mjs` -------
@@ -1226,7 +1337,6 @@ struct JsDelegation {
     device: String,
     rooms: Vec<String>,
     apps: Vec<String>,
-    may_confirm: bool,
     expires_at_ns: u64,
 }
 
@@ -1246,7 +1356,7 @@ pub fn verify_agent_delegation(
 ) -> Result<String, JsError> {
     let bytes = hex::decode(delegation_hex).map_err(js_error)?;
     let delegation =
-        tilo_relay_protocol::agents::AgentDelegation::decode(&bytes).map_err(js_error)?;
+        tilo_relay_protocol::delegation::Delegation::decode(&bytes).map_err(js_error)?;
     let user: [u8; 32] = hex::decode(user_public_key_hex)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
@@ -1258,14 +1368,18 @@ pub fn verify_agent_delegation(
     )]
     let now_ns = (now_ms.max(0.0) as u64).saturating_mul(1_000_000);
     delegation.verify(&user, now_ns).map_err(js_error)?;
+    let agent_id = delegation
+        .delegate
+        .agent_id()
+        .ok_or_else(|| js_error("the delegation is not an agent's"))?
+        .to_owned();
     serde_json::to_string(&JsDelegation {
-        agent_id: delegation.agent_id,
+        agent_id,
         label: delegation.label,
         color: tilo_relay_protocol::agents::color_hex(delegation.color),
-        device: hex::encode(delegation.agent_device_public_key),
+        device: hex::encode(delegation.device_public_key),
         rooms: delegation.scope.rooms,
         apps: delegation.scope.apps,
-        may_confirm: delegation.scope.may_confirm,
         expires_at_ns: delegation.expires_at_ns,
     })
     .map_err(js_error)
@@ -1276,6 +1390,8 @@ pub fn verify_agent_delegation(
 pub struct WasmPeer {
     id: u32,
     device_key: [u8; 32],
+    reporter_cert: DeviceCert,
+    owner_cert: DeviceCert,
     handle: PeerHandle,
     durable_events: PeerEvents,
     remote_events: PeerEvents,
@@ -1347,6 +1463,8 @@ impl WasmPeer {
             })
         };
         let device_key = config.cert.device_public_key;
+        let reporter_cert = config.cert.clone();
+        let owner_cert = config.host_cert.clone();
         install_identity(&config.cert, config.display_name);
         let handle = PeerHandle::start(
             PeerConfig {
@@ -1379,6 +1497,7 @@ impl WasmPeer {
                         return;
                     };
                     crate::replication::pump(id);
+                    crate::feedback_delivery::pump(id);
                     let current = listeners.borrow().clone();
                     for listener in current {
                         let _ = listener.call0(&JsValue::NULL);
@@ -1389,6 +1508,8 @@ impl WasmPeer {
         Ok(Self {
             id,
             device_key,
+            reporter_cert,
+            owner_cert,
             durable_events: handle.events(),
             remote_events: handle.events(),
             voice_events: handle.events(),
@@ -1397,6 +1518,26 @@ impl WasmPeer {
             listeners,
             replication: RefCell::new(replication),
         })
+    }
+
+    /// Select an existing destination. Admission comes only from the connected
+    /// owner, asynchronously; mount after feedbackStatus reports ready.
+    /// # Errors
+    /// Refuses missing existing membership, record or a repeated configuration.
+    #[wasm_bindgen(js_name = configureFeedback)]
+    pub fn configure_feedback(&self, destination: &str) -> Result<(), JsError> {
+        crate::feedback_delivery::configure(
+            self.id,
+            self.handle.clone(),
+            self.reporter_cert.clone(),
+            self.owner_cert.clone(),
+            serde_json::from_str(destination).map_err(js_error)?,
+        )
+        .map_err(js_error)
+    }
+    #[wasm_bindgen(js_name = feedbackStatus)]
+    pub fn feedback_status(&self) -> String {
+        crate::feedback_delivery::status(self.id)
     }
 
     /// `PeerSnapshot` JSON.
@@ -1526,11 +1667,7 @@ impl WasmPeer {
         }
         let options: Options = serde_json::from_str(&options).map_err(js_error)?;
         let root = PageSigner::from_js(&root)?;
-        let now_ns = web_time::SystemTime::now()
-            .duration_since(web_time::UNIX_EPOCH)
-            .ok()
-            .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
-            .unwrap_or_default();
+        let now_ns = ui::time::unix_now_ns();
         let mut grant = tilo_relay_protocol::rooms::PreAdmission {
             room: options.room,
             role: options.role,
@@ -1759,6 +1896,18 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
+    /// How many changes this page made to its room's records and sent:
+    /// above zero once the person posted or created something.
+    #[wasm_bindgen(js_name = authoredChanges)]
+    pub fn authored_changes(&self) -> f64 {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a count far below 2^53, read by JavaScript as a number"
+        )]
+        let count = crate::replication::authored(self.id) as f64;
+        count
+    }
+
     /// Records whose durable change landed since the last call, as a JSON
     /// array of `{kind: 'durable', record}`: the live layer drops their
     /// previews and snaps drags.
@@ -1931,23 +2080,18 @@ impl WasmPeer {
         self.handle.clear_surface(surface);
     }
 
+    /// The person's chosen name from now on, for history and presence
+    /// (empty for none).
+    #[wasm_bindgen(js_name = setDisplayName)]
+    pub fn set_display_name(&self, name: String) {
+        install_identity(&self.reporter_cert, name);
+    }
+
     /// End the session. The page no longer acts as the certified user.
     pub fn dispose(&self) {
         self.listeners.borrow_mut().clear();
         self.handle.close();
         crate::replication::close(self.id);
         ui::local_identity::install_source(None);
-    }
-}
-
-impl WasmPeer {
-    /// A toolkit transport over this session for the desktop's
-    /// `CollaborationManager::with_transport`.
-    #[allow(
-        dead_code,
-        reason = "consumed by the desktop mount (milestone 3), which lands separately"
-    )]
-    pub(crate) fn collab_transport(&self) -> tilo_browser_peer::transport::RelayCollabTransport {
-        tilo_browser_peer::transport::RelayCollabTransport::new(self.handle.clone())
     }
 }

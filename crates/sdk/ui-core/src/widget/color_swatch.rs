@@ -1,17 +1,67 @@
-//! Immediate-mode colour swatch face.
+//! Colour swatches: one named swatch type, one painter, one picker.
 //!
-//! Dense toolbars and custom canvases can keep their own layout while sharing
-//! one declaration for swatch paint, hit-testing, tooltip help, and radio-style
-//! accessibility semantics.
+//! * [`ColorSwatch`] is a colour with an optional name; a swatch without a
+//!   name is spoken and shown as its `#RRGGBB` hex.
+//! * [`ColorSwatchFace`] paints a swatch and answers its hit-test, tooltip and
+//!   radio-style accessibility, for dense toolbars and custom canvases that
+//!   keep their own layout.
+//! * [`ColorSwatchPicker`] is a grid of swatches as a widget. Clicking a
+//!   swatch records its index; the host reads it with
+//!   [`ColorSwatchPicker::take_choice`] (or is told through
+//!   [`ColorSwatchPicker::on_change`]) and writes the colour to its model.
+//!   [`ColorSwatchPicker::with_painter`] paints a sample in each cell instead
+//!   of the flat colour, for a choice among brushes or patterns.
+//!   [`super::ColorPicker::with_swatches`] uses the same swatches as quick
+//!   picks beside its full colour field.
 
+use crate::widget::ModelPath;
+use std::collections::HashMap;
+use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::{AccessNode, AccessState, Role};
+use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
+use crate::widget::{TaffyTreeExt, Widget};
 
+/// One colour a person can pick.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorSwatch {
+    pub color: Color,
+    /// Spoken and tooltip name; `None` uses the `#RRGGBB` hex.
+    pub name: Option<String>,
+}
+
+impl ColorSwatch {
+    #[must_use]
+    pub fn new(color: Color) -> Self {
+        Self { color, name: None }
+    }
+
+    #[must_use]
+    pub fn named(color: Color, name: impl Into<String>) -> Self {
+        Self {
+            color,
+            name: Some(name.into()),
+        }
+    }
+
+    /// The name a screen reader speaks and the tooltip shows.
+    pub fn spoken_name(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| crate::color::to_hex(self.color))
+    }
+}
+
+/// An immediate-mode swatch: paint, hit-test, tooltip and accessibility from
+/// one declaration.
 pub struct ColorSwatchFace {
     rect: Rect,
     target_rect: Rect,
@@ -20,6 +70,7 @@ pub struct ColorSwatchFace {
     marker: Option<String>,
     selected: bool,
     hovered: bool,
+    focused: bool,
 }
 
 impl ColorSwatchFace {
@@ -32,9 +83,16 @@ impl ColorSwatchFace {
             marker: None,
             selected: false,
             hovered: false,
+            focused: false,
         }
     }
 
+    /// The face of a [`ColorSwatch`].
+    pub fn of(rect: Rect, swatch: &ColorSwatch) -> Self {
+        Self::new(rect, swatch.color, swatch.spoken_name())
+    }
+
+    /// A short mark painted on the swatch (a letter for "automatic").
     #[must_use]
     pub fn marker(mut self, marker: impl Into<String>) -> Self {
         self.marker = Some(marker.into());
@@ -53,6 +111,14 @@ impl ColorSwatchFace {
         self
     }
 
+    /// Keyboard focus: the ring in your colour.
+    #[must_use]
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// A pointer target larger than the painted swatch.
     #[must_use]
     pub fn target_rect(mut self, target_rect: Rect) -> Self {
         self.target_rect = target_rect;
@@ -82,65 +148,587 @@ impl ColorSwatchFace {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, 4.0);
+        let colors = &theme.tokens.colors;
+        let radius = f64::from(theme.tokens.radii.item);
+        let ground = colors.surfaces.content;
+        // The chosen swatch keeps its full fill; its mark is a ring outside
+        // it (see `paint_mark`), so choosing never shrinks the colour.
+        let fill_rect = self.rect;
+        let fill_radius = radius;
+        let shape = RoundedRect::from_rect(fill_rect, fill_radius);
         scene.fill(Fill::NonZero, transform, self.color, None, &shape);
-        let border = if self.selected {
-            Some((2.0, theme.tokens.colors.border_focus))
-        } else if self.hovered {
-            Some((
-                1.5,
-                theme.tokens.colors.ink_on_any(
-                    &[self.color],
-                    theme.tokens.colors.text_primary,
-                    3.0,
-                ),
-            ))
-        } else {
-            // At rest the swatch still carries an edge derived from its own
-            // fill (HIG §9.5), so a white chip on paper or a black one on a
-            // dark panel keeps its outline.
-            Some((1.0, crate::surface::edge_on(self.color)))
-        };
-        if let Some((width, color)) = border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(width),
-                transform,
-                color,
-                None,
-                &shape,
-            );
-        }
+        // The fill's edge is derived from the fill and the ground it stands
+        // on, so a white swatch on paper or a black one on a dark panel keeps
+        // its outline and a saturated one does not take a heavy one.
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            swatch_edge(theme, self.color, ground),
+            None,
+            &crate::surface::edge_outline(fill_rect, fill_radius),
+        );
+        self.paint_mark(scene, transform, theme);
         if let Some(marker) = &self.marker {
-            let size = 12.0;
-            let (width, _) = text.measure(marker, size, None);
-            let ink = theme
-                .tokens
-                .colors
-                .ink_on_any(&[self.color], theme.text_primary, 4.5);
-            text.draw_text(
+            let style = theme.text(TextRole::Caption).strong();
+            let ink = colors.ink_on_any(&[self.color], colors.text_primary, 4.5);
+            let (width, height) = text.measure_style(marker, None, &style);
+            text.draw_style(
                 scene,
                 marker,
-                size,
                 ink,
-                transform.pre_translate(Vec2::new(
+                transform.pre_translate(vello::kurbo::Vec2::new(
                     self.rect.center().x - f64::from(width) / 2.0,
-                    self.rect.center().y - 7.0,
+                    self.rect.center().y - f64::from(height) / 2.0,
                 )),
                 None,
+                &style,
             );
         }
+    }
+
+    /// The swatch's edge and mark over a sample the host painted in its
+    /// rect instead of the flat colour: an edge derived from the colour,
+    /// and the chosen, focused or hovered ring as on a flat swatch.
+    pub fn paint_ring(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let radius = f64::from(theme.tokens.radii.item);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            swatch_edge(theme, self.color, theme.tokens.colors.surfaces.content),
+            None,
+            &crate::surface::edge_outline(self.rect, radius),
+        );
+        self.paint_mark(scene, transform, theme);
+    }
+
+    /// The chosen swatch's concentric ring in primary ink (your colour under
+    /// keyboard focus), or the hover ring that reads on the swatch's fill.
+    fn paint_mark(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let colors = &theme.tokens.colors;
+        let radius = f64::from(theme.tokens.radii.item);
+        let ground = colors.surfaces.content;
+        let marked = self.selected || self.focused;
+        if marked {
+            // Offset outside the swatch: a gap of the ground, then the ring,
+            // each half a spacing step, concentric with the swatch's corner.
+            let gap = f64::from(theme.tokens.spacing.s1) / 2.0;
+            let ring_width = gap;
+            let reach = gap + ring_width / 2.0;
+            let ink = if self.focused {
+                colors.intent.you
+            } else {
+                colors.ink_on_any(&[ground], colors.text_primary, 3.0)
+            };
+            scene.stroke(
+                &vello::kurbo::Stroke::new(ring_width),
+                transform,
+                ink,
+                None,
+                &RoundedRect::from_rect(self.rect.inset(reach), radius + reach),
+            );
+        } else if self.hovered {
+            // Hover: a ring that reads on the swatch's own fill.
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                colors.ink_on_any(&[self.color], colors.text_primary, 3.0),
+                None,
+                &crate::surface::edge_outline(self.rect, radius),
+            );
+        }
+    }
+}
+
+/// Paints swatch `index` into its rect in place of its flat colour:
+/// `(scene, transform, rect, index, theme, text)`.
+pub type SwatchPainter = dyn FnMut(&mut Scene, Affine, Rect, usize, &Theme, &mut TextRenderer);
+
+/// A swatch fill's edge on `ground`: the edge derived from the fill, made to
+/// part the fill from the ground where the two are close. The derived edge
+/// is a translucent hairline, so it is measured as painted over the fill.
+fn swatch_edge(theme: &Theme, fill: Color, ground: Color) -> Color {
+    theme.tokens.colors.ink_on_any(
+        &[fill, ground],
+        crate::tokens::colors::composite(crate::surface::edge_on(fill), fill),
+        SWATCH_EDGE_CONTRAST,
+    )
+}
+
+/// The least contrast a swatch's edge keeps against its fill and its ground.
+const SWATCH_EDGE_CONTRAST: f64 = 1.4;
+
+/// A grid of [`ColorSwatch`]es as a widget.
+pub struct ColorSwatchPicker {
+    swatches: Vec<ColorSwatch>,
+    columns: usize,
+    selected: Option<usize>,
+    choice: Option<usize>,
+    rect: Rect,
+    swatch_rects: Vec<Rect>,
+    /// Edge of a swatch cell and the grid's padding, from the theme seen in
+    /// `build_layout`.
+    cell: f64,
+    pad: f64,
+    last_cursor: Point,
+    hovered: Option<usize>,
+    focused: bool,
+    focus_index: usize,
+    /// Told each chosen index, as well as [`ColorSwatchPicker::take_choice`].
+    on_change: Option<Box<dyn FnMut(usize)>>,
+    /// The cell's width (and height, unless `cell_height`), when it is not
+    /// a pointer target.
+    cell_width: Option<f64>,
+    /// The cell's height, when it is not as tall as it is wide.
+    cell_height: Option<f64>,
+    /// Paints each swatch in place of its flat colour.
+    painter: Option<Box<SwatchPainter>>,
+}
+
+impl ColorSwatchPicker {
+    /// `columns` swatches per row (at least one).
+    pub fn new(swatches: impl IntoIterator<Item = ColorSwatch>, columns: usize) -> Self {
+        let metrics = crate::tokens::Metrics::BASE;
+        Self {
+            swatches: swatches.into_iter().collect(),
+            columns: columns.max(1),
+            selected: None,
+            choice: None,
+            rect: Rect::ZERO,
+            swatch_rects: Vec::new(),
+            cell: f64::from(metrics.min_pointer_target),
+            pad: f64::from(crate::tokens::Spacing::BASE.s1),
+            last_cursor: Point::ZERO,
+            hovered: None,
+            focused: false,
+            focus_index: 0,
+            on_change: None,
+            cell_width: None,
+            cell_height: None,
+            painter: None,
+        }
+    }
+
+    /// Run `f` with each index the person chooses.
+    #[must_use]
+    pub fn on_change(mut self, f: impl FnMut(usize) + 'static) -> Self {
+        self.on_change = Some(Box::new(f));
+        self
+    }
+
+    /// Cells `cell` wide (and tall) rather than a pointer target, to fit a
+    /// given number of columns across a panel.
+    #[must_use]
+    pub fn with_cell(mut self, cell: f64) -> Self {
+        self.cell_width = Some(cell.max(1.0));
+        self
+    }
+
+    /// Cells `height` tall rather than square, for samples wider than they
+    /// are tall.
+    #[must_use]
+    pub fn with_cell_height(mut self, height: f64) -> Self {
+        self.cell_height = Some(height.max(1.0));
+        self
+    }
+
+    /// Paint each swatch with `painter` instead of its flat colour, for a
+    /// choice among samples (brush strokes, patterns) rather than colours.
+    /// The swatches' names still name the entries.
+    #[must_use]
+    pub fn with_painter(
+        mut self,
+        painter: impl FnMut(&mut Scene, Affine, Rect, usize, &Theme, &mut TextRenderer) + 'static,
+    ) -> Self {
+        self.painter = Some(Box::new(painter));
+        self
+    }
+
+    /// Show `idx` as chosen (`None`: none is), without telling
+    /// [`Self::on_change`].
+    pub fn set_selected(&mut self, idx: Option<usize>) {
+        self.selected = idx.filter(|idx| *idx < self.swatches.len());
+    }
+
+    fn row_height(&self) -> f64 {
+        self.cell_height.unwrap_or(self.cell)
+    }
+
+    #[must_use]
+    pub fn with_selected(mut self, idx: usize) -> Self {
+        self.selected = Some(idx);
+        self
+    }
+
+    pub fn take_choice(&mut self) -> Option<usize> {
+        self.choice.take()
+    }
+
+    pub fn swatch(&self, idx: usize) -> Option<&ColorSwatch> {
+        self.swatches.get(idx)
+    }
+
+    fn rows(&self) -> usize {
+        self.swatches.len().div_ceil(self.columns)
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "row/column indices are bounded by the on-screen swatch \
+                  grid, far below f64's exact-integer range"
+    )]
+    fn recompute_swatches(&mut self) {
+        self.swatch_rects.clear();
+        // Each swatch fills its pointer-target cell less the gap after it;
+        // the first sits on the grid's (the content's) leading edge.
+        let gap = self.pad;
+        let row = self.row_height();
+        for i in 0..self.swatches.len() {
+            let r = i.checked_div(self.columns).unwrap_or(0) as f64;
+            let c = i.checked_rem(self.columns).unwrap_or(0) as f64;
+            let x = self.rect.x0 + c * self.cell;
+            let y = self.rect.y0 + r * row;
+            self.swatch_rects
+                .push(Rect::new(x, y, x + self.cell - gap, y + row - gap));
+        }
+    }
+
+    /// `(width, height)` of the grid — shared by `build_layout` and
+    /// `measure` so they can't disagree.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "column/row counts describe a small, on-screen swatch grid, \
+                  far below f32's exact-integer range"
+    )]
+    fn grid_size(&self) -> (f32, f32) {
+        let w = (self.columns as f64 * self.cell - self.pad).max(0.0);
+        let h = (self.rows() as f64 * self.row_height() - self.pad).max(0.0);
+        (w as f32, h as f32)
+    }
+
+    fn choose(&mut self, index: usize) {
+        self.selected = Some(index);
+        self.choice = Some(index);
+        if let Some(on_change) = self.on_change.as_mut() {
+            on_change(index);
+        }
+    }
+}
+
+impl Widget for ColorSwatchPicker {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.cell = self
+            .cell_width
+            .unwrap_or_else(|| f64::from(theme.tokens.metrics.min_pointer_target));
+        self.pad = f64::from(theme.tokens.spacing.s1);
+        let (w, h) = self.grid_size();
+        let style = Style {
+            flex_shrink: 0.0,
+            size: taffy::Size::from_lengths(w, h),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn measure(
+        &mut self,
+        _k: taffy::Size<Option<f32>>,
+        _a: taffy::Size<taffy::AvailableSpace>,
+        _tr: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        let (width, height) = self.grid_size();
+        taffy::Size { width, height }
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.recompute_swatches();
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        for (i, (swatch, rect)) in self.swatches.iter().zip(&self.swatch_rects).enumerate() {
+            let face = ColorSwatchFace::of(*rect, swatch)
+                .selected(self.selected == Some(i))
+                .focused(self.focused && self.focus_index == i)
+                .hovered(self.hovered == Some(i));
+            match self.painter.as_mut() {
+                Some(painter) => {
+                    painter(scene, transform, *rect, i, theme, text_renderer);
+                    face.paint_ring(scene, transform, theme);
+                }
+                None => face.paint(scene, transform, text_renderer, theme),
+            }
+        }
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor = ctx.logical(position);
+                self.hovered = self
+                    .swatch_rects
+                    .iter()
+                    .position(|r| r.contains(self.last_cursor));
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(i) = self
+                    .swatch_rects
+                    .iter()
+                    .position(|r| r.contains(self.last_cursor))
+                {
+                    self.choose(i);
+                    self.focused = true;
+                    self.focus_index = i;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.focused && !self.swatches.is_empty() => {
+                let last = self.swatches.len().saturating_sub(1);
+                let next = match logical_key {
+                    Key::Named(NamedKey::ArrowLeft) => self.focus_index.saturating_sub(1),
+                    Key::Named(NamedKey::ArrowRight) => {
+                        self.focus_index.saturating_add(1).min(last)
+                    }
+                    Key::Named(NamedKey::ArrowUp) => self.focus_index.saturating_sub(self.columns),
+                    Key::Named(NamedKey::ArrowDown) => {
+                        self.focus_index.saturating_add(self.columns).min(last)
+                    }
+                    Key::Named(NamedKey::Home) => 0,
+                    Key::Named(NamedKey::End) => last,
+                    Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                        self.choose(self.focus_index);
+                        *ctx.handled = true;
+                        return;
+                    }
+                    _ => return,
+                };
+                self.focus_index = next;
+                *ctx.handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "ColorSwatchPicker"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Each swatch names itself on hover.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        self.swatches
+            .iter()
+            .zip(&self.swatch_rects)
+            .find_map(|(swatch, rect)| ColorSwatchFace::of(*rect, swatch).tooltip_target(point))
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if focused {
+            self.focus_index = self
+                .selected
+                .unwrap_or(0)
+                .min(self.swatches.len().saturating_sub(1));
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        // Each swatch is drawn (not a child widget), so it becomes a
+        // synthetic `ListItem` named like its tooltip.
+        let count = self.swatches.len();
+        let value = self
+            .selected
+            .and_then(|i| self.swatches.get(i))
+            .map(ColorSwatch::spoken_name);
+        let items: Vec<AccessNode> = self
+            .swatches
+            .iter()
+            .enumerate()
+            .map(|(i, swatch)| {
+                AccessNode::new(Role::ListItem)
+                    .with_action_target(format!("swatch:{i}"))
+                    .with_name(swatch.spoken_name())
+                    // The cells are custom-painted synthetic descendants, so
+                    // export their real logical-pixel rects for AT hit testing
+                    // and overlay inspection just like the shared pointer path.
+                    .with_bounds(self.swatch_rects.get(i).copied().unwrap_or(Rect::ZERO))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.selected == Some(i))
+                            .focused(self.focused && self.focus_index == i),
+                    )
+                    .with_position(i.saturating_add(1), count)
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::List)
+                .with_optional_value(value)
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused()),
+                )
+                .with_children(items),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [swatch] = path else {
+            return None;
+        };
+        self.swatch_rects.get(*swatch).copied()
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> bool {
+        let Some(index) = target
+            .strip_prefix("swatch:")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|index| *index < self.swatches.len())
+        else {
+            return false;
+        };
+        if matches!(action, crate::a11y::Action::Focus) {
+            self.focused = true;
+            self.focus_index = index;
+            return true;
+        }
+        if !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        self.choose(index);
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
+    use automerge::AutoCommit;
+
+    fn rgb(r: u8, g: u8, b: u8) -> Color {
+        Color::from_rgb8(r, g, b)
+    }
+
+    fn palette() -> Vec<ColorSwatch> {
+        vec![
+            ColorSwatch::named(rgb(0x11, 0x22, 0x33), "Ink"),
+            ColorSwatch::new(rgb(0x44, 0x55, 0x66)),
+            ColorSwatch::named(rgb(0x77, 0x88, 0x99), "Slate"),
+        ]
+    }
+
+    fn lay_out(w: &mut dyn Widget) {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = w.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(300.0),
+                    height: taffy::AvailableSpace::Definite(300.0),
+                },
+            )
+            .unwrap();
+        w.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    use crate::synthetic_input::named_key;
+
+    #[test]
+    fn a_sampled_grid_tells_each_choice_and_paints_its_samples() {
+        let chosen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let told = std::rc::Rc::clone(&chosen);
+        let painted = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let counted = std::rc::Rc::clone(&painted);
+        let mut picker = ColorSwatchPicker::new(palette(), 3)
+            .with_cell(60.0)
+            .with_cell_height(40.0)
+            .with_painter(move |_, _, _, _, _, _| counted.set(counted.get() + 1))
+            .on_change(move |index| told.borrow_mut().push(index));
+        lay_out(&mut picker);
+        // Three cells of 60 by 40, less the gap after the last: the grid
+        // has no outer inset.
+        let gap = f64::from(crate::tokens::Spacing::BASE.s1);
+        assert_eq!(picker.get_rect().size(), (180.0 - gap, 40.0 - gap).into(),);
+        let first = picker.swatch_rects[0];
+        assert!(first.width() > first.height(), "cells are wider than tall");
+        let third = picker.swatch_rects[2].center();
+
+        dispatch(
+            &mut picker,
+            &crate::synthetic_input::cursor_moved(third.x, third.y),
+        );
+        dispatch(&mut picker, &crate::synthetic_input::mouse_press());
+        assert_eq!(*chosen.borrow(), vec![2]);
+
+        // Showing a choice made elsewhere tells no one.
+        picker.set_selected(Some(0));
+        assert_eq!(picker.selected, Some(0));
+        assert_eq!(*chosen.borrow(), vec![2]);
+
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        picker.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        assert_eq!(painted.get(), 3, "every cell is painted by the sampler");
+    }
 
     #[test]
     fn one_face_drives_hit_help_and_checked_semantics() {
         let visual = Rect::new(10.0, 10.0, 30.0, 30.0);
         let target = Rect::new(6.0, 4.0, 34.0, 36.0);
-        let face = ColorSwatchFace::new(visual, Color::WHITE, "Text color #FFFFFF")
+        let face = ColorSwatchFace::new(visual, rgb(0xff, 0xff, 0xff), "Text color #FFFFFF")
             .selected(true)
             .target_rect(target);
         assert!(face.hit_test(Point::new(7.0, 20.0)));
@@ -152,5 +740,103 @@ mod tests {
         assert_eq!(node.role, Role::RadioButton);
         assert_eq!(node.state.checked, Some(true));
         assert_eq!(node.bounds.expect("target bounds").to_rect(), target);
+    }
+
+    #[test]
+    fn the_picker_names_each_swatch_and_chooses_by_pointer_keyboard_and_semantics() {
+        let mut picker = ColorSwatchPicker::new(palette(), 2);
+        lay_out(&mut picker);
+        let tree = Widget::accessibility(&picker).expect("picker semantics");
+        let names: Vec<_> = tree.children.iter().map(|c| c.name.clone()).collect();
+        assert_eq!(
+            names,
+            [
+                Some("Ink".to_owned()),
+                Some("#445566".to_owned()),
+                Some("Slate".to_owned())
+            ],
+            "a nameless swatch is spoken as its hex"
+        );
+        let centre = picker.swatch_rects[2].center();
+        assert_eq!(
+            Widget::tooltip_target_at(&picker, centre).map(|(_, name)| name),
+            Some("Slate".to_owned())
+        );
+
+        dispatch(
+            &mut picker,
+            &crate::synthetic_input::cursor_moved(centre.x, centre.y),
+        );
+        assert!(dispatch(
+            &mut picker,
+            &crate::synthetic_input::mouse_press()
+        ));
+        assert_eq!(picker.take_choice(), Some(2));
+
+        Widget::set_focus(&mut picker, true);
+        assert!(dispatch(&mut picker, &named_key(NamedKey::Home)));
+        assert!(dispatch(&mut picker, &named_key(NamedKey::ArrowRight)));
+        assert!(dispatch(&mut picker, &named_key(NamedKey::Space)));
+        assert_eq!(picker.take_choice(), Some(1));
+
+        assert!(Widget::perform_semantic_action(
+            &mut picker,
+            "swatch:0",
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &automerge::ROOT,
+        ));
+        assert_eq!(picker.take_choice(), Some(0));
+        assert_eq!(
+            picker.swatch(0).map(|s| s.color),
+            Some(rgb(0x11, 0x22, 0x33))
+        );
+        assert!(
+            Widget::accessibility(&picker).unwrap().children[0]
+                .state
+                .selected
+        );
+    }
+
+    #[test]
+    fn swatch_cells_are_pointer_targets() {
+        let mut picker = ColorSwatchPicker::new(palette(), 2);
+        lay_out(&mut picker);
+        let target = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
+        let pitch = picker.swatch_rects[1].x0 - picker.swatch_rects[0].x0;
+        assert_eq!(pitch, target, "each swatch owns a full pointer-target cell");
+        assert!(picker.swatch_rects[2].y0 > picker.swatch_rects[0].y0);
+    }
+    #[test]
+    fn the_first_swatch_sits_on_the_content_edge() {
+        let mut picker = ColorSwatchPicker::new(
+            [
+                ColorSwatch::named(Color::from_rgb8(200, 40, 40), "Red"),
+                ColorSwatch::named(Color::from_rgb8(40, 200, 40), "Green"),
+            ],
+            2,
+        );
+        let theme = Theme::dark();
+        let mut tree = TaffyTree::new();
+        let node = picker.build_layout(&mut tree, &theme, &mut HashMap::new());
+        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
+            .unwrap();
+        picker.apply_layout(&tree, node, Point::new(24.0, 10.0));
+        assert_eq!(picker.swatch_rects[0].x0, 24.0);
+        assert_eq!(picker.swatch_rects[0].y0, 10.0);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        ColorSwatchFace::new(Rect::new(0.0, 0.0, 24.0, 24.0), Color::WHITE, "White")
+            .selected(true)
+            .paint(&mut scene, Affine::IDENTITY, &mut text, &Theme::light());
+        let edge = swatch_edge(
+            &Theme::light(),
+            Color::WHITE,
+            Theme::light().tokens.colors.surfaces.content,
+        );
+        assert!(
+            crate::a11y::contrast_ratio(edge, Color::WHITE) >= SWATCH_EDGE_CONTRAST - 1e-6,
+            "a white swatch keeps an edge on paper"
+        );
     }
 }

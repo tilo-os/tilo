@@ -23,17 +23,17 @@ pub enum BrowserEffect {
     /// Go back
     ///
     /// Answers with the address once the previous page loaded.
-    #[effect(row, job, idempotent)]
+    #[effect(row, job, returns, idempotent)]
     Back,
     /// Go forward
     ///
     /// Answers with the address once the next page loaded.
-    #[effect(row, job, idempotent)]
+    #[effect(row, job, returns, idempotent)]
     Forward,
     /// Reload
     ///
     /// Answers with the address once the page loaded again.
-    #[effect(row, job, idempotent)]
+    #[effect(row, job, returns, idempotent)]
     Reload,
     /// Stop loading
     #[effect(view, row)]
@@ -41,7 +41,7 @@ pub enum BrowserEffect {
     /// Open address
     ///
     /// Answers with the address once the page loaded.
-    #[effect(row, job, idempotent)]
+    #[effect(row, job, returns, idempotent)]
     Navigate {
         #[param("Absolute URL or search terms")]
         url: String,
@@ -66,7 +66,7 @@ pub enum BrowserEffect {
     /// Open page
     ///
     /// Opens a page of the history or a bookmark in this window.
-    #[effect(row, job, idempotent)]
+    #[effect(row, job, returns, idempotent)]
     Open {
         #[param("The page's address")]
         url: String,
@@ -112,7 +112,7 @@ pub enum BrowserEffect {
     /// Open Picture in Picture
     ///
     /// Floats the page's video, or closes the floating video.
-    #[effect(row, job)]
+    #[effect(row, job, returns)]
     PictureInPicture,
     /// Download address
     #[effect(row, returns)]
@@ -153,19 +153,19 @@ pub enum BrowserEffect {
     /// Read page content
     ///
     /// Answers with the page's outline: its elements and their refs.
-    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     ReadPage,
     /// What changed on the page
     ///
     /// Answers with the outline lines added and removed since the last read,
     /// or the whole outline when the document is new.
-    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     ReadPageChanges,
     /// Element at a page point
     ///
     /// Answers with what a click at the point would hit, through overlays
     /// and banners, and the interactive element holding it.
-    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     ReadPageElementAt {
         #[param("Viewport x in CSS pixels from the page's left edge")]
         x: f64,
@@ -176,7 +176,7 @@ pub enum BrowserEffect {
     ///
     /// Answers once the document has loaded and stopped changing for a
     /// quiet period, or the longest wait passed.
-    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     WaitPageSettled {
         #[param("How long the page must stay unchanged, milliseconds (default 500)")]
         quiet_ms: Option<u32>,
@@ -187,7 +187,7 @@ pub enum BrowserEffect {
     ///
     /// Console messages and uncaught errors, collected from the first time
     /// an agent touched the tab.
-    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     ReadPageConsole {
         #[param(
             "Only entries after this sequence number: the `next` of the previous answer (default 0)"
@@ -198,7 +198,7 @@ pub enum BrowserEffect {
     ///
     /// Method, address, type, status, size and failure of the page's
     /// requests, never headers, bodies or cookies.
-    #[effect(row, job, idempotent, programmatic, untrusted, permission = "write")]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     ReadPageNetwork {
         #[param(
             "Only entries after this sequence number: the `next` of the previous answer (default 0)"
@@ -206,7 +206,7 @@ pub enum BrowserEffect {
         since: Option<u64>,
     },
     /// Click page element
-    #[effect(row, job, programmatic, untrusted)]
+    #[effect(row, job, returns, programmatic, untrusted)]
     ClickPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -214,7 +214,7 @@ pub enum BrowserEffect {
     /// Fill page field
     ///
     /// A password or card field is refused: those take the secret fill.
-    #[effect(row, job, programmatic, untrusted)]
+    #[effect(row, job, returns, programmatic, untrusted)]
     FillPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -225,7 +225,7 @@ pub enum BrowserEffect {
     ///
     /// Fills a password or card field; the text is a secret kept out of
     /// logs and history.
-    #[effect(row, job, programmatic, untrusted)]
+    #[effect(row, job, returns, programmatic, untrusted)]
     FillPageSecret {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -236,7 +236,7 @@ pub enum BrowserEffect {
         text: String,
     },
     /// Choose page options
-    #[effect(row, job, programmatic, untrusted)]
+    #[effect(row, job, returns, programmatic, untrusted)]
     SelectPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -244,7 +244,7 @@ pub enum BrowserEffect {
         values: Vec<String>,
     },
     /// Press key on page
-    #[effect(row, job, programmatic, untrusted)]
+    #[effect(row, job, returns, programmatic, untrusted)]
     PressPage {
         #[param("Key or chord such as Enter, Tab, Escape, ArrowDown or Control+a")]
         key: String,
@@ -256,7 +256,7 @@ pub enum BrowserEffect {
     /// A form that sends its data to another site than the page's own is
     /// refused, through submit, click or Enter, unless `cross_origin` allows
     /// it.
-    #[effect(row, job, programmatic, untrusted)]
+    #[effect(row, job, returns, programmatic, untrusted)]
     SubmitPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,

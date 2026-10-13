@@ -451,6 +451,66 @@ impl SlotStore {
         Ok(Some((from, to)))
     }
 
+    /// Prepare all admitted members as one generation. This is called while
+    /// holding the slot lock, after every import and scope was verified.
+    pub(crate) fn prepare_userspace(
+        &self,
+        record: &SlotRecord,
+        members: &[(String, Entry)],
+    ) -> Result<(Generation, Generation), DaemonError> {
+        self.userspace_generation(record, members, true)
+    }
+
+    pub(crate) fn userspace_preview(
+        &self,
+        record: &SlotRecord,
+        members: &[(String, Entry)],
+    ) -> Result<Generation, DaemonError> {
+        self.userspace_generation(record, members, false)
+            .map(|(_, to)| to)
+    }
+
+    fn userspace_generation(
+        &self,
+        record: &SlotRecord,
+        members: &[(String, Entry)],
+        publish: bool,
+    ) -> Result<(Generation, Generation), DaemonError> {
+        let from = self.generation(&record.name, record.current)?;
+        let mut to = from.clone();
+        if let Some(retained) = to.components.remove("runtime-retention") {
+            to.layers.retain(|hash| hash != &retained.layer);
+        }
+        for (name, entry) in members {
+            match to.components.insert(name.clone(), entry.clone()) {
+                Some(previous) => {
+                    for layer in &mut to.layers {
+                        if *layer == previous.layer {
+                            layer.clone_from(&entry.layer);
+                        }
+                    }
+                }
+                None => to.layers.push(entry.layer.clone()),
+            }
+        }
+        to.layers.dedup();
+        to.number = self
+            .generations(&record.name)
+            .last()
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| DaemonError::InvalidParams("generation exhausted".into()))?;
+        to.created_at = now();
+        to.reason = "matched userspace cohort".into();
+        let bytes = serde_json::to_vec_pretty(&to)
+            .map_err(|error| DaemonError::InvalidParams(error.to_string()))?;
+        if publish {
+            write_atomic(&self.generation_path(&record.name, to.number), &bytes)?;
+        }
+        Ok((from, to))
+    }
+
     /// The transition a rollback makes: to `to`, or the newest generation
     /// older than the current one (the base when none is recorded).
     ///
@@ -603,6 +663,37 @@ mod tests {
             .unwrap()?;
         store.set_current(record, to.number).unwrap();
         Some(to.number)
+    }
+
+    #[test]
+    fn frame_cpu_trace_changes_generation_for_the_same_layer() {
+        let root = tempfile::tempdir().unwrap();
+        let store = SlotStore::new(root.path());
+        let (mut record, _) = store
+            .create("cpu", SlotKind::Headless, Owner::default(), &[])
+            .unwrap();
+        assert_eq!(swap(&store, &mut record, "shell", "h1"), Some(1));
+        let mut info = session();
+        info.frame_cpu_trace = true;
+        let (from, to) = store
+            .prepare_swap(&record, "shell", "h1", info.clone())
+            .unwrap()
+            .unwrap();
+        assert!(!from.components["shell"].info.frame_cpu_trace);
+        assert!(to.components["shell"].info.frame_cpu_trace);
+        assert_eq!(to.number, 2);
+        store.set_current(&mut record, to.number).unwrap();
+        assert!(
+            store
+                .prepare_swap(&record, "shell", "h1", info)
+                .unwrap()
+                .is_none()
+        );
+        let (_, disabled) = store
+            .prepare_swap(&record, "shell", "h1", session())
+            .unwrap()
+            .unwrap();
+        assert!(!disabled.components["shell"].info.frame_cpu_trace);
     }
 
     #[test]

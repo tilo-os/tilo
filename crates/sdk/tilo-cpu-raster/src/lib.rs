@@ -31,6 +31,7 @@ mod blur;
 pub mod capture;
 pub mod compare;
 mod decode;
+mod diff;
 mod glyph;
 mod image;
 mod record;
@@ -164,6 +165,208 @@ impl<'a> Target<'a> {
     }
 }
 
+/// What differs between two prepared scenes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SceneChanges {
+    /// Every pixel that can differ.
+    pub regions: Vec<Region>,
+    /// The part of the change that moved, when every differing draw is its
+    /// old self translated by one whole-pixel offset.
+    pub motion: Option<PixelMotion>,
+    /// Why the change is not a motion, when it is not, for diagnostics.
+    pub not_a_motion: Option<String>,
+}
+
+/// Pixels the new scene shows where the old one showed them `(dx, dy)`
+/// earlier: a pixel `p` inside `opaque` and, at both `p` and `p - (dx, dy)`,
+/// outside every obstacle equals the old pixel at `p - (dx, dy)`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PixelMotion {
+    pub dx: i32,
+    pub dy: i32,
+    /// Where the moved draws paint opaquely, rounded in to whole pixels.
+    pub opaque: Vec<Region>,
+    /// Draws that stayed put over the moved ones, rounded out.
+    pub obstacles: Vec<Region>,
+}
+
+impl PixelMotion {
+    /// Tiles of a `width` x `height` target, `tile` pixels square, whose
+    /// pixels can be moved from `(dx, dy)` earlier instead of drawn, as runs
+    /// along tile rows. Partial tiles at the target's edge count whole.
+    pub fn movable(&self, width: u32, height: u32, tile: u32) -> Vec<Region> {
+        let tile = tile.max(1);
+        let (tiles_x, tiles_y) = (width.div_ceil(tile), height.div_ceil(tile));
+        let mut ok = vec![false; tiles_x as usize * tiles_y as usize];
+        let tile_rect = |tx: u32, ty: u32| {
+            let x = tx * tile;
+            let y = ty * tile;
+            (x, y, (x + tile).min(width), (y + tile).min(height))
+        };
+        for region in &self.opaque {
+            let (rx1, ry1) = (region.x + region.width, region.y + region.height);
+            for ty in region.y / tile..ry1.div_ceil(tile).min(tiles_y) {
+                for tx in region.x / tile..rx1.div_ceil(tile).min(tiles_x) {
+                    let (x0, y0, x1, y1) = tile_rect(tx, ty);
+                    if x0 >= region.x && y0 >= region.y && x1 <= rx1 && y1 <= ry1 {
+                        ok[(ty * tiles_x + tx) as usize] = true;
+                    }
+                }
+            }
+        }
+        let (dx, dy) = (i64::from(self.dx), i64::from(self.dy));
+        for region in &self.obstacles {
+            // The obstacle itself, and every pixel whose source it covers.
+            for (ox, oy) in [(0, 0), (dx, dy)] {
+                let x0 = (i64::from(region.x) + ox).clamp(0, i64::from(width));
+                let y0 = (i64::from(region.y) + oy).clamp(0, i64::from(height));
+                let x1 = (i64::from(region.x + region.width) + ox).clamp(0, i64::from(width));
+                let y1 = (i64::from(region.y + region.height) + oy).clamp(0, i64::from(height));
+                if x1 <= x0 || y1 <= y0 {
+                    continue;
+                }
+                let tile = i64::from(tile);
+                for ty in y0 / tile..(y1 + tile - 1) / tile {
+                    for tx in x0 / tile..(x1 + tile - 1) / tile {
+                        if let Some(cell) = ok.get_mut((ty * i64::from(tiles_x) + tx) as usize) {
+                            *cell = false;
+                        }
+                    }
+                }
+            }
+        }
+        // The source of every moved pixel must lie inside the target.
+        for ty in 0..tiles_y {
+            for tx in 0..tiles_x {
+                let (x0, y0, x1, y1) = tile_rect(tx, ty);
+                let inside = i64::from(x0) - dx >= 0
+                    && i64::from(y0) - dy >= 0
+                    && i64::from(x1) - dx <= i64::from(width)
+                    && i64::from(y1) - dy <= i64::from(height);
+                if !inside {
+                    ok[(ty * tiles_x + tx) as usize] = false;
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for ty in 0..tiles_y {
+            let mut tx = 0;
+            while tx < tiles_x {
+                if !ok[(ty * tiles_x + tx) as usize] {
+                    tx += 1;
+                    continue;
+                }
+                let start = tx;
+                while tx < tiles_x && ok[(ty * tiles_x + tx) as usize] {
+                    tx += 1;
+                }
+                let (x0, y0, _, y1) = tile_rect(start, ty);
+                let (_, _, x1, _) = tile_rect(tx - 1, ty);
+                out.push(Region::new(x0, y0, x1 - x0, y1 - y0));
+            }
+        }
+        out
+    }
+}
+
+/// Move the pixels of `regions` (destinations) from `(dx, dy)` earlier in
+/// the same target. Every source must lie inside the target. Rows are moved
+/// in place, ordered so that no source is overwritten before it is read.
+pub fn move_pixels(target: &mut Target<'_>, regions: &[Region], dx: i32, dy: i32) {
+    let stride = target.stride;
+    // (destination row, first column, width) for every row of every region.
+    let mut rows: Vec<(u32, u32, u32)> = regions
+        .iter()
+        .flat_map(|r| (r.y..r.y + r.height).map(move |y| (y, r.x, r.width)))
+        .collect();
+    // Moving down, the lowest rows go first; moving right, the rightmost.
+    rows.sort_unstable_by(|a, b| {
+        let by_row = if dy > 0 { b.0.cmp(&a.0) } else { a.0.cmp(&b.0) };
+        let by_column = if dx > 0 { b.1.cmp(&a.1) } else { a.1.cmp(&b.1) };
+        by_row.then(by_column)
+    });
+    for (y, x, width) in rows {
+        let sx = (i64::from(x) - i64::from(dx)) as usize;
+        let sy = (i64::from(y) - i64::from(dy)) as usize;
+        let src = sy * stride + sx * 4;
+        let dst = y as usize * stride + x as usize * 4;
+        let bytes = width as usize * 4;
+        if src + bytes <= target.data.len() && dst + bytes <= target.data.len() {
+            target.data.copy_within(src..src + bytes, dst);
+        }
+    }
+}
+
+/// The pixels `rect` touches, inside a `width` x `height` target. Bounds
+/// that are not finite cover the whole target.
+fn region_out(rect: Rect, width: u32, height: u32) -> Option<Region> {
+    if !(rect.x0.is_finite() && rect.y0.is_finite() && rect.x1.is_finite() && rect.y1.is_finite()) {
+        return Some(Region::new(0, 0, width, height));
+    }
+    let x0 = rect.x0.floor().clamp(0.0, f64::from(width)) as u32;
+    let y0 = rect.y0.floor().clamp(0.0, f64::from(height)) as u32;
+    let x1 = rect.x1.ceil().clamp(0.0, f64::from(width)) as u32;
+    let y1 = rect.y1.ceil().clamp(0.0, f64::from(height)) as u32;
+    (x1 > x0 && y1 > y0).then(|| Region::new(x0, y0, x1 - x0, y1 - y0))
+}
+
+/// The whole pixels inside `rect`, inside the target.
+fn region_in(rect: Rect, width: u32, height: u32) -> Option<Region> {
+    let x0 = rect.x0.ceil().clamp(0.0, f64::from(width)) as u32;
+    let y0 = rect.y0.ceil().clamp(0.0, f64::from(height)) as u32;
+    let x1 = rect.x1.floor().clamp(0.0, f64::from(width)) as u32;
+    let y1 = rect.y1.floor().clamp(0.0, f64::from(height)) as u32;
+    (x1 > x0 && y1 > y0).then(|| Region::new(x0, y0, x1 - x0, y1 - y0))
+}
+
+/// Whether `encoding` blends a layer with what is under it other than by
+/// source over. Such a scene drawn onto a transparent target and composited
+/// later would not match the scene drawn in place. Walks the draw tags only.
+pub fn reads_backdrop(encoding: &Encoding) -> bool {
+    decode::encoding_reads_backdrop(encoding)
+}
+
+/// Whether every layer `encoding` leaves open after its first `draws` draw
+/// tags is a plain clip or a source-over group at full opacity: a draw there
+/// composites onto the target as it would with no layer open, clipped.
+/// `false` when `encoding` has fewer draw tags. Walks the draw tags only.
+pub fn plain_layers_open_at(encoding: &Encoding, draws: usize) -> bool {
+    decode::plain_layers_open_at(encoding, draws)
+}
+
+/// Device-space bounds of everything a scene paints, for a caller that must
+/// know what lies over a region without rasterising the scene. Keep one: it
+/// retains glyph outlines across calls.
+#[derive(Default)]
+pub struct DrawBounds {
+    list: decode::DisplayList,
+    glyphs: glyph::GlyphCache,
+    images: image::ImageCache,
+}
+
+impl std::fmt::Debug for DrawBounds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DrawBounds").finish_non_exhaustive()
+    }
+}
+
+impl DrawBounds {
+    /// Every pixel `encoding` can paint, as device-space rectangles: each
+    /// draw's path (stroke reach included) or glyph outlines under its
+    /// transform, and the clip of every layer that blends other than by
+    /// source over. A layer's clip is not applied, so the bounds hold
+    /// whatever it clips. `None` when some draw cannot be bounded.
+    pub fn of(&mut self, encoding: &Encoding) -> Option<Vec<Rect>> {
+        let mut stats = Stats::default();
+        self.glyphs.begin_frame();
+        let bounds = self
+            .list
+            .bounds(encoding, &mut self.glyphs, &mut self.images, &mut stats);
+        self.glyphs.end_frame();
+        bounds
+    }
+}
+
 /// Regions smaller than this many pixels render on the calling thread.
 pub const SINGLE_THREAD_PIXELS: u32 = 128 * 1024;
 
@@ -220,6 +423,10 @@ pub struct CpuRasterizer {
     threaded: Option<RenderContext>,
     resources: vello_cpu::Resources,
     list: decode::DisplayList,
+    /// The scene decoded before `list`, for [`Self::changed_regions`].
+    previous: decode::DisplayList,
+    /// `list` holds a decoded scene that `previous` can be compared with.
+    comparable: bool,
     glyphs: glyph::GlyphCache,
     images: image::ImageCache,
     scratch: record::Scratch,
@@ -247,6 +454,8 @@ impl CpuRasterizer {
             threaded: None,
             resources: vello_cpu::Resources::new(),
             list: decode::DisplayList::default(),
+            previous: decode::DisplayList::default(),
+            comparable: false,
             glyphs: glyph::GlyphCache::default(),
             images: image::ImageCache::default(),
             scratch: record::Scratch::new(options.cached_blur),
@@ -265,16 +474,76 @@ impl CpuRasterizer {
         regions: Option<&[Region]>,
         base: AlphaColor<Srgb>,
     ) -> Stats {
+        let mut stats = self.prepare(encoding);
+        let rendered = self.render_prepared(target, regions, base);
+        stats.record = rendered.record;
+        stats.raster = rendered.raster;
+        stats.recorded = rendered.recorded;
+        stats.blur_misses = rendered.blur_misses;
+        stats
+    }
+
+    /// Decode `encoding` for [`Self::render_prepared`], keeping the scene
+    /// decoded before it for [`Self::changed_regions`].
+    pub fn prepare(&mut self, encoding: &Encoding) -> Stats {
         let mut stats = Stats::default();
         let start = Instant::now();
+        std::mem::swap(&mut self.list, &mut self.previous);
+        self.comparable = !self.previous.ops.is_empty();
         self.glyphs.begin_frame();
         self.images.begin_frame();
-        self.scratch.blurs.begin_frame();
         self.list
             .decode(encoding, &mut self.glyphs, &mut self.images, &mut stats);
+        self.glyphs.end_frame();
+        self.images.end_frame();
         stats.draws = self.list.draw_count();
         stats.decode = start.elapsed();
+        stats
+    }
 
+    /// Pixels of a `width` x `height` target that can differ between the
+    /// scene prepared before and the one prepared last: the bounds of every
+    /// draw between their first and last difference, rounded out to whole
+    /// pixels: coverage never leaves the pixels a draw's bounds touch. `None`
+    /// when there is no earlier scene or the difference is too large to list.
+    pub fn changed_regions(&self, width: u32, height: u32) -> Option<Vec<Region>> {
+        self.changes(width, height).map(|changes| changes.regions)
+    }
+
+    /// [`Self::changed_regions`], with the part of the change that is the old
+    /// picture moved by whole pixels, when there is one.
+    pub fn changes(&self, width: u32, height: u32) -> Option<SceneChanges> {
+        if !self.comparable {
+            return None;
+        }
+        let changes = diff::changes(&self.previous, &self.list)?;
+        let outward = |rect: Rect| region_out(rect, width, height);
+        Some(SceneChanges {
+            regions: changes.bounds.into_iter().filter_map(outward).collect(),
+            not_a_motion: changes.motion.as_ref().err().cloned(),
+            motion: changes.motion.ok().map(|motion| PixelMotion {
+                dx: motion.dx,
+                dy: motion.dy,
+                opaque: motion
+                    .opaque
+                    .into_iter()
+                    .filter_map(|rect| region_in(rect, width, height))
+                    .collect(),
+                obstacles: motion.obstacles.into_iter().filter_map(outward).collect(),
+            }),
+        })
+    }
+
+    /// Render the scene last given to [`Self::prepare`], like
+    /// [`Self::render`]. The decode fields of the returned stats are zero.
+    pub fn render_prepared(
+        &mut self,
+        target: &mut Target<'_>,
+        regions: Option<&[Region]>,
+        base: AlphaColor<Srgb>,
+    ) -> Stats {
+        let mut stats = Stats::default();
+        self.scratch.blurs.begin_frame();
         let full = [Region::new(0, 0, target.width, target.height)];
         let regions = regions.unwrap_or(&full);
         for region in regions {
@@ -283,8 +552,6 @@ impl CpuRasterizer {
             };
             self.render_region(target, region, base, &mut stats);
         }
-        self.glyphs.end_frame();
-        self.images.end_frame();
         self.scratch.blurs.end_frame();
         stats
     }

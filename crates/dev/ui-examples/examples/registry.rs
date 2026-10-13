@@ -1,7 +1,10 @@
 //! Shared scenario registry and command-line dispatcher for the three UI
 //! example surfaces.
 
-#![allow(dead_code)] // Each binary intentionally compiles one surface subset.
+#![expect(
+    dead_code,
+    reason = "each example binary includes this registry and constructs only its own surface"
+)]
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
@@ -78,18 +81,14 @@ pub(crate) use scenario_modules;
 
 const LAB_SOURCES: &[&str] = &[
     "activity_timeline.rs",
-    "channel_browser.rs",
     "chart_gallery.rs",
-    "collaboration_overview.rs",
-    "conflict_picker.rs",
     "dashboard.rs",
     "gallery.rs",
-    "identity_flow_demo.rs",
     "responsive_gallery.rs",
-    "widget_showcase.rs",
 ];
 const SHOT_SOURCES: &[&str] = &[
     "chart_gallery_shots.rs",
+    "content_shots.rs",
     "ctrl_k_palette.rs",
     "data_table.rs",
     "denied_state_shots.rs",
@@ -107,8 +106,8 @@ const SHOT_SOURCES: &[&str] = &[
     "text_shots.rs",
     "textinput_ext_shots.rs",
     "undo_controls_shots.rs",
-    "widget_showcase_snapshot.rs",
-    "widget_snapshot.rs",
+    "widget_states_shots.rs",
+    "window_chrome_shots.rs",
 ];
 const PERF_SOURCES: &[&str] = &[
     "dashboard_perf_bench.rs",
@@ -173,6 +172,13 @@ pub fn validate(surface: Surface, scenarios: &[Scenario]) -> Result<(), String> 
 pub fn fatal(message: impl std::fmt::Display) -> ! {
     eprintln!("{message}");
     std::process::exit(1);
+}
+
+/// The capture theme every `--shots` honours (`TILO_SHOTS_THEME`,
+/// `TILO_SHOTS_TEXT_SCALE`, …). An unknown theme name is fatal, never a
+/// silent dark shot.
+pub fn shot_theme() -> tilo_ui::theme::Theme {
+    tilo_ui::launch::shot_theme_from_env().unwrap_or_else(|error| fatal(error))
 }
 
 #[allow(
@@ -270,12 +276,17 @@ mod tests {
     const STANDALONE_ENTRYPOINTS: &[&str] = &[
         "block_editor_typing.rs",
         "card_composition_shots.rs",
+        "distinct_letters_shots.rs",
+        "distinct_letters_specimen.rs",
         "form_composition_shots.rs",
         "managed_history_probe.rs",
         "manual_composition_shots.rs",
+        "multiline_typing.rs",
         "native_file_picker.rs",
         "native_input_probe.rs",
+        "reading_face_shots.rs",
         "search_latency.rs",
+        "type_specimen_shots.rs",
         "windows_host.rs",
     ];
 

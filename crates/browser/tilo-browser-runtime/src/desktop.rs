@@ -31,15 +31,22 @@ use ui::widget::TileHost;
 /// else the built-in Scratch, so a runtime without apps still opens one.
 pub(crate) fn applications() -> Vec<&'static ApplicationDefinition> {
     let registered = ui::application::registry::applications();
-    if registered.is_empty() {
+    let mut applications = if registered.is_empty() {
         vec![crate::scratch::definition()]
     } else {
         registered
+    };
+    if !applications
+        .iter()
+        .any(|app| app.app_id == tilo_desktop::feedback::PACKAGE)
+    {
+        applications.push(tilo_desktop::feedback::definition());
     }
+    applications
 }
 
-/// An application the page can open by id, Scratch included: windows a
-/// desktop saved before keep their application.
+/// An application the page can open by id whose code is loaded, Scratch
+/// included: windows a desktop saved before keep their application.
 pub(crate) fn application(app: &str) -> Option<&'static ApplicationDefinition> {
     applications()
         .into_iter()
@@ -47,22 +54,45 @@ pub(crate) fn application(app: &str) -> Option<&'static ApplicationDefinition> {
         .find(|definition| definition.app_id == app)
 }
 
+/// Every application the page can open, as `(id, title)` in launcher
+/// order: those loaded ([`applications`]) and those whose code is fetched
+/// when they first open (`ui::application::registry::defer`).
+pub(crate) fn known_applications() -> Vec<(&'static str, &'static str)> {
+    let mut known = ui::application::registry::catalogue();
+    for definition in applications() {
+        if !known.iter().any(|(id, _)| *id == definition.app_id) {
+            known.push((definition.app_id, definition.title));
+        }
+    }
+    known
+}
+
+/// The title of an application the page can open by id, loaded or not.
+pub(crate) fn known_application(app: &str) -> Option<&'static str> {
+    let scratch = crate::scratch::definition();
+    known_applications()
+        .into_iter()
+        .chain(std::iter::once((scratch.app_id, scratch.title)))
+        .find_map(|(id, title)| (id == app).then_some(title))
+}
+
 /// What a group's new-tab control opens: Notes where the bundle has it,
 /// else the first application.
 const NEW_TAB_APP: &str = "so.tilo.notes";
 
 pub(crate) fn catalogue() -> Vec<Application> {
-    applications()
+    known_applications()
         .into_iter()
-        .map(|definition| Application {
-            id: definition.app_id.into(),
-            label: definition.title.into(),
+        .map(|(id, title)| Application {
+            id: id.into(),
+            label: title.into(),
         })
         .collect()
 }
 
 /// Everything a tab's component is prepared with.
 pub(crate) struct Inputs {
+    pub feedback: Option<tilo_desktop::feedback::transport::Startup>,
     pub owners: RecordOwners,
     pub views: Rc<InstanceViewStore>,
     pub device: String,
@@ -78,11 +108,14 @@ pub(crate) struct Inputs {
 /// State the mount and the tile source share.
 #[derive(Clone, Default)]
 pub(crate) struct Shared {
+    /// Trusted host custody, never configured from a launch URL or draft.
+    pub feedback: Rc<RefCell<Option<tilo_desktop::feedback::PrivateFeedback>>>,
     /// Every package's record owner opened so far, flushed with the mount.
     pub stores: Rc<RefCell<Vec<RecordStore>>>,
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     /// Set by any tab component's wake; the host relayouts before drawing.
     pub woken: Arc<AtomicBool>,
+    pub owner_wakes: ui::owner_wake::OwnerWakeQueue,
     /// The applications whose components woke the mount since it last
     /// looked, for the frame metrics.
     wakers: Arc<std::sync::Mutex<Vec<&'static str>>>,
@@ -90,9 +123,20 @@ pub(crate) struct Shared {
     records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
     /// A tab bound a record since the desktop was last saved.
     records_changed: Rc<Cell<bool>>,
-    /// Tabs bound to a record that could not open yet: a peer's desktop
-    /// named it before the record itself arrived.
+    /// Tabs that could not open yet: a peer's desktop named a record
+    /// before the record itself arrived, or the tab's application is still
+    /// loading.
     waiting: Rc<RefCell<std::collections::HashSet<TabId>>>,
+    /// Record ids of tabs whose application is not loaded yet: the record's
+    /// kind comes with the application, so they are bound once it is.
+    unbound: Rc<RefCell<HashMap<TabId, String>>>,
+    /// Applications whose code is being fetched.
+    loading: Rc<RefCell<std::collections::HashSet<&'static str>>>,
+    /// Applications whose code failed to load since their tabs last asked.
+    failed: Rc<RefCell<std::collections::HashSet<String>>>,
+    /// An application finished loading (or failed to) since the mount last
+    /// looked: its waiting tabs are built again.
+    arrived: Rc<Cell<bool>>,
     /// The windows showing another member's legacy windows, by tab.
     peer_windows: Rc<RefCell<HashMap<TabId, PeerWindow>>>,
     /// Legacy windows asked for and not opened yet, by key.
@@ -169,6 +213,11 @@ impl Shared {
             handle.rebuild(tab);
         }
         self.wake();
+    }
+
+    /// Whether an application finished loading since the last call.
+    pub fn take_arrived(&self) -> bool {
+        self.arrived.replace(false)
     }
 
     pub fn take_wake(&self) -> bool {
@@ -289,7 +338,7 @@ impl Shared {
         apps.retain(|node| {
             node.app
                 .as_deref()
-                .is_none_or(|package| application(package).is_none())
+                .is_none_or(|package| known_application(package).is_none())
         });
         *self.node_apps.borrow_mut() = apps;
     }
@@ -434,8 +483,27 @@ impl Tiles {
         let TileContent::LocalApp { app_id, .. } = &tab.tile else {
             return Err("This window has no application in the browser".into());
         };
+        if self.shared.failed.borrow_mut().remove(app_id.as_str()) {
+            return Err(format!(
+                "{} could not be loaded. Check the connection, then open it again.",
+                tab.title
+            ));
+        }
+        if ui::application::registry::is_deferred(app_id) {
+            self.load(app_id);
+            self.shared.waiting.borrow_mut().insert(tab.id);
+            return Err(format!("Opening {}…", tab.title));
+        }
         let definition = application(app_id)
             .ok_or_else(|| format!("{app_id} is not available in the browser"))?;
+        let unbound = self.shared.unbound.borrow_mut().remove(&tab.id);
+        if let Some(id) = unbound.as_deref().and_then(RecordId::parse) {
+            let checkout = RecordCheckout::new(id, definition.record_kind.clone());
+            self.shared.records.borrow_mut().insert(tab.id, checkout);
+        }
+        if definition.app_id == tilo_desktop::feedback::PACKAGE {
+            return self.private_feedback(tab.id);
+        }
         let store = self.store(definition)?;
         let saved = self.shared.records.borrow().get(&tab.id).cloned();
         let (target, named_new) = match saved {
@@ -446,7 +514,12 @@ impl Tiles {
                 },
                 None,
             ),
-            None if definition.keeps_room_record() => (definition.unsaved_target(&store), None),
+            None if definition.keeps_room_record() => (
+                definition
+                    .unsaved_target(&store)
+                    .map_err(|error| error.to_string())?,
+                None,
+            ),
             None => self.unbound_target(definition, &store, tab.id)?,
         };
         let restore = self
@@ -484,7 +557,7 @@ impl Tiles {
         let notify = Arc::clone(&self.notify);
         let app_id = definition.app_id;
         component
-            .mount(move |_| {
+            .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
                 woken.store(true, Ordering::Release);
                 let mut wakers = wakers
                     .lock()
@@ -510,6 +583,55 @@ impl Tiles {
 }
 
 impl Tiles {
+    /// Fetch a deferred application's code; its tabs are built again once
+    /// it is in, or show that it failed.
+    fn load(&self, app_id: &str) {
+        let Some((id, _)) = ui::application::registry::catalogue()
+            .into_iter()
+            .find(|(id, _)| *id == app_id)
+        else {
+            return;
+        };
+        if !self.shared.loading.borrow_mut().insert(id) {
+            return;
+        }
+        let shared = self.shared.clone();
+        let notify = Arc::clone(&self.notify);
+        wasm_bindgen_futures::spawn_local(async move {
+            let loaded = ui::application::registry::load(id).await.is_some();
+            shared.loading.borrow_mut().remove(id);
+            if !loaded {
+                shared.failed.borrow_mut().insert(id.to_owned());
+            }
+            shared.arrived.set(true);
+            shared.wake();
+            notify();
+        });
+    }
+
+    fn private_feedback(&self, instance: TabId) -> Result<AppComponent, String> {
+        let mut component = match self.shared.feedback.borrow().as_ref() {
+            Some(feedback) => feedback.prepare(&self.inputs.device, &self.inputs.author, instance),
+            None => tilo_desktop::feedback::unconfigured(
+                &self.inputs.device,
+                &self.inputs.author,
+                instance,
+            ),
+        }
+        .map_err(|error| error.to_string())?;
+        let woken = Arc::clone(&self.shared.woken);
+        let notify = Arc::clone(&self.notify);
+        component
+            .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
+                woken.store(true, Ordering::Release);
+                notify();
+            })
+            .map_err(|error| error.to_string())?;
+        // Its ephemeral draft owner never enters Shared.stores/records:
+        // neither replication nor desktop restore can publish raw text.
+        Ok(component)
+    }
+
     /// What a tab no record is bound to opens: the room's default record
     /// while no other window of the app shows it (the record a native
     /// launch into the room opens too), otherwise a new one. The second
@@ -583,8 +705,12 @@ impl TileSource for Tiles {
     }
 
     fn new_tab(&mut self, _: &Workspace, id: TabId) -> Option<Tab> {
-        let definition = application(NEW_TAB_APP).or_else(|| applications().into_iter().next())?;
-        Some(app_tab(id, definition))
+        let known = known_applications();
+        let (app, title) = known
+            .iter()
+            .find(|(app, _)| *app == NEW_TAB_APP)
+            .or_else(|| known.first())?;
+        Some(app_tab(id, app, title))
     }
 
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
@@ -620,15 +746,16 @@ impl TileSource for Tiles {
             self.shared.peer_windows.borrow_mut().insert(id, window);
             return Some(tab);
         }
-        Some(app_tab(id, application(app)?))
+        let title = known_application(app)?;
+        Some(app_tab(id, app, title))
     }
 
     fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
-        applications()
+        known_applications()
             .into_iter()
-            .map(|definition| tilo_desktop_search::providers::AppEntry {
-                id: definition.app_id.into(),
-                title: definition.title.into(),
+            .map(|(id, title)| tilo_desktop_search::providers::AppEntry {
+                id: id.into(),
+                title: title.into(),
                 category: None,
                 description: None,
                 unavailable: None,
@@ -638,13 +765,13 @@ impl TileSource for Tiles {
     }
 }
 
-fn app_tab(id: TabId, definition: &ApplicationDefinition) -> Tab {
+fn app_tab(id: TabId, app: &str, title: &str) -> Tab {
     Tab {
         id,
-        title: definition.title.into(),
+        title: title.into(),
         tile: TileContent::LocalApp {
-            app_id: definition.app_id.into(),
-            label: definition.title.into(),
+            app_id: app.into(),
+            label: title.into(),
             note: String::new(),
         },
     }
@@ -684,6 +811,7 @@ pub(crate) struct Persistence {
     saved_revision: Cell<u64>,
     records_changed: Rc<Cell<bool>>,
     records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
+    unbound: Rc<RefCell<HashMap<TabId, String>>>,
     /// Every change of this device's desktop, for Activity
     /// (`tilo_desktop_surface::history_log`).
     pub history: Rc<RefCell<AutoCommit>>,
@@ -722,7 +850,7 @@ impl Persistence {
         {
             return Ok(());
         }
-        let stored = stored_desktop(handle, &self.records.borrow());
+        let stored = stored_desktop(handle, &self.records.borrow(), &self.unbound.borrow());
         let value = serde_json::to_value(&stored).map_err(|error| error.to_string())?;
         let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
         self.store
@@ -733,7 +861,7 @@ impl Persistence {
             &mut history,
             &value,
             &self.author,
-            crate::history::now_seconds(),
+            ui::time::unix_now_i64(),
         ) {
             self.history_dirty.set(true);
         }
@@ -756,6 +884,7 @@ impl Persistence {
 fn stored_desktop(
     handle: &DesktopHandle,
     bindings: &HashMap<TabId, RecordCheckout>,
+    unbound: &HashMap<TabId, String>,
 ) -> StoredDesktop {
     handle.read(|tree| {
         let mut live = std::collections::HashSet::new();
@@ -770,6 +899,12 @@ fn stored_desktop(
             .iter()
             .filter(|(tab, _)| live.contains(tab))
             .map(|(tab, checkout)| (*tab, checkout.id.as_str().to_owned()))
+            .chain(
+                unbound
+                    .iter()
+                    .filter(|(tab, _)| live.contains(tab) && !bindings.contains_key(tab))
+                    .map(|(tab, record)| (*tab, record.clone())),
+            )
             .collect();
         records.sort_unstable();
         StoredDesktop {
@@ -781,7 +916,7 @@ fn stored_desktop(
 
 /// The desktop as peers share it: the tree and each tab's record.
 pub(crate) fn shared_value(handle: &DesktopHandle, shared: &Shared) -> serde_json::Value {
-    let mut desktop = stored_desktop(handle, &shared.records.borrow());
+    let mut desktop = stored_desktop(handle, &shared.records.borrow(), &shared.unbound.borrow());
     desktop.tree = handle.shared_tree();
     serde_json::to_value(desktop).unwrap_or(serde_json::Value::Null)
 }
@@ -802,8 +937,10 @@ pub(crate) fn apply_shared(
         return Err("a desktop needs a workspace".into());
     }
     {
+        let (bound, unbound) = stored_records(&desktop);
+        shared.unbound.borrow_mut().extend(unbound);
         let mut records = shared.records.borrow_mut();
-        for (tab, checkout) in stored_records(&desktop) {
+        for (tab, checkout) in bound {
             if records
                 .get(&tab)
                 .is_none_or(|bound| bound.id != checkout.id)
@@ -826,8 +963,11 @@ fn load_stored(store: &dyn DurableStore, key: &StorageKey) -> Option<StoredDeskt
 }
 
 /// The record bindings of a stored desktop, for the tabs whose application
-/// the page still registers.
-fn stored_records(desktop: &StoredDesktop) -> HashMap<TabId, RecordCheckout> {
+/// the page still registers: bound where the application is loaded, as
+/// record ids where it is not yet.
+fn stored_records(
+    desktop: &StoredDesktop,
+) -> (HashMap<TabId, RecordCheckout>, HashMap<TabId, String>) {
     let mut apps = HashMap::new();
     for workspace in &desktop.tree.workspaces {
         for strip in &workspace.strips {
@@ -840,18 +980,22 @@ fn stored_records(desktop: &StoredDesktop) -> HashMap<TabId, RecordCheckout> {
             }
         }
     }
-    desktop
-        .records
-        .iter()
-        .filter_map(|(tab, record)| {
-            let definition = application(apps.get(tab)?)?;
-            let id = RecordId::parse(record)?;
-            Some((
-                *tab,
-                RecordCheckout::new(id, definition.record_kind.clone()),
-            ))
-        })
-        .collect()
+    let mut bound = HashMap::new();
+    let mut unbound = HashMap::new();
+    for (tab, record) in &desktop.records {
+        let Some(app) = apps.get(tab) else { continue };
+        if let Some(definition) = application(app) {
+            if let Some(id) = RecordId::parse(record) {
+                bound.insert(
+                    *tab,
+                    RecordCheckout::new(id, definition.record_kind.clone()),
+                );
+            }
+        } else if known_application(app).is_some() {
+            unbound.insert(*tab, record.clone());
+        }
+    }
+    (bound, unbound)
 }
 
 /// Mount the room's desktop from the profile, or seed one: one workspace
@@ -861,7 +1005,7 @@ fn stored_records(desktop: &StoredDesktop) -> HashMap<TabId, RecordCheckout> {
 /// # Errors
 /// Refuses an application id the page does not register.
 pub(crate) fn mount(
-    inputs: Inputs,
+    mut inputs: Inputs,
     store: Rc<dyn DurableStore>,
     apps: Option<&[String]>,
     workspace_name: Option<&str>,
@@ -870,14 +1014,30 @@ pub(crate) fn mount(
     let key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
     let shared = Shared::default();
+    if let Some(startup) = inputs.feedback.take() {
+        if startup.reporter().principal()
+            != &tilo_actions::remote::CallerPrincipal::Person(inputs.author.clone())
+        {
+            return Err("feedback reporter does not own this profile".into());
+        }
+        startup
+            .install(Rc::clone(&store), &mut shared.feedback.borrow_mut())
+            .map_err(|error| error.to_string())?;
+    }
     let tree = if let Some(stored) = load_stored(store.as_ref(), &key) {
-        *shared.records.borrow_mut() = stored_records(&stored);
+        let (bound, unbound) = stored_records(&stored);
+        *shared.records.borrow_mut() = bound;
+        *shared.unbound.borrow_mut() = unbound;
         stored.tree
     } else {
-        let definitions: Vec<&'static ApplicationDefinition> = match apps {
+        let definitions: Vec<(&str, &'static str)> = match apps {
             Some(ids) => ids
                 .iter()
-                .map(|id| application(id).ok_or_else(|| format!("unsupported application {id}")))
+                .map(|id| {
+                    known_application(id)
+                        .map(|title| (id.as_str(), title))
+                        .ok_or_else(|| format!("unsupported application {id}"))
+                })
                 .collect::<Result<_, _>>()?,
             // A fresh desktop opens no window: its empty workspace shows the
             // launchpad, and every registered app is in search.
@@ -886,7 +1046,7 @@ pub(crate) fn mount(
         let mut minter = IdMinter::new(salt);
         let tabs = definitions
             .into_iter()
-            .map(|definition| app_tab(minter.mint(), definition))
+            .map(|(app, title)| app_tab(minter.mint(), app, title))
             .collect();
         let name = workspace_name
             .map(str::trim)
@@ -926,6 +1086,7 @@ pub(crate) fn mount(
         saved_revision: Cell::new(0),
         records_changed: Rc::clone(&shared.records_changed),
         records: Rc::clone(&shared.records),
+        unbound: Rc::clone(&shared.unbound),
         history: Rc::new(RefCell::new(history)),
         history_key,
         history_dirty: Cell::new(false),

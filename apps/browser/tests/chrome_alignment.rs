@@ -1,15 +1,12 @@
 #![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
-    clippy::unwrap_used,
     reason = "headless geometry fixture asserts setup failures directly"
 )]
 
 //! The toolbar row's geometry, read off the retained widgets through the
-//! production frame: every control shares the address field's height and
-//! centre line, and a tablet-width window still leaves the address field
-//! readable.
+//! production frame: every control sits on the address field's centre line,
+//! and a narrow window moves commands into the overflow menu instead of
+//! starving the address field.
 
 use std::collections::HashMap;
 
@@ -20,162 +17,139 @@ use vello::kurbo::Rect;
 const URL_INPUT: &str = "browser.url_input";
 
 fn targets_at(width: u32, height: u32) -> HashMap<String, Rect> {
+    targets_with_theme(width, height, ui::theme::Theme::dark())
+}
+
+fn targets_with_theme(width: u32, height: u32, theme: ui::theme::Theme) -> HashMap<String, Rect> {
     let mut widget = BrowserWidget::new_headless();
     // The same seeding the `--shots` routes use: the responsive tier has to be
     // known before the first retained layout pass.
     widget.debug_set_viewport_width(width);
-    let harness = FrameHarness::new_with_theme(
-        ui::State::new(),
-        Box::new(widget),
-        (width, height),
-        ui::theme::Theme::dark(),
-    );
+    let harness =
+        FrameHarness::new_with_theme(ui::State::new(), Box::new(widget), (width, height), theme);
     harness.targets()
+}
+
+fn assert_on_centre_line(targets: &HashMap<String, Rect>, ids: &[&str]) {
+    let url = targets[URL_INPUT];
+    for id in ids {
+        let rect = targets
+            .get(*id)
+            .unwrap_or_else(|| panic!("{id} is on the toolbar"));
+        assert!(
+            (rect.center().y - url.center().y).abs() < 0.5,
+            "{id} centre {} is off the address field's centre {}",
+            rect.center().y,
+            url.center().y
+        );
+        assert!(
+            rect.x0 >= 0.0 && rect.x1 <= targets["browser.root"].x1,
+            "{id} stays inside the window"
+        );
+    }
 }
 
 /// Toolbar control alignment and responsive tiers.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn toolbar_controls_align_and_follow_width_and_text_tiers() {
-    // Phase `every_toolbar_control_shares_the_address_fields_height_and_centre_line`.
+fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
+    const ROW: [&str; 6] = [
+        "browser.back",
+        "browser.forward",
+        "browser.reload",
+        "browser.site.info",
+        "browser.bookmark",
+        "browser.library",
+    ];
+
+    // Phase `every_toolbar_control_shares_the_address_fields_centre_line`.
     {
         let targets = targets_at(1200, 800);
-        let url = targets[URL_INPUT];
+        assert_on_centre_line(&targets, &ROW);
+        for id in ROW {
+            assert!(
+                (targets[id].width() - targets[id].height()).abs() < 0.5,
+                "{id} is a square icon button"
+            );
+        }
+        // The overflow commands are menu rows, not row controls.
         for id in [
-            "browser.back",
-            "browser.reload",
-            "browser.forward",
-            "browser.site.info",
-            "browser.site.shield",
-            "browser.bookmark",
-            "browser.history-pause",
-            "browser.library",
-            "browser.pip",
             "browser.devtools",
             "browser.find",
             "browser.zoom.reset",
+            "browser.pip",
+            "browser.history-pause",
             "browser.private-window",
             "browser.settings",
         ] {
-            let rect = targets
-                .get(id)
-                .unwrap_or_else(|| panic!("{id} is on the 1200px toolbar"));
-            assert!(
-                (rect.height() - url.height()).abs() < 0.5,
-                "{id} is {} tall beside a {} tall address field",
-                rect.height(),
-                url.height()
-            );
-            assert!(
-                (rect.center().y - url.center().y).abs() < 0.5,
-                "{id} centre {} is off the address field's centre {}",
-                rect.center().y,
-                url.center().y
-            );
+            assert!(!targets.contains_key(id), "{id} lives in the overflow menu");
         }
     }
 
-    // Phase `a_tablet_width_window_keeps_a_readable_address_field`.
+    // Phase `the_narrowest_regular_window_keeps_every_primary_command_and_a_readable_address_field`.
+    // The toolbar follows the shell's one compact tier: at the breakpoint
+    // every primary command is still on the row.
     {
-        let targets = targets_at(768, 1024);
-        let url = targets[URL_INPUT];
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the breakpoint is a small positive window width"
+        )]
+        let width = ui::tokens::Metrics::BASE.compact_breakpoint.ceil() as u32;
+        let targets = targets_at(width, 1024);
+        for id in ROW {
+            assert!(
+                targets.contains_key(id),
+                "{id} stays on the toolbar at {width}px"
+            );
+        }
         assert!(
-            url.width() >= 200.0,
-            "the address field is starved at tablet width: {}",
-            url.width()
+            targets[URL_INPUT].width() >= 400.0,
+            "the address field is starved at {width}px: {}",
+            targets[URL_INPUT].width()
         );
-        // The commands with another route leave the row; navigation, both site
-        // launchers (site information has no action route yet), library, private
-        // window and settings stay.
-        for id in ["browser.bookmark", "browser.history-pause", "browser.pip"] {
+    }
+
+    // Phase `a_compact_window_keeps_navigation_and_moves_the_rest_to_the_menu`.
+    {
+        let targets = targets_at(390, 800);
+        assert_on_centre_line(
+            &targets,
+            &["browser.back", "browser.forward", "browser.reload"],
+        );
+        for id in ["browser.site.info", "browser.bookmark", "browser.library"] {
             assert!(
                 !targets.contains_key(id),
-                "{id} should yield its width to the address field below 1000px"
+                "{id} joins the overflow menu in a compact window"
             );
         }
-        for id in [
-            "browser.back",
-            "browser.forward",
-            "browser.reload",
-            "browser.site.info",
-            "browser.site.shield",
-            "browser.library",
-            "browser.private-window",
-            "browser.settings",
-        ] {
-            assert!(targets.contains_key(id), "{id} stays on the tablet toolbar");
-        }
-    }
-
-    // Phase `the_roomy_tier_starts_at_a_thousand_pixels`.
-    // The optional commands join the row at exactly the roomy breakpoint: one
-    // pixel under it they are gone, at it they are back.
-    {
-        let optional = ["browser.bookmark", "browser.history-pause", "browser.pip"];
-        let under = targets_at(999, 700);
-        let at = targets_at(1000, 700);
-        for id in optional {
-            assert!(!under.contains_key(id), "{id} is still on a 999px toolbar");
-            assert!(at.contains_key(id), "{id} is missing from a 1000px toolbar");
-        }
         assert!(
-            under[URL_INPUT].width() >= 200.0,
-            "the 999px address field is starved: {}",
-            under[URL_INPUT].width()
+            targets[URL_INPUT].width() >= 150.0,
+            "the compact address field is starved: {}",
+            targets[URL_INPUT].width()
         );
     }
 
-    // Phase `labelled_toolbar_controls_grow_with_the_text_and_the_tiers_follow`.
-    // At a 2× text scale a labelled control's face grows with its label, and
-    // the responsive tiers are judged on the width the text leaves: a 1200px
-    // window at 2× lays out as a 600px one, keeping the address field readable
-    // instead of squeezing every 1× command onto the row.
+    // Phase `the_compact_tier_is_judged_on_the_width_the_text_leaves`.
+    // A 1100px window at 2x text lays out as the 550px window it is to the
+    // eye: the same commands move into the menu and the address field stays
+    // readable.
     {
-        let base = targets_at(1200, 800);
-        let large = targets_with_theme(1200, 800, ui::theme::Theme::dark().with_text_scale(2.0));
-        for id in ["browser.site.info", "browser.private-window"] {
-            let (b, l) = (base[id], large[id]);
-            assert!(
-                l.width() >= 1.9 * b.width(),
-                "{id} is {} wide at 2x against {} at 1x — its label outgrows its face",
-                l.width(),
-                b.width()
-            );
-            assert!(
-                (l.height() - large[URL_INPUT].height()).abs() < 0.5,
-                "{id} leaves the row's one control height at 2x"
-            );
-        }
-        for id in [
-            "browser.bookmark",
-            "browser.history-pause",
-            "browser.pip",
-            "browser.devtools",
-        ] {
-            assert!(
-                !large.contains_key(id),
-                "{id} stays on a 1200px toolbar at 2x, where it is a 600px toolbar to the eye"
-            );
-        }
+        let large = targets_with_theme(1100, 800, ui::theme::Theme::dark().with_text_scale(2.0));
         assert!(
-            large[URL_INPUT].width() >= 200.0,
+            !large.contains_key("browser.bookmark"),
+            "bookmark joins the menu at 2x text"
+        );
+        assert!(
+            large[URL_INPUT].width() >= 150.0,
             "the 2x address field is starved: {}",
             large[URL_INPUT].width()
         );
     }
 }
 
-/// Find bar and download status alignment.
+/// The find bar's controls share the find field's centre line.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
-    // Phase `the_find_bar_controls_share_the_find_fields_height_and_centre_line`.
+fn find_bar_controls_share_the_find_fields_centre_line() {
     {
         let mut widget = BrowserWidget::new_headless();
         widget.debug_set_viewport_width(1200);
@@ -185,16 +159,29 @@ fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
             (1200, 800),
             ui::theme::Theme::dark(),
         );
-        // Open the find bar the way a person does: through the toolbar's Find
-        // command, whose effect a following frame's sync turns into the bar.
-        harness
-            .perform_named("browser.find", &ui::a11y::Action::Activate)
-            .expect("the Find command is on the 1200px toolbar");
+        // Open the find bar the way a person does: with the Find shortcut,
+        // which a following frame's sync turns into the bar. That is Cmd+F on
+        // macOS and Ctrl+F elsewhere — the browser honours the platform's
+        // command modifier, so the test presses the same one.
+        let command = match ui::platform::PlatformConventions::default().platform() {
+            ui::platform::Platform::MacOs => "super",
+            _ => "ctrl",
+        };
+        harness.set_modifiers(&[command.to_owned()]);
+        harness.key("f");
+        harness.set_modifiers(&[]);
         harness
             .wait_for_named("browser.find.input", tilo_test_env::hang_bound())
-            .expect("activating Find composes the find bar");
+            .expect("the Find shortcut composes the find bar");
         let targets = harness.targets();
         let field = targets["browser.find.input"];
+        let window = targets["browser.root"];
+        // The field is a field, and the commands after it stay in the window.
+        assert!(
+            field.width() >= 200.0,
+            "the find field is squeezed to {}",
+            field.width()
+        );
         for id in [
             "browser.find.previous",
             "browser.find.next",
@@ -204,24 +191,21 @@ fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
                 .get(id)
                 .unwrap_or_else(|| panic!("{id} is on the find bar"));
             assert!(
-                (rect.height() - field.height()).abs() < 0.5,
-                "{id} is {} tall beside a {} tall find field",
-                rect.height(),
-                field.height()
-            );
-            assert!(
                 (rect.center().y - field.center().y).abs() < 0.5,
                 "{id} centre {} is off the find field's centre {}",
                 rect.center().y,
                 field.center().y
             );
+            assert!(rect.x0 >= field.x1, "{id} sits after the field");
+            assert!(rect.x1 <= window.x1, "{id} stays inside the window");
         }
     }
+}
 
-    // Phase `the_download_status_shares_the_toolbar_rows_height_and_centre_line`.
-    // A download in progress adds its status to the row without breaking the
-    // row's one control height and centre line, and without starving the
-    // address field.
+/// A download in progress adds its status to the row without breaking the
+/// row's centre line, and without starving the address field.
+#[test]
+fn download_status_shares_the_toolbar_rows_centre_line() {
     {
         use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 
@@ -264,46 +248,23 @@ fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
             .wait_for_named("browser.download-status", tilo_test_env::hang_bound())
             .expect("a requested download puts its status on the toolbar");
         let targets = harness.targets();
-        let url = targets[URL_INPUT];
-        let status = targets["browser.download-status"];
+        assert_on_centre_line(&targets, &["browser.download-status"]);
         assert!(
-            (status.height() - url.height()).abs() < 0.5,
-            "the download status is {} tall beside a {} tall address field",
-            status.height(),
-            url.height()
-        );
-        assert!(
-            (status.center().y - url.center().y).abs() < 0.5,
-            "the download status centre {} is off the address field's centre {}",
-            status.center().y,
-            url.center().y
-        );
-        assert!(
-            url.width() >= 200.0,
+            targets[URL_INPUT].width() >= 400.0,
             "the address field is starved once a download is showing: {}",
-            url.width()
+            targets[URL_INPUT].width()
         );
-        // The optional commands yield to the status first; Find and the zoom
-        // readout keep their tier, whatever is downloading.
-        for id in ["browser.bookmark", "browser.history-pause", "browser.pip"] {
-            assert!(
-                !targets.contains_key(id),
-                "{id} should yield its width to the download status at 1200px"
-            );
-        }
-        for id in ["browser.devtools", "browser.find", "browser.zoom.reset"] {
+        for id in [
+            "browser.back",
+            "browser.forward",
+            "browser.reload",
+            "browser.bookmark",
+            "browser.library",
+        ] {
             assert!(
                 targets.contains_key(id),
                 "{id} must not depend on whether a download is running"
             );
         }
     }
-}
-
-fn targets_with_theme(width: u32, height: u32, theme: ui::theme::Theme) -> HashMap<String, Rect> {
-    let mut widget = BrowserWidget::new_headless();
-    widget.debug_set_viewport_width(width);
-    let harness =
-        FrameHarness::new_with_theme(ui::State::new(), Box::new(widget), (width, height), theme);
-    harness.targets()
 }

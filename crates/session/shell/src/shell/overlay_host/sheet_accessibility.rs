@@ -262,6 +262,9 @@ impl ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> Option<bool> {
+        if target == "task-direction" {
+            return Some(self.room_activity.perform_task_direction_action(action));
+        }
         if crate::shell::portal_dialog::accessibility::is_sheet_target(target) {
             return Some(
                 self.portal_dialogs
@@ -293,7 +296,7 @@ impl ShellOverlayHost {
             };
             return Some(match action {
                 Action::ScrollIntoView => true,
-                _ => ui::widget::Widget::perform_action_at(picker, action, &keys, state, path),
+                _ => ui::widget::Widget::perform_action(picker, action, &keys, state, path),
             });
         }
         let rest = target.strip_prefix(WIFI_PASSWORD_PREFIX)?;

@@ -193,7 +193,15 @@ pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
 
 pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
     // A device-identity hero: the machine's name in the accent, the OS beneath.
-    let hero_block = hero(ui::icons::Icon::Monitor, &info.hostname, &info.pretty_name);
+    let hero_block = Box::new(
+        ui::widget::Column::new()
+            .with_no_padding()
+            .push(hero(ui::icons::Icon::Monitor, &info.hostname))
+            .push(Box::new(
+                ui::widget::Text::new(&info.pretty_name)
+                    .with_role(ui::tokens::typography::TextRole::Body),
+            )),
+    );
 
     let person = info
         .identity_name
@@ -222,7 +230,7 @@ pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
             Box::new(
                 Row::new()
                     .push(Box::new(cx.bind_invocation(
-                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label).content_sized(),
+                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label),
                         AboutEffect::BackUpIdentity,
                     )))
                     .push(Box::new(Spacer::new())),

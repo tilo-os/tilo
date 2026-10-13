@@ -17,6 +17,11 @@ path = "src/main.rs"
 [features]
 default = ["tls-fixture"]
 tls-fixture = []
+# Apple's SRP-6a sign-in client (`srp_apple`), for the iCloud sign-in in
+# account-custody. Consumers take it with `default-features = false`.
+srp = ["dep:crypto-bigint", "dep:pbkdf2"]
+# The server half of `srp_apple`, for test servers that impersonate Apple.
+srp-test-server = ["srp"]
 
 [dependencies]
 authenticode = { version = "0.6", features = ["object", "std"] }
@@ -27,6 +32,9 @@ authenticode-sha2 = { package = "sha2", version = "0.10" }
 base64.workspace = true
 cms = "0.2"
 const-oid = { version = "0.9", features = ["db"] }
+# Constant-time fixed-width Montgomery arithmetic for `srp_apple`, on the
+# rand_core 0.10 generation rsa 0.10 and iroh already lock.
+crypto-bigint = { version = "0.7", default-features = false, features = ["zeroize"], optional = true }
 der = { version = "0.7", features = ["alloc", "pem"] }
 ed25519-dalek.workspace = true
 # The crate's one randomness source: RSA key generation takes a rand_core
@@ -36,6 +44,8 @@ hex.workspace = true
 libc.workspace = true
 object = { version = "0.39", default-features = false, features = ["pe", "read_core", "unaligned"] }
 p256 = { version = "0.14", features = ["pem"] }
+# Apple's SRP password stretching (`srp_apple`), fixed by the protocol.
+pbkdf2 = { workspace = true, optional = true }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 # Only for its blinded RSA PKCS#1 signer (see `sign_rsa_pkcs1_ring`):
 # RustCrypto's private RSA operation is affected by RUSTSEC-2023-0071.

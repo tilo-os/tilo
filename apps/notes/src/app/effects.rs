@@ -15,9 +15,14 @@ type Cx = EffectCx<Notebook, NotesApp>;
 impl NotesApp {
     /// Answer `effect`, however it was invoked.
     pub(crate) fn answer_effect(&mut self, effect: NotesEffect, cx: &mut Cx) -> EffectAnswer {
-        let state = cx.live().get();
+        if effect == NotesEffect::InspectEditor {
+            let document = cx.document().ok_or("the editor document is unavailable")?;
+            return Ok(Effected::value(self.editor_observation(&document)));
+        }
+        let state = Workspace::of(cx.live().get(), &self.workspace);
         match effect {
-            NotesEffect::ImportMarkdown => Ok(Self::choose_markdown(cx)),
+            NotesEffect::InspectEditor => Err("the editor document is unavailable".into()),
+            NotesEffect::ImportMarkdownFile => Ok(Self::choose_markdown(cx)),
             NotesEffect::ImportMarkdownContent { title, body } => {
                 let title = title.trim();
                 let title = if title.is_empty() {
@@ -42,8 +47,17 @@ impl NotesApp {
             }
             NotesEffect::Back => self.step(ui::NavAction::Back, "no previous note"),
             NotesEffect::Forward => self.step(ui::NavAction::Forward, "no next note"),
-            NotesEffect::Open { page, block } => self
+            NotesEffect::OpenNote { page, block } => self
                 .open_block(&state, page, block)
+                .map(|()| Effected::done()),
+            NotesEffect::RevealBlockRange {
+                page,
+                block,
+                start,
+                end,
+                unit,
+            } => self
+                .open_block_range(&state, page, block, (start, end, &unit))
                 .map(|()| Effected::done()),
             NotesEffect::OpenTag { tag } => self.open_tag(&state, tag).map(|()| Effected::done()),
         }
@@ -76,11 +90,12 @@ impl NotesApp {
             tracing::warn!(?effect, "notes: this notebook is open to view only");
             return;
         };
+        // What acts on one note is offered on that note.
         match effect {
-            NotesEffect::ExportMarkdown { page }
-            | NotesEffect::InsertImage { page }
-            | NotesEffect::CopyLink { page } => {
-                dispatcher.effect_on(&actions::page_resource_id(*page), effect);
+            NotesEffect::CopyLink { page }
+            | NotesEffect::ExportMarkdown { page }
+            | NotesEffect::InsertImage { page } => {
+                dispatcher.effect_on(&crate::actions::page_resource_id(*page), effect);
             }
             _ => dispatcher.effect(effect),
         }
@@ -110,10 +125,46 @@ impl NotesApp {
         {
             return Err("the block no longer exists".into());
         }
-        self.open_note(page)?;
+        state.get(page).ok_or("the note no longer exists")?;
+        self.open_page(page);
+        self.pending_block_range = None;
         if let Some(block) = block {
             self.pending_block_reveal = Some((page, block));
         }
+        Ok(())
+    }
+
+    /// Validate offsets before navigation; select only once the same text is bound.
+    pub(super) fn open_block_range(
+        &mut self,
+        state: &Workspace,
+        page: PageId,
+        block: String,
+        range: (usize, usize, &str),
+    ) -> Result<(), String> {
+        let (start, end, unit) = range;
+        let text = &state
+            .bodies
+            .get(&page)
+            .and_then(|blocks| blocks.iter().find(|stored| stored.id == block))
+            .ok_or("the block no longer exists")?
+            .text;
+        if start > end {
+            return Err("backwards block range".into());
+        }
+        let offset = |at| match unit {
+            "Bytes" => (at <= text.len() && text.is_char_boundary(at)).then_some(at),
+            "Chars" => text
+                .char_indices()
+                .map(|(byte, _)| byte)
+                .chain(std::iter::once(text.len()))
+                .nth(at),
+            _ => None,
+        };
+        let start = offset(start).ok_or("block range unit or start is invalid")?;
+        let end = offset(end).ok_or("block range unit or end is invalid")?;
+        self.open_block(state, page, Some(block.clone()))?;
+        self.pending_block_range = Some((page, block, text.clone(), start, end));
         Ok(())
     }
 
@@ -207,15 +258,20 @@ impl NotesApp {
 
     /// Add `markdown` to the notebook as a note titled `title`, and show it.
     fn import_note(&mut self, title: &str, markdown: &str, cx: &Cx) -> Result<PageId, String> {
-        if let Err(error) = actions::check_markdown_import(markdown) {
+        if let Err(error) = crate::notebook::check_markdown_import(markdown) {
             self.import_failed(&error);
             return Err(error);
         }
         let (markdown, assets) = super::adopt_inline_images(markdown);
         let page = PageId::new_v4();
-        cx.apply(&actions::import_markdown_action(
-            page, title, &markdown, assets,
-        ));
+        cx.submit(
+            Notebook::IMPORT_MARKDOWN.with(crate::notebook::notebook::ImportMarkdown {
+                title: title.to_owned(),
+                markdown,
+                images: assets.into_iter().map(|(_, bytes)| bytes).collect(),
+                note: Some(crate::notebook::page_id(page)),
+            }),
+        );
         self.open_when_present(page);
         self.transfer_toasts.push(
             format!("Imported {title}"),
@@ -286,7 +342,7 @@ impl NotesApp {
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("Image")
                 .replace([']', '[', '(', ')'], " ");
-            cx.apply(&app.image_insertion(page, alt.trim(), file.bytes));
+            cx.submit(app.image_insertion(page, alt.trim(), file.bytes));
             app.bound_page = None;
             app.self_dirty = true;
             app.transfer_toasts
@@ -295,14 +351,14 @@ impl NotesApp {
         })
     }
 
-    /// The action adding image `bytes` to `page`, after the block the
+    /// The change adding image `bytes` to `page`, after the block the
     /// caret is in when the note is the one shown, else at its end.
     pub(super) fn image_insertion(
         &self,
         page: PageId,
         alt: &str,
         bytes: Vec<u8>,
-    ) -> actions::NotesAction {
+    ) -> ui::tilo_resource::Invoke<crate::notebook::Notebook> {
         let digest = blake3::hash(&bytes).to_hex().to_string();
         let after = (self.main.page_id() == Some(page))
             .then(|| {
@@ -319,7 +375,7 @@ impl NotesApp {
             Some(after) => tilo_document::RichTextAction::InsertParagraph { after, text },
             None => tilo_document::RichTextAction::AppendParagraph { text },
         };
-        actions::add_image_asset_action(page, bytes, edit)
+        actions::show_image(page, bytes, edit)
     }
 }
 

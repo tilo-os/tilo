@@ -4,15 +4,20 @@
 
 pub mod actions;
 pub mod applications;
+mod background_index;
 pub mod continuity;
 pub mod desktop_windows;
+pub mod file_picker;
 pub mod files;
 pub mod host_applications;
 pub mod live_app_actions;
 pub mod now_playing;
+pub mod permission_prompts;
 pub mod records;
 pub mod session_actions;
 pub mod shortcuts;
+pub(crate) mod task_review;
+pub mod terminal_device_shell;
 pub mod tray_items;
 pub mod unavailable_applications;
 

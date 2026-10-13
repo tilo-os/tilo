@@ -27,7 +27,7 @@ use ui::charts::{CartesianPlot, PlotDatum, PlotSeries, SeriesKind};
 | Dense weighted relationships | `ChordChart` |
 | Schedule, interval, reservation, or milestone | `RangeChart` |
 | Sequential conversion | `FunnelChart` |
-| Compact progress or threshold value | `RingGauge` / `BarGauge` |
+| Compact progress, a countdown or a threshold value | `ProgressRing` / `BarGauge` |
 
 `CartesianPlot` series may be mixed. It supports line, smooth line, step,
 straight/smooth/stepped area, scatter, bubble, bar and lollipop marks. `CategoryChart` supports grouped,
@@ -109,7 +109,7 @@ let plot = CartesianPlot::new(vec![latency])
         CartesianAnnotation::x_band("deploy", 1.25, 1.5, accent)
             .labelled("Deployment"),
     ])
-    .styled(style)
+    .with_style(style)
     .titled("Request latency")
     .with_height(320.0);
 ```
@@ -237,6 +237,10 @@ touch-first drill-downs, and externally labelled pies share the same widget
 without accepting one hard-coded overlay.
 Identical slice updates do not restart motion; `set_slices_immediate()`,
 `finish_animation()`, and `is_animating()` provide explicit lifecycle control.
+`PieChart::with_legend()` names every slice (swatch, label and share) beside
+the chart when there is room and under it otherwise; the wedges shrink to make
+room, so the legend never overlaps them. Prefer it to a legend painted beside
+the chart.
 
 ```rust
 # use tilo_ui as ui;
@@ -319,9 +323,9 @@ hand-rolling paths:
 |---|---|
 | `Chart::draw_styled` | Rolling line/area series with grid, header/legend and axis labels |
 | `Sparkline::paint` | One trend of `f32` or `f64` samples; `Sparkline::points` returns where each sample lands |
-| `RingGauge::draw_styled` / `BarGauge::draw_styled` | A fraction as a ring or labelled bar |
+| `ProgressRingFace::paint` / `BarGauge::draw_styled` | A fraction as a ring or labelled bar |
 | `BarGauge::draw_span` | A `from..=to` span on a track, e.g. a day's low–high on the week's range |
-| `FunctionPlane::paint_grid` | The pan/zoom grid, axes and 1-2-5 tick labels of a function plot |
+| `FunctionPlane::paint_grid` | The pan/zoom grid, axes and 1-2-5 tick labels of a function plot; labels are `Caption`, culled on collision and kept whole inside the canvas |
 
 `TrendStyle` chooses line width, a flat or gradient fill, straight or
 Catmull-Rom joins, per-sample markers and a leading dot on the newest sample;
@@ -345,15 +349,9 @@ optional color delegates it to the OS theme. Explicit data colors are useful
 when color has domain meaning; never copy surface or text colors out of a
 particular light/dark theme.
 
-Every chart accepts either `.styled(style)` or `.with_style(style)`, so both
-the chart-focused and toolkit-wide builder vocabularies are predictable. Most
-fixed-canvas charts expose `.with_height(...)`; `RangeChart` intentionally
-derives its height from row count and `RangeStyle::row_height`, keeping Gantt
+Every chart takes its style through `.with_style(style)`. Most fixed-canvas
+charts expose `.with_height(...)`; `RangeChart` intentionally derives its height from row count and `RangeStyle::row_height`, keeping Gantt
 rows readable as data changes.
-
-All chart widgets expose both `style()` and `style_mut()`. This makes live
-theme editors, compact-mode policies, and user preferences cheap to apply
-without replacing the retained widget or losing hover/selection identity.
 
 Tooltips, focus outlines, dim text, grids and surfaces always resolve from the
 current `Theme` during drawing. This keeps the same chart intentional in light,

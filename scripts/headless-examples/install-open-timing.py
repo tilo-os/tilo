@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """How long it takes to open an app this machine does not have.
 
-The demo claims installing is effortless. That is a claim about a
-duration, and a duration nobody had measured — so this measures it, on
-the same path the film uses, and prints a number that can be checked
-with a stopwatch against the recording.
+Installing an app from the palette is meant to feel effortless. That
+is a claim about a duration — so this measures it, on the real install
+path, and prints a number that can be checked with a stopwatch.
 
 What is timed
 -------------
@@ -45,8 +44,7 @@ the machine that gets filmed.
 What the network is
 -------------------
 Loopback. `serve-test-registry` binds `127.0.0.1` and serves a really
-packed, really signed `.tapp`, which is what happens on the day
-(`docs/demo-script.md` — a local registry is served on set). A run against
+packed, really signed `.tapp`. A run against
 a registry across the internet is a different measurement and this
 script does not pretend otherwise. Every run prints the conditions it
 measured under — payload size, filesystem, load average — alongside the
@@ -135,8 +133,8 @@ class Session:
         # measurement decision rather than tidiness. `/tmp` here is a
         # 16 GB tmpfs, so an install root under it unpacks 446 MB into
         # RAM and reports a verify-and-unpack time no disk can match.
-        # `scripts/demo/run.py` puts its session dirs under `--out`, on
-        # the filesystem the repo lives on, so this does too.
+        # Session dirs go under `--out`, on the filesystem the repo
+        # lives on.
         self.dir = root
         self.dir.mkdir(parents=True, exist_ok=True)
         # Only the sockets go somewhere short: AF_UNIX paths are capped
@@ -375,12 +373,12 @@ def measure_run(s: Session, timeout: float, shot: pathlib.Path | None) -> dict:
     # Open the palette in global scope — the only scope that offers an
     # app the machine does not have.
     s.modifiers(logo=True)
-    s.key("k")
+    s.key("Space")
     s.modifiers()
     time.sleep(0.5)
     pal = s.palette()
     if pal.get("visible") is not True:
-        raise Failure(f"Super+K did not open the palette: {pal}")
+        raise Failure(f"Super+Space did not open the palette: {pal}")
     # Let the cold catalogue cache fill before the name is finished.
     time.sleep(1.5)
     s.type_text(QUERY)
@@ -540,8 +538,7 @@ def filesystem_of(path: pathlib.Path) -> str:
     """The filesystem `path` lands on, longest mountpoint wins.
 
     Reported because it moves the answer: unpacking 446 MB onto a
-    tmpfs is a RAM write and reads a second faster than the disk the
-    demo machine actually has.
+    tmpfs is a RAM write and reads a second faster than a real disk.
     """
     best = ("", "unknown")
     try:
@@ -576,19 +573,19 @@ def main() -> int:
                    help="where logs and screenshots land")
     p.add_argument("--shell", type=pathlib.Path, default=None,
                    help="compositor binary (default: target/demo/shell, "
-                        "falling back to target/debug/shell — the same "
-                        "resolution scripts/demo/run.py does)")
+                        "falling back to target/debug/shell)")
     p.add_argument("--payload", type=pathlib.Path, default=None,
                    help="the word-processor binary to pack and serve "
-                        "(default: the one yc-demo.py serves)")
+                        "(default: the tree scripts/headless-examples/apps-live.sh "
+                        "assembles)")
     p.add_argument("--timeout", type=float, default=300.0,
                    help="seconds one install-and-open may take (default: 300)")
     p.add_argument("--keep", action="store_true",
                    help="leave session dirs behind")
     args = p.parse_args()
 
-    # `demo` first, then `debug`: the same order yc-demo.py resolves in,
-    # so this measures the binaries that get filmed.
+    # `demo` first, then `debug`: the optimised build is what a person
+    # actually waits on.
     def tool(name: str) -> pathlib.Path | None:
         for profile in ("demo", "debug"):
             path = REPO / "target" / profile / name

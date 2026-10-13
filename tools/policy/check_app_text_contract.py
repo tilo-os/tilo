@@ -15,6 +15,9 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import line_number  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 APPS = ROOT / "apps"
@@ -35,7 +38,7 @@ PRIVATE_SOURCE_PATTERNS = {
     "private font system": re.compile(r"\b(?:FontSystem|SwashCache)::new\s*\("),
     "raw Vello glyph emission": re.compile(r"\.draw_glyphs\s*\(|\bvello::Glyph\b"),
     "product font family literal": re.compile(
-        r'"Noto (?:Sans(?: Mono| Math)?|Serif)"'
+        r'"(?:Noto (?:Sans(?: Mono| Math)?|Serif)|New Computer Modern[^"]*)"'
     ),
 }
 
@@ -72,10 +75,6 @@ def dependency_tables(manifest: dict) -> list[dict]:
                 if isinstance(value, dict):
                     tables.append(value)
     return tables
-
-
-def line_number(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1
 
 
 def audit(root: Path = ROOT) -> tuple[list[Violation], int, int]:

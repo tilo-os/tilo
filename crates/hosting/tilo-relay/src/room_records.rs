@@ -49,10 +49,108 @@ pub struct RoomRecords {
     user: [u8; 32],
     signing_key: ed25519_dalek::SigningKey,
     metrics: std::sync::Arc<crate::metrics::Metrics>,
+    inflight: std::sync::Arc<Inflight>,
+}
+
+/// The host commits each workspace has queued that are not durable yet.
+/// A caller may queue a commit and wait for it later, off its own lock;
+/// whoever reads the workspace's retention meanwhile must still see it.
+#[derive(Default)]
+struct Inflight {
+    open: std::sync::Mutex<std::collections::HashMap<u64, Open>>,
+    settled: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct Open {
+    next: u64,
+    queued: std::collections::BTreeSet<u64>,
+}
+
+impl Inflight {
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Open>> {
+        self.open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn queue(self: &std::sync::Arc<Self>, workspace_id: u64) -> Ticket {
+        let mut open = self.lock();
+        let entry = open.entry(workspace_id).or_default();
+        let number = entry.next;
+        entry.next = entry.next.wrapping_add(1);
+        entry.queued.insert(number);
+        drop(open);
+        Ticket {
+            inflight: std::sync::Arc::clone(self),
+            workspace_id,
+            number,
+        }
+    }
+
+    /// Whether every commit queued for `workspace_id` before `next` is
+    /// durable (or abandoned).
+    fn settled_before(&self, workspace_id: u64, next: u64) -> bool {
+        self.lock()
+            .get(&workspace_id)
+            .is_none_or(|open| open.queued.first().is_none_or(|first| *first >= next))
+    }
+
+    /// Wait until every commit queued for `workspace_id` so far is durable.
+    async fn settle(&self, workspace_id: u64) {
+        let Some(next) = self.lock().get(&workspace_id).map(|open| open.next) else {
+            return;
+        };
+        loop {
+            let notified = self.settled.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.settled_before(workspace_id, next) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+/// One queued host commit, until it is durable or given up.
+struct Ticket {
+    inflight: std::sync::Arc<Inflight>,
+    workspace_id: u64,
+    number: u64,
+}
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        let mut open = self.inflight.lock();
+        if let Some(entry) = open.get_mut(&self.workspace_id) {
+            entry.queued.remove(&self.number);
+            if entry.queued.is_empty() {
+                open.remove(&self.workspace_id);
+            }
+        }
+        drop(open);
+        self.inflight.settled.notify_waiters();
+    }
+}
+
+/// A host commit holding its place in the workspace's order, not yet
+/// waited on: [`RoomRecords::retained`] waits for it until it is durable.
+pub(crate) struct RoomAdmission {
+    admission: crate::peer::HostAdmission,
+    _ticket: Ticket,
+}
+
+impl RoomAdmission {
+    /// Wait until the commit is durable and published; returns its host
+    /// order.
+    pub(crate) async fn durable(self) -> Result<u64, String> {
+        self.admission.durable().await
+    }
 }
 
 impl RoomRecords {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         workspaces: WorkspaceRegistry,
         device: [u8; 32],
         user: [u8; 32],
@@ -65,6 +163,7 @@ impl RoomRecords {
             user,
             signing_key,
             metrics,
+            inflight: std::sync::Arc::default(),
         }
     }
 
@@ -87,7 +186,8 @@ impl RoomRecords {
     }
 
     /// Every retained document body of `workspace_id`, checkpoints before
-    /// the deltas retained after them.
+    /// the deltas retained after them, including every host commit queued
+    /// before the call.
     ///
     /// # Errors
     ///
@@ -97,6 +197,7 @@ impl RoomRecords {
         reason = "the guard only lives for the lookup; the value kept is a clone"
     )]
     pub async fn retained(&self, workspace_id: u64) -> Result<Vec<RetainedBody>, String> {
+        self.inflight.settle(workspace_id).await;
         let ws = self
             .workspaces
             .lock()
@@ -132,6 +233,43 @@ impl RoomRecords {
             .collect())
     }
 
+    /// Bounded existing ciphertext for one channel, without changing retention.
+    #[cfg(feature = "agents")]
+    pub(crate) async fn view_channel(
+        &self,
+        workspace: u64,
+        channel: [u8; 32],
+        max_bytes: usize,
+    ) -> Result<Vec<RetainedBody>, String> {
+        self.inflight.settle(workspace).await;
+        let ws = self
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace)
+            .cloned()
+            .ok_or("the workspace is not hosted here")?;
+        let guard = ws.lock().await;
+        let encoded = guard
+            .store
+            .load_view_channel(&channel, max_bytes)
+            .map_err(|error| error.to_string())?;
+        drop(guard);
+        drop(ws);
+        encoded
+            .into_iter()
+            .map(|raw| {
+                let (author, payload) = crate::store::retained::payload(&raw, workspace)
+                    .ok_or("invalid retained source frame")?;
+                let body = match payload {
+                    CoeditPayload::Checkpoint { body, .. }
+                    | CoeditPayload::RetainedDelta { body, .. } => body,
+                };
+                Ok(RetainedBody { author, body })
+            })
+            .collect()
+    }
+
     /// Admit `commit` to `workspace_id` as this host's own change: ordered,
     /// retained, fanned out to every subscriber and queued for offline
     /// members. Returns its host order.
@@ -140,11 +278,26 @@ impl RoomRecords {
     ///
     /// Returns why the workspace is not hosted here or the change could not
     /// be persisted.
+    pub async fn commit(&self, workspace_id: u64, commit: HostCommit) -> Result<u64, String> {
+        self.enqueue(workspace_id, commit).await?.durable().await
+    }
+
+    /// [`Self::commit`] without waiting for durability: the commit holds its
+    /// place in the workspace's order once this returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the workspace is not hosted here or the change could not
+    /// be queued.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the guard only lives for the lookup; the value kept is a clone"
     )]
-    pub async fn commit(&self, workspace_id: u64, commit: HostCommit) -> Result<u64, String> {
+    pub(crate) async fn enqueue(
+        &self,
+        workspace_id: u64,
+        commit: HostCommit,
+    ) -> Result<RoomAdmission, String> {
         let payload = if commit.checkpoint {
             CoeditPayload::Checkpoint {
                 channel: commit.channel,
@@ -171,6 +324,13 @@ impl RoomRecords {
             delta,
             signature: [0; 64],
         };
-        crate::peer::admit_host_state(&ws, envelope, std::sync::Arc::clone(&self.metrics)).await
+        let ticket = self.inflight.queue(workspace_id);
+        let admission =
+            crate::peer::enqueue_host_state(&ws, envelope, std::sync::Arc::clone(&self.metrics))
+                .await?;
+        Ok(RoomAdmission {
+            admission,
+            _ticket: ticket,
+        })
     }
 }

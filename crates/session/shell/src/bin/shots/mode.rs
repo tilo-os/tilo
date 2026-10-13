@@ -70,6 +70,7 @@ pub mod offscreen {
         fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
             let scene = driver.paint();
             let path = self.dir.join(format!("{name}.png"));
+            self.renderer.set_backdrop(driver.take_backdrop());
             self.renderer.render_png(&scene, Color::TRANSPARENT, &path);
             if !self.first_paint_seen {
                 // Match the mark name the ui `App` emits at the same
@@ -157,6 +158,7 @@ pub mod offscreen {
                 .map_err(|e| format!("scene_setup({name}) failed: {e}"))?;
             let scene = driver.paint_settled();
             let path = dir.join(format!("{name}.png"));
+            renderer.set_backdrop(driver.take_backdrop());
             renderer.render_png(&scene, Color::TRANSPARENT, &path);
             if !first_paint_seen {
                 // Mark AFTER render_png returns so the metric captures
@@ -311,6 +313,7 @@ pub mod recording {
     impl RecordingSink<'_> {
         fn encode_current(&mut self, driver: &mut ShellDriver) -> Result<(), String> {
             let scene = driver.paint();
+            self.renderer.set_backdrop(driver.take_backdrop());
             let rgba = self.renderer.render_rgba_resilient(&scene);
             for _ in 0..self.frames_per_step {
                 let units = self

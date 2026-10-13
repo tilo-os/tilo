@@ -7,9 +7,6 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::float_cmp,
         reason = "test assertions; layout tests pin exact computed positions"
     )
@@ -23,11 +20,11 @@ pub mod chrome;
 pub mod collaborators;
 pub mod composition;
 pub mod emoji_picker;
+pub mod feedback;
 pub mod intents;
 pub mod launchpad;
 pub mod overview;
 pub mod overview_panel;
-pub mod peer_join_toast;
 pub mod records;
 pub mod resolver;
 pub mod search;

@@ -3,21 +3,25 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
+use crate::testing::{Dispatch, dispatch};
 use crate::widget::ResourceOperation;
 use crate::widget::TaffyTreeExt;
 use automerge::ReadDoc;
 
-/// The method names declared at the top level of the block that starts with
-/// `header` in `source`: lines indented by exactly four spaces that begin
-/// with `fn`. Comment lines (including doc examples) are skipped, and the
-/// block ends at the first unindented `}`.
+/// The method names declared at the top level of the block that opens with
+/// the line `header` in `source`: lines indented four spaces deeper than the
+/// header that begin with `fn`. Comment lines (including doc examples) are
+/// skipped, and the block ends at the header's closing `}`.
 fn block_methods(source: &str, header: &str) -> std::collections::BTreeSet<String> {
-    let mut lines = source.lines().skip_while(|line| !line.starts_with(header));
+    let indent = &header[..header.len() - header.trim_start().len()];
+    let close = format!("{indent}}}");
+    let method = format!("{indent}    fn ");
+    let mut lines = source.lines().skip_while(|line| *line != header);
     assert!(lines.next().is_some(), "`{header}` not found");
     lines
-        .take_while(|line| *line != "}")
+        .take_while(|line| *line != close)
         .filter(|line| !line.trim_start().starts_with("//"))
-        .filter_map(|line| line.strip_prefix("    fn "))
+        .filter_map(|line| line.strip_prefix(method.as_str()))
         .map(|rest| {
             rest.split(|c: char| !(c.is_alphanumeric() || c == '_'))
                 .next()
@@ -35,32 +39,32 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
     fn decorator_forwards_every_widget_method() {
         let widget = block_methods(include_str!("mod.rs"), "pub trait Widget {");
         let source = include_str!("decorator.rs");
-        let mut decorator = block_methods(source, "pub trait Decorator {");
+        // `decorator_trait!` turns each `ref`/`mut` line into both copies;
+        // the methods written out by hand must appear in both blocks.
+        let mut own = block_methods(source, "    trait {");
         for accessor in ["inner", "inner_mut"] {
-            assert!(decorator.remove(accessor), "Decorator::{accessor} missing");
+            assert!(own.remove(accessor), "Decorator::{accessor} missing");
         }
-        let blanket = block_methods(source, "impl<T: Decorator + 'static> Widget for T {");
+        let blanket_own = block_methods(source, "    impl {");
+        let mut forwarded = block_methods(source, "    ref {");
+        forwarded.extend(block_methods(source, "    mut {"));
         assert!(
             widget.len() > 20,
             "parsed only {} Widget methods",
             widget.len()
         );
+        let mut decorator = own.clone();
+        decorator.extend(forwarded.iter().cloned());
         let missing: Vec<_> = widget.difference(&decorator).collect();
         assert!(
             missing.is_empty(),
-            "add these Widget methods to `trait Decorator` (forwarding to the inner widget) \
+            "add these Widget methods to the `ref` or `mut` list of `decorator_trait!` \
          in widget/decorator.rs: {missing:?}"
         );
-        let unforwarded: Vec<_> = widget.difference(&blanket).collect();
-        assert!(
-            unforwarded.is_empty(),
-            "add these methods to `impl<T: Decorator> Widget for T` (calling `Decorator::m`) \
-         in widget/decorator.rs: {unforwarded:?}"
-        );
-        let stale: Vec<_> = decorator.symmetric_difference(&blanket).collect();
+        let stale: Vec<_> = own.symmetric_difference(&blanket_own).collect();
         assert!(
             stale.is_empty(),
-            "Decorator and its blanket impl disagree: {stale:?}"
+            "write these methods under both `trait` and `impl` of `decorator_trait!`: {stale:?}"
         );
     }
 
@@ -88,21 +92,10 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             &theme,
             &PresenceCtx::empty(),
         );
-        let mut handled = false;
-        let mut focus = None;
-        widget.handle_event(
-            &WindowEvent::Focused(true),
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(widget, &WindowEvent::Focused(true));
         assert_eq!(crate::resources::resources(widget, &doc).len(), 1);
         assert!(crate::widget::controls::take_control_invocation(widget).is_none());
         assert_eq!(
@@ -165,24 +158,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             inner: Recorder::new(&log),
             seen: 0,
         };
-        let mut taffy = TaffyTree::new();
-        let node = taffy.leaf_node(taffy::Style::default());
-        let (mut handled, mut focus) = (false, None);
-        Widget::handle_event(
-            &mut swallow,
-            &WindowEvent::Focused(true),
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        assert!(handled);
+        assert!(dispatch(&mut swallow, &WindowEvent::Focused(true)));
         assert_eq!(swallow.seen, 1);
         assert!(log.borrow().is_empty(), "the inner widget never saw it");
     }
@@ -204,21 +180,8 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             ) -> NodeId {
                 taffy.leaf_node(taffy::Style::default())
             }
-            fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-            fn draw(
-                &mut self,
-                _scene: &mut Scene,
-                _transform: Affine,
-                _text_renderer: &mut TextRenderer,
-                _theme: &Theme,
-                _presence: &PresenceCtx,
-            ) {
-            }
             fn name(&self) -> &'static str {
                 "Plain"
-            }
-            fn get_rect(&self) -> Rect {
-                Rect::ZERO
             }
             fn children(&self) -> Vec<&dyn Widget> {
                 self.children.iter().map(AsRef::as_ref).collect()
@@ -262,6 +225,7 @@ struct Recorder {
     log: Log,
     dirty: bool,
     rect: Rect,
+    physical: Option<super::super::PhysicalInput>,
 }
 
 impl Recorder {
@@ -270,6 +234,7 @@ impl Recorder {
             log: Rc::clone(log),
             dirty: false,
             rect: Rect::new(1.0, 2.0, 3.0, 4.0),
+            physical: None,
         }
     }
 
@@ -281,6 +246,10 @@ impl Recorder {
 use vello::kurbo::{Point, Rect};
 
 impl Widget for Recorder {
+    fn observe_physical_input(&mut self, input: super::super::PhysicalInput) {
+        self.physical = Some(input);
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources
@@ -297,9 +266,7 @@ impl Widget for Recorder {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.note("build_layout");
-        let node = taffy.leaf_node(taffy::Style::default());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {
@@ -399,4 +366,28 @@ fn start(widget: &mut dyn Widget, doc: &mut AutoCommit) -> Option<ResourceOperat
         &automerge::ROOT,
     )
     .expect("admission succeeds")
+}
+
+#[test]
+fn decorators_preserve_content_free_physical_feedback() {
+    use crate::widget::PhysicalInput;
+    let mut decorated = Named {
+        inner: Recorder::new(&Log::default()),
+    };
+    let key = winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
+    Widget::observe_physical_input(
+        &mut decorated,
+        PhysicalInput::Key {
+            key,
+            state: winit::event::ElementState::Pressed,
+        },
+    );
+    assert!(matches!(decorated.inner.physical, Some(PhysicalInput::Key {
+        key: observed, state: winit::event::ElementState::Pressed,
+    }) if observed == key));
+    Widget::observe_physical_input(&mut decorated, PhysicalInput::Focused(false));
+    assert!(matches!(
+        decorated.inner.physical,
+        Some(PhysicalInput::Focused(false))
+    ));
 }

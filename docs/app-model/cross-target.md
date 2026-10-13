@@ -35,10 +35,10 @@ launchers show it as unavailable there.
 | Notifications, location, camera, clipboard | `ui::notify`, `ui::location`, `tilo_capture`, `ui::clipboard` | each platform crate's backend | | |
 | The workspace mount, login and host name | `tilo_paths::workspace_root`, `tilo_paths::session` | | | none |
 | Owner-only files (keys, host-key stores) | `tilo_files::native::private` | mode 0600/0700 | same | refused |
-| This process's id, other processes' open files | `tilo_process` (`id`, `open_file_count`, `probe_process_table`) | std, `/proc` | std; no open-file count | `None` |
+| This process's id and open-file limit, other processes' open files | `tilo_process` (`id`, `raise_open_file_limit`, `open_file_count`, `probe_process_table`) | std, `setrlimit`, `/proc` | std, `setrlimit`; no open-file count | `None`; no limit |
 
-What a target cannot provide is an `Unsupported` error at run time and a row in
-the crate's `CAPABILITIES` table, never a missing item at compile time. Handle
+What a target cannot provide is an `Unsupported` error at run time and an entry
+in its `Feature`'s targets, never a missing item at compile time. Handle
 it: grey the control out and say why. Where no crate offers what you need, add
 it to the platform crate with a backend per target instead of branching in the
 app.
@@ -75,8 +75,7 @@ app in the same lane.
 
 Debug, capture and benchmark switches are environment variables named
 `TILO_UI_*` (`TILO_UI_DEBUG`, `TILO_UI_PRESENT`, …), read through
-`ui::env`. The pre-rename `QUICK_UI_*` names still work and warn once per
-variable. [`../performance-flags.md`](../performance-flags.md) lists the
+`ui::env`. [`../performance-flags.md`](../performance-flags.md) lists the
 rendering ones.
 
 ## Packaging

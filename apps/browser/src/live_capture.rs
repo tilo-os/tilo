@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 
 use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::webview::{FrameSlot, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
@@ -151,7 +150,6 @@ fn render_live_shot_to_png(
     let (w, h) = viewport;
     let theme = ui::launch::shot_theme_from_env()?;
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
     text_renderer.set_text_scale(theme.text_scale);
 
@@ -174,30 +172,26 @@ fn render_live_shot_to_png(
         widget.sync(&state.doc, &root_obj);
         let root = taffy.new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
+                size: Size::from_lengths(w as f32, h as f32),
                 ..Default::default()
             },
             &[child],
         )?;
-        {
-            let measure_map = node_map.clone();
-            let tr = &mut text_renderer;
-            taffy.compute_layout_with_measure(
+        let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: this capture exclusively owns the widget and the exact live
+        // layout tree; neither changes between admission and measurement.
+        unsafe {
+            bindings.rebuild(&widget, &taffy, root, &node_map);
+            ui::widget::compute_widget_layout(
+                &mut taffy,
                 root,
                 taffy::Size {
                     width: AvailableSpace::Definite(w as f32),
                     height: AvailableSpace::Definite(h as f32),
                 },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
+                &node_map,
+                &bindings,
+                &mut text_renderer,
             )?;
         }
         widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -242,15 +236,21 @@ fn render_live_shot_to_png(
                         continue;
                     }
                     let mut scene = Scene::new();
-                    widget.draw_with_presence(
+                    widget.draw(
                         &mut scene,
                         Affine::IDENTITY,
                         &mut text_renderer,
                         &theme,
                         &presence,
-                        &permission,
                     );
-                    return write_live_capture(&scene, viewport, out, pip_request.as_ref(), &page);
+                    return write_live_capture(
+                        &scene,
+                        viewport,
+                        out,
+                        pip_request.as_ref(),
+                        &page,
+                        &theme,
+                    );
                 }
             }
         }
@@ -267,13 +267,14 @@ fn write_live_capture(
     out: &std::path::Path,
     pip_request: Option<&ui::floating_surface::FloatingSurfaceRequest>,
     page: &PageState,
+    theme: &ui::theme::Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(scene, vello::peniko::Color::TRANSPARENT, out);
+    renderer.render_png(scene, theme.tokens.colors.surfaces.content, out);
     if let Some(request) = pip_request {
         let ui::floating_surface::FloatingSource::AppElement {
             element_id, region, ..
@@ -288,7 +289,7 @@ fn write_live_capture(
         let sidecar = std::path::PathBuf::from(format!("{}.pip.json", out.display()));
         std::fs::write(&sidecar, serde_json::to_vec_pretty(&protocol)?)?;
         println!(
-            "browser: live PiP selected {} at {:.0}×{:.0}; wrote {}",
+            "browser: live PiP selected {} at {:.0} by {:.0}; wrote {}",
             request.title,
             region.width(),
             region.height(),

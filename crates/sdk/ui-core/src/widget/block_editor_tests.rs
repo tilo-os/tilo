@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::{Dispatch, dispatch};
 use automerge::transaction::Transactable as _;
 
 #[test]
@@ -251,10 +252,14 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             for _ in 0..3 {
                 layout_image_editor(&mut editor, width, &mut renderer);
                 let preview = editor.image_preview_rects[0].unwrap();
-                assert!((preview.width() - f64::from(width)).abs() < 0.01);
+                // The image stands on the content edge: inside the line's
+                // text inset on both sides.
+                let inner = f64::from(width) - editor.handle_column() - 2.0 * editor.text_pad;
+                assert!((preview.width() - inner).abs() < 0.01, "{preview:?}");
                 assert!(
-                    (preview.height() - f64::from(width) * 100.0 / 160.0).abs() < 0.01,
-                    "image must occupy its full available width at its native aspect: {preview:?}"
+                    (preview.height() - inner * 100.0 / 160.0).abs() <= 0.5,
+                    "image must occupy its full available width at its native aspect \
+                     (within the layout's whole-pixel rounding): {preview:?}"
                 );
                 let source = editor.blocks[0].line.get_rect();
                 let following = editor.blocks[1].line.get_rect();
@@ -297,7 +302,9 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             source.height() > 28.0,
             "long image source must not be clipped to one line"
         );
-        assert!((preview.height() - 220.0).abs() < 0.01);
+        // The preview's edges snap to whole pixels below a fractional
+        // source block, so its height may differ by up to half a pixel.
+        assert!((preview.height() - 220.0).abs() <= 0.5, "{preview:?}");
         assert!(preview.y0 > source.y1);
     }
 
@@ -394,66 +401,27 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         let mut renderer = TextRenderer::new();
         layout_image_editor(&mut editor, 640.0, &mut renderer);
         editor.focus_block(0, CursorPlacement::Start);
-        let mut doc = AutoCommit::new();
-        let tree = TaffyTree::new();
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Character("x".into());
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let event = crate::synthetic_input::key_event(
+            Key::Character("x".into()),
+            Some("x".into()),
+            ElementState::Pressed,
         );
-        event.state = ElementState::Pressed;
-        event.text = Some("x".into());
-        let character = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        };
+        let character = crate::synthetic_input::keyboard_input(event);
         editor.begin_edit();
         for event in [character, WindowEvent::Ime(Ime::Commit("hidden".into()))] {
-            let mut handled = false;
-            editor.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: NodeId::new(0),
-                    taffy: &tree,
-                },
-            );
+            let handled = dispatch(&mut editor, &event);
             assert!(handled);
             assert_eq!(editor.blocks[0].text(), source);
         }
         assert!(editor.take_edit_ops().is_empty());
-        let mut key: KeyEvent = unsafe { std::mem::zeroed() };
-        key.logical_key = Key::Named(NamedKey::Backspace);
-        key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let key = crate::synthetic_input::key_event(
+            Key::Named(NamedKey::Backspace),
+            None,
+            ElementState::Pressed,
         );
-        key.state = ElementState::Pressed;
-        key.text = None;
-        let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: key,
-            is_synthetic: false,
-        };
+        let event = crate::synthetic_input::keyboard_input(key);
         editor.begin_edit();
-        editor.handle_event(
-            &event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut false,
-                focus_target: &mut None,
-                node_id: NodeId::new(0),
-                taffy: &tree,
-            },
-        );
+        dispatch(&mut editor, &event);
         assert_eq!(
             editor.blocks[0].text(),
             "",
@@ -603,7 +571,7 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
 fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     fn click_focuses_the_block_under_the_cursor() {
         use winit::dpi::PhysicalPosition;
-        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+        use winit::event::{ElementState, MouseButton, WindowEvent};
 
         let mut e = BlockEditor::new();
         e.set_blocks(vec![Block::paragraph("first"), Block::paragraph("second")]);
@@ -617,7 +585,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         e.focus_block(0, CursorPlacement::End);
         assert_eq!(e.focused, Some(0));
 
-        let dev: DeviceId = unsafe { std::mem::zeroed() };
+        let dev = winit::event::DeviceId::dummy();
         let moved = WindowEvent::CursorMoved {
             device_id: dev,
             position: PhysicalPosition::new(50.0, 30.0), // inside block 1
@@ -628,26 +596,8 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
             button: MouseButton::Left,
         };
 
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let mods = Modifiers::default();
         for ev in [&moved, &click] {
-            let mut handled = false;
-            let mut focus_target = None;
-            e.handle_event(
-                ev,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: NodeId::new(0),
-                    taffy: &taffy,
-                },
-            );
+            dispatch(&mut e, ev);
         }
         assert_eq!(
             e.focused,
@@ -657,25 +607,9 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     }
 
     fn ctrl_shift_arrow_extends_selection_across_blocks() {
-        use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-        use winit::keyboard::{
-            Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey,
-        };
+        use winit::keyboard::{ModifiersState, NamedKey};
 
-        fn arrow(named: NamedKey) -> WindowEvent {
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(named);
-            ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-            ev.location = KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            }
-        }
+        use crate::synthetic_input::named_key;
 
         let mut e = BlockEditor::new();
         e.set_blocks(vec![
@@ -685,31 +619,11 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         ]);
         e.focus_block(0, CursorPlacement::Byte(2)); // caret after "he"
 
-        let ctrl_shift = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
-
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let mut send = |e: &mut BlockEditor, ev: &WindowEvent| {
-            let mut handled = false;
-            let mut ft = None;
-            e.handle_event(
-                ev,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &ctrl_shift,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: NodeId::new(0),
-                    taffy: &taffy,
-                },
-            );
-        };
+        let mut ctrl_shift =
+            Dispatch::new().modifiers(ModifiersState::CONTROL | ModifiersState::SHIFT);
 
         // Down once: selects the tail of block 0 ("llo"), caret into block 1.
-        send(&mut e, &arrow(NamedKey::ArrowDown));
+        ctrl_shift.send(&mut e, &named_key(NamedKey::ArrowDown));
         assert_eq!(e.focused_index(), Some(1), "active end walked into block 1");
         assert_eq!(
             e.blocks()[0].line.selection_range(),
@@ -718,7 +632,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         );
 
         // Down again: block 1 fully selected too.
-        send(&mut e, &arrow(NamedKey::ArrowDown));
+        ctrl_shift.send(&mut e, &named_key(NamedKey::ArrowDown));
         assert_eq!(e.focused_index(), Some(2));
         assert_eq!(e.blocks()[0].line.selection_range(), Some((2, 5)));
         assert_eq!(
@@ -728,7 +642,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         );
 
         // Retreat up: block 2 cleared, block 1 selected to its end.
-        send(&mut e, &arrow(NamedKey::ArrowUp));
+        ctrl_shift.send(&mut e, &named_key(NamedKey::ArrowUp));
         assert_eq!(e.focused_index(), Some(1));
         assert_eq!(
             e.blocks()[2].line.selection_range(),
@@ -754,26 +668,8 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         editor.focus_block(0, CursorPlacement::End);
         editor.open_slash_menu_for_test();
 
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy = TaffyTree::<()>::new();
-        let mut send = |editor: &mut BlockEditor, event: &WindowEvent| {
-            let mut handled = false;
-            let mut focus_target = None;
-            editor.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: NodeId::new(0),
-                    taffy: &taffy,
-                },
-            );
-            assert!(handled);
+        let send = |editor: &mut BlockEditor, event: &WindowEvent| {
+            assert!(dispatch(editor, event));
         };
 
         send(
@@ -1068,47 +964,16 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
     }
 
     fn ctrl_a_then_typing_replaces_the_document_through_the_real_event_path() {
-        use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-        use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+        use winit::event::{ElementState, WindowEvent};
+        use winit::keyboard::{Key, ModifiersState};
 
         fn character(key: &str, text: Option<&str>) -> WindowEvent {
-            let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-            event.logical_key = Key::Character(key.into());
-            event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-            event.location = KeyLocation::Standard;
-            event.state = ElementState::Pressed;
-            event.repeat = false;
-            event.text = text.map(Into::into);
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event,
-                is_synthetic: false,
-            }
-        }
-
-        fn dispatch(
-            editor: &mut BlockEditor,
-            state: &mut AutoCommit,
-            taffy: &TaffyTree<()>,
-            event: &WindowEvent,
-            modifiers: Modifiers,
-        ) {
-            let mut handled = false;
-            let mut focus_target = None;
-            editor.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(state),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: NodeId::new(0),
-                    taffy,
-                },
+            let event = crate::synthetic_input::key_event(
+                Key::Character(key.into()),
+                text.map(Into::into),
+                ElementState::Pressed,
             );
-            assert!(handled);
+            crate::synthetic_input::keyboard_input(event)
         }
 
         let mut editor = BlockEditor::new();
@@ -1118,27 +983,18 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
             Block::paragraph("omega"),
         ]);
         editor.focus_block(1, CursorPlacement::Byte(3));
-        let mut state = AutoCommit::new();
-        let taffy = TaffyTree::new();
-        dispatch(
-            &mut editor,
-            &mut state,
-            &taffy,
-            &character("a", None),
-            Modifiers::from(ModifiersState::CONTROL),
+        assert!(
+            Dispatch::new()
+                .modifiers(ModifiersState::CONTROL)
+                .send(&mut editor, &character("a", None))
+                .handled
         );
         assert_eq!(
             editor.selected_text().as_deref(),
             Some("alpha\nmiddle\nomega")
         );
 
-        dispatch(
-            &mut editor,
-            &mut state,
-            &taffy,
-            &character("X", Some("X")),
-            Modifiers::default(),
-        );
+        assert!(dispatch(&mut editor, &character("X", Some("X"))));
         assert_eq!(editor.blocks().len(), 1);
         assert_eq!(editor.blocks()[0].text(), "X");
         assert_eq!(editor.blocks()[0].kind, BlockKind::Paragraph);
@@ -1219,11 +1075,13 @@ fn block_typography_scales_and_bands_each_kind() {
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![heading, paragraph, numbered]);
 
-        // H1 is the `x3l` step (32) — the heading sizes moved onto the type
-        // scale in the 2026-09-17 review; what this test guards is that the
-        // shaped size is that step once, then exactly doubled at 2×.
+        // H1 is the `LargeTitle` role; what this test guards is that the
+        // shaped size is that role's size once, then exactly doubled at 2×.
         let h1 = BlockKind::Heading(1).font_size();
-        assert_eq!(h1, crate::tokens::TypeScale::default().x3l);
+        assert_eq!(
+            h1,
+            Theme::dark().text(crate::tokens::TextRole::LargeTitle).size
+        );
         layout_and_draw_editor(&mut editor, &Theme::dark());
         assert_eq!(
             editor.blocks[0].line.inner().shaped_font_size_for_test(),
@@ -1231,7 +1089,7 @@ fn block_typography_scales_and_bands_each_kind() {
         );
         assert_eq!(
             editor.blocks[1].line.inner().shaped_font_size_for_test(),
-            Some(16.0)
+            Some(BlockKind::Paragraph.font_size())
         );
 
         let large = Theme::dark().with_text_scale(2.0);
@@ -1246,23 +1104,25 @@ fn block_typography_scales_and_bands_each_kind() {
                     .line
                     .inner()
                     .shaped_font_size_for_test(),
-                Some(32.0)
+                Some(BlockKind::Paragraph.font_size() * 2.0)
             );
         }
         let selection = editor.blocks[1].line.selection_rect(&large, 0, 6);
-        assert!((selection.height() - 40.0).abs() < 0.1);
+        assert!(
+            (selection.height() - f64::from(BlockKind::Paragraph.font_size()) * 2.5).abs() < 0.1
+        );
 
         let numbered_line = &editor.blocks[2].line;
         let line_rect = numbered_line.get_rect();
         let gutter = prefix_gutter_for(&editor.blocks[2].kind) * 2.0;
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(2.0);
-        let (label_width, _) = renderer.measure("1.", 16.0, None);
+        let (label_width, _) = renderer.measure("1.", BlockKind::Paragraph.font_size(), None);
         let origin = numbered_prefix_origin(
             line_rect,
             line_rect.x0 - gutter,
             f64::from(label_width),
-            16.0,
+            BlockKind::Paragraph.font_size(),
             2.0,
             large.tokens.metrics.icon_label_gap,
         );
@@ -1297,11 +1157,20 @@ fn block_typography_scales_and_bands_each_kind() {
 
         let checklist = editor.blocks[0].line.get_rect();
         let code = editor.blocks[1].line.get_rect();
+        // A row holds its text at its role's leading, scaled with the text.
+        let band = |kind: BlockKind| {
+            let style = crate::tokens::typography::stock().style(kind.text_role());
+            let leading = f64::from(style.line_height_px() / style.size).max(1.0);
+            f64::from(kind.font_size()) * 2.0 * leading - 0.01
+        };
         assert!(
-            checklist.height() >= 48.0,
-            "2× checklist text needs a 48px band"
+            checklist.height() >= band(BlockKind::Paragraph),
+            "2× checklist text needs its full scaled line band"
         );
-        assert!(code.height() >= 42.0, "2× code text needs a 42px band");
+        assert!(
+            code.height() >= band(BlockKind::CodeBlock { lang: None }),
+            "2× code text needs its full scaled line band"
+        );
         assert!(checklist.y1 <= code.y0, "scaled rows must not collide");
         assert!(code.x0 >= prefix_gutter_for(&editor.blocks[1].kind) * 2.0);
     }
@@ -2230,6 +2099,57 @@ fn action_bridge_emits_uuid_ops_at_unicode_boundaries() {
 }
 
 #[test]
+fn hidden_find_controls_do_not_extend_content_and_reopen_after_layout() {
+    fn layout(editor: &mut BlockEditor) -> f32 {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes = HashMap::new();
+        let node = editor.build_layout(&mut taffy, &theme, &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(640.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+            .expect("editor layout");
+        editor.apply_layout(&taffy, node, Point::ZERO);
+        taffy
+            .layout(node)
+            .expect("editor content")
+            .content_size
+            .height
+    }
+
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("Short draft")]);
+    let before = editor.to_markdown();
+    let hidden_height = layout(&mut editor);
+    assert!(
+        hidden_height < 44.0,
+        "hidden search must not add its overlay height"
+    );
+    let _ = editor.take_structure_dirty();
+    editor.open_find();
+    assert!(
+        editor.take_structure_dirty(),
+        "opening search rebuilds its layout"
+    );
+    assert!(layout(&mut editor) >= 44.0);
+    assert!(editor.find_field.get_rect().height() > 0.0);
+    editor.close_find();
+    assert!(
+        editor.take_structure_dirty(),
+        "closing search removes its layout"
+    );
+    let closed_height = layout(&mut editor);
+    assert!((closed_height - hidden_height).abs() < f32::EPSILON);
+    assert_eq!(editor.to_markdown(), before);
+    assert!(editor.take_edit_ops().is_empty());
+}
+
+#[test]
 fn find_matches_unicode_safely_and_navigates_without_editing() {
     fn find_ranges_are_case_insensitive_and_unicode_byte_safe() {
         assert_eq!(
@@ -2416,19 +2336,9 @@ fn focused_block_ime_repaints_after_an_idle_paint() {
     editor.set_focus(true);
     layout_and_draw_editor(&mut editor, &Theme::dark());
     editor.mark_drawn();
-    let mut handled = false;
-    editor.handle_event(
+    let handled = dispatch(
+        &mut editor,
         &WindowEvent::Ime(winit::event::Ime::Preedit("candidate".into(), Some((0, 9)))),
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
     );
     assert!(handled);
     assert!(
@@ -2573,4 +2483,36 @@ fn a_block_fields_suggestion_timer_wakes_the_editor() {
         Widget::next_wake_deadline(&editor),
         Some(now + crate::text_edit::SUGGESTION_SETTLE)
     );
+}
+
+#[test]
+fn deferred_input_document_tracks_identical_blocks_cross_block_selection_and_read_only() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("same"), Block::paragraph("same")]);
+    editor.set_focus(true);
+    editor.focus_block(0, CursorPlacement::End);
+    let first = editor.ime_edit_fingerprint(&[8; 32]).unwrap();
+    editor.focus_block(1, CursorPlacement::End);
+    let second = editor.ime_edit_fingerprint(&[8; 32]).unwrap();
+    assert_ne!(
+        first, second,
+        "identical paragraphs have distinct insertion targets"
+    );
+    editor.select_document_range(
+        DocumentPosition { block: 0, byte: 0 },
+        DocumentPosition { block: 1, byte: 4 },
+    );
+    let selection = editor.ime_edit_fingerprint(&[8; 32]).unwrap();
+    assert_ne!(selection, second);
+    editor.select_document_range(
+        DocumentPosition { block: 1, byte: 0 },
+        DocumentPosition { block: 1, byte: 4 },
+    );
+    assert_ne!(
+        editor.ime_edit_fingerprint(&[8; 32]).unwrap(),
+        selection,
+        "changing the document selection anchor must invalidate at an unchanged caret"
+    );
+    editor.set_read_only(true);
+    assert!(editor.ime_edit_fingerprint(&[8; 32]).is_none());
 }

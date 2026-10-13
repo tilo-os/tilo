@@ -24,7 +24,7 @@ pub struct InputEnvironment {
     /// read outside libinput and announce no device, so using one is what
     /// makes it available.
     controller: Option<ControllerFamily>,
-    /// Touch is the most recent of touch, keyboard and pointer input. False
+    /// Touch is the most recent of touch, keyboard and pointer activation. False
     /// until the screen is first touched.
     touch_is_current: bool,
     tablet_mode: bool,
@@ -50,6 +50,7 @@ impl InputEnvironment {
     /// it exists even when no backend announced it (a headless session's
     /// injected input). Returns whether anything changed.
     pub fn note_used(&mut self, modality: InputModality) -> bool {
+        let previous_touch = self.touch_is_current;
         let changed = self.last_used != Some(modality);
         self.last_used = Some(modality);
         match modality {
@@ -57,6 +58,14 @@ impl InputEnvironment {
             InputModality::Touch => self.touch_is_current = true,
             InputModality::Controller => {}
         }
+        changed || previous_touch != self.touch_is_current
+    }
+
+    /// Pointer hover updates pointer precision and help without dismissing
+    /// the keyboard requested by a touch. A click or scroll uses `note_used`.
+    pub fn note_pointer_motion(&mut self) -> bool {
+        let changed = self.last_used != Some(InputModality::Pointer);
+        self.last_used = Some(InputModality::Pointer);
         changed
     }
 
@@ -68,7 +77,7 @@ impl InputEnvironment {
     }
 
     /// Whether the screen was touched after the most recent key press or
-    /// pointer use (and touched at all).
+    /// pointer activation (and touched at all).
     pub fn touch_is_current(&self) -> bool {
         self.touch_is_current
     }
@@ -214,6 +223,23 @@ mod tests {
         assert_eq!(env.preferred_hint_modality(), InputModality::Keyboard);
         assert!(env.available.contains(InputDevice::Controller));
         assert_eq!(env.controller, Some(ControllerFamily::PlayStation));
+    }
+
+    #[test]
+    fn activation_after_hover_publishes_touch_policy_change() {
+        let mut input = InputEnvironment::default();
+        assert!(input.note_used(InputModality::Touch));
+        assert!(input.note_pointer_motion());
+        assert!(input.touch_is_current());
+        assert_eq!(input.last_used(), Some(InputModality::Pointer));
+        assert!(!input.note_pointer_motion());
+        assert!(input.note_used(InputModality::Pointer));
+        assert!(!input.touch_is_current());
+        assert!(!input.note_used(InputModality::Pointer));
+        assert!(input.note_used(InputModality::Touch));
+        assert!(input.note_pointer_motion());
+        assert!(input.note_used(InputModality::Keyboard));
+        assert!(!input.touch_is_current());
     }
 
     #[test]

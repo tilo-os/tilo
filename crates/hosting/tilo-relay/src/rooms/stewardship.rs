@@ -33,6 +33,10 @@ pub(super) struct Stewardship {
     stewards: HashMap<ChannelId, ChannelSteward>,
     /// Each device's newest request per channel, kept until it is a member.
     requests: HashMap<ChannelId, BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>>,
+    /// The frames of each channel's outbox already published. The host
+    /// retains them for whoever subscribes later and delivers them to
+    /// whoever is live, so each is published once.
+    published: HashMap<ChannelId, BTreeSet<[u8; 32]>>,
     delivery: u64,
 }
 
@@ -52,8 +56,45 @@ impl Stewardship {
             vault,
             stewards: HashMap::new(),
             requests: HashMap::new(),
+            published: HashMap::new(),
             delivery: 0,
         }
+    }
+
+    /// Read keys for an existing channel, recovering its sealed state if cold.
+    /// Missing channels are refused; this path never initializes a group.
+    #[cfg(feature = "agents")]
+    pub(super) fn existing_keys(
+        &mut self,
+        channel: ChannelId,
+    ) -> Result<channel_crypto::ChannelContentKeys, String> {
+        if !self.stewards.contains_key(&channel) {
+            if self.stewards.len() >= MAX_CHANNELS {
+                return Err("the room stewards too many channels".into());
+            }
+            let steward =
+                ChannelSteward::open_existing(&self.dir, channel, self.key.clone(), &self.vault)
+                    .map_err(|error| error.to_string())?;
+            self.stewards.insert(channel, steward);
+        }
+        self.stewards
+            .get(&channel)
+            .ok_or("the source channel is not open on this host")?
+            .content_keys()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Open `channel` for this device's own endpoint, which is about to
+    /// write its first record there: create its group when it has none yet,
+    /// with `allowed` admitted as they ask, exactly as the first member's
+    /// request would. Returns the governance messages to publish.
+    #[cfg(feature = "agents")]
+    pub(super) fn open_channel(
+        &mut self,
+        channel: ChannelId,
+        allowed: &BTreeSet<Ed25519PublicKey>,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        self.reconcile(channel, allowed)
     }
 
     fn device(&self) -> Ed25519PublicKey {
@@ -81,42 +122,60 @@ impl Stewardship {
             .ok_or_else(|| "steward missing".into())
     }
 
-    /// Take in `request`, which the authenticated device `author` sent:
-    /// admit it when governance lets it read the room. Returns the
-    /// governance messages to publish.
+    /// Take in `request`, which the authenticated device `author` sent, to
+    /// be admitted by the next [`Self::admit_pending`] when governance lets
+    /// it read the room.
     pub(super) fn request(
         &mut self,
         author: [u8; 32],
         request: MlsAccessRequestV1,
         allowed: &BTreeSet<Ed25519PublicKey>,
-    ) -> Result<Vec<NeighbourMsg>, String> {
+    ) -> Result<(), String> {
         if request.device.as_bytes() != &author || request.verify().is_err() {
             return Err("access request is not the sender's own".into());
         }
         if !allowed.contains(&request.device) {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        let channel = request.channel;
-        let pending = self.requests.entry(channel).or_default();
+        let pending = self.requests.entry(request.channel).or_default();
         if pending
             .get(&request.device)
-            .is_some_and(|known| known.issued_at > request.issued_at)
+            .is_none_or(|known| known.issued_at <= request.issued_at)
         {
-            return Ok(Vec::new());
+            pending.insert(request.device, request);
         }
-        pending.insert(request.device, request);
-        self.reconcile(channel, allowed)
+        Ok(())
     }
 
-    /// Record a member's acknowledgement of the frames it applied.
-    pub(super) fn acknowledge(&mut self, author: [u8; 32], ack: &MlsGovernanceAckV1) {
-        if ack.device.as_bytes() != &author {
-            return;
+    /// Admit every device asking for a channel, one change per channel for
+    /// all of them. Returns the governance messages to publish.
+    pub(super) fn admit_pending(
+        &mut self,
+        allowed: &BTreeSet<Ed25519PublicKey>,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let channels: Vec<ChannelId> = self.requests.keys().copied().collect();
+        let mut messages = Vec::new();
+        for channel in channels {
+            messages.extend(self.reconcile(channel, allowed)?);
         }
-        if let Some(steward) = self.stewards.get_mut(&ack.channel)
-            && let Err(error) = steward.acknowledge(ack)
-        {
-            tracing::debug!(room = %self.room, %error, "channel acknowledgement refused");
+        Ok(messages)
+    }
+
+    /// Record members' acknowledgements of the frames they applied, each
+    /// `(author, ack)` sent by the authenticated device `author`.
+    pub(super) fn acknowledge(&mut self, acks: Vec<([u8; 32], MlsGovernanceAckV1)>) {
+        let mut by_channel: HashMap<ChannelId, Vec<MlsGovernanceAckV1>> = HashMap::new();
+        for (author, ack) in acks {
+            if ack.device.as_bytes() == &author {
+                by_channel.entry(ack.channel).or_default().push(ack);
+            }
+        }
+        for (channel, acks) in by_channel {
+            if let Some(steward) = self.stewards.get_mut(&channel)
+                && let Err(error) = steward.acknowledge_all(&acks)
+            {
+                tracing::debug!(room = %self.room, %error, "channel acknowledgements refused");
+            }
         }
     }
 
@@ -153,10 +212,12 @@ impl Stewardship {
             .reconcile(&allowed, &pending, &self.vault)
             .map_err(|error| error.to_string())?;
         let members = steward.members();
-        let frames: Vec<_> = steward
-            .outbox()
-            .into_iter()
-            .flat_map(|outgoing| outgoing.frames)
+        let frames = steward.outbox_frames();
+        let journal: BTreeSet<[u8; 32]> = steward
+            .journal()
+            .frames()
+            .iter()
+            .filter_map(|frame| frame.digest().ok())
             .collect();
         // A request stays until its device is a member: one that could not
         // be admitted yet is retried on the next change.
@@ -167,20 +228,28 @@ impl Stewardship {
         if !waiting.is_empty() {
             self.requests.insert(channel, waiting);
         }
-        let mut seen = BTreeSet::new();
+        // The journal holds only genesis and the head, so what is
+        // remembered as published stays as small.
+        let mut published = self.published.remove(&channel).unwrap_or_default();
+        published.retain(|digest| journal.contains(digest));
         let mut messages = Vec::new();
         for frame in frames {
             let Ok(digest) = frame.digest() else { continue };
-            if !seen.insert(digest) {
+            if !published.insert(digest) {
                 continue;
             }
-            self.delivery = self.delivery.saturating_add(1);
-            messages.push(NeighbourMsg::MlsGovernance {
-                room: self.room.clone(),
-                frame: Box::new(frame),
-                delivery: self.delivery,
-            });
+            // An admission goes out twice: whole to the devices it adds,
+            // and without what they join from to everyone.
+            for frame in frame.into_deliveries().map_err(|error| error.to_string())? {
+                self.delivery = self.delivery.saturating_add(1);
+                messages.push(NeighbourMsg::MlsGovernance {
+                    room: self.room.clone(),
+                    frame: Box::new(frame),
+                    delivery: self.delivery,
+                });
+            }
         }
+        self.published.insert(channel, published);
         Ok(messages)
     }
 }

@@ -49,6 +49,7 @@ mod search;
 
 pub use history::HistorySource;
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
+pub use search::HostAction;
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -114,6 +115,9 @@ struct Shared {
     rebuild: Vec<TabId>,
     search_request: Option<search::SearchRequest>,
     search_open: bool,
+    /// What the host offers to do for the person, and what they chose.
+    host_actions: Vec<search::HostAction>,
+    host_choices: Vec<String>,
     /// Pan, scroll, history and activity state, as last presented.
     presentation: Presentation,
     /// Bumped whenever `presentation` changes. Unlike `revision` it never
@@ -436,6 +440,8 @@ impl DesktopSurface {
             rebuild: Vec::new(),
             search_request: None,
             search_open: false,
+            host_actions: Vec::new(),
+            host_choices: Vec::new(),
             presentation: Presentation::default(),
             presented: 0,
         }));
@@ -522,9 +528,20 @@ impl DesktopSurface {
         layer.tick();
         let mut open_app = layer.open_app.take();
         for outcome in layer.notifications().take_outcomes() {
-            let NotificationOutcome::Activated { notification, .. } = outcome else {
+            let NotificationOutcome::Activated {
+                notification,
+                action,
+            } = outcome
+            else {
                 continue;
             };
+            if let Some(choice) = action.as_deref().and_then(search::host_choice) {
+                self.shared
+                    .borrow_mut()
+                    .host_choices
+                    .push(choice.to_owned());
+                continue;
+            }
             if let Some(uri) = layer
                 .inbox
                 .as_mut()
@@ -784,10 +801,6 @@ impl DesktopSurface {
     }
 
     /// Mirror gestures the shown row performed into the tree.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered harvest, matching the shell overlay host's pass order"
-    )]
     fn harvest(&mut self) {
         let Some(strip_id) = self.shown else {
             return;
@@ -1189,11 +1202,6 @@ impl DesktopSurface {
         }
     }
 
-    /// The workspace shown, for hosts that label their chrome.
-    pub fn shown_workspace(&self) -> Option<WorkspaceId> {
-        Some(self.shared.borrow().tree.active_workspace()?.id)
-    }
-
     /// Whether the strip takes this wheel event. A trackpad's sideways swipe
     /// (pixel deltas) pans the strip under the fingers, 1:1 and through its
     /// momentum, when the strip can move that way; else it is the content's.
@@ -1589,30 +1597,20 @@ impl Widget for DesktopSurface {
             .chain(activity)
             .chain(notices)
             .collect();
-        let node = taffy.parent_node(
-            Style {
-                display: ui::taffy::Display::Flex,
-                flex_direction: ui::taffy::FlexDirection::Column,
-                size: ui::taffy::Size {
-                    width: ui::taffy::Dimension::percent(1.0),
-                    height: ui::taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            display: ui::taffy::Display::Flex,
+            flex_direction: ui::taffy::FlexDirection::Column,
+            size: ui::taffy::Size {
+                width: ui::taffy::Dimension::percent(1.0),
+                height: ui::taffy::Dimension::percent(1.0),
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let nodes = taffy.children(node).unwrap_or_default();
         let has_row = self.shown_row().is_some();
@@ -1699,25 +1697,7 @@ impl Widget for DesktopSurface {
         presence: &ui::presence::PresenceCtx,
     ) {
         if let Some(row) = self.shown_row() {
-            row.draw(scene, transform, text, theme, presence);
-        }
-        self.draw_overlays(scene, transform, text, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.rect) {
-            return;
-        }
-        if let Some(row) = self.shown_row() {
-            row.draw_with_presence(scene, transform, text, theme, presence, permissions);
+            ui::widget::draw_child(row, scene, transform, text, theme, presence);
         }
         self.draw_overlays(scene, transform, text, theme, presence);
     }
@@ -1779,6 +1759,26 @@ impl Widget for DesktopSurface {
             .chain(activity)
             .chain(notices)
             .collect()
+    }
+
+    fn visit_retained_components(
+        &mut self,
+        request: &mut ui::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), ui::bound_dispatch::BoundDispatchError> {
+        for row in self.rows.values_mut() {
+            request.visit(row)?;
+        }
+        // Retain original visible overlay callback reach after the retained rows.
+        if self.search.is_open() {
+            request.visit(self.search.palette_mut())?;
+        }
+        if let Some(activity) = &mut self.activity {
+            request.visit(activity)?;
+        }
+        if let Some(notices) = &mut self.notices {
+            request.visit(notices)?;
+        }
+        Ok(())
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {

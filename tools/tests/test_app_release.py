@@ -130,6 +130,20 @@ class AppReleaseTests(unittest.TestCase):
                 with self.subTest(path=path):
                     self.assertEqual(app_release.apps_from_changes([path], catalog), expected)
 
+    def test_app_manifest_changes_rebuild_the_shared_runtime_collection(self):
+        catalog = app_release.app_catalog(ROOT)
+        # Mail's new Contacts dependency changed the collection runtime while
+        # ordinary reverse-dependency selection chose only four apps. Reusing
+        # the old tapps then failed the production runtime-root check.
+        self.assertEqual(
+            app_release.apps_from_changes(["apps/mail/Cargo.toml"], catalog),
+            sorted(catalog),
+        )
+        self.assertEqual(
+            app_release.apps_from_changes(["apps/mail/src/app.rs"], catalog),
+            ["mail"],
+        )
+
     def test_direct_changes_select_exactly_their_packaging_closure(self):
         with self.subTest(phase='direct app change does not select fleet'):
             self.assertEqual(
@@ -141,7 +155,10 @@ class AppReleaseTests(unittest.TestCase):
         with self.subTest(phase='actual packaging closure inputs never silently select zero'):
             inputs = {
                 "tools/ci/rustc-thin-app-wrapper.sh": "binary",
+                "tools/ci/runtime-dylib-lazy-link.py": "binary",
                 "os/scripts/bake-runtime-bundle.sh": "packaging",
+                "os/scripts/collect-runtime-dependencies.py": "packaging",
+                "os/scripts/verify-runtime-bundle-closure.sh": "verification",
                 "os/scripts/verify-elf-hardening.sh": "verification",
                 "os/Containerfile.builder": "binary",
                 "os/external-assets/github-assets.tsv": "binary",
@@ -247,6 +264,17 @@ class AppReleaseTests(unittest.TestCase):
                     self.assertEqual([path], app_release.input_classification([path], metadata, root)[kind])
                 self.assertEqual(sorted(catalog), app_release.apps_from_changes(
                     ['crates/deleted-owner/src/lib.rs'], catalog, metadata, root))
+                # A runtime engine is signed into the runtime bundle:
+                # changing it changes the runtime every app names, not only
+                # the one app that loads it.
+                engine = root / 'crates/runtime/engines/typst/Cargo.toml'
+                engine.parent.mkdir(parents=True)
+                engine.write_text('[package]\nname = "tilo-typst-engine"\n')
+                metadata['packages'].append(package('tilo-typst-engine', 'crates/runtime/engines/typst'))
+                self.assertEqual({'tilo-typst-engine'}, app_release.runtime_engines(root))
+                self.assertEqual(sorted(catalog), app_release.apps_from_changes(
+                    ['crates/runtime/engines/typst/src/lib.rs'], catalog, metadata, root))
+                metadata['packages'].pop()
                 # A shared dependency can invalidate packaging tools AND app code;
                 # do not label that as packaging-only for a future reuse worker.
                 metadata['packages'][-2]['dependencies'] = [{'path': str(root / 'crates/format')}]

@@ -5,7 +5,7 @@
 //! timezone juggling, no `Local` reads (the live app's "today" is read
 //! once at construction; tests pin a fixed anchor for determinism).
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime};
 
 /// 6×7 = 42 dates covering the month that `anchor` falls in, Monday
 /// first, including the spill-in days from the previous month and the
@@ -59,52 +59,24 @@ pub(crate) fn month_title_short(anchor: NaiveDate) -> String {
     format!("{} {}", month_abbr(anchor.month()), anchor.year())
 }
 
-/// Full English month name. `m` is expected to be `1..=12`; out-of-range
-/// values clamp to the nearest end rather than panicking.
-pub fn month_name(m: u32) -> &'static str {
-    const NAMES: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    NAMES
-        .get(m.saturating_sub(1) as usize)
-        .copied()
-        .unwrap_or("January")
+/// Full English month name for a 1-based month.
+fn month_name(m: u32) -> &'static str {
+    ui::format::month_name(m.saturating_sub(1) as usize)
 }
 
-/// First three characters of a month name — every entry in [`month_name`]'s
-/// table is a static ASCII string of at least three characters, so this is
-/// really infallible, but `.get()` still keeps the compiler honest about it.
+/// Three-letter month name for a 1-based month.
 fn month_abbr(m: u32) -> &'static str {
-    let name = month_name(m);
-    name.get(..3).unwrap_or(name)
+    ui::format::month_abbrev(m.saturating_sub(1) as usize)
 }
-
-/// Three-letter weekday, Monday-indexed columns.
-pub const WEEKDAY_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-pub const WEEKDAY_NARROW: [&str; 7] = ["M", "T", "W", "T", "F", "S", "S"];
 
 /// Three-letter weekday abbreviation for `date`'s day of week.
-fn weekday_short(date: NaiveDate) -> &'static str {
-    WEEKDAY_SHORT
-        .get(date.weekday().num_days_from_monday() as usize)
-        .copied()
-        .unwrap_or("")
+pub(crate) fn weekday_short(date: NaiveDate) -> &'static str {
+    ui::format::weekday_abbrev(date.weekday().num_days_from_sunday() as usize)
 }
 
-/// "9:00", "14:30" — 24-hour, no leading zero on the hour.
+/// "14:30" or "2:30 PM", as the person reads clocks.
 pub fn fmt_time(dt: &NaiveDateTime) -> String {
-    format!("{}:{:02}", dt.hour(), dt.minute())
+    ui::clock::time_of_day(dt)
 }
 
 /// "Mon 15 Jun"
@@ -147,10 +119,10 @@ pub fn week_range_short(start: NaiveDate, end: NaiveDate) -> String {
 /// A human "relative" label for a due date against `today`.
 pub fn relative_label(due: NaiveDate, today: NaiveDate) -> String {
     let d = (due - today).num_days();
+    if let Some(near) = ui::format::near_day(d) {
+        return near;
+    }
     match d {
-        0 => "Today".into(),
-        1 => "Tomorrow".into(),
-        -1 => "Yesterday".into(),
         2..=6 => weekday_short(due).into(),
         _ if d < 0 => format!("{} d overdue", -d),
         _ => fmt_day_long(due),

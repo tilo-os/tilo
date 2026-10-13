@@ -27,21 +27,13 @@
 //! an invocation of the agent's transform actions ([`AGENT_APP_ID`],
 //! [`AGENT_TRANSFORM_KIND`]), granted, confirmed and recorded like any other.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod catalog;
 pub mod check;
+pub mod dispatch;
 pub mod grant;
 pub mod path;
+pub mod program;
+pub mod requirements;
 pub mod run;
 pub mod shortcut;
 mod template;
@@ -55,18 +47,18 @@ pub use catalog::{
 };
 pub use check::{
     BindingOption, CheckError, CheckErrorKind, NoShortcuts, ShortcutResolver, binding_options,
-    check, values_at,
+    check, check_bot, values_at,
 };
-pub use grant::{grant_permits, required_verb};
+pub use grant::{StepGrant, action_rule, grant_answer, step_node};
 pub use path::StepPath;
 pub use run::{
     AskRequest, ConfirmationRequest, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest,
-    RunTrigger, StepFailure, StepRecord, StepStatus, invocation_id, run,
+    RunTrigger, STEP_FACET, StepFailure, StepRecord, StepStatus, invocation_id, run,
 };
 pub use shortcut::{
-    AiTransform, Binding, CatchUp, Condition, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE,
-    FocusTransition, Schedule, ScheduleClaim, Selector, Shortcut, Step, StepKind, TimeOfDay,
-    TriggerSpec, UnattendedConsent, Weekday,
+    ActorFilter, AiTransform, Binding, CatchUp, Condition, EVENT_INPUT, FOCUS_DO_NOT_DISTURB,
+    FOCUS_SCHEDULE, FocusTransition, Schedule, ScheduleClaim, Selector, Shortcut, Step, StepKind,
+    TimeOfDay, TriggerSpec, Weekday,
 };
 
 /// Application that publishes shortcuts as runnable actions.

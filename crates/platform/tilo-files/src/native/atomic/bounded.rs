@@ -21,17 +21,13 @@ use std::{ffi::OsStr, fs::File, io, os::unix::ffi::OsStrExt};
 pub struct BoundedOwnerDirectory {
     pub(crate) directory: StorageDirectory,
 }
-/// Refusal retains the original directory handle and its native error.
+/// Why a directory was refused: its native error.
 pub struct AdmissionError {
     source: io::Error,
-    directory: StorageDirectory,
 }
 impl AdmissionError {
     pub fn io_error(&self) -> &io::Error {
         &self.source
-    }
-    pub fn into_directory(self) -> StorageDirectory {
-        self.directory
     }
 }
 impl std::fmt::Debug for AdmissionError {
@@ -46,12 +42,12 @@ impl BoundedOwnerDirectory {
     ///
     /// # Errors
     ///
-    /// Returns an [`AdmissionError`] retaining `directory` when its current
-    /// privacy profile is not a supported bounded owner-only profile.
+    /// Returns an [`AdmissionError`] when the directory's current privacy
+    /// profile is not a supported bounded owner-only profile.
     pub fn admit(directory: StorageDirectory) -> Result<Self, AdmissionError> {
         match directory.inner.validate_bounded() {
             Ok(()) => Ok(Self { directory }),
-            Err(source) => Err(AdmissionError { source, directory }),
+            Err(source) => Err(AdmissionError { source }),
         }
     }
     /// Query the retained directory's identity.
@@ -102,9 +98,11 @@ impl BoundedOwnerDirectory {
         )
     }
 }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod linux_tests;
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 mod tests;
 
 impl BoundedOwnerDirectory {

@@ -17,15 +17,15 @@ use tilo_actions::{
 use zeroize::Zeroizing;
 
 use super::{
-    FILESYSTEMS, InstallMethod, InstallState, InstallerApp, STEP_LABELS, Step, VerifiedBootState,
-    clear_secret_buffer, local_text, prev_step, secret_copy, step_index, valid_full_name,
-    valid_hostname, valid_locale, valid_timezone_name, valid_username, validate_passwords,
-    validate_startup_secret_for,
+    CODECS_DESCRIPTION, FILESYSTEMS, InstallMethod, InstallState, InstallerApp, STEP_LABELS, Step,
+    VerifiedBootState, clear_secret_buffer, local_text, prev_step, secret_copy, step_index,
+    valid_full_name, valid_hostname, valid_locale, valid_timezone_name, valid_username,
+    validate_passwords, validate_startup_secret_for,
 };
 use crate::install::PowerAction;
 use crate::layouts;
 use crate::operation::{
-    ACCOUNT, KEYBOARD, NETWORK, OPERATION_TYPE, OPTIONS, Operation, POWER, RECOVERY, REVIEW,
+    ACCOUNT, KEYBOARD, MEDIA, NETWORK, OPERATION_TYPE, OPTIONS, Operation, POWER, RECOVERY, REVIEW,
     SESSION, STORAGE, disk_resource, region_resource,
 };
 
@@ -181,6 +181,7 @@ impl InstallerApp {
             .with_child(self.storage_resource())
             .with_child(self.account_resource())
             .with_child(self.options_resource())
+            .with_child(self.media_resource())
             .with_child(self.review_resource());
         if let Some(recovery) = self.recovery_resource() {
             root = root.with_child(recovery);
@@ -611,15 +612,6 @@ impl InstallerApp {
                 on_step.clone(),
             ))
             .with_action(gate(
-                toggle(
-                    "set-media-codecs",
-                    "Install media codecs",
-                    "Download RPM Fusion and Cisco codecs once the new system is online",
-                    |enabled| Operation::SetMediaCodecs { enabled },
-                ),
-                on_step.clone(),
-            ))
-            .with_action(gate(
                 typed(
                     "set-hostname",
                     "Set hostname",
@@ -640,7 +632,7 @@ impl InstallerApp {
                     "Choose language and locale",
                     vec![
                         ActionParam::required("locale", ParamType::Text, "Language and locale")
-                            .with_choices(crate::locales::list()),
+                            .with_choices(install_profile_model::locales()),
                     ],
                     |args| Operation::SetLocale {
                         locale: args.text("locale").unwrap_or_default().to_owned(),
@@ -661,6 +653,31 @@ impl InstallerApp {
                     },
                 ),
                 on_step,
+            ))
+    }
+
+    fn media_resource(&self) -> Resource {
+        Resource::new(MEDIA, "installer.media", "More video and audio formats")
+            .with_presentation(ResourcePresentation {
+                detail: Some(
+                    if self.codecs {
+                        "chosen: installed once the new system is online"
+                    } else {
+                        "not chosen"
+                    }
+                    .to_owned(),
+                ),
+                ..ResourcePresentation::default()
+            })
+            .with_action(gate(
+                toggle(
+                    "set-media-codecs",
+                    "Install media codecs",
+                    CODECS_DESCRIPTION,
+                    |enabled| Operation::SetMediaCodecs { enabled },
+                )
+                .with_description(CODECS_DESCRIPTION),
+                self.off_step(Step::Media),
             ))
     }
 
@@ -1145,7 +1162,7 @@ impl InstallerApp {
                 done()
             }
             Operation::SetMediaCodecs { enabled } => {
-                self.require_step(Step::Options)?;
+                self.require_step(Step::Media)?;
                 self.codecs = enabled;
                 self.dirty_structure = true;
                 done()

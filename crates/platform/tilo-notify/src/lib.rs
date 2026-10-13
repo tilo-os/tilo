@@ -2,9 +2,6 @@
     test,
     allow(
         clippy::disallowed_methods,
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -18,7 +15,7 @@
 //!
 //! | Target | Backend |
 //! |---|---|
-//! | Linux | the notification portal (which the Tilo shell implements), else `org.freedesktop.Notifications` |
+//! | Linux | the notification portal, else `org.freedesktop.Notifications`; Tilo's service also owns durable deadlines |
 //! | macOS | `UNUserNotificationCenter`, which needs the app bundle's identifier: an unbundled binary has none and answers [`NotifyError::Unavailable`] |
 //! | Web | the Notifications API, while the page is open |
 //! | Windows | toasts under the installer-registered app id |
@@ -32,7 +29,9 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+mod calendar;
 mod caps;
+pub use calendar::{AlarmSchedule, CalendarAlarm};
 pub mod conformance;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -50,7 +49,7 @@ pub mod windows_toasts {
     pub use crate::windows::{HostNotifications, ScheduledNotice, register_shortcut};
 }
 
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use tilo_clock::SystemTime;
 
 /// One user-visible notification.
@@ -186,6 +185,17 @@ pub struct Scheduled {
     pub at: SystemTime,
 }
 
+/// The host's authoritative occurrence and delivery history for an alarm.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlarmState {
+    pub tag: String,
+    pub alarm: CalendarAlarm,
+    pub enabled_at_ms: i64,
+    pub next_at: Option<SystemTime>,
+    pub last_at: Option<SystemTime>,
+    pub last_rung: Option<chrono::NaiveDate>,
+}
+
 /// Host-owned user notifications.
 pub trait Notifier: Send + Sync {
     /// Show `notification`, replacing any earlier one with the same tag.
@@ -207,9 +217,34 @@ pub trait Notifier: Send + Sync {
     /// [`Feature::Schedule`] is unsupported here, or the platform refused.
     fn schedule(&self, notification: &Notification, at: SystemTime) -> Result<(), NotifyError> {
         let _ = (notification, at);
-        Err(NotifyError::Unsupported(caps::unsupported(
-            Feature::Schedule,
-        )))
+        Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
+    }
+
+    /// Schedule a local-time alarm. Hosts that understand calendar alarms
+    /// retain recurrence and timezone semantics after the app closes; other
+    /// hosts retain the supplied next occurrence through `schedule`.
+    ///
+    /// # Errors
+    /// Invalid calendar fields, an unavailable scheduler, or a host refusal.
+    fn schedule_alarm(
+        &self,
+        notification: &Notification,
+        at: SystemTime,
+        schedule: AlarmSchedule,
+    ) -> Result<(), NotifyError> {
+        if !schedule.alarm.valid() {
+            return Err(NotifyError::Invalid("invalid alarm time or weekdays"));
+        }
+        self.schedule(notification, at)
+    }
+
+    /// Calendar handoffs and delivered occurrences owned by this app.
+    /// Hosts that retain only an absolute deadline return no calendar state.
+    ///
+    /// # Errors
+    /// The durable calendar service is unavailable or refused the caller.
+    fn alarm_states(&self) -> Result<Vec<AlarmState>, NotifyError> {
+        Ok(Vec::new())
     }
 
     /// The notifications this app has scheduled that are not yet delivered.
@@ -217,9 +252,7 @@ pub trait Notifier: Send + Sync {
     /// # Errors
     /// As [`schedule`](Self::schedule).
     fn scheduled(&self) -> Result<Vec<Scheduled>, NotifyError> {
-        Err(NotifyError::Unsupported(caps::unsupported(
-            Feature::Schedule,
-        )))
+        Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
     }
 
     /// Cancel the scheduled notification under `tag`, if any.
@@ -228,9 +261,7 @@ pub trait Notifier: Send + Sync {
     /// As [`schedule`](Self::schedule).
     fn cancel_scheduled(&self, tag: &str) -> Result<(), NotifyError> {
         let _ = tag;
-        Err(NotifyError::Unsupported(caps::unsupported(
-            Feature::Schedule,
-        )))
+        Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
     }
 }
 
@@ -252,7 +283,7 @@ pub(crate) fn validate(notification: &Notification) -> Result<(), NotifyError> {
 
 /// `scheme:rest`, the scheme as RFC 3986 spells it, without control
 /// characters or whitespace.
-fn valid_activation(uri: &str) -> bool {
+pub fn valid_activation(uri: &str) -> bool {
     let Some((scheme, _)) = uri.split_once(':') else {
         return false;
     };
@@ -353,7 +384,7 @@ impl Notifier for UnavailableNotifier {
 fn schedule_refusal() -> NotifyError {
     match availability(Feature::Schedule) {
         Availability::Unsupported(_) => {
-            NotifyError::Unsupported(caps::unsupported(Feature::Schedule))
+            NotifyError::Unsupported(Unsupported::of(Feature::Schedule))
         }
         Availability::Available | Availability::Prompt => NotifyError::Unavailable,
     }
@@ -390,7 +421,7 @@ fn priority_contacts(app_id: &str, contacts: &[PriorityContact]) -> Result<(), N
 
 #[cfg(not(target_os = "linux"))]
 fn priority_contacts(_app_id: &str, _contacts: &[PriorityContact]) -> Result<(), NotifyError> {
-    Err(NotifyError::Unsupported(caps::unsupported(
+    Err(NotifyError::Unsupported(Unsupported::of(
         Feature::PriorityContacts,
     )))
 }

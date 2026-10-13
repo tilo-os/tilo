@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! A framework app's kind publishes, for a host with no window, the document
 //! operations the running app publishes, under the same addresses and the
 //! name the app gives the open resource.
@@ -47,7 +45,7 @@ impl ResourceApp for TallyApp {
 #[test]
 fn a_kind_publishes_the_document_operations_the_running_app_publishes() {
     let mut app = TestApp::<TallyApp>::new().unwrap();
-    app.invoke(Tally::RENAME.with("visitors".into())).unwrap();
+    app.invoke(Tally::RENAME.with("visitors")).unwrap();
     let kind = resource_kind::<TallyApp>();
     assert_eq!(kind.kind(), "test.tally");
     assert_eq!(kind.app_id(), Some("so.tilo.test-tally"));

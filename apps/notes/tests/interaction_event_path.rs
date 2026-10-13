@@ -11,12 +11,7 @@
 //!   - Alt-↑ / Alt-↓ reorder a page among its siblings.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -333,11 +328,16 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
             0..11,
             Mark::Transclusion(uuid::Uuid::new_v4()),
         )]);
-        for block in [
-            Block::table("| Key | Value |\n| --- | --- |\n| Name | Test |", true),
-            Block::paragraph("![Diagram](diagram.png)"),
-            embedded,
-        ] {
+        // Pushed one by one: a literal array of three blocks is too large
+        // for the stack.
+        let mut blocks = Vec::with_capacity(3);
+        blocks.push(Block::table(
+            "| Key | Value |\n| --- | --- |\n| Name | Test |",
+            true,
+        ));
+        blocks.push(Block::paragraph("![Diagram](diagram.png)"));
+        blocks.push(embedded);
+        for block in blocks {
             let mut editor = BlockEditor::new().with_wrap_lines(true);
             editor.set_blocks(vec![block]);
             let mut editor = layout_block_editor(editor, 400.0);
@@ -681,6 +681,17 @@ fn block_event(editor: &mut Framed<ui::widget::BlockEditor>, event: WindowEvent)
     Framed::harness_mut(editor).dispatch_to_root_with(&event, &Modifiers::default());
 }
 
+/// Where every block's text starts: past the editor's handle column and
+/// the line's own inset.
+fn content_edge(editor: &Framed<ui::widget::BlockEditor>) -> f64 {
+    editor.get_rect().x0 + editor.text_inset(&Theme::dark())
+}
+
+/// The x of a drag handle's centre, left of the content edge.
+fn handle_x(editor: &Framed<ui::widget::BlockEditor>) -> f64 {
+    content_edge(editor) - 14.0
+}
+
 /// Run a frame and return the scene it drew.
 fn block_scene(editor: &mut Framed<ui::widget::BlockEditor>) -> Scene {
     let harness = Framed::harness_mut(editor);
@@ -696,6 +707,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         let mut editor = block_gesture_fixture();
         let idle = block_scene(&mut editor).encoding().draw_tags.len();
         let row = editor.blocks()[0].line.get_rect();
+        let handle = handle_x(&editor);
         block_event(&mut editor, cursor_moved(row.center().x, row.center().y));
         let hovered = block_scene(&mut editor).encoding().draw_tags.len();
         assert_eq!(
@@ -703,7 +715,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             idle + 6,
             "only the hovered block gets six handle dots"
         );
-        block_event(&mut editor, cursor_moved(row.x0 - 14.0, row.center().y));
+        block_event(&mut editor, cursor_moved(handle, row.center().y));
         assert_eq!(
             block_scene(&mut editor).encoding().draw_tags.len(),
             hovered + 1,
@@ -712,7 +724,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         block_event(
             &mut editor,
             WindowEvent::CursorLeft {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
             },
         );
         assert_eq!(block_scene(&mut editor).encoding().draw_tags.len(), idle);
@@ -730,7 +742,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         block_event(
             &mut editor,
             WindowEvent::CursorLeft {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
             },
         );
         assert_eq!(
@@ -754,7 +766,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         block_event(
             &mut editor,
             WindowEvent::CursorLeft {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
             },
         );
         editor.set_focus(false);
@@ -771,11 +783,12 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         let first = editor.blocks()[0].line.get_rect();
         let second = editor.blocks()[1].line.get_rect();
         let third = editor.blocks()[2].line.get_rect();
-        block_event(&mut editor, cursor_moved(first.x0 - 14.0, first.center().y));
+        let handle = handle_x(&editor);
+        block_event(&mut editor, cursor_moved(handle, first.center().y));
         block_event(&mut editor, mouse_press());
         let before = block_scene(&mut editor).encoding().draw_tags.len();
         let gap = f64::midpoint(second.y0, first.y1);
-        block_event(&mut editor, cursor_moved(first.x0 - 14.0, gap));
+        block_event(&mut editor, cursor_moved(handle, gap));
         let preview = block_scene(&mut editor);
         assert!(
             preview.encoding().draw_tags.len() > before + 2,
@@ -785,7 +798,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         marker_brush.fill(
             vello::peniko::Fill::NonZero,
             Affine::IDENTITY,
-            Theme::dark().tokens.colors.accent[5],
+            Theme::dark().tokens.colors.intent.you,
             None,
             &Rect::new(0.0, 0.0, 1.0, 1.0),
         );
@@ -798,7 +811,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             "the insertion marker must remain visible above the opaque drag preview"
         );
         let transforms = format!("{:?}", preview.encoding().transforms);
-        block_event(&mut editor, cursor_moved(first.x0 - 10.0, gap));
+        block_event(&mut editor, cursor_moved(handle, gap + 2.0));
         assert_ne!(
             transforms,
             format!("{:?}", block_scene(&mut editor).encoding().transforms),
@@ -809,14 +822,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             "first",
             "preview must not mutate document order"
         );
-        block_event(
-            &mut editor,
-            WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-        );
+        block_event(&mut editor, ui::synthetic_input::mouse_release());
         assert_eq!(
             editor
                 .blocks()
@@ -839,18 +845,19 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             Block::bullet(1, "Child B"),
         ]);
         let mut editor = layout_block_editor(editor, 400.0);
-        let root_x = editor.get_rect().x0;
+        let root_x = content_edge(&editor);
+        let handle = handle_x(&editor);
         let first = editor.blocks()[0].line.get_rect();
         let last = editor.blocks()[3].line.get_rect();
-        block_event(&mut editor, cursor_moved(root_x - 14.0, first.center().y));
+        block_event(&mut editor, cursor_moved(handle, first.center().y));
         block_event(&mut editor, mouse_press());
-        block_event(&mut editor, cursor_moved(root_x - 14.0, last.center().y));
+        block_event(&mut editor, cursor_moved(handle, last.center().y));
         let scene = block_scene(&mut editor);
         let mut expected_marker = Scene::new();
         expected_marker.fill(
             vello::peniko::Fill::NonZero,
             Affine::IDENTITY,
-            Theme::dark().tokens.colors.accent[5],
+            Theme::dark().tokens.colors.intent.you,
             None,
             &Rect::new(root_x - 4.0, last.y1 - 1.0, last.x1, last.y1 + 1.0),
         );
@@ -869,19 +876,13 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             let mut editor = block_gesture_fixture();
             let first = editor.blocks()[0].line.get_rect();
             let last = editor.blocks()[3].line.get_rect();
-            block_event(&mut editor, cursor_moved(first.x0 - 14.0, first.center().y));
+            let handle = handle_x(&editor);
+            block_event(&mut editor, cursor_moved(handle, first.center().y));
             block_event(&mut editor, mouse_press());
-            block_event(&mut editor, cursor_moved(first.x0 - 14.0, last.center().y));
+            block_event(&mut editor, cursor_moved(handle, last.center().y));
             block_scene(&mut editor);
             block_event(&mut editor, cancel);
-            block_event(
-                &mut editor,
-                WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-            );
+            block_event(&mut editor, ui::synthetic_input::mouse_release());
             assert_eq!(
                 editor
                     .blocks()
@@ -895,74 +896,25 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
 }
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{ModifiersState, NamedKey};
 
-fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 
-fn mouse_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
 fn mouse_press_right() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Right,
-    }
+    ui::synthetic_input::mouse_input(
+        ui::winit::event::ElementState::Pressed,
+        ui::winit::event::MouseButton::Right,
+    )
 }
 
-fn mouse_release() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_release;
 
-/// A printable-character keyboard event (mirrors `text_input`'s test
-/// helper — `KeyEvent` has a `pub(crate)` field so it can't be built by
-/// struct literal).
-fn char_key(s: &str) -> WindowEvent {
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(SmolStr::new(s));
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(SmolStr::new(s));
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use ui::synthetic_input::char_key;
 
-fn named_key(key: NamedKey) -> WindowEvent {
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(key);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use ui::synthetic_input::named_key;
 
 /// Notes with a Welcome note that uses every block kind, open.
 fn starter() -> TestApp<NotesShell> {
@@ -1168,9 +1120,42 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let btn = n(&mut app).sidebar_new_page_btn_center_for_test();
         dispatch(&mut app, no_mods, &cursor_moved(btn.x, btn.y));
         let handled = dispatch(&mut app, no_mods, &mouse_press());
+        let mut release = mouse_press();
+        if let WindowEvent::MouseInput { state, .. } = &mut release {
+            *state = ElementState::Released;
+        }
+        // Keep the direct root press diagnostic above, then admit its
+        // release through the host that owns queued native control actions.
+        app.harness().send(&release);
+        app.settle();
 
         assert!(handled, "clicking the + button must be consumed");
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "{:?}",
+            app.harness().control_failures()
+        );
         let pages = n(&mut app).workspace_pages_for_test();
+        if pages.len() != 2 {
+            let resources = app.harness().resources();
+            eprintln!(
+                "new-note target {:?}; native controls {:?}; contract violations {:?}",
+                app.harness().targets().get("new-note"),
+                resources
+                    .iter()
+                    .filter(|resource| resource.kind == "tilo.control")
+                    .map(|resource| (
+                        &resource.id,
+                        resource
+                            .actions
+                            .iter()
+                            .map(|action| &action.id)
+                            .collect::<Vec<_>>()
+                    ))
+                    .collect::<Vec<_>>(),
+                app.harness().component_contract_violations()
+            );
+        }
         assert_eq!(pages.len(), 2, "the + button must add exactly one page");
         let new_id = n(&mut app).selected_for_test().unwrap();
         let new_meta = pages.iter().find(|p| p.id == new_id).unwrap();
@@ -1201,6 +1186,8 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let handled = dispatch(&mut app, no_mods, &named_key(NamedKey::Delete));
 
         assert!(handled, "Delete must be consumed by the focused tree");
+        // Deleting a page asks first; the person confirms.
+        assert!(app.confirm_asked().is_some(), "the host asks first");
         let pages = n(&mut app).workspace_pages_for_test();
         assert_eq!(pages.len(), 1, "Delete must remove the page");
         assert_eq!(pages[0].id, welcome);
@@ -1295,7 +1282,6 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let order_ids = |app: &mut TestApp<NotesShell>| -> Vec<uuid::Uuid> {
             let mut ps = n(app).workspace_pages_for_test();
             ps.retain(|p| p.parent.is_none());
-            ps.sort_by(notes::model::sibling_order);
             ps.into_iter().map(|p| p.id).collect()
         };
         assert_eq!(order_ids(&mut app), vec![welcome, p1, p2]);

@@ -1,6 +1,90 @@
 use super::*;
 
 #[test]
+fn repeated_full_size_packets_keep_one_frame_but_events_still_wake() {
+    use std::sync::atomic::AtomicUsize;
+
+    let shared = Arc::new(Shared::default());
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let observed = wakes.clone();
+    *shared.waker.lock().unwrap() = Some(Arc::new(move || {
+        observed.fetch_add(1, Ordering::Relaxed);
+    }));
+    let routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let frame = super::super::Frame {
+        trace_id: None,
+        rgba: Arc::new(vec![255; 868 * 772 * 4]),
+        width: 868,
+        height: 772,
+    };
+    let mut packet = Vec::new();
+    protocol::write_tab_frame(&mut packet, 1, &frame).unwrap();
+    let mut retained = None;
+    for _ in 0..40 {
+        let Some(protocol::Packet::TabFrame(tab, decoded)) =
+            protocol::read_packet(&mut std::io::Cursor::new(&packet)).unwrap()
+        else {
+            panic!("expected routed full-size frame");
+        };
+        deliver_frame(&routes, tab, decoded);
+        let pixels = shared.frames.lock().unwrap().as_ref().unwrap().rgba.clone();
+        if let Some(first) = &retained {
+            assert!(Arc::ptr_eq(first, &pixels));
+        } else {
+            retained = Some(pixels);
+        }
+    }
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    shared.event(WebViewEvent::TitleChanged("Updated title".into()));
+    assert_eq!(wakes.load(Ordering::Relaxed), 2);
+    assert!(matches!(
+        shared.events.lock().unwrap().front(),
+        Some(WebViewEvent::TitleChanged(title)) if title == "Updated title"
+    ));
+}
+
+#[test]
+fn unchanged_frames_do_not_wake_or_replace_the_painted_pixels() {
+    use std::sync::atomic::AtomicUsize;
+
+    let shared = Arc::new(Shared::default());
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let observed = wakes.clone();
+    *shared.waker.lock().unwrap() = Some(Arc::new(move || {
+        observed.fetch_add(1, Ordering::Relaxed);
+    }));
+    let routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let pixels = Arc::new(vec![255; 8]);
+    let frame = |width, height, rgba, trace_id| super::super::Frame {
+        trace_id,
+        rgba,
+        width,
+        height,
+    };
+    deliver_frame(&routes, 1, frame(2, 1, pixels.clone(), Some(1)));
+    deliver_frame(&routes, 1, frame(2, 1, Arc::new(vec![255; 8]), Some(2)));
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    let retained = shared.frames.lock().unwrap().clone().unwrap();
+    assert!(Arc::ptr_eq(&retained.rgba, &pixels));
+    assert_eq!(retained.trace_id, Some(1));
+
+    let changed = Arc::new(vec![0, 255, 255, 255, 255, 255, 255, 255]);
+    deliver_frame(&routes, 1, frame(2, 1, changed.clone(), Some(3)));
+    assert_eq!(wakes.load(Ordering::Relaxed), 2);
+    assert!(Arc::ptr_eq(
+        &shared.frames.lock().unwrap().as_ref().unwrap().rgba,
+        &changed,
+    ));
+    deliver_frame(&routes, 1, frame(1, 2, changed, Some(4)));
+    assert_eq!(wakes.load(Ordering::Relaxed), 3);
+    let resized = shared.frames.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        (resized.width, resized.height, resized.trace_id),
+        (1, 2, Some(4))
+    );
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario, one labelled phase per merged case"
@@ -306,7 +390,10 @@ fn private_engines_own_and_remove_their_disposable_roots() {
     }
     // phase: private_process_exit_waits_for_helper_and_root_cleanup
     {
-        let (_fixture, host) = helper_fixture("exec cat >/dev/null");
+        // Keep the protocol output open while stdin is consumed. Redirecting
+        // stdout alone sends EOF to the production frame reader, which can
+        // reap this supposedly-live helper before the child checks its root.
+        let (_fixture, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
         let root = private_root();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -628,6 +715,17 @@ fn capability_history_and_download_payloads_round_trip_bounded() {
             encode_command(WebViewCommand::RetryDownload { id: 9 }),
             Some(json!({"op":"download_retry","id":9}))
         );
+        assert_eq!(
+            encode_command(WebViewCommand::StartDownload {
+                uri: "https://downloads.test/archive.zip".into(),
+            }),
+            Some(json!({"op":"download_start","url":"https://downloads.test/archive.zip"}))
+        );
+        for uri in ["file:///etc/passwd", "https://", "javascript:alert(1)"] {
+            assert!(!command_within_limits(&WebViewCommand::StartDownload {
+                uri: uri.into(),
+            }));
+        }
         assert_eq!(
             encode_command(WebViewCommand::CancelAllDownloads),
             Some(json!({"op":"download_cancel_all"}))
@@ -1714,4 +1812,614 @@ fn the_engine_host_does_not_inherit_the_app_loader_environment() {
             "the host must start without the app's {name}"
         );
     }
+}
+
+#[test]
+fn owned_navigation_protocol_preserves_identity_and_bounds() {
+    for (command, fields) in [
+        (
+            NavigationCommand::Navigate {
+                url: "about:blank".into(),
+            },
+            json!({"command":"navigate","url":"about:blank"}),
+        ),
+        (NavigationCommand::Back, json!({"command":"back"})),
+        (NavigationCommand::Forward, json!({"command":"forward"})),
+        (NavigationCommand::Reload, json!({"command":"reload"})),
+        (
+            NavigationCommand::HistoryEntry {
+                history_request_id: 8,
+                id: 2,
+            },
+            json!({"command":"history_entry","history_request_id":8,"id":2}),
+        ),
+    ] {
+        let command = WebViewCommand::ScopedNavigation {
+            request_id: 7,
+            command,
+        };
+        assert!(command_within_limits(&command));
+        let mut expected = fields;
+        expected["op"] = json!("scoped_navigation");
+        expected["request_id"] = json!(7);
+        assert_eq!(encode_command(command), Some(expected));
+    }
+    assert_eq!(
+        encode_command(WebViewCommand::CancelScopedNavigation { request_id: 7 }),
+        Some(json!({"op":"cancel_navigation","request_id":7}))
+    );
+    let valid = json!({"event":"navigation_outcome","request_id":7,"url":"https://redirect.test/"});
+    assert_eq!(
+        decode_event(&valid),
+        Some(WebViewEvent::NavigationOutcome {
+            request_id: 7,
+            uri: "https://redirect.test/".into(),
+            error: None
+        })
+    );
+    for (key, bad) in [
+        ("request_id", json!(0)),
+        ("request_id", json!(u32::MAX)),
+        ("request_id", json!(-1)),
+        ("request_id", json!("7")),
+        ("url", json!(false)),
+        ("url", json!("x".repeat(65537))),
+        ("error", json!(null)),
+        ("error", json!("")),
+        ("error", json!("x".repeat(4097))),
+    ] {
+        let mut invalid = valid.clone();
+        invalid[key] = bad;
+        assert!(validate_event(&invalid).is_err(), "{invalid}");
+        assert!(decode_event(&invalid).is_none(), "{invalid}");
+    }
+    for request_id in [0, u32::MAX] {
+        assert!(!command_within_limits(&WebViewCommand::ScopedNavigation {
+            request_id,
+            command: NavigationCommand::Back
+        }));
+        assert!(!command_within_limits(
+            &WebViewCommand::CancelScopedNavigation { request_id }
+        ));
+    }
+    for command in [
+        NavigationCommand::Navigate {
+            url: "x".repeat(8193),
+        },
+        NavigationCommand::Navigate { url: String::new() },
+        NavigationCommand::HistoryEntry {
+            history_request_id: 0,
+            id: 2,
+        },
+    ] {
+        assert!(!command_within_limits(&WebViewCommand::ScopedNavigation {
+            request_id: 1,
+            command
+        }));
+    }
+}
+
+#[test]
+fn owned_navigation_first_terminal_survives_unknown_duplicate_and_state_floods() {
+    let shared = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let downloads = Mutex::new(VecDeque::new());
+    let (ready, _receiver) = sync_channel(1);
+    for id in 1..=32 {
+        shared.admit_navigation(id, "requested".into()).unwrap();
+    }
+    // Real decoder/router: failure is first and a late success cannot overwrite it.
+    route_native_event(&json!({"event":"navigation_outcome","request_id":1,"url":"failed","error":"fixture failure"}), &routes, &downloads, &ready).unwrap();
+    for _ in 0..2000 {
+        route_native_event(
+            &json!({"event":"navigation_outcome","request_id":1,"url":"stale-success"}),
+            &routes,
+            &downloads,
+            &ready,
+        )
+        .unwrap();
+        route_native_event(
+            &json!({"event":"navigation_outcome","request_id":999,"url":"unowned"}),
+            &routes,
+            &downloads,
+            &ready,
+        )
+        .unwrap();
+    }
+    for id in 0..2000 {
+        shared.event(WebViewEvent::MediaElementUnavailable { request_id: id });
+    }
+    shared.event(WebViewEvent::LoadFinishedAt {
+        uri: "about:blank".into(),
+    });
+    for id in 2..=32 {
+        route_native_event(
+            &json!({"event":"navigation_outcome","request_id":id,"url":format!("page-{id}")}),
+            &routes,
+            &downloads,
+            &ready,
+        )
+        .unwrap();
+    }
+    let events = shared.events.lock().unwrap();
+    assert_eq!(events.len(), 512);
+    let outcomes: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
+        .collect();
+    assert_eq!(outcomes.len(), 32);
+    assert!(
+        matches!(outcomes[0], WebViewEvent::NavigationOutcome { request_id: 1, error: Some(error), uri } if error == "fixture failure" && uri == "failed")
+    );
+    assert!(events.iter().any(
+        |event| matches!(event, WebViewEvent::LoadFinishedAt { uri } if uri == "about:blank")
+    ));
+    drop(events);
+    assert!(shared.admit_navigation(33, "blocked".into()).is_err());
+    shared.events.lock().unwrap().clear();
+    shared.admit_navigation(33, "fresh".into()).unwrap();
+    shared.cancel_navigation(33);
+    route_native_event(
+        &json!({"event":"navigation_outcome","request_id":33,"url":"cancelled"}),
+        &routes,
+        &downloads,
+        &ready,
+    )
+    .unwrap();
+    assert!(shared.events.lock().unwrap().is_empty());
+    assert!(shared.admit_navigation(33, "reused".into()).is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn owned_navigation_real_transport_ignores_bootstrap_and_keeps_redirect_owner() {
+    let mut packets = Vec::new();
+    for event in [
+        json!({"event":"uri","url":"about:blank"}),
+        json!({"event":"loaded","url":"about:blank","status":200}),
+        json!({"event":"uri","url":"https://redirect.test/final"}),
+        json!({"event":"navigation_outcome","request_id":1,"url":"https://redirect.test/final"}),
+        json!({"event":"navigation_outcome","request_id":1,"url":"about:blank","error":"stale duplicate"}),
+    ] {
+        protocol::write_json(&mut packets, &event).unwrap();
+    }
+    let (dir, host) = shared_fixture(&packets);
+    let profile = dir.path().join("profile");
+    let engine = ChromiumEngine::with_host(&host, &profile).unwrap();
+    engine
+        .navigate_owned(
+            1,
+            NavigationCommand::Navigate {
+                url: "https://requested.test/start".into(),
+            },
+        )
+        .unwrap();
+    assert!(
+        !engine
+            .drain_events()
+            .iter()
+            .any(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
+    );
+    // The helper's input recorder and event emitter run independently.
+    // Observe the real command before permitting its canned terminal events.
+    wait_for_command(
+        &profile,
+        "owned navigation recorded on helper wire",
+        |command| command["op"] == "scoped_navigation" && command["request_id"] == 1,
+    );
+    std::fs::write(profile.join("emit"), "").unwrap();
+    let mut events = Vec::new();
+    tilo_test_env::wait_until("owned navigation outcome", || {
+        events.extend(engine.drain_events());
+        events
+            .iter()
+            .any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 1, .. }))
+    });
+    let outcomes: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
+        .collect();
+    assert_eq!(outcomes.len(), 1);
+    assert!(
+        matches!(outcomes[0], WebViewEvent::NavigationOutcome { request_id: 1, uri, error: None } if uri == "https://redirect.test/final")
+    );
+    assert!(events.iter().any(
+        |event| matches!(event, WebViewEvent::LoadFinishedAt { uri } if uri == "about:blank")
+    ));
+    // Event output and the command reader run independently in the host
+    // fixture. Observe a complete command before opening its recording.
+    wait_for_command(&profile, "owned navigation command", |command| {
+        command["op"] == "scoped_navigation"
+    });
+    let mut commands = std::fs::File::open(profile.join("commands")).unwrap();
+    let mut navigation = None;
+    while let Some(protocol::Packet::Json(value)) = protocol::read_packet(&mut commands).unwrap() {
+        if value["op"] == "scoped_navigation" {
+            navigation = Some(value);
+            break;
+        }
+    }
+    assert_eq!(
+        navigation,
+        Some(
+            json!({"op":"scoped_navigation","tab":1,"command":"navigate","request_id":1,"url":"https://requested.test/start"})
+        )
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn owned_navigation_admission_queue_loss_and_renderer_death_are_observable() {
+    let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
+    let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+    assert!(engine.navigate_owned(0, NavigationCommand::Back).is_err());
+    assert!(
+        engine
+            .navigate_owned(u32::MAX, NavigationCommand::Back)
+            .is_err()
+    );
+    assert!(
+        engine
+            .navigate_owned(
+                1,
+                NavigationCommand::Navigate {
+                    url: "x".repeat(8193)
+                }
+            )
+            .is_err()
+    );
+    assert!(engine.shared.navigations.lock().unwrap().pending.is_empty());
+    let (ready, _receiver) = sync_channel(1);
+    engine.navigate_owned(7, NavigationCommand::Reload).unwrap();
+    route_native_event(&json!({"event":"navigation_outcome","request_id":7,"url":"crashed","error":"renderer crashed"}), &engine.runtime.routes, &engine.runtime.download_events, &ready).unwrap();
+    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 7, error: Some(error), .. } if error == "renderer crashed")));
+    engine.navigate_owned(8, NavigationCommand::Reload).unwrap();
+    route_native_event(
+        &json!({"event":"renderer_terminated"}),
+        &engine.runtime.routes,
+        &engine.runtime.download_events,
+        &ready,
+    )
+    .unwrap();
+    let events = engine.drain_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, WebViewEvent::RendererTerminated))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 8, .. }))
+    );
+    assert!(
+        engine
+            .shared
+            .navigations
+            .lock()
+            .unwrap()
+            .pending
+            .contains_key(&8)
+    );
+    route_native_event(
+        &json!({"event":"navigation_outcome","request_id":8,"url":"recovered"}),
+        &engine.runtime.routes,
+        &engine.runtime.download_events,
+        &ready,
+    )
+    .unwrap();
+    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 8, error: None, uri } if uri == "recovered")));
+    engine.navigate_owned(9, NavigationCommand::Reload).unwrap();
+    engine.shared.fail("fixture helper disconnected".into());
+    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 9, error: Some(error), .. } if error == "fixture helper disconnected")));
+    assert!(engine.navigate_owned(10, NavigationCommand::Back).is_err());
+    // Closing the queue also drops the helper's stdin; keep the helper alive
+    // past EOF so the reader's disconnect cannot win the race and turn the
+    // refusal into "Chromium is unavailable".
+    let (dir, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
+    let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+    engine.tx.close();
+    assert!(
+        engine
+            .navigate_owned(1, NavigationCommand::Reload)
+            .unwrap_err()
+            .contains("not queued")
+    );
+    assert!(engine.shared.navigations.lock().unwrap().pending.is_empty());
+    let unavailable = UnavailableEngine::new("runtime unavailable".into());
+    assert_eq!(
+        unavailable.navigate_owned(1, NavigationCommand::Back),
+        Err("runtime unavailable".into())
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn owned_navigation_concurrent_cancel_cannot_overtake_admitted_command() {
+    let (dir, host) = shared_fixture(&[]);
+    let profile = dir.path().join("profile");
+    let engine = ChromiumEngine::with_host(&host, &profile).unwrap();
+    // Stop the production enqueue at its mutex, after owner registration.
+    let queue_barrier = engine.tx.state.lock().unwrap();
+    let navigating = engine.clone();
+    let navigation =
+        std::thread::spawn(move || navigating.navigate_owned(1, NavigationCommand::Reload));
+    tilo_test_env::wait_until("navigation reserved before blocked enqueue", || {
+        engine
+            .shared
+            .navigations
+            .lock()
+            .unwrap()
+            .pending
+            .contains_key(&1)
+    });
+    assert!(engine.shared.navigation_commands.try_lock().is_err());
+    let cancelling = engine.clone();
+    let (ready, entered) = sync_channel(1);
+    let cancel = std::thread::spawn(move || {
+        ready.send(()).unwrap();
+        cancelling.send(WebViewCommand::CancelScopedNavigation { request_id: 1 });
+    });
+    entered.recv().unwrap();
+    // The held queue barrier makes both scheduling orders deterministic: the
+    // cancel either blocks now or begins after the admitted command was queued.
+    drop(queue_barrier);
+    navigation.join().unwrap().unwrap();
+    cancel.join().unwrap();
+    assert!(engine.shared.navigations.lock().unwrap().pending.is_empty());
+    let mut observed = Vec::new();
+    tilo_test_env::wait_until("owned navigation then cancellation on helper wire", || {
+        let Ok(bytes) = std::fs::read(profile.join("commands")) else {
+            return false;
+        };
+        let mut reader = std::io::Cursor::new(bytes);
+        let mut commands = Vec::new();
+        while let Ok(Some(protocol::Packet::Json(value))) = protocol::read_packet(&mut reader) {
+            if matches!(
+                value["op"].as_str(),
+                Some("scoped_navigation" | "cancel_navigation")
+            ) {
+                commands.push(value);
+            }
+        }
+        if commands.len() == 2 {
+            observed = commands;
+            true
+        } else {
+            false
+        }
+    });
+    assert_eq!(
+        observed,
+        vec![
+            json!({"op":"scoped_navigation","tab":1,"request_id":1,"command":"reload"}),
+            json!({"op":"cancel_navigation","tab":1,"request_id":1}),
+        ]
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
+    // Closing the command queue hangs up helper stdin. Keep stdout owned by
+    // the supervised helper until cancellation fails it; otherwise an unrelated
+    // EOF can win the first-error latch before the refusal under test.
+    let (_fixture, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
+    // This route joins the supervisor on drop, so a fast test process cannot
+    // exit before its deliberately live helper has been killed and reaped.
+    let root = private_root();
+    let engine = ChromiumEngine::with_private_host(&host, &root).unwrap();
+    let enabled = Arc::new(AtomicBool::new(false));
+    let reentered = Arc::new(AtomicBool::new(false));
+    let weak = Arc::downgrade(&engine);
+    let ready = enabled.clone();
+    let observed = reentered.clone();
+    engine.set_waker(Box::new(move || {
+        if ready.swap(false, Ordering::AcqRel) {
+            weak.upgrade()
+                .unwrap()
+                .send(WebViewCommand::CancelScopedNavigation { request_id: 2 });
+            observed.store(true, Ordering::Release);
+        }
+    }));
+    engine.tx.close();
+    enabled.store(true, Ordering::Release);
+    let cancelling = engine.clone();
+    let (finished, received) = sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        cancelling.send(WebViewCommand::CancelScopedNavigation { request_id: 1 });
+        finished.send(()).unwrap();
+    });
+    received
+        .recv_timeout(Duration::from_secs(5))
+        .expect("cancel refusal must allow its waker to reenter the command path");
+    worker.join().unwrap();
+    assert!(reentered.load(Ordering::Acquire));
+    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed { error, .. } if error.contains("cancellation was not queued"))));
+    drop(engine);
+    assert!(
+        !root.exists(),
+        "cancellation failure must reap its owned helper"
+    );
+}
+
+#[test]
+fn private_text_input_receipts_route_only_to_the_original_tab_without_public_events() {
+    let first = Arc::new(Shared::default());
+    let second = Arc::new(Shared::default());
+    let (one, a) = first
+        .text_input
+        .lock()
+        .unwrap()
+        .admit(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let (two, b) = second
+        .text_input
+        .lock()
+        .unwrap()
+        .admit(super::super::text_input::Request::Prepare)
+        .unwrap();
+    assert_eq!(
+        a["request_id"], b["request_id"],
+        "tab owners have independent request spaces"
+    );
+    let routes = Arc::new(Mutex::new(HashMap::from([
+        (1, Arc::downgrade(&first)),
+        (2, Arc::downgrade(&second)),
+    ])));
+    let downloads = Mutex::default();
+    let (ready, _) = sync_channel(1);
+    let reply = json!({"event":"text_input_result","tab":2,"request_id":b["request_id"],"ok":true,"navigated":false,"url":"http://fixture.invalid/","message":"Prepared","data":{"lease":"0123456789abcdef0123456789abcdef"}});
+    route_native_event(&reply, &routes, &downloads, &ready).unwrap();
+    assert!(
+        one.poll().is_none(),
+        "another tab cannot acknowledge the original request"
+    );
+    assert!(matches!(two.poll(), Some(Ok(Some(_)))));
+    assert!(first.events.lock().unwrap().is_empty());
+    assert!(second.events.lock().unwrap().is_empty());
+    let mut stale = reply.clone();
+    stale["ok"] = json!(false);
+    stale["code"] = json!("text_input_changed");
+    route_native_event(&stale, &routes, &downloads, &ready).unwrap();
+    assert!(
+        matches!(two.poll(), Some(Ok(Some(_)))),
+        "replayed failures cannot alter a consumed receipt"
+    );
+    first.text_input.lock().unwrap().unavailable();
+    assert!(matches!(
+        one.poll(),
+        Some(Err(super::super::text_input::Failure::Unknown))
+    ));
+}
+
+#[test]
+fn native_history_capability_is_optional_strict_and_per_tab() {
+    let first = Arc::new(Shared::default());
+    let second = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([
+        (1, Arc::downgrade(&first)),
+        (2, Arc::downgrade(&second)),
+    ])));
+    let downloads = Mutex::default();
+    let (ready, _receiver) = sync_channel(1);
+    assert!(!first.native_edit_history.load(Ordering::Acquire));
+    assert!(!first.native_caret_text_input.load(Ordering::Acquire));
+    route_native_event(&json!({"event":"ready","cef_version":"152","chromium_version":"152","native_edit_history":true,"guarded_edit_history":true,"native_caret_text_input":true}), &routes, &downloads, &ready).unwrap();
+    assert!(first.native_edit_history.load(Ordering::Acquire));
+    assert!(first.guarded_edit_history.load(Ordering::Acquire));
+    assert!(first.native_caret_text_input.load(Ordering::Acquire));
+    route_native_event(
+        &json!({"event":"tab_ready","tab":2}),
+        &routes,
+        &downloads,
+        &ready,
+    )
+    .unwrap();
+    assert!(!second.native_edit_history.load(Ordering::Acquire));
+    assert!(!second.guarded_edit_history.load(Ordering::Acquire));
+    assert!(!second.native_caret_text_input.load(Ordering::Acquire));
+    assert!(first.native_edit_history.load(Ordering::Acquire));
+    route_native_event(
+        &json!({"event":"tab_ready","tab":2,"native_edit_history":true,"guarded_edit_history":true,"native_caret_text_input":true}),
+        &routes,
+        &downloads,
+        &ready,
+    )
+    .unwrap();
+    assert!(second.native_edit_history.load(Ordering::Acquire));
+    assert!(second.guarded_edit_history.load(Ordering::Acquire));
+    assert!(second.native_caret_text_input.load(Ordering::Acquire));
+    assert!(
+        route_native_event(
+            &json!({"event":"tab_ready","tab":2,"native_edit_history":true,"guarded_edit_history":"true"}),
+            &routes,
+            &downloads,
+            &ready
+        )
+        .is_err()
+    );
+    assert!(
+        route_native_event(
+            &json!({"event":"tab_ready","tab":2,"native_caret_text_input":"true"}),
+            &routes,
+            &downloads,
+            &ready,
+        )
+        .is_err()
+    );
+    route_native_event(
+        &json!({"event":"ready","cef_version":"152","chromium_version":"152"}),
+        &routes,
+        &downloads,
+        &ready,
+    )
+    .unwrap();
+    assert!(!first.native_edit_history.load(Ordering::Acquire));
+    assert!(!first.native_caret_text_input.load(Ordering::Acquire));
+    assert!(!first.guarded_edit_history.load(Ordering::Acquire));
+    assert!(second.native_edit_history.load(Ordering::Acquire));
+}
+
+#[test]
+fn native_caret_prepare_opt_in_uses_the_original_tab_capability() {
+    let tx = Arc::new(CommandQueue::default());
+    let first = Arc::new(Shared::default());
+    let second = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([
+        (1, Arc::downgrade(&first)),
+        (2, Arc::downgrade(&second)),
+    ])));
+    let runtime = Arc::new(Runtime {
+        tx: tx.clone(),
+        process: first.clone(),
+        supervisor: Mutex::default(),
+        routes,
+        next_tab: AtomicU32::new(3),
+        download_events: Arc::default(),
+        server: std::sync::OnceLock::new(),
+        link: None,
+    });
+    let one = ChromiumEngine {
+        tx: tx.clone(),
+        shared: first,
+        runtime: runtime.clone(),
+        tab: 1,
+    };
+    let two = ChromiumEngine {
+        tx: tx.clone(),
+        shared: second,
+        runtime: runtime.clone(),
+        tab: 2,
+    };
+    let original = one
+        .text_input(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let legacy = tx.pop().unwrap();
+    assert!(legacy.get("native_caret").is_none());
+    let (ready, _receiver) = sync_channel(1);
+    route_native_event(
+        &json!({"event":"ready","cef_version":"152","chromium_version":"152","native_caret_text_input":true}),
+        &runtime.routes, &runtime.download_events, &ready,
+    ).unwrap();
+    one.text_input(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let native = tx.pop().unwrap();
+    assert_eq!(native["tab"], 1);
+    assert_eq!(native["native_caret"], true);
+    two.text_input(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let other = tx.pop().unwrap();
+    assert_eq!(other["tab"], 2);
+    assert!(other.get("native_caret").is_none());
+    route_native_event(
+        &json!({"event":"text_input_result","tab":1,"request_id":legacy["request_id"],"ok":true,"navigated":false,"url":"http://fixture.invalid/","message":"Prepared","data":{"lease":"0123456789abcdef0123456789abcdef"}}),
+        &runtime.routes, &runtime.download_events, &ready,
+    ).unwrap();
+    let lease = original.poll().unwrap().unwrap().unwrap();
+    one.text_input(super::super::text_input::Request::Check(lease))
+        .unwrap();
+    let check = tx.pop().unwrap();
+    assert_eq!(check["action"], "check_text_input");
+    assert!(check.get("native_caret").is_none());
 }

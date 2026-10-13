@@ -5,6 +5,7 @@
 //   write <relative path> <contents>   write inside $TILO_APP_DIR
 //   writeabs <path> <contents>         write to an absolute path
 //   read  <path>                       read it, print OK/ERR
+//   elf <path>                         read the ELF magic bytes
 //   readdir <path>                     list it, print OK/ERR
 //   env   <name>                       print the variable's value
 //   envall                             print every variable name it has
@@ -48,6 +49,17 @@ fn main() {
         }
         Some("read") => match std::fs::read_to_string(&args[1]) {
             Ok(s) => writeln!(out, "OK {} {}", &args[1], s.trim()).unwrap(),
+            Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
+        },
+        Some("elf") => match std::fs::File::open(&args[1]) {
+            Ok(mut file) => {
+                use std::io::Read;
+                let mut magic = [0; 4];
+                match file.read_exact(&mut magic) {
+                    Ok(()) => writeln!(out, "ELF {} {:?}", &args[1], magic).unwrap(),
+                    Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
+                }
+            }
             Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
         },
         Some("readdir") => match std::fs::read_dir(&args[1]) {

@@ -1,0 +1,44 @@
+{
+  "assumptions": {
+    "context_tokens": 64,
+    "kv_bits": 16,
+    "logical_parameters": 1024,
+    "weight_bits": 4
+  },
+  "batch_size": 1,
+  "config_sha256": "d10c076a600d7f526026e4dcde3de46b616ff4cf26d1d265e1ecf96781ef8020",
+  "evidence": "analytical_storage_bound",
+  "full_attention_cache": {
+    "excludes": [
+      "recurrent_state",
+      "convolution_state",
+      "scales",
+      "padding",
+      "workspace",
+      "batching"
+    ],
+    "full_attention_layers": 2,
+    "kv_elements": 2048,
+    "packed_bytes": 4096,
+    "status": "partial_bound"
+  },
+  "limitations": [
+    "SYNTHETIC contract example. Model, revisions, digests and all values are authored fixtures; no experiment or checkpoint is represented.",
+    "Weight bound assumes uniform precision; excludes scales, padding and duplicated storage.",
+    "Logical parameter count is a user assumption, not inferred from packed tensor inventory.",
+    "Open-weight access does not by itself establish hardware commercialization rights.",
+    "Snapshot digest checks integrity, not publisher authentication.",
+    "Precision is a storage assumption; quantization quality has not been validated."
+  ],
+  "model": "Synthetic/Contract-Example",
+  "not_estimated": [
+    "silicon_area",
+    "power",
+    "tokens_per_second",
+    "coding_quality",
+    "total_runtime_memory"
+  ],
+  "packed_weight_bytes": 512,
+  "revision": "ad835591193cff5d2a231485cab35f8654c71287",
+  "schema_version": 1
+}

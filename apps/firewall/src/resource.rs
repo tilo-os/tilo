@@ -1,13 +1,15 @@
-//! Firewall as a [`tilo_resource::Resource`]: the stored configuration is
-//! the shared document, and firewalld on each device is its projection.
+//! Firewall as a resource: the stored configuration ([`Firewall`]) is the
+//! shared document, and firewalld on each device is its projection.
 //!
-//! Every edit — a rule, a service, the active zone, start/stop, panic — is a
-//! [`FirewallAction`] through the framework dispatcher. After every change,
-//! each device running the app applies the stored configuration to its own
-//! firewalld (a projection drain); what it applied last is that device's own
-//! setting, so an unchanged configuration is not pushed again. Applying now
-//! and reading the configuration firewalld already has are effects with no
-//! document delta of their own: reading one in submits [`FirewallAction::Import`].
+//! A zone's policy, members, rules and the active zone are field edits at
+//! their paths; starting, stopping and panic mode are verbs, the switches a
+//! running firewall is turned with; deleting a rule is a verb
+//! because the deletion must win over a concurrent edit; taking in what
+//! firewalld reported is the `import` verb. After every change, each device
+//! running the app applies the stored configuration to its own firewalld (a
+//! job of its window, the latest configuration winning); what it applied
+//! last is that device's own setting, so an unchanged configuration is not
+//! pushed again.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,56 +21,136 @@ use ui::framework::{
 };
 use ui::prelude::Effect;
 use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_resource::{self, ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{self, Availability, Derived, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::widget::Element;
 
-use crate::actions::{FIREWALL_ACTION_TYPE, FirewallAction, register};
-use crate::app::FirewallApp;
+use crate::app::{FirewallApp, Notice, Tone};
 use crate::backend::{Backend, Mode};
-use crate::doc::FirewallDoc;
+pub use crate::model::Firewall;
 use crate::model::{FirewallConfig, ZoneKind};
 
-/// The firewall configuration resource.
-pub struct Firewall;
-
-impl Resource for Firewall {
-    const KIND: &'static str = "firewall.config";
-    const LABEL: &'static str = "Firewall";
-    const ACTION_TYPE: &'static str = FIREWALL_ACTION_TYPE;
-
-    type State = FirewallConfig;
-    type Action = FirewallAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
+#[resource(
+    kind = "firewall.config",
+    label = "Firewall",
+    available = Firewall::available,
+    children = Firewall::zone_places,
+    search = Firewall::search,
+)]
+impl Firewall {
+    /// Start firewall.
+    #[action]
+    pub fn start(&mut self) {
+        self.enabled = true;
     }
 
-    fn read(doc: &Doc) -> Result<FirewallConfig, ModelError> {
-        Ok(FirewallDoc::load(doc).unwrap_or_else(FirewallConfig::empty))
+    /// Stop firewall.
+    #[action(destructive)]
+    pub fn stop(&mut self) {
+        self.enabled = false;
     }
 
-    /// Start/stop and panic carry the stored on/off.
-    fn bound_declarations(state: &FirewallConfig) -> Vec<ActionDecl<Self>> {
-        if state.zones.is_empty() {
-            return Vec::new();
+    /// Enter panic mode: drop all traffic in and out.
+    #[action(destructive)]
+    pub fn enter_panic_mode(&mut self) {
+        self.panic_mode = true;
+    }
+
+    /// Exit panic mode.
+    #[action]
+    pub fn exit_panic_mode(&mut self) {
+        self.panic_mode = false;
+    }
+
+    /// Delete a rule from a zone.
+    #[action]
+    pub fn delete_rule(
+        &mut self,
+        #[param("The zone")] zone: ZoneKind,
+        #[param("The rule's id")] rule: Id,
+    ) -> Result<(), Refusal> {
+        let stored = self
+            .zones
+            .get_mut(zone.name())
+            .ok_or("there is no such zone")?;
+        stored.rules.remove(&rule).ok_or("there is no such rule")?;
+        stored.deleted_rules.insert(rule.as_str().to_owned());
+        Ok(())
+    }
+
+    /// Take in the configuration firewalld reported on a device.
+    #[action(external)]
+    pub fn import(
+        &mut self,
+        #[param("The configuration, as firewalld reported it")] config: serde_json::Value,
+    ) -> Result<(), Refusal> {
+        let config: FirewallConfig = serde_json::from_value(config)
+            .map_err(|error| Refusal::new(format!("not a firewall configuration: {error}")))?;
+        self.take_in(&config);
+        Ok(())
+    }
+}
+
+impl Firewall {
+    /// The import of `config`, as a device that read it submits it.
+    pub fn import_of(config: &FirewallConfig) -> Invoke<Self> {
+        Self::IMPORT.with(serde_json::to_value(config).unwrap_or_default())
+    }
+
+    /// Start, stop and panic mode apply to a configured firewall in the
+    /// other state.
+    fn available(&self, verb: firewall::Verb) -> Availability {
+        let unavailable = |code: &str, reason: &str| Availability::Unavailable {
+            code: code.into(),
+            reason: reason.into(),
+        };
+        let switch = matches!(
+            verb,
+            firewall::Verb::Start
+                | firewall::Verb::Stop
+                | firewall::Verb::EnterPanicMode
+                | firewall::Verb::ExitPanicMode
+        );
+        if switch && self.zones.is_empty() {
+            return unavailable("unconfigured", "There is no firewall configuration yet");
         }
-        crate::actions::toggle_declarations(state)
+        match verb {
+            firewall::Verb::Start if self.enabled => {
+                unavailable("running", "The firewall is running")
+            }
+            firewall::Verb::Stop if !self.enabled => {
+                unavailable("stopped", "The firewall is stopped")
+            }
+            firewall::Verb::EnterPanicMode if self.panic_mode => {
+                unavailable("panic", "Panic mode is on")
+            }
+            firewall::Verb::ExitPanicMode if !self.panic_mode => {
+                unavailable("calm", "Panic mode is off")
+            }
+            _ => Availability::Available,
+        }
     }
 
-    fn children(state: &FirewallConfig) -> Vec<tilo_actions::Resource> {
-        crate::actions::zone_children(state)
-    }
-
-    fn search(state: &FirewallConfig) -> Vec<SearchEntry> {
-        state
+    /// Each configured zone, which deletes its own rules.
+    fn zone_places(&self) -> Vec<Derived<Self>> {
+        self.config()
             .zones
             .iter()
-            .map(|zone| SearchEntry {
-                anchor: Some(format!("firewall.zone:{}", zone.kind.name())),
-                title: zone.kind.name().to_owned(),
-                text: format!("{} rules", zone.rules.len()),
-                action: None,
-                ..Default::default()
+            .map(|zone| {
+                Derived::new(zone.kind.title())
+                    .of_kind("zone")
+                    .identified(zone.kind.name())
+                    .with(Self::DELETE_RULE.bind(firewall::DeleteRule::paths().zone, zone.kind))
+            })
+            .collect()
+    }
+
+    fn search(&self) -> Vec<SearchEntry> {
+        self.config()
+            .zones
+            .iter()
+            .map(|zone| {
+                SearchEntry::new(zone.kind.title(), format!("{} rules", zone.rules.len()))
+                    .anchored(format!("firewall.zone:{}", zone.kind.name()))
             })
             .collect()
     }
@@ -79,7 +161,7 @@ impl Resource for Firewall {
 #[effect(operation = "firewall.effect", device_only)]
 pub enum FirewallEffect {
     /// Apply firewall configuration.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     ApplyConfig,
     /// Retry firewalld connection.
     #[effect(job)]
@@ -129,14 +211,25 @@ pub(crate) fn apply_on_device(config: &FirewallConfig) -> Applied {
         .map(|()| (backend.mode(), backend.last_plan().len()))
 }
 
-/// The status line one apply leaves.
-pub(crate) fn applied_status(applied: &Applied) -> String {
+/// What one apply reports.
+pub(crate) fn applied_status(applied: &Applied) -> Notice {
+    let changes = |n: usize| if n == 1 { "change" } else { "changes" };
     match applied {
-        Ok((Mode::Live, n)) => format!("Applied {n} firewall-cmd commands"),
-        Ok((Mode::DryRun, n)) => {
-            format!("Dry-run: {n} commands planned (set TILO_FIREWALL_APPLY=1)")
-        }
-        Err(error) => format!("Apply failed: {error}"),
+        Ok((Mode::Live, n)) => Notice {
+            text: format!("Applied {n} {}", changes(*n)),
+            tone: Tone::Success,
+        },
+        Ok((Mode::DryRun, n)) => Notice {
+            text: format!(
+                "{n} {} checked. This device does not allow applying them.",
+                changes(*n)
+            ),
+            tone: Tone::Info,
+        },
+        Err(error) => Notice {
+            text: format!("Could not apply the configuration: {error}"),
+            tone: Tone::Error,
+        },
     }
 }
 
@@ -153,11 +246,9 @@ fn read_device() -> Result<FirewallConfig, String> {
     match crate::backend::import() {
         Some(config) if config.validate().is_ok() => Ok(config),
         Some(_) => {
-            Err("firewalld returned unsupported or unsafe rule data; no changes were made".into())
+            Err("Firewalld returned rules this app cannot show safely. Nothing was changed.".into())
         }
-        None => Err(
-            "Still unable to reach firewalld. Start the service, authorize it, then retry.".into(),
-        ),
+        None => Err("Firewalld is still not reachable. Start the service, then try again.".into()),
     }
 }
 
@@ -167,20 +258,29 @@ pub struct FirewallShell;
 /// Every screenshot scenario. All but `service-error` show the sample
 /// ruleset; the rest is view state the surface stages.
 const SCENARIOS: &[&str] = &[
-    "default",
     "empty",
+    "add-rule",
     "error",
     "confirmation",
     "active-change",
+    "panic",
+    "stopped",
     "service-error",
     "services",
     "selected",
+    "narrow",
+    "drawer",
 ];
 
 impl ResourceApp for FirewallShell {
     type Resource = Firewall;
     const ID: &'static str = "so.tilo.firewall";
     const TITLE: &'static str = "Firewall";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("firewall");
 
     fn view(cx: &mut ViewCx<Firewall>) -> Element {
@@ -191,28 +291,32 @@ impl ResourceApp for FirewallShell {
         SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1100, 720)
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(|name| match name {
+                "narrow" => Some((800, 600)),
+                "drawer" => Some((640, 600)),
+                _ => None,
+            })
+            .unwrap_or((1280, 800))
     }
 
     /// The bundled sample ruleset, never the capturing machine's; the
-    /// active-change scenario has just made `home` the active zone.
+    /// active-change scenario has just made `home` the active zone, and
+    /// the panic and stopped scenarios have turned those switches.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Firewall>> {
         if name == Some("service-error") {
             return Vec::new();
         }
-        let mut actions = vec![FirewallAction::Import {
-            config: crate::sample::sample_config(),
-        }];
-        if name == Some("active-change") {
-            actions.push(FirewallAction::SetDefaultZone {
-                zone: ZoneKind::Home,
-            });
+        let mut invokes = vec![Firewall::import_of(&crate::sample::sample_config())];
+        match name {
+            Some("active-change") => invokes
+                .extend(Invoke::edit(&Firewall::paths().default_zone.set(ZoneKind::Home)).ok()),
+            Some("panic") => invokes.push(Firewall::ENTER_PANIC_MODE.invoke()),
+            Some("stopped") => invokes.push(Firewall::STOP.invoke()),
+            _ => {}
         }
-        actions
-            .iter()
-            .filter_map(|action| Invoke::apply(action).ok())
-            .collect()
+        invokes
     }
 
     /// A new record starts with what firewalld on the creating device
@@ -232,43 +336,22 @@ impl ResourceApp for FirewallShell {
         if let Err(error) = host.settings::<AppliedConfig>().set(&applied) {
             tracing::warn!(%error, "could not remember the imported firewall configuration");
         }
-        Invoke::apply(&FirewallAction::Import { config })
-            .into_iter()
-            .collect()
+        vec![Firewall::import_of(&config)]
     }
 }
 
 impl ResourceSurface<Firewall, FirewallEffect> for FirewallApp {
-    fn present(&mut self, state: &Rc<FirewallConfig>) {
-        self.show_config(state);
+    fn present(&mut self, state: &Rc<Firewall>) {
+        let config = state.config();
+        self.show_config(&config);
+        self.apply_to_device(&config);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Firewall>) {
         let applied = cx.settings::<AppliedConfig>();
-        self.attach_framework(cx.dispatcher(), applied.clone());
+        self.attach_framework(cx.dispatcher(), applied);
         // Apply the stored configuration to this device after every change.
-        let outcome = self.apply_outcome();
-        let pending = applied.clone();
-        cx.drain(
-            move |config: &FirewallConfig| pending_apply(config, &pending.get()),
-            move |config: FirewallConfig, cx| {
-                let applied = applied.clone();
-                let outcome = Rc::clone(&outcome);
-                Ok(cx.thread(
-                    move |_| {
-                        let result = apply_on_device(&config);
-                        (config, result)
-                    },
-                    move |(), (config, result): (FirewallConfig, Applied), _| {
-                        let status = applied_status(&result);
-                        *outcome.borrow_mut() = Some(status.clone());
-                        result.map_err(|_| status)?;
-                        remember_applied(&applied, &config);
-                        Ok(Effected::done())
-                    },
-                ))
-            },
-        );
+        self.follow_jobs(cx.jobs());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -284,7 +367,7 @@ impl ResourceSurface<Firewall, FirewallEffect> for FirewallApp {
     ) -> Result<Effected, String> {
         match effect {
             FirewallEffect::ApplyConfig => {
-                let config = cx.live().get().as_ref().clone();
+                let config = cx.live().get().config();
                 if config.zones.is_empty() {
                     return Err("Firewall service is unavailable".into());
                 }
@@ -303,7 +386,7 @@ impl ResourceSurface<Firewall, FirewallEffect> for FirewallApp {
                 |_| read_device(),
                 |app: &mut Self, read: Result<FirewallConfig, String>, cx| {
                     let config = app.finish_retry(read)?;
-                    cx.apply(&FirewallAction::Import { config });
+                    cx.submit(Firewall::import_of(&config));
                     Ok(Effected::done())
                 },
             )),
@@ -327,8 +410,8 @@ impl ResourceSurface<Firewall, FirewallEffect> for FirewallApp {
     }
 }
 
-/// Where the projection's result goes until the surface shows it.
-pub(crate) type ApplyOutcome = Rc<RefCell<Option<String>>>;
+/// Where a failed apply of the projection goes until the surface reports it.
+pub(crate) type ApplyOutcome = Rc<RefCell<Option<Notice>>>;
 
 #[cfg(test)]
 mod tests {
@@ -378,26 +461,21 @@ mod tests {
         let empty = ui::tilo_resource::publish::<Firewall>(
             "firewall.config",
             "Firewall",
-            &FirewallConfig::empty(),
+            &Firewall::default(),
         );
         assert!(
-            !empty
+            empty
                 .actions
                 .iter()
-                .any(|action| action.id == "toggle-enabled"),
+                .filter(|action| ["start", "stop"].contains(&action.id.as_str()))
+                .all(|action| !action.contract.availability.is_available()),
             "nothing to start or stop before there is a configuration"
         );
 
         let mut app = TestApp::<FirewallShell>::new().unwrap();
-        app.invoke(
-            Invoke::apply(&FirewallAction::Import {
-                config: sample_config(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        app.invoke(Firewall::import_of(&sample_config())).unwrap();
         let surface = app.agent_surface();
-        for id in ["toggle-enabled", "toggle-panic"] {
+        for id in ["stop", "enter-panic-mode"] {
             assert_eq!(
                 action(&surface, id).unwrap()["operation"],
                 "Document",
@@ -416,22 +494,19 @@ mod tests {
         );
 
         let remembered = app.settings::<AppliedConfig>();
-        let stored = app.state().to_json();
+        let stored = app.state().config().to_json();
         let applied = app
             .harness()
             .wait_until(ui::time::Duration::from_secs(30), |_| {
                 remembered.get().config.as_deref() == Some(stored.as_str())
             });
         assert!(applied, "the device remembers the configuration it applied");
-        let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains("commands planned"), "{frame}");
 
         // Stopping the firewall is an edit like any other: confirmed, in
         // the document, and applied by the device in turn.
-        app.invoke_confirmed(Invoke::apply(&FirewallAction::SetEnabled { on: false }).unwrap())
-            .unwrap();
+        app.invoke_confirmed(Firewall::STOP.invoke()).unwrap();
         assert!(!app.state().enabled);
-        let stopped = app.state().to_json();
+        let stopped = app.state().config().to_json();
         let reapplied = app
             .harness()
             .wait_until(ui::time::Duration::from_secs(30), |_| {
@@ -446,14 +521,189 @@ mod tests {
     #[test]
     fn captures_stage_the_sample_through_actions() {
         let mut active = TestApp::<FirewallShell>::capture(Some("active-change")).unwrap();
-        assert_eq!(active.harness().inspection().viewport, [1100, 720]);
+        assert_eq!(active.harness().inspection().viewport, [1280, 800]);
         assert_eq!(active.state().default_zone, ZoneKind::Home);
         let frame = active.harness().inspection_json().unwrap();
-        assert!(frame.contains("home is now the active zone"), "{frame}");
+        assert!(frame.contains("Home is now the active zone"), "{frame}");
+
+        let mut narrow = TestApp::<FirewallShell>::capture(Some("narrow")).unwrap();
+        assert_eq!(narrow.harness().inspection().viewport, [800, 600]);
+
+        let panic = TestApp::<FirewallShell>::capture(Some("panic")).unwrap();
+        assert!(panic.state().panic_mode);
+        let stopped = TestApp::<FirewallShell>::capture(Some("stopped")).unwrap();
+        assert!(!stopped.state().enabled);
 
         let mut error = TestApp::<FirewallShell>::capture(Some("service-error")).unwrap();
         assert!(error.state().zones.is_empty());
         let frame = error.harness().inspection_json().unwrap();
-        assert!(frame.contains("Permission denied"), "{frame}");
+        assert!(
+            frame.contains("Permission to read firewalld was denied"),
+            "{frame}"
+        );
+    }
+
+    fn imported(config: &FirewallConfig) -> ui::tilo_resource::Replica<Firewall> {
+        let mut replica = ui::tilo_resource::Replica::<Firewall>::new();
+        replica.apply(Firewall::import_of(config)).unwrap();
+        replica
+    }
+
+    fn edit(
+        replica: &mut ui::tilo_resource::Replica<Firewall>,
+        edit: &ui::tilo_resource::Edit<Firewall>,
+    ) -> Result<(), String> {
+        replica
+            .apply(Invoke::edit(edit).map_err(|error| error.to_string())?)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    /// The record reads back as the canonical configuration, and an import
+    /// removes the members and rules firewalld no longer reports.
+    #[test]
+    fn the_record_round_trips_and_an_import_reconciles() {
+        let config = sample_config();
+        let replica = imported(&config);
+        assert_eq!(replica.state().unwrap().config(), config.canonical());
+
+        let zone_kind = config.default_zone;
+        let stale_rule = config.zone(zone_kind).unwrap().rules[0].id;
+        let mut probe = config.clone();
+        let zone = probe.zone_mut(zone_kind).unwrap();
+        zone.services.retain(|service| service != "ssh");
+        zone.interfaces.retain(|interface| interface != "eth0");
+        zone.rules.retain(|rule| rule.id != stale_rule);
+        let mut replica = replica;
+        replica.apply(Firewall::import_of(&probe)).unwrap();
+        let restored = replica.state().unwrap().config();
+        let zone = restored.zone(zone_kind).unwrap();
+        assert!(!zone.has_service("ssh"));
+        assert!(!zone.interfaces.iter().any(|interface| interface == "eth0"));
+        assert!(!zone.rules.iter().any(|rule| rule.id == stale_rule));
+
+        // An import of the old configuration does not bring the rule back.
+        replica.apply(Firewall::import_of(&config)).unwrap();
+        let again = replica.state().unwrap().config();
+        assert!(
+            !again
+                .zone(zone_kind)
+                .unwrap()
+                .rules
+                .iter()
+                .any(|rule| rule.id == stale_rule)
+        );
+    }
+
+    /// Concurrent edits to independent fields, rules and services merge; a
+    /// deletion wins over a concurrent edit of the rule.
+    #[test]
+    fn concurrent_edits_merge_per_field_and_delete_wins() {
+        let config = sample_config();
+        let z = config.default_zone;
+        let ids: Vec<_> = config.zone(z).unwrap().rules.iter().map(|r| r.id).collect();
+        let rules = Firewall::paths().zones.key(z.name()).rules;
+        let rule = |id| rules.item(&Firewall::rule(id));
+
+        let mut a = imported(&config);
+        let mut b = a.fork();
+        edit(&mut a, &rule(ids[0]).source.replace("10.0.0.0/8")).unwrap();
+        edit(&mut b, &rule(ids[0]).enabled.set(false)).unwrap();
+        edit(&mut b, &rule(ids[1]).enabled.set(false)).unwrap();
+        let services = Firewall::paths().zones.key(z.name()).services;
+        edit(&mut a, &services.insert(&"https".to_owned())).unwrap();
+        edit(&mut b, &services.insert(&"dns".to_owned())).unwrap();
+        a.sync_with(&mut b).unwrap();
+        assert_eq!(a.state().unwrap(), b.state().unwrap());
+        let merged = a.state().unwrap().config();
+        let zone = merged.zone(z).unwrap();
+        let first = zone.rules.iter().find(|r| r.id == ids[0]).unwrap();
+        assert_eq!(first.source, "10.0.0.0/8");
+        assert!(!first.enabled);
+        assert!(!zone.rules.iter().find(|r| r.id == ids[1]).unwrap().enabled);
+        assert!(zone.has_service("https") && zone.has_service("dns"));
+
+        let mut a = imported(&config);
+        let mut b = a.fork();
+        a.apply(Firewall::DELETE_RULE.with((z, Firewall::rule(ids[0]))))
+            .unwrap();
+        edit(&mut b, &rule(ids[0]).source.replace("192.168.1.0/24")).unwrap();
+        a.sync_with(&mut b).unwrap();
+        assert!(
+            !a.state()
+                .unwrap()
+                .config()
+                .zone(z)
+                .unwrap()
+                .rules
+                .iter()
+                .any(|r| r.id == ids[0])
+        );
+    }
+
+    /// The stored configuration is held to what firewalld accepts, however
+    /// it is changed; an agent edits it in one call; history says what
+    /// changed.
+    #[test]
+    fn edits_are_held_to_the_configuration_rules_and_history_names_them() {
+        let mut app = TestApp::<FirewallShell>::new().unwrap();
+        app.invoke(Firewall::import_of(&sample_config())).unwrap();
+        let public = Firewall::paths().zones.key(ZoneKind::Public.name());
+        assert!(
+            app.invoke(Invoke::edit(&public.services.insert(&"bad service".to_owned())).unwrap())
+                .is_err(),
+            "a malformed service name is refused"
+        );
+        app.call(
+            "field-edit",
+            serde_json::json!({ "edit": Firewall::paths().default_zone.set(ZoneKind::Home) }),
+        )
+        .unwrap();
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = app
+            .history()
+            .into_iter()
+            .filter(|entry| entry.what.is_some())
+            .map(|entry| reader.sentence(&entry))
+            .collect();
+        assert_eq!(
+            sentences.last().map(String::as_str),
+            Some("Made home the active zone")
+        );
+    }
+
+    /// An agent deletes a rule naming its zone as the zone's JSON name.
+    #[test]
+    fn an_agent_deletes_a_rule_naming_its_zone() {
+        let config = sample_config();
+        let mut app = TestApp::<FirewallShell>::new().unwrap();
+        app.invoke(Firewall::import_of(&config)).unwrap();
+        let rule = config.zone(ZoneKind::Public).unwrap().rules[0].id;
+        assert!(
+            app.call(
+                "delete-rule",
+                serde_json::json!({ "zone": "dmz", "rule": Firewall::rule(rule) }),
+            )
+            .is_err(),
+            "the rule is not in that zone"
+        );
+        app.call(
+            "delete-rule",
+            serde_json::json!({ "zone": "public", "rule": Firewall::rule(rule) }),
+        )
+        .unwrap();
+        let public = app.state().config();
+        let public = public.zone(ZoneKind::Public).unwrap();
+        assert!(public.rules.iter().all(|stored| stored.id != rule));
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let last = app.history().pop().map(|entry| reader.sentence(&entry));
+        assert_eq!(
+            last.as_deref(),
+            Some("Deleted a rule from the “public” zone")
+        );
     }
 }

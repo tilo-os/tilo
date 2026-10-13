@@ -32,12 +32,13 @@ pub enum InviteRole {
 }
 
 impl InviteRole {
+    /// The room role an accepted invitation admits its holder with.
     #[must_use]
-    pub fn verb(self) -> crate::shell::state::Verb {
+    pub fn role(self) -> crate::shell::state::CapRole {
         match self {
-            Self::Viewer => crate::shell::state::Verb::Read,
-            Self::Commenter => crate::shell::state::Verb::Comment,
-            Self::Editor => crate::shell::state::Verb::Write,
+            Self::Viewer => crate::shell::state::CapRole::Viewer,
+            Self::Commenter => crate::shell::state::CapRole::Commenter,
+            Self::Editor => crate::shell::state::CapRole::Editor,
         }
     }
 
@@ -142,10 +143,6 @@ fn signing_payload(token: &PeerInviteToken) -> Result<Vec<u8>, postcard::Error> 
         invitee_name: token.invitee_name.as_deref(),
         expiry_unix_seconds: token.expiry_unix_seconds,
     })
-}
-
-fn now_unix_seconds() -> u64 {
-    tilo_clock::unix_now()
 }
 
 /// Stable, non-secret identifier for one exact signed invite. Authorities use
@@ -333,7 +330,7 @@ pub fn make_invite_token_with_recipient(
         invite_nonce: *uuid::Uuid::new_v4().as_bytes(),
         recipient_user_public_key,
         invitee_name: invitee_name.map(str::to_string),
-        expiry_unix_seconds: now_unix_seconds().saturating_add(expiry_seconds_from_now),
+        expiry_unix_seconds: tilo_clock::unix_now().saturating_add(expiry_seconds_from_now),
         signature: Vec::new(),
     };
     token.signature = key
@@ -352,17 +349,13 @@ pub fn make_invite_token_with_recipient(
 /// Returns an error describing which check failed: base64/JSON decoding,
 /// expiry, an invalid or unminted room id, a device-certificate/endpoint
 /// mismatch, or a signature that does not cover the token.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one linear sequence of token checks, each failing with its own message"
-)]
 pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String> {
     let json = B64
         .decode(token_str)
         .map_err(|e| format!("base64 decode: {e}"))?;
     let token: PeerInviteToken =
         serde_json::from_slice(&json).map_err(|error| format!("json parse: {error}"))?;
-    if token.expiry_unix_seconds < now_unix_seconds() {
+    if token.expiry_unix_seconds < tilo_clock::unix_now() {
         return Err("token expired".into());
     }
     if token.invitee_name.as_ref().is_some_and(|name| {
@@ -492,10 +485,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn invitations_round_trip_their_room_hosts_and_roster() {
         // Phase `round_trip_binds_room_key_and_dialing_address`.
         {
@@ -787,7 +776,7 @@ mod tests {
         {
             let key = iroh::SecretKey::from_bytes(&[12; 32]);
             let mut ws = workspace(4);
-            ws.room = RoomId::nil();
+            ws.set_room(RoomId::nil());
             assert!(make_invite_token(&key, &ws, &endpoint(&key, 4), 3600).is_err());
         }
     }

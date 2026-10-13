@@ -6,15 +6,14 @@
 //!   The `--shots` renderer and every test run here — no network, fully
 //!   hermetic, deterministic screenshots.
 //! * **live** (`--features live`): real `YouTube` data via the pure-Rust
-//!   [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client, with `PoTokens`
-//!   minted by a swappable [`potoken`] provider (`rustypipe-botguard` by
-//!   default). This pulls in `tokio` + a network stack, so it is *off* by
-//!   default and never compiled into the hermetic shots path.
+//!   [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client. This pulls
+//!   in `tokio` + a network stack, so it is *off* by default and never
+//!   compiled into the hermetic shots path.
 //!
 //! Both worlds implement the same [`YtBackend`] trait, so the rest of the app
 //! (the fetch worker in [`crate::api`]) is written once against the trait and
 //! the build feature picks the implementation: rustypipe is real but gated,
-//! the offline sample is the default, and `PoToken` is a module you can swap.
+//! and the offline sample is the default.
 //!
 //! ## What lives where
 //!
@@ -23,16 +22,13 @@
 //! | data-source trait  | [`YtBackend`]                       |
 //! | offline impl       | [`offline::OfflineBackend`]         |
 //! | live impl (gated)  | `live::RustyPipeBackend` (`live`)   |
-//! | `PoToken` seam       | [`potoken::PoTokenProvider`]        |
 //! | request/result DTO | [`Query`], [`BackendResult`]        |
 //!
-//! Recommendations model (Home): the trait exposes the three no-auth signals
-//! `NewPipe` / Piped use — [`YtBackend::subscription_feed`] (fan-out of latest
-//! uploads across subscribed channels), [`YtBackend::trending`], and
-//! [`YtBackend::related`] (per-video "up next"). See [`crate::recommend`].
+//! Recommendations model (Home): the trait exposes the no-auth signals
+//! `NewPipe` / Piped use — [`YtBackend::trending`] and [`YtBackend::related`]
+//! (per-video "up next"). See [`crate::recommend`].
 
 pub mod offline;
-pub mod potoken;
 /// Fully-rangeable stream resolution through public Invidious `local=true`
 /// proxies — the reliable, seekable playback URL for the media engine.
 pub mod proxy;
@@ -73,8 +69,6 @@ pub enum Query {
     Related(String),
     /// Region trending feed.
     Trending,
-    /// Fan-out of the latest uploads across the given subscribed channels.
-    SubscriptionFeed(Vec<String>),
 }
 
 /// The result of a [`Query`]. Backends map their native types onto Tube's
@@ -114,15 +108,9 @@ pub struct PlaybackSource {
     /// Directly-playable media URL (progressive muxed when available, else the
     /// best video-only stream). Signature/nsig already applied by the extractor.
     pub url: String,
-    /// Full format description, e.g. `video/mp4; codecs="avc1.42001E"` or the
-    /// yt-dlp format note — informational, for the status log.
-    pub format: String,
     /// True when the chosen URL carries audio as well as video (a progressive
     /// muxed format), so the caller knows sound will play.
     pub has_audio: bool,
-    pub width: u32,
-    pub height: u32,
-    pub fps: u8,
     /// `YouTube` quality label, e.g. "360p".
     pub quality: String,
 }
@@ -226,18 +214,6 @@ pub trait YtBackend: Send + Sync {
         ))
     }
 
-    /// Fan-out the latest uploads across `channel_ids` (the subscriptions
-    /// feed). The default implementation pulls each channel's uploads via
-    /// [`YtBackend::channel`] and interleaves them newest-first; a backend
-    /// with a cheaper bulk endpoint may override.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if any fanned-out [`YtBackend::channel`] call fails.
-    fn subscription_feed(&self, channel_ids: &[String]) -> BackendOutcome {
-        crate::recommend::fan_out_subscription_feed(self, channel_ids)
-    }
-
     /// Dispatch a [`Query`] to the right method. Lets the worker stay generic.
     ///
     /// # Errors
@@ -250,7 +226,6 @@ pub trait YtBackend: Send + Sync {
             Query::Channel(id) => self.channel(&id),
             Query::Related(id) => self.related(&id),
             Query::Trending => self.trending(),
-            Query::SubscriptionFeed(ids) => self.subscription_feed(&ids),
         }
     }
 }

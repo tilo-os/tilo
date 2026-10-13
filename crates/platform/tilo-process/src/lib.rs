@@ -8,6 +8,9 @@
 //! This crate is the platform layer's home for process capabilities; child
 //! processes, process groups and PTYs (today's `bounded-command`) move here.
 
+#[cfg(feature = "native-editor")]
+pub mod editor;
+pub use tilo_platform_caps::{Availability, availability, available};
 pub mod rendezvous;
 
 /// A capability of this crate.
@@ -19,50 +22,34 @@ pub enum Feature {
     Rendezvous,
 }
 
-/// Whether a feature works on this target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Availability {
-    Available,
-    Unsupported(&'static str),
-}
-
-/// Each feature's availability on Linux, macOS and the web, in that order.
-pub const CAPABILITIES: &[(Feature, [Availability; 3])] = &[
-    (
-        Feature::ProcessId,
-        [
-            Availability::Available,
-            Availability::Available,
-            Availability::Unsupported("a page has no process id"),
-        ],
-    ),
-    (
-        Feature::Rendezvous,
-        [
-            Availability::Available,
-            Availability::Available,
-            Availability::Unsupported("a page has no local sockets"),
-        ],
-    ),
-];
-
-/// Whether `feature` works on the running target.
-#[must_use]
-pub fn availability(feature: Feature) -> Availability {
-    match feature {
-        Feature::ProcessId => {
-            if backend::HAS_PROCESS_ID {
-                Availability::Available
-            } else {
-                Availability::Unsupported("a page has no process id")
-            }
+impl tilo_platform_caps::Feature for Feature {
+    /// The feature's availability on Linux, macOS and the web, in that order.
+    fn targets(self) -> [Availability; 3] {
+        use Availability::{Available, Unsupported};
+        match self {
+            Self::ProcessId => [
+                Available,
+                Available,
+                Unsupported("a page has no process id"),
+            ],
+            Self::Rendezvous => [
+                Available,
+                Available,
+                Unsupported("a page has no local sockets"),
+            ],
         }
-        Feature::Rendezvous => {
-            if cfg!(unix) {
-                Availability::Available
-            } else {
-                Availability::Unsupported("a page has no local sockets")
-            }
+    }
+
+    /// Whether the feature works on the running target.
+    fn availability(self) -> Availability {
+        let here = match self {
+            Self::ProcessId => backend::HAS_PROCESS_ID,
+            Self::Rendezvous => cfg!(unix),
+        };
+        if here {
+            Availability::Available
+        } else {
+            self.targets()[2]
         }
     }
 }
@@ -91,6 +78,45 @@ pub fn open_file_count(pid: u32) -> Option<usize> {
 /// The error reading the table.
 pub fn probe_process_table() -> std::io::Result<()> {
     table::probe()
+}
+
+/// Raise this process's soft open-file limit to the 1024 descriptors a Linux
+/// app starts with, as far as the hard limit allows. macOS starts processes
+/// at 256, which one app retaining a descriptor per selected file exhausts.
+/// The limit is never lowered and the hard limit is left alone; it stops at
+/// 1024 so code bounded by `select`'s `FD_SETSIZE` keeps working. Other
+/// platforms already start at least that high, so it does nothing there.
+pub fn raise_open_file_limit() {
+    limits::raise_open_files();
+}
+
+#[cfg(target_os = "macos")]
+mod limits {
+    const OPEN_FILES: libc::rlim_t = 1024;
+
+    pub fn raise_open_files() {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit only writes the rlimit it is given.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) } != 0 {
+            return;
+        }
+        let wanted = OPEN_FILES.min(limit.rlim_max);
+        if limit.rlim_cur >= wanted {
+            return;
+        }
+        limit.rlim_cur = wanted;
+        // SAFETY: setrlimit only reads the initialized rlimit it is given. A
+        // refusal leaves the previous limit, which is still usable.
+        let _ = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod limits {
+    pub const fn raise_open_files() {}
 }
 
 #[cfg(target_os = "linux")]
@@ -146,6 +172,7 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_platform_caps::Feature as _;
 
     #[test]
     fn availability_matches_the_table_for_this_target() {
@@ -154,8 +181,8 @@ mod tests {
         } else {
             usize::from(cfg!(target_os = "macos"))
         };
-        for (feature, row) in CAPABILITIES {
-            assert_eq!(availability(*feature), row[column]);
+        for feature in [Feature::ProcessId, Feature::Rendezvous] {
+            assert_eq!(availability(feature), feature.targets()[column]);
         }
     }
 

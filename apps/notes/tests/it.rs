@@ -6,7 +6,6 @@
     clippy::indexing_slicing,
     clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -26,6 +25,8 @@ mod framework_body;
 mod framework_new_note;
 #[path = "framework_save_status.rs"]
 mod framework_save_status;
+#[path = "history_and_agents.rs"]
+mod history_and_agents;
 #[path = "interaction_event_path.rs"]
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
@@ -50,6 +51,8 @@ mod paste_image;
 mod read_content;
 #[path = "responsive_drawer.rs"]
 mod responsive_drawer;
+#[path = "scroll_damage.rs"]
+mod scroll_damage;
 #[path = "sidebar_collab_growth.rs"]
 mod sidebar_collab_growth;
 #[path = "sidebar_dnd.rs"]
@@ -62,6 +65,8 @@ mod tab_nesting;
 mod tree_operations;
 #[path = "two_peer_sync.rs"]
 mod two_peer_sync;
+#[path = "typing_damage.rs"]
+mod typing_damage;
 #[path = "typing_order.rs"]
 mod typing_order;
 #[path = "welcome_page_renders_all_block_kinds.rs"]
@@ -84,6 +89,8 @@ mod canonical_views;
 
 #[path = "note_context_menu.rs"]
 mod note_context_menu;
+#[path = "note_header.rs"]
+mod note_header;
 #[path = "semantic_input.rs"]
 mod semantic_input;
 
@@ -114,9 +121,6 @@ mod capture_runtime;
 #[path = "scenarios.rs"]
 mod scenarios;
 
-#[path = "continuation_discovery.rs"]
-mod continuation_discovery;
-
 #[path = "block_commands.rs"]
 mod block_commands;
 
@@ -127,3 +131,6 @@ mod clipboard_safety;
 mod find_replace;
 
 mod slash_text_input;
+
+#[path = "paragraph_damage.rs"]
+mod paragraph_damage;

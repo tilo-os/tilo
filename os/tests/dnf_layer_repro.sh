@@ -144,6 +144,12 @@ for instruction in instructions:
     if active.startswith('RUN ') and re.search(r'\bdnf (?:install|swap|--disablerepo)', active):
         transactions += 1
         assert '${FINALIZE_RPMDB}' in active, active[:120]
-assert transactions >= 10, transactions
+# Every rpm transaction rewrites the whole database, so each RUN that holds
+# one ships a full rpmdb.sqlite in its layer (#4055: twenty layers carried
+# 957 MB of them). The package transactions share one RUN; the kernel swap,
+# which needs files copied after them, is the other.
+assert transactions == 2, (
+    f'{transactions} rootfs RUNs run dnf; each ships its own copy of the rpm database. '
+    'Add a transaction to the package RUN in rootfs-base instead.')
 PY
 echo 'fixed DNF/RPM transaction time, package ownership and layer cleanup: ok'

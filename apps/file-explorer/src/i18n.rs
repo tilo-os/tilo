@@ -12,31 +12,18 @@ use icu_datetime::{
 };
 use icu_decimal::{DecimalFormatter, input::Decimal};
 use icu_locale::Locale;
-use ui::i18n::{ArgValue, EmbeddedCatalog};
+use ui::i18n::ArgValue;
 use unic_langid::LanguageIdentifier;
 
+#[cfg(test)]
 const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
+#[cfg(test)]
 const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
 
-/// Region variants such as de-AT and de-CH negotiate to the complete German
-/// catalog, while ICU and Fluent keep the requested locale for number,
-/// plural and date rules.
-static CATALOG: EmbeddedCatalog = catalog();
-
-const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new(
-        "en-US",
-        &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)],
-        "files-menu-open",
-    )
-    .with_system_locale();
-    // Unit tests assert source-copy behavior throughout the widget. Keep them
-    // deterministic across developer/CI host locales; catalog negotiation
-    // itself is exercised through explicit-locale helpers below.
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
+// Region variants such as de-AT and de-CH negotiate to the complete German
+// catalog, while ICU and Fluent keep the requested locale for number,
+// plural and date rules.
+ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 fn source_lang() -> LanguageIdentifier {
     "en-US".parse().unwrap_or_default()
@@ -89,6 +76,34 @@ fn format_datetime_parts_for(
         time: Time::try_new(hour, minute, 0, 0).ok()?,
     };
     Some(formatter.format(&value).to_string())
+}
+
+fn format_date_parts_for(
+    locale: &LanguageIdentifier,
+    year: i32,
+    month: u8,
+    day: u8,
+) -> Option<String> {
+    let formatter = DateTimeFormatter::try_new(data_locale(locale).into(), YMD::medium()).ok()?;
+    let value = DateTime {
+        date: Date::try_new_iso(year, month, day).ok()?,
+        time: Time::try_new(0, 0, 0, 0).ok()?,
+    };
+    Some(formatter.format(&value).to_string())
+}
+
+/// Format the date of a local wall-clock value with ICU4X/CLDR data for the
+/// active locale (the time of day left out, for a narrow column).
+pub fn format_date(value: chrono::DateTime<chrono::Local>) -> String {
+    use chrono::Datelike;
+
+    format_date_parts_for(
+        &active_locale(),
+        value.year(),
+        value.month() as u8,
+        value.day() as u8,
+    )
+    .unwrap_or_else(|| value.format("%Y-%m-%d").to_string())
 }
 
 /// Format a local wall-clock value with ICU4X/CLDR data for the active locale.
@@ -156,14 +171,6 @@ pub fn format_bytes(bytes: u64) -> String {
     format_bytes_for(&active_locale(), bytes)
 }
 
-pub fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
-}
-
 pub fn arg<V: Into<ArgValue>>(name: &str, value: V) -> (&str, ArgValue) {
     (name, value.into())
 }
@@ -181,139 +188,10 @@ fn t_args_for(locale: &str, key: &str, args: &[(&str, ArgValue)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluent::{FluentBundle, FluentResource};
-    use std::collections::{BTreeMap, BTreeSet};
-
-    /// Parse a catalog the way Fluent will, keeping entries past a syntax
-    /// error so the assertions below name every affected key.
-    fn make_bundle(locale: LanguageIdentifier, source: &str) -> FluentBundle<FluentResource> {
-        let mut bundle = FluentBundle::new(vec![locale]);
-        bundle.set_use_isolating(false);
-        let resource =
-            FluentResource::try_new(source.to_string()).unwrap_or_else(|(partial, _)| partial);
-        let _ = bundle.add_resource(resource);
-        bundle
-    }
-
-    fn catalog_messages(source: &str) -> BTreeMap<String, String> {
-        let mut messages = BTreeMap::new();
-        let mut current: Option<(String, String)> = None;
-        for line in source.lines() {
-            if !line.starts_with(char::is_whitespace)
-                && let Some((key, value)) = line.split_once(" = ")
-            {
-                if let Some((key, value)) = current.take() {
-                    messages.insert(key, value);
-                }
-                current = Some((key.to_string(), value.to_string()));
-            } else if let Some((_, value)) = current.as_mut()
-                && (line.starts_with(char::is_whitespace) || line.trim() == "}")
-            {
-                value.push('\n');
-                value.push_str(line);
-            }
-        }
-        if let Some((key, value)) = current {
-            messages.insert(key, value);
-        }
-        messages
-    }
-
-    fn variables(pattern: &str) -> BTreeSet<String> {
-        let mut variables = BTreeSet::new();
-        let bytes = pattern.as_bytes();
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index] == b'$' {
-                let start = index + 1;
-                index = start;
-                while index < bytes.len()
-                    && (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'-' | b'_'))
-                {
-                    index += 1;
-                }
-                variables.insert(pattern[start..index].to_string());
-            } else {
-                index += 1;
-            }
-        }
-        variables
-    }
-
-    fn selector_variants(pattern: &str) -> Vec<String> {
-        let mut variants: Vec<_> = pattern
-            .lines()
-            .filter_map(|line| {
-                let line = line.trim_start();
-                let line = line.strip_prefix('*').unwrap_or(line);
-                line.strip_prefix('[')
-                    .and_then(|line| line.split_once(']'))
-                    .map(|(variant, _)| variant.to_string())
-            })
-            .collect();
-        variants.sort();
-        variants
-    }
-
     /// The German catalogue is complete and structurally matches the source, every key is registered, and negotiation falls back correctly.
     #[test]
     fn catalogs_are_complete_registered_and_negotiated() {
-        // --- phase: german_catalog_is_valid_complete_and_structurally_matches_source ---
-        {
-            assert!(
-                FluentResource::try_new(DE_FTL.to_string()).is_ok(),
-                "de-DE.ftl must parse without Fluent syntax recovery"
-            );
-            let source = catalog_messages(SOURCE_FTL);
-            let german = catalog_messages(DE_FTL);
-            assert_eq!(
-                source.keys().collect::<Vec<_>>(),
-                german.keys().collect::<Vec<_>>(),
-                "German and source catalogs must have exact key parity"
-            );
-            for (key, source_pattern) in &source {
-                let german_pattern = &german[key];
-                assert_eq!(
-                    variables(source_pattern),
-                    variables(german_pattern),
-                    "Fluent variables changed for {key}"
-                );
-                assert_eq!(
-                    selector_variants(source_pattern),
-                    selector_variants(german_pattern),
-                    "Fluent selector branches changed for {key}"
-                );
-            }
-
-            let locale: LanguageIdentifier = "de-DE".parse().unwrap();
-            let bundle = make_bundle(locale, DE_FTL);
-            for key in source.keys() {
-                assert!(
-                    bundle
-                        .get_message(key)
-                        .and_then(|message| message.value())
-                        .is_some(),
-                    "de-DE would fall back to source English for {key}"
-                );
-            }
-        }
-
-        // --- phase: every_source_key_is_registered ---
-        {
-            let bundle = make_bundle(source_lang(), SOURCE_FTL);
-            for key in include_str!("../locales/en-US.ftl")
-                .lines()
-                .filter_map(|line| line.split_once(" = ").map(|(key, _)| key.trim()))
-            {
-                assert!(
-                    bundle
-                        .get_message(key)
-                        .and_then(|message| message.value())
-                        .is_some(),
-                    "missing or valueless Fluent message: {key}"
-                );
-            }
-        }
+        tilo_copy_lint::catalog::check_translations(&[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)]);
 
         // --- phase: catalog_negotiation_uses_german_regions_and_source_fallback ---
         {
@@ -442,13 +320,13 @@ mod tests {
                     .map_or(source, |(production, _)| production)
             });
             for phrase in [
-                "Keep Offline",
-                "Use Automatic Storage",
-                "Retry Download",
-                "Copy One-Time Share Link",
-                "Sharing & Access…",
+                "Keep offline",
+                "Use automatic storage",
+                "Retry download",
+                "Copy one-time share link",
+                "Sharing and access…",
                 "Availability…",
-                "Version History…",
+                "Version history…",
                 "Shared with 1 recipient",
                 "Transfer failed",
                 "Replica status unknown",
@@ -507,7 +385,6 @@ mod tests {
         // --- phase: generic_files_surfaces_do_not_embed_catalog_labels ---
         {
             let sources = [
-                include_str!("breadcrumb_bar.rs"),
                 include_str!("breadcrumbs.rs"),
                 include_str!("favorites.rs"),
                 include_str!("fileops.rs"),
@@ -515,7 +392,6 @@ mod tests {
                 include_str!("path_bar.rs"),
                 include_str!("places_sidebar.rs"),
                 include_str!("search_provider.rs"),
-                include_str!("sidebar.rs"),
                 include_str!("templates.rs"),
                 include_str!("toolbar.rs"),
                 include_str!("views/file_view.rs"),

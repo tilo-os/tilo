@@ -1,6 +1,7 @@
 //! Floating map controls shared by every Maps surface.
 //!
-//! This component owns the zoom/location/traffic stack's UI state, geometry,
+//! This component owns the History/zoom/location/traffic stack's UI state,
+//! geometry,
 //! drawing, hit-testing, and tooltip dwell. Geographic effects remain in the
 //! app and are requested through [`MapControlAction`].
 
@@ -8,34 +9,54 @@ use ui::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 
+use ui::icons::Icon;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::spacing::Spacing;
-use ui::widget::{Button, ButtonFace, TooltipHost};
+use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, HistoryControl, TooltipHost};
 
-use crate::draw;
+/// The geometry of the control column, read from the theme: icon buttons of
+/// the Regular control height, the zoom pair an `s2` apart (one group), the
+/// locate and traffic buttons an `s3` from it and from each other, and the
+/// whole column an `s4` from the map's edges like every floating map surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ColumnMetrics {
+    pub size: f64,
+    pub margin: f64,
+    pub pair_gap: f64,
+    pub group_gap: f64,
+}
 
-pub(super) const SIZE: f64 = 40.0;
-/// Inset of the control column from the map's edge — the theme's `s4`, the
-/// same margin every other floating map surface keeps.
-const MARGIN: f64 = Spacing::BASE.s4 as f64;
-/// The zoom pair reads as one group: its two buttons sit an `s2` apart
-/// (HIG §7b "related rows"), never sharing an edge — nothing touches.
-const PAIR_GAP: f64 = Spacing::BASE.s2 as f64;
-/// Locate and Traffic are siblings of the zoom group: `s3` between them.
-const GROUP_GAP: f64 = Spacing::BASE.s3 as f64;
+impl ColumnMetrics {
+    pub(super) fn of(theme: &Theme) -> Self {
+        let sp = &theme.tokens.spacing;
+        Self {
+            size: ButtonFace::height(ControlSize::Regular, theme),
+            margin: f64::from(sp.s4),
+            pair_gap: f64::from(sp.s2),
+            group_gap: f64::from(sp.s3),
+        }
+    }
 
-/// Height of the whole control column below its top margin: four controls,
-/// the zoom pair gap and two sibling gaps. The app lays the navigation card
-/// and the ⋯ overflow button out around this.
-pub(super) const fn column_height() -> f64 {
-    4.0 * SIZE + PAIR_GAP + 2.0 * GROUP_GAP
+    /// Height of the whole column below its top margin: four controls, the
+    /// zoom pair gap and two sibling gaps. The app lays the navigation card
+    /// and the overflow button out around this.
+    pub(super) fn column_height(self) -> f64 {
+        4.0 * self.size + self.pair_gap + 2.0 * self.group_gap
+    }
+}
+
+impl Default for ColumnMetrics {
+    fn default() -> Self {
+        Self::of(&Theme::dark())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MapControlAction {
+    /// The window's History control, which the map's corner holds since the
+    /// full-bleed map has no header row.
+    History,
     ZoomIn,
     ZoomOut,
     Locate,
@@ -44,6 +65,7 @@ pub(super) enum MapControlAction {
 
 #[derive(Clone, Copy)]
 struct Layout {
+    history: Rect,
     zoom_in: Rect,
     zoom_out: Rect,
     locate: Rect,
@@ -51,29 +73,21 @@ struct Layout {
 }
 
 impl Layout {
-    fn new(viewport: Rect) -> Self {
-        let x1 = viewport.x1 - MARGIN;
-        let y0 = viewport.y0 + MARGIN;
-        let zoom_in = Rect::new(x1 - SIZE, y0, x1, y0 + SIZE);
-        let zoom_out = Rect::new(
-            zoom_in.x0,
-            zoom_in.y1 + PAIR_GAP,
-            zoom_in.x1,
-            zoom_in.y1 + PAIR_GAP + SIZE,
-        );
-        let locate = Rect::new(
-            zoom_out.x0,
-            zoom_out.y1 + GROUP_GAP,
-            zoom_out.x1,
-            zoom_out.y1 + GROUP_GAP + SIZE,
-        );
-        let traffic = Rect::new(
-            locate.x0,
-            locate.y1 + GROUP_GAP,
-            locate.x1,
-            locate.y1 + GROUP_GAP + SIZE,
-        );
+    fn new(viewport: Rect, m: ColumnMetrics, with_history: bool) -> Self {
+        let x1 = viewport.x1 - m.margin;
+        let y0 = viewport.y0 + m.margin;
+        let below = |r: Rect, gap: f64| Rect::new(r.x0, r.y1 + gap, r.x1, r.y1 + gap + m.size);
+        let first = Rect::new(x1 - m.size, y0, x1, y0 + m.size);
+        let (history, zoom_in) = if with_history {
+            (first, below(first, m.group_gap))
+        } else {
+            (Rect::ZERO, first)
+        };
+        let zoom_out = below(zoom_in, m.pair_gap);
+        let locate = below(zoom_out, m.group_gap);
+        let traffic = below(locate, m.group_gap);
         Self {
+            history,
             zoom_in,
             zoom_out,
             locate,
@@ -83,6 +97,7 @@ impl Layout {
 
     fn rect(self, action: MapControlAction) -> Rect {
         match action {
+            MapControlAction::History => self.history,
             MapControlAction::ZoomIn => self.zoom_in,
             MapControlAction::ZoomOut => self.zoom_out,
             MapControlAction::Locate => self.locate,
@@ -91,9 +106,42 @@ impl Layout {
     }
 }
 
+impl MapControlAction {
+    const ALL: [Self; 5] = [
+        Self::History,
+        Self::ZoomIn,
+        Self::ZoomOut,
+        Self::Locate,
+        Self::ToggleTraffic,
+    ];
+
+    /// What the control is called: its accessible name and its tooltip.
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::History => "History",
+            Self::ZoomIn => "Zoom in",
+            Self::ZoomOut => "Zoom out",
+            Self::Locate => "My location",
+            Self::ToggleTraffic => "Traffic",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::History => Icon::History,
+            Self::ZoomIn => Icon::Plus,
+            Self::ZoomOut => Icon::Minus,
+            Self::Locate => Icon::LocateFixed,
+            Self::ToggleTraffic => Icon::Layers,
+        }
+    }
+}
+
 pub(super) struct MapControls {
     viewport: Rect,
+    metrics: ColumnMetrics,
     traffic_enabled: bool,
+    history: Option<HistoryControl>,
     hovered: Option<MapControlAction>,
     tooltip: TooltipHost,
 }
@@ -102,7 +150,9 @@ impl Default for MapControls {
     fn default() -> Self {
         Self {
             viewport: Rect::ZERO,
+            metrics: ColumnMetrics::default(),
             traffic_enabled: false,
+            history: None,
             hovered: None,
             tooltip: TooltipHost::new(),
         }
@@ -114,6 +164,34 @@ impl MapControls {
         self.viewport = viewport;
     }
 
+    pub(super) fn set_metrics(&mut self, metrics: ColumnMetrics) {
+        self.metrics = metrics;
+    }
+
+    pub(super) fn metrics(&self) -> ColumnMetrics {
+        self.metrics
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::new(self.viewport, self.metrics, self.history.is_some())
+    }
+
+    /// Show the window's History control at the top of the column, or none.
+    pub(super) fn set_history(&mut self, control: Option<HistoryControl>) {
+        self.history = control;
+    }
+
+    /// Height of the column below its top margin, with the History control
+    /// and its group gap while it shows.
+    pub(super) fn column_height(&self) -> f64 {
+        let history = if self.history.is_some() {
+            self.metrics.size + self.metrics.group_gap
+        } else {
+            0.0
+        };
+        self.metrics.column_height() + history
+    }
+
     pub(super) fn traffic_enabled(&self) -> bool {
         self.traffic_enabled
     }
@@ -122,16 +200,20 @@ impl MapControls {
         self.traffic_enabled = enabled;
     }
 
+    /// Where each shown control is drawn.
+    pub(super) fn rects(&self) -> impl Iterator<Item = Rect> {
+        let layout = self.layout();
+        MapControlAction::ALL
+            .into_iter()
+            .map(move |action| layout.rect(action))
+            .filter(|rect| rect.area() > 0.0)
+    }
+
     pub(super) fn hit_test(&self, point: Point) -> Option<MapControlAction> {
-        let layout = Layout::new(self.viewport);
-        [
-            MapControlAction::ZoomIn,
-            MapControlAction::ZoomOut,
-            MapControlAction::Locate,
-            MapControlAction::ToggleTraffic,
-        ]
-        .into_iter()
-        .find(|action| layout.rect(*action).contains(point))
+        let layout = self.layout();
+        MapControlAction::ALL
+            .into_iter()
+            .find(|action| layout.rect(*action).contains(point))
     }
 
     /// Retarget both immediate hover feedback and the shared delayed tooltip.
@@ -146,15 +228,9 @@ impl MapControls {
     ) -> bool {
         let old_hover = self.hovered;
         self.hovered = (!suppressed).then(|| self.hit_test(point)).flatten();
-        let own_target = self.hovered.map(|action| {
-            let label = match action {
-                MapControlAction::ZoomIn => "Zoom in",
-                MapControlAction::ZoomOut => "Zoom out",
-                MapControlAction::Locate => "My location",
-                MapControlAction::ToggleTraffic => "Traffic",
-            };
-            (Layout::new(self.viewport).rect(action), label.to_string())
-        });
+        let own_target = self
+            .hovered
+            .map(|action| (self.layout().rect(action), action.label().to_string()));
         let target = if suppressed {
             None
         } else {
@@ -177,6 +253,9 @@ impl MapControls {
         self.tooltip.needs_frame()
     }
 
+    /// Paint the column: icon buttons on their raised face so they read over
+    /// any basemap tone. The traffic toggle stands on the selection lift
+    /// while on.
     pub(super) fn draw(
         &self,
         scene: &mut Scene,
@@ -184,96 +263,25 @@ impl MapControls {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let layout = Layout::new(self.viewport);
-        for (action, label) in [
-            (MapControlAction::ZoomIn, "+"),
-            (MapControlAction::ZoomOut, "–"),
-        ] {
+        let layout = self.layout();
+        for action in MapControlAction::ALL {
+            if layout.rect(action).area() <= 0.0 {
+                continue;
+            }
+            let on = match action {
+                MapControlAction::ToggleTraffic => self.traffic_enabled,
+                MapControlAction::History => self.history.is_some_and(HistoryControl::is_open),
+                _ => false,
+            };
             Button::paint(
                 scene,
                 transform,
                 text,
                 theme,
-                &ButtonFace::new(layout.rect(action), label)
-                    .radius(10.0)
-                    .text_size(22.0)
+                &ButtonFace::icon_only(layout.rect(action), action.icon(), action.label())
+                    .role(ButtonRole::Secondary)
                     .hovered(self.hovered == Some(action))
-                    .accessible_name(if action == MapControlAction::ZoomIn {
-                        "Zoom in"
-                    } else {
-                        "Zoom out"
-                    }),
-            );
-        }
-
-        let colors = &theme.tokens.colors;
-        // Locate and Traffic are the same Neutral button face as the zoom
-        // pair (one rest edge, one hover, one radius for the whole column);
-        // their pictograms paint on top of the face.
-        let locate = layout.locate;
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::new(locate, "")
-                .radius(10.0)
-                .hovered(self.hovered == Some(MapControlAction::Locate))
-                .accessible_name("My location"),
-        );
-        let center = locate.center();
-        draw::stroke_circle(scene, transform, center, 6.0, 2.0, theme.accent_primary);
-        draw::fill_circle(scene, transform, center, 2.0, theme.accent_primary);
-        for (dx, dy) in [(0.0, -9.0), (0.0, 9.0), (-9.0, 0.0), (9.0, 0.0)] {
-            draw::line(
-                scene,
-                transform,
-                Point::new(center.x + dx * 0.7, center.y + dy * 0.7),
-                Point::new(center.x + dx, center.y + dy),
-                2.0,
-                theme.accent_primary,
-            );
-        }
-
-        let traffic = layout.traffic;
-        let traffic_hovered = self.hovered == Some(MapControlAction::ToggleTraffic);
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::new(traffic, "")
-                .radius(10.0)
-                .hovered(traffic_hovered)
-                .accessible_name("Traffic"),
-        );
-        let (traffic_bg, _, _) = ButtonFace::new(traffic, "")
-            .hovered(traffic_hovered)
-            .colors(theme);
-        if self.traffic_enabled {
-            // The overlay is *live* while enabled — accent is the right
-            // vocabulary for that (HIG §9.4), as a ring over the rest face.
-            draw::stroke_rrect(scene, transform, traffic, 10.0, 1.0, theme.accent_primary);
-        }
-        let center = traffic.center();
-        let dot = |color: Color| {
-            if self.traffic_enabled {
-                color
-            } else {
-                draw::mix(color, traffic_bg, 0.55)
-            }
-        };
-        for (dy, color) in [
-            (-8.0, colors.semantic.danger),
-            (0.0, colors.semantic.warning),
-            (8.0, colors.semantic.success),
-        ] {
-            draw::fill_circle(
-                scene,
-                transform,
-                Point::new(center.x, center.y + dy),
-                3.2,
-                dot(color),
+                    .toggled(on),
             );
         }
     }
@@ -301,7 +309,7 @@ impl MapControls {
     }
 
     pub(super) fn rect(&self, action: MapControlAction) -> Rect {
-        Layout::new(self.viewport).rect(action)
+        self.layout().rect(action)
     }
 }
 
@@ -318,10 +326,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn map_controls_own_hit_testing_hover_gaps_and_traffic_state() {
         // Phase `every_drawn_control_hit_tests_to_one_semantic_action`.
         {
@@ -360,7 +364,7 @@ mod tests {
         // the four faces plus those gaps — no control shares an edge.
         {
             let controls = controls();
-            let sp = Spacing::BASE;
+            let sp = Theme::dark().tokens.spacing;
             let zoom_in = controls.rect(MapControlAction::ZoomIn);
             let zoom_out = controls.rect(MapControlAction::ZoomOut);
             let locate = controls.rect(MapControlAction::Locate);
@@ -369,7 +373,7 @@ mod tests {
             assert_eq!(locate.y0 - zoom_out.y1, f64::from(sp.s3));
             assert_eq!(traffic.y0 - locate.y1, f64::from(sp.s3));
             assert_eq!(zoom_in.y0, f64::from(sp.s4));
-            assert_eq!(traffic.y1 - zoom_in.y0, column_height());
+            assert_eq!(traffic.y1 - zoom_in.y0, controls.metrics().column_height());
             let rects = [zoom_in, zoom_out, locate, traffic];
             for (i, a) in rects.iter().enumerate() {
                 for b in &rects[i + 1..] {
@@ -379,6 +383,27 @@ mod tests {
                     );
                 }
             }
+        }
+
+        // Phase `the_history_control_heads_the_column_while_offered`.
+        {
+            let mut controls = controls();
+            let sp = Theme::dark().tokens.spacing;
+            let plain = controls.rect(MapControlAction::ZoomIn);
+            assert_eq!(controls.rect(MapControlAction::History), Rect::ZERO);
+            assert_eq!(controls.rects().count(), 4);
+            controls.set_history(Some(HistoryControl::Closed));
+            let history = controls.rect(MapControlAction::History);
+            let zoom_in = controls.rect(MapControlAction::ZoomIn);
+            assert_eq!(history.y0, plain.y0);
+            assert_eq!(zoom_in.y0 - history.y1, f64::from(sp.s3));
+            assert_eq!(
+                controls.hit_test(history.center()),
+                Some(MapControlAction::History)
+            );
+            let traffic = controls.rect(MapControlAction::ToggleTraffic);
+            assert_eq!(traffic.y1 - history.y0, controls.column_height());
+            assert_eq!(controls.rects().count(), 5);
         }
 
         // Phase `traffic_visual_state_is_not_duplicated_in_the_app`.

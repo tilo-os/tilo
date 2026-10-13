@@ -158,6 +158,130 @@ async fn invoke(
 }
 
 impl ShellNetwork {
+    /// Record a member audit at the exact admitted governor on the existing
+    /// certified action lane. No endpoint fallback or caller-selected authority.
+    pub(crate) async fn record_effect_at_governor(
+        &self,
+        room: RoomId,
+        invocation: uuid::Uuid,
+        redacted: Vec<u8>,
+    ) -> Result<(), String> {
+        let route = self.governor_route(room)?;
+        let invocation = tilo_actions::InvocationId(invocation);
+        let redacted = String::from_utf8(redacted).map_err(|_| "invalid effect encoding")?;
+        let answer = tokio::time::timeout(GOVERNOR_TIMEOUT, async {
+            loop {
+                let answer = route
+                    .ask(
+                        &self.cmd_tx,
+                        ActionMessage::RecordEffectReceipt {
+                            invocation,
+                            redacted: redacted.clone(),
+                        },
+                    )
+                    .await;
+                match answer {
+                    Err(reason)
+                        if reason == crate::network::actor::native_ingress::NOT_CONNECTED =>
+                    {
+                        // The actor refused before queueing a directed request.
+                        // Wait for the original native session, never a fallback.
+                        tokio::time::sleep(STATUS_INTERVAL).await;
+                    }
+                    answer => break answer,
+                }
+            }
+        })
+        .await
+        .map_err(|_| "effect governor did not answer in time; outcome unknown")??;
+        let fresh = self.governor_route(room)?;
+        if fresh.source != route.source
+            || fresh.target != route.target
+            || fresh.governor_user != route.governor_user
+        {
+            return Err("effect governor or selected device changed; outcome unknown".into());
+        }
+        match answer {
+            ActionMessage::EffectReceiptCommitted { invocation: got } if got == invocation => {
+                Ok(())
+            }
+            ActionMessage::Rejected { code } => Err(format!("effect governor refused: {code}")),
+            _ => Err("effect governor returned an unexpected answer".into()),
+        }
+    }
+    /// Discover one existing resource on the currently governed room's host,
+    /// using the same authenticated remote-action transport as the palette.
+    pub(crate) async fn discover_resource_view(
+        &self,
+        room: RoomId,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> Result<tilo_actions::remote::CataloguePage, String> {
+        use crate::shell::remote_action_link::RemoteActionLink as _;
+        use tilo_actions::remote::RemoteActionMessage;
+        let route = self.governor_route(room)?;
+        let wanted = query
+            .view_resource
+            .as_ref()
+            .ok_or("missing resource view query")?
+            .clone();
+        let provider = query
+            .provider
+            .as_ref()
+            .ok_or("missing resource provider")?
+            .clone();
+        let target =
+            iroh::EndpointId::from_bytes(&route.target).map_err(|error| error.to_string())?;
+        // Fresh ids do not collide with another palette's or room's counter.
+        let correlation = uuid::Uuid::new_v4().as_u64_pair().0;
+        let pending = self.request(
+            route.ws,
+            target,
+            RemoteActionMessage::CatalogueRequest { correlation, query },
+        )?;
+        let answer = tokio::time::timeout(GOVERNOR_TIMEOUT, pending)
+            .await
+            .map_err(|_| "resource host lookup timed out")?
+            .ok_or("resource host lookup ended")?;
+        let RemoteActionMessage::CatalogueResponse {
+            correlation: got,
+            result,
+        } = answer
+        else {
+            return Err("resource host answered another request".into());
+        };
+        if got != correlation {
+            return Err("resource host correlation changed".into());
+        }
+        let page = result.map_err(|error| error.to_string())?;
+        let fresh = self.governor_route(room)?;
+        if fresh.source != route.source
+            || fresh.target != route.target
+            || fresh.governor_user != route.governor_user
+        {
+            return Err("resource host or selected device changed".into());
+        }
+        let locator = page
+            .locator
+            .as_ref()
+            .ok_or("resource host has no public browser locator")?;
+        if locator.room != room.to_string()
+            || locator.host_device != hex::encode(route.target)
+            || locator.provider != provider
+            || page.rows.iter().any(|row| {
+                row.provider != provider
+                    || row.resource.id != wanted.id
+                    || row.resource.kind != wanted.kind
+                    || row
+                        .action
+                        .as_ref()
+                        .is_none_or(|action| action.kind != tilo_actions::OperationKind::View)
+            })
+        {
+            return Err("resource host answered outside the requested source".into());
+        }
+        Ok(page)
+    }
+
     fn governor_route(&self, room: RoomId) -> Result<GovernorRoute, String> {
         let owner = self.native_owner()?;
         self.check_native_custody(&owner, room)?;

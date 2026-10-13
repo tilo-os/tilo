@@ -16,7 +16,9 @@ description = "The canonical Tilo desktop model shared by every host."
 # `tools/policy/check_desktop_model_dependencies.py` enforces that list.
 
 [dependencies]
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 blake3.workspace = true
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 desktop-policy = { version = "0.1.0", path = "../../system/desktop-policy", default-features = false }
@@ -27,6 +29,7 @@ thiserror.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-automation = { version = "0.1.0", path = "../../collab/automation" }
 uuid.workspace = true
+web-time = "1"
 
 [dev-dependencies]
 # Tests take a peer's changes in the way production does (clippy.toml).

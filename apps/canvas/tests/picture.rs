@@ -5,7 +5,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::float_cmp,
-    clippy::indexing_slicing,
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
@@ -38,6 +37,17 @@ fn halves(width: u32, height: u32) -> String {
 }
 
 fn view(app: &mut TestApp<App>, action: &str, args: Value) -> Value {
+    let effect = args.as_object().and_then(|args| {
+        <canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(action, args).ok()
+    });
+    if let Some(effect) = effect {
+        return app
+            .effect(&effect)
+            .expect("the view effect finishes")
+            .value
+            .unwrap_or(Value::Null);
+    }
+
     app.call(action, args).unwrap().unwrap()
 }
 
@@ -73,6 +83,72 @@ fn placed(app: &mut TestApp<App>) {
         json!({"marks": [{"id": "photo", "shape": {"kind": "image", "src": halves(200, 100), "x": 100, "y": 100}}]}),
     )
     .unwrap();
+}
+
+#[test]
+fn a_look_job_keeps_its_snapshot_while_another_edit_is_applied() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call(
+        "set-artwork",
+        json!({"width": 64, "height": 64, "ground_colour": "#ff0000", "texture": "smooth"}),
+    )
+    .unwrap();
+    let look = canvas::resource::ViewOp::Look {
+        look: Look {
+            size: Some(64),
+            format: Some("png".into()),
+            ..Default::default()
+        },
+    };
+    let invocation = app.start_effect(&look).unwrap();
+    app.call("set-artwork", json!({"ground_colour": "#0000ff"}))
+        .unwrap();
+    app.harness()
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
+            harness
+                .job_updates(invocation)
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+        });
+    let updates = app.effect_progress();
+    let output = updates
+        .iter()
+        .find_map(|update| match update {
+            ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => Some(output),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{updates:?}"));
+    let contract = app
+        .harness()
+        .resources()
+        .iter()
+        .find(|resource| resource.kind == "canvas.artwork")
+        .unwrap()
+        .actions
+        .iter()
+        .find(|action| action.id == "look")
+        .unwrap()
+        .contract
+        .clone();
+    assert!(matches!(
+        contract.execution,
+        ui::tilo_actions::ExecutionMode::Background { .. }
+    ));
+    contract
+        .result
+        .validate(output)
+        .expect("the broker accepts the published terminal result");
+    let hash = ui::tilo_actions::content_hash(&output.resources[0]).unwrap();
+    let png = app.content().read(hash).unwrap();
+    let picture = image::load_from_memory(&png).unwrap().to_rgba8();
+    assert_eq!(picture.get_pixel(32, 32).0, [255, 0, 0, 255]);
+    let now = app.effect(&look).unwrap();
+    assert_ne!(
+        output.value.as_ref().unwrap()["revision"],
+        now.value.unwrap()["revision"]
+    );
+    assert!(app.undo(), "only the blue-ground edit is undone");
+    assert_eq!(app.state().ground.colour, "#ff0000");
 }
 
 #[test]
@@ -261,7 +337,8 @@ fn opening_a_picture_makes_a_new_artwork_of_it() {
         json!({"marks": [{"id": "old", "shape": {"kind": "rect", "x": 0, "y": 0, "width": 9, "height": 9}}]}),
     )
     .unwrap();
-    app.call("open", json!({"path": halves(320, 180)})).unwrap();
+    app.call("open-picture", json!({"path": halves(320, 180)}))
+        .unwrap();
     let art = app.state();
     assert_eq!((art.width, art.height), (320.0, 180.0));
     assert_eq!(art.layers.len(), 1);
@@ -296,7 +373,8 @@ fn the_artwork_is_cut_to_a_region_or_to_what_a_mark_shows() {
 #[test]
 fn exports_are_png_jpeg_or_webp_at_any_scale() {
     let mut app = TestApp::<App>::new().unwrap();
-    app.call("open", json!({"path": halves(400, 200)})).unwrap();
+    app.call("open-picture", json!({"path": halves(400, 200)}))
+        .unwrap();
     let art = app.state();
     let mut renderer = Renderer::default();
     renderer.pictures.read_from(app.content());
@@ -341,7 +419,8 @@ fn exports_are_png_jpeg_or_webp_at_any_scale() {
 #[test]
 fn exports_are_written_where_the_caller_names() {
     let mut app = TestApp::<App>::new().unwrap();
-    app.call("open", json!({"path": halves(40, 20)})).unwrap();
+    app.call("open-picture", json!({"path": halves(40, 20)}))
+        .unwrap();
     let dir = std::env::temp_dir().join(format!("canvas-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let jpeg = dir.join("halves.jpg");
@@ -370,7 +449,14 @@ fn exports_are_written_where_the_caller_names() {
         ("export-svg", "/tmp/x.png"),
     ] {
         assert!(
-            app.call(action, json!({ "path": path })).is_err(),
+            app.effect(
+                &<canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(
+                    action,
+                    json!({"path": path}).as_object().unwrap()
+                )
+                .unwrap()
+            )
+            .is_err(),
             "{action} {path} is refused"
         );
     }
@@ -437,15 +523,8 @@ fn the_canvas_decodes_a_picture_in_the_background_and_a_look_waits_for_it() {
     canvas.pictures.read_from(app.content());
     assert_eq!(canvas.pictures.size(src), None, "a frame does not wait");
     assert!(canvas.pictures.decoding());
-    let mut ready = None;
-    for _ in 0..500 {
-        ready = canvas.pictures.size(src);
-        if ready.is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert_eq!(ready, Some((200, 100)));
+    let ready = tilo_test_env::wait_for("the picture to decode", || canvas.pictures.size(src));
+    assert_eq!(ready, (200, 100));
     assert!(!canvas.pictures.decoding());
     let mut look = Renderer::default();
     look.pictures.read_from(app.content());
@@ -507,4 +586,89 @@ fn a_picture_opened_from_the_desktop_has_an_artwork_of_its_own() {
     let app = app.relaunch(&[path]).unwrap();
     assert_eq!(app.record(), &record);
     assert_eq!(app.state().title, "Harbour at dusk");
+}
+
+#[test]
+fn pixel_brush_and_eraser_keep_exact_cells_and_transparency() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call(
+        "new-artwork",
+        json!({"width":32,"height":32,"texture":"smooth","ground_colour":"#122a3b"}),
+    )
+    .unwrap();
+    app.call("paint", json!({"strokes":[{"id":"pixel-line","brush":"pixel","size":1,"colour":"#dce9d9","points":[[4.2,8.7,0.1],[12.9,8.1,1.0]]}]})).unwrap();
+    app.call("paint", json!({"strokes":[{"id":"pixel-clear","brush":"pixel-eraser","size":1,"points":[[8.1,8.2]]}]})).unwrap();
+    let mut renderer = Renderer::default();
+    let mut text = ui::TextRenderer::new();
+    let (picture, _) = view_ops::export(
+        &mut renderer,
+        &mut text,
+        &app.state(),
+        &Export {
+            transparent: Some(true),
+            ..Export::default()
+        },
+    )
+    .unwrap();
+    let pixels = image::load_from_memory(&picture.bytes).unwrap().to_rgba8();
+    for (x, y, pixel) in pixels.enumerate_pixels() {
+        let filled = y == 8 && (4..=12).contains(&x) && x != 8;
+        assert_eq!(
+            pixel.0,
+            if filled {
+                [220, 233, 217, 255]
+            } else {
+                [0, 0, 0, 0]
+            },
+            "cell {x},{y}"
+        );
+    }
+    let expected = app.state().marks;
+    app.call("undo", json!({})).unwrap();
+    let restored = app.state();
+    assert_eq!(restored.marks.len(), 1);
+    app.call("redo", json!({})).unwrap();
+    assert_eq!(app.state().marks, expected);
+}
+
+#[test]
+fn nearest_image_preview_preserves_every_enlarged_pixel_and_is_editable() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call(
+        "new-artwork",
+        json!({"width":32,"height":32,"texture":"smooth"}),
+    )
+    .unwrap();
+    app.call("draw", json!({"marks":[{"id":"sprite","pixelated":true,"shape":{"kind":"image","src":halves(32,32),"x":0,"y":0,"width":32,"height":32}}]})).unwrap();
+    let render = |app: &TestApp<App>| {
+        let mut renderer = Renderer::default();
+        renderer.pictures.read_from(app.content());
+        let (picture, _) = view_ops::look(
+            &mut renderer,
+            &mut ui::TextRenderer::new(),
+            &app.state(),
+            &Look {
+                size: Some(1024),
+                format: Some("png".into()),
+                ..Look::default()
+            },
+        )
+        .unwrap();
+        image::load_from_memory(&picture.bytes).unwrap().to_rgba8()
+    };
+    let crisp = render(&app);
+    for (x, _, pixel) in crisp.enumerate_pixels() {
+        assert_eq!(pixel.0, if x < 512 { RED } else { BLUE });
+    }
+    app.call("edit-marks", json!({"ids":["sprite"],"pixelated":false}))
+        .unwrap();
+    assert!(!app.state().mark("sprite").unwrap().style.pixelated);
+    let smooth = render(&app);
+    assert!(
+        smooth
+            .pixels()
+            .any(|pixel| pixel.0 != RED && pixel.0 != BLUE)
+    );
+    app.call("undo", json!({})).unwrap();
+    assert_eq!(render(&app), crisp);
 }

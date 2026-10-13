@@ -102,7 +102,7 @@ mod tests {
 
     fn inputs(parent: &std::path::Path) -> ShellFixtureInputs {
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
+            ui::font_catalog::checkout_root(),
             "en-US",
         );
         let renderer = ui::text_render::TextRenderer::with_font_catalog(&catalog).unwrap();
@@ -123,7 +123,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "records"]
+                vec!["actions", "records", "file-picker"]
             );
             assert_eq!(frame.chrome().active_local_user(), "shell-fixture");
             assert!(!frame.paint().encoding().is_empty());
@@ -196,17 +196,14 @@ mod tests {
 
     // Same cursor/press/release wire sequence as redraw_bench::dispatch_click.
     fn click(frame: &mut FrameBuilder, target: &str, document: &mut automerge::AutoCommit) {
-        use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+        use winit::event::Modifiers;
         let center = frame
             .widget_registry()
             .get(target)
             .expect("real widget target")
             .center();
         let mut focus = None;
-        let cursor = WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-        };
+        let cursor = ui::synthetic_input::cursor_moved(center.x, center.y);
         let _ = frame.dispatch_event(
             &cursor,
             &Modifiers::default(),
@@ -214,16 +211,8 @@ mod tests {
             &automerge::ROOT,
             &mut focus,
         );
-        let press = WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        let release = WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        };
+        let press = ui::synthetic_input::mouse_press();
+        let release = ui::synthetic_input::mouse_release();
         let pressed = frame.dispatch_event(
             &press,
             &Modifiers::default(),
@@ -279,7 +268,7 @@ mod tests {
             assert!(frame.chrome().records().open_records().is_empty());
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "records"]
+                vec!["actions", "records", "file-picker"]
             );
             assert!(!frame.paint().encoding().is_empty());
             click(&mut frame, "topbar_tray_pill", &mut document);
@@ -334,8 +323,8 @@ mod tests {
                     .workspaces
                     .last()
                     .unwrap()
-                    .owner
-                    .as_deref(),
+                    .owner()
+                    .map(String::as_str),
                 Some("shell-fixture")
             );
             assert!(std::rc::Rc::ptr_eq(
@@ -346,7 +335,7 @@ mod tests {
             assert_rebuilt_files(&mut frame, strip, files, &child, &document);
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "records"]
+                vec!["actions", "records", "file-picker"]
             );
             assert_eq!(guard.attempts(), 0);
         }

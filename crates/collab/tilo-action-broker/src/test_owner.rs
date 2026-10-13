@@ -7,8 +7,6 @@
 //! answers. A failed write leaves the live owner unchanged.
 #![allow(
     clippy::missing_panics_doc,
-    clippy::unwrap_used,
-    clippy::expect_used,
     reason = "test fixture: a failed step is the test failing"
 )]
 use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
@@ -87,6 +85,14 @@ fn writer_seed(room: &str) -> Result<Vec<u8>, String> {
 impl SessionOwner {
     /// A new room under `dir`, governed by a fresh device with a Writer record.
     pub fn initialize(dir: &Path) -> Result<Self, String> {
+        Self::initialize_with_documents(dir, |_| Ok(Vec::new()))
+    }
+
+    /// Add real typed record genesis to the same durable owner fixture.
+    pub fn initialize_with_documents(
+        dir: &Path,
+        documents: impl FnOnce(&str) -> Result<Vec<SeedDocument>, String>,
+    ) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let seed: Vec<u8> = (0..4)
             .flat_map(|_| *uuid::Uuid::new_v4().as_bytes())
@@ -113,6 +119,13 @@ impl SessionOwner {
             now,
         )?;
         let writer = writer_seed(&room)?;
+        let mut seeded = documents(&room)?;
+        seeded.push(SeedDocument {
+            app_id: WRITER.0.into(),
+            record_id: WRITER.1.into(),
+            kind: word_processor::definition().record_kind.as_str().into(),
+            bytes: writer,
+        });
         peer.install_seed(
             SeedState {
                 room_changes: tilo_peer_state::seed_room(
@@ -120,12 +133,7 @@ impl SessionOwner {
                     &authority,
                     std::slice::from_ref(&authority),
                 )?,
-                documents: vec![SeedDocument {
-                    app_id: WRITER.0.into(),
-                    record_id: WRITER.1.into(),
-                    kind: word_processor::definition().record_kind.as_str().into(),
-                    bytes: writer,
-                }],
+                documents: seeded,
             },
             &key,
             now,
@@ -272,7 +280,13 @@ impl SessionOwner {
                 let id = invocation.to_string();
                 match doc.get(&object, &id).map_err(|e| e.to_string())? {
                     Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Bytes(prior) if prior == redacted) =>
-                        {}
+                    {
+                        return Ok(OwnerCommitReceipt {
+                            binding,
+                            generation: self.generation,
+                            aggregate_hash: self.status().aggregate,
+                        });
+                    }
                     Some(_) => return Err("effect receipt is immutable".into()),
                     None => {
                         doc.put(&object, &id, ScalarValue::Bytes(redacted.clone()))

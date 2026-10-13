@@ -1,5 +1,16 @@
 //! Exact, read-only action geometry shared by native and retained browser hosts.
 
+/// One marker exported only by the action-presence painter, in surface-local
+/// logical coordinates. It grants no authority to its actor.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PaintedActionMarker {
+    pub interaction: tilo_actions::SemanticInteraction,
+    pub viewport: [f64; 4],
+    pub marker: [f64; 4],
+    pub locus: [f64; 4],
+    pub protected: [f64; 4],
+}
+
 /// Paint semantic activity against this frame's exact action bindings. Both
 /// native and retained hosts use this projection; an unresolved action remains
 /// in the activity rail rather than guessing a control from its label.
@@ -11,7 +22,8 @@ pub(crate) fn draw_action_presence(
     viewport: vello::kurbo::Rect,
     surface: &str,
     now: crate::time::Instant,
-) {
+) -> Vec<PaintedActionMarker> {
+    let mut painted = Vec::new();
     let mut resolved = Vec::new();
     for interaction in presence.visible_interactions(now) {
         let Some(bounds) = interaction_bounds(tree, bindings, &interaction) else {
@@ -23,15 +35,28 @@ pub(crate) fn draw_action_presence(
         }
         let user = crate::permissions::UserId(interaction.actor.id.clone());
         let label = presence.interaction_status_label(&interaction);
-        presence.draw_peer_outline_labeled_within(
+        presence.draw_action_outline_labeled_within(
             paint,
             &user,
             &label,
             bounds,
-            f64::from(paint.theme.tokens.radii.sm),
+            f64::from(paint.theme.tokens.radii.detail),
             viewport,
         );
-        presence.draw_agent_action_marker(paint, &interaction, bounds, viewport, surface, now);
+        if let Some(marker) =
+            presence.draw_agent_action_marker(paint, &interaction, bounds, viewport, surface, now)
+            && presence.participant_kind(&user) == crate::presence::ParticipantKind::Agent
+        {
+            painted.push(PaintedActionMarker {
+                interaction: interaction.clone(),
+                viewport: crate::floating_surface::protocol_rect_array(viewport),
+                marker: crate::floating_surface::protocol_rect_array(marker.bounds),
+                locus: crate::floating_surface::protocol_rect_array(bounds),
+                protected: crate::floating_surface::protocol_rect_array(
+                    bounds.union(marker.bounds),
+                ),
+            });
+        }
         resolved.push(interaction.invocation);
     }
     presence.draw_interactions_excluding(
@@ -43,6 +68,7 @@ pub(crate) fn draw_action_presence(
         now,
         &resolved,
     );
+    painted
 }
 
 /// One visible expression of a domain action in the retained UI. The action

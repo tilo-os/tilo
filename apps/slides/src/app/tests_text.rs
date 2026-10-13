@@ -244,15 +244,8 @@ fn help_overlay_and_accessibility_expose_the_deck() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        let palette = app.palette(&theme);
-        app.help_overlay.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            app.rect,
-            &palette,
-        );
+        app.help_overlay
+            .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, app.rect);
         // While open it is modal: a nav key is captured, not applied.
         let before = app.cur_slide;
         assert!(press_named(app, NamedKey::ArrowRight));
@@ -400,9 +393,13 @@ fn notes_typing_edits_the_notes_and_up_down_move_the_caret() {
         );
     });
     named(&mut bench, NamedKey::ArrowUp);
-    assert!(
-        bench.read(|app| app.notes.control().cursor_pos()) < "line one".len(),
-        "ArrowUp moved the notes caret onto the first shaped line"
+    // The second line's final x lies beyond the first line's final glyph.
+    // Shaped vertical navigation therefore lands at the first line's end,
+    // immediately before its newline, while retaining x for ArrowDown.
+    assert_eq!(
+        bench.read(|app| app.notes.control().cursor_pos()),
+        "line one".len(),
+        "ArrowUp reaches the first shaped line's end before its newline"
     );
     named(&mut bench, NamedKey::ArrowDown);
     assert_eq!(
@@ -512,30 +509,17 @@ fn text_box_keys_and_notes_editing() {
     }
 }
 
-/// An agent writes a slide's notes as the deck's child text.
+/// An agent writes a slide's notes with one field edit at their path.
 #[test]
-fn an_agent_writes_speaker_notes_as_a_plain_text_resource() {
-    use ui::tilo_resource::{Invoke, PlainText, TextEdit};
+fn an_agent_writes_speaker_notes_by_a_field_edit() {
     let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
     let slide = bench.deck().slides[0].id.clone();
-    let child = crate::actions::notes_resource_id(&slide);
-    let declared = bench.app.agent_surface();
-    assert!(
-        declared.as_array().unwrap().iter().any(|row| {
-            row["resource"] == child.as_str()
-                && row["resource_kind"] == <PlainText as ui::tilo_resource::Resource>::KIND
-        }),
-        "the notes are published as plain text: {declared}"
-    );
+    let edit = crate::actions::slide_paths(&slide)
+        .notes
+        .replace("thank the hosts");
     bench
         .app
-        .invoke_child::<PlainText>(
-            &child,
-            Invoke::<PlainText>::apply(&TextEdit::ReplaceText {
-                text: "thank the hosts".into(),
-            })
-            .unwrap(),
-        )
+        .call("field-edit", serde_json::json!({ "edit": edit }))
         .unwrap();
     assert_eq!(notes(&bench), "thank the hosts");
     assert!(bench.undo());
@@ -545,11 +529,14 @@ fn an_agent_writes_speaker_notes_as_a_plain_text_resource() {
 /// Where the starter deck's text box reading `words` is drawn, with the
 /// editor open for `role`.
 fn editing_starter_box(words: &str, role: ui::permissions::Role) -> (Bench, String) {
-    let mut app = ui::framework::testing::TestApp::<crate::SlidesShell>::with_role(role).unwrap();
-    let mut bench = {
-        app.harness().relayout();
-        Bench { app }
-    };
+    let mut slide = Slide::new(Layout::Blank);
+    slide.add(Element::text(words, 96.0, 90.0, 1088.0, 100.0, 54.0));
+    slide.add(Element::text("Subtitle", 96.0, 240.0, 1088.0, 100.0, 32.0));
+    let mut bench = Bench::open_as(
+        &super::bench::deck_of(vec![slide]),
+        super::bench::WINDOW,
+        role,
+    );
     let (id, at) = bench.read(|editor| {
         let id = editor.deck.slides[0]
             .elements
@@ -566,6 +553,20 @@ fn editing_starter_box(words: &str, role: ui::permissions::Role) -> (Bench, Stri
         )
     });
     bench.app.harness().double_click_at(at.x, at.y);
+    bench.read(|editor| {
+        assert!(
+            editor.editing_text,
+            "physical double-click opens the text box"
+        );
+        let retained = editor
+            .text_editor
+            .as_ref()
+            .expect("the clicked text box has its retained rich-text editor");
+        assert_eq!(
+            retained.element_id, id,
+            "the retained editor belongs to the physically clicked box"
+        );
+    });
     (bench, id)
 }
 
@@ -624,9 +625,9 @@ fn typing_in_a_text_box_edits_it_through_the_decks_dispatcher() {
 /// A text box's words are a rich-text resource of their own beneath their
 /// element, which an agent edits as the deck's action.
 #[test]
-fn an_agent_edits_a_text_box_as_a_rich_text_resource() {
-    use ui::tilo_resource::Resource as _;
+fn an_agent_edits_a_text_box_by_a_field_edit() {
     let (mut bench, _) = editing_starter_box("Title", ui::permissions::Role::Owner);
+    let slide = bench.deck().slides[0].id.clone();
     let id = bench.deck().slides[0]
         .elements
         .iter()
@@ -634,26 +635,15 @@ fn an_agent_edits_a_text_box_as_a_rich_text_resource() {
         .unwrap()
         .id
         .clone();
-    let child = crate::actions::text_resource_id(&id);
-    let declared = bench.app.agent_surface();
-    assert!(
-        declared.as_array().unwrap().iter().any(|row| {
-            row["resource"] == child.as_str()
-                && row["resource_kind"] == tilo_document::RichText::KIND
-        }),
-        "the words are published as rich text: {declared}"
-    );
+    let edit = crate::actions::element_paths(&slide, &id)
+        .body
+        .perform(&tilo_document::RichTextAction::ReplaceBody {
+            markdown: "from an agent".into(),
+        })
+        .unwrap();
     bench
         .app
-        .invoke_child::<tilo_document::RichText>(
-            &child,
-            ui::tilo_resource::Invoke::<tilo_document::RichText>::apply(
-                &tilo_document::RichTextAction::ReplaceBody {
-                    markdown: "from an agent".into(),
-                },
-            )
-            .unwrap(),
-        )
+        .call("field-edit", serde_json::json!({ "edit": edit }))
         .unwrap();
     assert_eq!(element_text(&bench, &id).text, "from an agent");
     assert!(bench.undo());

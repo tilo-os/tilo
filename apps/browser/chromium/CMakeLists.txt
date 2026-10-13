@@ -78,6 +78,14 @@ elseif(UNIX)
   add_executable(tilo-chromium-host src/host.cc src/renderer.cc src/main_linux.cc)
   tilo_target(tilo-chromium-host)
   target_link_libraries(tilo-chromium-host PRIVATE libcef_lib)
+  # CEF's build defaults do not supply the distribution's executable hardening.
+  # Set it on our host, independently of the SDK's prebuilt shared libraries.
+  target_compile_options(tilo-chromium-host PRIVATE -fPIE -fstack-protector-strong -fstack-clash-protection -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3)
+  target_link_options(tilo-chromium-host PRIVATE -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
+  if(PROJECT_ARCH STREQUAL "x86_64")
+    target_compile_options(tilo-chromium-host PRIVATE -fcf-protection=full)
+    target_link_options(tilo-chromium-host PRIVATE -Wl,-z,shstk)
+  endif()
   # libcef.so's own dependencies (ATK, CUPS, NSS, X11 extensions) are resolved
   # where the engine runs; the image checks them there. The builder need not
   # carry them just to link the host.

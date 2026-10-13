@@ -22,11 +22,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -41,6 +37,12 @@ use tracing_subscriber::{EnvFilter, fmt};
 use tilo_relay::{RelayConfig, daemon::RelayIdentity};
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
 
+#[cfg(feature = "agents")]
+mod persistent_moderation;
+#[cfg(feature = "agents")]
+mod persistent_room_cli;
+#[cfg(feature = "agents")]
+mod room_seed;
 #[cfg(feature = "web")]
 mod web_cli;
 
@@ -76,7 +78,7 @@ enum Cmd {
     /// A short-lived shared room: its own user root and browser listener,
     /// certifying only the browsers its operator admits on stdin.
     #[cfg(feature = "web")]
-    Room(web_cli::RoomArgs),
+    Room(Box<web_cli::RoomArgs>),
     /// Print current metrics + hosted workspace list.
     Status,
     /// Add a workspace to the config file.
@@ -113,6 +115,11 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return Ok(std::process::ExitCode::from(code));
     }
+    // So do the confined workers agents and room actions run apps in.
+    #[cfg(feature = "agents")]
+    if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
     run().map(|()| std::process::ExitCode::SUCCESS)
 }
 
@@ -132,7 +139,7 @@ fn run() -> anyhow::Result<()> {
         }
         #[cfg(feature = "web")]
         Cmd::Room(args) => {
-            tilo_rt::daemon("tilo-relay").run(web_cli::room(args, wait_for_shutdown()))?
+            tilo_rt::daemon("tilo-relay").run(web_cli::room(*args, wait_for_shutdown()))?
         }
         Cmd::Status => cmd_status(&cli.config),
         Cmd::BindWorkspace { id, pin } => cmd_bind(&cli.config, id, pin),
@@ -216,6 +223,10 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
             metrics.deltas_received, metrics.deltas_fanned_out
         );
         println!("bytes queued: {}", metrics.bytes_queued);
+        println!(
+            "bytes sent: {} ({} live fan-out)",
+            metrics.bytes_sent, metrics.bytes_sent_live
+        );
     }
     Ok(())
 }
@@ -227,6 +238,12 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
 fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     tilo_rt::daemon("tilo-relay").run(async move {
+        // Every change the relay receives is decided against its app's
+        // surface, fetched by hash from the registry.
+        tilo_relay::surfaces::decide_receipt_from_registry(
+            &std::env::var("TILO_REGISTRY")
+                .unwrap_or_else(|_| tilo_relay::surfaces::DEFAULT_REGISTRY.to_owned()),
+        );
         #[cfg(feature = "web")]
         web_cli::await_certificate(&cfg.identity_root, &web, &cfg.state_root).await?;
         let identity = load_identity(&cfg.identity_root, &cfg.state_root)?;

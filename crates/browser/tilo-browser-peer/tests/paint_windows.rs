@@ -17,11 +17,12 @@ use tilo_browser_peer::Host;
 use tilo_browser_peer::remote_page::RemotePage;
 use tilo_paint_stream::wire::Payload;
 use tilo_paint_stream::{BlobRef, Color, Frame, Item, ItemKey, Layer, Point, ROOT, Rect};
-use tilo_relay_client::{AttributedPresence, Envelope, RelayClient};
+use tilo_relay_client::{AttributedPresence, Envelope};
 use tilo_relay_protocol::legacy_window as wire;
+use tilo_relay_session::RelayClient;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
-use support::{enrol, ready, start_host, start_peer, workspace};
+use support::{TestHost, enrol, ready, start_host, start_peer, workspace};
 
 const SURFACE: u64 = 9;
 
@@ -118,17 +119,14 @@ async fn a_streamed_page_is_rebuilt_by_the_member_and_its_input_returns() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let (http, relay, web) = {
-        let host = start_host(
-            &root,
-            &host_device,
-            state.path(),
-            "127.0.0.1:0".parse().unwrap(),
-        )
-        .await;
-        let http = host.https();
-        (http, host.relay, host.web)
-    };
+    let TestHost { relay, web } = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let http = support::https::DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&laptop.key.to_bytes()))
         .relay_mode(iroh::RelayMode::Disabled)

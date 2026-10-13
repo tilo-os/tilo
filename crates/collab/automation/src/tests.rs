@@ -3,10 +3,12 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
 
-use collab_types::{PermissionProfileRule, Scope, Verb};
 use serde_json::{Value, json};
+use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
+use tilo_actions::ActionKey;
 use tilo_actions::action::{ExecutionLocus, OperationKind};
 use tilo_actions::contract::{ActionContract, ConfirmationPolicy, ResultSpec, RiskLevel};
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
@@ -14,8 +16,8 @@ use tilo_actions::outcome::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
-    CatalogueRow, Confirmation, InvocationLedger, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending,
+    CatalogueRow, Completer, Confirmation, InvocationLedger, InvocationReceipt, InvocationState,
+    InvokeArgument, InvokeRequest, Pending, pending,
 };
 
 use crate::{
@@ -23,8 +25,8 @@ use crate::{
     AskRequest, Binding, CatchUp, CheckErrorKind, Condition, ConfirmationRequest, NoShortcuts,
     RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger,
     SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut,
-    Step, StepFailure, StepKind, StepPath, TimeOfDay, TriggerSpec, UnattendedConsent, Weekday,
-    check, run, shortcut_resource_id,
+    Step, StepFailure, StepKind, StepPath, TimeOfDay, TriggerSpec, Weekday, check, run,
+    shortcut_resource_id,
 };
 
 const NOTES: &str = "so.tilo.notes";
@@ -51,6 +53,7 @@ fn row(
             presentation: None,
         },
         action: Some(ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(resource, action),
             resource_kind: kind.into(),
             resource_label: resource.into(),
@@ -115,7 +118,7 @@ impl FakeHost {
                 "list",
                 Vec::new(),
                 ActionContract {
-                    permission: tilo_actions::contract::PermissionRequirement::Read,
+                    kind: tilo_actions::contract::ActionKind::Read,
                     ..returning(ResultSpec::Json {
                         schema: list_schema(),
                     })
@@ -210,7 +213,7 @@ impl FakeHost {
                 value: Some(json!({"titles": ["a", "b"], "count": 2})),
                 resources: Vec::new(),
             },
-            "create" => ActionOutput {
+            "create" | "send" => ActionOutput {
                 value: None,
                 resources: vec![NOTE.into()],
             },
@@ -283,6 +286,8 @@ struct Hooks {
     confirmation: Option<Confirmation>,
     answer: Option<Value>,
     confirmations: Mutex<Vec<ConfirmationRequest>>,
+    /// How many times a run fell back to waiting out a poll interval.
+    settles: AtomicUsize,
 }
 
 impl RunHooks for Hooks {
@@ -296,6 +301,7 @@ impl RunHooks for Hooks {
     }
 
     fn settle(&self, _invocation: InvocationId) -> Pending<()> {
+        self.settles.fetch_add(1, Ordering::Relaxed);
         Pending::ready(())
     }
 }
@@ -316,11 +322,16 @@ fn caller() -> Caller {
     Caller::local_person("ada")
 }
 
-fn notes_grant() -> Vec<PermissionProfileRule> {
-    vec![PermissionProfileRule::grant(
-        Scope::App(NOTES.into()),
-        Verb::Write,
-    )]
+fn app_rule(app: &str) -> Rule {
+    Rule::new(
+        TreePath::root().any(Level::Room).app(app),
+        KindSet::ALL,
+        Answer::Allow,
+    )
+}
+
+fn notes_grant() -> Vec<Rule> {
+    vec![app_rule(NOTES)]
 }
 
 fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
@@ -332,22 +343,24 @@ fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
         output: None,
         grant: notes_grant(),
         triggers: Vec::new(),
-        consents: Vec::new(),
         saved_by: None,
     }
 }
 
+/// A step invoking `action` of `app` on the resource `resource` selects. Its
+/// key names the app's root kind, so it reaches any kind the app publishes.
 fn invoke(id: &str, app: &str, resource: Selector, action: &str, args: &[(&str, Binding)]) -> Step {
+    let kind = app.rsplit('.').next().unwrap_or(app);
     Step::new(
         id,
         StepKind::Invoke {
-            app_id: app.into(),
+            action: ActionKey::new(app, kind, action),
             resource,
-            action: action.into(),
             args: args
                 .iter()
                 .map(|(name, binding)| ((*name).to_string(), binding.clone()))
                 .collect::<BTreeMap<_, _>>(),
+            appearance: None,
         },
     )
 }
@@ -363,17 +376,6 @@ fn run_with(
     run_id: RunId,
     mode: RunMode,
 ) -> RunReport {
-    run_consented(host, hooks, shortcut, run_id, mode, Vec::new())
-}
-
-fn run_consented(
-    host: &FakeHost,
-    hooks: &Hooks,
-    shortcut: &Shortcut,
-    run_id: RunId,
-    mode: RunMode,
-    consents: Vec<UnattendedConsent>,
-) -> RunReport {
     block_on(run(
         host,
         hooks,
@@ -384,7 +386,7 @@ fn run_consented(
             mode,
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
-            consents,
+            caused_by: None,
         },
     ))
 }
@@ -639,14 +641,24 @@ fn an_unattended_run_takes_only_the_exact_actions_consented_to() {
             &[],
         )],
     );
-    let elsewhere = UnattendedConsent::new(NOTES, "notes.note:other", "delete");
-    let report = run_consented(
+    let consented = |resource: &str| {
+        let mut shortcut = purge.clone();
+        shortcut.grant.push(crate::action_rule(
+            NOTES,
+            "notes.note",
+            Some(resource),
+            "delete",
+            KindSet::ALL,
+            Answer::Allow,
+        ));
+        shortcut
+    };
+    let report = run_with(
         &host,
         &Hooks::default(),
-        &purge,
+        &consented("notes.note:other"),
         RunId::new(),
         RunMode::Unattended,
-        vec![elsewhere],
     );
     assert!(
         matches!(
@@ -658,29 +670,17 @@ fn an_unattended_run_takes_only_the_exact_actions_consented_to() {
     assert!(host.started().is_empty());
 
     let hooks = Hooks::default();
-    let report = run_consented(
+    let report = run_with(
         &host,
         &hooks,
-        &purge,
+        &consented(NOTE),
         RunId::new(),
         RunMode::Unattended,
-        vec![UnattendedConsent::new(NOTES, NOTE, "delete")],
     );
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
     assert!(
         hooks.confirmations.lock().unwrap().is_empty(),
         "nobody is asked in an unattended run"
-    );
-    let mut stray = purge;
-    stray.consents = vec![UnattendedConsent::new(NOTES, NOTE, "archive")];
-    assert!(
-        matches!(
-            check(&stray, &host.catalog(), &NoShortcuts)
-                .as_ref()
-                .map_err(Vec::as_slice),
-            Err([error]) if matches!(error.kind, CheckErrorKind::UnusedConsent { .. })
-        ),
-        "a consent no step can use is refused at save time"
     );
     let started = host.started();
     assert_eq!(started.len(), 1);
@@ -736,6 +736,194 @@ fn a_retried_run_reuses_its_invocation_ids_and_acts_once() {
     );
     assert!(other.invocations().iter().all(|id| !ids.contains(id)));
     assert_eq!(host.started().len(), 6);
+}
+
+#[test]
+fn bindings_address_into_an_object_input_and_a_loop_item() {
+    let host = FakeHost::new();
+    let mut make = shortcut(
+        "make",
+        vec![
+            Step::new(
+                "each",
+                StepKind::ForEach {
+                    items: Binding::Input("event/notes".into()),
+                    item: "note".into(),
+                    body: vec![invoke(
+                        "make",
+                        NOTES,
+                        Selector::Fixed(INBOX.into()),
+                        "create",
+                        &[("title", Binding::Var("note/title".into()))],
+                    )],
+                },
+            ),
+            invoke(
+                "last",
+                NOTES,
+                Selector::Fixed(INBOX.into()),
+                "create",
+                &[(
+                    "title",
+                    Binding::Template("by {{input.event/by/name}}".into()),
+                )],
+            ),
+        ],
+    );
+    make.inputs = vec![ActionParam::required(
+        "event",
+        ParamType::Object,
+        "What fired",
+    )];
+    assert_eq!(check(&make, &host.catalog(), &NoShortcuts), Ok(()));
+    let mut inputs = serde_json::Map::new();
+    inputs.insert(
+        "event".into(),
+        json!({"notes": [{"title": "a"}, {"title": "b"}], "by": {"name": "Ada"}}),
+    );
+    let report = block_on(run(
+        &host,
+        &Hooks::default(),
+        RunRequest {
+            shortcut: &make,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs,
+            caused_by: None,
+        },
+    ));
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let titles: Vec<_> = host
+        .started()
+        .iter()
+        .map(|request| match &request.argument {
+            InvokeArgument::Json(args) => args.get("title").cloned(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        titles,
+        [Some(json!("a")), Some(json!("b")), Some(json!("by Ada"))]
+    );
+
+    let mut unknown = make;
+    unknown.steps.truncate(1);
+    if let StepKind::ForEach { items, .. } = &mut unknown.steps[0].kind {
+        *items = Binding::Input("other/notes".into());
+    }
+    assert!(
+        check(&unknown, &host.catalog(), &NoShortcuts).is_err(),
+        "the input a pointer starts at must exist"
+    );
+}
+
+#[test]
+fn a_verb_answers_the_item_it_created_and_a_null_option_is_omitted() {
+    let host = FakeHost::new();
+    let mut send = shortcut(
+        "send",
+        vec![
+            invoke(
+                "send",
+                MAIL,
+                Selector::Fixed("mail.outbox:main".into()),
+                "send",
+                &[("body", Binding::Literal(json!("hi")))],
+            ),
+            invoke(
+                "note",
+                NOTES,
+                Selector::Fixed(INBOX.into()),
+                "create",
+                &[
+                    ("title", Binding::Literal(json!("t"))),
+                    ("pinned", Binding::Literal(Value::Null)),
+                ],
+            ),
+            invoke(
+                "archive",
+                NOTES,
+                Selector::FromBinding(Binding::step("send", "")),
+                "archive",
+                &[],
+            ),
+        ],
+    );
+    send.grant.push(app_rule(MAIL));
+    assert_eq!(check(&send, &host.catalog(), &NoShortcuts), Ok(()));
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &send,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let started = host.started();
+    assert_eq!(
+        started[1].argument,
+        InvokeArgument::Json(json!({"title": "t"}).as_object().unwrap().clone()),
+        "a null optional argument is left out"
+    );
+    assert_eq!(started[2].target.address.resource, NOTE);
+}
+
+#[test]
+fn an_invoke_step_carries_the_appearance_it_binds_and_refuses_a_bad_one() {
+    let host = FakeHost::new();
+    let mut step = invoke(
+        "make",
+        NOTES,
+        Selector::Fixed(INBOX.into()),
+        "create",
+        &[("title", Binding::Literal(json!("hi")))],
+    );
+    if let StepKind::Invoke { appearance, .. } = &mut step.kind {
+        *appearance = Some(Binding::Input("event/as".into()));
+    }
+    let mut make = shortcut("make", vec![step]);
+    make.inputs = vec![ActionParam::required(
+        "event",
+        ParamType::Object,
+        "What fired",
+    )];
+    assert_eq!(check(&make, &host.catalog(), &NoShortcuts), Ok(()));
+    let go = |shown: Value| {
+        let mut inputs = serde_json::Map::new();
+        inputs.insert("event".into(), json!({ "as": shown }));
+        block_on(run(
+            &host,
+            &Hooks::default(),
+            RunRequest {
+                shortcut: &make,
+                run: RunId::new(),
+                caller: caller(),
+                mode: RunMode::Unattended,
+                trigger: RunTrigger::Manual,
+                inputs,
+                caused_by: None,
+            },
+        ))
+    };
+    let shown = json!({"name": "Ada", "persona": {"service": "discord", "account": "42"}});
+    let report = go(shown);
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let sent = host.started()[0].appearance.clone().expect("an appearance");
+    assert_eq!(sent.name, "Ada");
+    assert_eq!(sent.persona.map(|p| p.account).as_deref(), Some("42"));
+
+    let report = go(json!({"name": " padded "}));
+    assert!(
+        matches!(failure(&report), Some((_, StepFailure::Arguments { .. }))),
+        "{report:?}"
+    );
+    assert_eq!(
+        host.started().len(),
+        1,
+        "a refused appearance invokes nothing"
+    );
 }
 
 #[test]
@@ -834,8 +1022,7 @@ fn for_each_runs_its_body_per_item_and_if_takes_one_branch() {
 #[test]
 fn a_shortcut_that_could_run_itself_is_refused() {
     let host = FakeHost::new();
-    let shortcuts_grant =
-        PermissionProfileRule::grant(Scope::App(SHORTCUTS_APP_ID.into()), Verb::Write);
+    let shortcuts_grant = app_rule(SHORTCUTS_APP_ID);
     let calling = |id: &str, callee: &str| {
         let mut shortcut = shortcut(
             id,
@@ -914,10 +1101,7 @@ fn an_ai_step_is_an_invocation_of_the_agent_transform() {
             },
         )],
     );
-    digest.grant.push(PermissionProfileRule::grant(
-        Scope::App(AGENT_APP_ID.into()),
-        Verb::Write,
-    ));
+    digest.grant.push(app_rule(AGENT_APP_ID));
     digest.output = Some(Binding::step("sum", ""));
     assert_eq!(check(&digest, &host.catalog(), &NoShortcuts), Ok(()));
 
@@ -955,10 +1139,7 @@ fn an_ai_step_never_reads_a_secret() {
         ParamType::Secret,
         "An API token",
     )];
-    leak.grant.push(PermissionProfileRule::grant(
-        Scope::App(AGENT_APP_ID.into()),
-        Verb::Write,
-    ));
+    leak.grant.push(app_rule(AGENT_APP_ID));
     let errors = check(&leak, &host.catalog(), &NoShortcuts).unwrap_err();
     assert!(
         errors.iter().any(|error| matches!(
@@ -981,7 +1162,7 @@ fn an_ai_step_never_reads_a_secret() {
             mode: RunMode::Unattended,
             trigger: RunTrigger::Manual,
             inputs,
-            consents: Vec::new(),
+            caused_by: None,
         },
     ));
     assert!(
@@ -1192,4 +1373,365 @@ fn binding_options_are_exactly_what_the_checker_accepts_in_scope() {
             .any(|option| option.binding == Binding::Var("title".into())),
         "the loop item is gone after the loop"
     );
+}
+
+/// A host whose every action keeps running after it is accepted, as a
+/// background job does, until the test or enough observations finish it.
+struct RunningHost {
+    offers: FakeHost,
+    /// Whether the host can tell a waiter when the job changes.
+    pushes: bool,
+    job: Mutex<RunningJob>,
+}
+
+#[derive(Default)]
+struct RunningJob {
+    invocation: Option<InvocationId>,
+    finished: bool,
+    observes: usize,
+    /// For a host that cannot push: how many more observations still find
+    /// the job running.
+    running_for: usize,
+    /// The waiter [`ActionHost::next_change`] handed out.
+    change: Option<Completer<()>>,
+}
+
+impl RunningHost {
+    fn new(pushes: bool, running_for: usize) -> Self {
+        Self {
+            offers: FakeHost::new(),
+            pushes,
+            job: Mutex::new(RunningJob {
+                running_for,
+                ..RunningJob::default()
+            }),
+        }
+    }
+
+    /// The job ends, and whoever waits on it is told.
+    fn finish(&self) {
+        let change = {
+            let mut job = self.job.lock().unwrap();
+            job.finished = true;
+            job.change.take()
+        };
+        change.expect("the run waits on the host").complete(());
+    }
+
+    fn observes(&self) -> usize {
+        self.job.lock().unwrap().observes
+    }
+}
+
+impl ActionHost for RunningHost {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        self.offers.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        _caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        let id = request.invocation;
+        self.job.lock().unwrap().invocation = Some(id);
+        Pending::ready(Ok(InvocationState::new(
+            id,
+            InvocationUpdate::Accepted { invocation: id },
+        )
+        .receipt()))
+    }
+
+    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let finished = {
+            let mut job = self.job.lock().unwrap();
+            job.observes = job.observes.saturating_add(1);
+            if job.invocation != Some(*id) {
+                return None;
+            }
+            if !self.pushes {
+                match job.running_for.checked_sub(1) {
+                    Some(left) => job.running_for = left,
+                    None => job.finished = true,
+                }
+            }
+            job.finished
+        };
+        let update = if finished {
+            InvocationUpdate::Succeeded {
+                invocation: *id,
+                output: ActionOutput::default(),
+            }
+        } else {
+            InvocationUpdate::Accepted { invocation: *id }
+        };
+        Some(InvocationState::new(*id, update))
+    }
+
+    fn next_change(&self, _caller: &Caller, _id: &InvocationId) -> Option<Pending<()>> {
+        if !self.pushes {
+            return None;
+        }
+        let (change, waiter) = pending();
+        self.job.lock().unwrap().change = Some(change);
+        Some(waiter)
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
+        Err(ActionHostError::NotCancellable {
+            reason: "not in these tests".into(),
+        })
+    }
+}
+
+fn archive_shortcut() -> Shortcut {
+    shortcut(
+        "archive",
+        vec![invoke(
+            "archive",
+            NOTES,
+            Selector::Fixed(NOTE.into()),
+            "archive",
+            &[],
+        )],
+    )
+}
+
+fn archive_run<'a>(
+    host: &'a RunningHost,
+    hooks: &'a Hooks,
+    shortcut: &'a Shortcut,
+) -> impl Future<Output = RunReport> + 'a {
+    run(
+        host,
+        hooks,
+        RunRequest {
+            shortcut,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::Map::new(),
+            caused_by: None,
+        },
+    )
+}
+
+#[test]
+fn a_running_step_wakes_on_host_change_not_on_a_timer() {
+    let host = RunningHost::new(true, 0);
+    let hooks = Hooks::default();
+    let archive = archive_shortcut();
+    let mut running = std::pin::pin!(archive_run(&host, &hooks, &archive));
+    let mut cx = Context::from_waker(Waker::noop());
+
+    assert!(
+        running.as_mut().poll(&mut cx).is_pending(),
+        "an accepted step waits for its host"
+    );
+    // Only the look for an earlier invocation has observed so far: the run
+    // is parked on the host's change, not re-observing on a schedule.
+    assert_eq!(host.observes(), 1);
+    assert!(running.as_mut().poll(&mut cx).is_pending());
+    assert_eq!(
+        host.observes(),
+        1,
+        "polling without a change observes nothing"
+    );
+
+    host.finish();
+    let Poll::Ready(report) = running.as_mut().poll(&mut cx) else {
+        panic!("the change finishes the step");
+    };
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(host.observes(), 2, "one observation per change");
+    assert_eq!(
+        hooks.settles.load(Ordering::Relaxed),
+        0,
+        "the poll fallback is unused"
+    );
+}
+
+#[test]
+fn a_host_without_next_change_still_completes_via_settle() {
+    let host = RunningHost::new(false, 2);
+    let hooks = Hooks::default();
+    let archive = archive_shortcut();
+    let report = block_on(archive_run(&host, &hooks, &archive));
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    // The look for an earlier invocation, two observations still running,
+    // then the one that finds it finished: each after a poll interval.
+    assert_eq!(host.observes(), 4);
+    assert_eq!(hooks.settles.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn a_step_reaches_only_the_app_and_kind_its_key_names() {
+    let catalog = ActionCatalog::new(vec![row(
+        NOTES,
+        INBOX,
+        "notes.folder",
+        "list",
+        Vec::new(),
+        ActionContract::default(),
+    )]);
+    let inbox = crate::ResourceTarget::Id(INBOX);
+    let found = |key: ActionKey| catalog.find(&key, inbox).is_some();
+    assert!(found(ActionKey::new(NOTES, "notes.folder", "list")));
+    assert!(found(ActionKey::new(NOTES, "notes", "list")), "a sub-kind");
+    assert!(!found(ActionKey::new(NOTES, "notes.note", "list")));
+    assert!(!found(ActionKey::new(NOTES, "notes.folderish", "list")));
+    assert!(!found(ActionKey::new(MAIL, "notes.folder", "list")));
+    assert!(!found(ActionKey::new(NOTES, "notes.folder", "delete")));
+}
+
+/// A catalogue offering one undoable action: posting to chat `chat:1`.
+fn chat_catalog() -> ActionCatalog {
+    ActionCatalog::new(vec![row(
+        "so.tilo.chat",
+        "chat:1",
+        "chat.workspace",
+        "post",
+        Vec::new(),
+        ActionContract {
+            kind: tilo_actions::contract::ActionKind::Undoable,
+            ..ActionContract::default()
+        },
+    )])
+}
+
+/// One step posting to the first chat, with no grant yet.
+fn posting_shortcut() -> Shortcut {
+    let mut shortcut = shortcut(
+        "bridge",
+        vec![Step::new(
+            "post",
+            StepKind::Invoke {
+                action: ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
+                resource: Selector::FirstOfKind("chat.workspace".into()),
+                args: BTreeMap::new(),
+                appearance: None,
+            },
+        )],
+    );
+    shortcut.grant.clear();
+    shortcut
+}
+
+#[test]
+fn check_bot_refuses_a_grant_wider_than_the_steps() {
+    let catalog = chat_catalog();
+    let mut shortcut = posting_shortcut();
+    shortcut.grant = crate::grant::derived_rules(&shortcut, &catalog);
+    assert_eq!(crate::check_bot(&shortcut, &catalog), Ok(()));
+
+    shortcut.grant.push(crate::grant::action_rule(
+        "so.tilo.chat",
+        "chat.workspace",
+        None,
+        "delete",
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+    ));
+    let errors = crate::check_bot(&shortcut, &catalog).expect_err("an unused rule");
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, CheckErrorKind::UnusedRule(_)))
+    );
+
+    shortcut.grant.clear();
+    let errors = crate::check_bot(&shortcut, &catalog).expect_err("a missing rule");
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, CheckErrorKind::MissingRule(_)))
+    );
+}
+
+#[test]
+fn record_and_connector_triggers_round_trip_and_bind_an_event_object() {
+    use crate::{ActorFilter, EVENT_INPUT};
+    let record: TriggerSpec = serde_json::from_value(json!({
+        "trigger": "record_changed",
+        "kind": "chat.workspace",
+        "actions": ["post"],
+        "by": "not_bots"
+    }))
+    .unwrap();
+    assert_eq!(
+        record,
+        TriggerSpec::RecordChanged {
+            kind: "chat.workspace".into(),
+            actions: vec!["post".into()],
+            fields: vec![],
+            by: ActorFilter::NotBots,
+        }
+    );
+    assert_eq!(record.kind(), "record_changed");
+    let connector: TriggerSpec = serde_json::from_value(json!({
+        "trigger": "connector",
+        "app_id": "so.tilo.discord",
+        "source": "message-created",
+        "filter": {"channel": "42"}
+    }))
+    .unwrap();
+    assert_eq!(connector.kind(), "connector");
+    for trigger in [
+        &record,
+        &connector,
+        &TriggerSpec::IncomingMessage {
+            app_id: None,
+            from: None,
+        },
+    ] {
+        let payload = trigger.payload();
+        assert_eq!(payload.len(), 1);
+        assert_eq!(payload[0].name.as_ref(), EVENT_INPUT);
+        assert_eq!(payload[0].ty, ParamType::Object);
+    }
+    // Defaults: `by` is anyone, empty lists are any change.
+    let any: TriggerSpec =
+        serde_json::from_value(json!({"trigger": "record_changed", "kind": "tilo.room"})).unwrap();
+    assert!(matches!(
+        any,
+        TriggerSpec::RecordChanged {
+            by: ActorFilter::Anyone,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn every_step_of_a_caused_run_records_the_cause() {
+    let cause = tilo_actions::context::Cause {
+        installation: "bot-1".into(),
+        event: "cd".repeat(32),
+        depth: 2,
+    };
+    let host = FakeHost::new();
+    let tidy = shortcut("tidy", vec![list()]);
+    let report = block_on(run(
+        &host,
+        &Hooks::default(),
+        RunRequest {
+            shortcut: &tidy,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::Map::new(),
+            caused_by: Some(cause.clone()),
+        },
+    ));
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let started = host.started();
+    assert!(!started.is_empty());
+    for request in started {
+        assert_eq!(request.context.unwrap().caused_by, Some(cause.clone()));
+    }
 }

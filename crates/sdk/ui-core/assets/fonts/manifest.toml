@@ -1,7 +1,94 @@
 schema = 1
-catalog_id = "tilo-fonts-fedora44-2026-09-12-v2"
-product_bytes = 43817716
-fixture_bytes = 44697512
+catalog_id = "tilo-fonts-fedora44-tilo-sans-reading-2026-10-04"
+product_bytes = 54174180
+os_bytes = 54891768
+fixture_bytes = 55771564
+
+[[font]]
+scope = "product"
+browser_startup = true
+file = "TiloSans[wdth,wght].ttf"
+bytes = 325400
+sha256 = "903aac545b421e1c050552980762613e9373b4a01b491e45c9737f42525888d6"
+source_url = "https://code.tilo.so/tilo/tilo-sans/releases/download/v1.002/TiloSans%5Bwdth,wght%5D.ttf"
+source_tag = "tilo/tilo-sans v1.002"
+source_commit = "025d4613d723e0da70d0d2d99e39fbb781f9f45f"
+source_metadata = "Tilo Sans; Regular; PS `TiloSans-Regular`; v1.002; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek, the distinct I/l and slashed zero features; Cyrillic held back)"
+reserved_aliases = ["Tilo Sans"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Tilo-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Tilo Sans"
+post_script_name = "TiloSans-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "TiloSans-Italic[wdth,wght].ttf"
+bytes = 338224
+sha256 = "72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743"
+source_url = "https://code.tilo.so/tilo/tilo-sans/releases/download/v1.002/TiloSans-Italic%5Bwdth,wght%5D.ttf"
+source_tag = "tilo/tilo-sans v1.002"
+source_commit = "025d4613d723e0da70d0d2d99e39fbb781f9f45f"
+source_metadata = "Tilo Sans; Italic; PS `TiloSans-Italic`; v1.002; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek, the distinct I/l and slashed zero features; Cyrillic held back)"
+reserved_aliases = ["Tilo Sans"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Tilo-Sans-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Tilo Sans"
+post_script_name = "TiloSans-Italic"
+style = "italic"
+
+[[font]]
+scope = "product"
+file = "AtkinsonHyperlegibleNext[wght].ttf"
+bytes = 114552
+sha256 = "5a455d1cfa099b601ab70751bb9673e8fe1854dc4500c80e1a220d0d75e31745"
+source_url = "https://github.com/google/fonts/blob/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/atkinsonhyperlegiblenext/AtkinsonHyperlegibleNext[wght].ttf"
+source_metadata = "Atkinson Hyperlegible Next; Regular; PS `AtkinsonHyperlegibleNext-Regular`; `wght` 200/400/800; the Hyperlegible UI face"
+reserved_aliases = ["Atkinson Hyperlegible Next"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Atkinson-Hyperlegible-Next-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Atkinson Hyperlegible Next"
+post_script_name = "AtkinsonHyperlegibleNext-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "AtkinsonHyperlegibleNext-Italic[wght].ttf"
+bytes = 123916
+sha256 = "ce9cffed32742ad2d9238c561a93220385e5934cdc02b8eb4097a50efa957dc6"
+source_url = "https://github.com/google/fonts/blob/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/atkinsonhyperlegiblenext/AtkinsonHyperlegibleNext-Italic[wght].ttf"
+source_metadata = "Atkinson Hyperlegible Next; Italic; PS `AtkinsonHyperlegibleNext-Italic`; `wght` 200/400/800; the Hyperlegible UI face"
+reserved_aliases = ["Atkinson Hyperlegible Next"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Atkinson-Hyperlegible-Next-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Atkinson Hyperlegible Next"
+post_script_name = "AtkinsonHyperlegibleNext-Italic"
+style = "italic"
+
+[[font]]
+scope = "product"
+browser_startup = true
+file = "Onest-Cyrillic[wght].ttf"
+bytes = 80696
+sha256 = "efc3cf7b09f5bb11880ece503a7df2f5d6c2bf3177f2bd88dca5e709aeb10895"
+source_url = "https://github.com/google/fonts/blob/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/onest/Onest[wght].ttf"
+source_metadata = "Onest; Regular; PS `Onest-Regular`; `wght` 100/400/900; Cyrillic subset built by tools/font-fallback-subsets.py from the upstream file (SHA-256 966c5c29b4755da84b6854d5c21dd4eaa2420225d0e9874de602de176d4a9f31)"
+reserved_aliases = ["Onest"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Onest-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Onest"
+post_script_name = "Onest-Regular"
+style = "normal"
 
 [[font]]
 scope = "product"
@@ -23,7 +110,6 @@ style = "normal"
 
 [[font]]
 scope = "product"
-browser_startup = true
 file = "NotoSans-Italic[wght].ttf"
 bytes = 739728
 sha256 = "28602f4b032ed8f5d91445e830585f34aba54ff9d3ac3e58c0b8834f3d6ae684"
@@ -41,43 +127,44 @@ style = "italic"
 
 [[font]]
 scope = "product"
-browser_startup = true
-file = "NotoSerif[wght].ttf"
-bytes = 811080
-sha256 = "9374c4d81d2e21b03ac03fbc165458e8cf63e434a44c82193aa0305d20dc1037"
-source_path = "/usr/share/fonts/google-noto-vf/NotoSerif[wght].ttf"
-rpm = "google-noto-serif-vf-fonts-0:20251201-2.fc44"
-source_metadata = "Noto Serif; Regular; PS `NotoSerif`; v2.015; `wght` 400/400/700"
-reserved_aliases = ["Noto Serif"]
-license_spdx = "OFL-1.1"
-license_files = ["LICENSES/Noto-Latin-Greek-Cyrillic-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+file = "NewCM10-Book.otf"
+bytes = 694392
+sha256 = "005f9b4e13b2a133df36d4ebfbb8f5fe402854bcb5882deb500b9c0f72b1bb49"
+source_url = "https://download.gnu.org.ua/release/newcm/newcm-8.1.1.txz"
+source_member = "newcm-8.1.1/otf/NewCM10-Book.otf"
+source_tag = "newcm 8.1.1 (CTAN newcomputermodern 8.1.1, 2026-06-22)"
+source_metadata = "NewComputerModern; 10 pt Book, the text cut; PS `NewCM10-Book`; Version 8.1.1; CFF outlines"
+reserved_aliases = ["NewComputerModern", "New Computer Modern", "New Computer Modern Book", "New Computer Modern 08"]
+license_spdx = "LPPL-1.3c"
+license_files = ["LICENSES/GUST-FONT-LICENSE.txt", "LICENSES/LPPL-1.3c.txt", "LICENSES/New-Computer-Modern-License.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
 [[font.faces]]
 index = 0
-family = "Noto Serif"
-post_script_name = "NotoSerif"
+family = "NewComputerModern"
+post_script_name = "NewCM10-Book"
 style = "normal"
+tilo_families = ["New Computer Modern Book"]
 
 [[font]]
 scope = "product"
-browser_startup = true
-file = "NotoSerif-Italic[wght].ttf"
-bytes = 849200
-sha256 = "30f1c0204b6bb16d7b6f0984ce6e355ad61d05656201b3d13a2b19bb9baa6779"
-source_path = "/usr/share/fonts/google-noto-vf/NotoSerif-Italic[wght].ttf"
-rpm = "google-noto-serif-vf-fonts-0:20251201-2.fc44"
-source_metadata = "Noto Serif; Italic; PS `NotoSerif-Italic`; v2.015; `wght` 400/400/700"
-reserved_aliases = ["Noto Serif"]
-license_spdx = "OFL-1.1"
-license_files = ["LICENSES/Noto-Latin-Greek-Cyrillic-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+file = "NewCM10-BookItalic.otf"
+bytes = 699696
+sha256 = "d01f6c7b5bcdee2545823f1cf0a35698b9ccff1891a2f79a8e9938e5b8ea561e"
+source_url = "https://download.gnu.org.ua/release/newcm/newcm-8.1.1.txz"
+source_member = "newcm-8.1.1/otf/NewCM10-BookItalic.otf"
+source_tag = "newcm 8.1.1 (CTAN newcomputermodern 8.1.1, 2026-06-22)"
+source_metadata = "NewComputerModern; 10 pt Book Italic; PS `NewCM10-BookItalic`; Version 8.1.1; CFF outlines"
+reserved_aliases = ["NewComputerModern", "New Computer Modern", "New Computer Modern Book", "New Computer Modern 08"]
+license_spdx = "LPPL-1.3c"
+license_files = ["LICENSES/GUST-FONT-LICENSE.txt", "LICENSES/LPPL-1.3c.txt", "LICENSES/New-Computer-Modern-License.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
 [[font.faces]]
 index = 0
-family = "Noto Serif"
-post_script_name = "NotoSerif-Italic"
+family = "NewComputerModern"
+post_script_name = "NewCM10-BookItalic"
 style = "italic"
+tilo_families = ["New Computer Modern Book"]
 
 [[font]]
 scope = "product"
-browser_startup = true
 file = "NotoSansMono[wght].ttf"
 bytes = 569204
 sha256 = "3c874b97ce11dc54de004c81df02c8f0974033ed1b113377130cbdd71d478f11"
@@ -284,6 +371,295 @@ post_script_name = "NotoColorEmoji"
 style = "normal"
 
 [[font]]
+scope = "os"
+file = "NewCM10-Regular.otf"
+bytes = 717588
+sha256 = "328698d764ccdf7acf6bc1088aefd83a237f6a1d8b812de1e77ac5e4483bf3d1"
+source_url = "https://download.gnu.org.ua/release/newcm/newcm-8.1.1.txz"
+source_member = "newcm-8.1.1/otf/NewCM10-Regular.otf"
+source_tag = "newcm 8.1.1 (CTAN newcomputermodern 8.1.1, 2026-06-22)"
+source_metadata = "NewComputerModern; 10 pt Regular, the display cut; PS `NewCM10-Regular`; Version 8.1.1; CFF outlines"
+reserved_aliases = ["NewComputerModern", "New Computer Modern", "New Computer Modern Book", "New Computer Modern 08"]
+license_spdx = "GPL-3.0-or-later WITH Font-exception-2.0"
+license_files = ["LICENSES/New-Computer-Modern-License.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "NewComputerModern"
+post_script_name = "NewCM10-Regular"
+style = "normal"
+tilo_families = ["New Computer Modern"]
+
+[[font]]
+scope = "product"
+file = "NewCM10-Italic.otf"
+bytes = 721176
+sha256 = "a55d07607eec48889b6e7e7d51d7703c3beb915a39690f34fe01b4e2a744a9d6"
+source_url = "https://download.gnu.org.ua/release/newcm/newcm-8.1.1.txz"
+source_member = "newcm-8.1.1/otf/NewCM10-Italic.otf"
+source_tag = "newcm 8.1.1 (CTAN newcomputermodern 8.1.1, 2026-06-22)"
+source_metadata = "NewComputerModern; 10 pt Italic; PS `NewCM10-Italic`; Version 8.1.1; CFF outlines"
+reserved_aliases = ["NewComputerModern", "New Computer Modern", "New Computer Modern Book", "New Computer Modern 08"]
+license_spdx = "LPPL-1.3c"
+license_files = ["LICENSES/GUST-FONT-LICENSE.txt", "LICENSES/LPPL-1.3c.txt", "LICENSES/New-Computer-Modern-License.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "NewComputerModern"
+post_script_name = "NewCM10-Italic"
+style = "italic"
+tilo_families = ["New Computer Modern"]
+
+[[font]]
+scope = "product"
+file = "NewCM10-Bold.otf"
+bytes = 629288
+sha256 = "40b0b32b63655fe802679ee4a14adb29c762a4712095d9c84cf7df7852b5152e"
+source_url = "https://download.gnu.org.ua/release/newcm/newcm-8.1.1.txz"
+source_member = "newcm-8.1.1/otf/NewCM10-Bold.otf"
+source_tag = "newcm 8.1.1 (CTAN newcomputermodern 8.1.1, 2026-06-22)"
+source_metadata = "NewComputerModern; 10 pt Bold, shared by every cut; PS `NewCM10-Bold`; Version 8.1.1; CFF outlines"
+reserved_aliases = ["NewComputerModern", "New Computer Modern", "New Computer Modern Book", "New Computer Modern 08"]
+license_spdx = "LPPL-1.3c"
+license_files = ["LICENSES/GUST-FONT-LICENSE.txt", "LICENSES/LPPL-1.3c.txt", "LICENSES/New-Computer-Modern-License.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "NewComputerModern"
+post_script_name = "NewCM10-Bold"
+style = "normal"
+tilo_families = ["New Computer Modern", "New Computer Modern Book", "New Computer Modern 08"]
+
+[[font]]
+scope = "product"
+file = "NewCM10-BoldItalic.otf"
+bytes = 609000
+sha256 = "fb53f43500c8ffbcc6dfdea5a519961d475543174ea2a0dcbe16c08510299fdf"
+source_url = "https://download.gnu.org.ua/release/newcm/newcm-8.1.1.txz"
+source_member = "newcm-8.1.1/otf/NewCM10-BoldItalic.otf"
+source_tag = "newcm 8.1.1 (CTAN newcomputermodern 8.1.1, 2026-06-22)"
+source_metadata = "NewComputerModern; 10 pt Bold Italic, shared by both 10 pt cuts; PS `NewCM10-BoldItalic`; Version 8.1.1; CFF outlines"
+reserved_aliases = ["NewComputerModern", "New Computer Modern", "New Computer Modern Book", "New Computer Modern 08"]
+license_spdx = "LPPL-1.3c"
+license_files = ["LICENSES/GUST-FONT-LICENSE.txt", "LICENSES/LPPL-1.3c.txt", "LICENSES/New-Computer-Modern-License.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "NewComputerModern"
+post_script_name = "NewCM10-BoldItalic"
+style = "italic"
+tilo_families = ["New Computer Modern", "New Computer Modern Book"]
+
+[[font]]
+scope = "product"
+file = "NewCM08-Book.otf"
+bytes = 676440
+sha256 = "dd00447c2bf13d1923dccbc0ee90a0faf7e3a893442463255e170fd8599495fb"
+source_url = "https://download.gnu.org.ua/release/newcm/newcm-8.1.1.txz"
+source_member = "newcm-8.1.1/otf/NewCM08-Book.otf"
+source_tag = "newcm 8.1.1 (CTAN newcomputermodern 8.1.1, 2026-06-22)"
+source_metadata = "NewComputerModern; 8 pt Book, the small-text cut; PS `NewCM08-Book`; Version 8.1.1; CFF outlines"
+reserved_aliases = ["NewComputerModern", "New Computer Modern", "New Computer Modern Book", "New Computer Modern 08"]
+license_spdx = "LPPL-1.3c"
+license_files = ["LICENSES/GUST-FONT-LICENSE.txt", "LICENSES/LPPL-1.3c.txt", "LICENSES/New-Computer-Modern-License.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "NewComputerModern"
+post_script_name = "NewCM08-Book"
+style = "normal"
+tilo_families = ["New Computer Modern 08"]
+
+[[font]]
+scope = "product"
+file = "LibertinusSerif-Regular.otf"
+bytes = 337132
+sha256 = "fcf06307a77367394fcb0ccb241e59eea70dba3d732be309647611224679c733"
+source_url = "https://github.com/alerque/libertinus/releases/download/v7.051/Libertinus-7.051.zip"
+source_member = "Libertinus-7.051/static/OTF/LibertinusSerif-Regular.otf"
+source_tag = "alerque/libertinus v7.051"
+source_metadata = "Libertinus Serif; Regular; PS `LibertinusSerif-Regular`; Version 7.051; CFF outlines"
+reserved_aliases = ["Libertinus Serif", "Libertinus Serif Display"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Libertinus-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Libertinus Serif"
+post_script_name = "LibertinusSerif-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "LibertinusSerif-Italic.otf"
+bytes = 332312
+sha256 = "9a393d63d6e05f620d3dc0190dfd35a8ede58c0808cf0fc9de7fcb9c723e4c24"
+source_url = "https://github.com/alerque/libertinus/releases/download/v7.051/Libertinus-7.051.zip"
+source_member = "Libertinus-7.051/static/OTF/LibertinusSerif-Italic.otf"
+source_tag = "alerque/libertinus v7.051"
+source_metadata = "Libertinus Serif; Italic; PS `LibertinusSerif-Italic`; Version 7.051; CFF outlines"
+reserved_aliases = ["Libertinus Serif", "Libertinus Serif Display"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Libertinus-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Libertinus Serif"
+post_script_name = "LibertinusSerif-Italic"
+style = "italic"
+
+[[font]]
+scope = "product"
+file = "LibertinusSerif-Bold.otf"
+bytes = 293908
+sha256 = "0264914210ed51b3231ebc92ce529e9f2e166ba9eebf0cd4a579558690a27b64"
+source_url = "https://github.com/alerque/libertinus/releases/download/v7.051/Libertinus-7.051.zip"
+source_member = "Libertinus-7.051/static/OTF/LibertinusSerif-Bold.otf"
+source_tag = "alerque/libertinus v7.051"
+source_metadata = "Libertinus Serif; Bold; PS `LibertinusSerif-Bold`; Version 7.051; CFF outlines"
+reserved_aliases = ["Libertinus Serif", "Libertinus Serif Display"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Libertinus-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Libertinus Serif"
+post_script_name = "LibertinusSerif-Bold"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "LibertinusSerif-BoldItalic.otf"
+bytes = 259176
+sha256 = "47a665259f09f554f5d133d7718cdad43ff462c6a6b2328f38023465e62d57ce"
+source_url = "https://github.com/alerque/libertinus/releases/download/v7.051/Libertinus-7.051.zip"
+source_member = "Libertinus-7.051/static/OTF/LibertinusSerif-BoldItalic.otf"
+source_tag = "alerque/libertinus v7.051"
+source_metadata = "Libertinus Serif; Bold Italic; PS `LibertinusSerif-BoldItalic`; Version 7.051; CFF outlines"
+reserved_aliases = ["Libertinus Serif", "Libertinus Serif Display"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Libertinus-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Libertinus Serif"
+post_script_name = "LibertinusSerif-BoldItalic"
+style = "italic"
+
+[[font]]
+scope = "product"
+file = "LibertinusSerifDisplay-Regular.otf"
+bytes = 263688
+sha256 = "7734b4d4cc5f3b98926f47a1389d775107496c813269cfed238dae5bd9329d44"
+source_url = "https://github.com/alerque/libertinus/releases/download/v7.051/Libertinus-7.051.zip"
+source_member = "Libertinus-7.051/static/OTF/LibertinusSerifDisplay-Regular.otf"
+source_tag = "alerque/libertinus v7.051"
+source_metadata = "Libertinus Serif Display; Regular, the display cut; PS `LibertinusSerifDisplay-Regular`; Version 7.051; CFF outlines"
+reserved_aliases = ["Libertinus Serif", "Libertinus Serif Display"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Libertinus-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Libertinus Serif Display"
+post_script_name = "LibertinusSerifDisplay-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "Literata[opsz,wght].ttf"
+bytes = 955132
+sha256 = "b41138c9373112f32abb589cc22e8674b06ed4048b0c513be922bdd26f274440"
+source_url = "https://github.com/googlefonts/literata/releases/download/3.103/3.103.zip"
+source_member = "fonts/variable/Literata[opsz,wght].ttf"
+source_tag = "googlefonts/literata 3.103"
+source_metadata = "Literata; Regular; PS `Literata-Regular`; Version 3.103; axes `opsz` 7/12/72, `wght` 200/400/900"
+reserved_aliases = ["Literata"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Literata-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Literata"
+post_script_name = "Literata-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "Literata-Italic[opsz,wght].ttf"
+bytes = 902728
+sha256 = "d483dfaeba9cbf4ce71d32a52ee65df82f7e35b15fff8d1011cdb242d1fcd465"
+source_url = "https://github.com/googlefonts/literata/releases/download/3.103/3.103.zip"
+source_member = "fonts/variable/Literata-Italic[opsz,wght].ttf"
+source_tag = "googlefonts/literata 3.103"
+source_metadata = "Literata; Italic; PS `Literata-Italic`; Version 3.103; axes `opsz` 7/12/72, `wght` 200/400/900"
+reserved_aliases = ["Literata"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Literata-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Literata"
+post_script_name = "Literata-Italic"
+style = "italic"
+
+[[font]]
+scope = "product"
+file = "EBGaramond[wght].ttf"
+bytes = 851176
+sha256 = "ef9512f92f6d579e5dc75af59a5a4b1b8b47d2eda89e00b954d44520e5369027"
+source_url = "https://github.com/google/fonts/blob/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/ebgaramond/EBGaramond[wght].ttf"
+source_metadata = "EB Garamond; Regular; PS `EBGaramond-Regular`; Version 1.003; `wght` 400/400/800"
+reserved_aliases = ["EB Garamond"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/EB-Garamond-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "EB Garamond"
+post_script_name = "EBGaramond-Regular"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "EBGaramond-Italic[wght].ttf"
+bytes = 754468
+sha256 = "bba2c4499c93c9612b90b9825d32b07da52fce2fe57562a1eb6b833553f93c4e"
+source_url = "https://github.com/google/fonts/blob/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/ebgaramond/EBGaramond-Italic[wght].ttf"
+source_metadata = "EB Garamond; Italic; PS `EBGaramond-Italic`; Version 1.003; `wght` 400/400/800"
+reserved_aliases = ["EB Garamond"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/EB-Garamond-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "EB Garamond"
+post_script_name = "EBGaramond-Italic"
+style = "italic"
+
+[[font]]
+scope = "product"
+file = "SourceSerif4Variable-Roman.ttf"
+bytes = 1204208
+sha256 = "14d360ee1b76655da9276628b229e11671bc1f5d1083636144db6677d452cf55"
+source_url = "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip"
+source_member = "source-serif-4.005_Desktop/VAR/SourceSerif4Variable-Roman.ttf"
+source_tag = "adobe-fonts/source-serif 4.005R"
+source_metadata = "Source Serif 4 Variable; Roman; PS `SourceSerif4Variable-Roman`; Version 4.005; axes `opsz` 8/20/60, `wght` 200/400/900"
+reserved_aliases = ["Source Serif 4 Variable", "Source Serif 4"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Source-Serif-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Source Serif 4 Variable"
+post_script_name = "SourceSerif4Variable-Roman"
+style = "normal"
+
+[[font]]
+scope = "product"
+file = "SourceSerif4Variable-Italic.ttf"
+bytes = 850036
+sha256 = "6a059a64838978d54e8fab71ed86b0d82e948c0e12b2664d0c15166326dcff82"
+source_url = "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip"
+source_member = "source-serif-4.005_Desktop/VAR/SourceSerif4Variable-Italic.ttf"
+source_tag = "adobe-fonts/source-serif 4.005R"
+source_metadata = "Source Serif 4 Variable; Italic; PS `SourceSerif4Variable-Italic`; Version 4.005; axes `opsz` 8/20/60, `wght` 200/400/900"
+reserved_aliases = ["Source Serif 4 Variable", "Source Serif 4"]
+license_spdx = "OFL-1.1"
+license_files = ["LICENSES/Source-Serif-OFL.txt", "LICENSES/FONT-COPYRIGHT-NOTICES.txt"]
+[[font.faces]]
+index = 0
+family = "Source Serif 4 Variable"
+post_script_name = "SourceSerif4Variable-Italic"
+style = "italic"
+
+[[font]]
 scope = "fixture"
 file = "AdwaitaSans-Regular.ttf"
 bytes = 879796
@@ -353,7 +729,9 @@ sha256 = "500bb1ccf43df7bbb522112f9133a52b16e1c35e809632f5d8609b179152de5b"
 [[license]]
 file = "LICENSES/Noto-Color-Emoji-OFL.txt"
 source_in_license_scratch = "licenses/fedora-installed/google-noto-color-emoji-fonts/OFL.txt"
-sha256 = "ab2dcc4de7edccb08a7e453bb88dd21bd3035fd5e8c9a2e977368b0ba3992281"
+# Upstream bytes are archived verbatim; see LICENSES/UPSTREAM.md.
+# Source line endings are normalized from CRLF to LF; license text is unchanged.
+sha256 = "041ef83a3c8edb985efb5ea73a0018141f076ff411f80ed8180c5dac70c37fba"
 
 [[license]]
 file = "LICENSES/Adwaita-Sans-OFL.txt"
@@ -361,6 +739,56 @@ source_in_license_scratch = "licenses/adwaita-fonts-50.0/LICENSE"
 sha256 = "459687971d21c53923c1d1c9c062ec273a7ea03226b36195b79ec6af7d98dc81"
 
 [[license]]
+file = "LICENSES/Tilo-Sans-OFL.txt"
+source_url = "https://code.tilo.so/tilo/tilo-sans/src/commit/025d4613d723e0da70d0d2d99e39fbb781f9f45f/OFL.txt"
+sha256 = "63a4ce1628d9c43e728a77e40d27529f036a7bca9f50c65be96f4cf0a9aa5f98"
+
+[[license]]
+file = "LICENSES/Onest-OFL.txt"
+source_url = "https://github.com/google/fonts/blob/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/onest/OFL.txt"
+sha256 = "071195d8806e226faeee60259c28ca67b458227af5195a73f5cfcab06e3003bc"
+
+[[license]]
+file = "LICENSES/Atkinson-Hyperlegible-Next-OFL.txt"
+source_url = "https://github.com/google/fonts/blob/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/atkinsonhyperlegiblenext/OFL.txt"
+sha256 = "aca6a428580965d2297d1b718042dd427c2a9443ece3b0d02d758e161e0c4030"
+
+[[license]]
 file = "LICENSES/FONT-COPYRIGHT-NOTICES.txt"
 source_in_license_scratch = "licenses/../font-name-notices.txt"
-sha256 = "f3cbba1d449827c0a7c7d47d9cabb9e87a81a03136fb0bb1bf20df3744548374"
+sha256 = "750407c0700455977166db73c9bb6bd0b661638f23faa0b9d5e98e50236e34d0"
+
+[[license]]
+file = "LICENSES/New-Computer-Modern-License.txt"
+source_url = "https://mirrors.ctan.org/fonts/newcomputermodern.zip (newcomputermodern/License.txt, package 8.1.1)"
+sha256 = "8641346ee391ff97eb66c70f3d5d695792cf9c5b3c5d748c6158d49cf79646e3"
+
+[[license]]
+file = "LICENSES/GUST-FONT-LICENSE.txt"
+source_url = "https://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt"
+sha256 = "49ea6cb9257bbee0a3979c48a774cd221550ac1c20c95549efe45fc99cc18050"
+
+[[license]]
+file = "LICENSES/LPPL-1.3c.txt"
+source_url = "https://www.latex-project.org/lppl/lppl-1-3c.txt"
+sha256 = "3d262cdf34dafa6955f703c634a8c238ec44109bc8dd6ef34fb7aa54809f7e66"
+
+[[license]]
+file = "LICENSES/Libertinus-OFL.txt"
+source_url = "https://github.com/alerque/libertinus/releases/download/v7.051/Libertinus-7.051.zip (Libertinus-7.051/OFL.txt)"
+sha256 = "9aeecc8107c489ec1ec0068b0313e531a760edf3493705b32ab8ab8215a8794e"
+
+[[license]]
+file = "LICENSES/Literata-OFL.txt"
+source_url = "https://github.com/googlefonts/literata/releases/download/3.103/3.103.zip (OFL.txt)"
+sha256 = "8742963604cd89dc81437811a850018fc03b2bfad686d7422c8235967c87614e"
+
+[[license]]
+file = "LICENSES/EB-Garamond-OFL.txt"
+source_url = "https://github.com/google/fonts/blob/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/ebgaramond/OFL.txt"
+sha256 = "0985066662eb755ed3683ae5482a81a9195b49ce3f7e165cc2388b3dbece7dd7"
+
+[[license]]
+file = "LICENSES/Source-Serif-OFL.txt"
+source_url = "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip (source-serif-4.005_Desktop/LICENSE.md)"
+sha256 = "75784a295293a8992f5a8d99210566e0064a012e6dab6731305e3787f15896c7"

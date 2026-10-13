@@ -42,6 +42,17 @@ use crate::document::{ContentCipher, DocumentRoute};
 /// First and longest wait before a waiting member asks again.
 const REQUEST_FIRST_MS: u64 = 2_000;
 const REQUEST_LONGEST_MS: u64 = 120_000;
+/// The wait from which a member asks with a fresh key package: the host
+/// keeps only a channel's newest change, so an admission replaced before it
+/// reached this page is gone, and the steward answers the same request
+/// once.
+const REQUEST_FRESH_MS: u64 = 16_000;
+/// How long a member holds back acknowledging the changes it applied after
+/// joining. Acknowledgements are cumulative and only spare the steward
+/// redelivery, while every member of a busy channel acknowledging every
+/// change is a host write per member per change: a public room of 300
+/// acknowledging every 20 s spent a third of its host's disk writes on it.
+const ACK_DELAY_MS: u64 = 60_000;
 /// Frames kept for a channel no route of this page has opened yet.
 const MAX_UNOPENED_FRAMES: usize = 256;
 /// Channels whose frames are kept before a route opens them.
@@ -127,6 +138,8 @@ struct Route {
     next_request_ms: u64,
     request_delay_ms: u64,
     installed_epoch: Option<u64>,
+    /// When the acknowledgement held back for changes applied is due.
+    ack_due_ms: Option<u64>,
 }
 
 /// A member's state as [`Channels::export`] hands it to the durable store.
@@ -178,6 +191,7 @@ pub(crate) struct Channels {
     candidates: Vec<(String, [u8; 32], MlsGovernanceFrameV1)>,
     /// Restored member state, waiting for its route to open.
     saved: HashMap<ChannelId, SavedMember>,
+    saved_requests: HashMap<ChannelId, MlsAccessRequestV1>,
     dirty: bool,
 }
 
@@ -196,6 +210,7 @@ impl Channels {
             host: None,
             candidates: Vec::new(),
             saved: HashMap::new(),
+            saved_requests: HashMap::new(),
             dirty: false,
         }
     }
@@ -245,6 +260,37 @@ impl Channels {
             members,
         });
         self.dirty = true;
+    }
+
+    /// Restore requests with their sealed member state, so a reload cannot
+    /// race an earlier request with an unnecessary replacement key package.
+    pub(crate) fn restore_requests(&mut self, requests: Vec<MlsAccessRequestV1>) {
+        self.saved_requests = requests
+            .into_iter()
+            .filter(|request| {
+                request.device == self.device && self.saved.contains_key(&request.channel)
+            })
+            .map(|request| (request.channel, request))
+            .collect();
+    }
+
+    pub(crate) fn pending_requests(&self) -> Vec<MlsAccessRequestV1> {
+        let mut requests = self.saved_requests.clone();
+        for (channel, route) in &self.routes {
+            if let Some(request) = &route.request
+                && route
+                    .member
+                    .as_ref()
+                    .is_some_and(|member| matches!(member.access(), Access::Waiting))
+            {
+                requests.insert(*channel, request.clone());
+            } else {
+                requests.remove(channel);
+            }
+        }
+        let mut requests: Vec<_> = requests.into_values().collect();
+        requests.sort_by_key(|request| request.channel.0);
+        requests
     }
 
     /// Have the next [`Self::export_if_changed`] export.
@@ -434,6 +480,7 @@ impl Channels {
                 next_request_ms: now_ms,
                 request_delay_ms: REQUEST_FIRST_MS,
                 installed_epoch: None,
+                ack_due_ms: None,
             },
         );
         self.settle(channel, now_ms, &mut changes);
@@ -526,8 +573,32 @@ impl Channels {
         let channels: Vec<ChannelId> = self.routes.keys().copied().collect();
         for channel in channels {
             self.request_if_due(channel, now_ms, &mut changes);
+            self.ack_if_due(channel, now_ms, &mut changes);
         }
         changes
+    }
+
+    fn ack_if_due(&mut self, channel: ChannelId, now_ms: u64, changes: &mut Changes) {
+        let Some(route) = self.routes.get_mut(&channel) else {
+            return;
+        };
+        if route.ack_due_ms.is_none_or(|due| due > now_ms) {
+            return;
+        }
+        route.ack_due_ms = None;
+        if let Some(member) = route.member.as_ref()
+            && !member.journal().frames().is_empty()
+        {
+            changes.outgoing.push(Outgoing::Ack {
+                workspace_id: route.workspace_id,
+                room: route.document.cluster_id.clone(),
+                ack: MlsGovernanceAckV1::unsigned(
+                    channel,
+                    self.device,
+                    member.journal().head_digest(),
+                ),
+            });
+        }
     }
 
     /// Take part in `channel` under its room's governor, once known, then
@@ -556,6 +627,10 @@ impl Channels {
                 )
                 .ok()
             });
+        let request = restored
+            .as_ref()
+            .filter(|member| matches!(member.access(), Access::Waiting))
+            .and_then(|_| self.saved_requests.remove(&channel));
         let member = match restored {
             Some(member) => member,
             None => match ChannelMember::in_memory(channel, self.device, steward) {
@@ -574,6 +649,7 @@ impl Channels {
             }
         }
         route.member = Some(member);
+        route.request = request;
         route.next_request_ms = now_ms;
         route.request_delay_ms = REQUEST_FIRST_MS;
         self.dirty = true;
@@ -599,7 +675,19 @@ impl Channels {
         if moved {
             self.dirty = true;
         }
-        if moved && !member.journal().frames().is_empty() {
+        // Joining is acknowledged at once; later changes in a while.
+        let joined = events
+            .iter()
+            .any(|event| matches!(event, MemberEvent::Joined { .. }));
+        if moved && !joined {
+            route.ack_due_ms = Some(
+                route
+                    .ack_due_ms
+                    .unwrap_or_else(|| now_ms.saturating_add(ACK_DELAY_MS)),
+            );
+        }
+        if joined && !member.journal().frames().is_empty() {
+            route.ack_due_ms = None;
             changes.outgoing.push(Outgoing::Ack {
                 workspace_id: route.workspace_id,
                 room: route.document.cluster_id.clone(),
@@ -637,6 +725,9 @@ impl Channels {
         if matches!(member.access(), Access::Ready { .. }) || now_ms < route.next_request_ms {
             return;
         }
+        if route.request_delay_ms >= REQUEST_FRESH_MS {
+            route.request = None;
+        }
         if route.request.is_none() {
             route.request = member
                 .unsigned_access_request(now_ms / 1000, &self.vault)
@@ -668,12 +759,6 @@ impl Changes {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 mod tests {
     use super::*;
     use channel_crypto::ChannelSteward;
@@ -968,5 +1053,87 @@ mod tests {
         assert_eq!(requests(&changes), 0, "a migrated page does not ask again");
         let (_, restored) = changes.keys.into_iter().next().expect("keys are back");
         assert_eq!(restored.epoch(), keys.epoch());
+    }
+    /// A steward may receive the request queued by the old page before the
+    /// reloaded page's request. Both admissions reach the reload in order.
+    #[test]
+    fn a_pending_reload_survives_the_old_request_being_admitted_first() {
+        let user = SigningKey::from_bytes(&[1; 32]);
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let laptop = SigningKey::from_bytes(&[4; 32]);
+        let note = route("note-pending-reload");
+        let channel = Channels::channel(&note);
+        let vault = VaultKey::new([9; 32]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut steward =
+            ChannelSteward::open_or_create(dir.path(), channel, laptop.clone(), &vault).unwrap();
+        let mut first = Channels::new(device(&browser), device(&user), [4; 32]);
+        first.open(&note, 0);
+        first.note_cert(
+            device(&laptop),
+            cert(&user, &laptop, DeviceCapabilities::primary()),
+            0,
+        );
+        let first_changes = first.receive_frame(
+            device(&laptop),
+            ROOM,
+            steward.journal().frames()[0].clone(),
+            0,
+        );
+        let saved = first.export_if_changed().expect("waiting member is stored");
+        let pending = first.pending_requests();
+        let mut reload = Channels::new(device(&browser), device(&user), [4; 32]);
+        reload.restore(saved);
+        reload.restore_requests(pending);
+        let reload_changes = reload.open(&note, 1);
+        let allowed = BTreeSet::from([
+            Ed25519PublicKey::from_bytes(device(&laptop)),
+            Ed25519PublicKey::from_bytes(device(&browser)),
+        ]);
+        for changes in [first_changes, reload_changes] {
+            for outgoing in changes.outgoing {
+                if let Outgoing::Request { mut request, .. } = outgoing {
+                    request.signature = collab_types::Signature::from_bytes(
+                        browser.sign(&request.signing_bytes().unwrap()).to_bytes(),
+                    );
+                    steward
+                        .reconcile(
+                            &allowed,
+                            &BTreeMap::from([(request.device, request)]),
+                            &vault,
+                        )
+                        .unwrap();
+                }
+            }
+        }
+        for outgoing in steward.outbox() {
+            for frame in outgoing.frames {
+                reload.receive_frame(device(&laptop), ROOM, frame, 2);
+            }
+        }
+        let keys = reload.routes[&channel]
+            .member
+            .as_ref()
+            .unwrap()
+            .content_keys()
+            .expect("the reload keeps its admitted channel keys");
+        let artifact =
+            collab_types::document_artifact_id(&note.app_id, &note.cluster_id, &note.record);
+        let (metadata, sealed) = keys
+            .seal_content(
+                artifact,
+                collab_types::ContentRetention::Checkpoint,
+                b"before the reload",
+            )
+            .unwrap();
+        assert_eq!(
+            steward
+                .content_keys()
+                .unwrap()
+                .open_content(artifact, &metadata, &sealed)
+                .unwrap()
+                .to_vec(),
+            b"before the reload",
+        );
     }
 }

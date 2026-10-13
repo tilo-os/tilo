@@ -5,7 +5,10 @@
 pub mod apply;
 pub mod awake;
 pub mod boot;
+mod cohort;
 pub mod daemon;
+mod device_actions;
+mod disk_unlock;
 pub mod display;
 pub mod error;
 pub mod exec;
@@ -17,9 +20,11 @@ mod linker;
 pub mod locks;
 pub mod packages;
 pub mod server;
+mod session_view;
 pub mod slots;
 pub mod systemd;
 pub mod targets;
 
+pub use cohort::SelectedApps;
 pub use daemon::Daemon;
 pub use error::DaemonError;

@@ -86,10 +86,7 @@ impl Widget for PreviewCanvas {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
-            min_size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::length(0.0),
-            },
+            min_size: Size::from_lengths(0.0, 0.0),
             flex_grow: 1.0,
             ..Default::default()
         });
@@ -97,14 +94,7 @@ impl Widget for PreviewCanvas {
         node
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = tree.layout(node).copied().unwrap_or_default();
-        let rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        let rect = crate::widget::layout_rect(tree, node, origin);
         if self.rect != rect {
             self.rect = rect;
             self.dirty = true;
@@ -144,7 +134,7 @@ impl Widget for PreviewCanvas {
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         if *ctx.handled {
             return;
@@ -181,10 +171,5 @@ impl Widget for PreviewCanvas {
             ),
         )
     }
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 }

@@ -23,13 +23,7 @@
 //! The client is public (no privileged or input-method credential), owns no
 //! toplevel and is never shown; it exists only to be the text-input focus.
 
-use std::os::unix::net::UnixStream;
-
-use smithay::reexports::calloop::generic::Generic;
-use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
-use smithay::reexports::wayland_server::backend::DisconnectReason;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface as ServerSurface;
-use smithay::reexports::wayland_server::{Client, DisplayHandle};
 use smithay::wayland::text_input::TextInputSeat as _;
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_seat, wl_surface};
 use wayland_client::{Connection, EventQueue, Proxy as _, QueueHandle, delegate_noop};
@@ -40,10 +34,27 @@ use winit::event::{Ime, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::state::{ClientState, State};
+use super::text_commit::LoopbackClient;
 
 /// What a chrome field asks of an input method: its purpose and where its
 /// caret is, in desktop coordinates.
 pub type FieldRequest = ui::ime::ImeWindowState;
+
+/// A native keyboard owner, independent of its caret geometry. Widget ids
+/// identify the current layout node; the palette owns keyboard input even
+/// when the host's ordinary focused node has not changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeFieldId {
+    Widget(u64),
+    Palette,
+}
+
+/// Private opaque edit metadata, never surrounding text or a persisted hash.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct NativeEditStamp {
+    pub document: ui::bound_dispatch::DocumentEditStamp,
+    pub fingerprint: [u8; 32],
+}
 
 /// Client-side protocol state.
 #[derive(Default)]
@@ -64,19 +75,20 @@ struct ClientSide {
 /// The stand-in client. Dropping it disconnects it, which also retires the
 /// text-input focus Smithay held for its surface.
 pub struct ShellTextInput {
+    /// Declared first so the server side disconnects before `conn` closes.
+    link: LoopbackClient,
     conn: Connection,
     queue: EventQueue<ClientSide>,
     state: ClientSide,
     surface: Option<wl_surface::WlSurface>,
     text_input: Option<zwp_text_input_v3::ZwpTextInputV3>,
-    server: Client,
-    display: DisplayHandle,
-    loop_handle: LoopHandle<'static, State>,
-    wake: Option<RegistrationToken>,
     /// What the client last enabled its text input for.
     enabled: Option<FieldRequest>,
     /// The field the compositor wants served, if any.
     wanted: Option<FieldRequest>,
+    native_field: Option<NativeFieldId>,
+    edit_stamp: Option<NativeEditStamp>,
+    edit_stamp_session: Option<super::dictation::SessionId>,
 }
 
 impl ShellTextInput {
@@ -87,43 +99,22 @@ impl ShellTextInput {
     /// Returns a description when the socket pair, the client insertion or
     /// the Wayland connection fails.
     pub fn connect(state: &mut State) -> Result<Self, String> {
-        let (server, client) = UnixStream::pair().map_err(|e| e.to_string())?;
-        client.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let server = state
-            .display_handle
-            .insert_client(server, ClientState::new_arc())
-            .map_err(|e| e.to_string())?;
-        let conn = Connection::from_socket(client).map_err(|e| e.to_string())?;
+        let (link, conn) = LoopbackClient::connect(state, ClientState::new_arc())?;
         let queue = conn.new_event_queue::<ClientSide>();
         let _registry = conn.display().get_registry(&queue.handle(), ());
         let _ = conn.flush();
-        // Only a wake: the loop's tick reads what arrived.
-        let wake = conn
-            .backend()
-            .poll_fd()
-            .try_clone_to_owned()
-            .ok()
-            .and_then(|fd| {
-                state
-                    .loop_handle
-                    .insert_source(
-                        Generic::new(fd, Interest::READ, Mode::Level),
-                        |_, _, _: &mut State| Ok(PostAction::Continue),
-                    )
-                    .ok()
-            });
         Ok(Self {
+            link,
             conn,
             queue,
             state: ClientSide::default(),
             surface: None,
             text_input: None,
-            server,
-            display: state.display_handle.clone(),
-            loop_handle: state.loop_handle.clone(),
-            wake,
             enabled: None,
             wanted: None,
+            native_field: None,
+            edit_stamp: None,
+            edit_stamp_session: None,
         })
     }
 
@@ -131,8 +122,12 @@ impl ShellTextInput {
     /// rests on while a chrome field is served.
     fn server_surface(&self) -> Option<ServerSurface> {
         let surface = self.surface.as_ref()?;
-        self.server
-            .object_from_protocol_id::<ServerSurface>(&self.display, surface.id().protocol_id())
+        self.link
+            .server
+            .object_from_protocol_id::<ServerSurface>(
+                &self.link.display,
+                surface.id().protocol_id(),
+            )
             .ok()
     }
 
@@ -153,6 +148,37 @@ impl ShellTextInput {
     /// text input to match. Returns what the input method typed since the
     /// last call, as chrome events.
     pub fn sync(&mut self, state: &mut State, field: Option<FieldRequest>) -> Vec<WindowEvent> {
+        self.sync_for_field(state, field, None)
+    }
+
+    /// Serve an explicitly identified native field. Changing owners cancels
+    /// dictation immediately and starts a fresh protocol enable cycle, even
+    /// when both fields have the same purpose and caret rectangle. Events
+    /// already received for the previous owner are discarded.
+    pub fn sync_for_field(
+        &mut self,
+        state: &mut State,
+        field: Option<FieldRequest>,
+        identity: Option<NativeFieldId>,
+    ) -> Vec<WindowEvent> {
+        let identity = identity.filter(|_| field.is_some());
+        let changed = identity != self.native_field;
+        if changed {
+            state.cancel_active_dictation();
+            if self.enabled.is_some()
+                && let Some(text_input) = self.text_input.as_ref()
+            {
+                text_input.disable();
+                text_input.commit();
+                self.enabled = None;
+            }
+            self.state.pending_preedit = None;
+            self.state.pending_commit = None;
+            self.state.events.clear();
+            self.native_field = identity;
+            self.edit_stamp = None;
+            self.edit_stamp_session = None;
+        }
         self.wanted = field;
         self.pump();
         let holds = self.holds_focus(state);
@@ -174,7 +200,43 @@ impl ShellTextInput {
         }
         self.pump();
         self.update_enable();
-        std::mem::take(&mut self.state.events)
+        let events = std::mem::take(&mut self.state.events);
+        if changed { Vec::new() } else { events }
+    }
+
+    /// Call before processing speech replies. A same-field edit/selection or
+    /// changed record owner cancels deferred insertion even with equal caret
+    /// geometry. An unavailable active-field stamp fails closed.
+    pub(crate) fn observe_edit_stamp(&mut self, state: &mut State, stamp: Option<NativeEditStamp>) {
+        let session = state.dictation_target_id();
+        if self.edit_stamp_session != session {
+            self.edit_stamp = None;
+            self.edit_stamp_session = session;
+        }
+        if session.is_some()
+            && (stamp.is_none() || (self.edit_stamp.is_some() && self.edit_stamp != stamp))
+        {
+            state.cancel_active_dictation();
+        }
+        self.edit_stamp = stamp;
+    }
+
+    /// After the compositor flushes a native dictation final, drain its local
+    /// bridge in the same input turn. Reads are nonblocking and bounded; a
+    /// missing complete commit is failure, never a delayed insertion attempt.
+    pub(crate) fn drain_dictation_commit(&mut self) -> Option<Vec<WindowEvent>> {
+        for _ in 0..32 {
+            self.pump();
+            if self
+                .state
+                .events
+                .iter()
+                .any(|event| matches!(event, WindowEvent::Ime(Ime::Commit(_))))
+            {
+                return Some(std::mem::take(&mut self.state.events));
+            }
+        }
+        None
     }
 
     fn update_enable(&mut self) {
@@ -192,7 +254,7 @@ impl ShellTextInput {
             let _ = self.conn.flush();
             return;
         };
-        let (hint, purpose) = content_type(field.purpose);
+        let (hint, purpose) = content_type(field.purpose, field.multiline);
         if self.enabled.is_none() {
             text_input.enable();
         }
@@ -241,30 +303,12 @@ impl ShellTextInput {
     }
 }
 
-impl Drop for ShellTextInput {
-    fn drop(&mut self) {
-        if let Some(wake) = self.wake.take() {
-            self.loop_handle.remove(wake);
-        }
-        let id = self.server.id();
-        if self
-            .display
-            .backend_handle()
-            .get_client_data(id.clone())
-            .is_ok()
-        {
-            self.display
-                .backend_handle()
-                .kill_client(id, DisconnectReason::ConnectionClosed);
-        }
-    }
-}
-
 /// The text-input content type for a field's purpose: a password is hidden
 /// and sensitive, so the keyboard shows its password layout and learns
 /// nothing from it.
 fn content_type(
     purpose: winit::window::ImePurpose,
+    multiline: bool,
 ) -> (
     zwp_text_input_v3::ContentHint,
     zwp_text_input_v3::ContentPurpose,
@@ -276,6 +320,9 @@ fn content_type(
             ContentPurpose::Password,
         ),
         winit::window::ImePurpose::Terminal => (ContentHint::None, ContentPurpose::Terminal),
+        winit::window::ImePurpose::Normal if multiline => {
+            (ContentHint::Multiline, ContentPurpose::Normal)
+        }
         _ => (ContentHint::None, ContentPurpose::Normal),
     }
 }
@@ -402,13 +449,33 @@ mod tests {
     #[test]
     fn a_password_field_asks_for_the_hidden_password_layout() {
         use zwp_text_input_v3::{ContentHint, ContentPurpose};
-        let (hint, purpose) = content_type(winit::window::ImePurpose::Password);
+        let (hint, purpose) = content_type(winit::window::ImePurpose::Password, false);
         assert_eq!(purpose, ContentPurpose::Password);
         assert!(hint.contains(ContentHint::HiddenText | ContentHint::SensitiveData));
         assert_eq!(
-            content_type(winit::window::ImePurpose::Normal),
+            content_type(winit::window::ImePurpose::Normal, false),
             (ContentHint::None, ContentPurpose::Normal)
         );
+    }
+
+    #[test]
+    fn multiline_hint_never_changes_password_or_terminal_purpose() {
+        use zwp_text_input_v3::{ContentHint, ContentPurpose};
+        assert_eq!(
+            content_type(winit::window::ImePurpose::Normal, true),
+            (ContentHint::Multiline, ContentPurpose::Normal)
+        );
+        for purpose in [
+            winit::window::ImePurpose::Password,
+            winit::window::ImePurpose::Terminal,
+        ] {
+            assert_eq!(content_type(purpose, true), content_type(purpose, false));
+            assert!(
+                !content_type(purpose, true)
+                    .0
+                    .contains(ContentHint::Multiline)
+            );
+        }
     }
 
     #[test]

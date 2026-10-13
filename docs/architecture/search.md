@@ -7,7 +7,7 @@ result or runs an action. Two entry points:
 
 - **Ctrl+K** — per-app: the overlay pre-scoped to the active app's resources +
   actions.
-- **Super+Space** (or Super+K) — global: shell-level, all apps + full-text FS.
+- **Super+Space** — global: shell-level, all apps + full-text FS.
 
 ## Resources
 

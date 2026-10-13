@@ -75,3 +75,22 @@ test('two profiles on one origin hold two device keys', async () => {
   assert.notDeepEqual(a.publicKey, b.publicKey);
   a.close(); b.close();
 });
+
+test('a link recipient requires existing custody without creating a key', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  let generations = 0;
+  const unavailableCrypto = {subtle: {generateKey: async () => { generations++; throw new Error('unexpected generation'); }}};
+  await assert.rejects(openDeviceCustody({profile: 'existing', storage,
+    locks: locks.manager('tab-1'), crypto: unavailableCrypto, requireExisting: true}),
+    error => error instanceof CustodyError && error.code === 'custody-missing');
+  assert.equal(generations, 0);
+  assert.equal(storage.rows.size, 0);
+  // The refusal releases custody, so the ordinary enrollment flow can continue.
+  const enrolled = await openDeviceCustody({profile: 'existing', storage, locks: locks.manager('tab-2')});
+  await enrolled.close();
+  const reopened = await openDeviceCustody({profile: 'existing', storage,
+    locks: locks.manager('tab-1'), requireExisting: true});
+  assert.deepEqual(reopened.publicKey, enrolled.publicKey);
+  await reopened.close();
+});

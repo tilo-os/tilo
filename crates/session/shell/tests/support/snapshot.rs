@@ -22,14 +22,38 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Resolve an existing reviewed shell golden; update mode writes a local candidate.
+/// The cache is verified even when a source-directory candidate also exists.
+pub fn pinned_golden_path(candidate: PathBuf) -> PathBuf {
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
+        return candidate;
+    }
+    let filename = candidate.file_name().unwrap().to_str().unwrap();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let result = std::process::Command::new("python3")
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../tools/test-assets.py"))
+        .arg(root.join("tests/snapshots/artifacts.json"))
+        .args(["--file", filename])
+        .output()
+        .expect("run pinned shell golden resolver");
+    assert!(
+        result.status.success(),
+        "resolve immutable shell golden {filename}: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    PathBuf::from(
+        String::from_utf8(result.stdout)
+            .expect("UTF-8 golden path")
+            .trim(),
+    )
+}
 
 /// `rendered` is produced by the test; `golden` is checked in under
 /// `tests/snapshots/`.
@@ -46,11 +70,6 @@ impl SnapshotAssertion {
             golden_png: golden.into(),
             tolerance: 4,
         }
-    }
-
-    pub fn with_tolerance(mut self, t: u8) -> Self {
-        self.tolerance = t;
-        self
     }
 
     /// See the module doc for the full behaviour matrix.

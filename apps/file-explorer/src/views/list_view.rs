@@ -1,16 +1,13 @@
-//! List-mode content: a clean, modern file list built on [`FileView`].
+//! List-mode content: the file list, a framework `DataTable` hosted by
+//! [`FileView`].
 //!
-//! No zebra striping — transparent rows, a subtle hover veneer, and a solid
-//! accent highlight for the selection. Columns are Name (flex) / Size /
-//! Modified with an inline type glyph; the header is click-to-sort.
+//! The table paints the header, the rows, the selection lift and the sort
+//! indicator. Columns are Name (flex) / Size / Modified with the file's icon
+//! or preview in the Name column; the header is click-to-sort.
 
 use crate::model::{SortBy, SortOrder, ViewMode};
 use crate::views::file_view::FileView;
 use ui::widget::Widget;
-
-/// Column keys in left-to-right display order (the inline type glyph lives in
-/// the Name column, so it is no longer a column of its own).
-pub const COLUMN_KEYS: &[&str] = &["name", "size", "modified"];
 
 /// Present `view` — already bound to the live entries, selection, zoom and
 /// in-place rename — as the sortable list, ordered by `sort_by`/`sort_order`.

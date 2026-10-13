@@ -33,14 +33,6 @@ impl PlaceCluster {
     pub fn count(&self) -> usize {
         self.photo_ids.len()
     }
-
-    /// A safe, concise screen-reader name. Exact coordinates are deliberately
-    /// not announced by default; a person may choose to inspect them in the
-    /// location editor when that precision is actually needed.
-    #[must_use]
-    pub fn accessibility_label(&self) -> String {
-        format!("{}: {} photographs", self.label, self.count())
-    }
 }
 
 /// Local map camera using WGS-84 degrees. The conversion is Web-Mercator-ish
@@ -92,33 +84,34 @@ impl MapViewport {
         .clamped()
     }
 
-    /// Zoom around a focus point. The caller can pass the keyboard focus or
-    /// pinch centre, keeping the item under it stable rather than jumping to
-    /// the map centre.
+    /// The camera that shows every one of `points` (latitude, longitude)
+    /// inside a `width × height` viewport, `margin` pixels clear of its
+    /// edges, as close as that allows. One point is shown at a city's
+    /// scale; none leaves the default camera.
     #[must_use]
-    pub fn zoomed_at(
-        self,
-        delta: f64,
-        focus_x: f64,
-        focus_y: f64,
-        width: f64,
-        height: f64,
-    ) -> Self {
-        if width <= 0.0 || height <= 0.0 || !delta.is_finite() {
-            return self.clamped();
-        }
-        let next = Self {
-            zoom: (self.zoom + delta).clamp(MIN_ZOOM, MAX_ZOOM),
-            ..self
+    pub fn fitting(points: &[(f64, f64)], width: f64, height: f64, margin: f64) -> Self {
+        let Some(&(first_lat, first_lon)) = points.first() else {
+            return Self::default();
         };
-        let old_scale = 360.0 / (256.0 * 2.0_f64.powf(self.zoom));
-        let next_scale = 360.0 / (256.0 * 2.0_f64.powf(next.zoom));
-        let fx = focus_x - width / 2.0;
-        let fy = focus_y - height / 2.0;
+        let (mut south, mut north, mut west, mut east) =
+            (first_lat, first_lat, first_lon, first_lon);
+        for &(latitude, longitude) in points {
+            south = south.min(latitude);
+            north = north.max(latitude);
+            west = west.min(longitude);
+            east = east.max(longitude);
+        }
+        let room_x = (width - 2.0 * margin).max(1.0);
+        let room_y = (height - 2.0 * margin).max(1.0);
+        // Pixels per degree that fit both spans; a single place opens at a
+        // regional scale rather than the deepest zoom.
+        let fit = (room_x / (east - west).max(f64::EPSILON))
+            .min(room_y / (north - south).max(f64::EPSILON));
+        let zoom = (fit * 360.0 / 256.0).log2().min(6.0);
         Self {
-            latitude: self.latitude + fy * (old_scale - next_scale),
-            longitude: self.longitude - fx * (old_scale - next_scale),
-            ..next
+            latitude: f64::midpoint(south, north),
+            longitude: f64::midpoint(west, east),
+            zoom,
         }
         .clamped()
     }
@@ -209,7 +202,7 @@ mod tests {
     use crate::model::{LibraryPhoto, LocationProvenance, OpenImage};
 
     fn photo(id: &str, latitude: f64, longitude: f64, label: &str) -> LibraryPhoto {
-        let mut photo = LibraryPhoto::from_image(OpenImage::from_path(id, 10, 10));
+        let mut photo = LibraryPhoto::from_image(OpenImage::fixture(id, 10, 10));
         photo.location = Some(PhotoLocation {
             latitude,
             longitude,
@@ -239,11 +232,6 @@ mod tests {
                 san_francisco.photo_ids,
                 vec![photos[0].id.clone(), photos[1].id.clone()]
             );
-            assert!(
-                clusters
-                    .iter()
-                    .any(|cluster| cluster.accessibility_label().contains("photographs"))
-            );
         }
 
         eprintln!("phase pan_zoom_and_projection_are_finite_and_wrap_the_dateline");
@@ -268,9 +256,7 @@ mod tests {
             let (latitude, longitude) = viewport.unproject(x, y, 1000.0, 600.0).unwrap();
             assert!((latitude - location.latitude).abs() < 0.000_001);
             assert!((longitude - location.longitude).abs() < 0.000_001);
-            let moved = viewport
-                .panned(40.0, -20.0, 1000.0, 600.0)
-                .zoomed_at(1.0, x, y, 1000.0, 600.0);
+            let moved = viewport.panned(40.0, -20.0, 1000.0, 600.0);
             assert!((MIN_ZOOM..=MAX_ZOOM).contains(&moved.zoom));
             assert!((-180.0..180.0).contains(&moved.longitude));
         }

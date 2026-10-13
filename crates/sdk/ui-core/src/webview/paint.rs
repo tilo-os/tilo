@@ -22,9 +22,7 @@ use tilo_paint_stream::wire::Payload;
 use tilo_paint_stream::{BlobRef, Color as PaintColor, Frame, Item, LayerId, Patch, Point, ROOT};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Stroke};
-use vello::peniko::{
-    BlendMode, Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
-};
+use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 
 use super::{FrameSlot, KeyModifiers, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
@@ -1014,13 +1012,7 @@ impl PageRenderer {
         let decoded = image::load_from_memory(&bytes).ok().map(|img| {
             let img = img.to_rgba8();
             let (width, height) = img.dimensions();
-            ImageData {
-                data: Blob::new(Arc::new(img.into_raw())),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width,
-                height,
-            }
+            crate::raster::rgba8(img.into_raw(), width, height)
         });
         self.images.insert(*hash, decoded.clone());
         decoded
@@ -1067,8 +1059,7 @@ mod tests {
         include_str!("../../../../browser/paint-stream/tests/fixtures/layers.top.json");
     const SCROLLED: &str =
         include_str!("../../../../browser/paint-stream/tests/fixtures/layers.scrolled.json");
-    const TOP_PNG: &[u8] =
-        include_bytes!("../../../../browser/paint-stream/tests/fixtures/layers.top.png");
+    const TOP_PNG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/layers.top.png"));
 
     fn paint_engine(snapshot: &str) -> (Arc<TestEngine>, Arc<PaintEngine>) {
         let test = TestEngine::new();

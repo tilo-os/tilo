@@ -1,6 +1,8 @@
 use super::{MusicApp, Track};
-#[cfg(all(test, feature = "audio"))]
+#[cfg(test)]
+#[cfg(feature = "audio")]
 use ui::widget::Continuable as _;
+use ui::widget::toast::ToastKind;
 
 impl MusicApp {
     pub(super) fn make_open_file_button() -> ui::widget::Button {
@@ -14,9 +16,12 @@ impl MusicApp {
         )]
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "open-file")
             .expect("canonical Music picker binding");
-        ui::widget::Button::new("music-open-file", "music-open-audio-file")
-            .content_sized()
-            .on_action(binding)
+        ui::widget::Button::icon_only(
+            "music-open-file",
+            ui::icons::Icon::FolderOpen,
+            &crate::i18n::t("music-open-audio-file"),
+        )
+        .on_action(binding)
     }
 
     pub(super) fn is_local_file(&self, id: &str) -> bool {
@@ -141,7 +146,7 @@ impl MusicApp {
             }
             ui::portal::PortalOutcome::Failed(error) => error,
         };
-        self.toast = Some((error.clone(), ui::time::now()));
+        self.notify(ToastKind::Error, error.clone());
         self.resource_stream_results
             .push(tilo_actions::InvocationUpdate::Failed {
                 invocation,
@@ -149,7 +154,7 @@ impl MusicApp {
                     code: "music.open_file_failed".into(),
                     message: error,
                     details: None,
-                    retryable: true,
+                    retryable: false,
                 },
             });
     }
@@ -199,8 +204,27 @@ impl MusicApp {
         Ok(request)
     }
 
+    pub(super) fn observe_local_duration(&mut self) {
+        if let Some(file) = self
+            .local_file
+            .as_mut()
+            .filter(|file| self.pb.current.as_deref() == Some(&file.track.id))
+            && let Some(duration) = self.audio.duration_ms().filter(|duration| *duration > 0)
+        {
+            file.observed_duration_ms = Some(duration);
+        }
+    }
+
     pub(super) fn start_local_file(&mut self) -> Result<u64, String> {
         let file = self.local_file.as_ref().ok_or("No local file is open")?;
+        if self.pb.playing
+            && file
+                .observed_duration_ms
+                .is_some_and(|duration| self.pb.position_ms >= duration)
+        {
+            self.pb.position_ms = 0;
+        }
+        self.playhead_ms = self.pb.position_ms as f64;
         if !crate::files::is_nonempty_file(&file.path) {
             return Err("Local audio file is unavailable or empty".into());
         }
@@ -251,6 +275,53 @@ mod tests {
     #[cfg(feature = "audio")]
     use ui::widget::Widget;
 
+    #[cfg(feature = "audio")]
+    #[test]
+    fn picker_failure_settles_the_at_most_once_effect_without_retry() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = MusicApp::without_profile();
+        let mut doc = automerge::AutoCommit::new();
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        let before = doc.get_heads();
+        let invocation = tilo_actions::InvocationId::new();
+        let effect = crate::actions::MusicEffect::OpenFile;
+        assert_eq!(
+            effect.bound().contract.retry,
+            tilo_actions::RetryPolicy::AtMostOnce
+        );
+        let action = crate::actions::MusicEffect::specs()
+            .into_iter()
+            .find(|action| action.id == "open-file")
+            .unwrap();
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Failed(
+            "Fixture file access denied".into(),
+        ));
+        let payload = action.build_json(&serde_json::Map::new()).unwrap().payload;
+        assert!(matches!(
+            app.start_effect(invocation, &payload).unwrap(),
+            ui::framework::Effected::Pending
+        ));
+        app.drain_local_file_pick();
+        let Some(tilo_actions::InvocationUpdate::Failed {
+            invocation: completed,
+            error,
+        }) = app.take_effect_result(invocation)
+        else {
+            panic!("the actual picker failure must settle its pending invocation");
+        };
+        assert_eq!(completed, invocation);
+        assert_eq!(error.code, "music.open_file_failed");
+        assert_eq!(error.message, "Fixture file access denied");
+        assert!(!error.retryable);
+        assert!(app.local_file_pick.is_none());
+        assert!(app.local_file.is_none());
+        assert!(!app.audio.has_stream());
+        assert_eq!(doc.get_heads(), before);
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -295,16 +366,12 @@ mod tests {
                     &theme,
                 );
                 let rect = app.open_file_button.get_rect();
-                assert!(rect.width() >= 100.0 && rect.height() >= 40.0);
+                let side = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, &theme);
+                assert!(rect.width() >= side - 0.5 && rect.height() >= side - 0.5);
                 assert!(app.rect.contains(rect.center()));
-                let (_, text_height) = text.measure(
-                    &ui::i18n!("music-open-audio-file"),
-                    14.0,
-                    Some((rect.width() as f32 - 2.0 * theme.padding_standard).max(0.0)),
-                );
-                assert!(rect.height() >= f64::from(text_height + theme.padding_standard));
+                assert!(rect.y1 <= app.body_rect.y0, "the action sits in the header");
                 assert_eq!(tree.children(node).unwrap().len(), app.children().len());
-                let device_id = unsafe { std::mem::zeroed() };
+                let device_id = winit::event::DeviceId::dummy();
                 let events = [
                     winit::event::WindowEvent::CursorMoved {
                         device_id,
@@ -324,26 +391,18 @@ mod tests {
                         button: winit::event::MouseButton::Left,
                     },
                 ];
+                let mut sending = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .layout(&tree, node);
                 for event in events {
-                    app.handle_event(
-                        &event,
-                        &mut ui::widget::EventCtx {
-                            scale_factor: 1.0,
-                            modifiers: &winit::event::Modifiers::default(),
-                            state: ui::widget::Edits::lend(&mut doc),
-                            path: &automerge::ROOT,
-                            handled: &mut false,
-                            focus_target: &mut None,
-                            node_id: node,
-                            taffy: &tree,
-                        },
-                    );
+                    sending.send(&mut app, &event);
                 }
                 let intent = ui::widget::controls::take_control_invocation(&mut app)
                     .expect("visible shared button intent");
+                assert_eq!(intent.address.resource, "music.library");
                 assert_eq!(
-                    intent.address,
-                    tilo_actions::ActionAddress::new("music.library", "open-file")
+                    intent.address.action,
+                    ui::tilo_resource::Effect::id(&crate::actions::MusicEffect::OpenFile)
                 );
                 assert!(intent.arguments.is_empty());
                 assert!(
@@ -353,13 +412,18 @@ mod tests {
             }
         }
 
-        // Phase `home_picker_is_in_host_focus_order_only_while_visible`.
+        // Phase `header_actions_are_in_host_focus_order_on_every_destination`.
         {
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
             recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
             let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
-            let on_home = app.harness().focus_order().len();
+            let home_focus = app.harness().focus_order();
+            assert!(home_focus.len() > 2, "Home source controls are focusable");
+            assert!(
+                app.harness().targets().contains_key("music-open-file"),
+                "Home exposes its file picker"
+            );
             app.call_on(
                 &crate::actions::view_resource_id("songs"),
                 "open",
@@ -367,10 +431,18 @@ mod tests {
             )
             .unwrap();
             app.settle();
+            assert!(
+                !app.harness().targets().contains_key("music-open-file"),
+                "leaving Home removes the picker"
+            );
             assert_eq!(
-                app.harness().focus_order().len() + 1,
-                on_home,
-                "the picker leaves the focus order with Home"
+                app.harness().focus_order().len(),
+                2,
+                "Search and Back remain after the Home picker and source controls leave focus order"
+            );
+            assert!(
+                app.harness().a11y_node_named("Back").is_some(),
+                "the page offers Back"
             );
             app.call_on(
                 &crate::actions::view_resource_id("home"),
@@ -379,7 +451,13 @@ mod tests {
             )
             .unwrap();
             app.settle();
-            assert_eq!(app.harness().focus_order().len(), on_home);
+            assert_eq!(
+                app.harness().focus_order().len(),
+                home_focus.len() + 1,
+                "returning Home restores the picker and keeps Back to the prior page"
+            );
+            assert!(app.harness().a11y_node_named("Back").is_some());
+            assert!(app.harness().targets().contains_key("music-open-file"));
             #[cfg(feature = "audio")]
             {
                 app.call("open-file", serde_json::json!({})).unwrap();
@@ -455,6 +533,98 @@ mod tests {
             assert!(app.local_file.is_none());
             assert!(!app.audio.has_stream());
         }
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
+    #[serial_test::serial(audio_backend)]
+    #[expect(
+        clippy::float_cmp,
+        reason = "EOF and replay assign exact integer-millisecond playhead values"
+    )]
+    fn local_decoder_duration_survives_eos_and_replay_rewinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("finished local song.wav");
+        wav(&path);
+        let mut app = MusicApp::without_profile();
+        app.open_local_file(path.to_str().unwrap()).unwrap();
+        wait_for_audio(&mut app);
+        let duration = app.current_duration_ms();
+        assert!(duration >= 2900);
+        let deadline = tilo_test_env::hang_deadline();
+        while app.pb.playing {
+            app.tick();
+            assert!(
+                ui::time::now() < deadline,
+                "local decoder did not reach EOS"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!app.audio.has_stream());
+        assert!(app.playback_error.is_none());
+        assert_eq!(
+            app.current_duration_ms(),
+            duration,
+            "the visible local duration must survive real decoder teardown"
+        );
+        assert_eq!(app.playhead_ms, duration as f64);
+        let ui::framework::Effected::Done(status) = app
+            .begin_effect(
+                tilo_actions::InvocationId::new(),
+                crate::actions::MusicEffect::PlaybackStatus,
+            )
+            .unwrap()
+        else {
+            panic!("playback inspection must return the actual stopped state");
+        };
+        let status = status.value.unwrap();
+        assert_eq!(status["duration_ms"], duration);
+        assert_eq!(
+            status["position_ms"], duration,
+            "actual local EOS must retain its observed end position after decoder teardown"
+        );
+        assert_eq!(status["confirmed_playing"], false);
+        assert_eq!(status["requested_playing"], false);
+        // The self-managed sink retains its actual decoded-buffer history at
+        // EOS; a stopped source must not erase that evidence or report playing.
+        assert_eq!(status["rendered_counter_unit"], "sink_buffers");
+        assert!(status["rendered_buffers"].as_u64().unwrap() > 0);
+        let resource =
+            crate::app::MusicApp::publish_resource(&app, crate::actions::LOCAL_FILE_RESOURCE_ID)
+                .unwrap();
+        let action = resource
+            .actions
+            .iter()
+            .find(|a| a.id == "play-pause")
+            .unwrap();
+        let encoded = action.build_json(&serde_json::Map::new()).unwrap();
+        let invocation = tilo_actions::InvocationId::new();
+        assert!(matches!(
+            app.start_effect(invocation, &encoded.payload).unwrap(),
+            ui::framework::Effected::Pending
+        ));
+        assert_eq!(
+            app.pb.position_ms, 0,
+            "replay must not seek to the ended position"
+        );
+        assert_eq!(app.playhead_ms, 0.0);
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            app.tick();
+            if let Some(update) = app.take_effect_result(invocation) {
+                let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+                    panic!("real replay did not succeed: {update:?}");
+                };
+                assert_eq!(output.value, Some(serde_json::json!({"state":"playing"})));
+                action.contract.result.validate(&output).unwrap();
+                assert!(app.audio.frames_rendered() > 0);
+                assert!(app.audio.is_playing_confirmed());
+                break;
+            }
+            assert!(ui::time::now() < deadline, "replay produced no actual PCM");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        app.audio.stop();
     }
 
     #[test]
@@ -647,8 +817,7 @@ mod tests {
         };
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -716,8 +885,7 @@ mod tests {
         wav(&path);
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -774,8 +942,7 @@ mod tests {
         wav(&path);
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -795,7 +962,7 @@ mod tests {
             assert!(
                 app.restore_continuation_metadata(
                     &ui::collaboration::ContinuationMetadata {
-                        schema_version: 1,
+                        schema_version: ui::collaboration::semantic_schema::MEDIA_POSITION_V1,
                         bytes: serde_json::to_vec(&serde_json::json!({
                             "track_id": next_id, "position_ms": 500, "paused": true,
                         }))
@@ -908,12 +1075,14 @@ mod tests {
             .expect("tests capture decoded audio")
             .clone();
         let until = tilo_test_env::hang_deadline();
-        // A playing source must also be rendering before the caller acts on
-        // it. Unlike a sound server's sink, the capture sink can stall when it
-        // is paused while still completing its switch to PLAYING.
+        // First PCM can arrive before the asynchronous Playing transition.
+        // Keep driving production tick until the active decoder confirms it,
+        // within the original deadline. The capture sink can also stall when
+        // paused while still completing its switch to Playing.
         let rendered_before = capture.snapshot().rendered;
         while app.audio.frames_rendered() == 0
             || app.audio.needs_poll()
+            || (app.pb.playing && !app.audio.is_playing_confirmed())
             || (app.pb.playing && capture.snapshot().rendered == rendered_before)
         {
             app.tick();
@@ -943,12 +1112,12 @@ mod tests {
             let arguments = [path.to_str().unwrap().to_owned()];
             app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
             assert!(app.playback_error.is_none());
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::seed::empty_document();
             app.sync(&doc, &automerge::ROOT);
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
             assert!(app.lib.tracks.is_empty());
-            assert!(crate::doc::load_library(&doc).tracks.is_empty());
+            assert!(crate::seed::library_of(&doc).tracks.is_empty());
             assert_eq!(app.pb.queue.len(), 1);
             assert!(app.pb.playing);
             assert!(app.worker.is_none());
@@ -1003,6 +1172,11 @@ mod tests {
                         panic!("resume did not succeed: {result:?}");
                     };
                     assert_eq!(output.value, Some(serde_json::json!({"state":"playing"})));
+                    action
+                        .contract
+                        .result
+                        .validate(&output)
+                        .expect("real resumed PCM completion must match the published result");
                     assert!(app.audio.frames_rendered() >= before);
                     assert!(app.audio.is_playing_confirmed());
                     break;
@@ -1065,8 +1239,10 @@ mod tests {
             assert_eq!(doc.get_heads(), before);
             assert!(app.lib.tracks.is_empty());
             let profile = crate::storage::DeviceProfile {
+                spotify_catalogue: false,
                 local_file: app.local_file.clone(),
                 playback: app.pb.clone(),
+                queue_catalogue: Vec::new(),
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();
@@ -1083,6 +1259,7 @@ mod tests {
             wav(&path);
             let file = crate::local_file::LocalFile::open(path.to_str().unwrap(), None).unwrap();
             let profile = crate::storage::DeviceProfile {
+                spotify_catalogue: false,
                 playback: crate::model::Playback {
                     current: Some(file.track.id.clone()),
                     queue: vec![file.track.id.clone()],
@@ -1090,6 +1267,7 @@ mod tests {
                     ..Default::default()
                 },
                 local_file: Some(file),
+                queue_catalogue: Vec::new(),
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();
@@ -1262,5 +1440,142 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+}
+
+impl MusicApp {
+    pub(super) fn make_source_buttons() -> Vec<ui::widget::Button> {
+        use crate::actions::MusicEffect;
+        use ui::tilo_resource::Effect as _;
+        [
+            (MusicEffect::Sources, "music-sources"),
+            (MusicEffect::SpotifyQueue, "music-spotify-queue-refresh"),
+            (
+                MusicEffect::NewSpotifyPlaylist,
+                "music-spotify-create-playlist",
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(effect, key)| {
+            let resource = tilo_actions::Resource::new("music.library", "music.library", "Library")
+                .with_action(effect.bound());
+            tilo_actions::ActionBinding::unit_for(&resource, effect.id())
+                .ok()
+                .map(|binding| ui::widget::Button::new(key, key).on_action(binding))
+        })
+        .collect()
+    }
+}
+
+#[cfg(test)]
+mod spotify_tests {
+    use super::*;
+    use ui::widget::Widget as _;
+
+    #[test]
+    fn spotify_search_projection_uses_provider_ids_and_retains_youtube_ids() {
+        let hit = crate::backend::TrackHit {
+            video_id: "spotify:track:1234567890123456789012".into(),
+            title: "Song".into(),
+            artist: "Artist".into(),
+            artist_id: Some("spotify:artist:abcdefghijklmnopqrstuv".into()),
+            album: Some("Album".into()),
+            album_id: Some("spotify:album:ABCDEFGHIJKLMNOPQRSTUV".into()),
+            duration_s: 120,
+            cover_url: String::new(),
+        };
+        let mut app = MusicApp::without_profile();
+        app.disconnect();
+        app.ingest_search_results(
+            "Song",
+            crate::backend::SearchBundle {
+                tracks: vec![hit.clone()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            app.live_results.as_ref().unwrap().1.as_slice(),
+            std::slice::from_ref(&hit.video_id)
+        );
+        assert!(app.lib.track(&hit.video_id).is_some());
+        assert_eq!(
+            super::super::live_track_id("existing-video"),
+            "yt:existing-video"
+        );
+        app.ingest_search_results(
+            "Song",
+            crate::backend::SearchBundle {
+                tracks: vec![hit.clone()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(app.live_results.as_ref().unwrap().1, [hit.video_id]);
+    }
+
+    #[test]
+    fn home_has_one_source_picker_with_semantic_actions() {
+        use crate::actions::MusicEffect;
+        use ui::tilo_resource::Effect as _;
+        for effect in [
+            MusicEffect::ConnectSpotifyLibrary,
+            MusicEffect::ConnectSpotify,
+            MusicEffect::BrowseSpotify,
+            MusicEffect::BrowseYouTube,
+            MusicEffect::DisconnectSpotify,
+        ] {
+            assert_eq!(effect.bound().kind, tilo_actions::OperationKind::Effect);
+        }
+        for (width, base_theme) in [360.0, 1000.0].into_iter().flat_map(|width| {
+            [
+                ui::theme::Theme::dark(),
+                ui::theme::Theme::light(),
+                ui::theme::Theme::high_contrast(),
+            ]
+            .map(|theme| (width, theme))
+        }) {
+            for scale in [1.0, 2.0] {
+                let mut app = MusicApp::without_profile();
+                app.disconnect();
+                assert!(app.device_row("music.source:catalogue").is_some());
+                assert!(
+                    app.device_rows()
+                        .iter()
+                        .any(|row| row.id() == "music.source:catalogue")
+                );
+                app.rect = vello::kurbo::Rect::new(0.0, 0.0, width, 1000.0);
+                let theme = base_theme.clone().with_text_scale(scale);
+                let mut tree = taffy::TaffyTree::new();
+                app.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
+                let mut text = ui::text_render::TextRenderer::new();
+                text.set_text_scale(scale);
+                app.render_frame(
+                    &mut vello::Scene::new(),
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                );
+                let visible: Vec<_> = app
+                    .children()
+                    .into_iter()
+                    .filter(|button| button.test_id() == Some("music-sources"))
+                    .collect();
+                assert_eq!(visible.len(), 1, "one compact source picker on Home");
+                let rect = visible[0].get_rect();
+                assert!(rect.width() > 0.0 && rect.height() > 0.0);
+                assert!(rect.x0 >= 0.0 && rect.x1 <= width);
+                assert!(
+                    app.children().into_iter().all(|button| !matches!(
+                        button.test_id(),
+                        Some(
+                            "music-connect-spotify"
+                                | "music-spotify-playback"
+                                | "music-disconnect-spotify"
+                                | "music-spotify-queue-refresh"
+                        )
+                    )),
+                    "Home does not expose backend operations as rows of buttons"
+                );
+            }
+        }
     }
 }

@@ -243,7 +243,17 @@ impl PortalDialogController {
                         t("portal-a11y-answer"),
                         target(Part::Name),
                         Some(rect),
-                        focused,
+                        AccessState {
+                            required: matches!(
+                                view,
+                                DialogView::ShortcutStep {
+                                    field_review: true,
+                                    ..
+                                }
+                            ),
+                            invalid: self.entry_error.is_some(),
+                            ..focused
+                        },
                     )
                 } else {
                     let end = self.launcher_name.len();
@@ -303,6 +313,21 @@ impl PortalDialogController {
             }
         }
 
+        if matches!(
+            view,
+            DialogView::ShortcutStep {
+                field_review: true,
+                ..
+            }
+        ) {
+            if let Some(error) = self.entry_error() {
+                children.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(error.to_owned())
+                        .with_live(Politeness::Assertive),
+                );
+            }
+        }
         if let DialogView::NetworkSecrets { fields, .. } = &view {
             for (index, (field, input)) in fields.iter().zip(&self.entries).enumerate() {
                 let invalid = self.entry_error.is_some() && index == self.entry_focus;
@@ -419,6 +444,7 @@ impl PortalDialogController {
                 }
                 if matches!(view, DialogView::ShortcutStep { .. }) {
                     set_field(&mut self.step_field, value);
+                    self.entry_error = None;
                 } else {
                     self.launcher_name = value
                         .chars()

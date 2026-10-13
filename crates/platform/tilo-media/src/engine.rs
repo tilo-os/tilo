@@ -150,27 +150,6 @@ const SYNTH_H: u32 = 270;
 const SYNTH_ROW_BYTES: usize = SYNTH_W as usize * 4;
 const SYNTH_RGBA_BYTES: usize = SYNTH_ROW_BYTES * SYNTH_H as usize;
 
-/// One channel of the synthesized gradient: `n` scaled to a byte across
-/// `span`, rolling over at 256.
-///
-/// The roll-over is the animation. `n` carries the playhead-driven hue shift,
-/// which grows without bound, and letting the scaled value wrap is what makes
-/// the gradient cycle instead of pinning at white.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "the truncation is the feature, not an accident: `& 0xff` on the \
-              same line asks for the low byte, and rolling over at 256 is what \
-              cycles the hue. Widening the result would pin the gradient at \
-              white instead"
-)]
-fn gradient_byte(n: usize, span: usize) -> u8 {
-    // `span` is a picture dimension. `.max(1)` keeps zero out of the divisor
-    // and `checked_div` is how that guarantee is stated rather than assumed,
-    // so the fallback below never runs.
-    let scaled = n.saturating_mul(255).checked_div(span.max(1)).unwrap_or(0);
-    (scaled & 0xff) as u8
-}
-
 /// Process-monotonic millisecond clock for the fallback playhead. A lazily
 /// pinned `Instant` base keeps it cheap and immune to wall-clock jumps.
 fn mono_now_ms() -> u64 {
@@ -222,8 +201,9 @@ pub struct MediaEngine {
 
 enum Backend {
     Synth(SynthState),
+    /// Boxed: the pipeline state is far larger than the other backends.
     #[cfg(gst_decode)]
-    Gst(crate::gst_backend::GstState),
+    Gst(Box<crate::gst_backend::GstState>),
     #[cfg(web_page)]
     Web(crate::web::WebState),
 }
@@ -266,15 +246,6 @@ impl MediaEngine {
         Self::with_config(EngineConfig::default())
     }
 
-    /// Build an engine that keeps pictures in whatever memory the decoder
-    /// produced them in — a dmabuf when the hardware can export one, planar
-    /// YUV otherwise. Read frames with [`Self::latest`] and import or upload
-    /// them yourself; [`Self::latest_frame`] stays empty for a non-RGBA
-    /// payload rather than converting behind your back.
-    pub fn new_gpu() -> Self {
-        Self::with_config(EngineConfig::gpu())
-    }
-
     /// Build an engine from an explicit configuration.
     pub fn with_config(config: EngineConfig) -> Self {
         #[cfg(web_page)]
@@ -302,7 +273,7 @@ impl MediaEngine {
                 return Self {
                     handoff_id: Self::next_handoff_id(),
                     handoff_controller_bus_name: None,
-                    backend: Backend::Gst(gst),
+                    backend: Backend::Gst(Box::new(gst)),
                     source: None,
                     volume: config.volume,
                     muted: false,
@@ -1069,54 +1040,34 @@ impl SynthState {
         frac.clamp(0.0, 1.0)
     }
 
-    /// Draw the synthesized test pattern for the current playhead: a slowly
-    /// drifting hue gradient with diagonal content stripes and a bright scan
-    /// bar at the playhead fraction, so a capture unmistakably shows a moving
-    /// picture and the correct progress.
+    /// Draw the synthesized picture for the current playhead: a calm diagonal
+    /// gradient between two muted colours whose blend drifts with the
+    /// playhead, so a capture shows a quiet picture that still changes as it
+    /// plays.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "pixel coordinates are below 1000 and every channel is a blend \
+                  of two bytes rounded back into 0..=255"
+    )]
     fn render_frame(&mut self) {
-        let width = SYNTH_W as usize;
-        let height = SYNTH_H as usize;
+        /// Dusk blue, top left.
+        const FROM: [f64; 3] = [36.0, 48.0, 82.0];
+        /// Muted teal, bottom right.
+        const TO: [f64; 3] = [86.0, 120.0, 134.0];
         let mut rgba = vec![0u8; SYNTH_RGBA_BYTES];
-        let frac = self.playhead_fraction();
-        // `frac` is clamped to 0.0..=1.0, so this lands inside the picture.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::cast_precision_loss,
-            reason = "frac is 0.0..=1.0 and SYNTH_W is 480, so the product is \
-                      a non-negative value no larger than 479"
-        )]
-        let scan_x = (frac * (f64::from(SYNTH_W) - 1.0)) as usize;
-        // The playhead drives the hue. Saturating so an absurd position slides
-        // the gradient to its limit instead of overflowing the products below;
-        // the synthesized backend clamps its own duration to an hour, so a real
-        // shift is at most 90 000.
-        let hue_shift = usize::try_from(self.position / 40).unwrap_or(usize::MAX);
+        let drift = self.playhead_fraction() * 0.25;
+        let span = f64::from(SYNTH_W + SYNTH_H - 2).max(1.0);
         for (y, row) in rgba.chunks_exact_mut(SYNTH_ROW_BYTES).enumerate() {
             for (x, px) in row.chunks_exact_mut(4).enumerate() {
-                // Base gradient: x drives red/green, y drives blue; hue_shift
-                // slides it so the pattern visibly animates over time. The
-                // scaled values are reduced mod 256 rather than clipped —
-                // rolling over is what makes the hue cycle.
-                let red = gradient_byte(x.saturating_add(hue_shift), width);
-                let green = gradient_byte(y, height);
-                let blue = gradient_byte(
-                    x.saturating_add(y).saturating_add(hue_shift),
-                    width.saturating_add(height),
-                );
-                // Diagonal content stripes for texture.
-                let stripe =
-                    if (x.saturating_add(y).saturating_add(hue_shift) / 24).is_multiple_of(2) {
-                        24
-                    } else {
-                        0
-                    };
-                // Bright scan bar at the playhead, otherwise the gradient.
-                if x.abs_diff(scan_x) <= 1 {
-                    px.copy_from_slice(&[255, 255, 255, 255]);
-                } else {
-                    px.copy_from_slice(&[red.saturating_add(stripe), green, blue, 255]);
-                }
+                let t = (x.saturating_add(y) as f64 / span * 0.75 + drift).clamp(0.0, 1.0);
+                let [r, g, b] = std::array::from_fn::<u8, 3, _>(|i| {
+                    let (from, to) = (FROM.get(i).copied(), TO.get(i).copied());
+                    from.zip(to)
+                        .map_or(0, |(from, to)| (from + (to - from) * t).round() as u8)
+                });
+                px.copy_from_slice(&[r, g, b, 255]);
             }
         }
         let frame = VideoFrame::new(SYNTH_W, SYNTH_H, rgba, self.position);

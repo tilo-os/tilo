@@ -1,0 +1,11 @@
+--- a/third_party/blink/renderer/bindings/BUILD.gn
++++ b/third_party/blink/renderer/bindings/BUILD.gn
+@@ -200,6 +200,8 @@
+     if (blink_enable_generated_code_formatting) {
+       args += [ "--format_generated_files" ]
+     }
++    # Bound local generator fan-out using its supported single-process mode.
++    args += [ "--single_process" ]
+     args += invoker.targets
+ 
+     deps = [ ":web_idl_database" ]

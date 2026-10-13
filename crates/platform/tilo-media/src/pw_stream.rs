@@ -538,6 +538,12 @@ impl TargetLinkGuard {
         self.links.push((output_node, input_node));
     }
 
+    /// A known link left the registry. Node ids alone cannot identify link removal.
+    pub fn remove_link(&mut self, output_node: u32, input_node: u32) {
+        self.links
+            .retain(|&(output, input)| output != output_node || input != input_node);
+    }
+
     /// The stream's own node id, once `PipeWire` assigned it.
     pub const fn set_own_node(&mut self, id: u32) {
         self.own_node = Some(id);
@@ -929,6 +935,38 @@ pub trait PlaybackStream: Send {
     fn failure(&self) -> Option<String>;
 }
 
+/// One-shot custody of an output verified by the local device observer.
+/// This descriptor stays in the host; apps never receive it.
+#[cfg(unix)]
+pub struct ObservedPlayback {
+    pub socket: std::os::fd::OwnedFd,
+    pub cookie: u32,
+    pub serial: u32,
+}
+
+/// Open an output on the observer's exact connection, pinned to its sink.
+///
+/// # Errors
+/// Fails when native support, the observed daemon or the selected output is unavailable.
+#[cfg(unix)]
+pub fn open_observed_playback(
+    config: &PlaybackConfig,
+    source: Box<dyn PlaybackSource>,
+    observed: ObservedPlayback,
+) -> Result<Box<dyn PlaybackStream>, StreamError> {
+    #[cfg(all(feature = "pipewire", target_os = "linux"))]
+    {
+        native::observed_playback(config, source, observed)
+    }
+    #[cfg(not(all(feature = "pipewire", target_os = "linux")))]
+    {
+        let _ = (config, source, observed);
+        Err(StreamError::Unavailable(
+            "built without native PipeWire output".into(),
+        ))
+    }
+}
+
 /// A running capture stream. Dropping it stops the stream.
 pub trait CaptureStream: Send {
     /// Everything captured since the last call.
@@ -1194,17 +1232,119 @@ mod native {
         }
     }
 
+    fn playback_graph(
+        core: &pw::core::CoreRc,
+        expected_cookie: Option<u32>,
+        guard: Option<Rc<RefCell<TargetLinkGuard>>>,
+        status: Arc<StreamStatus>,
+    ) -> Result<(Rc<std::cell::Cell<bool>>, impl Sized), StreamError> {
+        let cookie_valid = Rc::new(std::cell::Cell::new(expected_cookie.is_none()));
+        let cookie_gate = cookie_valid.clone();
+        let core_status = status;
+        let core_listener = core
+            .add_listener_local()
+            .info(move |info| {
+                let valid = expected_cookie.is_none_or(|expected| expected == info.cookie());
+                cookie_gate.set(valid);
+                if !valid {
+                    core_status.fail("the observed audio daemon changed");
+                }
+            })
+            .register();
+        let registry = core
+            .get_registry_rc()
+            .map_err(|error| StreamError::Setup(error.to_string()))?;
+        let global_guard = guard.clone();
+        let removal_guard = guard;
+        let links = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
+        let added_links = links.clone();
+        let registry_listener = registry
+            .add_listener_local()
+            .global(move |global| {
+                let Some(guard) = global_guard.as_ref() else {
+                    return;
+                };
+                match global.type_ {
+                    pw::types::ObjectType::Node => guard
+                        .borrow_mut()
+                        .observe_node(global.id, numeric(global.props, "object.serial")),
+                    pw::types::ObjectType::Link => {
+                        if let (Some(output), Some(input)) = (
+                            numeric(global.props, "link.output.node"),
+                            numeric(global.props, "link.input.node"),
+                        ) {
+                            // Reverse the capture guard: our output must link only to the selected sink.
+                            added_links.borrow_mut().insert(global.id, (input, output));
+                            guard.borrow_mut().observe_link(input, output);
+                        }
+                    }
+                    _ => {}
+                }
+            })
+            .global_remove(move |id| {
+                if let Some(guard) = removal_guard.as_ref() {
+                    if let Some((output, input)) = links.borrow_mut().remove(&id) {
+                        guard.borrow_mut().remove_link(output, input);
+                    }
+                    guard.borrow_mut().observe_removal(id);
+                }
+            })
+            .register();
+        Ok((cookie_valid, (core_listener, registry, registry_listener)))
+    }
+
+    fn wait_playback_graph(
+        mainloop: &pw::main_loop::MainLoopRc,
+        status: &StreamStatus,
+        guard: Option<&Rc<RefCell<TargetLinkGuard>>>,
+    ) {
+        let link_deadline = Instant::now().checked_add(LINK_TIMEOUT);
+        let mut linked = guard.is_none();
+        while !status.stop_requested() && status.failure().is_none() {
+            let _ = mainloop
+                .loop_()
+                .iterate(pw::loop_::Timeout::Finite(LOOP_TICK));
+            if let Some(guard) = &guard {
+                match guard.borrow().verdict() {
+                    LinkVerdict::Linked => linked = true,
+                    LinkVerdict::Waiting if linked => status.fail("the selected output link ended"),
+                    LinkVerdict::Waiting
+                        if link_deadline.is_none_or(|deadline| Instant::now() >= deadline) =>
+                    {
+                        status.fail("the selected output did not connect");
+                    }
+                    LinkVerdict::Foreign { .. } => {
+                        status.fail("the playback stream linked to another output");
+                    }
+                    LinkVerdict::TargetGone => status.fail("the selected output disappeared"),
+                    LinkVerdict::Waiting => {}
+                }
+            }
+        }
+    }
+
     fn run_playback(
         config: &PlaybackConfig,
         source: Box<dyn PlaybackSource>,
         status: &Arc<StreamStatus>,
         ready: &SyncSender<Result<(), StreamError>>,
+        observed: Option<super::ObservedPlayback>,
     ) -> Result<(), StreamError> {
         let unavailable = |error: pw::Error| StreamError::Unavailable(error.to_string());
         let setup = |error: pw::Error| StreamError::Setup(error.to_string());
         let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(unavailable)?;
         let context = pw::context::ContextRc::new(&mainloop, None).map_err(unavailable)?;
-        let core = context.connect_rc(None).map_err(unavailable)?;
+        let expected_cookie = observed.as_ref().map(|value| value.cookie);
+        let guard = observed
+            .as_ref()
+            .map(|value| Rc::new(RefCell::new(TargetLinkGuard::new(value.serial))));
+        let core = match observed {
+            Some(value) => context.connect_fd_rc(value.socket, None),
+            None => context.connect_rc(None),
+        }
+        .map_err(unavailable)?;
+        let (cookie_valid, _graph) =
+            playback_graph(&core, expected_cookie, guard.clone(), status.clone())?;
         let stream =
             pw::stream::StreamBox::new(&core, "tilo-playback", properties(config.properties()))
                 .map_err(setup)?;
@@ -1212,6 +1352,8 @@ mod native {
             PlaybackRenderer::new(source, config.channels, config.rate, Arc::clone(status));
         let stride = renderer.stride();
         let state_status = Arc::clone(status);
+        let process_guard = guard.clone();
+        let process_cookie = cookie_valid;
         let _listener = stream
             .add_local_listener_with_user_data(renderer)
             .state_changed(move |_, _, old, new| record_state(&state_status, &old, &new))
@@ -1224,9 +1366,18 @@ mod native {
                 let Some(data) = buffer.datas_mut().first_mut() else {
                     return;
                 };
-                let written = data
-                    .data()
-                    .map_or(0, |out| renderer.fill(&clock, out, requested));
+                let allowed = process_cookie.get()
+                    && process_guard
+                        .as_ref()
+                        .is_none_or(|guard| guard.borrow().verdict() == LinkVerdict::Linked);
+                let written = data.data().map_or(0, |out| {
+                    if allowed {
+                        renderer.fill(&clock, out, requested)
+                    } else {
+                        out.fill(0);
+                        out.len()
+                    }
+                });
                 let chunk = data.chunk_mut();
                 *chunk.offset_mut() = 0;
                 *chunk.stride_mut() = i32::try_from(stride).unwrap_or(i32::MAX);
@@ -1249,16 +1400,15 @@ mod native {
                 &mut [pod],
             )
             .map_err(setup)?;
-        await_node(&mainloop, &stream, status)?;
+        let node = await_node(&mainloop, &stream, status)?;
+        if let Some(guard) = &guard {
+            guard.borrow_mut().set_own_node(node);
+        }
         if ready.send(Ok(())).is_err() {
             let _ = stream.disconnect();
             return Ok(());
         }
-        while !status.stop_requested() && status.failure().is_none() {
-            let _ = mainloop
-                .loop_()
-                .iterate(pw::loop_::Timeout::Finite(LOOP_TICK));
-        }
+        wait_playback_graph(&mainloop, status, guard.as_ref());
         let _ = stream.disconnect();
         Ok(())
     }
@@ -1463,7 +1613,7 @@ mod native {
             let config = config.clone();
             let status = Arc::new(StreamStatus::default());
             let worker = spawn_worker("tilo-pw-playback", status, move |status, ready| {
-                if let Err(error) = run_playback(&config, source, &status, &ready) {
+                if let Err(error) = run_playback(&config, source, &status, &ready, None) {
                     status.fail(error.to_string());
                     let _ = ready.send(Err(error));
                 }
@@ -1489,6 +1639,27 @@ mod native {
                 chunks: chunk_rx,
             }))
         }
+    }
+
+    pub(super) fn observed_playback(
+        config: &PlaybackConfig,
+        source: Box<dyn PlaybackSource>,
+        observed: super::ObservedPlayback,
+    ) -> Result<Box<dyn PlaybackStream>, StreamError> {
+        if config.target_serial != Some(observed.serial) {
+            return Err(StreamError::Setup(
+                "output target differs from observed sink".into(),
+            ));
+        }
+        let config = config.clone();
+        let status = Arc::new(StreamStatus::default());
+        let worker = spawn_worker("tilo-pw-app-output", status, move |status, ready| {
+            if let Err(error) = run_playback(&config, source, &status, &ready, Some(observed)) {
+                status.fail(error.to_string());
+                let _ = ready.send(Err(error));
+            }
+        })?;
+        Ok(Box::new(Playback { worker }))
     }
 }
 
@@ -1745,6 +1916,24 @@ mod tests {
         let after_gap = timeline.stamp(start + 80_000_000, 480);
         assert_eq!(after_gap, 483_840);
         assert_eq!(timeline.stamp(start + 90_000_000, 480), after_gap + 480);
+    }
+
+    #[test]
+    fn governed_playback_requires_only_the_observed_output_link() {
+        let mut guard = TargetLinkGuard::new(812);
+        guard.observe_node(40, Some(812));
+        guard.set_own_node(77);
+        // Playback registry entries are reversed by the production listener.
+        guard.observe_link(40, 77);
+        assert_eq!(guard.verdict(), LinkVerdict::Linked);
+        guard.remove_link(40, 77);
+        assert_eq!(guard.verdict(), LinkVerdict::Waiting);
+        guard.observe_link(55, 77);
+        assert_eq!(guard.verdict(), LinkVerdict::Foreign { node: 55 });
+        guard.observe_link(40, 77);
+        assert_eq!(guard.verdict(), LinkVerdict::Foreign { node: 55 });
+        guard.observe_removal(40);
+        assert_eq!(guard.verdict(), LinkVerdict::TargetGone);
     }
 
     #[test]

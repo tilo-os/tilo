@@ -5,6 +5,9 @@ pub struct HostClockBracket {
     pub hi_s: f64,
 }
 
+/// Whether ordinary Wayland frames can be joined to the kernel monotonic clock.
+pub const SUPPORTS_WAYLAND_TIMING: bool = cfg!(target_os = "linux");
+
 pub const CLOCK_NAME: &str = if cfg!(target_os = "macos") {
     "mach_absolute_seconds"
 } else if cfg!(target_os = "linux") {
@@ -143,6 +146,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             {
                 assert_eq!(CLOCK_NAME, "clock_monotonic_seconds");
+                const { assert!(SUPPORTS_WAYLAND_TIMING) };
                 let bracket = bracket.expect("Linux CLOCK_MONOTONIC must be available");
                 assert!(bracket.lo_s.is_finite() && bracket.lo_s > 0.0);
                 assert!(bracket.hi_s.is_finite() && bracket.hi_s >= bracket.lo_s);

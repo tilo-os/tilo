@@ -9,11 +9,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -55,15 +51,15 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
     let mut buttons = [
         Button::new("search", "")
             .with_icon(Icon::Search)
-            .ghost()
+            .role(tilo_ui::widget::ButtonRole::Plain)
             .tooltip("Search"),
         Button::new("add", "")
             .with_icon(Icon::Plus)
-            .ghost()
+            .role(tilo_ui::widget::ButtonRole::Plain)
             .tooltip("New folder"),
         Button::new("more", "")
             .with_icon(Icon::MoreHorizontal)
-            .ghost()
+            .role(tilo_ui::widget::ButtonRole::Plain)
             .tooltip("View options"),
     ];
     for (b, r) in buttons.iter_mut().zip(rects.iter()) {

@@ -8,20 +8,12 @@
 //! record its app writes reaches the browser the same way. The relay keeps
 //! ciphertext only.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::too_many_lines,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use automerge::transaction::Transactable as _;
 use collab_types::{
-    ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, OpClass, SignedOp,
+    ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, OpKind, SignedOp,
     document_artifact_id, document_attestation_id, document_channel_id,
 };
 use ed25519_dalek::SigningKey;
@@ -73,13 +65,6 @@ fn until<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(20));
     }
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
 }
 
 fn document(title: &str) -> Vec<u8> {
@@ -212,6 +197,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         ShellNetwork::spawn_with(
             tree.clone(),
             &session_dir.join("device-private/keypair.bin"),
+            &session_dir.join("peer-sync"),
             Reach::Loopback,
             move |secret, _| {
                 let key = SigningKey::from_bytes(&secret.to_bytes());
@@ -290,7 +276,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         let channel = document_channel_id(NOTES, &acme.room, record);
         until("the steward to admit the session", || {
             net.tick();
-            channels.pump(&net, Instant::now(), unix_now());
+            channels.pump(&net, Instant::now(), tilo_clock::try_unix_now().unwrap());
             match channels.access(room, channel, Instant::now()) {
                 ChannelAccess::Ready(keys) => Some(keys),
                 ChannelAccess::Waiting => None,
@@ -341,7 +327,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         artifact,
         Ed25519PublicKey::from_bytes(session_cert.device_public_key),
         document_attestation_id(NOTES, &acme.room, "reply"),
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::now(),
         1,
         metadata,
@@ -370,7 +356,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     let mut events = Vec::new();
     let seen = until("the reply to reach the browser", || {
         net.tick();
-        channels.pump(&net, Instant::now(), unix_now());
+        channels.pump(&net, Instant::now(), tilo_clock::try_unix_now().unwrap());
         events.extend(ada.drain());
         let index = events.iter().position(|event| {
             matches!(event, PeerEvent::Document(document) if document.route.record == "reply")
@@ -408,6 +394,71 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         request.from.as_bytes(),
         &browser_device,
         "answered to the device the relay authenticated"
+    );
+
+    assert!(
+        net.peer_identities
+            .get(&crate::shell::state::PeerOrigin::peer(&request.from))
+            .is_none(),
+        "the browser has sent no legacy identity hello"
+    );
+    let presence = collab_types::PeerPresence {
+        key: postcard::to_stdvec(&ui::presence::PresenceKey::Workspace {
+            id: acme.room.clone(),
+        })
+        .unwrap(),
+        payload: collab_types::PeerPresencePayload::Arrived,
+    };
+    let publisher = neighbour_wire::peer_handle(&browser_device);
+    let publish_presence = |topic, endpoint, publisher, cluster| {
+        net.dispatch_neighbour_msg(
+            topic,
+            endpoint,
+            None,
+            false,
+            neighbour_wire::NeighbourMsg::AppPresenceV2 {
+                peer: publisher,
+                app_id: NOTES.into(),
+                cluster_id: cluster,
+                presence: presence.clone(),
+                colour: None,
+            },
+        );
+    };
+    let inbound = net.inbound_app_presence_handle();
+    inbound.lock().unwrap().clear();
+    publish_presence(
+        acme.workspace_id,
+        request.from,
+        publisher,
+        acme.room.clone(),
+    );
+    let observed = inbound.lock().unwrap().pop().expect("admitted presence");
+    assert_eq!(observed.peer, publisher);
+    assert_eq!(observed.cluster_id, acme.room);
+    assert_eq!(observed.presence, presence);
+    publish_presence(
+        acme.workspace_id,
+        request.from,
+        publisher + 1,
+        acme.room.clone(),
+    );
+    let stranger = iroh::SecretKey::from_bytes(&[0x71; 32]).public();
+    publish_presence(
+        acme.workspace_id,
+        stranger,
+        neighbour_wire::peer_handle(stranger.as_bytes()),
+        acme.room.clone(),
+    );
+    publish_presence(
+        acme.workspace_id,
+        request.from,
+        publisher,
+        RoomId::new().to_string(),
+    );
+    assert!(
+        inbound.lock().unwrap().is_empty(),
+        "spoofed or cross-room presence was admitted"
     );
 
     // The relay carried both only as ciphertext.

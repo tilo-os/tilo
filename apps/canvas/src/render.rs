@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use ui::num::f32_of_f64;
 
 use tilo_wet_media::{
     Blend, Canvas, ColourField, Engines, FieldKind, Fill as WetFill, Heightfield, LayerPainter,
@@ -21,8 +22,8 @@ use ui::TextRenderer;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape as _, Stroke};
 use ui::vello::peniko::{
-    BlendMode, Blob, Color, ColorStop, Compose, Extend, Fill, Gradient as PenikoGradient,
-    ImageAlphaType, ImageBrush, ImageData, ImageFormat, Mix,
+    BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient as PenikoGradient, ImageBrush,
+    ImageData, Mix,
 };
 
 use crate::adjust::Grade;
@@ -50,14 +51,6 @@ fn cells(units: f64, scale: f64) -> usize {
     (units * scale).round().clamp(1.0, MAX_CELLS) as usize
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "simulation coordinates are bounded artwork units"
-)]
-fn narrow(value: f64) -> f32 {
-    value as f32
-}
-
 /// A colour a mark names, as drawn.
 pub fn colour(text: &str, palette: &[Pigment]) -> Option<Color> {
     let paint = tilo_wet_media::parse_paint(text, palette)?;
@@ -72,7 +65,7 @@ pub fn colour(text: &str, palette: &[Pigment]) -> Option<Color> {
 }
 
 fn with_opacity(colour: Color, opacity: f64) -> Color {
-    colour.multiply_alpha(narrow(opacity.clamp(0.0, 1.0)))
+    colour.multiply_alpha(f32_of_f64(opacity.clamp(0.0, 1.0)))
 }
 
 struct PaintedLayer {
@@ -170,10 +163,48 @@ pub struct Renderer {
     pub pictures: Pictures,
     tooth: Option<(String, ImageData)>,
     brushes: BrushCache,
+    paths: PathCache,
     /// The ground's halvings, for a view farther than its scale.
     ground_mips: Mips,
     /// Tiles of a close view, simulated finer than the whole layer.
     tiles: Tiles,
+}
+
+/// Parsed SVG geometry survives viewport redraws. Bound source bytes so an
+/// agent replacing outlines repeatedly cannot keep unbounded old geometry.
+#[derive(Default)]
+struct PathCache {
+    entries: HashMap<String, (String, Arc<BezPath>)>,
+    bytes: usize,
+}
+
+impl PathCache {
+    fn get(&mut self, mark: &Mark) -> Option<Arc<BezPath>> {
+        const BUDGET: usize = 4 << 20;
+        let Shape::Path { d } = &mark.shape else {
+            return None;
+        };
+        if let Some((known, path)) = self.entries.get(&mark.id)
+            && known == d
+        {
+            return Some(Arc::clone(path));
+        }
+        let path = Arc::new(mark.shape.path());
+        if d.len() > BUDGET {
+            return Some(path);
+        }
+        if let Some((old, _)) = self.entries.remove(&mark.id) {
+            self.bytes = self.bytes.saturating_sub(old.len());
+        }
+        if self.bytes.saturating_add(d.len()) > BUDGET || self.entries.len() >= 512 {
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(d.len());
+        self.entries
+            .insert(mark.id.clone(), (d.clone(), Arc::clone(&path)));
+        Some(path)
+    }
 }
 
 /// Dabbed strokes as last laid, by what they were laid from, so a frame
@@ -220,6 +251,7 @@ struct MarkCx<'a> {
     text: &'a mut TextRenderer,
     tooth: Option<&'a Speckle>,
     brushes: &'a mut BrushCache,
+    paths: &'a mut PathCache,
     /// The ground's height field and cells per unit, which graphite and
     /// charcoal catch on.
     ground: (&'a Heightfield, f64),
@@ -372,7 +404,7 @@ impl Renderer {
             scene.push_layer(
                 Fill::NonZero,
                 BlendMode::default(),
-                narrow(reference.opacity),
+                f32_of_f64(reference.opacity),
                 transform,
                 &board,
             );
@@ -479,7 +511,7 @@ impl Renderer {
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
-            narrow(layer.opacity),
+            f32_of_f64(layer.opacity),
             transform,
             &board,
         );
@@ -491,6 +523,7 @@ impl Renderer {
             text: &mut *text,
             tooth: tooth.as_ref(),
             brushes: &mut self.brushes,
+            paths: &mut self.paths,
             ground: (&field, cell_scale(art)),
             pictures: &mut self.pictures,
             layer_adjust: layer.adjust.as_ref(),
@@ -694,7 +727,7 @@ impl Renderer {
         {
             return image.clone();
         }
-        let field = Heightfield::new(width, height, texture, narrow(scale), 1);
+        let field = Heightfield::new(width, height, texture, f32_of_f64(scale), 1);
         let shaded = field.shade(tilo_wet_media::Rgb::WHITE);
         let relief: Vec<u8> = shaded
             .chunks_exact(4)
@@ -705,7 +738,7 @@ impl Renderer {
                 speck(byte_of(128.0 + (lit - 236.0) * 3.0))
             })
             .collect();
-        let image = image(relief, width, height);
+        let image = crate::picture::image_of(relief, width, height);
         self.tooth = Some((key, image.clone()));
         image
     }
@@ -720,10 +753,16 @@ impl Renderer {
         );
         if self.ground.as_ref().is_none_or(|(have, ..)| *have != key) {
             let texture = Texture::parse(&art.ground.texture).unwrap_or_default();
-            let field = Arc::new(Heightfield::new(width, height, texture, narrow(scale), 1));
+            let field = Arc::new(Heightfield::new(
+                width,
+                height,
+                texture,
+                f32_of_f64(scale),
+                1,
+            ));
             let lit = tilo_wet_media::parse_paint(&art.ground.colour, &[])
                 .map_or(tilo_wet_media::Rgb::WHITE, |paint| paint.colour);
-            let image = image(field.shade(lit), width, height);
+            let image = crate::picture::image_of(field.shade(lit), width, height);
             self.ground = Some((key, field, image));
         }
         #[allow(clippy::expect_used, reason = "set just above when absent")]
@@ -743,7 +782,7 @@ impl Renderer {
         };
         let scale = cell_scale(art);
         let ground = Arc::clone(&self.ground(art).1);
-        let canvas = Canvas::whole(narrow(scale), ground);
+        let canvas = Canvas::whole(f32_of_f64(scale), ground);
         let preset = medium.to_preset();
         let settings = Settings::new(engine.parameters(), &preset.params);
         let palette = preset.palette;
@@ -761,7 +800,7 @@ impl Renderer {
         scene.push_layer(
             Fill::NonZero,
             blend,
-            narrow(layer.opacity),
+            f32_of_f64(layer.opacity),
             transform,
             &board,
         );
@@ -1161,10 +1200,21 @@ fn draw_picture(
         .collect();
     let treatment = Treatment::of(&adjusts, per_unit);
     let device = pixels_per_unit(at) / per_unit.max(1e-9);
-    let Some((image, step)) = pictures.shown(src, device, &treatment) else {
+    let Some((image, step)) = pictures.shown(
+        src,
+        if mark.style.pixelated {
+            device.max(1.0)
+        } else {
+            device
+        },
+        &treatment,
+    ) else {
         return;
     };
-    let brush = ImageBrush::new(image).with_alpha(narrow(mark.style.opacity()));
+    let mut brush = ImageBrush::new(image).with_alpha(f32_of_f64(mark.style.opacity()));
+    if mark.style.pixelated {
+        brush = brush.with_quality(ui::vello::peniko::ImageQuality::Low);
+    }
     let to_frame = placement.picture_to_local(size) * Affine::scale(step);
     let vignetted = mark
         .style
@@ -1202,14 +1252,14 @@ fn vignette(scene: &mut Scene, transform: Affine, area: Rect, amount: f64) {
         .map(|step| {
             let distance = reach * f64::from(step) / 12.0;
             ColorStop {
-                offset: narrow(distance / reach),
+                offset: f32_of_f64(distance / reach),
                 color: ink
-                    .with_alpha(narrow(crate::adjust::vignette_alpha(amount, distance)))
+                    .with_alpha(f32_of_f64(crate::adjust::vignette_alpha(amount, distance)))
                     .into(),
             }
         })
         .collect();
-    let gradient = PenikoGradient::new_radial((0.0, 0.0), narrow(reach))
+    let gradient = PenikoGradient::new_radial((0.0, 0.0), f32_of_f64(reach))
         .with_extend(Extend::Pad)
         .with_stops(&stops[..]);
     // The unit circle stretched over the area: 1 at the middle of each edge.
@@ -1249,69 +1299,14 @@ pub fn selection_outline(scene: &mut Scene, path: &BezPath, width: f64, phase: f
     );
 }
 
-/// Where an eraser took paint off, outlined over the artwork: faint dots,
-/// light under dark so they read over any paint, or `marked` (hovered or
-/// picked) in that colour.
-pub fn eraser_outline(scene: &mut Scene, path: &BezPath, marked: Option<Color>) {
-    let (under, dashes, ink) = match marked {
-        Some(colour) => (
-            Stroke::new(2.5),
-            Stroke::new(1.5).with_dashes(0.0, [6.0, 3.0]),
-            colour,
-        ),
-        None => (
-            Stroke::new(2.0),
-            Stroke::new(1.0).with_dashes(0.0, [2.0, 3.0]),
-            SHADOW_INK.with_alpha(0.75),
-        ),
-    };
-    scene.stroke(
-        &under,
-        Affine::IDENTITY,
-        BLANK_GROUND.multiply_alpha(if marked.is_some() { 0.9 } else { 0.55 }),
-        None,
-        path,
-    );
-    scene.stroke(&dashes, Affine::IDENTITY, ink, None, path);
-}
-
-/// Where a brush or eraser will land, round the pointer: a dark ring
-/// under a light one, so it reads on any paint.
-pub fn footprint_ring(scene: &mut Scene, path: &BezPath) {
-    scene.stroke(
-        &Stroke::new(1.5),
-        Affine::IDENTITY,
-        SHADOW_INK.with_alpha(0.6),
-        None,
-        path,
-    );
-    scene.stroke(
-        &Stroke::new(0.75),
-        Affine::IDENTITY,
-        BLANK_GROUND.multiply_alpha(0.9),
-        None,
-        path,
-    );
-}
-
-fn image(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
-    ImageData {
-        data: Blob::new(Arc::new(pixels)),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: u32::try_from(width).unwrap_or(1),
-        height: u32::try_from(height).unwrap_or(1),
-    }
-}
-
 /// The outline of `path` flattened into polygons, in cell coordinates.
 fn contours(path: &BezPath, to_cells: Affine) -> Vec<Vec<(f32, f32)>> {
     let mut contours: Vec<Vec<(f32, f32)>> = Vec::new();
     ui::vello::kurbo::flatten(to_cells * path.clone(), 0.25, |element| match element {
-        PathEl::MoveTo(at) => contours.push(vec![(narrow(at.x), narrow(at.y))]),
+        PathEl::MoveTo(at) => contours.push(vec![(f32_of_f64(at.x), f32_of_f64(at.y))]),
         PathEl::LineTo(at) => {
             if let Some(contour) = contours.last_mut() {
-                contour.push((narrow(at.x), narrow(at.y)));
+                contour.push((f32_of_f64(at.x), f32_of_f64(at.y)));
             }
         }
         _ => {}
@@ -1366,9 +1361,9 @@ fn cell_points(points: &[Vec<f64>], to_cells: Affine) -> Vec<WetPoint> {
                     point.get(1).copied().unwrap_or(0.0),
                 );
             WetPoint::new(
-                narrow(at.x),
-                narrow(at.y),
-                narrow(point.get(2).copied().unwrap_or(1.0)),
+                f32_of_f64(at.x),
+                f32_of_f64(at.y),
+                f32_of_f64(point.get(2).copied().unwrap_or(1.0)),
             )
         })
         .collect()
@@ -1382,26 +1377,24 @@ fn wet_marks(mark: &Mark, clip: Option<&BezPath>, palette: &[Pigment], scale: f6
     let params = style
         .params
         .iter()
-        .map(|(id, value)| (id.clone(), narrow(*value)))
+        .map(|(id, value)| (id.clone(), f32_of_f64(*value)))
         .collect();
-    let opacity = narrow(style.opacity());
+    let opacity = f32_of_f64(style.opacity());
     let paint = |text: &Option<String>| {
         text.as_deref()
             .and_then(|text| tilo_wet_media::parse_paint(text, palette))
     };
     let mut painted = Vec::new();
     match &mark.shape {
-        Shape::Stroke { points, size, .. }
-            if crate::brushes::Preset::of(style) == crate::brushes::Preset::Eraser =>
-        {
+        Shape::Stroke { points, size, .. } if crate::brushes::Preset::of(style).erases() => {
             let dynamics = crate::brushes::Dynamics::of_mark(mark);
             painted.push(Painted::new(
                 &mark.id,
                 WetMark::Erase(tilo_wet_media::Erase {
                     points: cell_points(points, to_cells),
-                    size: narrow(size * scale),
+                    size: f32_of_f64(size * scale),
                     strength: opacity,
-                    hardness: narrow(dynamics.hardness),
+                    hardness: f32_of_f64(dynamics.hardness),
                     clip: clip_contours(clip, scale),
                 }),
             ));
@@ -1413,7 +1406,7 @@ fn wet_marks(mark: &Mark, clip: Option<&BezPath>, palette: &[Pigment], scale: f6
                     &mark.id,
                     WetMark::Stroke(WetStroke {
                         points,
-                        size: narrow(size * scale),
+                        size: f32_of_f64(size * scale),
                         paint: colour,
                         opacity,
                         wet: style.wet,
@@ -1421,7 +1414,7 @@ fn wet_marks(mark: &Mark, clip: Option<&BezPath>, palette: &[Pigment], scale: f6
                         form: mark
                             .shape
                             .form(style.angle)
-                            .map(|form| form.scaled(narrow(scale))),
+                            .map(|form| form.scaled(f32_of_f64(scale))),
                         clip: clip_contours(clip, scale),
                     }),
                 ));
@@ -1456,8 +1449,8 @@ fn wet_marks(mark: &Mark, clip: Option<&BezPath>, palette: &[Pigment], scale: f6
                         paint: colour,
                         opacity,
                         wet: style.wet,
-                        brush: narrow(brush * scale),
-                        angle: narrow(style.angle.unwrap_or(0.0)),
+                        brush: f32_of_f64(brush * scale),
+                        angle: f32_of_f64(style.angle.unwrap_or(0.0)),
                         params: params.clone(),
                         field: style
                             .gradient
@@ -1487,7 +1480,7 @@ fn colour_field(gradient: &Gradient, palette: &[Pigment], to_cells: Affine) -> O
         .iter()
         .filter_map(|(at, text)| {
             let paint = tilo_wet_media::parse_paint(text, palette)?;
-            Some((narrow(*at), paint.colour, paint.alpha))
+            Some((f32_of_f64(*at), paint.colour, paint.alpha))
         })
         .collect();
     let kind = if gradient.kind == "radial" {
@@ -1499,8 +1492,8 @@ fn colour_field(gradient: &Gradient, palette: &[Pigment], to_cells: Affine) -> O
     let to = to_cells * Point::new(gradient.to[0], gradient.to[1]);
     ColourField::new(
         kind,
-        (narrow(from.x), narrow(from.y)),
-        (narrow(to.x), narrow(to.y)),
+        (f32_of_f64(from.x), f32_of_f64(from.y)),
+        (f32_of_f64(to.x), f32_of_f64(to.y)),
         stops,
     )
 }
@@ -1529,9 +1522,9 @@ fn outline_strokes(
                 &format!("{}/outline", mark.id),
                 WetMark::Stroke(WetStroke {
                     points,
-                    size: narrow(mark.style.stroke_width.max(1.0) * scale),
+                    size: f32_of_f64(mark.style.stroke_width.max(1.0) * scale),
                     paint: colour,
-                    opacity: narrow(mark.style.opacity()),
+                    opacity: f32_of_f64(mark.style.opacity()),
                     wet: true,
                     params: params.clone(),
                     form: None,
@@ -1552,7 +1545,7 @@ fn gradient_brush(
         .iter()
         .filter_map(|(at, text)| {
             Some(ColorStop {
-                offset: narrow(at.clamp(0.0, 1.0)),
+                offset: f32_of_f64(at.clamp(0.0, 1.0)),
                 color: with_opacity(colour(text, palette)?, opacity).into(),
             })
         })
@@ -1563,7 +1556,7 @@ fn gradient_brush(
     let from = Point::new(gradient.from[0], gradient.from[1]);
     let to = Point::new(gradient.to[0], gradient.to[1]);
     let brush = if gradient.kind == "radial" {
-        let radius = narrow(from.distance(to));
+        let radius = f32_of_f64(from.distance(to));
         match gradient.focal {
             Some([x, y]) => PenikoGradient::new_two_point_radial((x, y), 0.0, from, radius),
             None => PenikoGradient::new_radial(from, radius),
@@ -1622,7 +1615,7 @@ fn ink_strokes(mark: &Mark) -> BezPath {
         let points = crate::brushes::steady_ends(&points, size);
         let samples = crate::brushes::samples(&points, 0.75, smoothing, size);
         path.extend(
-            ink_outline(&samples, narrow(size))
+            ink_outline(&samples, f32_of_f64(size))
                 .elements()
                 .iter()
                 .copied(),
@@ -1657,20 +1650,17 @@ fn draw_mark(
 ) {
     let transform = cx.transform;
     let preset = crate::brushes::Preset::of(&mark.style);
-    if matches!(mark.shape, Shape::Stroke { .. }) && preset == crate::brushes::Preset::Eraser {
+    if matches!(mark.shape, Shape::Stroke { .. }) && preset.erases() {
         draw_eraser(art, mark, scene, cx);
         return;
     }
     let picture = matches!(mark.shape, Shape::Image { .. });
     let graded;
-    let mark = if picture {
+    let adjustments = grades_of(&[mark.style.adjust.as_ref(), cx.layer_adjust]);
+    let mark = if picture || adjustments.is_empty() {
         mark
     } else {
-        graded = graded_mark(
-            mark,
-            palette,
-            &grades_of(&[mark.style.adjust.as_ref(), cx.layer_adjust]),
-        );
+        graded = graded_mark(mark, palette, &adjustments);
         &graded
     };
     let mut layers = 0;
@@ -1717,11 +1707,16 @@ fn draw_mark(
     // paint does not: the mark is drawn into a group of its own and the
     // speckle lands only on what it covers. Opaque paint takes the cheap
     // path, its outline filled with the speckle.
-    let reach = mark.bounds().inflate(
-        style.feather.unwrap_or(0.0) + 2.0,
-        style.feather.unwrap_or(0.0) + 2.0,
-    );
     let isolated = !speckles.is_empty() && !opaque(mark, palette);
+    let reach = if isolated {
+        mark.bounds().inflate(
+            style.feather.unwrap_or(0.0) + 2.0,
+            style.feather.unwrap_or(0.0) + 2.0,
+        )
+    } else {
+        Rect::ZERO
+    };
+    let path = cx.paths.get(mark);
     if isolated {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &reach);
     }
@@ -1730,11 +1725,11 @@ fn draw_mark(
     match style.feather {
         _ if picture => {
             draw_picture(mark, cx.layer_adjust, scene, transform, cx.pictures);
-            draw_vector(mark, palette, scene, transform, cx.text);
+            draw_vector_path(mark, palette, scene, transform, cx.text, path.as_deref());
         }
         _ if dabbed => draw_dabbed(mark, palette, scene, cx, Compose::SrcOver),
         Some(feather) if feather > 0.0 => draw_feathered(mark, palette, scene, transform, feather),
-        _ => draw_vector(mark, palette, scene, transform, cx.text),
+        _ => draw_vector_path(mark, palette, scene, transform, cx.text, path.as_deref()),
     }
     if let Some(inner) = &style.inner_shadow {
         draw_inner_shadow(mark, inner, palette, scene, transform);
@@ -1771,13 +1766,13 @@ fn draw_eraser(art: &Artwork, mark: &Mark, scene: &mut Scene, cx: &mut MarkCx<'_
     for outline in &cuts {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, outline);
     }
-    if crate::brushes::Preset::Eraser.dabbed(&crate::brushes::Dynamics::of_mark(mark)) {
+    if crate::brushes::Preset::of(&mark.style).dabbed(&crate::brushes::Dynamics::of_mark(mark)) {
         draw_dabbed(mark, &[], scene, cx, Compose::SrcOver);
     } else {
         scene.fill(
             Fill::NonZero,
             transform * mark.affine(),
-            ERASED.multiply_alpha(narrow(mark.style.opacity())),
+            ERASED.multiply_alpha(f32_of_f64(mark.style.opacity())),
             None,
             &silhouette(mark),
         );
@@ -1825,7 +1820,7 @@ fn draw_dabbed(
         return;
     }
     let style = &mark.style;
-    let eraser = crate::brushes::Preset::of(style) == crate::brushes::Preset::Eraser;
+    let eraser = crate::brushes::Preset::of(style).erases();
     let ink = if eraser {
         ERASED
     } else {
@@ -1861,13 +1856,7 @@ fn draw_dabbed(
         }) else {
             return;
         };
-        let image = ImageData {
-            data: Blob::new(Arc::new(dabs.pixels)),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: dabs.width,
-            height: dabs.height,
-        };
+        let image = ui::raster::rgba8(dabs.pixels, dabs.width, dabs.height);
         cx.brushes.bytes = cx.brushes.bytes.saturating_add(image.data.len());
         cx.brushes.entries.insert(
             key,
@@ -1891,7 +1880,7 @@ fn draw_dabbed(
             f64::from(laid.image.height) / laid.scale,
         ),
     );
-    let brush = ImageBrush::new(laid.image.clone()).with_alpha(narrow(alpha));
+    let brush = ImageBrush::new(laid.image.clone()).with_alpha(f32_of_f64(alpha));
     let place = Affine::translate(laid.origin.to_vec2()) * Affine::scale(1.0 / laid.scale);
     if compose == Compose::SrcOver {
         scene.fill(Fill::NonZero, to_screen, &brush, Some(place), &area);
@@ -2005,7 +1994,7 @@ fn noise() -> ImageData {
                 let grey = u8::try_from(u16::midpoint(u16::from(a), u16::from(b))).unwrap_or(128);
                 pixels.extend_from_slice(&speck(grey));
             }
-            image(pixels, GRAIN_TILE, GRAIN_TILE)
+            crate::picture::image_of(pixels, GRAIN_TILE, GRAIN_TILE)
         })
         .clone()
 }
@@ -2044,7 +2033,7 @@ impl Speckle {
     fn brush(&self, opacity: f64) -> ImageBrush {
         ImageBrush::new(self.tile.clone())
             .with_extend(Extend::Repeat)
-            .with_alpha(narrow((self.amount * opacity).clamp(0.0, 1.0)))
+            .with_alpha(f32_of_f64((self.amount * opacity).clamp(0.0, 1.0)))
     }
 
     /// Over the outline of `mark`, which paints it solidly.
@@ -2160,7 +2149,7 @@ fn draw_inner_shadow(
     scene.fill(
         Fill::EvenOdd,
         shifted,
-        ink.with_alpha(narrow(alpha)),
+        ink.with_alpha(f32_of_f64(alpha)),
         None,
         &around,
     );
@@ -2170,7 +2159,7 @@ fn draw_inner_shadow(
         for ring in 0..rings {
             let grow = shadow.blur * (f64::from(ring) + 0.5) / f64::from(rings);
             let pen = Stroke::new(grow * 2.0).with_join(Join::Round);
-            scene.stroke(&pen, shifted, ink.with_alpha(narrow(each)), None, &path);
+            scene.stroke(&pen, shifted, ink.with_alpha(f32_of_f64(each)), None, &path);
         }
         scene.pop_layer();
     }
@@ -2204,12 +2193,12 @@ fn soft_paint(
             let pen = Stroke::new(width)
                 .with_caps(Cap::Round)
                 .with_join(Join::Round);
-            let faint = brush.clone().multiply_alpha(narrow(each));
+            let faint = brush.clone().multiply_alpha(f32_of_f64(each));
             scene.stroke(&pen, at, &faint, None, path);
         }
         return;
     }
-    let solid = brush.clone().multiply_alpha(narrow(alpha));
+    let solid = brush.clone().multiply_alpha(f32_of_f64(alpha));
     scene.fill(Fill::NonZero, at, &solid, None, path);
     if soft <= 0.0 {
         return;
@@ -2224,7 +2213,7 @@ fn soft_paint(
         outside
     };
     scene.push_layer(Fill::EvenOdd, BlendMode::default(), 1.0, at, &outside);
-    let faint = brush.clone().multiply_alpha(narrow(each));
+    let faint = brush.clone().multiply_alpha(f32_of_f64(each));
     for ring in 0..rings {
         let pen = Stroke::new(grow(ring) * 2.0).with_join(Join::Round);
         scene.stroke(&pen, at, &faint, None, path);
@@ -2260,7 +2249,7 @@ fn draw_shadow(
                 turn.cos() * shadow.blur * 0.5,
                 turn.sin() * shadow.blur * 0.5,
             ));
-            let faint = ink.with_alpha(narrow(each));
+            let faint = ink.with_alpha(f32_of_f64(each));
             draw_text_shape(&mark.shape, faint, scene, jitter * at, text);
         }
         return;
@@ -2314,15 +2303,15 @@ pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
         _ => ui::ParagraphAlign::Start,
     };
     Some(
-        ui::TextStyle::new(narrow(*size))
+        ui::TextStyle::content(f32_of_f64(*size))
             .with_family(family)
             .with_weight(tier)
             // The shipped faces are variable: any weight between their
             // lightest and boldest draws as given.
             .with_font_variation(ui::OpenTypeTag::WEIGHT, f32::from(weight))
             .with_italic(*italic)
-            .with_tracking(narrow(tracking.unwrap_or(0.0) / 1000.0))
-            .with_line_height(narrow(line_height.unwrap_or(1.2)))
+            .with_tracking(f32_of_f64(tracking.unwrap_or(0.0) / 1000.0))
+            .with_line_height(f32_of_f64(line_height.unwrap_or(1.2)))
             .with_align(align),
     )
 }
@@ -2345,7 +2334,7 @@ fn text_frame(
     else {
         return None;
     };
-    let natural = f64::from(text.measure_style(words, width.map(narrow), style).0);
+    let natural = f64::from(text.measure_style(words, width.map(f32_of_f64), style).0);
     let wide = width.unwrap_or(natural + 0.5);
     // Letter spacing follows every letter, the last too: a centred or
     // end-aligned line would sit that trailing space off where its letters
@@ -2359,7 +2348,7 @@ fn text_frame(
         _ => *x,
     };
     let max = (width.is_some() || align.as_deref().is_some_and(|align| align != "start"))
-        .then(|| narrow(wide));
+        .then(|| f32_of_f64(wide));
     let top = y - f64::from(text.first_baseline_style(words, max, style));
     Some((left, top, max))
 }
@@ -2533,6 +2522,17 @@ pub fn draw_vector(
     transform: Affine,
     text: &mut TextRenderer,
 ) {
+    draw_vector_path(mark, palette, scene, transform, text, None);
+}
+
+fn draw_vector_path(
+    mark: &Mark,
+    palette: &[Pigment],
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    cached: Option<&BezPath>,
+) {
     let style = &mark.style;
     let at = transform * mark.affine();
     let opacity = style.opacity();
@@ -2545,14 +2545,14 @@ pub fn draw_vector(
     match &mark.shape {
         Shape::Stroke { .. } => {
             let preset = crate::brushes::Preset::of(style);
-            if preset == crate::brushes::Preset::Eraser {
+            if preset.erases() {
                 return;
             }
             let Some(ink) = named(&style.stroke).or_else(|| named(&style.fill)) else {
                 return;
             };
             let path = silhouette(mark);
-            let ink = ink.multiply_alpha(narrow(crate::brushes::ink_alpha(style)));
+            let ink = ink.multiply_alpha(f32_of_f64(crate::brushes::ink_alpha(style)));
             scene.fill(Fill::NonZero, at, ink, None, &path);
         }
         Shape::Text { .. } => {
@@ -2562,16 +2562,22 @@ pub fn draw_vector(
             draw_text_shape(&mark.shape, ink, scene, at, text);
         }
         shape => {
-            let path = shape.path();
+            let fresh;
+            let path = if let Some(path) = cached {
+                path
+            } else {
+                fresh = shape.path();
+                &fresh
+            };
             if shape.closed() {
                 if let Some(gradient) = style
                     .gradient
                     .as_ref()
                     .and_then(|gradient| gradient_brush(gradient, palette, opacity))
                 {
-                    scene.fill(Fill::NonZero, at, &gradient, None, &path);
+                    scene.fill(Fill::NonZero, at, &gradient, None, path);
                 } else if let Some(fill) = named(&style.fill) {
-                    scene.fill(Fill::NonZero, at, fill, None, &path);
+                    scene.fill(Fill::NonZero, at, fill, None, path);
                 }
             }
             let width = if shape.closed() {
@@ -2582,7 +2588,7 @@ pub fn draw_vector(
             if width > 0.0
                 && let Some(line) = named(&style.stroke)
             {
-                scene.stroke(&pen(style, width), at, line, None, &path);
+                scene.stroke(&pen(style, width), at, line, None, path);
             }
         }
     }
@@ -2613,7 +2619,7 @@ fn draw_grid(
     let label = Color::from_rgba8(20, 80, 170, 255); // picture ink, theme-independent
     let halo = Color::from_rgba8(255, 255, 255, 210); // picture ink, theme-independent
     let pen = Stroke::new(pixel);
-    let font = narrow((pixel * 11.0).max(0.1));
+    let font = f32_of_f64((pixel * 11.0).max(0.1));
     let tag = |scene: &mut Scene, text: &mut TextRenderer, x: f64, y: f64, value: f64| {
         let words = format!("{value:.0}");
         let width = pixel * (6.5 * f64::from(u32::try_from(words.len()).unwrap_or(4)) + 4.0);
@@ -2624,13 +2630,13 @@ fn draw_grid(
             None,
             &Rect::new(x, y, x + width, y + pixel * 14.0),
         );
-        text.draw_text(
+        text.draw_style(
             scene,
             &words,
-            font,
             label,
             transform * Affine::translate((x + pixel * 2.0, y + pixel)),
             None,
+            &ui::TextStyle::content(font),
         );
     };
     let lines = |from: f64, to: f64| {

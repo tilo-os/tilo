@@ -10,7 +10,7 @@
 //! actions ([`FrameHarness::invoke_action`]) resolve here too, so an agent
 //! driving a headless mount reaches everything a person in a window can.
 
-use super::{FrameHarness, Rect, WindowEvent};
+use super::{FrameHarness, Rect};
 use crate::a11y::Action;
 use crate::a11y_tree::{
     SEMANTIC_OPERATION_TYPE, SemanticActionKind, SemanticId, SemanticNode, SemanticTree,
@@ -174,7 +174,7 @@ impl FrameHarness {
         self.visit_publication_locus(
             self.root.as_ref(),
             &target,
-            &snapshot.resources,
+            snapshot.resources(),
             &mut result,
         );
         if result.len() == 1 {
@@ -346,20 +346,6 @@ impl FrameHarness {
             .collect()
     }
 
-    /// Where the control a projected `ui:` resource names is on the surface.
-    pub fn projected_control_bounds(&self, resource: &str) -> Option<Rect> {
-        let id = resource
-            .strip_prefix(CONTROL_RESOURCE_PREFIX)
-            .and_then(|encoded| {
-                percent_encoding::percent_decode_str(encoded)
-                    .decode_utf8()
-                    .ok()
-            })?;
-        self.semantic_tree()
-            .node(&SemanticId(id.into_owned()))?
-            .bounds
-    }
-
     /// The control `id` names, if the current frame has it.
     pub fn control(&self, id: &str) -> Option<Control> {
         self.controls().into_iter().find(|control| control.id == id)
@@ -469,13 +455,10 @@ impl FrameHarness {
             }
             ControlInput::Scroll { dx, dy } => {
                 let centre = pointer?;
-                self.send(&WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(
-                        centre.x * self.input_scale,
-                        centre.y * self.input_scale,
-                    ),
-                });
+                self.send(&crate::synthetic_input::cursor_moved(
+                    centre.x * self.input_scale,
+                    centre.y * self.input_scale,
+                ));
                 self.scroll(*dx, *dy);
                 self.relayout();
                 Ok(())
@@ -580,7 +563,7 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(owner, verb, |widget, doc, root| {
                 if let Some(key_path) = &key_path {
-                    widget.perform_action_at(
+                    widget.perform_action(
                         verb,
                         key_path,
                         &mut crate::widget::Edits::lend(doc),
@@ -684,7 +667,8 @@ mod locus_tests {
             sequence: 1,
             actor: tilo_actions::InteractionActor {
                 id: "synthetic-test-only".into(),
-                kind: tilo_actions::InteractionActorKind::Person,
+                kind: tilo_actions::ActorKind::Person,
+                for_person: None,
             },
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {
@@ -725,7 +709,7 @@ mod locus_tests {
                 .unwrap();
             assert_eq!(calls.get(), 1, "the actual semantic executor ran once");
             let mut event = interaction("first");
-            event.actor.kind = tilo_actions::InteractionActorKind::Agent;
+            event.actor.kind = tilo_actions::ActorKind::Agent;
             let now = crate::time::now();
             frame.update_presence(|presence| {
                 presence.apply_interaction_at(event.clone(), now).unwrap()
@@ -813,7 +797,7 @@ mod locus_tests {
                     .join(name)
                     .join(format!("{}x{}", viewport.0, viewport.1));
                 std::fs::create_dir_all(&path).unwrap();
-                frame.render_window_png(&path.join("before.png"));
+                frame.render_png(&path.join("before.png"));
                 frame
                     .invoke_action(
                         &tilo_actions::ActionAddress::new("first", "edit"),
@@ -824,7 +808,7 @@ mod locus_tests {
                     .unwrap();
                 let mut event = interaction("first");
                 event.actor.id = "scribe".into();
-                event.actor.kind = tilo_actions::InteractionActorKind::Agent;
+                event.actor.kind = tilo_actions::ActorKind::Agent;
                 let at = crate::time::now()
                     .checked_sub(crate::time::Duration::from_secs(2))
                     .unwrap();
@@ -832,7 +816,7 @@ mod locus_tests {
                     presence.apply_interaction_at(event.clone(), at).unwrap()
                 });
                 assert!(frame.poll_frame().unwrap());
-                frame.render_window_png(&path.join("after.png"));
+                frame.render_png(&path.join("after.png"));
                 assert_eq!(calls.get(), 1);
                 for file in ["before.png", "after.png"] {
                     assert!(std::fs::metadata(path.join(file)).unwrap().len() > 0);
@@ -1027,6 +1011,80 @@ mod locus_tests {
         let mut event = interaction(&format!("ui:{encoded}"));
         event.action.id = "activate".into();
         assert_eq!(frame.semantic_locus(&event), None);
+    }
+
+    #[test]
+    fn painted_marker_export_tracks_live_geometry_and_retires_with_roster() {
+        let (frame, calls) = fixture();
+        let (tree, bindings) = frame.retained_action_geometry().unwrap();
+        let mut presence = crate::presence::PresenceCtx::empty();
+        let mut event = interaction("first");
+        event.actor.id = "opaque-software".into();
+        event.actor.kind = tilo_actions::ActorKind::Agent;
+        let at = crate::time::now();
+        presence.apply_interaction_at(event.clone(), at).unwrap();
+        let theme = crate::theme::Theme::dark();
+        let viewport = vello::kurbo::Rect::new(0.0, 0.0, 400.0, 240.0);
+        let mut scene = vello::Scene::new();
+        let mut text = crate::text_render::TextRenderer::new();
+        let mut paint = |presence: &mut crate::presence::PresenceCtx, now| {
+            scene.reset();
+            let markers = crate::action_locus::draw_action_presence(
+                &mut crate::paint::PaintCtx::new(
+                    &mut scene,
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                ),
+                presence,
+                &tree,
+                &bindings,
+                viewport,
+                "native-primary",
+                now,
+            );
+            assert!(
+                !scene.encoding().draw_tags.is_empty(),
+                "the production painter emits pixels"
+            );
+            markers
+        };
+        let first = paint(&mut presence, at);
+        let arrived = paint(&mut presence, at + crate::time::Duration::from_millis(500));
+        assert_eq!(first.len(), 1);
+        assert_eq!(arrived.len(), 1);
+        assert_eq!(first[0].interaction, event);
+        assert_eq!(
+            first[0].locus,
+            crate::floating_surface::protocol_rect_array(frame.targets()["first"])
+        );
+        assert_ne!(
+            first[0].marker, arrived[0].marker,
+            "published bounds follow the animated paint, not the target"
+        );
+        // Complete empty certified rosters remove their participants through
+        // this same PresenceCtx retirement path.
+        presence.unregister_peer(&event.actor.id);
+        let retired = crate::action_locus::draw_action_presence(
+            &mut crate::paint::PaintCtx::new(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+            ),
+            &mut presence,
+            &tree,
+            &bindings,
+            viewport,
+            "native-primary",
+            at,
+        );
+        assert!(retired.is_empty());
+        assert_eq!(
+            calls.get(),
+            0,
+            "publication never executes the underlying action"
+        );
     }
 
     #[test]

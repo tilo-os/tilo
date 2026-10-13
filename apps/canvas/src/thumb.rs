@@ -10,14 +10,13 @@ use std::rc::Rc;
 use ui::framework::ResourceSurface;
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use ui::vello::kurbo::{Affine, Rect, RoundedRect};
 use ui::vello::peniko::Fill;
 use ui::widget::{AppModel, ModelPath, Widget};
 use ui::{LocalState, PresenceCtx, TextRenderer, Theme};
 
 use crate::model::Artwork;
 use crate::render::{Options, Renderer};
-use crate::resource::ArtworkResource;
 
 /// The part of an artwork a picture shows, worked out from the artwork
 /// as it is now: the artwork to draw (the same one, or a part cut from
@@ -81,29 +80,15 @@ impl Widget for Thumb {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         use ui::widget::TaffyTreeExt as _;
-        let node = taffy.leaf_node(Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(self.size.0),
-                height: taffy::Dimension::length(self.size.1),
-            },
+        let style = Style {
+            size: taffy::Size::from_lengths(self.size.0, self.size.1),
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
-    }
+    ui::rect_geometry!();
 
     #[allow(
         clippy::arithmetic_side_effects,
@@ -120,7 +105,7 @@ impl Widget for Thumb {
         if self.rect.width() < 1.0 || self.art.width <= 0.0 || self.art.height <= 0.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.item);
         let frame = RoundedRect::from_rect(self.rect, radius);
         scene.push_layer(
             Fill::NonZero,
@@ -129,7 +114,13 @@ impl Widget for Thumb {
             transform,
             &frame,
         );
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &self.rect,
+        );
         let (art, region, bare) = match &self.framing {
             Some(framing) => {
                 framing(&self.art).unwrap_or_else(|| (Rc::clone(&self.art), Rect::ZERO, false))
@@ -174,39 +165,14 @@ impl Widget for Thumb {
             .target
             .as_ref()
             .is_some_and(|(chosen, id)| chosen.with(|chosen| chosen == id));
-        if ringed {
-            // Outside the picture, so none of it is hidden by the ring.
-            // Two of the chrome's rules: heavy enough to say "this one".
-            let ring = 2.0 * f64::from(theme.tokens.metrics.chrome_rule_px);
-            scene.stroke(
-                &Stroke::new(ring),
-                transform,
-                theme.accent_primary,
-                None,
-                &frame
-                    .rect()
-                    .inflate(ring / 2.0, ring / 2.0)
-                    .to_rounded_rect(radius + ring / 2.0),
-            );
-        } else {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &frame,
-            );
-        }
+        ui::surface::ContentFrame::Thumbnail { selected: ringed }
+            .draw(scene, transform, self.rect, theme);
     }
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
     fn name(&self) -> &'static str {
         "Thumb"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 
@@ -221,7 +187,13 @@ impl Widget for Thumb {
 fn checker(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme) {
     // The checker's square is a step of the theme's spacing.
     let square_side = f64::from(theme.tokens.spacing.s2);
-    scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &area);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &area,
+    );
     let columns = (area.width() / square_side).ceil() as usize;
     let rows = (area.height() / square_side).ceil() as usize;
     for row in 0..rows {
@@ -234,12 +206,18 @@ fn checker(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme) {
                 (x + square_side).min(area.x1),
                 (y + square_side).min(area.y1),
             );
-            scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &square);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &square,
+            );
         }
     }
 }
 
-impl ResourceSurface<ArtworkResource> for Thumb {
+impl ResourceSurface<Artwork> for Thumb {
     fn present(&mut self, state: &Rc<Artwork>) {
         self.art = Rc::clone(state);
     }

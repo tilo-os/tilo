@@ -9,12 +9,14 @@
 set -euo pipefail
 
 plugin_deadline_sec="${AIRPLAY_PLUGIN_DEADLINE_SEC:-30}"
+codec_deadline_sec="${AIRPLAY_CODEC_DEADLINE_SEC:-30}"
 setup_deadline_sec="${AIRPLAY_SETUP_DEADLINE_SEC:-30}"
 media_deadline_sec="${AIRPLAY_MEDIA_DEADLINE_SEC:-60}"
 teardown_deadline_sec="${AIRPLAY_TEARDOWN_DEADLINE_SEC:-10}"
 force_cleanup_deadline_sec="${AIRPLAY_FORCE_CLEANUP_DEADLINE_SEC:-5}"
 
 gst_inspect="${TILO_AIRPLAY_GST_INSPECT:-gst-inspect-1.0}"
+gst_launch="${TILO_AIRPLAY_GST_LAUNCH:-gst-launch-1.0}"
 receiver_bin="${TILO_DOUBLETAKE_TEST_RECEIVER:-/usr/libexec/tilo-doubletake-test-receiver}"
 sender_bin="${TILO_DOUBLETAKE:-/usr/libexec/tilo-doubletake}"
 
@@ -38,7 +40,7 @@ cleanup() {
   fi
   if (( status != 0 )); then
     echo "airplay encrypted-session test failed (status $status)" >&2
-    for log in "$receiver_log" "$sender_log"; do
+    for log in "$test_root/codec.log" "$receiver_log" "$sender_log"; do
       if [[ -n "$log" && -s "$log" ]]; then
         echo "--- $(basename "$log") ---" >&2
         sed 's/^/  /' "$log" >&2
@@ -121,6 +123,25 @@ if [[ "$plugin_status" == 124 || "$plugin_status" == 143 ]]; then
 fi
 if (( plugin_status != 0 )); then
   echo "airplay plugin-discovery failed: openh264enc is not available" >&2
+  exit 1
+fi
+
+# Factory discovery also succeeds against Fedora's noopenh264 compatibility
+# stub. Exercise both real constructors and decoded frames before pairing.
+set +e
+timeout --signal=TERM --kill-after=5s "${codec_deadline_sec}s" \
+  "$gst_launch" -q videotestsrc num-buffers=30 pattern=black ! \
+  video/x-raw,format=I420,width=160,height=96,framerate=30/1 ! \
+  openh264enc ! h264parse ! openh264dec ! video/x-raw,format=I420 ! \
+  filesink "location=$test_root/decoded.i420" >"$test_root/codec.log" 2>&1
+codec_status=$?
+set -e
+if [[ "$codec_status" == 124 || "$codec_status" == 137 || "$codec_status" == 143 ]]; then
+  fail_phase codec-initialization "$codec_deadline_sec"
+fi
+if (( codec_status != 0 )) || [[ ! -f "$test_root/decoded.i420" ]] \
+    || [[ $(stat -c %s "$test_root/decoded.i420") != 691200 ]]; then
+  echo "airplay codec-initialization failed: OpenH264 must encode and decode 30 synthetic frames; plugin discovery alone is insufficient" >&2
   exit 1
 fi
 

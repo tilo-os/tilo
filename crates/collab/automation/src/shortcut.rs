@@ -7,14 +7,15 @@
 
 use std::collections::BTreeMap;
 
-use collab_types::PermissionProfileRule;
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::Rule;
+use tilo_actions::ActionKey;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::{
-    AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION,
-    SHORTCUT_RUN_ACTION, shortcut_resource_id,
+    AGENT_APP_ID, AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION,
+    AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, shortcut_resource_id,
 };
 
 /// One saved shortcut.
@@ -33,21 +34,17 @@ pub struct Shortcut {
     /// The value a finished run reports back to whoever started it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Binding>,
-    /// The most the shortcut may do. A run acts with the intersection of this
-    /// and the authority of the person who started it: a step outside the
-    /// grant is refused here, a step outside the person's authority is refused
-    /// by the host.
+    /// The most the shortcut may do, shown when it is imported. A run acts
+    /// with the stricter of this and the authority of the person who started
+    /// it: a step outside the grant is refused here, a step outside the
+    /// person's authority is refused by the host. A run nobody is present at
+    /// refuses what the grant would ask about, and passes a confirmation only
+    /// for an action a rule names exactly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub grant: Vec<PermissionProfileRule>,
+    pub grant: Vec<Rule>,
     /// When the system may start it without being asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<TriggerSpec>,
-    /// Confirmations given in advance for runs nobody is present at: a
-    /// triggered run may take exactly these actions although their contract
-    /// asks for confirmation. They are the saving person's, so a host honours
-    /// them only in runs that person started.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub consents: Vec<UnattendedConsent>,
     /// Policy id of the person who saved it. Set by the host that stored it,
     /// whatever the saved JSON claimed; its triggers fire on that person's
     /// behalf only.
@@ -60,36 +57,6 @@ impl Shortcut {
     #[must_use]
     pub fn action_address(&self) -> ActionAddress {
         ActionAddress::new(shortcut_resource_id(&self.id), SHORTCUT_RUN_ACTION)
-    }
-}
-
-/// Advance confirmation of one exact action: `action` on resource
-/// `resource` of application `app_id`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct UnattendedConsent {
-    pub app_id: String,
-    pub resource: String,
-    pub action: String,
-}
-
-impl UnattendedConsent {
-    #[must_use]
-    pub fn new(
-        app_id: impl Into<String>,
-        resource: impl Into<String>,
-        action: impl Into<String>,
-    ) -> Self {
-        Self {
-            app_id: app_id.into(),
-            resource: resource.into(),
-            action: action.into(),
-        }
-    }
-
-    /// Whether this consent names `address` on `app_id`.
-    #[must_use]
-    pub fn covers(&self, app_id: &str, address: &ActionAddress) -> bool {
-        self.app_id == app_id && self.resource == address.resource && self.action == address.action
     }
 }
 
@@ -116,13 +83,19 @@ impl Step {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub enum StepKind {
-    /// Invoke one published action.
+    /// Invoke one published action: the app, the resource kind that
+    /// publishes it and its public id, on the resource `resource` selects.
     Invoke {
-        app_id: String,
+        action: ActionKey,
         resource: Selector,
-        action: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         args: BTreeMap<String, Binding>,
+        /// The name and avatar a bot shows for this one action
+        /// ([`tilo_actions::Appearance`]), such as a bridge posting a
+        /// Discord user's message under their name. Only a bot's door
+        /// admits one; it never changes who the author is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        appearance: Option<Binding>,
     },
     /// Run one of two blocks.
     If {
@@ -175,9 +148,11 @@ pub enum Selector {
 pub enum Binding {
     /// A constant.
     Literal(serde_json::Value),
-    /// One of the shortcut's inputs.
+    /// One of the shortcut's inputs, or part of it: `NAME/json/pointer`
+    /// addresses into an object input (`event/after/text`).
     Input(String),
-    /// A variable set by [`StepKind::SetVar`] or a loop's item.
+    /// A variable set by [`StepKind::SetVar`] or a loop's item, or part of
+    /// it, addressed as an input is (`item/op`).
     Var(String),
     /// Part of an earlier step's output, addressed by an RFC 6901 JSON
     /// pointer (empty for the whole value).
@@ -193,6 +168,17 @@ pub enum Binding {
 }
 
 impl Binding {
+    /// The input or variable an [`Input`](Self::Input) or [`Var`](Self::Var)
+    /// name refers to, and the RFC 6901 pointer into its value (empty for
+    /// the whole value).
+    #[must_use]
+    pub fn named_part(name: &str) -> (&str, String) {
+        match name.split_once('/') {
+            Some((base, rest)) => (base, format!("/{rest}")),
+            None => (name, String::new()),
+        }
+    }
+
     #[must_use]
     pub fn step(step: impl Into<String>, pointer: impl Into<String>) -> Self {
         Self::StepOutput {
@@ -240,6 +226,12 @@ pub enum AiTransform {
 impl AiTransform {
     /// The agent transform action this lowers to.
     #[must_use]
+    pub fn key(&self) -> ActionKey {
+        ActionKey::new(AGENT_APP_ID, AGENT_TRANSFORM_KIND, self.action())
+    }
+
+    /// The public id of the agent transform action this lowers to.
+    #[must_use]
     pub const fn action(&self) -> &'static str {
         match self {
             Self::Summarise => AGENT_SUMMARISE_ACTION,
@@ -275,7 +267,7 @@ impl AiTransform {
 
 /// What may start a shortcut. Data only: the session decides how to watch
 /// for each and starts an unattended run when one fires.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "trigger", rename_all = "snake_case")]
 pub enum TriggerSpec {
     /// A key chord in the shell's own notation, e.g. `Super+Shift+N`.
@@ -320,6 +312,28 @@ pub enum TriggerSpec {
     DeviceConnected {
         device_class: String,
     },
+    /// A committed change to a record of `kind` in the room. Empty
+    /// `actions` and `fields` match any change; otherwise a change matches
+    /// when it ran one of the verbs (public ids) or edited a field whose
+    /// path matches one of the patterns (`channels.*.name`).
+    RecordChanged {
+        kind: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        actions: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fields: Vec<String>,
+        #[serde(default, skip_serializing_if = "ActorFilter::is_anyone")]
+        by: ActorFilter,
+    },
+    /// An event from a connector's declared trigger source on the room's
+    /// host. Only a bot can carry one: a person's devices see no connector.
+    Connector {
+        app_id: String,
+        source: String,
+        /// Equality on top-level payload fields.
+        #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+        filter: serde_json::Map<String, serde_json::Value>,
+    },
     IncomingMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_id: Option<String>,
@@ -332,6 +346,35 @@ pub enum TriggerSpec {
         device: Option<String>,
     },
 }
+
+/// Whose changes a [`TriggerSpec::RecordChanged`] counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActorFilter {
+    #[default]
+    Anyone,
+    /// Only people acting at their own devices.
+    People,
+    /// People, agents and Shortcuts, never a bot.
+    NotBots,
+}
+
+impl ActorFilter {
+    #[must_use]
+    pub const fn is_anyone(&self) -> bool {
+        matches!(self, Self::Anyone)
+    }
+}
+
+/// The input a record, connector or incoming-message firing binds its
+/// event to.
+pub const EVENT_INPUT: &str = "event";
+
+static EVENT_PAYLOAD: [ActionParam; 1] = [ActionParam::required(
+    EVENT_INPUT,
+    ParamType::Object,
+    "What fired the run: the change or the connector event",
+)];
 
 /// [`TriggerSpec::FocusMode`] mode: the person's Do Not Disturb switch.
 pub const FOCUS_DO_NOT_DISTURB: &str = "do_not_disturb";
@@ -383,6 +426,9 @@ impl TriggerSpec {
             Self::WorkspaceJoined { .. } => &WORKSPACE_PAYLOAD,
             Self::FileChanged { .. } => &FILE_PAYLOAD,
             Self::FocusMode { .. } => &FOCUS_PAYLOAD,
+            Self::RecordChanged { .. } | Self::Connector { .. } | Self::IncomingMessage { .. } => {
+                &EVENT_PAYLOAD
+            }
             _ => &[],
         }
     }
@@ -399,6 +445,8 @@ impl TriggerSpec {
             Self::FocusMode { .. } => "focus_mode",
             Self::NetworkChanged { .. } => "network_changed",
             Self::DeviceConnected { .. } => "device_connected",
+            Self::RecordChanged { .. } => "record_changed",
+            Self::Connector { .. } => "connector",
             Self::IncomingMessage { .. } => "incoming_message",
             Self::NearbyDevice { .. } => "nearby_device",
         }

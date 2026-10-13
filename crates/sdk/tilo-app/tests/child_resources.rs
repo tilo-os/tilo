@@ -1,9 +1,4 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! A resource nested in another — here a saved query's SQL, plain text in a
 //! text object of the query's document — is edited through a child
@@ -130,9 +125,8 @@ fn typing_splices_the_child_through_the_parents_action() {
         "the rest of the query is untouched"
     );
     assert!(
-        app.versions()
+        app.history()
             .into_iter()
-            .filter_map(|version| version.context)
             .any(|context| context.resource.as_ref().is_some_and(|r| r.id == sql_id())),
         "history names the SQL as the resource edited"
     );

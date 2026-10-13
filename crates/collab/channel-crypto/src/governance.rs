@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use collab_types::{
-    Ed25519PublicKey, EncryptionMetadata, MlsGovernanceAction, MlsGovernanceContext,
+    Admission, Ed25519PublicKey, EncryptionMetadata, MlsGovernanceAction, MlsGovernanceContext,
     MlsGovernanceFrameV1,
 };
 use serde::{Deserialize, Serialize};
@@ -148,9 +148,20 @@ impl GovernanceJournal {
                 "unsupported governance journal version".into(),
             ));
         }
-        let mut previous = [0_u8; 32];
-        for frame in &state.frames {
-            if frame.previous_frame_digest != previous {
+        // A compacted journal skips from genesis to its head, and a rebased
+        // mirror starts at an admission (see [`Self::compact`] and
+        // [`Self::rebase`]).
+        let mut previous = state
+            .frames
+            .first()
+            .map_or([0_u8; 32], |frame| frame.previous_frame_digest);
+        for (index, frame) in state.frames.iter().enumerate() {
+            let after_genesis = index == 1
+                && state
+                    .frames
+                    .first()
+                    .is_some_and(|first| matches!(first.action, MlsGovernanceAction::Genesis));
+            if frame.previous_frame_digest != previous && !after_genesis {
                 return Err(Error::InvalidState("broken governance hash chain".into()));
             }
             frame
@@ -271,15 +282,22 @@ impl GovernanceJournal {
         match &frame.action {
             action @ (MlsGovernanceAction::Add { .. }
             | MlsGovernanceAction::AddWithKeyHistory { .. }) => {
-                let Some((recipient, _, existing_member_commit, _)) = action.admission() else {
+                let Some(Admission {
+                    recipients,
+                    existing_member_commit,
+                    ..
+                }) = action.admission()
+                else {
                     return Err(Error::Governance("malformed admission".into()));
                 };
-                next.deliveries.push(GovernanceDelivery {
-                    frame_digest: digest,
-                    recipient: *recipient,
-                    kind: DeliveryKind::Welcome,
-                    acknowledged: false,
-                });
+                for recipient in recipients {
+                    next.deliveries.push(GovernanceDelivery {
+                        frame_digest: digest,
+                        recipient: *recipient,
+                        kind: DeliveryKind::Welcome,
+                        acknowledged: false,
+                    });
+                }
                 if existing_member_commit.is_some() {
                     for target in context.current_mls_members {
                         if target != &frame.signed_by {
@@ -369,6 +387,127 @@ impl GovernanceJournal {
         Ok(MirrorAppend::Appended(digest))
     }
 
+    /// Keep only the genesis frame, the head frame and the deliveries of the
+    /// head still owed. Genesis stays because it is how a member learns who
+    /// stewards the channel.
+    ///
+    /// A steward's frames are a chain of MLS commits: a device that missed
+    /// one cannot use the ones after it, and a device joining later needs
+    /// only the Welcome that admits it. Kept whole, the journal and every
+    /// replay of it grew with each admission, each one carrying the group's
+    /// whole ratchet tree, so a channel with hundreds of members cost every
+    /// newcomer all their Welcomes. A device behind the head now finds a
+    /// frame it cannot apply, asks again, and is admitted afresh.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the atomic write fails.
+    pub fn compact(&mut self) -> Result<()> {
+        let Some(head) = self.state.frames.last() else {
+            return Ok(());
+        };
+        let genesis = self
+            .state
+            .frames
+            .first()
+            .filter(|first| matches!(first.action, MlsGovernanceAction::Genesis));
+        let before_head = usize::from(genesis.is_some());
+        if self.state.frames.len() <= before_head.saturating_add(1) {
+            return Ok(());
+        }
+        let digest = head
+            .digest()
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        let mut next = self.state.clone();
+        let head = next.frames.pop();
+        next.frames.truncate(before_head);
+        next.frames.extend(head);
+        next.deliveries
+            .retain(|delivery| delivery.frame_digest == digest && !delivery.acknowledged);
+        self.persist(&next)?;
+        self.state = next;
+        Ok(())
+    }
+
+    /// A mirror holding `frames`, as [`ChannelMember`](crate::ChannelMember)
+    /// exported them: each signed by `steward`, chained as a compacted or
+    /// rebased journal may be. Kept in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a frame of another channel or steward, a bad
+    /// signature, or a broken chain.
+    pub fn mirrored(
+        channel: collab_types::ChannelId,
+        steward: Ed25519PublicKey,
+        frames: Vec<MlsGovernanceFrameV1>,
+    ) -> Result<Self> {
+        if frames
+            .iter()
+            .any(|frame| frame.channel != channel || frame.signed_by != steward)
+        {
+            return Err(Error::Governance(
+                "mirrored frame is not this channel's steward's".into(),
+            ));
+        }
+        let encryption_required = frames.first().is_some_and(|first| {
+            first.previous_frame_digest != [0; 32]
+                || frames.iter().any(|frame| {
+                    matches!(
+                        frame.action,
+                        MlsGovernanceAction::EnableEncryption { .. } | MlsGovernanceAction::Genesis
+                    )
+                })
+        });
+        let state = JournalState {
+            version: JOURNAL_VERSION,
+            frames,
+            deliveries: Vec::new(),
+            encryption_required,
+        };
+        let bytes = postcard::to_allocvec(&state)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        Self::from_bytes(&bytes)
+    }
+
+    /// Restart a mirror at `frame`, an admission of this device that does
+    /// not follow its head: what came before it is the steward's history,
+    /// which a joining device neither needs nor is sent. The channel was
+    /// created encrypted (every stewarded channel starts with a genesis
+    /// frame), so the plaintext gate stays closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a frame of another channel, one not signed by
+    /// `steward`, a bad signature, or a failed atomic write.
+    pub fn rebase(
+        &mut self,
+        channel: collab_types::ChannelId,
+        steward: Ed25519PublicKey,
+        frame: MlsGovernanceFrameV1,
+    ) -> Result<[u8; 32]> {
+        if frame.channel != channel || frame.signed_by != steward {
+            return Err(Error::Governance(
+                "governance frame is not this channel's steward's".into(),
+            ));
+        }
+        frame
+            .verify_signature()
+            .map_err(|error| Error::Governance(error.to_string()))?;
+        let digest = frame
+            .digest()
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        let next = JournalState {
+            version: JOURNAL_VERSION,
+            frames: vec![frame],
+            deliveries: Vec::new(),
+            encryption_required: true,
+        };
+        self.persist(&next)?;
+        self.state = next;
+        Ok(digest)
+    }
+
     /// Whether a frame with this digest is in the journal.
     pub fn contains(&self, digest: [u8; 32]) -> bool {
         self.state
@@ -404,6 +543,51 @@ impl GovernanceJournal {
             .filter(|delivery| !delivery.acknowledged)
             .map(|delivery| delivery.recipient)
             .collect()
+    }
+
+    /// [`Self::acknowledge_through`] for many acknowledgements at once,
+    /// written once; one naming a frame not in the journal is skipped.
+    /// Returns how many deliveries they completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the atomic write fails; nothing changes then.
+    pub fn acknowledge_all(&mut self, acks: &[(Ed25519PublicKey, [u8; 32])]) -> Result<usize> {
+        let digests: Vec<Option<[u8; 32]>> = self
+            .state
+            .frames
+            .iter()
+            .map(|frame| frame.digest().ok())
+            .collect();
+        let mut through: std::collections::HashMap<Ed25519PublicKey, usize> =
+            std::collections::HashMap::new();
+        for (recipient, digest) in acks {
+            if let Some(position) = digests.iter().position(|known| *known == Some(*digest)) {
+                let furthest = through.entry(*recipient).or_insert(position);
+                *furthest = (*furthest).max(position);
+            }
+        }
+        let mut deliveries = self.state.deliveries.clone();
+        let mut completed: usize = 0;
+        for delivery in &mut deliveries {
+            let covered = through.get(&delivery.recipient).is_some_and(|position| {
+                digests
+                    .get(..=*position)
+                    .is_some_and(|covered| covered.contains(&Some(delivery.frame_digest)))
+            });
+            if covered && !delivery.acknowledged {
+                delivery.acknowledged = true;
+                completed = completed.saturating_add(1);
+            }
+        }
+        if completed > 0 {
+            let previous = std::mem::replace(&mut self.state.deliveries, deliveries);
+            if let Err(error) = self.persist(&self.state) {
+                self.state.deliveries = previous;
+                return Err(error);
+            }
+        }
+        Ok(completed)
     }
 
     /// Apply a cumulative acknowledgement: `recipient` has processed every
@@ -468,14 +652,6 @@ impl GovernanceJournal {
             .frames
             .iter()
             .find(|frame| frame.digest().ok() == Some(digest))
-    }
-
-    /// Locate a previously committed idempotency key during crash recovery.
-    pub fn frame_for_transaction(&self, transaction_id: [u8; 32]) -> Option<&MlsGovernanceFrameV1> {
-        self.state
-            .frames
-            .iter()
-            .find(|frame| frame.transaction_id == transaction_id)
     }
 
     /// Durably mark an exact endpoint delivery complete.

@@ -1,6 +1,6 @@
 //! Snapshot history compaction end to end: a real server over HTTP on real
-//! storage, snapshots signed by the real CLI, and the native and browser
-//! clients verifying what it serves.
+//! storage, snapshots signed by the real CLI, and the native client verifying
+//! what it serves.
 
 #![cfg(unix)]
 #![allow(
@@ -64,6 +64,7 @@ fn registry(entries: usize) -> Registry {
     for index in 0..entries {
         let mut entry = RegistryEntry {
             package_id: format!("so.tilo.test{index}"),
+            kind: registry_types::EntryKind::App,
             name: "Test".into(),
             description: "A test app with a description long enough to weigh something".into(),
             tagline: "Test on Tilo OS".into(),
@@ -78,18 +79,20 @@ fn registry(entries: usize) -> Registry {
             publisher_pubkey_hex: publisher_hex.clone(),
             versions: vec![RegistryVersion {
                 version: "1".into(),
-                tapp_url: format!("https://apps.tilo.so/artifacts/test{index}.tapp"),
-                tapp_root_hash_hex: "ab".repeat(32),
-                tapp_size_bytes: 1,
                 released_at_unix: 1,
-                tapp_blake3_hex: "cd".repeat(32),
-                target: RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: format!("https://apps.tilo.so/artifacts/test{index}.tapp"),
+                    tapp_root_hash_hex: "ab".repeat(32),
+                    tapp_size_bytes: 1,
+                    tapp_blake3_hex: "cd".repeat(32),
+                    target: RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),
@@ -186,36 +189,6 @@ fn serve(registry: &Registry) -> SocketAddr {
     receiver.recv().unwrap()
 }
 
-/// The browser client: same proofs, checkpoint kept by the caller.
-struct WebClient {
-    url: String,
-    owner_hex: String,
-    checkpoint: Option<registry_web::Checkpoint>,
-}
-
-impl WebClient {
-    fn sync(&mut self) -> Result<u64, registry_web::VerifyError> {
-        let bytes = tilo_net::http::blocking_client()
-            .build()
-            .unwrap()
-            .get(&self.url)
-            .send()
-            .unwrap()
-            .error_for_status()
-            .unwrap()
-            .bytes()
-            .unwrap();
-        let verified = registry_web::verify_snapshot(
-            &bytes,
-            &self.owner_hex,
-            self.checkpoint.as_ref(),
-            tilo_clock::unix_now(),
-        )?;
-        self.checkpoint = Some(verified.checkpoint().clone());
-        Ok(verified.sequence())
-    }
-}
-
 fn native_sync(config: &RegistryConfig, config_dir: &Path) -> Result<u64, RegistryError> {
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("TILO_STORE_CONFIG_DIR", config_dir);
@@ -223,31 +196,24 @@ fn native_sync(config: &RegistryConfig, config_dir: &Path) -> Result<u64, Regist
 }
 
 #[test]
-fn clients_synced_before_compaction_verify_the_latest_and_still_reject_rollbacks_and_forks() {
+fn a_client_synced_before_compaction_verifies_the_latest_and_still_rejects_rollbacks_and_forks() {
     let registry = registry(2);
     let addr = serve(&registry);
-    let base_url = format!("http://{addr}");
     let config = RegistryConfig {
         name: "test".into(),
-        base_url: base_url.clone(),
+        base_url: format!("http://{addr}"),
         owner_pubkey_hex: registry.owner_hex.clone(),
         enabled: true,
         channel: tilo_app_package::version::ReleaseChannel::default(),
     };
     let native_dir = tempfile::tempdir().unwrap();
-    let mut web = WebClient {
-        url: format!("{base_url}/entries"),
-        owner_hex: registry.owner_hex.clone(),
-        checkpoint: None,
-    };
 
-    // Both clients last sync at sequence 3, then go offline.
+    // The client last syncs at sequence 3, then goes offline.
     let mut signed = Vec::new();
     for _ in 0..3 {
         signed.push(registry.sign());
     }
     assert_eq!(native_sync(&config, native_dir.path()).unwrap(), 3);
-    assert_eq!(web.sync().unwrap(), 3);
 
     let last = u64::try_from(SNAPSHOT_HISTORY_RETAINED).unwrap() * 2 + 5;
     while signed.len() < usize::try_from(last).unwrap() {
@@ -292,13 +258,6 @@ fn clients_synced_before_compaction_verify_the_latest_and_still_reject_rollbacks
         native_sync(&config, native_dir.path()),
         Err(RegistryError::Rollback)
     ));
-    assert!(matches!(
-        web.sync(),
-        Err(registry_web::VerifyError::Rollback {
-            checkpoint: 3,
-            sequence: 2
-        })
-    ));
 
     // So is a fork: another validly signed snapshot at the checkpoint.
     let mut fork = signed[2].clone();
@@ -310,15 +269,10 @@ fn clients_synced_before_compaction_verify_the_latest_and_still_reject_rollbacks
         native_sync(&config, native_dir.path()),
         Err(RegistryError::Rollback)
     ));
-    assert!(matches!(
-        web.sync(),
-        Err(registry_web::VerifyError::Rollback { .. })
-    ));
 
-    // The latest state verifies for clients last synced before compaction.
+    // The latest state verifies for a client last synced before compaction.
     registry.serve_raw(&latest);
     assert_eq!(native_sync(&config, native_dir.path()).unwrap(), last);
-    assert_eq!(web.sync().unwrap(), last);
 
     // Replaying a snapshot from before the compaction point, or forking the
     // newest checkpoint, is still refused afterwards.
@@ -327,10 +281,6 @@ fn clients_synced_before_compaction_verify_the_latest_and_still_reject_rollbacks
         native_sync(&config, native_dir.path()),
         Err(RegistryError::Rollback)
     ));
-    assert!(matches!(
-        web.sync(),
-        Err(registry_web::VerifyError::Rollback { .. })
-    ));
     let mut fork = latest.clone();
     fork.entries.pop();
     registry_types::sign_snapshot(&mut fork, &registry.owner).unwrap();
@@ -338,10 +288,6 @@ fn clients_synced_before_compaction_verify_the_latest_and_still_reject_rollbacks
     assert!(matches!(
         native_sync(&config, native_dir.path()),
         Err(RegistryError::Rollback)
-    ));
-    assert!(matches!(
-        web.sync(),
-        Err(registry_web::VerifyError::Rollback { .. })
     ));
     registry.serve_raw(&latest);
 
@@ -366,7 +312,6 @@ fn clients_synced_before_compaction_verify_the_latest_and_still_reject_rollbacks
         String::from_utf8_lossy(&rolled.stderr)
     );
     assert_eq!(native_sync(&config, native_dir.path()).unwrap(), last + 1);
-    assert_eq!(web.sync().unwrap(), last + 1);
     assert_eq!(registry.history().len(), SNAPSHOT_HISTORY_RETAINED);
 }
 

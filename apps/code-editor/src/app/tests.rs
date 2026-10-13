@@ -5,6 +5,52 @@ use automerge::ReadDoc;
 const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
+fn peer_hardware_language_metadata_survives_projection_without_a_source_extension() {
+    for language in [Language::Verilog, Language::SystemVerilog] {
+        let mut sample = synced_sample();
+        let id = "00000000-0000-4000-8000-0000000000ed";
+        sample.app.merge_peer_edit(|doc| {
+            crate::test_support::peer_file(
+                doc,
+                id,
+                "hardware.txt",
+                language.label(),
+                "module mac;\nendmodule\n",
+            );
+        });
+        sample.app.settle();
+        sample.editor(|app| {
+            let node = app
+                .session
+                .project
+                .node_for_resource(id)
+                .expect("peer file projected");
+            let file = app
+                .session
+                .project
+                .get(node)
+                .expect("projected file exists");
+            assert!(
+                matches!(
+                    &file.kind,
+                    crate::model::NodeKind::File { language: actual, .. } if *actual == language
+                ),
+                "persisted {language:?} wins over the .txt extension"
+            );
+        });
+    }
+}
+
+#[test]
+fn hardware_dialects_use_standard_language_server_ids() {
+    assert_eq!(CodeApp::language_id(Language::Verilog), "verilog");
+    assert_eq!(
+        CodeApp::language_id(Language::SystemVerilog),
+        "systemverilog"
+    );
+}
+
+#[test]
 fn sample_app_opens_main_rs_with_accessible_context_and_a_collapsed_dock() {
     // Each phase builds a fresh sample app.
     new_app_opens_main_rs();
@@ -43,6 +89,60 @@ fn search_projection_rebuilds_only_on_revisions_or_an_exhausted_generation() {
     exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor();
 }
 
+#[test]
+fn navigation_and_result_changes_reuse_symbols_but_pending_forks_do_not() {
+    use automerge::transaction::Transactable;
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        let before = app.search_refresh_stats();
+        app.invalidate_search_projection();
+        app.refresh_search_entries(doc.doc());
+        assert_eq!(app.search_refresh_stats().buffer_reads, before.buffer_reads);
+        let node = app.active_file_node().expect("sample source");
+        let key = app.buffer_key(node);
+        let object = EditorDoc::buffer_text_key(doc, &key).expect("authoritative text");
+        let mut first = doc.doc().clone();
+        let mut second = doc.doc().clone();
+        first
+            .splice_text(&object, 0, 0, "fn pending_first() {}\n")
+            .unwrap();
+        second
+            .splice_text(&object, 0, 0, "fn pending_other() {}\n")
+            .unwrap();
+        assert_eq!(first.pending_ops(), second.pending_ops());
+        assert!(first.pending_ops() > 0);
+        assert_eq!(first.committed_heads(), second.committed_heads());
+        app.refresh_search_entries(&first);
+        assert!(
+            app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_first")
+        );
+        app.refresh_search_entries(&second);
+        assert!(
+            app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_other")
+        );
+        assert!(
+            !app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_first")
+        );
+        app.refresh_search_entries(doc.doc());
+        assert!(
+            !app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name.starts_with("pending_"))
+        );
+        assert_eq!(
+            first.pending_ops(),
+            second.pending_ops(),
+            "reading did not commit either fork"
+        );
+    });
+}
+
 fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
     let mut sample = synced_sample();
     sample.with_doc(|app, doc| {
@@ -70,7 +170,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         assert_eq!(after_document.rebuilds, idle.rebuilds.saturating_add(1));
         assert!(
             ui::search::SearchProvider::search(
-                &ui::framework::testing::search_source::<crate::resource::CodeEditor>(
+                &ui::framework::testing::search_source::<crate::project::Project>(
                     app.code_search_entries()
                 ),
                 "revision_gate_needle"
@@ -105,12 +205,16 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         app.sync(doc.doc(), &automerge::ROOT);
         let after_results = app.search_refresh_stats();
         assert_eq!(
+            after_results.buffer_reads, after_project.buffer_reads,
+            "new result previews do not rescan authoritative source bodies"
+        );
+        assert_eq!(
             after_results.rebuilds,
             after_project.rebuilds.saturating_add(1)
         );
         assert!(
             ui::search::SearchProvider::search(
-                &ui::framework::testing::search_source::<crate::resource::CodeEditor>(
+                &ui::framework::testing::search_source::<crate::project::Project>(
                     app.code_search_entries()
                 ),
                 "result_revision_needle"
@@ -204,31 +308,34 @@ fn the_embedded_terminal_is_the_projects_terminal_child() {
     crate::test_support::editor(&mut app, |app| {
         app.shots_terminal_input("printf 'CHILD_TERM_OK\\n'\n");
     });
-    let shown = |app: &ui::framework::testing::TestApp<crate::CodeEditorShell>| {
-        app.state().terminal.as_ref().is_some_and(|session| {
-            session
-                .screen
-                .active()
-                .iter()
-                .any(|line| line.text.contains("CHILD_TERM_OK"))
-        })
+    // The shell's output stays in the terminal; the project records the
+    // session the process took.
+    let shown = |app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>| {
+        let recorded = app
+            .state()
+            .terminal_panel
+            .as_ref()
+            .is_some_and(|session| !session.pane_id().is_empty());
+        recorded
+            && crate::test_support::editor(app, |app| app.shots_terminal_grid_text())
+                .is_some_and(|text| text.contains("CHILD_TERM_OK"))
     };
     let deadline = ui::time::now() + HANG_BOUND;
-    while !shown(&app) && ui::time::now() < deadline {
+    while !shown(&mut app) && ui::time::now() < deadline {
         app.settle();
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(
-        shown(&app),
-        "the shell's output is the session the project records"
+        shown(&mut app),
+        "the shell's output shows, and the session is the one the project records"
     );
-    let published =
-        <crate::resource::CodeEditor as ui::tilo_resource::Resource>::children(&app.state());
+    let published = app.harness().resources();
     let child = published
         .iter()
+        .flat_map(|resource| resource.children.iter())
         .find(|child| child.id.as_str() == crate::resource::TERMINAL_RESOURCE_ID)
         .expect("the project publishes its terminal");
-    assert_eq!(child.kind, "terminal.session");
+    assert_eq!(child.kind, "code_editor.project.terminal");
     app.read_document(|doc| {
         assert!(
             doc.get(automerge::ROOT, "terminal_title")
@@ -380,9 +487,9 @@ fn the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop() {
         "documents are desktop tabs; the editor draws no tab strip"
     );
     assert!(
-        crate::commands::Command::all()
+        crate::effects::CodeEditorEffect::specs()
             .iter()
-            .all(|(command, label)| command.id() != "close-tab" && !label.contains("Tab")),
+            .all(|spec| !spec.id.contains("tab")),
         "closing is the desktop's tab lifecycle, not an editor command"
     );
 }
@@ -393,21 +500,36 @@ fn quick_open_and_go_to_line_open_the_host_palette() {
     sample.app.harness().set_modifiers(&["ctrl".to_owned()]);
     sample.app.harness().key("p");
     assert_eq!(
-        ui::host_palette::take(),
-        Some(ui::host_palette::PaletteRequest::Search(String::new())),
-        "quick open is the host palette over the project's search entries"
+        sample
+            .app
+            .harness()
+            .focused_access_node()
+            .expect("host search focus")
+            .children
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Search"))
+            .expect("host search query")
+            .role,
+        ui::a11y::Role::TextInput,
+        "quick open exposes the platform search query over project entries"
     );
+    sample.app.harness().set_modifiers(&[]);
+    sample.app.harness().key("Escape");
+    sample.app.harness().set_modifiers(&["ctrl".to_owned()]);
     sample.app.harness().key("g");
     sample.app.harness().set_modifiers(&[]);
     assert_eq!(
         ui::host_palette::take(),
         Some(ui::host_palette::PaletteRequest::Action(
-            ui::tilo_actions::ActionAddress::new(crate::resource::PROJECT_KIND, "go-to-line")
+            ui::tilo_actions::ActionAddress::new(
+                <crate::project::Project as ui::tilo_resource::Resource>::KIND,
+                "go-to-line"
+            )
         )),
         "go to line asks for its line on the published effect"
     );
     let entries =
-        <crate::resource::CodeEditor as ui::tilo_resource::Resource>::search(&sample.app.state());
+        <crate::project::Project as ui::tilo_resource::Resource>::search(&sample.app.state());
     assert!(
         entries.iter().any(|entry| entry.title == "main.rs"),
         "the project's files are its search entries"
@@ -505,24 +627,7 @@ fn a_collaborative_file_is_adopted_as_a_tracked_file() {
     let before = sample.editor(|app| app.session.project.nodes.len());
     let orphan = "00000000-0000-4000-8000-0000000000ee";
     sample.app.merge_peer_edit(|doc| {
-        EditorDoc::create_file(
-            doc,
-            &crate::doc::CollaborativeFile {
-                id: orphan.into(),
-                kind: "file".into(),
-                name: "peer.rs".into(),
-                path: "peer.rs".into(),
-                parent: None,
-                language: "Rust".into(),
-                order: 1,
-                deleted: false,
-                name_revision: 0,
-                structure_revision: 0,
-                language_revision: 0,
-                deletion_revision: 0,
-            },
-            "// created out of band\n",
-        );
+        crate::test_support::peer_file(doc, orphan, "peer.rs", "Rust", "// created out of band\n");
     });
     sample.app.settle();
     let (adopted, after) = sample.editor(|app| {
@@ -542,9 +647,10 @@ fn layout_is_docked_when_wide_overlay_when_narrow() {
     app.set_width_hint(600.0);
     assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
     // Boundary is inclusive at the breakpoint → docked.
-    app.set_width_hint(SIDEBAR_BREAKPOINT);
+    let breakpoint = app.drawer.resolved_breakpoint();
+    app.set_width_hint(breakpoint);
     assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-    app.set_width_hint(SIDEBAR_BREAKPOINT - 1.0);
+    app.set_width_hint(breakpoint - 1.0);
     assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
 }
 
@@ -862,9 +968,9 @@ fn buffer_lines(app: &CodeApp, doc: &AutoCommit, node: TreeId) -> Vec<String> {
 fn find_highlights_and_navigates_matches() {
     let mut sample = synced_sample();
     sample.with_doc(|app, doc| {
-        app.open_find(false, doc);
+        app.open_find();
         app.find.set_query("primes");
-        app.refresh_find(doc);
+        app.drive_find(doc);
 
         assert!(
             app.find_matches.len() >= 2,
@@ -1117,7 +1223,7 @@ fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Show bottom panel"),
+        Some("Show panel"),
         "keyboard close returns focus to the retained disclosure"
     );
 
@@ -1130,7 +1236,7 @@ fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Hide bottom panel"),
+        Some("Hide panel"),
         "reopening keeps focus on the disclosure instead of hidden Terminal content"
     );
 
@@ -1175,9 +1281,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     // same line, and never overlaps it.
     assert!(
         (trigger.center().y - header.center().y).abs() < 1.0,
-        "trigger and file name share the chrome row: {} vs {}",
-        trigger.center().y,
-        header.center().y
+        "trigger and file name share the chrome row: {trigger:?} vs {header:?}"
     );
     assert!(
         header.x1 <= trigger.x0,
@@ -1185,7 +1289,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     );
     let closed_snapshot = driver.inspection();
     let closed = trigger_semantics(&closed_snapshot);
-    assert_eq!(closed.name.as_deref(), Some("Show bottom panel"));
+    assert_eq!(closed.name.as_deref(), Some("Show panel"));
     assert_eq!(closed.state.expanded, Some(false));
     assert!(!closed.state.selected);
 
@@ -1195,7 +1299,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     assert!(driver.targets().contains_key("bottom_panel"));
     let open_snapshot = driver.inspection();
     let open = trigger_semantics(&open_snapshot);
-    assert_eq!(open.name.as_deref(), Some("Hide bottom panel"));
+    assert_eq!(open.name.as_deref(), Some("Hide panel"));
     assert_eq!(open.state.expanded, Some(true));
     assert!(open.state.selected);
     assert_eq!(
@@ -1203,7 +1307,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Hide bottom panel"),
+        Some("Hide panel"),
         "click transfers keyboard focus to the retained trigger"
     );
 
@@ -1231,12 +1335,12 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Show bottom panel"),
+        Some("Show panel"),
         "Escape returns focus to the retained trigger"
     );
 
     let trigger_node = driver
-        .a11y_node_named("Show bottom panel")
+        .a11y_node_named("Show panel")
         .expect("trigger is exported to assistive technology");
     driver
         .perform_a11y_action(trigger_node, &ui::a11y::Action::Activate)
@@ -1272,7 +1376,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     assert!(header_standard.x1 <= trigger_standard.x0);
     let resized_snapshot = driver.inspection();
     let resized_trigger = trigger_semantics(&resized_snapshot);
-    assert_eq!(resized_trigger.name.as_deref(), Some("Hide bottom panel"));
+    assert_eq!(resized_trigger.name.as_deref(), Some("Hide panel"));
     assert_eq!(resized_trigger.state.expanded, Some(true));
     assert!(resized_trigger.state.selected);
 

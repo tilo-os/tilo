@@ -6,8 +6,6 @@
 //! what another profile kept.
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
@@ -153,8 +151,7 @@ fn the_artworks_json_alone_still_opens() {
     let _store = tilo_test_env::lock();
     let mut app = TestApp::<App>::new().unwrap();
     for action in canvas::sample::landscape() {
-        app.invoke(ui::prelude::Invoke::apply(&action).unwrap())
-            .unwrap();
+        app.invoke(action).unwrap();
     }
     let json = canvas::document::ArtworkFile::of(&app.state()).to_json();
     std::fs::write(&path, json).unwrap();

@@ -11,7 +11,7 @@ use crate::time::SystemTime;
 use crate::tokens::TextRole;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
-    Button, ButtonStyle, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
+    Button, ButtonRole, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
     TextInput, Toggle, Widget, labeled_check, labeled_field,
 };
 use automerge::{AutoCommit, ObjId};
@@ -21,11 +21,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
-use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::Rect;
 
 /// Directory of live `*.json` screen graphs. When set, graph apps load and
 /// hot-reload screens from disk instead of the embed baked by `include_str!`.
@@ -35,7 +32,7 @@ pub const LIVE_GRAPH_DIR_ENV: &str = "TILO_UI_GRAPH_DIR";
 pub const LIVE_GRAPH_OPERATION: &str = "tilo.ui.graph";
 
 pub use tilo_ui_graph::{
-    UI_GRAPH_VERSION, UiButtonStyle, UiDocument, UiGraphEdit, UiGraphError, UiNavigation, UiNode,
+    UI_GRAPH_VERSION, UiButtonRole, UiDocument, UiGraphEdit, UiGraphError, UiNavigation, UiNode,
     UiTextRole, UiTextSource, parse_ui_graph_edits,
 };
 
@@ -275,13 +272,13 @@ impl UiBuildContext {
     }
 }
 
-impl From<UiButtonStyle> for ButtonStyle {
-    fn from(value: UiButtonStyle) -> Self {
+impl From<UiButtonRole> for ButtonRole {
+    fn from(value: UiButtonRole) -> Self {
         match value {
-            UiButtonStyle::Neutral => Self::Neutral,
-            UiButtonStyle::Primary => Self::Primary,
-            UiButtonStyle::Danger => Self::Danger,
-            UiButtonStyle::Ghost => Self::Ghost,
+            UiButtonRole::Primary => Self::Primary,
+            UiButtonRole::Secondary => Self::Secondary,
+            UiButtonRole::Destructive => Self::Destructive,
+            UiButtonRole::Plain => Self::Plain,
         }
     }
 }
@@ -289,13 +286,15 @@ impl From<UiButtonStyle> for ButtonStyle {
 impl From<UiTextRole> for TextRole {
     fn from(value: UiTextRole) -> Self {
         match value {
-            UiTextRole::Caption => Self::Caption,
-            UiTextRole::Label => Self::Label,
-            UiTextRole::Body => Self::Body,
-            UiTextRole::Reading => Self::Reading,
+            UiTextRole::Display => Self::Display,
+            UiTextRole::LargeTitle => Self::LargeTitle,
             UiTextRole::Title => Self::Title,
             UiTextRole::Heading => Self::Heading,
-            UiTextRole::Display => Self::Display,
+            UiTextRole::Subheading => Self::Subheading,
+            UiTextRole::Body => Self::Body,
+            UiTextRole::Label => Self::Label,
+            UiTextRole::Caption => Self::Caption,
+            UiTextRole::Reading => Self::Reading,
             UiTextRole::Code => Self::Code,
         }
     }
@@ -412,21 +411,12 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             }
             Box::new(container)
         }
-        UiNode::Text {
-            id,
-            text,
-            role,
-            size,
-        } => {
+        UiNode::Text { id, text, role } => {
             let text = match text {
                 UiTextSource::Static { value } => Text::new(value),
                 UiTextSource::Document { path } => Text::from_document_string(path),
             };
-            let mut text = text.with_role((*role).into()).with_id(id);
-            if let Some(size) = size {
-                text = text.with_size(*size);
-            }
-            Box::new(text)
+            Box::new(text.with_role((*role).into()).with_id(id))
         }
         UiNode::Button {
             id,
@@ -437,7 +427,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             click_value,
             navigate,
             enabled,
-            style,
+            role,
         } => {
             let navigation_bound = navigate.as_ref().is_none_or(|navigation| {
                 context
@@ -452,7 +442,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             });
             let mut button = Button::new(id, label)
                 .with_enabled(*enabled && (navigation_bound || on_click_path.is_some()))
-                .with_style((*style).into());
+                .role((*role).into());
             if let Some(name) = accessible_name {
                 button = button.with_accessible_name(name);
             }
@@ -1068,20 +1058,7 @@ impl UiGraphHandle {
     /// Returns [`UiGraphError::Poisoned`] if another thread panicked while
     /// holding the graph lock.
     pub fn undo(&self) -> Result<bool, UiGraphError> {
-        let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
-        if state.undo.is_empty() {
-            return Ok(false);
-        }
-        advance_graph_revision(&mut state.revision)?;
-        let Some(previous) = state.undo.pop() else {
-            return Ok(false);
-        };
-        let current = std::mem::replace(&mut state.document, previous);
-        push_graph_history(&mut state.redo, current);
-        state.active_edit_group = None;
-        drop(state);
-        self.persist_live()?;
-        Ok(true)
+        self.step_history(crate::undo::UndoRequest::Undo)
     }
 
     /// Reapply the most recently undone graph edit.
@@ -1093,18 +1070,29 @@ impl UiGraphHandle {
     /// Returns [`UiGraphError::Poisoned`] if another thread panicked while
     /// holding the graph lock.
     pub fn redo(&self) -> Result<bool, UiGraphError> {
-        let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
-        if state.redo.is_empty() {
+        self.step_history(crate::undo::UndoRequest::Redo)
+    }
+
+    /// Move the graph one retained document back (undo) or forward (redo),
+    /// keeping the replaced document on the opposite stack.
+    fn step_history(&self, request: crate::undo::UndoRequest) -> Result<bool, UiGraphError> {
+        let mut guard = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
+        let state = &mut *guard;
+        let (from, to) = match request {
+            crate::undo::UndoRequest::Undo => (&mut state.undo, &mut state.redo),
+            crate::undo::UndoRequest::Redo => (&mut state.redo, &mut state.undo),
+        };
+        if from.is_empty() {
             return Ok(false);
         }
         advance_graph_revision(&mut state.revision)?;
-        let Some(next) = state.redo.pop() else {
+        let Some(document) = from.pop() else {
             return Ok(false);
         };
-        let current = std::mem::replace(&mut state.document, next);
-        push_graph_history(&mut state.undo, current);
+        let current = std::mem::replace(&mut state.document, document);
+        push_graph_history(to, current);
         state.active_edit_group = None;
-        drop(state);
+        drop(guard);
         self.persist_live()?;
         Ok(true)
     }
@@ -1440,8 +1428,8 @@ impl LiveUi {
     )]
     fn graph_resource(&self) -> crate::tilo_actions::Resource {
         use crate::tilo_actions::{
-            ActionContract, ActionParam, ActionSpec, DiscoveryScope, EncodedAction, OperationKind,
-            ParamType, Resource, ResultSpec,
+            ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
+            Resource, ResultSpec,
         };
         let id = self.seen_document.root.id();
         let mut resource = Resource::new(
@@ -1477,7 +1465,6 @@ impl LiveUi {
             },
         );
         apply.contract = ActionContract {
-            discovery: DiscoveryScope::Launchable,
             result: ResultSpec::None,
             ..ActionContract::default()
         };
@@ -1559,6 +1546,14 @@ impl LiveUi {
     }
 }
 
+/// The style of a widget that fills the space its parent gives it.
+fn filling() -> Style {
+    Style {
+        size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
+        ..Default::default()
+    }
+}
+
 impl Widget for LiveUi {
     crate::provides!(dyn crate::resources::PublishesResources);
 
@@ -1580,76 +1575,13 @@ impl Widget for LiveUi {
     ) -> NodeId {
         self.theme = theme.clone();
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = crate::widget::TaffyTreeExt::parent_node(
-            taffy,
-            Style {
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        crate::widget::TaffyTreeExt::widget_node(taffy, filling(), &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "LiveUi"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1693,25 +1625,6 @@ impl Widget for LiveUi {
         };
         self.invoke_graph_operation(request.type_id, request.payload)
             .map(|output| Some(crate::widget::ResourceOperationStart::Completed(output)))
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 
@@ -1836,17 +1749,14 @@ fn focused_widget_snapshot(widget: &dyn Widget) -> Option<(String, Option<String
 }
 
 fn restore_widget_focus(widget: &mut dyn Widget, id: &str, state: Option<&str>) -> bool {
-    if widget.test_id() == Some(id) {
-        widget.set_focus(true);
-        if let Some(state) = state {
-            crate::undo::set_state(widget, state);
-        }
-        return true;
+    let Some(widget) = crate::widget::find_test_id_mut(widget, id) else {
+        return false;
+    };
+    widget.set_focus(true);
+    if let Some(state) = state {
+        crate::undo::set_state(widget, state);
     }
-    widget
-        .children_mut()
-        .into_iter()
-        .any(|child| restore_widget_focus(child, id, state))
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -1870,7 +1780,6 @@ enum EditableProperty {
     ContainerWidth,
     ContainerHeight,
     TextDocumentPath,
-    TextSize,
     ButtonLabel,
     ButtonAccessibleName,
     ButtonTooltip,
@@ -1910,7 +1819,7 @@ enum EditableBool {
 enum EditableChoice {
     TextSource,
     TextRole,
-    ButtonStyle,
+    ButtonRole,
     ButtonNavigation,
 }
 
@@ -1934,7 +1843,7 @@ fn build_editor_child(
     flatten_nodes(&document.root, 0, &mut flattened);
 
     let mut hierarchy = Column::new().with_intrinsic_height();
-    hierarchy = hierarchy.push(Box::new(Text::new("Hierarchy").with_size(20.0)));
+    hierarchy = hierarchy.push(Box::new(Text::new("Hierarchy").with_role(TextRole::Title)));
     for (id, kind, depth) in flattened {
         let button_id = format!("builder-node-{id}");
         let label = format!("{}{}  {id}", "  ".repeat(depth), kind);
@@ -1944,11 +1853,10 @@ fn build_editor_child(
         let id_for_click = id.clone();
         hierarchy = hierarchy.push(Box::new(
             Button::new(&button_id, &label)
-                .fit_content(34.0)
-                .with_style(if selected_row {
-                    ButtonStyle::Primary
+                .role(if selected_row {
+                    ButtonRole::Primary
                 } else {
-                    ButtonStyle::Ghost
+                    ButtonRole::Plain
                 })
                 .on_click(move || {
                     if let Err(error) = graph.finish_edit_group() {
@@ -2027,7 +1935,7 @@ fn build_editor_child(
 
     let mut inspector = Column::new().with_intrinsic_height();
     inspector = inspector
-        .push(Box::new(Text::new("Inspector").with_size(20.0)))
+        .push(Box::new(Text::new("Inspector").with_role(TextRole::Title)))
         .push(Box::new(Text::new(&format!(
             "{} · {}",
             node_kind(selected_node),
@@ -2187,7 +2095,7 @@ fn editable_properties(
                 "builder-container-height",
             ));
         }
-        UiNode::Text { text, size, .. } => {
+        UiNode::Text { text, .. } => {
             let (property, value, label, id) = match text {
                 UiTextSource::Static { value } => (
                     EditableProperty::StaticText,
@@ -2203,12 +2111,6 @@ fn editable_properties(
                 ),
             };
             properties.push((property, value, label, id));
-            properties.push((
-                EditableProperty::TextSize,
-                optional_number(*size),
-                "Size (optional px)",
-                "builder-text-size",
-            ));
         }
         UiNode::Button {
             label,
@@ -2374,7 +2276,6 @@ fn parse_editable_property(
         EditableProperty::ColumnGap
             | EditableProperty::ContainerWidth
             | EditableProperty::ContainerHeight
-            | EditableProperty::TextSize
     ) {
         return if raw.trim().is_empty() {
             Ok(ParsedProperty::OptionalNumber(None))
@@ -2441,11 +2342,6 @@ fn set_editable_property(node: &mut UiNode, property: EditableProperty, value: P
             EditableProperty::TextDocumentPath,
             ParsedProperty::Text(value),
         ) => *text = UiTextSource::Document { path: value },
-        (
-            UiNode::Text { size, .. },
-            EditableProperty::TextSize,
-            ParsedProperty::OptionalNumber(value),
-        ) => *size = value,
         (
             UiNode::Button { label, .. },
             EditableProperty::ButtonLabel,
@@ -2762,7 +2658,6 @@ fn boolean_property_button(
         id,
         &format!("{label}: {}", if value { "On" } else { "Off" }),
     )
-    .fit_content(36.0)
     .on_click(move || {
         let result = graph.update_node(&selected, |node| set_editable_bool(node, property, !value));
         let status = state.borrow().status.clone();
@@ -2798,14 +2693,12 @@ fn editable_choices(
                 "builder-text-role",
             ),
         ],
-        UiNode::Button {
-            style, navigate, ..
-        } => vec![
+        UiNode::Button { role, navigate, .. } => vec![
             (
-                EditableChoice::ButtonStyle,
-                button_style_name(*style),
-                "Style",
-                "builder-button-style",
+                EditableChoice::ButtonRole,
+                button_role_name(*role),
+                "Role",
+                "builder-button-role",
             ),
             (
                 EditableChoice::ButtonNavigation,
@@ -2830,20 +2723,18 @@ fn choice_property_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     let selected = selected.to_owned();
-    Button::new(id, &format!("{label}: {value}"))
-        .fit_content(36.0)
-        .on_click(move || {
-            let result = graph.update_node(&selected, |node| cycle_editable_choice(node, property));
-            let status = state.borrow().status.clone();
-            match result {
-                Ok(()) => {
-                    let mut editor = state.borrow_mut();
-                    editor.chrome_dirty = true;
-                    status.set("Preview updated".to_owned());
-                }
-                Err(error) => status.set(format!("Edit rejected: {error}")),
+    Button::new(id, &format!("{label}: {value}")).on_click(move || {
+        let result = graph.update_node(&selected, |node| cycle_editable_choice(node, property));
+        let status = state.borrow().status.clone();
+        match result {
+            Ok(()) => {
+                let mut editor = state.borrow_mut();
+                editor.chrome_dirty = true;
+                status.set("Preview updated".to_owned());
             }
-        })
+            Err(error) => status.set(format!("Edit rejected: {error}")),
+        }
+    })
 }
 
 fn cycle_editable_choice(node: &mut UiNode, property: EditableChoice) {
@@ -2861,12 +2752,12 @@ fn cycle_editable_choice(node: &mut UiNode, property: EditableChoice) {
         (UiNode::Text { role, .. }, EditableChoice::TextRole) => {
             *role = next_text_role(*role);
         }
-        (UiNode::Button { style, .. }, EditableChoice::ButtonStyle) => {
-            *style = match style {
-                UiButtonStyle::Neutral => UiButtonStyle::Primary,
-                UiButtonStyle::Primary => UiButtonStyle::Danger,
-                UiButtonStyle::Danger => UiButtonStyle::Ghost,
-                UiButtonStyle::Ghost => UiButtonStyle::Neutral,
+        (UiNode::Button { role, .. }, EditableChoice::ButtonRole) => {
+            *role = match role {
+                UiButtonRole::Secondary => UiButtonRole::Primary,
+                UiButtonRole::Primary => UiButtonRole::Destructive,
+                UiButtonRole::Destructive => UiButtonRole::Plain,
+                UiButtonRole::Plain => UiButtonRole::Secondary,
             };
         }
         (UiNode::Button { navigate, .. }, EditableChoice::ButtonNavigation) => {
@@ -2886,36 +2777,40 @@ fn cycle_editable_choice(node: &mut UiNode, property: EditableChoice) {
 
 const fn text_role_name(role: UiTextRole) -> &'static str {
     match role {
-        UiTextRole::Caption => "Caption",
-        UiTextRole::Label => "Label",
-        UiTextRole::Body => "Body",
-        UiTextRole::Reading => "Reading",
+        UiTextRole::Display => "Display",
+        UiTextRole::LargeTitle => "Large title",
         UiTextRole::Title => "Title",
         UiTextRole::Heading => "Heading",
-        UiTextRole::Display => "Display",
+        UiTextRole::Subheading => "Subheading",
+        UiTextRole::Body => "Body",
+        UiTextRole::Label => "Label",
+        UiTextRole::Caption => "Caption",
+        UiTextRole::Reading => "Reading",
         UiTextRole::Code => "Code",
     }
 }
 
 const fn next_text_role(role: UiTextRole) -> UiTextRole {
     match role {
-        UiTextRole::Caption => UiTextRole::Label,
-        UiTextRole::Label => UiTextRole::Body,
-        UiTextRole::Body => UiTextRole::Reading,
-        UiTextRole::Reading => UiTextRole::Title,
+        UiTextRole::Display => UiTextRole::LargeTitle,
+        UiTextRole::LargeTitle => UiTextRole::Title,
         UiTextRole::Title => UiTextRole::Heading,
-        UiTextRole::Heading => UiTextRole::Display,
-        UiTextRole::Display => UiTextRole::Code,
-        UiTextRole::Code => UiTextRole::Caption,
+        UiTextRole::Heading => UiTextRole::Subheading,
+        UiTextRole::Subheading => UiTextRole::Body,
+        UiTextRole::Body => UiTextRole::Label,
+        UiTextRole::Label => UiTextRole::Caption,
+        UiTextRole::Caption => UiTextRole::Reading,
+        UiTextRole::Reading => UiTextRole::Code,
+        UiTextRole::Code => UiTextRole::Display,
     }
 }
 
-const fn button_style_name(style: UiButtonStyle) -> &'static str {
-    match style {
-        UiButtonStyle::Neutral => "Neutral",
-        UiButtonStyle::Primary => "Primary",
-        UiButtonStyle::Danger => "Danger",
-        UiButtonStyle::Ghost => "Ghost",
+const fn button_role_name(role: UiButtonRole) -> &'static str {
+    match role {
+        UiButtonRole::Primary => "Primary",
+        UiButtonRole::Secondary => "Secondary",
+        UiButtonRole::Destructive => "Destructive",
+        UiButtonRole::Plain => "Plain",
     }
 }
 
@@ -2943,7 +2838,7 @@ fn save_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-save", "Save")
-        .primary()
+        .role(ButtonRole::Primary)
         .on_click(move || {
             let status = state.borrow().status.clone();
             if let Err(error) = graph.finish_edit_group() {
@@ -2972,7 +2867,6 @@ fn undo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-undo", "Undo")
-        .fit_content(36.0)
         .with_enabled(handle.can_undo())
         .on_click(move || {
             let status = state.borrow().status.clone();
@@ -2988,7 +2882,6 @@ fn redo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-redo", "Redo")
-        .fit_content(36.0)
         .with_enabled(handle.can_redo())
         .on_click(move || {
             let status = state.borrow().status.clone();
@@ -3013,7 +2906,6 @@ fn add_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new(id, label)
-        .fit_content(36.0)
         .with_enabled(enabled)
         .on_click(move || {
             let status = state.borrow().status.clone();
@@ -3061,7 +2953,6 @@ fn new_editor_node(document: &UiDocument, kind: InsertKind) -> UiNode {
                 value: "New text".to_owned(),
             },
             role: UiTextRole::Body,
-            size: None,
         },
         InsertKind::Button => UiNode::Button {
             id,
@@ -3072,7 +2963,7 @@ fn new_editor_node(document: &UiDocument, kind: InsertKind) -> UiNode {
             click_value: None,
             navigate: None,
             enabled: true,
-            style: UiButtonStyle::Neutral,
+            role: UiButtonRole::Secondary,
         },
         InsertKind::Row => UiNode::Row {
             id,
@@ -3096,7 +2987,6 @@ fn new_editor_node(document: &UiDocument, kind: InsertKind) -> UiNode {
                     value: "Content".to_owned(),
                 },
                 role: UiTextRole::Body,
-                size: None,
             }),
             background: true,
             no_padding: false,
@@ -3160,7 +3050,6 @@ fn move_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new(id, label)
-        .fit_content(36.0)
         .with_enabled(enabled)
         .on_click(move || {
             let result = (|| {
@@ -3196,7 +3085,7 @@ fn delete_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-delete", "Delete")
-        .danger()
+        .role(ButtonRole::Destructive)
         .with_enabled(enabled)
         .on_click(move || {
             let result = (|| {
@@ -3241,69 +3130,10 @@ impl Widget for UiGraphEditor {
     ) -> NodeId {
         self.theme = theme.clone();
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = crate::widget::TaffyTreeExt::parent_node(
-            taffy,
-            Style {
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        crate::widget::TaffyTreeExt::widget_node(taffy, filling(), &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "UiGraphEditor"
@@ -3311,10 +3141,6 @@ impl Widget for UiGraphEditor {
 
     fn test_id(&self) -> Option<&str> {
         Some("ui-graph-editor")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -3326,25 +3152,6 @@ impl Widget for UiGraphEditor {
         state.chrome_dirty
             || self.handle.revision() != Some(self.seen_graph_revision)
             || self.child.needs_idle_sync()
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 
@@ -3386,7 +3193,8 @@ mod tests {
         ).unwrap();
         let context = UiBuildContext::default();
         let widget = document.build_with(&Theme::dark(), &context).unwrap();
-        let mut driver = crate::headless::Driver::new(crate::State::new(), widget, (360, 200));
+        let mut driver =
+            crate::headless::FrameHarness::new(crate::State::new(), widget, (360, 200));
         let before = driver.dump_json();
         driver.perform_named("check", &Action::ToggleCheck).unwrap();
         driver
@@ -3517,28 +3325,21 @@ mod tests {
         action: &Action,
         doc: &mut AutoCommit,
     ) -> bool {
-        if widget.test_id() == Some(id) {
-            return Widget::perform_action(
+        crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
+            Widget::perform_action(
                 widget,
                 action,
+                &[],
                 &mut crate::widget::Edits::lend(doc),
                 &ROOT,
-            );
-        }
-        widget
-            .children_mut()
-            .into_iter()
-            .any(|child| perform_named(child, id, action, doc))
+            )
+        })
     }
 
     fn named_value(widget: &dyn Widget, id: &str) -> Option<String> {
-        if widget.test_id() == Some(id) {
-            return widget.accessibility().and_then(|node| node.value);
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| named_value(child, id))
+        crate::widget::find_test_id(widget, id)?
+            .accessibility()?
+            .value
     }
 
     fn run_operation(
@@ -3571,7 +3372,6 @@ mod tests {
                         path: "title".into(),
                     },
                     role: UiTextRole::Title,
-                    size: None,
                 },
                 UiNode::TextInput {
                     id: "title-input".into(),
@@ -3592,7 +3392,7 @@ mod tests {
                     click_value: Some("yes".into()),
                     navigate: None,
                     enabled: true,
-                    style: UiButtonStyle::Primary,
+                    role: UiButtonRole::Primary,
                 },
             ],
             gap: Some(8.0),
@@ -3630,7 +3430,7 @@ mod tests {
             Ok(Box::new(Text::new(title).with_id(request.id)))
         });
         let widget = document.build_with(&Theme::dark(), &context).unwrap();
-        let mut app = crate::headless::Driver::new(crate::State::new(), widget, (320, 120));
+        let mut app = crate::headless::FrameHarness::new(crate::State::new(), widget, (320, 120));
         app.expect(
             &crate::headless::SemanticExpectation::named("profile")
                 .role(Role::StaticText)
@@ -3663,7 +3463,7 @@ mod tests {
         let handle = UiGraphHandle::new(document).unwrap();
         let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
         let mut app =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1200, 720));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1200, 720));
         app.expect(
             &crate::headless::SemanticExpectation::named("profile")
                 .role(Role::StaticText)
@@ -3704,7 +3504,7 @@ mod tests {
         title_doc.splice_text(&text, 0, 0, "Roadmap").unwrap();
         let values = UiValues::default();
         let context = UiBuildContext::default().with_values(values.clone());
-        let mut driver = crate::headless::Driver::new(
+        let mut driver = crate::headless::FrameHarness::new(
             crate::State::from_doc(title_doc),
             reparsed.build_with(&Theme::dark(), &context).unwrap(),
             (640, 360),
@@ -3748,7 +3548,6 @@ mod tests {
                 value: "Replacement".into(),
             },
             role: UiTextRole::Body,
-            size: None,
         });
         assert!(matches!(
             handle.replace(replacement),
@@ -3773,7 +3572,7 @@ mod tests {
             value_path: "remember".into(),
             enabled: true,
         });
-        let mut driver = crate::headless::Driver::new(
+        let mut driver = crate::headless::FrameHarness::new(
             crate::State::new(),
             document.build(&Theme::dark()).unwrap(),
             (360, 120),
@@ -3840,7 +3639,6 @@ mod tests {
                             value: title.into(),
                         },
                         role: UiTextRole::Title,
-                        size: None,
                     },
                     button,
                 ],
@@ -3865,7 +3663,7 @@ mod tests {
                     route: "settings".into(),
                 }),
                 enabled: true,
-                style: UiButtonStyle::Primary,
+                role: UiButtonRole::Primary,
             },
         );
         let settings = screen(
@@ -3880,7 +3678,7 @@ mod tests {
                 click_value: None,
                 navigate: Some(UiNavigation::Back),
                 enabled: true,
-                style: UiButtonStyle::Neutral,
+                role: UiButtonRole::Secondary,
             },
         );
         let router = crate::widget::Router::new(
@@ -3900,7 +3698,7 @@ mod tests {
         .unwrap();
         let handle = router.handle();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(router), (640, 360));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(router), (640, 360));
         let document_before = driver.dump_json();
 
         driver
@@ -3958,7 +3756,7 @@ mod tests {
                     route: "missing".into(),
                 }),
                 enabled: true,
-                style: UiButtonStyle::Neutral,
+                role: UiButtonRole::Secondary,
             });
         }
         let route = crate::widget::RouteHandle::new("home", ["home"]).unwrap();
@@ -3968,7 +3766,7 @@ mod tests {
                 &UiBuildContext::default().with_router(route.clone()),
             )
             .unwrap();
-        let mut driver = crate::headless::Driver::new(crate::State::new(), root, (640, 360));
+        let mut driver = crate::headless::FrameHarness::new(crate::State::new(), root, (640, 360));
         let inspection = driver.inspection();
         let missing = find_missing(&inspection.root).expect("missing-route button remains visible");
         assert!(missing.state.disabled);
@@ -4025,14 +3823,14 @@ mod tests {
         assert!(matches!(handle.node("save"), Ok(UiNode::Button { .. })));
         let live = handle.widget(&Theme::dark()).unwrap();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(live), (640, 360));
         assert!(driver.inspection_json().unwrap().contains("Save"));
 
         handle
             .update_node("save", |node| {
-                if let UiNode::Button { label, style, .. } = node {
+                if let UiNode::Button { label, role, .. } = node {
                     *label = "Publish".into();
-                    *style = UiButtonStyle::Danger;
+                    *role = UiButtonRole::Destructive;
                 }
             })
             .unwrap();
@@ -4053,35 +3851,21 @@ mod tests {
     }
 
     fn set_named_state(widget: &mut dyn Widget, id: &str, state: &str) -> bool {
-        if widget.test_id() == Some(id) {
-            widget.set_focus(true);
-            crate::undo::set_state(widget, state);
-            return true;
-        }
-        widget
-            .children_mut()
-            .into_iter()
-            .any(|child| set_named_state(child, id, state))
+        let Some(widget) = crate::widget::find_test_id_mut(widget, id) else {
+            return false;
+        };
+        widget.set_focus(true);
+        crate::undo::set_state(widget, state);
+        true
     }
 
     fn named_state(widget: &dyn Widget, id: &str) -> Option<String> {
-        if widget.test_id() == Some(id) {
-            return crate::undo::get_state(widget);
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| named_state(child, id))
+        crate::undo::get_state(crate::widget::find_test_id(widget, id)?)
     }
 
     fn named_widget_ptr(widget: &dyn Widget, id: &str) -> Option<usize> {
-        if widget.test_id() == Some(id) {
-            return Some((widget as *const dyn Widget).cast::<()>().addr());
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| named_widget_ptr(child, id))
+        crate::widget::find_test_id(widget, id)
+            .map(|widget| (widget as *const dyn Widget).cast::<()>().addr())
     }
 
     #[test]
@@ -4095,7 +3879,6 @@ mod tests {
                         value: "Hello".into(),
                     },
                     role: UiTextRole::Title,
-                    size: None,
                 },
                 UiNode::TextInput {
                     id: "name".into(),
@@ -4211,7 +3994,7 @@ mod tests {
         let doc = AutoCommit::new();
         Widget::sync(&mut live, &doc, &automerge::ROOT);
         assert!(
-            crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360))
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(live), (640, 360))
                 .inspection_json()
                 .unwrap()
                 .contains("Save"),
@@ -4333,7 +4116,6 @@ mod tests {
                         value: "A small project".into(),
                     },
                     role: UiTextRole::Caption,
-                    size: None,
                 },
             )
             .unwrap();
@@ -4395,7 +4177,6 @@ mod tests {
                     value: "Before".into(),
                 },
                 role: UiTextRole::Body,
-                size: None,
             }),
             background: true,
             no_padding: false,
@@ -4419,7 +4200,7 @@ mod tests {
                     click_value: None,
                     navigate: None,
                     enabled: true,
-                    style: UiButtonStyle::Primary,
+                    role: UiButtonRole::Primary,
                 },
             )
             .unwrap();
@@ -4551,7 +4332,7 @@ mod tests {
             )
             .unwrap();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(live), (640, 360));
         handle
             .insert_child(
                 "root",
@@ -4565,7 +4346,7 @@ mod tests {
                     click_value: Some("requested".into()),
                     navigate: None,
                     enabled: true,
-                    style: UiButtonStyle::Primary,
+                    role: UiButtonRole::Primary,
                 },
             )
             .unwrap();
@@ -4589,7 +4370,7 @@ mod tests {
         assert!(UiDocument::from_json(&handle.to_json_pretty().unwrap()).is_ok());
     }
 
-    fn edit_builder_button_properties(driver: &mut crate::headless::Driver) {
+    fn edit_builder_button_properties(driver: &mut crate::headless::FrameHarness) {
         driver
             .perform_named("builder-property", &Action::SetValue("Publish".into()))
             .unwrap();
@@ -4618,7 +4399,7 @@ mod tests {
             )
             .unwrap();
         driver
-            .perform_named("builder-button-style", &Action::Activate)
+            .perform_named("builder-button-role", &Action::Activate)
             .unwrap();
         driver.relayout();
         driver
@@ -4646,7 +4427,7 @@ mod tests {
                 Ok(())
             });
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
         let initial = driver.inspection_json().unwrap();
         assert!(initial.contains("builder-add-button"));
@@ -4688,7 +4469,7 @@ mod tests {
                 click_value: Some(click_value),
                 navigate: Some(UiNavigation::Push { route }),
                 enabled: false,
-                style: UiButtonStyle::Primary,
+                role: UiButtonRole::Primary,
                 ..
             }) if label == "Publish"
                 && accessible_name == "Publish changes"
@@ -4712,7 +4493,7 @@ mod tests {
                 on_click_path: Some(on_click_path),
                 navigate: Some(UiNavigation::Push { route }),
                 enabled: false,
-                style: UiButtonStyle::Primary,
+                role: UiButtonRole::Primary,
                 ..
             }) if label == "Publish"
                 && accessible_name == "Publish changes"
@@ -4726,7 +4507,7 @@ mod tests {
         let handle = UiGraphHandle::new(sample()).unwrap();
         let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
         driver
             .perform_named("builder-add-container", &Action::Activate)
@@ -4772,7 +4553,7 @@ mod tests {
         let handle = UiGraphHandle::new(sample()).unwrap();
         let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
         driver
             .perform_named("builder-add-container", &Action::Activate)
@@ -4809,7 +4590,7 @@ mod tests {
         let handle = UiGraphHandle::new(sample()).unwrap();
         let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
         let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
         driver
             .perform_named("builder-column-gap", &Action::SetValue("12.5".into()))

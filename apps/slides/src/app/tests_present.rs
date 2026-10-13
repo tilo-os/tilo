@@ -317,7 +317,7 @@ fn presenter_dashboard_timer_and_idle_frames() {
     // Case `present_mode_rests_when_idle_and_wakes_for_a_transition`.
     presenting().with(|app| {
         for _ in 0..3 {
-            app.sync_flaps(1.0, false);
+            app.sync_flaps(Some(&Theme::dark()));
         }
         app.presentation.expire_transition(true);
         assert!(

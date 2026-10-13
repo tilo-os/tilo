@@ -395,12 +395,12 @@ impl VideoEditorApp {
                         // rename, a re-sort, or another import landing above it.
                         .with_hashed_key(m.id)
                         .with_position(i + 1, n)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: cursor && self.focus.bin == i,
-                            selected: self.selected_media == Some(*mid),
-                            ..Default::default()
-                        }),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(cursor && self.focus.bin == i)
+                                .selected(self.selected_media == Some(*mid)),
+                        ),
                 )
             })
             .collect();
@@ -435,11 +435,11 @@ impl VideoEditorApp {
                     .with_name(name)
                     .with_key(ui::a11y::hash_key(&i))
                     .with_position(i + 1, TRANSPORT_NAMES.len())
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: cursor && self.focus.transport == i,
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(cursor && self.focus.transport == i),
+                    )
             })
             .collect();
         // Undo / redo, exported only when the strip actually drew them, and
@@ -454,11 +454,7 @@ impl VideoEditorApp {
                     .with_name(which.title())
                     .with_description(self.undo.status().description(which))
                     .with_key(ui::a11y::hash_key(&which.verb()))
-                    .with_state(AccessState {
-                        focusable: can,
-                        disabled: !can,
-                        ..Default::default()
-                    }),
+                    .with_state(AccessState::new().focusable(can).disabled(!can)),
             );
         }
         let mut node = VideoEditorApp::a11y_pane(Pane::Transport, buttons);
@@ -470,10 +466,6 @@ impl VideoEditorApp {
 
     /// Tracks as containers, clips as the items inside them, plus each track's
     /// mute / solo / lock toggles.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the timeline's accessible tree, built top to bottom in reading order"
-    )]
     pub(super) fn a11y_timeline(&self) -> AccessNode {
         let cursor = self.focus.pane == Pane::Timeline;
         let primary = self.selection.primary();
@@ -490,11 +482,7 @@ impl VideoEditorApp {
                     AccessNode::new(Role::ToggleButton)
                         .with_name(format!("{name} {}", track.name))
                         .with_hashed_key((track.id, name))
-                        .with_state(AccessState {
-                            focusable: true,
-                            checked: Some(on),
-                            ..Default::default()
-                        }),
+                        .with_state(AccessState::new().focusable(true).checked(on)),
                 );
             }
             let clips = self.project.clips_on(track.id);
@@ -508,12 +496,12 @@ impl VideoEditorApp {
                         // another track, keeps the node an AT is holding.
                         .with_hashed_key(clip.id)
                         .with_position(i + 1, n)
-                        .with_state(AccessState {
-                            focusable: true,
-                            selected: self.selection.contains(clip.id),
-                            focused: cursor && primary == Some(clip.id),
-                            ..Default::default()
-                        }),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .selected(self.selection.contains(clip.id))
+                                .focused(cursor && primary == Some(clip.id)),
+                        ),
                 );
             }
             // The lane's fader, its pan and whether it has been caught
@@ -576,10 +564,7 @@ impl VideoEditorApp {
                 })
                 .with_value(words)
                 .with_key(ui::a11y::hash_key(&MIX_METER_KEY))
-                .with_state(AccessState {
-                    focusable: clipped,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().focusable(clipped)),
             );
         }
         let mut node = VideoEditorApp::a11y_pane(Pane::Timeline, tracks);
@@ -652,11 +637,7 @@ impl VideoEditorApp {
                         // Keyed on the variant, not the label: two rows may
                         // legitimately read "Rotation" in their own sections.
                         .with_key(f.a11y_key())
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused,
-                            ..Default::default()
-                        });
+                        .with_state(AccessState::new().focusable(true).focused(focused));
                     if let Some((_, kids)) = current.as_mut() {
                         kids.push(node);
                     } else {
@@ -678,11 +659,7 @@ impl VideoEditorApp {
                     let node = AccessNode::new(Role::Button)
                         .with_name(ADD_MARKER_LABEL)
                         .with_hashed_key(ADD_MARKER_KEY)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused,
-                            ..Default::default()
-                        });
+                        .with_state(AccessState::new().focusable(true).focused(focused));
                     if let Some((_, kids)) = current.as_mut() {
                         kids.push(node);
                     } else {
@@ -738,10 +715,7 @@ impl VideoEditorApp {
                 AccessNode::new(Role::Button)
                     .with_name(format!("{verb} {name}"))
                     .with_hashed_key((m.id, *verb))
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect();
         AccessNode::new(Role::ListItem)
@@ -753,11 +727,7 @@ impl VideoEditorApp {
             .with_hashed_key(m.id)
             .with_position(pos + 1, n)
             .with_description("Activate to move the playhead here")
-            .with_state(AccessState {
-                focusable: true,
-                focused,
-                ..Default::default()
-            })
+            .with_state(AccessState::new().focusable(true).focused(focused))
             .with_children(verbs)
     }
 
@@ -958,12 +928,12 @@ impl VideoEditorApp {
             .with_name(section.label())
             .with_optional_value(folded.then(|| self.a11y_section_summary(section)))
             .with_hashed_key(section.label())
-            .with_state(AccessState {
-                focusable: true,
-                focused,
-                expanded: Some(!folded),
-                ..Default::default()
-            })
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(focused)
+                    .expanded(!folded),
+            )
             .with_children(kids)
     }
 
@@ -1123,10 +1093,7 @@ impl VideoEditorApp {
             .with_name(self.project_label())
             .with_value(self.project_status_line())
             .with_key(ui::a11y::hash_key(&"project"))
-            .with_state(AccessState {
-                focusable: visible,
-                ..Default::default()
-            });
+            .with_state(AccessState::new().focusable(visible));
         node = if !visible {
             node.with_description("Not shown at this width — use Ctrl+O to open, Ctrl+S to save")
         } else if self.project_is_dirty() {
@@ -1150,11 +1117,11 @@ impl VideoEditorApp {
                     .with_name("Toggle media bin")
                     .with_value("B")
                     .with_hashed_key(TOPBAR_BIN_KEY)
-                    .with_state(AccessState {
-                        focusable: true,
-                        checked: Some(self.bin_flap.is_open(self.bin_layout())),
-                        ..Default::default()
-                    }),
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.bin_flap.is_open(self.bin_layout())),
+                    ),
             );
         }
         if self.bin_overlay_is_open() {
@@ -1169,11 +1136,11 @@ impl VideoEditorApp {
                     .with_name("Toggle inspector")
                     .with_value("Ctrl+I")
                     .with_hashed_key(TOPBAR_INSPECTOR_KEY)
-                    .with_state(AccessState {
-                        focusable: true,
-                        checked: Some(self.inspector_flap.is_open(self.inspector_split())),
-                        ..Default::default()
-                    }),
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.inspector_flap.is_open(self.inspector_split())),
+                    ),
             );
         }
         kids.push(
@@ -1181,10 +1148,7 @@ impl VideoEditorApp {
                 .with_name("Import media")
                 .with_value("Ctrl+Shift+O")
                 .with_hashed_key(TOPBAR_IMPORT_KEY)
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().focusable(true)),
         );
         if r.split_btn.width() > 0.0 {
             kids.push(
@@ -1192,10 +1156,7 @@ impl VideoEditorApp {
                     .with_name("Split at playhead")
                     .with_value("S")
                     .with_hashed_key(TOPBAR_SPLIT_KEY)
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    }),
+                    .with_state(AccessState::new().focusable(true)),
             );
         }
         kids.push(
@@ -1203,11 +1164,9 @@ impl VideoEditorApp {
                 .with_name("Export video")
                 .with_value("Ctrl+E")
                 .with_hashed_key(TOPBAR_EXPORT_KEY)
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().focusable(true)),
         );
+        kids.extend(self.history.accessibility(r.history_btn));
         AccessNode::new(Role::Toolbar)
             .with_name("Editor commands")
             .with_hashed_key(TOPBAR_A11Y_KEY)
@@ -1233,32 +1192,20 @@ impl VideoEditorApp {
             AccessNode::new(Role::Button)
                 .with_name("Cancel")
                 .with_key(1)
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().focusable(true)),
             AccessNode::new(Role::Button)
                 .with_name("Open anyway")
                 .with_key(2)
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().focusable(true)),
             AccessNode::new(Role::Button)
                 .with_name("Save…")
                 .with_key(3)
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().focusable(true)),
         ];
         AccessNode::new(Role::Dialog)
             .with_name(format!("Save {} first?", pending.losing))
             .with_key(ui::a11y::hash_key(&"discard"))
-            .with_state(AccessState {
-                modal: true,
-                ..Default::default()
-            })
+            .with_state(AccessState::new().modal(true))
             .with_children(kids)
     }
 
@@ -1285,10 +1232,7 @@ impl VideoEditorApp {
                     .with_value(format!("{}%", (progress * 100.0).round() as i32))
                     .with_key(key)
                     .with_live(ui::a11y::Politeness::Polite)
-                    .with_state(AccessState {
-                        busy: true,
-                        ..Default::default()
-                    }),
+                    .with_state(AccessState::new().busy(true)),
             ),
             // Finished: operable, because activating it opens the dialog that
             // holds the whole path and the settings that produced it.
@@ -1298,10 +1242,7 @@ impl VideoEditorApp {
                     .with_value(path.clone())
                     .with_key(key)
                     .with_live(ui::a11y::Politeness::Polite)
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    }),
+                    .with_state(AccessState::new().focusable(true)),
             ),
             // A render that did not happen interrupts: the user is very
             // likely to act on the next thing believing a file exists.
@@ -1311,10 +1252,7 @@ impl VideoEditorApp {
                     .with_value(reason.clone())
                     .with_key(key)
                     .with_live(ui::a11y::Politeness::Assertive)
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    }),
+                    .with_state(AccessState::new().focusable(true)),
             ),
         }
     }
@@ -1337,18 +1275,15 @@ impl VideoEditorApp {
             AccessNode::new(Role::Button)
                 .with_name("Start export")
                 .with_key(1)
-                .with_state(AccessState {
-                    focusable: true,
-                    disabled: !self.export_is_offered(),
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .disabled(!self.export_is_offered()),
+                ),
             AccessNode::new(Role::Button)
                 .with_name("Close export")
                 .with_key(2)
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().focusable(true)),
         ];
         if let ExportStatus::Rendering { progress } = self.export_status {
             kids.push(
@@ -1359,10 +1294,7 @@ impl VideoEditorApp {
                     // A render's progress changes with no focus movement, so it
                     // must announce itself or the user is left guessing.
                     .with_live(ui::a11y::Politeness::Polite)
-                    .with_state(AccessState {
-                        busy: true,
-                        ..Default::default()
-                    }),
+                    .with_state(AccessState::new().busy(true)),
             );
         }
         if let ExportStatus::Failed { reason } = &self.export_status {
@@ -1381,10 +1313,7 @@ impl VideoEditorApp {
         AccessNode::new(Role::Dialog)
             .with_name("Export video")
             .with_key(ui::a11y::hash_key(&"export"))
-            .with_state(AccessState {
-                modal: true,
-                ..Default::default()
-            })
+            .with_state(AccessState::new().modal(true))
             .with_children(kids)
     }
 }
@@ -1416,18 +1345,12 @@ impl VideoEditorApp {
             AccessNode::new(Role::Button)
                 .with_name("Close shortcuts")
                 .with_key(key)
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().focusable(true)),
         );
         AccessNode::new(Role::Dialog)
             .with_name("Keyboard shortcuts")
             .with_key(ui::a11y::hash_key(&"help"))
-            .with_state(AccessState {
-                modal: true,
-                ..Default::default()
-            })
+            .with_state(AccessState::new().modal(true))
             .with_children(kids)
     }
 
@@ -1473,7 +1396,7 @@ impl VideoEditorApp {
         if let Some((mid, _)) = self
             .bin_item_rects(r)
             .into_iter()
-            .find(|(_, rect)| rect.contains(p))
+            .find(|(_, rect)| rect.contains(p) && VideoEditorApp::bin_viewport(r).contains(p))
             && let Some(i) = self.a11y_bin_items().iter().position(|m| *m == mid)
         {
             self.focus.pane = Pane::Bin;
@@ -1517,7 +1440,7 @@ impl VideoEditorApp {
         if matches!(row, InspectorRow::Field(_)) {
             return Some(Rect::new(
                 rect.x0 - 3.0,
-                rect.y0 - 21.0,
+                rect.y0 - 27.0,
                 rect.x1 + 3.0,
                 rect.y1 + 2.0,
             ));
@@ -1708,7 +1631,7 @@ impl VideoEditorApp {
     }
 
     /// Activate whatever the pane cursor is on — the keyboard's Enter, routed
-    /// through the same `perform_action_at` an assistive technology uses, so
+    /// through the same `perform_action` an assistive technology uses, so
     /// the two can never do different things.
     pub(super) fn activate_focused(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         use ui::a11y::{Action, hash_key};
@@ -1756,7 +1679,7 @@ impl VideoEditorApp {
         let mut path = vec![pane.key()];
         path.extend(rest);
         let root = automerge::ROOT;
-        self.perform_action_at(&Action::Activate, &path, state, &root)
+        self.perform_action(&Action::Activate, &path, state, &root)
     }
 
     /// The hover label for whatever icon-only control sits under `p`, or

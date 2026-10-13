@@ -345,7 +345,7 @@ impl Fixture {
             .unwrap()
             .effect_receipts
             .iter()
-            .map(|receipt| receipt.context.action_label.clone())
+            .filter_map(|receipt| ui::history_source::sentence::step_summary(&receipt.context))
             .collect()
     }
 
@@ -840,10 +840,6 @@ fn answer(f: &Fixture, report: &HandoffReport) {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one move, followed step by step through both handoff steps"
-)]
 fn a_move_checkpoints_first_and_the_old_instance_retires_its_own_document() {
     let (f, old) = Fixture::new(true, false);
     let old = old.unwrap();

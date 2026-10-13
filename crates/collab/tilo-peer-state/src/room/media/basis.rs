@@ -7,9 +7,9 @@ use crate::resources::{
 use crate::room::read::collections::Collections;
 use crate::room::read::{self, Capacity, LegacyRead, ReadError, RoomRead};
 use crate::state::GovernedIdentity;
-use collab_types::caps::CapOverride;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use tilo_action_policy::{Grant, Role};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
 #[derive(Clone, Copy)]
@@ -19,14 +19,18 @@ pub(crate) struct BasisLimits {
 }
 trait Decode {
     fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error>;
-    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error>;
+    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error>;
+    fn member(&self, bytes: &[u8]) -> Result<Role, Error>;
 }
 struct Legacy;
 impl Decode for Legacy {
     fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
         serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
     }
-    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
+    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
+        serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
+    }
+    fn member(&self, bytes: &[u8]) -> Result<Role, Error> {
         serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
     }
 }
@@ -37,7 +41,10 @@ impl Decode for Bounded {
     fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
         json::decode(bytes, self.limits).map_err(decode_error)
     }
-    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
+    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
+        json::decode(bytes, self.limits).map_err(decode_error)
+    }
+    fn member(&self, bytes: &[u8]) -> Result<Role, Error> {
         json::decode(bytes, self.limits).map_err(decode_error)
     }
 }
@@ -115,32 +122,28 @@ fn project<'a, R: RoomRead, D: Decode>(
     extra: impl IntoIterator<Item = &'a RevocationEntry>,
     work: &mut Work,
 ) -> Result<[u8; 32], Error> {
-    struct Hash<'a>(&'a mut blake3::Hasher);
-    impl postcard::ser_flavors::Flavor for Hash<'_> {
-        type Output = ();
-        fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
-            self.0.update(&[byte]);
-            Ok(())
-        }
-        fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-            self.0.update(bytes);
-            Ok(())
-        }
-        fn finalize(self) -> postcard::Result<()> {
-            Ok(())
-        }
-    }
     let owner = read::strict_string(room, &room.root(), "owner").map_err(strict_error)?;
     let owner_key = super::canonical_key(&owner).map_err(policy)?;
-    let caps = read::strict_map(room, &room.root(), "capabilities").map_err(strict_error)?;
-    let mut capabilities = BTreeMap::new();
-    room.visit_keys(&caps, |key| {
-        let bytes = read::strict_bytes(room, &caps, key).map_err(strict_error)?;
-        let value = decoder.capability(&bytes)?;
+    let grant_map = read::strict_map(room, &room.root(), "grants").map_err(strict_error)?;
+    let mut grants = BTreeMap::new();
+    room.visit_keys(&grant_map, |key| {
+        let bytes = read::strict_bytes(room, &grant_map, key).map_err(strict_error)?;
+        let value = decoder.grant(&bytes)?;
         let encoded = work.encoded(&value)?;
         let key = work.text(key)?;
         work.tree_entry::<String, Vec<u8>>()?;
-        capabilities.insert(key, encoded);
+        grants.insert(key, encoded);
+        Ok(())
+    })
+    .map_err(visit_error)?;
+    let member_map = read::strict_map(room, &room.root(), "members").map_err(strict_error)?;
+    let mut members = BTreeMap::new();
+    room.visit_keys(&member_map, |key| {
+        let bytes = read::strict_bytes(room, &member_map, key).map_err(strict_error)?;
+        let role = decoder.member(&bytes)?;
+        let key = work.text(key)?;
+        work.tree_entry::<String, Role>()?;
+        members.insert(key, role);
         Ok(())
     })
     .map_err(visit_error)?;
@@ -248,9 +251,10 @@ fn project<'a, R: RoomRead, D: Decode>(
     }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"tilo-room-media-auth-basis-v1\0");
-    postcard::serialize_with_flavor(
-        &(owner_key, capabilities, roster, rows, revocations),
-        Hash(&mut hasher),
+    crate::postcard_sink::hash_into(
+        &(owner_key, members, grants, roster, rows, revocations),
+        &mut hasher,
+        usize::MAX,
     )
     .map_err(|_| policy(MediaPolicyError::Malformed))?;
     Ok(*hasher.finalize().as_bytes())
@@ -274,24 +278,7 @@ impl Work {
         self.collections.push(values, value).map_err(capacity)
     }
     fn encoded<T: Serialize>(&mut self, value: &T) -> Result<Vec<u8>, Error> {
-        struct Count(usize);
-        impl postcard::ser_flavors::Flavor for Count {
-            type Output = usize;
-            fn try_push(&mut self, _: u8) -> postcard::Result<()> {
-                self.try_extend(&[0])
-            }
-            fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-                self.0 = self
-                    .0
-                    .checked_add(bytes.len())
-                    .ok_or(postcard::Error::SerializeBufferFull)?;
-                Ok(())
-            }
-            fn finalize(self) -> postcard::Result<usize> {
-                Ok(self.0)
-            }
-        }
-        let length = postcard::serialize_with_flavor(value, Count(0))
+        let length = crate::postcard_sink::encoded_len(value, usize::MAX)
             .map_err(|_| policy(MediaPolicyError::Malformed))?;
         let mut bytes = self.collections.zeroed(length).map_err(capacity)?;
         postcard::to_slice(value, &mut bytes).map_err(|_| policy(MediaPolicyError::Malformed))?;

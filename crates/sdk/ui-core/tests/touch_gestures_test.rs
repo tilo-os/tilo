@@ -2,28 +2,18 @@
 //! contract: two fingers pinch or pan, a still hold is a secondary click, and
 //! a widget claiming raw touch receives every finger itself.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui::widget::TaffyTreeExt;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_ui::State;
-use tilo_ui::headless::Driver;
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
+use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 
 /// Fills the window, records every event it is given and, like any widget
@@ -44,40 +34,14 @@ impl Widget for Probe {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Style::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size::from_percent(1.0, 1.0),
+            ..Style::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
+    tilo_ui::rect_geometry!();
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui::widget::EventCtx<'_>) {
         match event {
@@ -110,14 +74,10 @@ impl Widget for Probe {
     fn name(&self) -> &'static str {
         "Probe"
     }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 }
 
 struct Harness {
-    driver: Driver,
+    driver: FrameHarness,
     events: Rc<RefCell<Vec<WindowEvent>>>,
     menu_open_at: Rc<RefCell<Option<[f32; 2]>>>,
 }
@@ -135,7 +95,7 @@ fn harness(raw_touch: bool) -> Harness {
         events: events.clone(),
         menu_open_at: menu_open_at.clone(),
     };
-    let driver = Driver::new(State::new(), Box::new(probe), (600, 400));
+    let driver = FrameHarness::new(State::new(), Box::new(probe), (600, 400));
     events.borrow_mut().clear();
     Harness {
         driver,

@@ -12,10 +12,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -131,6 +127,25 @@ impl Env {
         write_payload(&payload, body);
         let manifest =
             Manifest::from_toml_str(&manifest_src(version, &self.pub_hex, runtime)).unwrap();
+        let path = build.join("pkg.tapp");
+        build_tapp(&path, &manifest, &self.sk, &payload);
+        path
+    }
+
+    /// A self-contained fixture with a linked release, never a runtime override.
+    fn desktop_tapp(&self, body: &[u8], platform: &str, arch: &str) -> PathBuf {
+        let build = self.home.path().join("desktop-build");
+        let payload = build.join("payload");
+        write_payload(&payload, body);
+        let authored = Manifest::from_toml_str(&manifest_src(
+            "0.2.0",
+            &self.pub_hex,
+            Some("tilo-runtime/2026.07"),
+        ))
+        .unwrap();
+        let manifest =
+            tilo_app_package::desktop::desktop_manifest(&authored, platform, arch, arch, "bin/app")
+                .unwrap();
         let path = build.join("pkg.tapp");
         build_tapp(&path, &manifest, &self.sk, &payload);
         path
@@ -619,4 +634,230 @@ fn thin_of(full: &Path) -> PathBuf {
     let out = std::fs::File::create(&thin).unwrap();
     tilo_app_package::tapp::write(out, &tapp.meta, None).unwrap();
     thin
+}
+
+#[test]
+fn desktop_contract_installs_above_thin_limit_without_shared_runtime() {
+    let env = Env::new();
+    let pkg = env.desktop_tapp(
+        &vec![0; 3 * 1024 * 1024],
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    );
+    let (ok, out, err) = env.cmd(&[
+        "install",
+        pkg.to_str().unwrap(),
+        "--require-publisher",
+        &env.pub_hex,
+    ]);
+    assert!(ok, "{out}{err}");
+    assert_eq!(
+        std::fs::metadata(env.payload_root().join("bin/app"))
+            .unwrap()
+            .len(),
+        3 * 1024 * 1024
+    );
+    assert!(!env.xdg_data().join("tilo-runtime").exists());
+}
+
+#[test]
+fn desktop_contract_refuses_foreign_platform_and_architecture() {
+    for (platform, arch) in [
+        (
+            if std::env::consts::OS == "linux" {
+                "windows"
+            } else {
+                "linux"
+            },
+            std::env::consts::ARCH,
+        ),
+        (
+            std::env::consts::OS,
+            if std::env::consts::ARCH == "x86_64" {
+                "aarch64"
+            } else {
+                "x86_64"
+            },
+        ),
+    ] {
+        let env = Env::new();
+        let pkg = env.desktop_tapp(b"foreign", platform, arch);
+        let (ok, out, err) = env.cmd(&[
+            "install",
+            pkg.to_str().unwrap(),
+            "--require-publisher",
+            &env.pub_hex,
+        ]);
+        assert!(!ok, "{out}");
+        assert!(err.contains("cannot run on"), "{err}");
+        assert!(env.registry_toml().is_empty());
+    }
+}
+
+#[test]
+fn desktop_contract_keeps_both_archive_size_limits() {
+    for desktop in [false, true] {
+        let env = Env::new();
+        let limit = if desktop {
+            tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES
+        } else {
+            tilo_app_package::MAX_APP_TAPP_BYTES
+        };
+        // Payload is exactly at its ceiling, but the signed tar adds metadata:
+        // the production installer must reject that oversized wire archive.
+        let body = vec![0; usize::try_from(limit).unwrap() - b"payload data".len()];
+        let pkg = if desktop {
+            env.desktop_tapp(&body, std::env::consts::OS, std::env::consts::ARCH)
+        } else {
+            env.tapp("0.2.0", &body, None)
+        };
+        let (ok, out, err) = env.cmd(&[
+            "install",
+            pkg.to_str().unwrap(),
+            "--require-publisher",
+            &env.pub_hex,
+        ]);
+        assert!(!ok, "{out}");
+        assert!(err.contains(&format!("at most {limit} bytes")), "{err}");
+        assert!(env.registry_toml().is_empty());
+    }
+}
+
+#[test]
+fn cohort_selection_preserves_user_holds_pins_and_state_through_the_real_installer() {
+    let env = Env::new();
+    let first = env.tapp("0.1.73018", b"public selected app", None);
+    let next = env.tapp("0.1.0", b"paired current cohort app", None);
+    let (ok, out, err) = env.cmd(&["install", "--pinned", first.to_str().unwrap()]);
+    assert!(ok, "{out}{err}");
+    let store = package_store::PackageStore::at(env.tilo_apps());
+    store
+        .update_row("so.tilo.lifecycle", |row| row.held = true)
+        .unwrap();
+    let held = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.lifecycle")
+        .unwrap()
+        .clone();
+    let before = env.registry_toml();
+    let (ok, out, err) = env.cmd(&[
+        "install",
+        "--force",
+        "--preserve-held",
+        next.to_str().unwrap(),
+    ]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("\"preserved\":true"), "{out}");
+    assert!(out.contains(&held.package_id_hex), "{out}");
+    assert_eq!(env.registry_toml(), before);
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"public selected app"
+    );
+    store
+        .update_row("so.tilo.lifecycle", |row| row.held = false)
+        .unwrap();
+    let (ok, out, err) = env.cmd(&[
+        "install",
+        "--force",
+        "--preserve-held",
+        next.to_str().unwrap(),
+    ]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("\"preserved\":false"), "{out}");
+    let selected = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.lifecycle")
+        .unwrap()
+        .clone();
+    assert!(selected.pinned);
+    assert!(!selected.held);
+    assert_ne!(selected.package_id_hex, held.package_id_hex);
+    assert_eq!(selected.version, "0.1.0");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"paired current cohort app"
+    );
+    assert!(out.contains(&selected.package_id_hex), "{out}");
+    let before = env.registry_toml();
+    let wrong = "00".repeat(32);
+    let (ok, out, _) = env.cmd(&[
+        "install",
+        "--force",
+        "--preserve-held",
+        "--require-publisher",
+        &wrong,
+        first.to_str().unwrap(),
+    ]);
+    assert!(!ok);
+    assert!(!out.contains("cohort-selection:"));
+    assert_eq!(env.registry_toml(), before);
+}
+
+#[test]
+fn selected_runtime_inventory_uses_the_real_catalog_and_xdg_bundle_path() {
+    let env = Env::new();
+    let archive = env.tapp(
+        "1.0.0",
+        b"actual selected payload",
+        Some("tilo-runtime/2026.07"),
+    );
+    let (ok, _, error) = env.cmd(&[
+        "install",
+        "--allow-self-signed",
+        "--ignore-missing-runtime",
+        archive.to_str().unwrap(),
+    ]);
+    assert!(ok, "{error}");
+    let host = env.home.path().join("fixture-host");
+    std::fs::create_dir_all(&host).unwrap();
+    let library = env.home.path().join("library.so");
+    std::fs::write(&library, b"selected runtime bytes").unwrap();
+    let identity = env.home.path().join("identity.json");
+    std::fs::write(
+        &identity,
+        serde_json::json!({"secret_key_hex":"11".repeat(32)}).to_string(),
+    )
+    .unwrap();
+    let runtime = env.xdg_data().join("tilo-runtime/2026.07");
+    runtime_bundle::build_bundle_with(
+        &runtime,
+        "2026.07",
+        &runtime_bundle::BuildOptions {
+            from: Some(&host),
+            identity: Some(&identity),
+            extra_libs: &[library],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = env.registry_toml();
+    let (ok, output, error) = env.cmd(&["list", "--json", "--runtime-paths"]);
+    assert!(ok, "{error}");
+    let snapshot: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(snapshot["apps"][0]["id"], "so.tilo.lifecycle");
+    assert_eq!(snapshot["apps"][0]["runtime"], "tilo-runtime/2026.07");
+    assert_eq!(
+        snapshot["runtime_paths"]["2026.07"],
+        runtime.to_str().unwrap()
+    );
+    assert!(
+        !runtime.starts_with(env.home.path().join(".local/share")),
+        "must honor actual XDG_DATA_HOME"
+    );
+    let (ok, output, error) = env.cmd(&["list", "--json"]);
+    assert!(ok, "{error}");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&output)
+            .unwrap()
+            .is_array()
+    );
+    assert!(!env.cmd(&["list", "--runtime-paths"]).0);
+    assert_eq!(
+        env.registry_toml(),
+        before,
+        "inspection never changes a selection"
+    );
 }

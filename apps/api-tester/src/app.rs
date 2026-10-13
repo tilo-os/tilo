@@ -1,309 +1,171 @@
 //! Root widget for the API tester.
 //!
-//! # Retained controls over painted chrome
+//! The window is one [`NavShell`]: the sidebar lists saved requests by
+//! collection and the history of what was sent; the content is the request
+//! builder over the response, split by a divider the person can drag.
 //!
-//! The app paints its panels, dividers, section labels, and response body, and
-//! composes focusable child widgets for every control:
+//! The app composes the toolkit's widgets and paints nothing of its own. Its
+//! controls tell the app what happened by pushing a [`Cmd`] onto a queue; the
+//! app applies the queue where it has the shared document, keeps the model,
+//! and replaces the parts of the view that depend on it ([`Slot`]s), so
+//! the controls around them keep their focus.
 //!
-//! - the HTTP method + environment pickers are [`Dropdown`]s (a11y `ComboBox`),
-//! - the URL and body editors are [`TextInput`]s (a11y `TextInput`) over the
-//!   workspace's texts, every keystroke a splice ([`TextControl`]),
-//! - Send is a primary [`Button`] (a11y `Button`),
-//! - the request tabs and the response-view switch are [`ToggleGroup`]s
-//!   (a11y `Group` of `ToggleButton`s),
-//! - each sidebar / history row is a [`NavRow`](crate::navrow::NavRow) (a11y
-//!   `Button`).
-//!
-//! [`build_layout`] registers every control in the Taffy tree for keyboard
-//! navigation and AccessKit export. Their external layout rects align them with
-//! the painted chrome.
-//!
-//! What the controls show is the workspace the app was presented
-//! ([`ApiTesterApp::present_workspace`]); what they change goes through the
-//! dispatcher as [`ApiTesterAction`]s, and sending is the
-//! [`ApiTesterEffect::Send`] effect.
-//!
-//! ```text
-//! ┌──────────┬───────────────────────────────────────────┐
-//! │ sidebar  │ method ▾  [ URL bar ............ ] [Send]  │
-//! │ collec-  ├───────────────────────────────────────────┤
-//! │ tions    │ Params · Headers · Auth · Body            │
-//! │ environ- │ <active tab editor>                        │
-//! │ ments    ├───────────────────────────────────────────┤
-//! │ history  │ 200 OK · 84 ms · 412 B   Pretty Raw Prev   │
-//! │          │ <response headers / highlighted body>      │
-//! └──────────┴───────────────────────────────────────────┘
-//! ```
+//! The request in the builder is part of the shared record: its controls
+//! bind to their fields' paths, and saving copies it into a collection.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
-
-use ui::color_compat::ColorCompat;
-use ui::format::bytes as format_bytes;
-use ui::framework::{
-    Actions, Dispatcher, EffectAnswer, EffectCx, Effected, SurfaceCx, TextControl,
-};
-use ui::icons::Icon;
-use ui::permissions::PermissionContext;
-use ui::prelude::Effect as _;
-use ui::presence::PresenceCtx;
-use ui::richtext::{RichSpan, RichTextLayout, TextAlign};
-use ui::secrets::SecretStore;
-use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
-use ui::theme::Theme;
-use ui::tilo_resource::ActionRef;
-use ui::widget::toggle_group::Segment;
+use ui::LocalState;
+use ui::tokens::Spacing;
+use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::{
-    Button, Checkbox, CheckboxFace, Dropdown, EmptyState, SidebarDrawer, SplitLayout, TextInput,
-    TextInputKind, ToggleGroup, Widget,
+    AppModel, Column, Dropdown, Element, ModelPath, NavShell, ResizableSplit, Spacer, Stack, Widget,
 };
+use winit::event::WindowEvent;
 
-use crate::actions::{self, ApiTesterAction, ApiTesterEffect};
-use crate::doc::ApiDoc;
+use crate::actions::ApiTesterEffect;
+use crate::commands::{Cmd, FormMode, FormTarget, RowEdit, Sink, Table};
+use crate::dialog::{self, Fields};
 use crate::http::{self, Outgoing};
+use crate::kv::{KvChange, KvQueue};
 use crate::model::{
-    Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, Request, RequestTab,
-    ResponseData, ResponseView, human_duration,
+    Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, Id, KeyValue, Request,
+    RequestTab, ResponseData, ResponseView,
 };
-use crate::navrow::{NavKind, NavRow, ROW_H};
-use crate::palette::{short_path, status_color, token_color};
-use crate::resource::{ApiTester, Workspace};
-use crate::responsive::{RAIL_BREAKPOINT, RAIL_WIDTH};
-use crate::vars;
-
-const SIDEBAR_W: f64 = RAIL_WIDTH;
-const METHOD_W: f64 = 104.0;
-/// The square hamburger toggle that summons the rail in overlay mode.
-const HAMBURGER_W: f64 = 36.0;
-const SEND_W: f64 = 96.0;
-const URLBAR_H: f64 = 56.0;
-/// On a phone, method/send stay on the first row and the URL gets a full
-/// second row. Keeping all four controls in one row leaves only a clipped
-/// sliver of the endpoint — especially unhelpful when it starts with a
-/// `{{variable}}` reference.
-const COMPACT_URLBAR_BREAKPOINT: f64 = 480.0;
-const TAB_STRIP_H: f64 = 40.0;
-const COMPACT_URLBAR_H: f64 = 100.0;
-const PAD: f64 = 16.0;
-const JSON_LINE_H: f64 = 20.0;
-const RESPONSE_STATUS_H: f64 = 44.0;
-/// A phone gets a second response-chrome row so status metadata and the view
-/// switch never compete for the same pixels.
-const COMPACT_RESPONSE_STATUS_H: f64 = 76.0;
-const COMPACT_RESPONSE_BREAKPOINT: f64 = 520.0;
-/// The secret-store purpose of a request's credential, keyed by request id.
+use crate::record::{Credentials, Variable};
+use crate::request::{self, BlankRows};
+use crate::resource::{Workspace, workspace as verbs};
+use ui::framework::{Actions, Dispatcher, EffectAnswer, EffectCx, Effected, Submit, SurfaceCx};
+use ui::secrets::SecretStore;
 const CREDENTIAL: &str = "request-credential";
-/// The secret-store purpose of a secret variable's value, keyed by variable id.
 const SECRET_VARIABLE: &str = "variable-value";
-/// The failure the `error` screenshot scenario shows.
-const SHOT_ERROR: &str =
-    "Could not reach api.example.com. Check the URL or your network connection.";
-/// The add-variable form's choice of where the value is kept.
-const SHARED_VALUE: &str = "Shared with the workspace";
-const SECRET_VALUE: &str = "Kept on this device";
-/// Label used for the "no environment selected" dropdown option.
-const NO_ENV: &str = actions::NO_ENVIRONMENT;
+use crate::response;
+use crate::sidebar::{self, SidebarView};
+use crate::vars;
+use ui::widget::{Slot, SlotHandle};
 
-/// A status hint may sit beside request tabs only when it has its own space.
-/// On a phone the tab strip consumes the full row, so painting the hint at the
-/// right edge would overlap the tab labels.
-fn tab_strip_has_room_for_hint(layout: &Layout, hint_width: f64) -> bool {
-    layout.tabs.x1 + 12.0 + hint_width <= layout.main.x1 - PAD
-}
+/// What the picker reads when no environment is chosen.
+const NO_ENV: &str = "No environment";
 
-fn response_status_height(width: f64) -> f64 {
-    if width < COMPACT_RESPONSE_BREAKPOINT {
-        COMPACT_RESPONSE_STATUS_H
+/// What the environment picker offers besides the environments themselves,
+/// and the sheet each opens; deleting the environment opens none, the host
+/// asks. The first needs no active environment.
+const ENVIRONMENT_COMMANDS: [(&str, Option<FormMode>); 5] = [
+    ("New environment\u{2026}", Some(FormMode::NewEnvironment)),
+    (
+        "Rename environment\u{2026}",
+        Some(FormMode::RenameEnvironment),
+    ),
+    ("Add variable\u{2026}", Some(FormMode::NewVariable)),
+    ("Delete variable\u{2026}", Some(FormMode::DeleteVariable)),
+    ("Delete environment\u{2026}", None),
+];
+
+/// A pane of the split: `slot` with room between it and the divider, which
+/// is painted over the edge of both panes.
+fn pane(slot: Slot, below_divider: bool) -> Column {
+    let gap = Spacing::BASE.s3;
+    let column = Column::new().with_no_padding();
+    let column = if below_divider {
+        column.with_extra_top_padding(gap)
     } else {
-        RESPONSE_STATUS_H
-    }
-}
-
-#[cfg(test)]
-fn response_status_line_center(row: Rect) -> f64 {
-    if row.height() > RESPONSE_STATUS_H {
-        // Compact response chrome reserves the lower part of the region for
-        // the view switcher. Centre status and timing in the first row only.
-        row.y0 + RESPONSE_STATUS_H / 2.0
+        column
+            .with_extra_bottom_padding(gap)
+            .with_intrinsic_height()
+    };
+    let body = Column::new().with_no_padding();
+    let body = if below_divider {
+        body.with_fill_remaining_height()
     } else {
-        row.center().y
+        body.with_intrinsic_height()
+    };
+    column.push(Box::new(body.push(Box::new(slot))))
+}
+
+/// Preserve the shared divider across request-view replacements, with an
+/// explicit local reset requested by the published header control.
+struct RequestSplit {
+    split: ResizableSplit<Column, Column>,
+    reset: LocalState<bool>,
+}
+impl ui::widget::Decorator for RequestSplit {
+    type Inner = ResizableSplit<Column, Column>;
+    fn inner(&self) -> &Self::Inner {
+        &self.split
     }
-}
-
-/// A user action collected from a child widget's callback, applied after the
-/// event has finished routing through the tree. Buttons and rows push these
-/// from their `on_click`/`on_activate` closures; the toggle groups push from
-/// `on_change`. Draining the sink in one place keeps the borrow of the child
-/// widgets and the mutation of the model cleanly separated.
-#[derive(Clone, Debug, PartialEq)]
-enum Cmd {
-    ToggleRail,
-    ToggleManagement(usize),
-    ResizeRequest(f64),
-    ResetRequest,
-    ScrollNav(i32),
-    SetTab(usize),
-    SetView(usize),
-    ToggleCollection(usize),
-    LoadRequest(usize, usize),
-    ReplayHistory(usize),
-    OpenForm(FormMode),
-    SubmitForm,
-    CancelForm,
-}
-
-/// The rail never leaves a generic text field lying around.  A field appears
-/// only while the user is completing one named, contextual durable action.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FormMode {
-    NewCollection,
-    SaveRequest,
-    RenameCollection,
-    RenameRequest,
-    DeleteRequest,
-    NewEnvironment,
-    RenameEnvironment,
-    DeleteEnvironment,
-    NewVariable,
-    DeleteVariable,
-}
-
-impl FormMode {
-    fn heading(self) -> &'static str {
-        match self {
-            Self::NewCollection => "New collection",
-            Self::SaveRequest => "Save request",
-            Self::RenameCollection => "Rename collection",
-            Self::RenameRequest => "Rename request",
-            Self::DeleteRequest => "Delete request?",
-            Self::NewEnvironment => "New environment",
-            Self::RenameEnvironment => "Rename environment",
-            Self::DeleteEnvironment => "Delete environment?",
-            Self::NewVariable => "Add variable",
-            Self::DeleteVariable => "Delete variable",
+    fn inner_mut(&mut self) -> &mut Self::Inner {
+        &mut self.split
+    }
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if self.reset.get() {
+            self.reset.set(false);
+            self.split.reset_to_content_size();
         }
-    }
-
-    fn needs_variable_fields(self) -> bool {
-        matches!(self, Self::NewVariable | Self::DeleteVariable)
-    }
-
-    fn needs_value(self) -> bool {
-        matches!(self, Self::NewVariable)
-    }
-
-    fn needs_name(self) -> bool {
-        !self.needs_variable_fields()
-            && !matches!(self, Self::DeleteRequest | Self::DeleteEnvironment)
+        self.split.sync(state, path);
     }
 }
 
-type Sink = Rc<RefCell<Vec<Cmd>>>;
+/// What stands where a sheet goes while none is open.
+fn no_dialog() -> Element {
+    Box::new(Spacer::token(ui::tokens::SpacingStep::S0))
+}
 
-/// Structural signature of the child set. When it changes, the app reports
-/// `take_structure_dirty` so the host rebuilds the taffy tree + focus order.
-#[derive(Clone, PartialEq, Eq, Default)]
+/// What to rebuild at the next synchronization.
+#[derive(Default)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each flag describes an independent retained-child category"
+    reason = "each flag names an independent part of the view"
 )]
-struct ChildSig {
-    tab: u8,
-    body_field: bool,
-    resp_view: bool,
-    hamburger: bool,
+struct Stale {
     sidebar: bool,
-    nav_rows: usize,
-    nav_start: usize,
-    management: Option<usize>,
-    form: Option<FormMode>,
-    sidebar_items: Vec<SidebarItem>,
+    header: bool,
+    url_bar: bool,
+    environments: bool,
+    request: bool,
+    tab_panel: bool,
+    body_inner: bool,
+    auth_inner: bool,
+    response: bool,
+    response_body: bool,
 }
 
-/// Computed geometry for one frame — every chrome region and every control
-/// rect. Produced purely from the widget's rect + the rail state, so
-/// `apply_layout` (which positions the child widgets) and `draw` (which paints
-/// the chrome behind them) agree without a frame of lag.
-#[derive(Default, Clone)]
-struct Layout {
-    sidebar: Rect,
-    scrim: Rect,
-    main: Rect,
-    // controls
-    hamburger: Rect,
-    rail_close: Rect,
-    method: Rect,
-    url: Rect,
-    send: Rect,
-    tabs: Rect,
-    save: Rect,
-    request_actions: Rect,
-    env: Rect,
-    form_name: Rect,
-    form_key: Rect,
-    form_value: Rect,
-    form_secret: Rect,
-    form_actions: [Rect; 2],
-    sidebar_items: Vec<(SidebarItem, Rect)>,
-    nav_viewport: Rect,
-    divider: Rect,
-    body: Rect,
-    resp_view: Rect,
-
-    // chrome sub-regions used by draw + hit-tests
-    urlbar: Rect,
-    tab_strip: Rect,
-    editor: Rect,
-    response: Rect,
-    resp_status: Rect,
-    resp_body: Rect,
-    form_heading: Point,
-    collections_label: Point,
-    body_region: Rect,
-    fold_carets: Vec<(Rect, usize)>,
+/// The slots of the view the app replaces in place.
+struct Slots {
+    sidebar: sidebar::NavHandle,
+    url_bar: SlotHandle,
+    request: SlotHandle,
+    tab_panel: Option<SlotHandle>,
+    panel_inner: Option<SlotHandle>,
+    response: SlotHandle,
+    response_body: Option<SlotHandle>,
+    environments: SlotHandle,
+    dialog: SlotHandle,
 }
 
-/// Shaped cells and relative row geometry are retained together: automatic
-/// height and paint consume exactly the same wrapped content and column widths.
-struct KvRowLayout {
-    rect: Rect,
-    key_rect: Rect,
-    value_rect: Rect,
-    key: RichTextLayout,
-    value: RichTextLayout,
-    enabled: bool,
-    placeholder: bool,
-    indicator: bool,
-    /// Side of the enable checkbox: the 16px design size scaled with the
-    /// text, bounded by the row so it never outgrows the text it toggles.
-    indicator_size: f64,
+/// A state of the shell that exists only once the window has been laid out.
+#[derive(Clone, Copy)]
+enum Pose {
+    SidebarOpen,
+    SidebarClosed,
 }
 
-impl KvRowLayout {
-    fn checkbox(&self) -> Rect {
-        let half = self.indicator_size / 2.0;
-        Rect::new(
-            PAD,
-            self.rect.center().y - half,
-            PAD + self.indicator_size,
-            self.rect.center().y + half,
-        )
-    }
+/// An open sheet and what it collects.
+struct OpenForm {
+    mode: FormMode,
+    target: FormTarget,
+    fields: Fields,
 }
 
-/// Design size of the KV row's enable checkbox at 1× text.
-const KV_INDICATOR_SIZE: f64 = 16.0;
-/// Gap between the enable checkbox and the key column.
-const KV_INDICATOR_GAP: f64 = 14.0;
+/// The model half of a freshly built [`ApiTesterApp`].
+struct BuiltModel {
+    collections: Vec<Collection>,
+    environments: Vec<Environment>,
+    active_env: Option<Id>,
+    request: Request,
+    history: Vec<HistoryEntry>,
+}
 
 /// Root widget: the whole API tester.
 #[allow(
@@ -313,12 +175,16 @@ const KV_INDICATOR_GAP: f64 = 14.0;
               design pass rather than a mechanical lint fix"
 )]
 pub struct ApiTesterApp {
+    nav: NavShell,
+
     // --- Model ---
     collections: Vec<Collection>,
     environments: Vec<Environment>,
-    active_env: Option<uuid::Uuid>,
+    active_env: Option<Id>,
     request: Request,
     history: Vec<HistoryEntry>,
+    /// The record as last presented.
+    workspace: Rc<Workspace>,
     response: Option<ResponseData>,
     sending: bool,
     error: Option<String>,
@@ -326,678 +192,516 @@ pub struct ApiTesterApp {
     // --- View state (local, per-peer) ---
     active_tab: RequestTab,
     response_view: ResponseView,
-    collapsed: std::collections::HashSet<usize>,
-    body_scroll: f64,
     selected: Option<(usize, usize)>,
-    management: Option<usize>,
-    nav_start: usize,
-    request_height_override: Option<f64>,
-    request_drag: Option<(f64, f64)>,
-    row_height: f64,
-    kv_rows: Vec<KvRowLayout>,
-    kv_height: Option<f64>,
-    variable_color: [u8; 3],
-    control_height: f64,
-    /// Gap between stacked rail controls (environment picker, buttons, the
-    /// action disclosures and their rows): one `s2` step for one relationship
-    /// (HIG §7b), read from the theme where the rail used to mix 8 and 4 px.
-    rail_row_gap: f64,
-    /// Gap between the rows inside an expanded action group (`s1`): rows
-    /// that read as one group under their disclosure sit closer than the
-    /// stacked top-level controls do (HIG §7b), so an open group of five
-    /// still fits a short window.
-    rail_group_gap: f64,
-    /// Rail top inset (`s6`, the page gutter) and the measured line boxes of
-    /// the two rail captions ("ENV" at 9 px, "COLLECTIONS" at 10 px), so each
-    /// caption sits one `s1` above what it labels instead of in a fixed band.
-    rail_inset: f64,
-    env_caption_h: f64,
-    caption_h: f64,
-    text_sm: f32,
-    text_scale: f64,
-    disclosures: Vec<NavRow>,
-    divider: NavRow,
-    /// Local scroll offset for the workspace rail. Essential when large text
-    /// turns a previously short control list into more than one viewport.
-    sidebar_scroll: f64,
+    form: Option<OpenForm>,
+    blanks: BlankRows,
+    table: Option<(Table, KvQueue)>,
+    stale: Stale,
+    /// A shell state to take at the next paint, for `--shots`.
+    pose: Option<Pose>,
+    slots: Slots,
+    /// The active environment's variables, for the URL's variable hint.
+    env_vars: Rc<RefCell<HashMap<String, String>>>,
+    /// What the environment picker shows.
+    env_state: LocalState<String>,
 
-    // --- Real child widgets ---
-    method_dropdown: Dropdown,
-    rail_button: Button,
-    rail_close: Button,
-    env_dropdown: Dropdown,
-    environment_actions: Dropdown,
-    url_input: TextControl<TextInput>,
-    body_input: TextControl<TextInput>,
-    send_button: Button,
-    save_button: Button,
-    request_actions: Dropdown,
-    request_tabs: ToggleGroup,
-    response_view_toggle: ToggleGroup,
-    /// Shared accessible recovery surfaces for an empty response and a failed
-    /// transport. They own their CTA focus/Enter/AT activation.
-    response_empty: EmptyState,
-    response_error: EmptyState,
-    form_name_input: TextInput,
-    form_key_input: TextInput,
-    form_value_input: TextInput,
-    /// Whether a new variable's value is shared or kept on this device.
-    form_secret: Dropdown,
-    form_submit: Button,
-    form_cancel: Button,
-    form: Option<FormMode>,
-    manage_buttons: Vec<Button>,
-    nav_rows: Vec<NavRow>,
-    // Host maps may still inspect old focus between an event and build_layout.
-    // Moving a Vec retains its backing allocation until that safe rebuild.
-    retired_nav_rows: Vec<Vec<NavRow>>,
-    nav_rows_replaced: bool,
-    /// Parallel to `nav_rows`: what each row draws + does (rebuilt together).
-    nav_meta: Vec<NavMeta>,
-
-    /// Commands pushed by child callbacks, drained after event routing.
+    /// Commands pushed by widget callbacks, applied after event routing.
     sink: Sink,
 
-    /// Where every change to the workspace goes; `None` until the framework
-    /// attaches the surface, when changes are dropped.
-    dispatcher: Option<Dispatcher<ApiTester>>,
-    /// The device's secret store, holding credentials and secret variable
-    /// values; `None` until attached.
+    /// Where every change of the shared record goes: field edits and verbs,
+    /// submitted as one undo step each through the host, the same path the
+    /// palette and agents take.
+    dispatcher: Option<Dispatcher<Workspace>>,
     secrets: Option<SecretStore>,
-    /// Credentials read from the store, by request id.
-    credentials: HashMap<uuid::Uuid, String>,
-    /// The participant may only view the workspace.
+    credentials: HashMap<Id, String>,
     read_only: bool,
-
-    // --- Adaptive chrome: the shared collapsible sidebar/drawer controller
-    // (docked-vs-overlay decision, eased reveal, and dimming scrim). ---
-    rail: SidebarDrawer,
-
-    // --- Layout / interaction caches ---
-    /// Last theme text scale, used to keep hand-positioned chrome and the
-    /// retained controls' scaled glyphs in the same geometry system.
-    layout_text_scale: f64,
-    rect: Rect,
-    layout: Layout,
-    last_cursor: Point,
+    adopted: bool,
+    /// Mounted on a record another participant created: its content is
+    /// theirs to seed, so an empty document is left untouched.
     dirty: bool,
-    /// Set when the child set changed; drained by `take_structure_dirty`.
-    last_sig: ChildSig,
-}
-
-/// Ordered identities used by layout, paint, event routing and focus traversal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum SidebarItem {
-    Environment,
-    Manage(usize),
-    Disclosure(usize),
-    Nav(usize),
-}
-
-/// The data + command for one sidebar row, rebuilt from the model whenever the
-/// collections / history / selection change.
-#[derive(Clone, PartialEq)]
-struct NavMeta {
-    kind: NavKind,
-    label: String,
-    a11y_name: String,
-    cmd: Cmd,
-}
-
-/// The real child widgets of a freshly built [`ApiTesterApp`] — see
-/// [`ApiTesterApp::build_widgets`].
-struct BuiltWidgets {
-    method_dropdown: Dropdown,
-    rail_button: Button,
-    rail_close: Button,
-    env_dropdown: Dropdown,
-    environment_actions: Dropdown,
-    url_input: TextControl<TextInput>,
-    body_input: TextControl<TextInput>,
-    send_button: Button,
-    save_button: Button,
-    request_actions: Dropdown,
-    request_tabs: ToggleGroup,
-    response_view_toggle: ToggleGroup,
-    sink: Sink,
-    form_name_input: TextInput,
-    form_key_input: TextInput,
-    form_value_input: TextInput,
-    form_secret: Dropdown,
-    form_submit: Button,
-    form_cancel: Button,
-    manage_buttons: Vec<Button>,
 }
 
 impl ApiTesterApp {
-    /// A control's binding of the send effect, published on the workspace.
-    #[allow(
-        clippy::expect_used,
-        reason = "the send effect is declared with no parameters, so its binding always builds"
-    )]
-    fn send_binding() -> tilo_actions::ActionBinding<()> {
-        use ui::tilo_resource::Resource as _;
-        let effect = ApiTesterEffect::Send;
-        let spec = ApiTesterEffect::specs()
-            .into_iter()
-            .find(|spec| spec.id == effect.id())
-            .expect("the send effect is declared");
-        let resource =
-            tilo_actions::Resource::new(ApiTester::KIND, ApiTester::KIND, ApiTester::LABEL)
-                .with_action(spec.clone());
-        tilo_actions::ActionBinding::static_json(&resource, &spec, effect.arguments())
-            .expect("the send effect takes no arguments")
+    /// The live app: no fabricated saved collections/history and NO canned
+    /// response — the response pane is empty until a real Send. It opens on a
+    /// single blank starter request.
+    pub fn new() -> Self {
+        Self::build(false)
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "the private menu resource constructors always export one typed open action"
-    )]
-    fn menu_binding(resource: &tilo_actions::Resource) -> tilo_actions::ActionBinding<String> {
-        let spec = resource
-            .actions
-            .first()
-            .expect("menu resources always publish their typed open action");
-        tilo_actions::ActionBinding::new(resource, spec, |action| {
-            serde_json::Map::from_iter([("action".to_string(), serde_json::Value::String(action))])
-        })
-        .expect("menu choices match their exported action schema")
+    /// The hermetic `--shots` / demo build: a sample collection, environments,
+    /// history and a rendered example response so the screenshot is populated.
+    pub fn new_demo() -> Self {
+        Self::build(true)
     }
 
-    /// The app before it is presented the workspace: no collections, no
-    /// history, a blank request and no response until a real Send.
-    pub fn new(actions: &Actions<ApiTester>) -> Self {
-        Self::build(Some(actions))
+    fn build(demo: bool) -> Self {
+        Self::build_with_actions(demo, None)
     }
-
-    /// The app with its pickers bound to nothing, for tests of its layout.
-    #[cfg(test)]
-    fn detached() -> Self {
-        Self::build(None)
+    pub(crate) fn new_with_actions(actions: &Actions<Workspace>) -> Self {
+        Self::build_with_actions(false, Some(actions.clone()))
     }
+    fn build_with_actions(demo: bool, actions: Option<Actions<Workspace>>) -> Self {
+        let model = Self::build_model(demo);
+        let sink = Sink::default();
+        *sink.actions.borrow_mut() = actions;
+        sink.method.set(model.request.method.as_str().to_owned());
+        let blanks = BlankRows::new();
+        let env_vars = Rc::new(RefCell::new(HashMap::new()));
+        let response = demo.then(http::sample_response);
+        let selected = demo.then_some((0, 0));
 
-    /// Stage a screenshot scenario's view state: the sample response every
-    /// populated scenario shows, and the rail, focus, failure or form it is
-    /// about.
-    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        if !matches!(scenario, Some("empty" | "error")) {
-            self.response = Some(http::sample_response());
-        }
-        match scenario {
-            Some("rail-open") => self.snap_rail(true),
-            Some("error") => {
-                self.response = None;
-                self.sending = false;
-                self.error = Some(SHOT_ERROR.into());
-            }
-            Some("focus-url") => self.url_input.control_mut().set_focus(true),
-            Some(form) => {
-                let mode = match form.strip_prefix("form-") {
-                    Some("new-collection") => Some(FormMode::NewCollection),
-                    Some("save-request") => Some(FormMode::SaveRequest),
-                    Some("rename-collection") => Some(FormMode::RenameCollection),
-                    Some("rename-request") => Some(FormMode::RenameRequest),
-                    Some("new-environment") => Some(FormMode::NewEnvironment),
-                    Some("rename-environment") => Some(FormMode::RenameEnvironment),
-                    Some("delete-environment") => Some(FormMode::DeleteEnvironment),
-                    Some("new-variable") => Some(FormMode::NewVariable),
-                    Some("delete-variable") => Some(FormMode::DeleteVariable),
-                    _ => None,
-                };
-                if let Some(mode) = mode {
-                    // Forms open in the rail.
-                    self.open_form(mode);
-                    self.snap_rail(true);
-                }
-            }
-            None => {}
-        }
-        self.dirty = true;
-    }
+        let builtin = request::section(&model.request, RequestTab::Params, &blanks, &sink);
+        let (request_slot, request) = Slot::new(builtin.element);
+        let (response_slot, response_handle, response_body) =
+            Self::response_slot(response.as_ref(), &sink);
+        let (dialog_slot, dialog) = Slot::new(no_dialog());
+        let env_state = LocalState::new(
+            Self::environment_name(&model.environments, model.active_env.as_ref()).to_owned(),
+        );
+        let (env_slot, environments) = Slot::new(Self::environment_picker(
+            &model.environments,
+            model.active_env.as_ref(),
+            &env_state,
+            &sink,
+        ));
+        let (lists_slot, sidebar_lists) = sidebar::lists(
+            &SidebarView {
+                collections: &model.collections,
+                history: &model.history,
+                selected,
+            },
+            &sink,
+        );
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "constructs every widget of the app in one declarative initializer"
-    )]
-    fn build(actions: Option<&Actions<ApiTester>>) -> Self {
-        let request = crate::resource::blank_request();
-        let widgets = Self::build_widgets(&request, actions);
+        let (url_slot, url_bar) = Slot::new(request::url_bar(&sink));
+        let content = Self::content(
+            url_slot,
+            request_slot,
+            response_slot,
+            dialog_slot,
+            &env_vars,
+            &sink,
+        );
+        let nav = NavShell::new()
+            .with_id("api.shell")
+            .sidebar(sidebar::frame(Box::new(env_slot), Box::new(lists_slot)))
+            .sidebar_header("", vec![sidebar::new_collection(&sink)])
+            .content(content)
+            .content_header(
+                model.request.name.clone(),
+                vec![
+                    Box::new(ui::search::search_button(
+                        ui::search::SearchRequest::this_app(),
+                    )),
+                    Box::new(Self::reset_area(&sink)),
+                ],
+            );
 
-        let mut app = Self {
-            collections: Vec::new(),
-            environments: Vec::new(),
-            active_env: None,
-            request,
-            history: Vec::new(),
-            response: None,
+        let app = Self {
+            nav,
+            collections: model.collections,
+            environments: model.environments,
+            active_env: model.active_env,
+            request: model.request,
+            history: model.history,
+            workspace: Rc::default(),
+            response,
             sending: false,
             error: None,
             active_tab: RequestTab::Params,
             response_view: ResponseView::Pretty,
-            collapsed: std::collections::HashSet::new(),
-            body_scroll: 0.0,
-            selected: None,
-            management: None,
-            nav_start: 0,
-            request_height_override: None,
-            request_drag: None,
-            row_height: ROW_H,
-            kv_rows: Vec::new(),
-            kv_height: None,
-            variable_color: [0, 0, 0],
-            control_height: 34.0,
-            rail_row_gap: f64::from(ui::tokens::spacing::Spacing::BASE.s2),
-            rail_group_gap: f64::from(ui::tokens::spacing::Spacing::BASE.s1),
-            rail_inset: f64::from(ui::tokens::spacing::Spacing::BASE.s6),
-            env_caption_h: 12.0,
-            caption_h: 13.0,
-            text_sm: 13.0,
-            text_scale: 1.0,
-            disclosures: [
-                ("api.collection-actions", "Collection actions"),
-                ("api.request-actions", "Request actions"),
-                ("api.environment-actions", "Environment actions"),
-            ]
-            .iter()
-            .enumerate()
-            .map(|(i, (id, label))| {
-                let sink = widgets.sink.clone();
-                NavRow::new(*id, NavKind::Disclosure { expanded: false }, *label, *label)
-                    .on_activate(move || sink.borrow_mut().push(Cmd::ToggleManagement(i)))
-            })
-            .collect(),
-            divider: {
-                let sink = widgets.sink.clone();
-                NavRow::new(
-                    "api.request-divider",
-                    NavKind::Divider,
-                    "",
-                    "Request area divider",
-                )
-                .on_adjust(move |delta| sink.borrow_mut().push(Cmd::ResizeRequest(delta)))
-            },
-            sidebar_scroll: 0.0,
-            method_dropdown: widgets.method_dropdown,
-            rail_button: widgets.rail_button,
-            rail_close: widgets.rail_close,
-            env_dropdown: widgets.env_dropdown,
-            environment_actions: widgets.environment_actions,
-            url_input: widgets.url_input,
-            body_input: widgets.body_input,
-            send_button: widgets.send_button,
-            save_button: widgets.save_button,
-            request_actions: widgets.request_actions,
-            request_tabs: widgets.request_tabs,
-            response_view_toggle: widgets.response_view_toggle,
-            response_empty: EmptyState::new("No response yet")
-                .with_icon(Icon::Globe)
-                .with_message("Enter a URL and send a request to inspect its response.")
-                .with_action("Send request")
-                .with_action_id("api.response.send")
-                .on_action(Self::send_binding()),
-            response_error: EmptyState::new("Request failed")
-                .with_icon(Icon::Refresh)
-                .with_message("Check the URL or network, then retry.")
-                .with_action("Retry request")
-                .with_action_id("api.response.retry")
-                .on_action(Self::send_binding()),
-            form_name_input: widgets.form_name_input,
-            form_key_input: widgets.form_key_input,
-            form_value_input: widgets.form_value_input,
-            form_secret: widgets.form_secret,
-            form_submit: widgets.form_submit,
-            form_cancel: widgets.form_cancel,
+            selected,
             form: None,
-            manage_buttons: widgets.manage_buttons,
-            nav_rows: Vec::new(),
-            retired_nav_rows: Vec::new(),
-            nav_rows_replaced: false,
-            nav_meta: Vec::new(),
-            sink: widgets.sink,
+            blanks,
+            table: builtin.table,
+            stale: Stale::default(),
+            pose: None,
+            slots: Slots {
+                sidebar: sidebar_lists,
+                url_bar,
+                request,
+                tab_panel: Some(builtin.slot),
+                panel_inner: builtin.inner,
+                response: response_handle,
+                response_body,
+                environments,
+                dialog,
+            },
+            env_vars,
+            env_state,
+            sink,
             dispatcher: None,
             secrets: None,
             credentials: HashMap::new(),
             read_only: false,
-            rail: SidebarDrawer::new()
-                .left()
-                .docked_width(SIDEBAR_W)
-                .overlay_width(SIDEBAR_W)
-                .breakpoint(RAIL_BREAKPOINT),
-            layout_text_scale: 1.0,
-            rect: Rect::ZERO,
-            layout: Layout::default(),
-            last_cursor: Point::ZERO,
+            adopted: false,
             dirty: true,
-            last_sig: ChildSig::default(),
         };
-        app.rebuild_env_dropdown();
-        app.rebuild_nav();
+        app.refresh_env_vars();
         app
     }
 
-    /// The real child widgets for a fresh app, wired to `model`'s starting
-    /// values. Split out of [`Self::build`] to keep it under the line budget.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one constructor keeps all retained controls and command bindings together"
-    )]
-    fn build_widgets(request: &Request, actions: Option<&Actions<ApiTester>>) -> BuiltWidgets {
-        let bind = |dropdown: Dropdown, action: &'static str, param: &'static [&'static str]| {
-            match actions {
-                Some(actions) => {
-                    actions.bind(dropdown, ActionRef::<ApiTester, String>::new(action, param))
-                }
-                None => dropdown,
-            }
+    /// The header control that gives the request and the response their
+    /// first sizes again.
+    fn reset_area(sink: &Sink) -> ui::widget::Button {
+        let reset = sink.reset_area.clone();
+        ui::widget::Button::icon_only(
+            "api.reset-request-area",
+            ui::icons::Icon::RotateCcw,
+            "Reset request area",
+        )
+        .on_view(move || reset.set(true))
+    }
+
+    /// The content column: the URL bar over the request and the response,
+    /// which a divider splits, with the sheet's slot above them.
+    fn content(
+        url_bar: Slot,
+        request: Slot,
+        response: Slot,
+        dialog: Slot,
+        env_vars: &Rc<RefCell<HashMap<String, String>>>,
+        sink: &Sink,
+    ) -> Element {
+        // The split relays out its panes as its divider moves.
+        let split = ResizableSplit::new(
+            pane(request, false),
+            pane(response, true),
+            SplitOrientation::Vertical,
+        )
+        .with_content_sized_first()
+        .with_divider_id("api.request-divider")
+        .with_divider_label("Resize the request and the response");
+        Box::new(
+            Stack::new()
+                .push(Box::new(
+                    // The URL and its variable-resolution caption belong
+                    // together; keep the caption's tight text rhythm so the
+                    // content-sized request leaves room for the response.
+                    Column::new()
+                        .with_rhythm(ui::tokens::Rhythm::Tight)
+                        .push(Box::new(url_bar))
+                        .push(request::variable_hint(
+                            Rc::clone(env_vars),
+                            Rc::clone(&sink.url),
+                        ))
+                        .push(Box::new(
+                            Column::new()
+                                .with_no_padding()
+                                .with_fill_remaining_height()
+                                .push(Box::new(RequestSplit {
+                                    split,
+                                    reset: sink.reset_area.clone(),
+                                })),
+                        )),
+                ))
+                .push(Box::new(dialog)),
+        )
+    }
+
+    /// The response pane's slot, showing `response` or the empty state.
+    fn response_slot(
+        response: Option<&ResponseData>,
+        sink: &Sink,
+    ) -> (Slot, SlotHandle, Option<SlotHandle>) {
+        if let Some(data) = response {
+            let built = response::response(data, ResponseView::Pretty, sink);
+            let (slot, handle) = Slot::new(built.element);
+            (slot, handle, Some(built.body))
+        } else {
+            let (slot, handle) = Slot::new(response::empty(sink));
+            (slot, handle, None)
+        }
+    }
+
+    /// The model half of a fresh app: sample data when `demo`, otherwise
+    /// empty/blank.
+    fn build_model(demo: bool) -> BuiltModel {
+        let collections = if demo {
+            crate::seed::collections()
+        } else {
+            Vec::new()
         };
-        let mut url_input = TextInput::local().with_kind(TextInputKind::Url);
-        url_input.set_plain_chrome(true);
-        let url_input = TextControl::view_only(
-            url_input
-                .with_id("api.url")
-                .with_accessible_name("Request URL"),
-            ApiDoc::url_text_id,
-        );
-        let mut body_input = TextInput::local();
-        body_input.set_plain_chrome(true);
-        body_input.set_mono(true);
-        let body_input = TextControl::view_only(
-            body_input
-                .multiline(true)
-                .with_id("api.body")
-                .with_accessible_name("Request body"),
-            ApiDoc::body_text_id,
-        );
-
-        let sink: Sink = Rc::new(RefCell::new(Vec::new()));
-
-        // Method picker — a ComboBox whose choice sets the request's method.
-        let method_dropdown = bind(
-            Dropdown::from_state(
-                HttpMethod::ALL
-                    .iter()
-                    .map(|m| m.as_str().to_string())
-                    .collect(),
-                &ui::LocalState::new(request.method.as_str().to_string()),
-            )
-            .with_id("api.method"),
-            "set-method",
-            &["method"],
-        );
-
-        // A real retained menu button replaces the painted-only hamburger in
-        // overlay mode, so a keyboard or screen-reader user can open the
-        // workspace rail on a narrow display.
-        let rail_sink = sink.clone();
-        let rail_button = Button::new("api.workspace-menu", "")
-            .with_icon(Icon::Menu)
-            .with_accessible_name("Open workspace")
-            .tooltip("Open workspace")
-            .with_size(HAMBURGER_W as f32, 36.0)
-            .on_effect(move || rail_sink.borrow_mut().push(Cmd::ToggleRail));
-        let close_sink = sink.clone();
-        let rail_close = Button::new("api.workspace-close", "Close")
-            .with_icon(Icon::X)
-            .with_accessible_name("Close workspace")
-            .tooltip("Close workspace")
-            .on_effect(move || close_sink.borrow_mut().push(Cmd::ToggleRail));
-
-        // Environment picker — "No Environment" plus each named environment,
-        // filled when the workspace is presented.
-        let env_dropdown = bind(
-            Dropdown::from_state(
-                vec![NO_ENV.to_string()],
-                &ui::LocalState::new(NO_ENV.to_string()),
-            )
-            .with_id("api.env"),
-            "use-environment",
-            &["environment"],
-        );
-        let environment_action_state = ui::LocalState::new("Environment actions".to_string());
-        let environment_actions = Dropdown::from_state(
-            vec![
-                "Environment actions".to_string(),
-                "Rename environment…".to_string(),
-                "Add variable…".to_string(),
-                "Delete variable…".to_string(),
-            ],
-            &environment_action_state,
-        )
-        .with_id("api.environment-actions")
-        .with_accessible_name("Environment actions")
-        .on_action(Self::menu_binding(&actions::environment_menu_resource()));
-
-        // Send — the accent primary action.
-        let send_button = Button::new("api.send", "Send")
-            .primary()
-            .with_size(SEND_W as f32, 36.0)
-            .on_action(Self::send_binding());
-        let save_sink = sink.clone();
-        let save_button = Button::new("api.save", "Save")
-            .with_icon(Icon::Check)
-            .with_accessible_name("Save request")
-            .tooltip("Save current request")
-            .on_effect(move || {
-                save_sink
-                    .borrow_mut()
-                    .push(Cmd::OpenForm(FormMode::SaveRequest));
-            });
-        let request_action_state = ui::LocalState::new("Request actions".to_string());
-        let request_actions = Dropdown::from_state(
-            vec![
-                "Request actions".to_string(),
-                "Save request…".to_string(),
-                "Rename request…".to_string(),
-                "Delete request…".to_string(),
-            ],
-            &request_action_state,
-        )
-        .with_id("api.request-actions")
-        .with_accessible_name("Request actions")
-        .on_action(Self::menu_binding(&actions::request_menu_resource()));
-
-        // Request-builder tabs.
-        let tab_sink = sink.clone();
-        let request_tabs = ToggleGroup::new(
-            RequestTab::ALL
-                .iter()
-                .map(|t| Segment::new(t.label()))
-                .collect(),
-            0,
-        )
-        .on_view("api.request-tabs", move |i| {
-            tab_sink.borrow_mut().push(Cmd::SetTab(i));
-        });
-
-        // Response-view switch.
-        let view_sink = sink.clone();
-        let response_view_toggle = ToggleGroup::new(
-            ResponseView::ALL
-                .iter()
-                .map(|v| Segment::new(v.label()))
-                .collect(),
-            0,
-        )
-        .on_view("api.response-view", move |i| {
-            view_sink.borrow_mut().push(Cmd::SetView(i));
-        });
-
-        let form_name_input = TextInput::local()
-            .with_placeholder("Name")
-            .with_id("api.form-name")
-            .with_accessible_name("Name");
-        let form_key_input = TextInput::local()
-            .with_placeholder("Key")
-            .with_id("api.form-variable-key")
-            .with_accessible_name("Variable key");
-        let form_value_input = TextInput::local()
-            .with_placeholder("Value")
-            .with_id("api.form-variable-value")
-            .with_accessible_name("Variable value");
-        let form_secret = Dropdown::from_state(
-            vec![SHARED_VALUE.to_string(), SECRET_VALUE.to_string()],
-            &ui::LocalState::new(SHARED_VALUE.to_string()),
-        )
-        .with_id("api.form-variable-secret")
-        .with_accessible_name("Where the value is kept");
-        let submit_sink = sink.clone();
-        let form_submit = Button::new("api.form-confirm", "Confirm")
-            .primary()
-            .on_effect(move || submit_sink.borrow_mut().push(Cmd::SubmitForm));
-        let cancel_sink = sink.clone();
-        let form_cancel = Button::new("api.form-cancel", "Cancel")
-            .on_effect(move || cancel_sink.borrow_mut().push(Cmd::CancelForm));
-        let management = [
-            (
-                "api.new-collection",
-                "New collection",
-                Cmd::OpenForm(FormMode::NewCollection),
-            ),
-            (
-                "api.save-request",
-                "Save request",
-                Cmd::OpenForm(FormMode::SaveRequest),
-            ),
-        ];
-        let management = management.into_iter().chain([
-            (
-                "api.rename-collection",
-                "Rename collection",
-                Cmd::OpenForm(FormMode::RenameCollection),
-            ),
-            (
-                "api.rename-request",
-                "Rename request",
-                Cmd::OpenForm(FormMode::RenameRequest),
-            ),
-            (
-                "api.delete-request",
-                "Delete request",
-                Cmd::OpenForm(FormMode::DeleteRequest),
-            ),
-            (
-                "api.new-environment",
-                "New environment",
-                Cmd::OpenForm(FormMode::NewEnvironment),
-            ),
-            (
-                "api.rename-environment",
-                "Rename environment",
-                Cmd::OpenForm(FormMode::RenameEnvironment),
-            ),
-            (
-                "api.delete-environment",
-                "Delete environment",
-                Cmd::OpenForm(FormMode::DeleteEnvironment),
-            ),
-            (
-                "api.new-variable",
-                "Add variable",
-                Cmd::OpenForm(FormMode::NewVariable),
-            ),
-            (
-                "api.delete-variable",
-                "Delete variable",
-                Cmd::OpenForm(FormMode::DeleteVariable),
-            ),
-            (
-                "api.increase-request-area",
-                "Increase request area",
-                Cmd::ResizeRequest(24.0),
-            ),
-            (
-                "api.decrease-request-area",
-                "Decrease request area",
-                Cmd::ResizeRequest(-24.0),
-            ),
-            (
-                "api.reset-request-area",
-                "Reset request area",
-                Cmd::ResetRequest,
-            ),
-            ("api.previous-saved", "↑ Earlier", Cmd::ScrollNav(-1)),
-            ("api.next-saved", "↓ More", Cmd::ScrollNav(1)),
-        ]);
-        let manage_buttons = management
-            .into_iter()
-            .map(|(id, label, command)| {
-                let sink = sink.clone();
-                Button::new(id, label)
-                    .with_accessible_name(label)
-                    .tooltip(label)
-                    .on_effect(move || sink.borrow_mut().push(command.clone()))
-            })
-            .collect();
-
-        BuiltWidgets {
-            method_dropdown,
-            rail_button,
-            rail_close,
-            env_dropdown,
-            environment_actions,
-            url_input,
-            body_input,
-            send_button,
-            save_button,
-            request_actions,
-            request_tabs,
-            response_view_toggle,
-            sink,
-            form_name_input,
-            form_key_input,
-            form_value_input,
-            form_secret,
-            form_submit,
-            form_cancel,
-            manage_buttons,
+        let environments = if demo {
+            crate::seed::environments()
+        } else {
+            Vec::new()
+        };
+        let active_env = environments.first().map(|e| e.id.clone());
+        let request = if demo {
+            crate::seed::active_request()
+        } else {
+            crate::seed::blank_request()
+        };
+        let history = if demo {
+            crate::seed::history()
+        } else {
+            Vec::new()
+        };
+        BuiltModel {
+            collections,
+            environments,
+            active_env,
+            request,
+            history,
         }
     }
 
-    /// Snap the rail to a settled open/closed state with no animation.
-    pub fn snap_rail(&mut self, open: bool) {
-        self.rail.snap(open);
+    // -----------------------------------------------------------------------
+    // Screenshot staging
+    // -----------------------------------------------------------------------
+
+    /// Show the state a named `--shots` scenario captures, on top of the demo
+    /// workspace. Returns whether the name is known.
+    pub fn stage(&mut self, scenario: &str) -> bool {
+        let known = match scenario {
+            "default" => true,
+            "empty" => {
+                self.response = None;
+                self.sending = false;
+                self.error = None;
+                self.stale.response = true;
+                true
+            }
+            "error" => {
+                self.response = None;
+                self.sending = false;
+                self.error = Some(
+                    "Could not reach api.example.com. Check the URL or your network connection."
+                        .into(),
+                );
+                self.stale.response = true;
+                true
+            }
+            "headers" => {
+                self.active_tab = RequestTab::Headers;
+                self.stale.request = true;
+                true
+            }
+            "auth" => {
+                self.active_tab = RequestTab::Auth;
+                self.stale.request = true;
+                true
+            }
+            "body" => {
+                self.load_saved(0, 2);
+                self.active_tab = RequestTab::Body;
+                self.stale.request = true;
+                true
+            }
+            "form-body" => {
+                self.load_saved(1, 0);
+                self.active_tab = RequestTab::Body;
+                self.stale.request = true;
+                true
+            }
+            "response-raw" => {
+                self.response_view = ResponseView::Raw;
+                self.stale.response = true;
+                true
+            }
+            "response-headers" => {
+                self.response_view = ResponseView::Headers;
+                self.stale.response = true;
+                true
+            }
+            "drawer" => {
+                self.pose = Some(Pose::SidebarOpen);
+                true
+            }
+            "sidebar-hidden" => {
+                self.pose = Some(Pose::SidebarClosed);
+                true
+            }
+            other => other
+                .strip_prefix("form-")
+                .and_then(Self::form_scenario)
+                .map(|mode| self.open_form(mode, FormTarget::default()))
+                .is_some(),
+        };
         self.dirty = true;
+        known
     }
 
-    /// The value of a secret kept on this device for `purpose` and `item`.
-    fn secret(&self, purpose: &'static str, item: &str) -> Option<String> {
-        let secret = self
-            .secrets
-            .as_ref()?
-            .item(purpose, item)
-            .get_blocking()
-            .ok()??;
-        String::from_utf8(secret.expose().to_vec()).ok()
+    fn form_scenario(name: &str) -> Option<FormMode> {
+        Some(match name {
+            "new-collection" => FormMode::NewCollection,
+            "save-request" => FormMode::SaveRequest,
+            "rename-collection" => FormMode::RenameCollection,
+            "rename-request" => FormMode::RenameRequest,
+            "new-environment" => FormMode::NewEnvironment,
+            "rename-environment" => FormMode::RenameEnvironment,
+            "new-variable" => FormMode::NewVariable,
+            "delete-variable" => FormMode::DeleteVariable,
+            _ => return None,
+        })
     }
 
-    /// Keep `value` on this device as the secret for `purpose` and `item`.
-    fn keep_secret(&self, purpose: &'static str, item: &str, value: &str) -> Result<(), String> {
-        let secrets = self
-            .secrets
-            .as_ref()
-            .ok_or_else(|| "this window keeps no secrets".to_string())?;
-        secrets
-            .item(purpose, item)
-            .put_blocking(value.as_bytes())
-            .map_err(|error| error.to_string())
+    /// Every scenario name `stage` accepts.
+    pub const SCENARIOS: &'static [&'static str] = &[
+        "default",
+        "empty",
+        "error",
+        "headers",
+        "auth",
+        "body",
+        "form-body",
+        "response-raw",
+        "response-headers",
+        "drawer",
+        "sidebar-hidden",
+        "form-new-collection",
+        "form-save-request",
+        "form-rename-collection",
+        "form-rename-request",
+        "form-new-environment",
+        "form-rename-environment",
+        "form-new-variable",
+        "form-delete-variable",
+    ];
+
+    // -----------------------------------------------------------------------
+    // Views
+    // -----------------------------------------------------------------------
+
+    /// The name the picker shows for `active`.
+    fn environment_name<'a>(environments: &'a [Environment], active: Option<&Id>) -> &'a str {
+        environments
+            .iter()
+            .find(|environment| Some(&environment.id) == active)
+            .map_or(NO_ENV, |environment| environment.name.as_str())
     }
 
-    /// The credential of request `id`, from this device.
-    fn credential(&mut self, id: uuid::Uuid) -> String {
-        if let Some(known) = self.credentials.get(&id) {
-            return known.clone();
+    /// The environment picker: the environments, no environment, and the
+    /// commands that manage them.
+    fn environment_picker(
+        environments: &[Environment],
+        active: Option<&Id>,
+        state: &LocalState<String>,
+        sink: &Sink,
+    ) -> Element {
+        let mut options: Vec<String> = environments.iter().map(|e| e.name.clone()).collect();
+        options.push(NO_ENV.to_owned());
+        let commands = if active.is_some() {
+            &ENVIRONMENT_COMMANDS[..]
+        } else {
+            &ENVIRONMENT_COMMANDS[..1]
+        };
+        options.extend(commands.iter().map(|(label, _)| (*label).to_owned()));
+        let picker = Dropdown::from_state(options, state)
+            .with_id("api.env")
+            .caption("Environment");
+        Box::new(match sink.actions.borrow().as_ref() {
+            Some(actions) => actions.bind_effect(picker, ApiTesterEffect::PICK_ENVIRONMENT),
+            None => picker.with_enabled(false),
+        })
+    }
+
+    fn refresh_env_vars(&self) {
+        *self.env_vars.borrow_mut() = self.env_vars();
+    }
+
+    /// Replace the parts of the view whose model changed.
+    fn refresh_views(&mut self) {
+        if std::mem::take(&mut self.stale.sidebar) {
+            self.slots.sidebar.set(&SidebarView {
+                collections: &self.collections,
+                history: &self.history,
+                selected: self.selected,
+            });
         }
-        let found = self.secret(CREDENTIAL, &id.to_string()).unwrap_or_default();
-        self.credentials.insert(id, found.clone());
-        found
+        if std::mem::take(&mut self.stale.header) {
+            self.nav.set_content_title(self.request.name.clone());
+        }
+        if std::mem::take(&mut self.stale.url_bar) {
+            self.slots.url_bar.set(request::url_bar(&self.sink));
+        }
+        if std::mem::take(&mut self.stale.environments) {
+            self.slots.environments.set(Self::environment_picker(
+                &self.environments,
+                self.active_env.as_ref(),
+                &self.env_state,
+                &self.sink,
+            ));
+        }
+        if std::mem::take(&mut self.stale.request) {
+            let built = request::section(&self.request, self.active_tab, &self.blanks, &self.sink);
+            self.slots.request.set(built.element);
+            self.slots.tab_panel = Some(built.slot);
+            self.slots.panel_inner = built.inner;
+            self.table = built.table;
+            self.stale.tab_panel = false;
+            self.stale.body_inner = false;
+            self.stale.auth_inner = false;
+        }
+        if std::mem::take(&mut self.stale.tab_panel) {
+            let panel = request::panel(&self.request, self.active_tab, &self.blanks, &self.sink);
+            if let Some(slot) = &self.slots.tab_panel {
+                slot.set(panel.element);
+            }
+            self.slots.panel_inner = panel.inner;
+            self.table = panel.table;
+            self.stale.body_inner = false;
+            self.stale.auth_inner = false;
+        }
+        if std::mem::take(&mut self.stale.body_inner) {
+            let (element, table) = request::body_inner(&self.request, &self.blanks, &self.sink);
+            if let Some(slot) = &self.slots.panel_inner {
+                slot.set(element);
+            }
+            self.table = table;
+        }
+        if std::mem::take(&mut self.stale.auth_inner)
+            && let Some(slot) = &self.slots.panel_inner
+        {
+            slot.set(request::auth_inner(&self.request.auth, &self.sink));
+        }
+        if std::mem::take(&mut self.stale.response) {
+            self.rebuild_response();
+        }
+        if std::mem::take(&mut self.stale.response_body)
+            && let (Some(slot), Some(data)) = (&self.slots.response_body, &self.response)
+        {
+            slot.set(response::body(data, self.response_view));
+        }
     }
 
-    /// The active environment's variable map (for `{{var}}` substitution),
-    /// with secret values from this device.
+    fn rebuild_response(&mut self) {
+        if self.sending {
+            self.slots.response.set(response::sending());
+            self.slots.response_body = None;
+            self.stale.response_body = false;
+            return;
+        }
+        match (&self.response, &self.error) {
+            (Some(data), _) => {
+                let built = response::response(data, self.response_view, &self.sink);
+                self.slots.response.set(built.element);
+                self.slots.response_body = Some(built.body);
+            }
+            (None, Some(error)) => {
+                self.slots.response.set(response::failed(error, &self.sink));
+                self.slots.response_body = None;
+            }
+            (None, None) => {
+                self.slots.response.set(response::empty(&self.sink));
+                self.slots.response_body = None;
+            }
+        }
+        self.stale.response_body = false;
+    }
+
+    // -----------------------------------------------------------------------
+    // Sending
+    // -----------------------------------------------------------------------
+
+    /// The active environment's variable map (for `{{var}}` substitution).
     fn env_vars(&self) -> HashMap<String, String> {
         match self
             .active_env
-            .and_then(|id| self.environments.iter().find(|e| e.id == id))
+            .as_ref()
+            .and_then(|id| self.environments.iter().find(|e| &e.id == id))
         {
             Some(env) => {
                 let variables: Vec<_> = env
@@ -1019,113 +723,707 @@ impl ApiTesterApp {
         }
     }
 
-    /// Resolve the request in the builder against the active environment.
+    /// Resolve the request being composed against the active environment.
     fn outgoing(&self) -> Outgoing {
-        let mut req = self.request.clone();
-        req.url = self.url_input.control().value().to_string();
-        req.body_text = self.body_input.control().value().to_string();
-        http::build_outgoing(&req, &self.env_vars())
+        http::build_outgoing(&self.request, &self.env_vars())
     }
 
-    /// Show the workspace: its records, the request in the builder (with its
-    /// credential from this device) and the history.
-    pub(crate) fn present_workspace(&mut self, state: &Workspace) {
-        let environments_changed = self.environments != state.environments;
-        self.collections.clone_from(&state.collections);
-        self.environments.clone_from(&state.environments);
-        self.active_env = state.active_env;
-        self.history.clone_from(&state.history);
-        let mut request = state.request.clone();
-        let credential = self.credential(request.id);
-        request.auth = request.auth.with_secret(&credential);
-        self.request = request;
-        self.selected = self
+    // -----------------------------------------------------------------------
+    // The saved workspace
+    // -----------------------------------------------------------------------
+
+    /// Show a saved request from a collection in the builder, with the
+    /// document untouched. Used before the document is first synchronized.
+    fn load_saved(&mut self, ci: usize, ri: usize) {
+        if let Some(req) = self
             .collections
+            .get(ci)
+            .and_then(|c| c.requests.get(ri))
+            .cloned()
+        {
+            self.request = req;
+            self.selected = Some((ci, ri));
+            self.active_tab = RequestTab::Params;
+            self.stale.request = true;
+            self.stale.header = true;
+            self.stale.sidebar = true;
+            self.dirty = true;
+        }
+    }
+
+    /// Open a saved request from a collection in the builder.
+    fn load_request(&mut self, ci: usize, ri: usize) {
+        if let Some((collection, request)) = self
+            .collections
+            .get(ci)
+            .and_then(|c| Some((c.id.clone(), c.requests.get(ri)?.id.clone())))
+        {
+            self.submit(Workspace::OPEN_REQUEST.with(verbs::OpenRequest {
+                collection,
+                request,
+            }));
+        }
+        self.dismiss_drawer();
+    }
+
+    /// Choosing from a floating sidebar is done with it: show the request.
+    fn dismiss_drawer(&mut self) {
+        if self.nav.geometry().sidebar == ui::widget::SidebarPlacement::Drawer {
+            self.nav.close_sidebar();
+        }
+    }
+
+    /// The collections, environments or history changed: rebuild what shows
+    /// them.
+    fn workspace_changed(&mut self) {
+        self.stale.sidebar = true;
+        self.stale.environments = true;
+        self.stale.header = true;
+        self.show_active_environment();
+        self.refresh_env_vars();
+    }
+
+    // -----------------------------------------------------------------------
+    // Commands
+    // -----------------------------------------------------------------------
+
+    /// Drain the command sink and apply each command, persisting when a
+    /// command changes shared state. Returns `true` if anything was applied.
+    fn drain_commands(&mut self) -> bool {
+        let cmds: Vec<Cmd> = self.sink.borrow_mut().drain(..).collect();
+        if cmds.is_empty() {
+            return false;
+        }
+        for cmd in cmds {
+            match cmd {
+                Cmd::SetTab(i) => {
+                    if let Some(&tab) = RequestTab::ALL.get(i)
+                        && tab != self.active_tab
+                    {
+                        self.active_tab = tab;
+                        self.stale.tab_panel = true;
+                    }
+                }
+                Cmd::SetView(i) => {
+                    if let Some(&view) = ResponseView::ALL.get(i)
+                        && view != self.response_view
+                    {
+                        self.response_view = view;
+                        self.stale.response_body = true;
+                    }
+                }
+                Cmd::SetBodyMode(i) => {
+                    if let Some(&mode) = BodyMode::ALL.get(i)
+                        && mode != self.request.body_mode
+                    {
+                        self.request.body_mode = mode;
+                        self.submit(Workspace::paths().request.body_mode.set(mode));
+                        self.stale.body_inner = true;
+                    }
+                }
+                Cmd::SetAuthKind(i) => self.set_auth_kind(i),
+                Cmd::LoadRequest(ci, ri) => self.load_request(ci, ri),
+                Cmd::ReplayHistory(hi) => self.replay_history(hi),
+                Cmd::Edit { table, row, edit } => self.edit_rows(table, &row, &edit),
+                Cmd::PickEnvironment(choice) => self.pick_environment(&choice),
+                Cmd::OpenForm(mode, target) => self.open_form(mode, target),
+                Cmd::DeleteRequest(target) => self.delete_request(target),
+                Cmd::CancelForm => self.close_form(),
+                Cmd::SubmitForm => self.submit_form(),
+            }
+        }
+        self.dirty = true;
+        true
+    }
+
+    fn replay_history(&mut self, index: usize) {
+        if let Some(entry) = self.history.get(index).cloned() {
+            // History keeps what was sent, not the rest of the request: it
+            // opens as a new request.
+            let mut request = crate::seed::blank_request();
+            request.method = entry.method;
+            request.url = entry.url;
+            self.request = request;
+            self.selected = None;
+            self.error = None;
+            self.active_tab = RequestTab::Params;
+            self.submit(Workspace::OPEN_SENT.with(entry.id));
+            self.stale.request = true;
+            self.stale.header = true;
+            self.stale.sidebar = true;
+            self.dismiss_drawer();
+        }
+    }
+
+    fn set_auth_kind(&mut self, index: usize) {
+        let next = match index {
+            0 => Auth::None,
+            1 => Auth::Bearer {
+                token: String::new(),
+            },
+            2 => Auth::Basic {
+                username: String::new(),
+                password: String::new(),
+            },
+            _ => Auth::ApiKey {
+                header: "X-Api-Key".into(),
+                value: String::new(),
+            },
+        };
+        if self.request.auth.label() != next.label() {
+            let before = Credentials::of(&self.request.auth);
+            self.request.auth = next;
+            let after = Credentials::of(&self.request.auth);
+            if let Some(dispatcher) = &self.dispatcher {
+                let edits = Workspace::paths()
+                    .request
+                    .auth
+                    .path()
+                    .edits(&before, &after);
+                dispatcher.group(|| {
+                    for edit in edits {
+                        dispatcher.submit(edit);
+                    }
+                });
+            }
+            self.stale.auth_inner = true;
+        }
+    }
+
+    fn rows_mut(&mut self, table: Table) -> &mut Vec<KeyValue> {
+        match table {
+            Table::Params => &mut self.request.params,
+            Table::Headers => &mut self.request.headers,
+            Table::Form => &mut self.request.form,
+        }
+    }
+
+    /// Apply one edit to a row of a table. Typing in the blank row makes it a
+    /// real pair and gives the table a new blank row.
+    fn edit_rows(&mut self, table: Table, row: &str, edit: &RowEdit) {
+        if row == self.blanks.of(table) {
+            return;
+        }
+        self.submit(table.rows().remove(&Id::from_raw(row)));
+        self.rows_mut(table).retain(|pair| pair.id != row);
+        if let Some((shown, queue)) = &self.table
+            && *shown == table
+        {
+            queue.push(KvChange::Remove(row.to_owned()));
+        }
+        let RowEdit::Remove = edit;
+    }
+
+    // -----------------------------------------------------------------------
+    // Sheets
+    // -----------------------------------------------------------------------
+
+    fn current_collection_id(&self) -> Option<Id> {
+        self.selected
+            .and_then(|(index, _)| self.collections.get(index))
+            .or_else(|| self.collections.first())
+            .map(|collection| collection.id.clone())
+    }
+
+    fn collection_named(&self, id: &Id) -> Option<&Collection> {
+        self.collections.iter().find(|c| &c.id == id)
+    }
+
+    fn selected_request(&self) -> Option<(Id, Id)> {
+        let (ci, ri) = self.selected?;
+        let collection = self.collections.get(ci)?;
+        Some((
+            collection.id.clone(),
+            collection.requests.get(ri)?.id.clone(),
+        ))
+    }
+
+    /// The collection and request a sheet acts on: the row it was opened
+    /// from, else the one in the builder.
+    fn resolve_target(&self, target: FormTarget) -> FormTarget {
+        let selected = self.selected_request();
+        FormTarget {
+            collection: target
+                .collection
+                .or_else(|| selected.as_ref().map(|(collection, _)| collection.clone()))
+                .or_else(|| self.current_collection_id()),
+            request: target
+                .request
+                .or_else(|| selected.map(|(_, request)| request)),
+        }
+    }
+
+    fn request_in(&self, target: &FormTarget) -> Option<&Request> {
+        self.collection_named(target.collection.as_ref()?)?
+            .requests
             .iter()
-            .enumerate()
-            .find_map(|(ci, collection)| {
-                collection
-                    .requests
+            .find(|request| Some(&request.id) == target.request.as_ref())
+    }
+
+    fn active_environment(&self) -> Option<&Environment> {
+        self.environments
+            .iter()
+            .find(|environment| Some(&environment.id) == self.active_env.as_ref())
+    }
+
+    fn open_form(&mut self, mode: FormMode, target: FormTarget) {
+        let target = self.resolve_target(target);
+        let initial = match mode {
+            FormMode::RenameCollection => target
+                .collection
+                .as_ref()
+                .and_then(|id| self.collection_named(id))
+                .map_or(String::new(), |c| c.name.clone()),
+            FormMode::RenameRequest => self
+                .request_in(&target)
+                .map_or(String::new(), |r| r.name.clone()),
+            FormMode::RenameEnvironment => self
+                .active_environment()
+                .map_or(String::new(), |e| e.name.clone()),
+            FormMode::SaveRequest => self.request.name.clone(),
+            FormMode::NewCollection
+            | FormMode::NewEnvironment
+            | FormMode::NewVariable
+            | FormMode::DeleteVariable => String::new(),
+        };
+        self.nav.show(ui::widget::NavPane::Content);
+        // In drawer mode, choosing a sidebar command must uncover the
+        // content-owned form; selecting a push pane alone cannot close it.
+        self.dismiss_drawer();
+        let fields = Fields::new(&initial);
+        self.slots
+            .dialog
+            .set(dialog::build(mode, &fields, &self.sink));
+        self.form = Some(OpenForm {
+            mode,
+            target,
+            fields,
+        });
+        self.dirty = true;
+    }
+
+    fn close_form(&mut self) {
+        if self.form.take().is_some() {
+            self.slots.dialog.set(no_dialog());
+        }
+        self.dirty = true;
+    }
+
+    /// Delete the saved request `target` names (the one in the builder when
+    /// none): the host asks the person to confirm.
+    fn delete_request(&mut self, target: FormTarget) {
+        let target = self.resolve_target(target);
+        if let (Some(collection), Some(request)) = (target.collection, target.request) {
+            self.submit(Workspace::DELETE_REQUEST.with(verbs::DeleteRequest {
+                collection,
+                request,
+            }));
+        }
+        self.dirty = true;
+    }
+
+    /// Delete the active environment: the host asks the person to confirm.
+    fn delete_environment(&mut self) {
+        if let Some(id) = self.active_env.clone() {
+            self.submit(Workspace::DELETE_ENVIRONMENT.with(id));
+        }
+        self.dirty = true;
+    }
+
+    fn open_request_menu_action(&mut self, action: &str) -> Result<(), String> {
+        let mode = match action {
+            "Save request…" => FormMode::SaveRequest,
+            "Rename request…" => FormMode::RenameRequest,
+            "Delete request…" => {
+                self.delete_request(FormTarget::default());
+                return Ok(());
+            }
+            _ => return Err(format!("unknown request action `{action}`")),
+        };
+        self.open_form(mode, FormTarget::default());
+        Ok(())
+    }
+
+    fn open_environment_menu_action(&mut self, action: &str) -> Result<(), String> {
+        let mode = match action {
+            "Rename environment…" => FormMode::RenameEnvironment,
+            "Add variable…" => FormMode::NewVariable,
+            "Delete variable…" => FormMode::DeleteVariable,
+            _ => return Err(format!("unknown environment action `{action}`")),
+        };
+        self.open_form(mode, FormTarget::default());
+        Ok(())
+    }
+
+    fn submit_form(&mut self) {
+        let Some(form) = self.form.take() else {
+            return;
+        };
+        self.slots.dialog.set(no_dialog());
+        let OpenForm {
+            mode,
+            target,
+            fields,
+        } = form;
+        let name = fields.name.get().trim().to_string();
+        let paths = Workspace::paths();
+        match mode {
+            FormMode::NewCollection => {
+                let name = if name.is_empty() {
+                    format!("Collection {}", self.collections.len() + 1)
+                } else {
+                    name
+                };
+                self.submit(Workspace::NEW_COLLECTION.with(name));
+            }
+            FormMode::RenameCollection => {
+                if let Some(id) = target.collection.filter(|_| !name.is_empty()) {
+                    self.submit(paths.collections.item(&id).name.replace(name));
+                }
+            }
+            FormMode::SaveRequest => {
+                if let Some(collection) = target.collection {
+                    let name = if name.is_empty() {
+                        "Saved request".to_owned()
+                    } else {
+                        name
+                    };
+                    self.request.name.clone_from(&name);
+                    self.submit(Workspace::SAVE_REQUEST.with(verbs::SaveRequest {
+                        collection,
+                        name: Some(name),
+                    }));
+                    self.stale.header = true;
+                    self.stale.sidebar = true;
+                }
+            }
+            FormMode::RenameRequest => {
+                if let (Some(collection), Some(request)) = (target.collection, target.request)
+                    && !name.is_empty()
+                {
+                    if self.request.id == request {
+                        self.request.name.clone_from(&name);
+                        self.stale.header = true;
+                    }
+                    self.submit(
+                        paths
+                            .collections
+                            .item(&collection)
+                            .requests
+                            .item(&request)
+                            .name
+                            .replace(name),
+                    );
+                }
+            }
+            FormMode::NewEnvironment => {
+                let name = if name.is_empty() {
+                    format!("Environment {}", self.environments.len() + 1)
+                } else {
+                    name
+                };
+                self.submit(Workspace::NEW_ENVIRONMENT.with(name));
+            }
+            FormMode::RenameEnvironment => {
+                if let Some(id) = self.active_env.clone().filter(|_| !name.is_empty()) {
+                    self.submit(paths.environments.item(&id).name.replace(name));
+                }
+            }
+            FormMode::NewVariable => self.set_variable(&fields),
+            FormMode::DeleteVariable => {
+                let key = fields.key.get().trim().to_string();
+                if let Some(env_id) = self.active_env.clone().filter(|_| !key.is_empty())
+                    && let Some(variable) = self
+                        .environments
+                        .iter()
+                        .find(|env| env.id == env_id)
+                        .and_then(|env| env.variables.iter().find(|row| row.key == key))
+                {
+                    self.submit(
+                        paths
+                            .environments
+                            .item(&env_id)
+                            .variables
+                            .remove(&Id::from_raw(variable.id.clone())),
+                    );
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Add the variable the form names to the active environment, or give
+    /// the one of that key its new value. A secret's value is kept on this
+    /// device.
+    fn set_variable(&mut self, fields: &Fields) {
+        let key = fields.key.get().trim().to_string();
+        let value = fields.value.get().trim().to_string();
+        let Some(env_id) = self.active_env.clone().filter(|_| !key.is_empty()) else {
+            return;
+        };
+        let existing = self
+            .environments
+            .iter()
+            .find(|env| env.id == env_id)
+            .and_then(|env| env.variables.iter().find(|row| row.key == key))
+            .cloned();
+        let secret = existing
+            .as_ref()
+            .map_or_else(|| fields.secret.get(), |variable| variable.secret);
+        let Some(variable) = existing else {
+            // The window names the new variable, so a secret's value is kept
+            // under its id before the variable is added.
+            let id = crate::model::fresh_id();
+            if secret && let Err(error) = self.keep_secret(SECRET_VARIABLE, id.as_str(), &value) {
+                self.error = Some(format!("Couldn't keep the value on this device: {error}"));
+                self.stale.response = true;
+                return;
+            }
+            let variables = Workspace::paths().environments.item(&env_id).variables;
+            let at = self
+                .environments
+                .iter()
+                .find(|env| env.id == env_id)
+                .map_or(0, |env| env.variables.len());
+            self.submit(variables.insert_as(
+                &id,
+                at,
+                &Variable {
+                    key,
+                    value: if secret { String::new() } else { value },
+                    enabled: true,
+                    secret,
+                },
+            ));
+            return;
+        };
+        if secret {
+            if let Err(error) = self.keep_secret(SECRET_VARIABLE, &variable.id, &value) {
+                self.error = Some(format!("Couldn't keep the value on this device: {error}"));
+                self.stale.response = true;
+            }
+            return;
+        }
+        self.submit(
+            Workspace::paths()
+                .environments
+                .item(&env_id)
+                .variables
+                .item(&Id::from_raw(variable.id))
+                .value
+                .replace(value),
+        );
+    }
+
+    /// The person chose from the environment picker: an environment, or one
+    /// of the commands that manage them. Which environment is active is
+    /// shared, so a choice is a field edit of the record.
+    fn pick_environment(&mut self, choice: &str) {
+        if let Some((_, mode)) = ENVIRONMENT_COMMANDS
+            .iter()
+            .find(|(label, _)| *label == choice)
+        {
+            match mode {
+                Some(mode) => self.open_form(*mode, FormTarget::default()),
+                None => self.delete_environment(),
+            }
+        } else {
+            let next = if choice == NO_ENV {
+                Some(None)
+            } else {
+                self.environments
                     .iter()
-                    .position(|saved| saved.id == self.request.id)
-                    .map(|ri| (ci, ri))
-            });
-        self.method_dropdown
-            .set_selected(self.request.method.as_str());
-        if environments_changed {
-            self.rebuild_env_dropdown();
+                    .find(|e| e.name == choice)
+                    .map(|e| Some(e.id.clone()))
+            };
+            if let Some(next) = next
+                && next != self.active_env
+            {
+                self.submit(Workspace::paths().active_environment.set(next));
+            }
         }
-        let environment = self
-            .active_env
-            .and_then(|id| self.environments.iter().find(|e| e.id == id))
-            .map_or_else(|| NO_ENV.to_string(), |e| e.name.clone());
-        self.env_dropdown.set_selected(environment);
-        self.rebuild_nav();
-        self.dirty = true;
+        // A command is not a value the picker keeps.
+        self.show_active_environment();
     }
 
-    /// Take part in the workspace: submit changes through its dispatcher,
-    /// edit the URL and body as its texts, and keep credentials in this
-    /// device's secret store.
-    pub(crate) fn attach_surface(&mut self, cx: &SurfaceCx<ApiTester>) {
-        let dispatcher = cx.dispatcher();
-        self.url_input
-            .attach(crate::resource::url_dispatcher(&dispatcher));
-        self.body_input
-            .attach(crate::resource::body_dispatcher(&dispatcher));
-        self.read_only = dispatcher.read_only();
-        self.dispatcher = Some(dispatcher);
-        self.secrets = Some(cx.secrets());
-        self.credentials.clear();
+    /// Make the environment picker read the active environment, whichever way
+    /// it changed (a pick, a rename, a deletion, the palette).
+    fn show_active_environment(&self) {
+        self.env_state
+            .set(Self::environment_name(&self.environments, self.active_env.as_ref()).to_owned());
     }
 
-    pub(crate) fn set_read_only(&mut self, read_only: bool) {
-        self.read_only = read_only;
-        self.dirty = true;
+    // Method selection uses the typed request dispatcher.
+
+    // -----------------------------------------------------------------------
+    // Resource operations
+    // -----------------------------------------------------------------------
+}
+
+impl Default for ApiTesterApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ===========================================================================
+// Widget impl
+// ===========================================================================
+
+impl ui::widget::Decorator for ApiTesterApp {
+    type Inner = NavShell;
+
+    fn inner(&self) -> &NavShell {
+        &self.nav
     }
 
-    /// Submit one change to the workspace.
-    fn submit(&self, action: &ApiTesterAction) {
+    fn inner_mut(&mut self) -> &mut NavShell {
+        &mut self.nav
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.refresh_views();
+        self.nav.sync(state, path);
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.nav.handle_event(event, ctx);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::theme::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        match self.pose.take() {
+            Some(Pose::SidebarOpen) => {
+                self.nav.open_sidebar();
+                self.nav.snap();
+            }
+            Some(Pose::SidebarClosed) => {
+                self.nav.close_sidebar();
+                self.nav.snap();
+            }
+            None => {}
+        }
+        self.nav
+            .draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.sending || self.pose.is_some() || self.nav.needs_redraw()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        self.nav.mark_drawn();
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.sending
+            || self.sink.reset_area.get()
+            || !self.sink.borrow().is_empty()
+            || self.nav.needs_idle_sync()
+    }
+
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        self.nav.settle(edits, path);
+        self.drain_commands();
+        self.refresh_views();
+    }
+    fn name(&self) -> &'static str {
+        "ApiTesterApp"
+    }
+}
+
+#[cfg(test)]
+mod tests;
+
+impl ApiTesterApp {
+    fn secret(&self, purpose: &'static str, item: &str) -> Option<String> {
+        let secret = self
+            .secrets
+            .as_ref()?
+            .item(purpose, item)
+            .get_blocking()
+            .ok()??;
+        String::from_utf8(secret.expose().to_vec()).ok()
+    }
+}
+
+impl ApiTesterApp {
+    fn keep_secret(&self, purpose: &'static str, item: &str, value: &str) -> Result<(), String> {
+        let secrets = self
+            .secrets
+            .as_ref()
+            .ok_or_else(|| "this window keeps no secrets".to_string())?;
+        secrets
+            .item(purpose, item)
+            .put_blocking(value.as_bytes())
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl ApiTesterApp {
+    fn credential(&mut self, id: &Id) -> String {
+        if let Some(known) = self.credentials.get(id) {
+            return known.clone();
+        }
+        let found = self.secret(CREDENTIAL, id.as_str()).unwrap_or_default();
+        self.credentials.insert(id.clone(), found.clone());
+        found
+    }
+}
+
+impl ApiTesterApp {
+    /// Submit a field edit or a verb of the shared record: the host checks
+    /// the participant may, applies it as one undo step and presents the
+    /// changed workspace.
+    fn submit(&self, submit: impl Submit<Workspace>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(submit);
         }
     }
+}
 
-    /// Answer one of the app's effects, from a control, the palette, an agent
-    /// or a script.
+impl ApiTesterApp {
     pub(crate) fn answer_effect(
         &mut self,
         effect: ApiTesterEffect,
-        cx: &mut EffectCx<ApiTester, Self>,
+        cx: &mut EffectCx<Workspace, Self>,
     ) -> EffectAnswer {
         match effect {
+            ApiTesterEffect::PickEnvironment { choice } => {
+                self.sink.borrow_mut().push(Cmd::PickEnvironment(choice));
+                self.dirty = true;
+                Ok(Effected::done())
+            }
             ApiTesterEffect::Send => {
                 let method = self.request.method;
                 let out = self.outgoing();
                 self.start_send(method, out, cx)
             }
             ApiTesterEffect::SendSaved { request } => {
-                let Some(saved) = self
-                    .collections
-                    .iter()
-                    .flat_map(|collection| &collection.requests)
-                    .find(|saved| saved.id.to_string() == request)
-                    .cloned()
-                else {
+                let request = Id::from_raw(request);
+                let Some((collection, saved)) = self.workspace.saved(&request) else {
                     return Err("saved request no longer exists".to_string());
                 };
-                cx.apply(&ApiTesterAction::OpenRequest {
-                    request: saved.clone(),
-                });
-                let mut outgoing = saved;
-                let credential = self.credential(outgoing.id);
+                let mut outgoing = saved.shown(&request);
+                cx.submit(Workspace::OPEN_REQUEST.with(verbs::OpenRequest {
+                    collection: collection.clone(),
+                    request,
+                }));
+                let credential = self.credential(&outgoing.id);
                 outgoing.auth = outgoing.auth.with_secret(&credential);
                 let out = http::build_outgoing(&outgoing, &self.env_vars());
                 self.start_send(outgoing.method, out, cx)
             }
             ApiTesterEffect::SetCredential { secret } => {
-                let id = self.request.id;
-                self.keep_secret(CREDENTIAL, &id.to_string(), &secret)?;
+                let id = self.request.id.clone();
+                self.keep_secret(CREDENTIAL, id.as_str(), &secret)?;
                 self.credentials.insert(id, secret.clone());
                 self.request.auth = self.request.auth.with_secret(&secret);
                 self.dirty = true;
@@ -1160,14 +1458,14 @@ impl ApiTesterApp {
             }
         }
     }
+}
 
-    /// Send `out` from this device; when it answers, show the response and
-    /// record the run in the history.
+impl ApiTesterApp {
     fn start_send(
         &mut self,
         method: HttpMethod,
         out: Outgoing,
-        cx: &mut EffectCx<ApiTester, Self>,
+        cx: &mut EffectCx<Workspace, Self>,
     ) -> EffectAnswer {
         if self.sending {
             return Err("another API request is already running".into());
@@ -1183,3731 +1481,115 @@ impl ApiTesterApp {
                 app.dirty = true;
                 match sent {
                     Ok(response) => {
-                        cx.apply(&ApiTesterAction::RecordHistory {
-                            entry: HistoryEntry {
-                                id: uuid::Uuid::new_v4(),
-                                method,
-                                url,
-                                status: response.status,
-                                duration_ms: response.duration_ms,
-                                when: "just now".into(),
-                            },
-                        });
+                        cx.submit(Workspace::RECORD_SENT.with(verbs::RecordSent {
+                            method: method.as_str().to_owned(),
+                            url,
+                            status: response.status,
+                            duration_ms: response.duration_ms,
+                        }));
                         app.response = Some(response);
                         app.response_view = ResponseView::Pretty;
-                        app.response_view_toggle.set_selected(0);
-                        app.collapsed.clear();
-                        app.body_scroll = 0.0;
+                        app.stale.response = true;
+                        app.stale.response_body = true;
+
                         Ok(Effected::done())
                     }
                     Err(error) => {
                         app.error = Some(error.clone());
+                        app.stale.response = true;
                         Err(error)
                     }
                 }
             },
         ))
     }
-
-    /// Open a saved request from a collection in the builder.
-    fn load_request(&mut self, ci: usize, ri: usize) {
-        if let Some(req) = self
-            .collections
-            .get(ci)
-            .and_then(|c| c.requests.get(ri))
-            .cloned()
-        {
-            self.submit(&ApiTesterAction::OpenRequest { request: req });
-            self.active_tab = RequestTab::Params;
-            self.request_tabs.set_selected(0);
-            self.dirty = true;
-        }
-    }
-
-    /// Number shown on a request-builder tab badge (kept for the tests + the
-    /// var hint; the tab strip itself no longer paints badges).
-    #[cfg(test)]
-    fn tab_count(&self, tab: RequestTab) -> usize {
-        match tab {
-            RequestTab::Params => Request::enabled_count(&self.request.params),
-            RequestTab::Headers => Request::enabled_count(&self.request.headers),
-            RequestTab::Auth => usize::from(!matches!(self.request.auth, Auth::None)),
-            RequestTab::Body => usize::from(!matches!(self.request.body_mode, BodyMode::None)),
-        }
-    }
-
-    /// Whether the body editor field is on screen (Body tab, JSON/Raw mode).
-    fn body_field_visible(&self) -> bool {
-        self.active_tab == RequestTab::Body
-            && matches!(self.request.body_mode, BodyMode::Json | BodyMode::Raw)
-    }
-
-    /// Whether the sidebar (and therefore the env picker + nav rows) is part
-    /// of the tree this frame.
-    fn sidebar_visible(&self) -> bool {
-        self.rail.is_open()
-    }
-
-    fn tab_index(&self) -> usize {
-        RequestTab::ALL
-            .iter()
-            .position(|t| *t == self.active_tab)
-            .unwrap_or(0)
-    }
-
-    /// The 0-based index of a saved request across the (expanded) collection
-    /// tree — matches the nav-row ordering so an a11y "n of m" reads sensibly.
-    fn child_sig(&self) -> ChildSig {
-        ChildSig {
-            tab: self.tab_index() as u8,
-            body_field: self.body_field_visible(),
-            resp_view: self.response.is_some(),
-            hamburger: self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay,
-            sidebar: self.sidebar_visible(),
-            nav_rows: self.nav_rows.len(),
-            nav_start: self.nav_start,
-            management: self.management,
-            form: self.form,
-            sidebar_items: self
-                .layout
-                .sidebar_items
-                .iter()
-                .map(|(item, _)| *item)
-                .collect(),
-        }
-    }
-
-    // -------------------------------------------------------------------
-    // Nav rows
-    // -------------------------------------------------------------------
-
-    /// Rebuild the ordered `nav_meta` list (collections → requests → history)
-    /// from the model, then rebuild the `NavRow` widgets to match, each wired
-    /// to push its command onto the sink.
-    fn rebuild_nav(&mut self) {
-        let meta = self.compute_nav_meta();
-        if meta == self.nav_meta && self.nav_rows.len() == meta.len() {
-            return;
-        }
-        self.layout
-            .sidebar_items
-            .retain(|(item, _)| !matches!(item, SidebarItem::Nav(_)));
-        self.nav_meta = meta;
-        let rows = self
-            .nav_meta
-            .iter()
-            .enumerate()
-            .map(|(i, m)| {
-                let sink = self.sink.clone();
-                let cmd = m.cmd.clone();
-                NavRow::new(
-                    format!("api.nav.{i}"),
-                    m.kind.clone(),
-                    m.label.clone(),
-                    m.a11y_name.clone(),
-                )
-                .on_activate(move || sink.borrow_mut().push(cmd.clone()))
-            })
-            .collect();
-        let previous = std::mem::replace(&mut self.nav_rows, rows);
-        if !previous.is_empty() {
-            self.retired_nav_rows.push(previous);
-        }
-        // A same-count replacement still invalidates the host's raw pointers.
-        self.nav_rows_replaced = true;
-    }
-
-    /// The ordered sidebar rows derived from the model. Kept separate from
-    /// widget construction so both `rebuild_nav` and (if needed) tests can
-    /// reason about the row set.
-    fn compute_nav_meta(&self) -> Vec<NavMeta> {
-        let mut v = Vec::new();
-        for (ci, col) in self.collections.iter().enumerate() {
-            let expanded = !self.collapsed.contains(&ci);
-            v.push(NavMeta {
-                kind: NavKind::Collection {
-                    expanded,
-                    count: col.requests.len(),
-                },
-                label: col.name.clone(),
-                a11y_name: format!("{}, collection, {} requests", col.name, col.requests.len()),
-                cmd: Cmd::ToggleCollection(ci),
-            });
-            if expanded {
-                for (ri, req) in col.requests.iter().enumerate() {
-                    v.push(NavMeta {
-                        kind: NavKind::Request {
-                            method: req.method,
-                            selected: self.selected == Some((ci, ri)),
-                        },
-                        label: req.name.clone(),
-                        a11y_name: format!("{} {}", req.method.as_str(), req.name),
-                        cmd: Cmd::LoadRequest(ci, ri),
-                    });
-                }
-            }
-        }
-        for (hi, h) in self.history.iter().enumerate() {
-            v.push(NavMeta {
-                kind: NavKind::History {
-                    method: h.method,
-                    status: h.status,
-                },
-                label: short_path(&h.url),
-                a11y_name: format!("{} {} {}", h.method.as_str(), short_path(&h.url), h.status),
-                cmd: Cmd::ReplayHistory(hi),
-            });
-        }
-        v
-    }
-
-    /// Refill the env dropdown after the environment list changes.
-    fn rebuild_env_dropdown(&mut self) {
-        let mut opts = vec![NO_ENV.to_string()];
-        opts.extend(self.environments.iter().map(|e| e.name.clone()));
-        self.env_dropdown.set_options(opts);
-    }
-
-    // -------------------------------------------------------------------
-    // Ordered child access (build_layout / children / children_mut all agree)
-    // -------------------------------------------------------------------
-
-    fn children_ref(&self) -> Vec<&dyn Widget> {
-        let mut v: Vec<&dyn Widget> = vec![
-            &self.method_dropdown,
-            &self.url_input,
-            &self.send_button,
-            &self.request_tabs,
-            &self.request_actions,
-        ];
-        if self.rect.width() > 600.0 {
-            v.insert(3, &self.save_button);
-        }
-        if self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay {
-            v.insert(0, &self.rail_button);
-            if self.sidebar_visible() {
-                v.insert(1, &self.rail_close);
-            }
-        }
-        if self.body_field_visible() {
-            v.push(&self.body_input);
-        }
-        v.push(&self.divider);
-        if self.response.is_some() {
-            v.push(&self.response_view_toggle);
-        } else if self.error.is_some() {
-            v.push(&self.response_error);
-        } else {
-            v.push(&self.response_empty);
-        }
-        if self.sidebar_visible() {
-            if let Some(form) = self.form {
-                if form.needs_name() {
-                    v.push(&self.form_name_input);
-                }
-                if form.needs_variable_fields() {
-                    v.push(&self.form_key_input);
-                    if form.needs_value() {
-                        v.push(&self.form_value_input);
-                        v.push(&self.form_secret);
-                    }
-                }
-                v.push(&self.form_cancel);
-                v.push(&self.form_submit);
-            }
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "every SidebarItem index is produced by layout from these widget vectors, so it is in bounds"
-            )]
-            for (item, _) in &self.layout.sidebar_items {
-                v.push(match *item {
-                    SidebarItem::Environment => &self.env_dropdown,
-                    SidebarItem::Manage(i) => &self.manage_buttons[i],
-                    SidebarItem::Disclosure(i) => &self.disclosures[i],
-                    SidebarItem::Nav(i) => &self.nav_rows[i],
-                });
-            }
-        }
-        v
-    }
-
-    fn children_mut_ref(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut v: Vec<&mut (dyn Widget + '_)> = Vec::new();
-        let body = self.body_field_visible();
-        let resp = self.response.is_some();
-        let sidebar = self.sidebar_visible();
-        let hamburger = self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay;
-        if hamburger {
-            v.push(&mut self.rail_button);
-            if sidebar {
-                v.push(&mut self.rail_close);
-            }
-        }
-        v.push(&mut self.method_dropdown);
-        v.push(&mut self.url_input);
-        v.push(&mut self.send_button);
-        if self.rect.width() > 600.0 {
-            v.push(&mut self.save_button);
-        }
-        v.push(&mut self.request_tabs);
-        v.push(&mut self.request_actions);
-        if body {
-            v.push(&mut self.body_input);
-        }
-        v.push(&mut self.divider);
-        if resp {
-            v.push(&mut self.response_view_toggle);
-        } else if self.error.is_some() {
-            v.push(&mut self.response_error);
-        } else {
-            v.push(&mut self.response_empty);
-        }
-        if sidebar {
-            if let Some(form) = self.form {
-                if form.needs_name() {
-                    v.push(&mut self.form_name_input);
-                }
-                if form.needs_variable_fields() {
-                    v.push(&mut self.form_key_input);
-                    if form.needs_value() {
-                        v.push(&mut self.form_value_input);
-                        v.push(&mut self.form_secret);
-                    }
-                }
-                v.push(&mut self.form_cancel);
-                v.push(&mut self.form_submit);
-            }
-            // Gather unique references first, then consume by explicit identity.
-            // Filtering never changes the association between a rect and action.
-            let mut items: HashMap<SidebarItem, &mut dyn Widget> = HashMap::new();
-            items.insert(SidebarItem::Environment, &mut self.env_dropdown);
-            for (i, button) in self.manage_buttons.iter_mut().enumerate() {
-                items.insert(SidebarItem::Manage(i), button);
-            }
-            for (i, row) in self.disclosures.iter_mut().enumerate() {
-                items.insert(SidebarItem::Disclosure(i), row);
-            }
-            for (i, row) in self.nav_rows.iter_mut().enumerate() {
-                items.insert(SidebarItem::Nav(i), row);
-            }
-            for (item, _) in &self.layout.sidebar_items {
-                if let Some(widget) = items.remove(item) {
-                    v.push(widget);
-                }
-            }
-        }
-        v
-    }
-
-    /// Position every live child widget from the computed layout, in the same
-    /// order `children_mut_ref` / `build_layout` use.
-    fn position_children(&mut self) {
-        let l = self.layout.clone();
-        self.divider.apply_layout_external(l.divider);
-        // Hidden rows and closed actions must have no stale hit rectangles.
-        self.env_dropdown.apply_layout_external(Rect::ZERO);
-        for (i, button) in self.manage_buttons.iter_mut().enumerate() {
-            if !l
-                .sidebar_items
-                .iter()
-                .any(|(item, _)| *item == SidebarItem::Manage(i))
-            {
-                button.apply_layout_external(Rect::ZERO);
-            }
-        }
-        for row in self.nav_rows.iter_mut().chain(self.disclosures.iter_mut()) {
-            row.apply_layout_external(Rect::ZERO);
-        }
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "every SidebarItem index is produced by layout from these widget vectors, so it is in bounds"
-        )]
-        for (item, rect) in &l.sidebar_items {
-            match *item {
-                SidebarItem::Environment => self.env_dropdown.apply_layout_external(*rect),
-                SidebarItem::Manage(i) => self.manage_buttons[i].apply_layout_external(*rect),
-                SidebarItem::Disclosure(i) => self.disclosures[i].apply_layout_external(*rect),
-                SidebarItem::Nav(i) => self.nav_rows[i].apply_layout_external(*rect),
-            }
-        }
-        if self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay {
-            self.rail_button.apply_layout_external(l.hamburger);
-            if self.sidebar_visible() {
-                self.rail_close.apply_layout_external(l.rail_close);
-            }
-        }
-        self.method_dropdown.apply_layout_external(l.method);
-        self.url_input.control_mut().apply_layout_external(l.url);
-        self.send_button.apply_layout_external(l.send);
-        if self.rect.width() > 600.0 {
-            self.save_button.apply_layout_external(l.save);
-        }
-        self.request_tabs.apply_layout_external(l.tabs);
-        self.request_actions
-            .apply_layout_external(l.request_actions);
-        if self.body_field_visible() {
-            self.body_input.control_mut().apply_layout_external(l.body);
-        }
-        if self.response.is_some() {
-            self.response_view_toggle.apply_layout_external(l.resp_view);
-        } else if self.error.is_some() {
-            self.response_error.apply_layout_external(l.resp_body);
-        } else {
-            self.response_empty.apply_layout_external(l.resp_body);
-        }
-        if self.sidebar_visible()
-            && let Some(form) = self.form
-        {
-            if form.needs_name() {
-                self.form_name_input.apply_layout_external(l.form_name);
-            }
-            if form.needs_variable_fields() {
-                self.form_key_input.apply_layout_external(l.form_key);
-                if form.needs_value() {
-                    self.form_value_input.apply_layout_external(l.form_value);
-                    self.form_secret.apply_layout_external(l.form_secret);
-                }
-            }
-            self.form_cancel.apply_layout_external(l.form_actions[0]);
-            self.form_submit.apply_layout_external(l.form_actions[1]);
-        }
-    }
-
-    fn response_chrome_height(&self, width: f64) -> f64 {
-        response_status_height(width / self.text_scale)
-            + (self.control_height - 34.0).max(0.0)
-                * if width < COMPACT_RESPONSE_BREAKPOINT * self.text_scale {
-                    2.0
-                } else {
-                    1.0
-                }
-    }
-
-    /// Left edge of the KV key column: the row gutter, the text-scaled enable
-    /// checkbox and a gap. Measurement, the `KEY` heading and the rows all
-    /// read this one value, so a 200% checkbox never overprints its key.
-    fn kv_key_x(&self) -> f64 {
-        PAD + KV_INDICATOR_SIZE * self.text_scale + KV_INDICATOR_GAP
-    }
-
-    fn automatic_request_height(&self) -> f64 {
-        // The provisional pre-measure pass only needs a nonzero editor.
-        // Settled layout and paint both consume the retained shaped rows.
-        let table_height = self.kv_height.unwrap_or(self.row_height + 42.0);
-        match self.active_tab {
-            RequestTab::Params | RequestTab::Headers => table_height,
-            RequestTab::Body => match self.request.body_mode {
-                BodyMode::Form => self.row_height + 16.0 + table_height,
-                BodyMode::None => 24.0 + self.row_height * 2.0,
-                BodyMode::Json | BodyMode::Raw => 36.0 + self.row_height * 6.0,
-            },
-            RequestTab::Auth => {
-                36.0 + 20.0 * self.text_scale
-                    + self.row_height
-                    + match self.request.auth {
-                        Auth::None => self.row_height,
-                        Auth::Bearer { .. } => self.control_height + 16.0 * self.text_scale + 12.0,
-                        _ => (self.control_height + 36.0 * self.text_scale) * 2.0,
-                    }
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------
-    // Layout
-    // -------------------------------------------------------------------
-
-    /// Compute all chrome regions + control rects for the current window rect
-    /// and rail state. Pure geometry; called from both `apply_layout` and
-    /// `draw`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pure geometry pass keeps the hand-positioned controls and painted chrome in lockstep"
-    )]
-    fn compute_layout(&mut self) -> Layout {
-        // The shared drawer resolves docked-vs-overlay from the rect and hands
-        // back the sidebar / content / scrim rects: a docked column with inset
-        // content when wide, or a slid-in overlay panel over a scrim when narrow.
-        let mut l = Layout {
-            main: self.rail.resolve(self.rect),
-            ..Layout::default()
-        };
-        let split = self.rail.layout();
-        l.sidebar = self.rail.sidebar_rect();
-        l.scrim = self.rail.scrim_rect();
-
-        // --- URL bar row ---
-        let area = l.main;
-        let compact_urlbar = split == SplitLayout::Overlay
-            && area.width() < COMPACT_URLBAR_BREAKPOINT * self.text_scale;
-        let control_h = self.control_height.max(36.0);
-        let row_h = URLBAR_H + control_h - 36.0;
-        let urlbar_h = if compact_urlbar {
-            COMPACT_URLBAR_H + 2.0 * (control_h - 36.0)
-        } else {
-            row_h
-        };
-        l.urlbar = Rect::new(area.x0, area.y0, area.x1, area.y0 + urlbar_h);
-        let cy0 = l.urlbar.y0 + 10.0;
-        let mut row_x0 = area.x0 + PAD;
-        if split == SplitLayout::Overlay {
-            // Square toggle: as wide as the row's controls are tall, so it
-            // does not become a narrow slab beside a taller picker at 200%.
-            let side = HAMBURGER_W.max(control_h);
-            l.hamburger = Rect::new(row_x0, cy0, row_x0 + side, cy0 + control_h);
-            row_x0 = l.hamburger.x1 + 8.0;
-        }
-        l.method = Rect::new(
-            row_x0,
-            cy0,
-            row_x0 + METHOD_W.max(72.0 * self.text_scale),
-            cy0 + control_h,
-        );
-        l.send = Rect::new(
-            area.x1 - PAD - SEND_W.max(64.0 * self.text_scale),
-            cy0,
-            area.x1 - PAD,
-            cy0 + control_h,
-        );
-        l.url = if compact_urlbar {
-            Rect::new(
-                area.x0 + PAD,
-                l.urlbar.y0 + row_h,
-                area.x1 - PAD,
-                l.urlbar.y0 + row_h + control_h,
-            )
-        } else {
-            Rect::new(l.method.x1 + 8.0, cy0, l.send.x0 - 8.0, cy0 + control_h)
-        };
-
-        // --- Tab strip ---
-        let compact_request_actions = area.width() <= 600.0;
-        let tab_strip_h = if compact_request_actions {
-            TAB_STRIP_H.max(control_h + 8.0) + control_h + 8.0
-        } else {
-            TAB_STRIP_H.max(control_h + 8.0)
-        };
-        let tab_y0 = l.urlbar.y1 + 8.0;
-        l.tab_strip = Rect::new(area.x0, tab_y0, area.x1, tab_y0 + tab_strip_h);
-        let tabs_w =
-            (96.0 * self.text_scale * RequestTab::ALL.len() as f64).min(area.width() - PAD * 2.0);
-        let tabs_y1 = if compact_request_actions {
-            l.tab_strip.y0 + TAB_STRIP_H.max(control_h + 8.0) - 4.0
-        } else {
-            l.tab_strip.y1 - 4.0
-        };
-        l.tabs = Rect::new(
-            area.x0 + PAD,
-            l.tab_strip.y0 + 4.0,
-            area.x0 + PAD + tabs_w,
-            tabs_y1,
-        );
-        l.save = Rect::new(
-            l.tabs.x1 + 8.0,
-            l.tabs.y0,
-            l.tabs.x1 + 8.0 + 84.0,
-            l.tabs.y1,
-        );
-        l.request_actions = if compact_request_actions {
-            Rect::new(
-                area.x0 + PAD,
-                l.tabs.y1 + 4.0,
-                area.x1 - PAD,
-                l.tab_strip.y1 - 4.0,
-            )
-        } else {
-            Rect::new(l.save.x1 + 8.0, l.tabs.y0, l.save.x1 + 164.0, l.tabs.y1)
-        };
-
-        // --- Editor / response split ---
-        let available = (area.y1 - l.tab_strip.y1 - 10.0).max(0.0);
-        let response_min = self.response_chrome_height(area.width()) + self.row_height * 2.0;
-        let maximum = (available - response_min).max(0.0);
-        let minimum = (self.row_height + 36.0).min(maximum);
-        let editor_h = self
-            .request_height_override
-            .unwrap_or_else(|| self.automatic_request_height())
-            .clamp(minimum, maximum);
-        l.editor = Rect::new(area.x0, l.tab_strip.y1, area.x1, l.tab_strip.y1 + editor_h);
-        l.divider = Rect::new(area.x0, l.editor.y1, area.x1, l.editor.y1 + 10.0);
-        l.response = Rect::new(area.x0, l.divider.y1, area.x1, area.y1);
-
-        // Body field (Body tab, JSON/Raw).
-        if self.body_field_visible() {
-            let e = l.editor;
-            l.body = Rect::new(
-                e.x0 + PAD,
-                (e.y0 + 24.0 + self.row_height).min(e.y1),
-                e.x1 - PAD,
-                (e.y1 - 12.0).max((e.y0 + 24.0 + self.row_height).min(e.y1)),
-            );
-        }
-
-        // Response chrome + view switch.
-        let status_h = self.response_chrome_height(l.response.width());
-        l.resp_status = Rect::new(
-            l.response.x0,
-            l.response.y0,
-            l.response.x1,
-            l.response.y0 + status_h,
-        );
-        l.resp_body = Rect::new(
-            l.response.x0,
-            l.resp_status.y1,
-            l.response.x1,
-            l.response.y1,
-        );
-        l.body_region = l.resp_body;
-        if self.response.is_some() {
-            if l.response.width() < COMPACT_RESPONSE_BREAKPOINT * self.text_scale {
-                // Keep the switcher a full-width, easy-to-hit control below
-                // the status line. Equal segments remain legible at large
-                // text sizes and the response body starts below both rows.
-                l.resp_view = Rect::new(
-                    l.response.x0 + PAD,
-                    l.resp_status.y1 - (self.control_height - 10.0) - 6.0,
-                    l.response.x1 - PAD,
-                    l.resp_status.y1 - 6.0,
-                );
-            } else {
-                let view_w = 210.0 * self.text_scale;
-                let cy = l.resp_status.center().y;
-                l.resp_view = Rect::new(
-                    l.response.x1 - PAD - view_w,
-                    cy - (self.control_height - 10.0) / 2.0,
-                    l.response.x1 - PAD,
-                    cy + (self.control_height - 10.0) / 2.0,
-                );
-            }
-        }
-
-        // --- Sidebar rows ---
-        if self.rail.reveal() > 0.001 && l.sidebar.width() > 1.0 {
-            let s = l.sidebar;
-            let rail_gap = self.rail_row_gap;
-            let group_gap = self.rail_group_gap;
-            // No app-name wordmark (the OS titlebar shows "API Tester"); the ENV
-            // picker leads the sidebar. Keep room above it for the ENV caption.
-            // The rail opens with its `s6` gutter, grown only when the ENV
-            // caption plus its `s1` gap to the picker needs more.
-            let mut y = s.y0 + self.rail_inset.max(self.env_caption_h + 2.0 * group_gap);
-            let control_x = s.x0 + PAD;
-            let scale = self.text_scale.max(1.0);
-            let close_w = 88.0 * scale;
-            let close_h = 36.0 * scale;
-            l.rail_close = Rect::new(
-                s.x1 - PAD - close_w,
-                s.y0 + PAD,
-                s.x1 - PAD,
-                s.y0 + PAD + close_h,
-            );
-            let control_w = s.width() - PAD * 2.0;
-            if let Some(form) = self.form {
-                l.form_heading = Point::new(control_x, y);
-                y += (20.0 * self.text_scale).max(20.0);
-                if form.needs_name() {
-                    l.form_name = Rect::new(control_x, y, s.x1 - PAD, y + self.control_height);
-                    y += self.control_height + 10.0;
-                }
-                if form.needs_variable_fields() {
-                    l.form_key = Rect::new(control_x, y, s.x1 - PAD, y + self.control_height);
-                    y += self.control_height + 8.0;
-                    if form.needs_value() {
-                        l.form_value = Rect::new(control_x, y, s.x1 - PAD, y + self.control_height);
-                        y += self.control_height + 8.0;
-                        l.form_secret =
-                            Rect::new(control_x, y, s.x1 - PAD, y + self.control_height);
-                        y += self.control_height + 10.0;
-                    }
-                }
-                let half = (control_w - 8.0) / 2.0;
-                l.form_actions = [
-                    Rect::new(control_x, y, control_x + half, y + self.control_height),
-                    Rect::new(
-                        control_x + half + 8.0,
-                        y,
-                        s.x1 - PAD,
-                        y + self.control_height,
-                    ),
-                ];
-                y += self.control_height + 16.0;
-            } else {
-                l.env = Rect::new(control_x, y, s.x1 - PAD, y + self.control_height);
-                l.sidebar_items.push((SidebarItem::Environment, l.env));
-                y = l.env.y1 + rail_gap;
-            }
-            let h = self.control_height;
-            let row = self.row_height;
-            let footer_actions: &[usize] = match self.management {
-                Some(0) => &[2],
-                Some(1) => &[3, 4, 10, 11, 12],
-                Some(2) => &[5, 6, 7, 8, 9],
-                _ => &[],
-            };
-            let footer_h = if self.form.is_none() {
-                4.0 * (h + rail_gap) + footer_actions.len() as f64 * (h + group_gap) + rail_gap
-            } else {
-                0.0
-            };
-            let mut add = |item, at: f64, height: f64| {
-                let rect = Rect::new(control_x, at, s.x1 - PAD, at + height);
-                if rect.y0 >= s.y0 && rect.y1 <= s.y1 - 4.0 {
-                    l.sidebar_items.push((item, rect));
-                }
-            };
-            if self.form.is_none() {
-                add(SidebarItem::Manage(0), y, h);
-                y += h + rail_gap;
-            }
-            // The "COLLECTIONS" caption only labels a list that has room for
-            // at least one row above the footer; a height-starved rail (an
-            // open action group in a short window) hands that band to the
-            // footer instead of reserving it for nothing (HIG §7a: empty
-            // docks do not reserve area).
-            let label_h = self.caption_h + group_gap;
-            let footer_top = s.y1 - PAD - footer_h;
-            if footer_top - y >= label_h + row {
-                l.collections_label = Point::new(control_x, y);
-                y += label_h;
-            }
-            let bottom = footer_top.max(y);
-            let paging = (self.nav_meta.len() as f64 * row) > bottom - y;
-            let nav_bottom = if paging {
-                (bottom - h - 4.0).max(y)
-            } else {
-                bottom
-            };
-            l.nav_viewport = Rect::new(s.x0, y, s.x1, nav_bottom);
-            let capacity = ((nav_bottom - y) / row).floor().max(0.0) as usize;
-            self.nav_start = self
-                .nav_start
-                .min(self.nav_meta.len().saturating_sub(capacity.max(1)));
-            for i in self.nav_start..(self.nav_start + capacity).min(self.nav_meta.len()) {
-                add(SidebarItem::Nav(i), y, row);
-                y += row;
-            }
-            if paging && bottom - l.nav_viewport.y0 >= h {
-                // Both directions stay available to keyboard users, including
-                // when a disclosure temporarily reduces the list viewport.
-                let half = (s.width() - PAD * 2.0 - rail_gap) / 2.0;
-                l.sidebar_items.push((
-                    SidebarItem::Manage(13),
-                    Rect::new(control_x, bottom - h, control_x + half, bottom),
-                ));
-                l.sidebar_items.push((
-                    SidebarItem::Manage(14),
-                    Rect::new(control_x + half + rail_gap, bottom - h, s.x1 - PAD, bottom),
-                ));
-            }
-            if self.form.is_none() {
-                y = if paging {
-                    bottom + rail_gap
-                } else {
-                    y + rail_gap
-                };
-                l.sidebar_items.push((
-                    SidebarItem::Manage(1),
-                    Rect::new(control_x, y, s.x1 - PAD, y + h),
-                ));
-                y += h + rail_gap;
-                for group in 0..3 {
-                    l.sidebar_items.push((
-                        SidebarItem::Disclosure(group),
-                        Rect::new(control_x, y, s.x1 - PAD, y + h),
-                    ));
-                    y += h + rail_gap;
-                    if self.management == Some(group) {
-                        for &i in footer_actions {
-                            l.sidebar_items.push((
-                                SidebarItem::Manage(i),
-                                Rect::new(control_x, y, s.x1 - PAD, y + h),
-                            ));
-                            y += h + group_gap;
-                        }
-                        // The next top-level control sits a full step below
-                        // the group, not a group step.
-                        y += rail_gap - group_gap;
-                    }
-                }
-            }
-        }
-
-        l
-    }
-
-    /// Keep the hand-positioned app chrome in step with the toolkit's text
-    /// scale. At large accessibility sizes a narrow overlay becomes a
-    /// full-width workspace rather than letting the underlying editor show
-    /// through beside clipped drawer controls.
-    fn sync_adaptive_metrics(&mut self, theme: &Theme) {
-        let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
-        self.layout_text_scale = scale;
-        self.rail.set_docked_width(SIDEBAR_W * scale);
-        self.rail
-            .set_overlay_width((SIDEBAR_W * scale).min(self.rect.width()));
-        self.rail.set_breakpoint(RAIL_BREAKPOINT * scale);
-    }
-
-    /// Keep keyboard / screen-reader focus visible as it traverses a rail
-    /// longer than the viewport. The offset is view-local and bounded, so it
-    /// never becomes collaborative document churn.
-    fn follow_rail_focus(&mut self) -> bool {
-        let sidebar = self.layout.sidebar;
-        let Some(row) = self.nav_rows.iter().find(|row| row.is_focused()) else {
-            return false;
-        };
-        let top = sidebar.y0 + 8.0;
-        let bottom = sidebar.y1 - 8.0;
-        let next = if row.get_rect().y0 < top {
-            self.sidebar_scroll - (top - row.get_rect().y0)
-        } else if row.get_rect().y1 > bottom {
-            self.sidebar_scroll + (row.get_rect().y1 - bottom)
-        } else {
-            return false;
-        };
-        self.sidebar_scroll = next.clamp(0.0, 1200.0);
-        true
-    }
 }
 
 impl ApiTesterApp {
-    // -------------------------------------------------------------------
-    // Drawing — chrome only; controls draw themselves at their rects.
-    // -------------------------------------------------------------------
-
-    fn paint(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        let c = &theme.tokens.colors;
-        let l = self.layout.clone();
-        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &self.rect);
-
-        self.draw_main(scene, t, tr, theme, presence, &l);
-
-        // The shared drawer paints the (subtle) dimming scrim + soft edge shadow
-        // behind an open overlay flap; it is a no-op when docked or closed.
-        self.rail.draw_scrim(scene, t);
-        if self.rail.reveal() > 0.001 && l.sidebar.width() > 1.0 {
-            self.draw_sidebar(scene, t, tr, theme, presence, &l);
-        }
-    }
-
-    fn draw_sidebar(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        l: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
-        let area = l.sidebar;
-        scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &area);
-        // The rail's edge is derived against the rail itself (HIG §9.5).
-        let div = Rect::new(area.x1 - 1.0, area.y0, area.x1, area.y1);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            ui::surface::edge_on(c.surfaces.raised),
-            None,
-            &div,
-        );
-
-        // ENV label above the picker.
-        if self.form.is_none() {
-            tr.draw_text_weighted(
-                scene,
-                "ENV",
-                9.0,
-                c.text_dim,
-                t * Affine::translate((
-                    l.env.x0,
-                    l.env.y0 - (self.env_caption_h + self.rail_group_gap),
-                )),
-                None,
-                TextWeight::Bold,
-            );
-        }
-        if self.rail.layout() == SplitLayout::Overlay {
-            self.rail_close.draw(scene, t, tr, theme, presence);
-        }
-        Self::draw_section_label(scene, t, tr, theme, l.collections_label, "COLLECTIONS");
-        if let Some(form) = self.form {
-            Self::draw_section_label(scene, t, tr, theme, l.form_heading, form.heading());
-        }
-
-        // The environment plus visible management controls are all retained
-        // widgets, so their labels/tooltips/focus state are exposed to AT.
-        if let Some(form) = self.form {
-            if form.needs_name() {
-                self.form_name_input.draw(scene, t, tr, theme, presence);
-            }
-            if form.needs_variable_fields() {
-                self.form_key_input.draw(scene, t, tr, theme, presence);
-                if form.needs_value() {
-                    self.form_value_input.draw(scene, t, tr, theme, presence);
-                    self.form_secret.draw(scene, t, tr, theme, presence);
-                }
-            }
-            self.form_cancel.draw(scene, t, tr, theme, presence);
-            self.form_submit.draw(scene, t, tr, theme, presence);
-        }
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "every SidebarItem index is produced by layout from these widget vectors, so it is in bounds"
-        )]
-        for (item, _) in &l.sidebar_items {
-            match *item {
-                SidebarItem::Environment => self.env_dropdown.draw(scene, t, tr, theme, presence),
-                SidebarItem::Manage(i) => {
-                    self.manage_buttons[i].draw(scene, t, tr, theme, presence);
-                }
-                SidebarItem::Disclosure(i) => {
-                    self.disclosures[i].draw(scene, t, tr, theme, presence);
-                }
-                SidebarItem::Nav(i) => self.nav_rows[i].draw(scene, t, tr, theme, presence),
-            }
-        }
-    }
-
-    fn draw_section_label(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        at: Point,
-        text: &str,
-    ) {
-        if at == Point::ZERO {
-            return;
-        }
-        tr.draw_text_weighted(
-            scene,
-            text,
-            10.0,
-            theme.tokens.colors.text_dim,
-            t * Affine::translate((at.x, at.y)),
-            None,
-            TextWeight::Bold,
-        );
-    }
-
-    fn draw_main(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        l: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
-        let area = l.main;
-
-        // URL bar background + divider.
-        scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &l.urlbar);
-        let bar_div = Rect::new(area.x0, l.urlbar.y1 - 1.0, area.x1, l.urlbar.y1);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            ui::surface::edge_on(c.surfaces.raised),
-            None,
-            &bar_div,
-        );
-
-        if self.rail.layout() == SplitLayout::Overlay {
-            self.rail_button.draw(scene, t, tr, theme, presence);
-        }
-
-        // Method picker draws itself; keep the method-tinted rest look via the
-        // dropdown's own themed chrome.
-        self.method_dropdown.draw(scene, t, tr, theme, presence);
-
-        // URL field box + the plain TextInput inside it.
-        // Rest: a base-toned field with its derived edge; focus: the ring.
-        if self.url_input.is_focused() {
-            let url_shape = RoundedRect::from_rect(l.url, f64::from(theme.tokens.radii.md));
-            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &url_shape);
-            scene.stroke(&Stroke::new(2.0), t, theme.border_focus, None, &url_shape);
-        } else {
-            ui::surface::card(
-                scene,
-                t,
-                l.url,
-                f64::from(theme.tokens.radii.md),
-                c.surfaces.base,
-            );
-        }
-        self.url_input.draw(scene, t, tr, theme, presence);
-
-        // Send button draws itself.
-        self.send_button.draw(scene, t, tr, theme, presence);
-
-        // Tab strip background + the ToggleGroup + the var hint.
-        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &l.tab_strip);
-        self.request_tabs.draw(scene, t, tr, theme, presence);
-        // Paint Save after the strip surface: its geometry deliberately lives
-        // beside the tabs, and drawing it before this fill made it invisible.
-        if self.rect.width() > 600.0 {
-            self.save_button.draw(scene, t, tr, theme, presence);
-        }
-        self.request_actions.draw(scene, t, tr, theme, presence);
-        self.draw_var_hint(scene, t, tr, theme, l);
-        let strip_div = Rect::new(area.x0, l.tab_strip.y1 - 1.0, area.x1, l.tab_strip.y1);
-        scene.fill(Fill::NonZero, t, c.border_standard, None, &strip_div);
-
-        // Editor + response.
-        self.draw_editor(scene, t, tr, theme, presence, l);
-        self.draw_response(scene, t, tr, theme, presence, l);
-    }
-
-    fn draw_var_hint(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        l: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
-        let url_now = self.url_input.control().value().to_string();
-        let refs = vars::referenced_vars(&url_now);
-        if refs.is_empty() {
-            return;
-        }
-        let env = self.env_vars();
-        let unresolved: Vec<&String> = refs.iter().filter(|r| !env.contains_key(*r)).collect();
-        let (hint, hint_col) = if unresolved.is_empty() {
-            (
-                format!("{} variable(s) resolved", refs.len()),
-                c.semantic.success,
-            )
-        } else {
-            (
-                format!(
-                    "unresolved: {}",
-                    unresolved
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                c.semantic.warning,
-            )
-        };
-        let size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-            .size;
-        let (hw, hh) = tr.measure(&hint, size, None);
-        if !tab_strip_has_room_for_hint(l, f64::from(hw)) {
-            return;
-        }
-        // Centre on the measured line height, not a font-size guess.
-        tr.draw_text(
-            scene,
-            &hint,
-            size,
-            hint_col,
-            t * Affine::translate((
-                l.main.x1 - PAD - f64::from(hw),
-                l.tab_strip.center().y - f64::from(hh) / 2.0,
-            )),
-            None,
-        );
-    }
-
-    fn draw_editor(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        l: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
-        let area = l.editor;
-        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &area);
-        self.divider.draw(scene, t, tr, theme, presence);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &area,
-        );
-        match self.active_tab {
-            RequestTab::Params | RequestTab::Headers => {
-                self.draw_kv_table(scene, t, tr, theme, area);
-            }
-            RequestTab::Auth => self.draw_auth(scene, t, tr, theme, area),
-            RequestTab::Body => self.draw_body(scene, t, tr, theme, presence, l),
-        }
-        scene.pop_layer();
-    }
-
-    fn measure_kv_table(&mut self, tr: &mut TextRenderer, width: f64) {
-        let (rows, empty_msg) = match self.active_tab {
-            RequestTab::Params => (&self.request.params, "No query parameters"),
-            RequestTab::Headers => (&self.request.headers, "No headers"),
-            RequestTab::Body if self.request.body_mode == BodyMode::Form => {
-                (&self.request.form, "No form fields")
-            }
-            _ => {
-                self.kv_rows.clear();
-                self.kv_height = None;
-                return;
-            }
-        };
-        let mut cells: Vec<_> = rows
-            .iter()
-            .filter(|row| !row.is_blank())
-            .map(|row| {
-                (
-                    row.key.as_str(),
-                    row.value.as_str(),
-                    row.enabled,
-                    false,
-                    true,
-                )
-            })
-            .collect();
-        if cells.is_empty() {
-            cells.push((empty_msg, "", true, false, false));
-        } else {
-            cells.push(("New key", "New value", false, true, true));
-        }
-        // RichTextLayout accepts resolved metrics directly; draw_rich paints
-        // the same shaped glyphs without another scale or wrapping pass.
-        let style = TextStyle::new(self.text_sm);
-        let key_x = self.kv_key_x();
-        let value_x = width * 0.5;
-        let key_width = (value_x - key_x - 12.0).max(1.0) as f32;
-        let value_width = (width - PAD - value_x).max(1.0) as f32;
-        let header_height =
-            f64::from(tr.measure_weighted("KEY", 10.0, None, TextWeight::Bold).1).ceil();
-        let mut y = 12.0 + header_height + 9.0;
-        self.kv_rows.clear();
-        for (key, value, enabled, placeholder, indicator) in cells {
-            let key = RichTextLayout::shape_styled(
-                &mut tr.font_system,
-                &[RichSpan::new(key)],
-                &style,
-                Some(if indicator {
-                    key_width
-                } else {
-                    (width - PAD * 2.0).max(1.0) as f32
-                }),
-                TextAlign::Left,
-                vec![],
-                vec![],
-            );
-            let spans = Self::value_spans(value, self.variable_color);
-            let value = RichTextLayout::shape_styled(
-                &mut tr.font_system,
-                &spans,
-                &style,
-                Some(value_width),
-                TextAlign::Left,
-                vec![],
-                vec![],
-            );
-            let key_h = f64::from(key.height());
-            let value_h = f64::from(value.height());
-            let height = (key_h.max(value_h).ceil() + 12.0).max(ROW_H);
-            let rect = Rect::new(PAD, y, width - PAD, y + height);
-            let kx = if indicator { key_x } else { PAD };
-            let indicator_size = (KV_INDICATOR_SIZE * self.text_scale).min(height - 4.0);
-            self.kv_rows.push(KvRowLayout {
-                rect,
-                key_rect: Rect::new(
-                    kx,
-                    rect.center().y - key_h / 2.0,
-                    if indicator {
-                        key_x + f64::from(key_width)
-                    } else {
-                        width - PAD
-                    },
-                    rect.center().y + key_h / 2.0,
-                ),
-                value_rect: Rect::new(
-                    value_x,
-                    rect.center().y - value_h / 2.0,
-                    value_x + f64::from(value_width),
-                    rect.center().y + value_h / 2.0,
-                ),
-                key,
-                value,
-                enabled,
-                placeholder,
-                indicator,
-                indicator_size,
-            });
-            y += height;
-        }
-        self.kv_height = Some(y + 8.0);
-    }
-
-    fn value_spans(value: &str, accent: [u8; 3]) -> Vec<RichSpan> {
-        let mut spans = Vec::new();
-        let mut rest = value;
-        while let Some((before, after_open)) = rest.split_once("{{") {
-            let Some((name, after)) = after_open.split_once("}}") else {
-                break;
-            };
-            spans.push(RichSpan::new(before));
-            spans.push(
-                RichSpan::new(format!("{{{{{name}}}}}"))
-                    .bold(true)
-                    .color(Some(accent)),
-            );
-            rest = after;
-        }
-        spans.push(RichSpan::new(rest));
-        spans
-    }
-
-    fn draw_kv_table(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let t = t * Affine::translate((area.x0, area.y0));
-        for (label, x) in [("KEY", self.kv_key_x()), ("VALUE", area.width() * 0.5)] {
-            tr.draw_text_weighted(
-                scene,
-                label,
-                10.0,
-                c.text_dim,
-                t * Affine::translate((x, 12.0)),
-                None,
-                TextWeight::Bold,
-            );
-        }
-        for row in &self.kv_rows {
-            if row.rect.y1 > area.height() {
-                break;
-            }
-            Self::draw_kv_row(scene, t, tr, theme, row);
-        }
-    }
-
-    fn draw_kv_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        row: &KvRowLayout,
-    ) {
-        let c = &theme.tokens.colors;
-        // Clip ink overhang too; text geometry already fits these bounds.
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &row.rect,
-        );
-        if row.indicator {
-            if row.placeholder {
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    t,
-                    ui::surface::edge_on(c.surfaces.base),
-                    None,
-                    &RoundedRect::from_rect(row.checkbox(), 4.0),
-                );
-            } else {
-                Checkbox::paint(
-                    scene,
-                    t,
-                    theme,
-                    &CheckboxFace::new(row.checkbox(), row.enabled).transparent_unchecked(),
-                );
-            }
-        }
-        let color = if row.placeholder {
-            c.text_dim.with_alpha_factor(0.6)
-        } else if row.enabled {
-            c.text_primary
-        } else {
-            c.text_dim
-        };
-        for (layout, rect) in [(&row.key, row.key_rect), (&row.value, row.value_rect)] {
-            scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                t,
-                &rect,
-            );
-            tr.draw_rich(
-                scene,
-                layout,
-                t * Affine::translate((rect.x0, rect.y0)),
-                color,
-            );
-            scene.pop_layer();
-        }
-        if !row.placeholder && row.indicator {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                ui::surface::edge_on(c.surfaces.base),
-                None,
-                &Rect::new(row.rect.x0, row.rect.y1 - 1.0, row.rect.x1, row.rect.y1),
-            );
-        }
-        scene.pop_layer();
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "declarative drawing of the auth editor that reads top-to-bottom"
-    )]
-    fn draw_auth(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let x0 = area.x0 + PAD;
-        let mut y = area.y0 + 16.0;
-        tr.draw_text_weighted(
-            scene,
-            "AUTH TYPE",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((x0, y)),
-            None,
-            TextWeight::Bold,
-        );
-        y += 20.0 * self.text_scale;
-
-        // Mode chips (display of the active scheme; the scheme is fixed per
-        // loaded request in this app, so these are read-only chrome).
-        let mut cx = x0;
-        for label in Auth::LABELS {
-            let active = self.request.auth.label() == label;
-            let (lw, _) = tr.measure(
-                label,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
-                None,
-            );
-            let chip = Rect::new(cx, y, cx + f64::from(lw) + 24.0, y + self.row_height);
-            if active {
-                let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.full));
-                scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
-            } else {
-                ui::surface::card(
-                    scene,
-                    t,
-                    chip,
-                    f64::from(theme.tokens.radii.full),
-                    c.lift(0.35),
-                );
-            }
-            tr.draw_text_weighted(
-                scene,
-                label,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
-                if active {
-                    c.on_surface(theme.accent_primary).ink
-                } else {
-                    c.text_dim
-                },
-                t * Affine::translate((cx + 12.0, y + 8.0)),
-                None,
-                TextWeight::Semibold,
-            );
-            cx = chip.x1 + 8.0;
-        }
-        y += self.row_height + 20.0;
-
-        let draw_field = |scene: &mut Scene,
-                          tr: &mut TextRenderer,
-                          y: f64,
-                          label: &str,
-                          value: &str,
-                          secret: bool| {
-            tr.draw_text_weighted(
-                scene,
-                label,
-                10.0,
-                c.text_dim,
-                t * Affine::translate((x0, y)),
-                None,
-                TextWeight::Bold,
-            );
-            let field = Rect::new(
-                x0,
-                y + 16.0 * self.text_scale,
-                area.x1 - PAD,
-                y + 16.0 * self.text_scale + self.control_height,
-            );
-            ui::surface::card(
-                scene,
-                t,
-                field,
-                f64::from(theme.tokens.radii.md),
-                c.surfaces.raised,
-            );
-            let shown = if secret && !value.is_empty() {
-                "\u{2022}".repeat(value.chars().count().min(24))
-            } else {
-                value.to_string()
-            };
-            tr.draw_text(
-                scene,
-                &shown,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
-                c.text_primary,
-                t * Affine::translate((field.x0 + 12.0, field.center().y - 7.0)),
-                Some((field.width() - 24.0) as f32),
-            );
-        };
-
-        match &self.request.auth {
-            Auth::None => {
-                tr.draw_text(
-                    scene,
-                    "This request does not use authentication.",
-                    tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                        .size,
-                    c.text_dim,
-                    t * Affine::translate((x0, y)),
-                    None,
-                );
-            }
-            Auth::Bearer { token } => draw_field(scene, tr, y, "TOKEN", token, true),
-            Auth::Basic { username, password } => {
-                draw_field(scene, tr, y, "USERNAME", username, false);
-                draw_field(
-                    scene,
-                    tr,
-                    y + self.control_height + 36.0 * self.text_scale,
-                    "PASSWORD",
-                    password,
-                    true,
-                );
-            }
-            Auth::ApiKey { header, value } => {
-                draw_field(scene, tr, y, "HEADER NAME", header, false);
-                draw_field(
-                    scene,
-                    tr,
-                    y + self.control_height + 36.0 * self.text_scale,
-                    "VALUE",
-                    value,
-                    true,
-                );
-            }
-        }
-    }
-
-    fn draw_body(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        l: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
-        let area = l.editor;
-        let x0 = area.x0 + PAD;
-        let mut y = area.y0 + 12.0;
-
-        // Body-mode chips (read-only chrome — mode is fixed per request).
-        let mut cx = x0;
-        for mode in BodyMode::ALL {
-            let active = self.request.body_mode == mode;
-            let label = mode.label();
-            let (lw, _) = tr.measure(
-                label,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
-                None,
-            );
-            let chip = Rect::new(cx, y, cx + f64::from(lw) + 20.0, y + self.row_height);
-            let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
-            if active {
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    theme.accent_primary.with_alpha_factor(0.2),
-                    None,
-                    &shape,
-                );
-                scene.stroke(&Stroke::new(1.0), t, theme.accent_primary, None, &shape);
-            } else {
-                ui::surface::card(
-                    scene,
-                    t,
-                    chip,
-                    f64::from(theme.tokens.radii.md),
-                    c.lift(0.35),
-                );
-            }
-            tr.draw_text_weighted(
-                scene,
-                label,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
-                if active { c.text_primary } else { c.text_dim },
-                t * Affine::translate((cx + 10.0, y + 6.0)),
-                None,
-                if active {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Regular
-                },
-            );
-            cx = chip.x1 + 8.0;
-        }
-        y += self.row_height + 12.0;
-
-        match self.request.body_mode {
-            BodyMode::None => {
-                tr.draw_text(
-                    scene,
-                    "This request does not have a body.",
-                    tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                        .size,
-                    c.text_dim,
-                    t * Affine::translate((x0, y)),
-                    None,
-                );
-            }
-            BodyMode::Form => {
-                let sub = Rect::new(area.x0, y - 8.0, area.x1, area.y1);
-                self.draw_kv_table(scene, t, tr, theme, sub);
-            }
-            BodyMode::Json | BodyMode::Raw => {
-                let field = l.body;
-                if self.body_input.is_focused() {
-                    let shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
-                    scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
-                    scene.stroke(&Stroke::new(2.0), t, theme.border_focus, None, &shape);
-                } else {
-                    ui::surface::card(
-                        scene,
-                        t,
-                        field,
-                        f64::from(theme.tokens.radii.md),
-                        c.surfaces.raised,
-                    );
-                }
-                self.body_input.draw(scene, t, tr, theme, presence);
-            }
-        }
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "declarative drawing of the response pane that reads top-to-bottom"
-    )]
-    fn draw_response(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        l: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
-        let area = l.response;
-        scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &area);
-        let top_div = Rect::new(area.x0, area.y0, area.x1, area.y0 + 1.0);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            ui::surface::edge_on(c.surfaces.raised),
-            None,
-            &top_div,
-        );
-
-        let row = l.resp_status;
-        let x0 = area.x0 + PAD;
-        let cy = row.y0 + f64::midpoint(self.control_height, 10.0);
-
-        if let Some(resp) = self.response.clone() {
-            let scol = status_color(theme, resp.status_class());
-            let pill_label = format!("{} {}", resp.status, resp.status_text);
-            let (pw, ph) = tr.measure_weighted(
-                &pill_label,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
-                None,
-                TextWeight::Bold,
-            );
-            let pill = Rect::new(
-                x0,
-                cy - self.control_height / 2.0,
-                x0 + f64::from(pw) + 24.0,
-                cy + self.control_height / 2.0,
-            );
-            let pill_shape = RoundedRect::from_rect(pill, f64::from(theme.tokens.radii.full));
-            scene.fill(
-                Fill::NonZero,
-                t,
-                scol.with_alpha_factor(0.18),
-                None,
-                &pill_shape,
-            );
-            tr.draw_text_weighted(
-                scene,
-                &pill_label,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
-                scol,
-                t * Affine::translate((pill.x0 + 12.0, cy - f64::from(ph) / 2.0)),
-                None,
-                TextWeight::Bold,
-            );
-            let meta = format!(
-                "{}   {}",
-                human_duration(resp.duration_ms),
-                format_bytes(u64::try_from(resp.size_bytes).unwrap_or(u64::MAX))
-            );
-            tr.draw_text(
-                scene,
-                &meta,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
-                c.text_dim,
-                t * Affine::translate((pill.x1 + 16.0, cy - f64::from(ph) / 2.0)),
-                None,
-            );
-
-            // View switch draws itself.
-            self.response_view_toggle
-                .draw(scene, t, tr, theme, presence);
-
-            let body_area = l.resp_body;
-            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &body_area);
-            let body_div = Rect::new(area.x0, body_area.y0, area.x1, body_area.y0 + 1.0);
-            scene.fill(
-                Fill::NonZero,
-                t,
-                ui::surface::edge_on(c.surfaces.raised),
-                None,
-                &body_div,
-            );
-
-            match self.response_view {
-                ResponseView::Pretty => {
-                    if resp.is_json() {
-                        self.draw_json_body(scene, t, tr, theme, &resp, body_area);
-                    } else {
-                        self.draw_raw_body(scene, t, tr, theme, &resp.body, body_area);
-                    }
-                }
-                ResponseView::Raw => self.draw_raw_body(scene, t, tr, theme, &resp.body, body_area),
-                ResponseView::Preview => {
-                    Self::draw_response_headers(scene, t, tr, theme, &resp, body_area);
-                }
-            }
-        } else if let Some(err) = &self.error {
-            let body_area = l.resp_body;
-            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &body_area);
-            self.response_error.draw(scene, t, tr, theme, presence);
-            // Preserve the transport's actual detail below the shared recovery
-            // treatment; the CTA remains visible and keyboard-accessible.
-            tr.draw_text(
-                scene,
-                err,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
-                c.text_dim,
-                t * Affine::translate((body_area.x0 + PAD, body_area.y1 - 48.0)),
-                Some((body_area.width() - PAD * 2.0) as f32),
-            );
-        } else {
-            let body_area = l.resp_body;
-            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &body_area);
-            self.response_empty.draw(scene, t, tr, theme, presence);
-        }
-    }
-
-    fn draw_json_body(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        resp: &ResponseData,
-        area: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let pretty = vars::pretty_json(&resp.body).unwrap_or_else(|| resp.body.clone());
-        let lines = vars::tokenize_json(&pretty);
-        let size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-            .size;
-        // Measure the line at the size the lines are drawn with.
-        let line_h = (f64::from(tr.measure("Ag", size, None).1) + 4.0).max(JSON_LINE_H);
-        let gutter_w = 44.0;
-        let text_x0 = area.x0 + gutter_w + 8.0;
-        self.layout.fold_carets.clear();
-
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &area,
-        );
-        let mut screen_y = area.y0 + 8.0 - self.body_scroll;
-        let mut line_no = 0usize;
-        let mut hidden_until: Option<usize> = None;
-
-        for (idx, line) in lines.iter().enumerate() {
-            if let Some(close) = hidden_until {
-                if idx <= close {
-                    continue;
-                }
-                hidden_until = None;
-            }
-            line_no += 1;
-            if screen_y + line_h >= area.y0 && screen_y <= area.y1 {
-                let ln = line_no.to_string();
-                let (lnw, _) = tr.measure(&ln, 11.0, None);
-                tr.draw_text(
-                    scene,
-                    &ln,
-                    11.0,
-                    c.text_dim.with_alpha_factor(0.6),
-                    t * Affine::translate((
-                        area.x0 + gutter_w - f64::from(lnw) - 6.0,
-                        screen_y + 3.0,
-                    )),
-                    None,
-                );
-
-                let collapsed = self.collapsed.contains(&idx);
-                if line.opens_block && line.close_line.is_some() {
-                    let caret_pt = Point::new(area.x0 + gutter_w - 2.0, screen_y + line_h / 2.0);
-                    draw_fold_caret(scene, t, caret_pt, c.text_dim, !collapsed);
-                    let caret_rect = Rect::new(
-                        area.x0 + gutter_w - 10.0,
-                        screen_y,
-                        area.x0 + gutter_w + 6.0,
-                        screen_y + line_h,
-                    );
-                    self.layout.fold_carets.push((caret_rect, idx));
-                }
-                let mut cx = text_x0;
-                for tok in &line.tokens {
-                    let col = token_color(theme, tok.kind);
-                    tr.draw_style(
-                        scene,
-                        &tok.text,
-                        col,
-                        t * Affine::translate((cx, screen_y + 3.0)),
-                        None,
-                        &TextStyle::new(size).with_family(FontChoice::Monospace),
-                    );
-                    let (w, _) =
-                        tr.measure_styled(&tok.text, size, None, TextWeight::Regular, false, true);
-                    cx += f64::from(w);
-                }
-                if collapsed && line.opens_block {
-                    tr.draw_text(
-                        scene,
-                        " \u{2026} ",
-                        size,
-                        c.text_dim,
-                        t * Affine::translate((cx, screen_y + 3.0)),
-                        None,
-                    );
-                }
-            }
-            if line.opens_block
-                && self.collapsed.contains(&idx)
-                && let Some(close) = line.close_line
-            {
-                hidden_until = Some(close);
-            }
-            screen_y += line_h;
-        }
-        scene.pop_layer();
-    }
-
-    fn draw_raw_body(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        body: &str,
-        area: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &area,
-        );
-        let size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-            .size;
-        // Measure the line at the size the lines are drawn with.
-        let line_h = (f64::from(tr.measure("Ag", size, None).1) + 4.0).max(JSON_LINE_H);
-        let mut y = area.y0 + 8.0 - self.body_scroll;
-        for line in body.lines() {
-            if y + line_h >= area.y0 && y <= area.y1 {
-                tr.draw_style(
-                    scene,
-                    line,
-                    c.text_primary,
-                    t * Affine::translate((area.x0 + PAD, y + 3.0)),
-                    None,
-                    &TextStyle::new(size).with_family(FontChoice::Monospace),
-                );
-            }
-            y += line_h;
-        }
-        scene.pop_layer();
-    }
-
-    fn draw_response_headers(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        resp: &ResponseData,
-        area: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let x0 = area.x0 + PAD;
-        let mut y = area.y0 + 12.0;
-        let caption = "RESPONSE HEADERS";
-        let (_, caption_h) = tr.measure_weighted(caption, 10.0, None, TextWeight::Bold);
-        tr.draw_text_weighted(
-            scene,
-            caption,
-            10.0,
-            c.text_dim,
-            t * Affine::translate((x0, y)),
-            None,
-            TextWeight::Bold,
-        );
-        y += f64::from(caption_h) + 9.0;
-        // Rows advance by the measured line height of the size they paint
-        // with, so a scaled header list never overprints its neighbours.
-        let size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-            .size;
-        let line_h = f64::from(tr.measure("Ag", size, None).1);
-        let row_h = (line_h + 10.0).max(28.0);
-        let key_w = (area.width() * 0.32).min(280.0);
-        for h in &resp.headers {
-            if y + row_h > area.y1 {
-                break;
-            }
-            let ty = y + (row_h - 1.0 - line_h) / 2.0;
-            tr.draw_text_weighted(
-                scene,
-                &h.key,
-                size,
-                c.semantic.info,
-                t * Affine::translate((x0, ty)),
-                Some((key_w - 12.0) as f32),
-                TextWeight::Semibold,
-            );
-            tr.draw_text(
-                scene,
-                &h.value,
-                size,
-                c.text_primary,
-                t * Affine::translate((x0 + key_w, ty)),
-                Some((area.width() - PAD * 2.0 - key_w) as f32),
-            );
-            let sep = Rect::new(x0, y + row_h - 1.0, area.x1 - PAD, y + row_h);
-            scene.fill(
-                Fill::NonZero,
-                t,
-                ui::surface::edge_on(c.surfaces.base),
-                None,
-                &sep,
-            );
-            y += row_h;
-        }
-    }
-
-    // -------------------------------------------------------------------
-    // Command application
-    // -------------------------------------------------------------------
-
-    /// Drain the command sink and apply each command, persisting when a
-    /// command changes shared state. Returns `true` if anything was applied.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match is the authoritative mapping from visible commands to canonical actions"
-    )]
-    fn drain_commands(&mut self) -> bool {
-        let cmds: Vec<Cmd> = self.sink.borrow_mut().drain(..).collect();
-        if cmds.is_empty() {
-            return false;
-        }
-        for cmd in cmds {
-            match cmd {
-                Cmd::ToggleRail => self.rail.toggle(),
-                Cmd::ToggleManagement(group) => {
-                    self.management = if self.management == Some(group) {
-                        None
-                    } else {
-                        Some(group)
-                    };
-                    for (i, row) in self.disclosures.iter_mut().enumerate() {
-                        row.set_expanded(self.management == Some(i));
-                    }
-                }
-                Cmd::ResizeRequest(delta) => {
-                    self.request_height_override =
-                        Some((self.layout.editor.height() + delta).max(0.0));
-                }
-                Cmd::ResetRequest => self.request_height_override = None,
-                Cmd::ScrollNav(direction) => {
-                    let page = (self.layout.nav_viewport.height() / self.row_height)
-                        .floor()
-                        .max(1.0) as usize;
-                    self.nav_start = if direction < 0 {
-                        self.nav_start.saturating_sub(page)
-                    } else {
-                        (self.nav_start + page).min(self.nav_rows.len().saturating_sub(1))
-                    };
-                }
-                Cmd::SetTab(i) => {
-                    if let Some(&tab) = RequestTab::ALL.get(i) {
-                        self.active_tab = tab;
-                    }
-                }
-                Cmd::SetView(i) => {
-                    if let Some(&v) = ResponseView::ALL.get(i) {
-                        self.response_view = v;
-                    }
-                }
-                Cmd::ToggleCollection(ci) => {
-                    if self.collapsed.contains(&ci) {
-                        self.collapsed.remove(&ci);
-                    } else {
-                        self.collapsed.insert(ci);
-                    }
-                    self.rebuild_nav();
-                }
-                Cmd::LoadRequest(ci, ri) => {
-                    self.load_request(ci, ri);
-                }
-                Cmd::ReplayHistory(hi) => {
-                    if let Some(h) = self.history.get(hi) {
-                        self.submit(&ApiTesterAction::OpenHistory {
-                            history_id: h.id.to_string(),
-                        });
-                    }
-                }
-                Cmd::OpenForm(mode) => self.open_form(mode),
-                Cmd::CancelForm => self.form = None,
-                Cmd::SubmitForm => self.submit_form(),
-            }
-        }
+    pub(crate) fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
         self.dirty = true;
-        true
-    }
-
-    fn current_collection_id(&self) -> Option<uuid::Uuid> {
-        self.selected
-            .and_then(|(index, _)| self.collections.get(index))
-            .or_else(|| self.collections.first())
-            .map(|collection| collection.id)
-    }
-
-    fn open_form(&mut self, mode: FormMode) {
-        self.form = Some(mode);
-        self.form_name_input.set_text(match mode {
-            FormMode::RenameCollection => self
-                .current_collection_id()
-                .and_then(|id| self.collections.iter().find(|c| c.id == id))
-                .map_or("", |c| c.name.as_str()),
-            FormMode::RenameRequest => self
-                .selected
-                .and_then(|(ci, ri)| self.collections.get(ci)?.requests.get(ri))
-                .map_or("", |r| r.name.as_str()),
-            FormMode::RenameEnvironment => self
-                .active_env
-                .and_then(|id| self.environments.iter().find(|e| e.id == id))
-                .map_or("", |e| e.name.as_str()),
-            FormMode::SaveRequest => self.request.name.as_str(),
-            _ => "",
-        });
-        self.form_key_input.set_text("");
-        self.form_value_input.set_text("");
-        self.form_secret.set_selected(SHARED_VALUE);
-    }
-
-    fn open_request_menu_action(&mut self, action: &str) -> Result<(), String> {
-        let mode = match action {
-            "Save request…" => FormMode::SaveRequest,
-            "Rename request…" => FormMode::RenameRequest,
-            "Delete request…" => FormMode::DeleteRequest,
-            _ => return Err(format!("unknown request action `{action}`")),
-        };
-        self.open_form(mode);
-        self.request_actions.set_selected("Request actions");
-        Ok(())
-    }
-
-    fn open_environment_menu_action(&mut self, action: &str) -> Result<(), String> {
-        let mode = match action {
-            "Rename environment…" => FormMode::RenameEnvironment,
-            "Add variable…" => FormMode::NewVariable,
-            "Delete variable…" => FormMode::DeleteVariable,
-            _ => return Err(format!("unknown environment action `{action}`")),
-        };
-        self.open_form(mode);
-        self.environment_actions.set_selected("Environment actions");
-        Ok(())
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive form-to-canonical-action mapping makes contextual management easy to audit"
-    )]
-    fn submit_form(&mut self) {
-        let Some(mode) = self.form else { return };
-        let name = self.form_name_input.value().trim().to_string();
-        match mode {
-            FormMode::NewCollection => {
-                let name = if name.is_empty() {
-                    format!("Collection {}", self.collections.len() + 1)
-                } else {
-                    name
-                };
-                self.submit(&actions::create_collection_action(
-                    uuid::Uuid::new_v4(),
-                    &name,
-                ));
-            }
-            FormMode::RenameCollection => {
-                if let Some(id) = self.current_collection_id().filter(|_| !name.is_empty()) {
-                    self.submit(&actions::rename_collection_action(id, &name));
-                }
-            }
-            FormMode::SaveRequest => {
-                if let Some(collection_id) = self.current_collection_id() {
-                    let mut request = self.request.clone();
-                    request.name = if name.is_empty() {
-                        "Saved request".into()
-                    } else {
-                        name
-                    };
-                    request.url = self.url_input.control().value().to_string();
-                    request.body_text = self.body_input.control().value().to_string();
-                    // The credential stays on this device, under the same id.
-                    request.auth = request.auth.without_secret();
-                    self.submit(&actions::save_request_action(collection_id, request));
-                }
-            }
-            FormMode::RenameRequest => {
-                if let Some((ci, ri)) = self.selected
-                    && let Some(collection) = self.collections.get(ci)
-                    && let Some(request) = collection.requests.get(ri)
-                    && !name.is_empty()
-                {
-                    self.submit(&actions::rename_request_action(
-                        collection.id,
-                        request.id,
-                        &name,
-                    ));
-                }
-            }
-            FormMode::DeleteRequest => {
-                if let Some((ci, ri)) = self.selected
-                    && let Some(collection) = self.collections.get(ci)
-                    && let Some(request) = collection.requests.get(ri)
-                {
-                    self.submit(&actions::delete_request_action(collection.id, request.id));
-                }
-            }
-            FormMode::NewEnvironment => {
-                let name = if name.is_empty() {
-                    format!("Environment {}", self.environments.len() + 1)
-                } else {
-                    name
-                };
-                self.submit(&actions::create_environment_action(
-                    uuid::Uuid::new_v4(),
-                    &name,
-                ));
-            }
-            FormMode::RenameEnvironment => {
-                if let Some(id) = self.active_env.filter(|_| !name.is_empty()) {
-                    self.submit(&actions::rename_environment_action(id, &name));
-                }
-            }
-            FormMode::DeleteEnvironment => {
-                if let Some(id) = self.active_env {
-                    self.submit(&actions::delete_environment_action(id));
-                }
-            }
-            FormMode::NewVariable => {
-                let key = self.form_key_input.value().trim().to_string();
-                let value = self.form_value_input.value().trim().to_string();
-                if let Some(env_id) = self.active_env.filter(|_| !key.is_empty()) {
-                    let stable_id = self
-                        .environments
-                        .iter()
-                        .find(|env| env.id == env_id)
-                        .and_then(|env| env.variables.iter().find(|row| row.key == key))
-                        .map_or_else(|| uuid::Uuid::new_v4().to_string(), |row| row.id.clone());
-                    let secret = self.form_secret.selected() == SECRET_VALUE;
-                    if secret
-                        && let Err(error) = self.keep_secret(SECRET_VARIABLE, &stable_id, &value)
-                    {
-                        self.error =
-                            Some(format!("Couldn't keep the value on this device: {error}"));
-                    }
-                    self.submit(&actions::set_variable_action(
-                        env_id, stable_id, &key, &value, secret,
-                    ));
-                }
-            }
-            FormMode::DeleteVariable => {
-                let key = self.form_key_input.value().trim();
-                if let Some(env_id) = self.active_env.filter(|_| !key.is_empty())
-                    && let Some(variable) = self
-                        .environments
-                        .iter()
-                        .find(|env| env.id == env_id)
-                        .and_then(|env| env.variables.iter().find(|row| row.key == key))
-                {
-                    self.submit(&actions::delete_variable_action(env_id, &variable.id));
-                }
-            }
-        }
-        self.form = None;
-    }
-}
-
-// ===========================================================================
-// Small drawing primitives (chrome)
-// ===========================================================================
-
-/// A triangle fold caret: pointing down when `expanded`, right when not.
-fn draw_fold_caret(scene: &mut Scene, t: Affine, center: Point, color: Color, expanded: bool) {
-    let mut p = BezPath::new();
-    let (cx, cy) = (center.x, center.y);
-    if expanded {
-        p.move_to((cx - 3.0, cy - 2.0));
-        p.line_to((cx + 3.0, cy - 2.0));
-        p.line_to((cx, cy + 3.0));
-    } else {
-        p.move_to((cx - 2.0, cy - 3.0));
-        p.line_to((cx + 3.0, cy));
-        p.line_to((cx - 2.0, cy + 3.0));
-    }
-    p.close_path();
-    scene.fill(Fill::NonZero, t, color, None, &p);
-}
-
-// ===========================================================================
-// Widget impl
-// ===========================================================================
-
-impl Widget for ApiTesterApp {
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        // The URL and body show the workspace's texts.
-        self.url_input.sync(state, path);
-        self.body_input.sync(state, path);
-
-        // Apply any commands an assistive technology queued by activating a
-        // control directly through `perform_action` (which bypasses the
-        // container's `handle_event`, where pointer/keyboard activations are
-        // drained). Draining here too means Orca / the built-in reader can
-        // Send, switch tabs, and open rows just like the keyboard.
-        self.drain_commands();
-        self.method_dropdown.sync(state, path);
-        self.env_dropdown.sync(state, path);
-
-        let collection_name = self
-            .current_collection_id()
-            .and_then(|id| self.collections.iter().find(|c| c.id == id))
-            .map_or("No collection", |c| c.name.as_str());
-        let request_name = self
-            .selected
-            .and_then(|(ci, ri)| self.collections.get(ci)?.requests.get(ri))
-            .map_or("Unsaved request", |r| r.name.as_str());
-        let environment_name = self
-            .environments
-            .iter()
-            .find(|e| Some(e.id) == self.active_env)
-            .map_or(NO_ENV, |e| e.name.as_str());
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "disclosures always holds the three management groups built in build()"
-        )]
-        self.disclosures[0].set_accessible_name(format!("Collection actions: {collection_name}"));
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "disclosures always holds the three management groups built in build()"
-        )]
-        self.disclosures[1].set_accessible_name(format!("Request actions: {request_name}"));
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "disclosures always holds the three management groups built in build()"
-        )]
-        self.disclosures[2].set_accessible_name(format!("Environment actions: {environment_name}"));
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "the listed indices are fixed entries of the management button table built in build_widgets()"
-        )]
-        for (index, label, target) in [
-            (2, "Rename collection", collection_name),
-            (3, "Rename request", request_name),
-            (4, "Delete request", request_name),
-            (6, "Rename environment", environment_name),
-            (7, "Delete environment", environment_name),
-            (8, "Add variable", environment_name),
-            (9, "Delete variable", environment_name),
-        ] {
-            // Preserve each button's callback while refreshing its contextual
-            // screen-reader name.
-            let button = std::mem::replace(&mut self.manage_buttons[index], Button::new("", ""));
-            self.manage_buttons[index] = button.with_accessible_name(&format!("{label}: {target}"));
-        }
-
-        self.send_button
-            .set_enabled(!self.sending && !self.read_only);
-        self.request_tabs.set_selected(self.tab_index());
-        self.response_view_toggle.set_selected(
-            ResponseView::ALL
-                .iter()
-                .position(|v| *v == self.response_view)
-                .unwrap_or(0),
-        );
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        // Both App::rebuild_structure/init_layout and FrameHarness::try_relayout
-        // clear bindings and node_map before calling root.build_layout. Only
-        // here can replaced rows be dropped: focus capture and event undo
-        // inspection have finished reading the preceding admitted tree.
-        self.retired_nav_rows.clear();
-        self.nav_rows_replaced = false;
-        // Build a child taffy node per live control, in the SAME order
-        // `children`/`children_mut`/`position_children` use, so the host's
-        // focus walk (which zips `children()` against `taffy.children()`)
-        // lines up. The children are hand-positioned in `apply_layout`, so
-        // their taffy geometry is unused — the nodes exist only so each
-        // control is registered in `node_map` (a11y + focus + hit-testing).
-        self.text_sm = theme.tokens.typography.scale.sm;
-        self.rail_row_gap = f64::from(theme.tokens.spacing.s2);
-        self.rail_group_gap = f64::from(theme.tokens.spacing.s1);
-        self.rail_inset = f64::from(theme.tokens.spacing.s6);
-        let accent = theme.accent_primary.to_rgba8();
-        self.variable_color = [accent.r, accent.g, accent.b];
-        let mut child_nodes: Vec<NodeId> = Vec::new();
-        {
-            let mut kids = self.children_mut_ref();
-            for k in &mut kids {
-                child_nodes.push(k.build_layout(taffy, theme, node_map));
-            }
-        }
-        // `new_with_children` only fails when a child belongs to a different
-        // tree; every entry in `child_nodes` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        self.last_sig = self.child_sig();
-        node
-    }
-
-    fn adjust_layout_with_measure(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        tr: &mut TextRenderer,
-    ) -> bool {
-        let style = tr.renderer_input_style(&TextStyle::new(self.text_sm));
-        let (_, line) = tr.measure_style("Ag", None, &style);
-        let (_, label) = tr.measure("Environment actions", 14.0, None);
-        let row = f64::from(line).ceil() + 12.0;
-        let control = f64::from(label).ceil() + 14.0;
-        let (_, env_caption) = tr.measure_weighted("ENV", 9.0, None, TextWeight::Bold);
-        let (_, caption) = tr.measure_weighted("COLLECTIONS", 10.0, None, TextWeight::Bold);
-        self.env_caption_h = f64::from(env_caption).ceil();
-        self.caption_h = f64::from(caption).ceil();
-        let changed = self.row_height.to_bits() != row.max(ROW_H).to_bits()
-            || self.control_height.to_bits() != control.max(34.0).to_bits();
-        self.row_height = row.max(ROW_H);
-        self.control_height = control.max(34.0);
-        self.text_scale = f64::from(tr.text_scale());
-        let (width, _) = tr.measure("Environment actions", 14.0, None);
-        let rail_width = SIDEBAR_W.max(f64::from(width) + 68.0);
-        self.rail.set_docked_width(rail_width);
-        self.rail.set_overlay_width(rail_width);
-        self.rail
-            .set_breakpoint(RAIL_BREAKPOINT.max(rail_width + 520.0));
-        let before = self.kv_height;
-        let rect = taffy.layout(node).map_or(self.rect, |layout| {
-            Rect::new(
-                0.0,
-                0.0,
-                f64::from(layout.size.width),
-                f64::from(layout.size.height),
-            )
-        });
-        let width = self.rail.resolve(rect).width();
-        self.measure_kv_table(tr, width);
-        changed || before != self.kv_height
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        self.layout = self.compute_layout();
-        self.position_children();
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.sync_adaptive_metrics(theme);
-        // Advance the drawer's eased reveal (it self-ticks off wall-clock and
-        // honours reduce-motion), then recompute geometry so the controls sit
-        // exactly on the chrome this frame.
-        self.rail.tick(theme.reduce_motion);
-        self.layout = self.compute_layout();
-        self.position_children();
-        if self.follow_rail_focus() {
-            self.layout = self.compute_layout();
-            self.position_children();
-        }
-        self.paint(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "event routing is ordered by precedence (escape, overlays, sidebar, editors); splitting it would hide that order"
-    )]
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-        }
-
-        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        if matches!(
-            event,
-            WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key: Key::Named(NamedKey::Escape),
-                    state: ElementState::Pressed,
-                    ..
-                },
-                ..
-            }
-        ) {
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "management only ever holds a group index from ToggleManagement, which is emitted by one of the three disclosures"
-            )]
-            let target = if let Some(group) = self.management.take() {
-                self.disclosures[group].set_expanded(false);
-                Some(
-                    [
-                        "api.collection-actions",
-                        "api.request-actions",
-                        "api.environment-actions",
-                    ][group],
-                )
-            } else if self.rail.is_overlay() && self.rail.is_open() {
-                self.rail.snap(false);
-                Some("api.workspace-menu")
-            } else {
-                None
-            };
-            if let Some(target) = target {
-                if let Some(index) = self
-                    .children_ref()
-                    .iter()
-                    .position(|child| child.test_id() == Some(target))
-                {
-                    *ctx.focus_target = child_nodes.get(index).copied();
-                }
-                *ctx.handled = true;
-                self.dirty = true;
-                return;
-            }
-        }
-        let blocked_by_rail = self.rail.is_overlay()
-            && self.sidebar_visible()
-            && self.layout.sidebar.contains(self.last_cursor);
-        match event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.layout.divider.contains(self.last_cursor) && !blocked_by_rail => {
-                self.request_drag = Some((self.last_cursor.y, self.layout.editor.height()));
-                if let Some(index) = self
-                    .children_ref()
-                    .iter()
-                    .position(|child| child.test_id() == Some("api.request-divider"))
-                {
-                    *ctx.focus_target = child_nodes.get(index).copied();
-                }
-                *ctx.handled = true;
-            }
-            WindowEvent::CursorMoved { .. } if self.request_drag.is_some() => {
-                if let Some((start, height)) = self.request_drag {
-                    self.request_height_override =
-                        Some((height + self.last_cursor.y - start).max(0.0));
-                }
-                *ctx.handled = true;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.request_drag.is_some() => {
-                self.request_drag = None;
-                *ctx.handled = true;
-            }
-            WindowEvent::MouseWheel { delta, .. }
-                if self.layout.nav_viewport.contains(self.last_cursor) =>
-            {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                    MouseScrollDelta::PixelDelta(p) => p.y,
-                };
-                if dy < 0.0 {
-                    self.nav_start =
-                        (self.nav_start + 1).min(self.nav_rows.len().saturating_sub(1));
-                } else if dy > 0.0 {
-                    self.nav_start = self.nav_start.saturating_sub(1);
-                }
-                *ctx.handled = true;
-            }
-            _ => {}
-        }
-        if *ctx.handled {
-            self.dirty = true;
-            return;
-        }
-
-        let pointer_event = matches!(
-            event,
-            WindowEvent::CursorMoved { .. }
-                | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. }
-        );
-        let overlay_sidebar = self.rail.is_overlay() && self.sidebar_visible() && pointer_event;
-        if overlay_sidebar
-            && matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    ..
-                }
-            )
-            && !self.layout.sidebar.contains(self.last_cursor)
-        {
-            self.rail.snap(false);
-            *ctx.handled = true;
-            self.dirty = true;
-            return;
-        }
-        let sidebar_count = self.layout.sidebar_items.len()
-            + self.form.map_or(0, |form| {
-                2 + usize::from(form.needs_name())
-                    + usize::from(form.needs_variable_fields())
-                    + 2 * usize::from(form.needs_value())
-            });
-        // Route the event through the child widgets (pointer-capture aware),
-        // exactly like a `Column`.
-        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        {
-            let mut kids = self.children_mut_ref();
-            if let Some(idx) = kids.iter().position(|k| k.wants_pointer_capture()) {
-                if let Some(&cnode) = child_nodes.get(idx)
-                    && let Some(k) = kids.get_mut(idx)
-                {
-                    k.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
-                }
-            } else {
-                let sidebar_start = kids.len().saturating_sub(sidebar_count);
-                let cursor_move = matches!(event, WindowEvent::CursorMoved { .. });
-                let mut any_handled = false;
-                for (index, (k, &cn)) in kids.iter_mut().zip(child_nodes.iter()).enumerate() {
-                    if overlay_sidebar && index < sidebar_start {
-                        continue;
-                    }
-                    if cursor_move {
-                        *ctx.handled = false;
-                    }
-                    k.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-                    any_handled |= *ctx.handled;
-                    if *ctx.handled && !cursor_move {
-                        break;
-                    }
-                }
-                *ctx.handled |= any_handled;
-            }
-        }
-
-        // Apply any commands the children queued.
-        let did = self.drain_commands();
-        if did || *ctx.handled {
-            self.dirty = true;
-        }
-        if *ctx.handled {
-            return;
-        }
-
-        // Chrome-only interactions (no backing widget).
-        match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(NamedKey::Escape),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                if self.rail.layout() == SplitLayout::Overlay && self.rail.is_open() {
-                    self.rail.close();
-                    self.dirty = true;
-                    *ctx.handled = true;
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * -40.0,
-                    MouseScrollDelta::PixelDelta(p) => -p.y,
-                };
-                if self.layout.sidebar.contains(self.last_cursor) {
-                    // The rail is a local view, not a collaborative document
-                    // field. Cap its offset to a generous bounded range so a
-                    // runaway wheel event cannot hide it indefinitely.
-                    self.sidebar_scroll = (self.sidebar_scroll + dy).clamp(0.0, 1200.0);
-                    self.dirty = true;
-                    *ctx.handled = true;
-                } else if self.layout.body_region.contains(self.last_cursor) {
-                    self.body_scroll = (self.body_scroll + dy).max(0.0);
-                    self.dirty = true;
-                    *ctx.handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.on_chrome_click(self.last_cursor);
-                // A chrome click that hit something marks dirty; either way we
-                // don't claim `handled` unless it landed on chrome.
-            }
-            _ => {}
-        }
-    }
-
-    fn wants_pointer_capture(&self) -> bool {
-        self.request_drag.is_some()
-    }
-
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.layout
-            .divider
-            .contains(point)
-            .then_some(winit::window::CursorIcon::RowResize)
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.children_ref()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children_mut_ref()
-    }
-
-    fn name(&self) -> &'static str {
-        "ApiTesterApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        // Drain child structure-dirty flags per the trait contract, then add
-        // our own child-set changes. A plain loop, not `.any()`: every child
-        // must be drained regardless of an earlier `true`, which `.any()`
-        // would short-circuit past.
-        let mut child_changed = false;
-        for c in self.children_mut_ref() {
-            child_changed |= c.take_structure_dirty();
-        }
-        let sig = self.child_sig();
-        let self_changed = sig != self.last_sig;
-        self.last_sig = sig;
-        let rows_replaced = std::mem::take(&mut self.nav_rows_replaced);
-        child_changed || self_changed || rows_replaced
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-            || self.sending
-            || self.rail.is_animating()
-            || self.children_ref().iter().any(|c| c.needs_redraw())
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.rail.is_animating()
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-        for c in self.children_mut_ref() {
-            c.mark_drawn();
-        }
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        self.sending
     }
 }
 
 impl ApiTesterApp {
-    /// Handle a left-press on painted chrome that has no backing widget: the
-    /// overlay scrim and JSON fold carets. The menu toggle itself is a real
-    /// [`Button`], so it participates in focus and accessibility.
-    fn on_chrome_click(&mut self, p: Point) {
-        if self.rail.layout() == SplitLayout::Overlay
-            && self.rail.is_open()
-            && !self.layout.sidebar.contains(p)
-            && self.layout.scrim.contains(p)
-        {
-            self.rail.close();
-            self.dirty = true;
-            return;
-        }
-        for (rect, idx) in self.layout.fold_carets.clone() {
-            if rect.contains(p) {
-                if self.collapsed.contains(&idx) {
-                    self.collapsed.remove(&idx);
-                } else {
-                    self.collapsed.insert(idx);
-                }
-                self.dirty = true;
-                return;
+    pub(crate) fn present_workspace(&mut self, state: &Rc<Workspace>) {
+        self.workspace = Rc::clone(state);
+        let collections = state.collections_shown();
+        let environments = state.environments_shown();
+        let history = state.history_shown();
+        let workspace_changed = self.collections != collections
+            || self.environments != environments
+            || self.active_env != state.active_environment
+            || self.history != history;
+        let mut request = state.request_shown();
+        request.auth = request.auth.with_secret(&self.credential(&request.id));
+        let replaced = self.request.id != request.id;
+        let body_changed = self.request.body_mode != request.body_mode;
+        let auth_changed =
+            std::mem::discriminant(&self.request.auth) != std::mem::discriminant(&request.auth);
+        let rows_changed = self.request.params != request.params
+            || self.request.headers != request.headers
+            || self.request.form != request.form;
+        self.collections = collections;
+        self.environments = environments;
+        self.active_env.clone_from(&state.active_environment);
+        self.history = history;
+        self.sink.method.set(request.method.as_str().to_owned());
+        self.sink.url.borrow_mut().clone_from(&request.url);
+        self.request = request;
+        // Canonical row-field actions turn the trailing blank into a durable
+        // row. Its next presentation must expose a new blank identity.
+        for table in [Table::Params, Table::Headers, Table::Form] {
+            let blank = self.blanks.of(table);
+            let consumed = match table {
+                Table::Params => &self.request.params,
+                Table::Headers => &self.request.headers,
+                Table::Form => &self.request.form,
+            }
+            .iter()
+            .any(|row| row.id == blank);
+            if consumed {
+                self.blanks.renew(table);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::resource::ApiTesterShell;
-    use tilo_actions::Action as _;
-    use ui::framework::testing::TestApp;
-    use ui::tilo_resource::Resource as _;
-
-    /// The sample workspace's document, built through its actions.
-    fn demo_state() -> ui::State {
-        let mut state = ui::State::new();
-        ApiTester::initialize(&mut state.doc).unwrap();
-        for action in crate::seed::workspace() {
-            action.apply(&mut state.doc).unwrap();
-        }
-        state
-    }
-
-    /// The app presented the sample workspace and staged as a plain
-    /// screenshot shows it, its URL and body bound to the sample's texts.
-    fn demo() -> ApiTesterApp {
-        let state = demo_state();
-        let mut app = ApiTesterApp::detached();
-        app.present_workspace(&ApiTester::read(&state.doc).unwrap());
-        app.stage_scenario(None);
-        app.sync(&state.doc, &state.root);
-        app
-    }
-
-    /// The live app on the sample workspace.
-    fn sample() -> TestApp<ApiTesterShell> {
-        let mut app = TestApp::<ApiTesterShell>::new().unwrap();
-        app.harness().resize((1280, 800)).unwrap();
-        ui::framework::stage::<ApiTesterShell>(app.harness(), None).unwrap();
-        app
-    }
-
-    /// The request builder's derived state: placeholder highlighting, active
-    /// environment resolution, the outgoing URL, tab counts and loading a saved
-    /// request, each on a fresh app.
-    #[test]
-    fn request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests() {
-        value_spans_highlight_each_closed_placeholder();
-        env_vars_resolve_from_active_environment();
-        outgoing_substitutes_environment_into_url();
-        tab_count_reflects_enabled_rows();
-    }
-
-    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
-    fn value_spans_highlight_each_closed_placeholder() {
-        let texts = |value: &str| -> Vec<(String, bool)> {
-            ApiTesterApp::value_spans(value, [1, 2, 3])
-                .into_iter()
-                .map(|span| (span.text, span.bold))
-                .collect()
-        };
-        assert_eq!(texts(""), [(String::new(), false)]);
-        assert_eq!(
-            texts("a {{host}}/é{{}}b {{open"),
-            [
-                ("a ".into(), false),
-                ("{{host}}".into(), true),
-                ("/é".into(), false),
-                ("{{}}".into(), true),
-                ("b {{open".into(), false),
-            ]
-        );
-        assert_eq!(
-            texts("{{x}}"),
-            [
-                (String::new(), false),
-                ("{{x}}".into(), true),
-                (String::new(), false)
-            ]
-        );
-    }
-
-    /// The navigation rail: token spacing, one retained row per nav entry, every
-    /// row reachable at large text, focus surviving row replacement, and
-    /// activation of the named item.
-    #[test]
-    fn navigation_rail_rows_keep_rhythm_reachability_and_focus() {
-        rail_controls_share_one_token_gap();
-        demo_builds_nav_rows_for_collections_and_history();
-        scaled_rail_keeps_every_users_request_before_history();
-        composition_same_count_nav_replacement_keeps_old_focus_alive_until_rebuild();
-        composition_long_displayed_navigation_activates_the_named_item();
-    }
-
-    /// The rail's stacked controls share one rhythm step (HIG §7b): the
-    /// named gap is the `s2` token, and every stacked pair in the computed
-    /// layout is separated by exactly that step.
-    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
-    fn rail_controls_share_one_token_gap() {
-        let mut app = ApiTesterApp::detached();
-        let rail_gap = app.rail_row_gap;
-        assert!((rail_gap - f64::from(ui::tokens::spacing::Spacing::BASE.s2)).abs() < 0.01);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.snap_rail(true);
-        let l = app.compute_layout();
-        let mut stacked: Vec<Rect> = l.sidebar_items.iter().map(|(_, r)| *r).collect();
-        stacked.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-        let controls: Vec<Rect> = stacked
-            .into_iter()
-            .filter(|r| (r.height() - app.control_height).abs() < 0.01)
-            .collect();
-        assert!(controls.len() >= 4, "the rail lays out its controls");
-        for pair in controls.windows(2) {
-            let gap = pair[1].y0 - pair[0].y1;
-            // Consecutive stacked controls: one step; a larger gap is the
-            // collections section between the groups, never a smaller one.
-            assert!(
-                (gap - rail_gap).abs() < 0.01 || gap > rail_gap,
-                "stacked rail controls keep the s2 step, got {gap}"
-            );
-            assert!(gap >= 4.0, "rail controls never touch: gap {gap}");
-        }
-        // An open action group: its rows sit one `s1` apart and the group
-        // still ends a full `s2` above whatever follows.
-        let group_gap = app.rail_group_gap;
-        assert!((group_gap - f64::from(ui::tokens::spacing::Spacing::BASE.s1)).abs() < 0.01);
-        app.management = Some(1);
-        let l = app.compute_layout();
-        let rows: Vec<Rect> = l
-            .sidebar_items
-            .iter()
-            .filter_map(|(item, r)| match item {
-                SidebarItem::Manage(3 | 4 | 10 | 11 | 12) => Some(*r),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            rows.len(),
-            5,
-            "the environment group lays out its five rows"
-        );
-        for pair in rows.windows(2) {
-            let gap = pair[1].y0 - pair[0].y1;
-            assert!(
-                (gap - group_gap).abs() < 0.01,
-                "group rows keep the s1 step, got {gap}"
-            );
-        }
-    }
-    use crate::model::KeyValue;
-
-    fn app() -> ApiTesterApp {
-        demo()
-    }
-
-    /// The app fabricates nothing before it is presented a workspace, and
-    /// shows the sample workspace it is presented.
-    #[test]
-    fn the_app_shows_only_the_workspace_it_is_presented() {
-        demo_app_has_seeded_workspace();
-        live_app_starts_empty();
-    }
-
-    /// Case of `constructors_start_live_empty_demo_seeded_and_persist_through_crdt`.
-    fn demo_app_has_seeded_workspace() {
-        let a = demo();
-        assert!(!a.collections.is_empty());
-        assert!(!a.environments.is_empty());
-        assert!(a.active_env.is_some());
-        assert!(a.response.is_some());
-    }
-
-    /// Case of `constructors_start_live_empty_demo_seeded_and_persist_through_crdt`.
-    fn live_app_starts_empty() {
-        let a = ApiTesterApp::detached();
-        assert!(a.collections.is_empty(), "no fabricated collections");
-        assert!(a.environments.is_empty(), "no fabricated environments");
-        assert!(a.history.is_empty(), "no fabricated history");
-        assert!(
-            a.response.is_none(),
-            "no canned response before a real Send"
-        );
-    }
-
-    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
-    fn env_vars_resolve_from_active_environment() {
-        let a = app();
-        let vars = a.env_vars();
-        assert_eq!(
-            vars.get("base_url").map(String::as_str),
-            Some("https://api.example.com/v2")
-        );
-    }
-
-    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
-    fn outgoing_substitutes_environment_into_url() {
-        let a = app();
-        let out = a.outgoing();
-        assert!(out.url.starts_with("https://api.example.com/v2/users"));
-        assert!(out.url.contains("page=1"));
-        assert!(out.url.contains("per_page=25"));
-        assert!(!out.url.contains("sort="));
-    }
-
-    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
-    fn tab_count_reflects_enabled_rows() {
-        let a = app();
-        assert_eq!(a.tab_count(RequestTab::Params), 2);
-        assert_eq!(a.tab_count(RequestTab::Headers), 2);
-        assert_eq!(a.tab_count(RequestTab::Auth), 1);
-    }
-
-    /// Visible commands either dispatch the canonical action (affordance ==
-    /// `ActionSpec`) or stay device-local without touching document heads; each
-    /// case uses a fresh app and document.
-    #[test]
-    fn ui_commands_dispatch_canonical_actions_or_stay_device_local() {
-        folding_a_collection_is_view_state();
-        composition_view_commands_never_change_document_heads_or_leave_hidden_rects();
-    }
-
-    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
-    fn folding_a_collection_is_view_state() {
-        let mut a = demo();
-        let rows = a.nav_rows.len();
-        a.sink.borrow_mut().push(Cmd::ToggleCollection(0));
-        assert!(a.drain_commands());
-        assert!(a.collapsed.contains(&0));
-        assert!(
-            a.nav_rows.len() < rows,
-            "the folded collection hides its rows"
-        );
-    }
-
-    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
-    fn demo_builds_nav_rows_for_collections_and_history() {
-        let a = app();
-        // At least the collection headers + the seeded history entries.
-        assert!(
-            !a.nav_rows.is_empty(),
-            "sidebar rows are real focusable widgets"
-        );
-        assert_eq!(a.nav_rows.len(), a.nav_meta.len());
-    }
-
-    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
-    fn scaled_rail_keeps_every_users_request_before_history() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        let theme = Theme::dark().with_text_scale(2.0);
-        a.sync_adaptive_metrics(&theme);
-        a.snap_rail(true);
-        let layout = a.compute_layout();
-
-        let users = a
-            .nav_meta
-            .iter()
-            .position(|meta| {
-                matches!(meta.kind, NavKind::Collection { .. }) && meta.label == "Users API"
-            })
-            .expect("the demo exposes Users API");
-        let history = a
-            .nav_meta
-            .iter()
-            .position(|meta| matches!(meta.kind, NavKind::History { .. }))
-            .expect("the demo exposes request history");
-        let _ = layout;
-        let mut visited = std::collections::BTreeSet::new();
-        for first in users..=history {
-            a.nav_start = first;
-            let page = a.compute_layout();
-            let visible: Vec<_> = page
-                .sidebar_items
+        self.selected = self.collections.iter().enumerate().find_map(|(ci, c)| {
+            c.requests
                 .iter()
-                .filter_map(|(item, rect)| {
-                    if let SidebarItem::Nav(index) = item {
-                        Some((*index, *rect))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            assert!(
-                !visible.is_empty(),
-                "a narrow large-text rail keeps a usable list viewport"
-            );
-            for (index, rect) in &visible {
-                assert!(
-                    rect.y0 >= page.nav_viewport.y0 && rect.y1 <= page.nav_viewport.y1,
-                    "each reachable row stays inside the list viewport"
-                );
-                visited.insert(*index);
-            }
-            for pair in visible.windows(2) {
-                assert!(
-                    pair[0].1.y1 <= pair[1].1.y0,
-                    "scaled request rows retain their own vertical cadence"
-                );
-            }
-        }
-        for index in users..users + 5 {
-            assert!(
-                visited.contains(&index),
-                "the collection and all four requests remain reachable"
-            );
-        }
-        assert!(
-            visited.contains(&history),
-            "History remains reachable after the collection"
-        );
-    }
-
-    /// Request and response chrome geometry at phone, overlay and desktop widths.
-    #[test]
-    fn request_and_response_chrome_adapts_between_phone_and_desktop() {
-        compact_tab_strip_reserves_no_overlapping_hint_space();
-        desktop_request_controls_keep_save_and_overflow_visible();
-        phone_url_bar_gives_the_endpoint_a_full_second_row();
-        compact_response_chrome_gets_a_separate_switcher_row();
-        wide_response_chrome_keeps_the_inline_switcher();
-        overlay_hamburger_is_square_and_kv_indicator_scales_with_text();
-    }
-
-    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
-    fn compact_tab_strip_reserves_no_overlapping_hint_space() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 400.0, 844.0);
-        let layout = a.compute_layout();
-        assert!(
-            layout.tabs.x1 <= layout.main.x1,
-            "tabs stay inside phone width"
-        );
-        assert!(
-            !tab_strip_has_room_for_hint(&layout, 112.0),
-            "a status hint would overlap the compact request tabs and must be hidden"
-        );
-    }
-
-    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
-    fn desktop_request_controls_keep_save_and_overflow_visible() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 1440.0, 900.0);
-        let layout = a.compute_layout();
-        assert!(
-            layout.tabs.x1 + 8.0 <= layout.save.x0,
-            "Save clears the tabs"
-        );
-        assert!(
-            layout.save.x1 + 8.0 <= layout.request_actions.x0,
-            "the contextual request menu clears Save"
-        );
-        assert!(
-            layout.request_actions.x1 <= layout.main.x1 - PAD,
-            "the visible request overflow stays within desktop chrome"
-        );
-        assert!(
-            layout.save.width() >= 80.0 && layout.save.height() >= 32.0,
-            "the explicit desktop Save affordance has a usable target: {}×{}",
-            layout.save.width(),
-            layout.save.height()
-        );
-    }
-
-    /// The request and environment menus are children whose choice opens
-    /// the real form in this window, from the palette or an agent.
-    #[test]
-    fn visible_context_menus_open_real_request_and_environment_workflows() {
-        let mut app = sample();
-        app.call_on(
-            "api_tester.request_menu",
-            "request-menu",
-            serde_json::json!({"action": "Rename request…"}),
-        )
-        .expect("the request menu opens its form");
-        app.settle();
-        let shown = app
-            .with_surface(|a: &mut ApiTesterApp| (a.form, a.request_actions.selected().to_owned()))
-            .expect("the builder is shown");
-        assert_eq!(
-            shown,
-            (Some(FormMode::RenameRequest), "Request actions".to_owned())
-        );
-
-        app.call_on(
-            "api_tester.environment_menu",
-            "environment-menu",
-            serde_json::json!({"action": "Add variable…"}),
-        )
-        .expect("the environment menu opens its form");
-        app.settle();
-        let shown = app
-            .with_surface(|a: &mut ApiTesterApp| {
-                (a.form, a.environment_actions.selected().to_owned())
-            })
-            .expect("the builder is shown");
-        assert_eq!(
-            shown,
-            (
-                Some(FormMode::NewVariable),
-                "Environment actions".to_owned()
-            )
-        );
-    }
-
-    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
-    fn phone_url_bar_gives_the_endpoint_a_full_second_row() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        let layout = a.compute_layout();
-        assert!((layout.urlbar.height() - COMPACT_URLBAR_H).abs() < 0.01);
-        assert!(layout.url.y0 >= layout.method.y1 + 8.0);
-        assert!(
-            layout.url.width() >= 350.0,
-            "URL input is not a clipped sliver"
-        );
-        assert!(layout.url.x0 >= layout.main.x0 + PAD);
-        assert!(layout.url.x1 <= layout.main.x1 - PAD);
-        assert!(layout.tab_strip.y0 >= layout.url.y1 + 8.0);
-    }
-
-    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
-    fn compact_response_chrome_gets_a_separate_switcher_row() {
-        let mut a = app();
-        a.response = Some(http::sample_response());
-        a.rect = Rect::new(0.0, 0.0, 400.0, 844.0);
-        let layout = a.compute_layout();
-        assert!(
-            (layout.resp_status.height() - COMPACT_RESPONSE_STATUS_H).abs() < 0.01,
-            "response width={} status height={}",
-            layout.response.width(),
-            layout.resp_status.height()
-        );
-        assert!(layout.resp_view.y0 >= layout.resp_status.y0 + 44.0);
-        assert!(layout.resp_view.y1 <= layout.resp_status.y1);
-        assert!((layout.resp_body.y0 - layout.resp_status.y1).abs() < f64::EPSILON);
-        assert!(layout.resp_view.x0 >= layout.response.x0 + PAD);
-        assert!(layout.resp_view.x1 <= layout.response.x1 - PAD);
-        assert!(
-            response_status_line_center(layout.resp_status) + 12.0 < layout.resp_view.y0,
-            "status pill must clear the compact view switcher"
-        );
-    }
-
-    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
-    fn wide_response_chrome_keeps_the_inline_switcher() {
-        let mut a = app();
-        a.response = Some(http::sample_response());
-        a.rect = Rect::new(0.0, 0.0, 1024.0, 800.0);
-        let layout = a.compute_layout();
-        assert!((layout.resp_status.height() - RESPONSE_STATUS_H).abs() < f64::EPSILON);
-        assert!((layout.resp_view.x1 - (layout.response.x1 - PAD)).abs() < f64::EPSILON);
-        assert!(layout.resp_view.y0 < layout.resp_status.y1);
-    }
-
-    /// Send is an effect: it performs a real HTTP round trip from the request
-    /// in the builder, and its completion records the run in the shared
-    /// history once.
-    #[test]
-    fn send_performs_a_real_http_round_trip_and_records_history() {
-        use std::io::{Read, Write};
-        use ui::time::Duration;
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let deadline = tilo_test_env::hang_deadline();
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            ui::time::now() < deadline,
-                            "the app's HTTP request never reached the probe server"
-                        );
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(error) => panic!("accept request: {error}"),
-                }
-            };
-            // Windows inherits the listener's nonblocking mode on accept.
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            stream
-                .set_write_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            let mut request = Vec::new();
-            while !request.ends_with(b"\r\n\r\n") {
-                let mut byte = [0];
-                stream.read_exact(&mut byte).unwrap();
-                request.push(byte[0]);
-                assert!(request.len() < 8192, "unbounded request headers");
-            }
-            let request = String::from_utf8(request).unwrap();
-            assert!(
-                request.starts_with("GET /probe?name=Gr%C3%BCn HTTP/1.1\r\n"),
-                "{request}"
-            );
-            assert!(
-                request
-                    .to_ascii_lowercase()
-                    .contains("x-tilo-probe: native\r\n"),
-                "{request}"
-            );
-            let body = "{\"result\":\"Grün\"}";
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                .position(|r| r.id == self.request.id)
+                .map(|ri| (ci, ri))
         });
-
-        let mut app = TestApp::<ApiTesterShell>::new().unwrap();
-        let edit = |action: ApiTesterAction| {
-            ui::tilo_resource::Invoke::<ApiTester>::apply(&action).unwrap()
-        };
-        app.invoke(edit(ApiTesterAction::EditUrl(
-            ui::tilo_resource::TextEdit::ReplaceText {
-                text: format!("http://{address}/probe"),
-            },
-        )))
-        .unwrap();
-        app.invoke(edit(ApiTesterAction::SetRow {
-            section: actions::RowSection::Params,
-            row: KeyValue::new("name", "Grün"),
-        }))
-        .unwrap();
-        app.invoke(edit(ApiTesterAction::SetRow {
-            section: actions::RowSection::Headers,
-            row: KeyValue::new("X-Tilo-Probe", "native"),
-        }))
-        .unwrap();
-        app.settle();
-        assert!(app.state().history.is_empty());
-
-        app.effect(&ApiTesterEffect::Send)
-            .expect("the send completes");
-        server.join().unwrap();
-        app.settle();
-        let history = app.state().history;
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].status, 200);
-        assert_eq!(history[0].method, HttpMethod::Get);
-        assert_eq!(
-            history[0].url,
-            format!("http://{address}/probe?name=Gr%C3%BCn")
-        );
-        let tree = app.harness().inspection_json().unwrap();
-        assert!(tree.contains("200"), "the response is shown");
-
-        let entry = history[0].clone();
-        app.invoke(edit(ApiTesterAction::RecordHistory { entry }))
-            .unwrap();
-        assert_eq!(
-            app.state().history.len(),
-            1,
-            "replay does not duplicate history"
-        );
+        if workspace_changed {
+            self.workspace_changed();
+        }
+        self.stale.request |= replaced;
+        self.stale.tab_panel |= rows_changed;
+        self.stale.body_inner |= body_changed;
+        self.stale.auth_inner |= auth_changed;
+        self.stale.header = true;
+        self.adopted = true;
     }
-
-    /// The builder's controls change the shared workspace through its
-    /// actions: the method and environment pickers, a saved request opened
-    /// from the rail, a new collection and a variable from their forms — and
-    /// a secret variable's value stays on the device.
-    #[test]
-    fn builder_controls_change_the_workspace_through_its_actions() {
-        let mut app = sample();
-        let state = app.state();
-        let staging = state.environments[1].clone();
-        assert_ne!(state.active_env, Some(staging.id));
-
-        let d = app.harness();
-        d.perform_named("api.env", &ui::a11y::Action::SetValue(staging.name.clone()))
-            .unwrap();
-        d.perform_named("api.method", &ui::a11y::Action::SetValue("POST".into()))
-            .unwrap();
-        app.settle();
-        let state = app.state();
-        assert_eq!(
-            state.active_env,
-            Some(staging.id),
-            "the environment switched"
-        );
-        assert_eq!(state.request.method, HttpMethod::Post, "the method changed");
-
-        // The third saved request, opened from its rail row.
-        let create = state.collections[0].requests[2].clone();
-        let d = app.harness();
-        d.perform_named("api.nav.3", &ui::a11y::Action::Activate)
-            .unwrap();
-        app.settle();
-        let state = app.state();
-        assert_eq!(state.request.id, create.id);
-        assert_eq!(state.request.url, "{{base_url}}/users");
-        assert_eq!(state.request.body_mode, BodyMode::Json);
-
-        let d = app.harness();
-        d.perform_named("api.new-collection", &ui::a11y::Action::Activate)
-            .unwrap();
-        d.perform_named(
-            "api.form-name",
-            &ui::a11y::Action::SetValue("Billing API".into()),
-        )
-        .unwrap();
-        d.perform_named("api.form-confirm", &ui::a11y::Action::Activate)
-            .unwrap();
-        app.settle();
-        assert!(
-            app.state()
-                .collections
-                .iter()
-                .any(|collection| collection.name == "Billing API")
-        );
-
-        let d = app.harness();
-        d.perform_named("api.environment-actions", &ui::a11y::Action::Activate)
-            .unwrap();
-        d.perform_named("api.new-variable", &ui::a11y::Action::Activate)
-            .unwrap();
-        d.perform_named(
-            "api.form-variable-key",
-            &ui::a11y::Action::SetValue("api_key".into()),
-        )
-        .unwrap();
-        d.perform_named(
-            "api.form-variable-value",
-            &ui::a11y::Action::SetValue("do-not-share".into()),
-        )
-        .unwrap();
-        d.perform_named(
-            "api.form-variable-secret",
-            &ui::a11y::Action::SetValue(SECRET_VALUE.into()),
-        )
-        .unwrap();
-        d.perform_named("api.form-confirm", &ui::a11y::Action::Activate)
-            .unwrap();
-        app.settle();
-        let variable = app
-            .state()
-            .environments
-            .iter()
-            .find(|environment| environment.id == staging.id)
-            .and_then(|environment| {
-                environment
-                    .variables
-                    .iter()
-                    .find(|variable| variable.key == "api_key")
-                    .cloned()
-            })
-            .expect("the variable was added");
-        assert!(variable.secret);
-        assert_eq!(
-            variable.value, "",
-            "a secret value never enters the document"
-        );
-        assert!(
-            !app.read_document(|doc| format!("{:?}", doc.clone().save()))
-                .contains("do-not-share"),
-            "nor any change in its history"
-        );
+    pub(crate) fn attach_surface(&mut self, cx: &SurfaceCx<Workspace>) {
+        let dispatcher = cx.dispatcher();
+        self.read_only = dispatcher.read_only();
+        *self.sink.dispatcher.borrow_mut() = Some(dispatcher.clone());
+        *self.sink.actions.borrow_mut() = Some(cx.actions());
+        self.dispatcher = Some(dispatcher);
+        self.secrets = Some(cx.secrets());
+        self.credentials.clear();
+        // The text controls edit at their paths through the dispatcher now.
+        self.stale.url_bar = true;
+        self.stale.request = true;
     }
-
-    /// Key/value rows size to wrapped content, keep glyphs inside their rows and
-    /// drive the automatic editor height without overriding a manual preference.
-    #[test]
-    fn kv_table_rows_fit_their_content_and_drive_the_editor_height() {
-        composition_auto_height_tracks_rows_and_auth_fields_without_changing_manual_preference();
-        composition_long_kv_glyphs_fit_allocated_rows();
-        composition_long_tables_share_wrapped_height_and_centered_indicators();
-    }
-
-    /// Case of `kv_table_rows_fit_their_content_and_drive_the_editor_height`.
-    #[expect(
-        clippy::float_cmp,
-        reason = "layout values are compared for exact reproduction, not approximate equality"
-    )]
-    fn composition_auto_height_tracks_rows_and_auth_fields_without_changing_manual_preference() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        let mut tr = TextRenderer::new();
-        a.measure_kv_table(&mut tr, 936.0);
-        let params = a.compute_layout();
-        a.request.params.push(KeyValue::new("extra", "value"));
-        a.measure_kv_table(&mut tr, 936.0);
-        assert_eq!(
-            a.compute_layout().editor.height(),
-            params.editor.height() + a.row_height
-        );
-        a.request.params.push(KeyValue::new("", ""));
-        a.measure_kv_table(&mut tr, 936.0);
-        assert_eq!(
-            a.compute_layout().editor.height(),
-            params.editor.height() + a.row_height
-        );
-        a.active_tab = RequestTab::Auth;
-        a.request.auth = Auth::None;
-        let none = a.compute_layout().editor.height();
-        a.request.auth = Auth::Basic {
-            username: "user".into(),
-            password: "secret".into(),
-        };
-        assert!(a.compute_layout().editor.height() > none);
-        a.request_height_override = Some(410.0);
-        a.rect = Rect::new(0.0, 0.0, 800.0, 480.0);
-        let small = a.compute_layout();
-        assert!(small.editor.height() < 410.0);
-        assert!(small.resp_body.height() >= a.row_height * 2.0);
-        assert_eq!(a.request_height_override, Some(410.0));
-        a.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        assert_eq!(a.compute_layout().editor.height(), 410.0);
-    }
-
-    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
-    fn composition_view_commands_never_change_document_heads_or_leave_hidden_rects() {
-        let mut a = app();
-        a.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        a.layout = a.compute_layout();
-        a.sink
-            .borrow_mut()
-            .extend([Cmd::ToggleManagement(1), Cmd::ResizeRequest(24.0)]);
-        a.drain_commands();
-        a.layout = a.compute_layout();
-        a.position_children();
-        assert!(a.manage_buttons[3].get_rect().area() > 0.0);
-        let sig = a.child_sig();
-        a.sink
-            .borrow_mut()
-            .extend([Cmd::ToggleManagement(1), Cmd::ResetRequest]);
-        a.drain_commands();
-        a.layout = a.compute_layout();
-        a.position_children();
-        assert!(sig != a.child_sig());
-        assert_eq!(a.manage_buttons[3].get_rect(), Rect::ZERO);
-        assert!(
-            !a.children_ref()
-                .iter()
-                .any(|child| child.test_id() == Some("api.rename-request"))
-        );
-    }
-    /// Case of `kv_table_rows_fit_their_content_and_drive_the_editor_height`.
-    #[expect(
-        clippy::float_cmp,
-        reason = "layout values are compared for exact reproduction, not approximate equality"
-    )]
-    fn composition_long_kv_glyphs_fit_allocated_rows() {
-        for (width, scale) in [(480.0, 1.0), (800.0, 2.0)] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            let rows = vec![KeyValue::new(
-                "a long query header or form field key that must wrap inside its own column",
-                "a long value with {{environment_variable}} and more text after the variable",
-            )];
-            let mut app = app();
-            app.text_sm = theme.tokens.typography.scale.sm;
-            app.request.params = rows;
-            app.measure_kv_table(&mut tr, width);
-            let row = &app.kv_rows[0];
-            let mut scene = Scene::new();
-            ApiTesterApp::draw_kv_row(&mut scene, Affine::IDENTITY, &mut tr, &theme, row);
-            let end = row.rect.y1;
-            assert_eq!(row.checkbox().center().y, row.rect.center().y);
-            assert_eq!(row.key_rect.center().y, row.rect.center().y);
-            assert_eq!(row.value_rect.center().y, row.rect.center().y);
-            assert!(row.rect.height() > ROW_H);
-            assert_eq!(app.automatic_request_height(), app.kv_height.unwrap());
-            for run in &scene.encoding().resources.glyph_runs {
-                for glyph in &scene.encoding().resources.glyphs[run.glyphs.clone()] {
-                    let baseline = f64::from(run.transform.translation[1] + glyph.y);
-                    assert!(
-                        baseline < end,
-                        "{scale}x row ends at {end}, glyph baseline {baseline} escapes"
-                    );
-                }
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        self.response = (scenario != Some("empty")).then(http::sample_response);
+        if let Some(name) = scenario {
+            let mapped = if name == "rail-open" { "drawer" } else { name };
+            self.stage(mapped);
+            if self.form.is_some() {
+                self.nav.snap();
             }
         }
-    }
-
-    /// The overlay hamburger is as wide as the row's controls are tall at
-    /// every text scale (a 36px slab beside a 52px picker read as a broken
-    /// button), and the KV enable box scales with the text it toggles.
-    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
-    fn overlay_hamburger_is_square_and_kv_indicator_scales_with_text() {
-        for scale in [1.0f32, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            let mut a = app();
-            a.text_scale = f64::from(scale);
-            a.text_sm = theme.tokens.typography.scale.sm;
-            a.control_height = 34.0 * f64::from(scale);
-            a.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
-            a.rail.resolve(a.rect);
-            assert_eq!(
-                a.rail.layout(),
-                SplitLayout::Overlay,
-                "480px collapses the rail"
-            );
-            let l = a.compute_layout();
-            assert!(
-                (l.hamburger.width() - l.hamburger.height()).abs() < 0.01,
-                "{scale}x hamburger {:?} is not square",
-                l.hamburger
-            );
-            assert!(l.hamburger.height() >= a.control_height - 0.01);
-            assert!(
-                l.method.x0 >= l.hamburger.x1,
-                "{scale}x the method picker starts after the hamburger"
-            );
-
-            a.measure_kv_table(&mut tr, 448.0);
-            let row = &a.kv_rows[0];
-            let expected = (KV_INDICATOR_SIZE * f64::from(scale)).min(row.rect.height() - 4.0);
-            assert!((row.checkbox().width() - expected).abs() < 0.01);
-            assert!((row.checkbox().height() - expected).abs() < 0.01);
-            assert!(row.checkbox().y0 >= row.rect.y0 && row.checkbox().y1 <= row.rect.y1);
-            assert!(
-                row.checkbox().x1 + KV_INDICATOR_GAP <= row.key_rect.x0 + 0.01,
-                "{scale}x checkbox {:?} runs into the key column at {}",
-                row.checkbox(),
-                row.key_rect.x0
-            );
-        }
-    }
-
-    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
-    fn composition_same_count_nav_replacement_keeps_old_focus_alive_until_rebuild() {
-        let mut app = app();
-        let mut tree = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        app.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        assert!(app.retired_nav_rows.is_empty());
-        app.nav_rows[1].set_focus(true);
-        let original = std::ptr::from_ref(&app.nav_rows[1]);
-        let original_name = app.nav_rows[1].accessibility().unwrap().name;
-        let count = app.nav_rows.len();
-        app.selected = Some((0, 1));
-        app.rebuild_nav();
-        assert_eq!(app.nav_rows.len(), count);
-        assert!(
-            app.take_structure_dirty(),
-            "same-count replacement invalidates topology"
-        );
-        assert_eq!(std::ptr::from_ref(&app.retired_nav_rows[0][1]), original);
-        assert_eq!(
-            app.retired_nav_rows[0][1].accessibility().unwrap().name,
-            original_name
-        );
-        assert!(app.retired_nav_rows[0][1].is_focused());
-        app.collections[0].requests[0].name = "renamed without changing row count".into();
-        app.rebuild_nav();
-        assert!(app.take_structure_dirty());
-        assert_eq!(app.retired_nav_rows.len(), 2);
-        // Match both real hosts: discard old maps before admitting a new tree.
-        nodes.clear();
-        tree = TaffyTree::new();
-        app.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        assert!(app.retired_nav_rows.is_empty());
-        assert!(!app.nav_rows_replaced);
-        assert!(
-            app.nav_rows[1]
-                .accessibility()
-                .unwrap()
-                .name
-                .unwrap()
-                .contains("renamed")
-        );
-    }
-
-    fn long_content_app(tab: RequestTab) -> ApiTesterApp {
-        let mut app = demo();
-        let rows = vec![
-            KeyValue::new(
-                "X-Client-Requested-Response-Format-For-International-Customer-Service",
-                "prefix {{environment_variable}} with a longer suffix",
-            ),
-            KeyValue {
-                key: "disabled optional request metadata field".into(),
-                value: "more descriptive content".into(),
-                enabled: false,
-                ..KeyValue::new("", "")
-            },
-        ];
-        app.request.params = rows.clone();
-        app.request.headers = rows.clone();
-        app.request.form = rows;
-        app.request.body_mode = BodyMode::Form;
-        app.active_tab = tab;
-        app.collections.truncate(1);
-        app.collections[0].name =
-            "Long named collection for the international customer service".into();
-        app.collections[0].requests.truncate(2);
-        app.collections[0].requests[0].name =
-            "List international customers with Unicode café and detailed response metadata".into();
-        app.collections[0].requests[1].name =
-            "Create international customer record with a long descriptive request name".into();
-        app.history.truncate(1);
-        app.history[0].url =
-            "https://example.com/very/long/customer/history/path/with/many/segments/and/details"
-                .into();
-        app.rebuild_nav();
-        app
-    }
-
-    /// Case of `kv_table_rows_fit_their_content_and_drive_the_editor_height`.
-    #[expect(
-        clippy::float_cmp,
-        reason = "layout values are compared for exact reproduction, not approximate equality"
-    )]
-    fn composition_long_tables_share_wrapped_height_and_centered_indicators() {
-        for (width, scale) in [(480.0, 1.0), (800.0, 2.0)] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            for tab in [RequestTab::Params, RequestTab::Headers, RequestTab::Body] {
-                let mut app = long_content_app(tab);
-                app.text_sm = theme.tokens.typography.scale.sm;
-                app.text_scale = f64::from(scale);
-                app.row_height = (f64::from(
-                    tr.measure_style(
-                        "Ag",
-                        None,
-                        &tr.renderer_input_style(&TextStyle::new(app.text_sm)),
-                    )
-                    .1,
-                )
-                .ceil()
-                    + 12.0)
-                    .max(ROW_H);
-                app.rect = Rect::new(0.0, 0.0, width, 1200.0);
-                app.measure_kv_table(&mut tr, width);
-                assert_eq!(app.kv_rows.len(), 3);
-                for row in &app.kv_rows {
-                    assert_eq!(row.checkbox().center().y, row.key_rect.center().y);
-                    assert_eq!(row.checkbox().center().y, row.value_rect.center().y);
-                    assert!(row.rect.contains_rect(row.key_rect));
-                    assert!(row.rect.contains_rect(row.value_rect));
-                    assert!(row.key_rect.x1 < row.value_rect.x0);
-                    assert!((row.key_rect.height() - f64::from(row.key.height())).abs() < 0.01);
-                    let mut scene = Scene::new();
-                    ApiTesterApp::draw_kv_row(&mut scene, Affine::IDENTITY, &mut tr, &theme, row);
-                    for run in &scene.encoding().resources.glyph_runs {
-                        for glyph in &scene.encoding().resources.glyphs[run.glyphs.clone()] {
-                            let x = f64::from(run.transform.translation[0] + glyph.x);
-                            let y = f64::from(run.transform.translation[1] + glyph.y);
-                            assert!(
-                                x >= row.rect.x0
-                                    && x < row.rect.x1
-                                    && y >= row.rect.y0
-                                    && y < row.rect.y1
-                            );
-                        }
-                    }
-                }
-                for pair in app.kv_rows.windows(2) {
-                    assert!(pair[0].rect.y1 <= pair[1].rect.y0);
-                }
-                let offset = if tab == RequestTab::Body {
-                    app.row_height + 16.0
-                } else {
-                    0.0
-                };
-                assert_eq!(
-                    app.automatic_request_height(),
-                    app.kv_height.unwrap() + offset
-                );
-                assert_eq!(
-                    app.compute_layout().editor.height(),
-                    app.automatic_request_height()
-                );
-                let narrow = app.kv_height.unwrap();
-                app.measure_kv_table(&mut tr, width * 2.0);
-                assert!(narrow > app.kv_height.unwrap());
-                app.request_height_override = Some(140.0);
-                app.measure_kv_table(&mut tr, width);
-                assert_eq!(app.compute_layout().editor.height(), 140.0);
-                assert_eq!(app.request_height_override, Some(140.0));
-            }
-        }
-    }
-
-    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
-    fn composition_long_displayed_navigation_activates_the_named_item() {
-        use ui::headless::Driver;
-        for (width, height, scale) in [(480, 900, 1.0), (800, 900, 2.0)] {
-            let mut app = long_content_app(RequestTab::Params);
-            app.snap_rail(true);
-            let selected_name = format!(
-                "{} {}",
-                app.collections[0].requests[1].method.as_str(),
-                app.collections[0].requests[1].name
-            );
-            let history_name = app.nav_meta.last().unwrap().a11y_name.clone();
-            let d = Driver::new_with_theme(
-                demo_state(),
-                Box::new(app),
-                (width, height),
-                Theme::dark().with_text_scale(scale),
-            );
-            assert!(
-                d.focus_access_nodes()
-                    .iter()
-                    .any(|node| node.name.as_deref() == Some(&selected_name))
-            );
-            let targets = d.targets();
-            assert!(targets["api.nav.2"].y1 <= targets["api.nav.3"].y0);
-            assert!(
-                d.focus_access_nodes()
-                    .iter()
-                    .any(|node| node.name.as_deref() == Some(&history_name))
-            );
-            // Mount the actual generated history row on its own so its
-            // callback can be observed without the unrelated draft-sync gap.
-            let mut history_app = long_content_app(RequestTab::Params);
-            let sink = history_app.sink.clone();
-            let request_row = history_app.nav_rows.remove(2);
-            let mut request_driver = Driver::new_with_theme(
-                demo_state(),
-                Box::new(request_row),
-                (width, height),
-                Theme::dark().with_text_scale(scale),
-            );
-            request_driver.click_named("api.nav.2").unwrap();
-            assert!(matches!(
-                sink.borrow_mut().pop(),
-                Some(Cmd::LoadRequest(0, 1))
-            ));
-            let row = history_app.nav_rows.pop().unwrap();
-            let mut history_driver = Driver::new_with_theme(
-                demo_state(),
-                Box::new(row),
-                (width, height),
-                Theme::dark().with_text_scale(scale),
-            );
-            history_driver.click_named("api.nav.3").unwrap();
-            assert!(matches!(
-                sink.borrow_mut().pop(),
-                Some(Cmd::ReplayHistory(0))
-            ));
-            history_driver.key("Enter");
-            assert!(matches!(
-                sink.borrow_mut().pop(),
-                Some(Cmd::ReplayHistory(0))
-            ));
-        }
+        self.stale.response = true;
     }
 }

@@ -5,7 +5,8 @@ use crate::cached_document::PolicyData;
 pub(crate) trait Destination {
     type Error;
     fn owner(&mut self, value: &str) -> Result<(), Self::Error>;
-    fn capability(&mut self, bytes: &[u8]) -> Result<(), Self::Error>;
+    fn grant(&mut self, bytes: &[u8]) -> Result<(), Self::Error>;
+    fn member(&mut self, key: &str, bytes: &[u8]) -> Result<(), Self::Error>;
     fn identity(&mut self, key: &str, bytes: &[u8]) -> Result<(), Self::Error>;
 }
 pub(crate) fn project<R: RoomRead, D: Destination>(
@@ -14,9 +15,10 @@ pub(crate) fn project<R: RoomRead, D: Destination>(
 ) -> Result<(), ReadError<D::Error>> {
     read::visit_governance_entries(read, |entry| match entry {
         GovernanceEntry::Owner(value) => destination.owner(value),
-        GovernanceEntry::Capability { bytes, .. } => destination.capability(bytes),
+        GovernanceEntry::Grant { bytes, .. } => destination.grant(bytes),
+        GovernanceEntry::Member { key, bytes } => destination.member(key, bytes),
         GovernanceEntry::Identity { key, bytes } => destination.identity(key, bytes),
-        GovernanceEntry::Peer { .. } => Ok(()),
+        GovernanceEntry::Peer { .. } | GovernanceEntry::Sandbox { .. } => Ok(()),
     })
 }
 impl Destination for PolicyData {
@@ -25,9 +27,15 @@ impl Destination for PolicyData {
         self.owner = Some(value.to_owned());
         Ok(())
     }
-    fn capability(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
-        if let Ok(cap) = serde_json::from_slice(bytes) {
-            self.caps.push(cap);
+    fn grant(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        if let Ok(grant) = serde_json::from_slice(bytes) {
+            self.grants.push(grant);
+        }
+        Ok(())
+    }
+    fn member(&mut self, key: &str, bytes: &[u8]) -> Result<(), Self::Error> {
+        if let Ok(role) = serde_json::from_slice(bytes) {
+            self.members.insert(key.to_owned(), role);
         }
         Ok(())
     }
@@ -41,7 +49,8 @@ pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
     super::POLICY_READS.with(|count| count.set(count.get().saturating_add(1)));
     let mut value = PolicyData {
         owner: None,
-        caps: Vec::new(),
+        members: std::collections::BTreeMap::new(),
+        grants: Vec::new(),
         identities: std::collections::BTreeMap::new(),
     };
     // This concrete legacy adapter has neither resource failures nor fallible

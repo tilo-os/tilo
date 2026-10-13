@@ -1,11 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use super::*;
 use crate::model::{Timer, WeekdayKey, repeat_mask};
 use chrono::{NaiveTime, Timelike};
@@ -389,10 +381,6 @@ fn timers_ring_once_per_deadline_across_restart_and_native_handoff() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
 fn shell_activity_shows_the_floating_clock_first() {
     let now = Utc::now();
 
@@ -474,4 +462,31 @@ fn shell_activity_shows_the_floating_clock_first() {
         );
         assert!(!unfloated.overlay);
     }
+}
+
+#[test]
+fn completed_one_shot_does_not_rearm_if_shared_settings_remain_enabled() {
+    let (clocks, _) = with_alarm(lunch(&[]));
+    let mut delivery = Delivery::default();
+    assert!(
+        ring(&clocks, &mut delivery, local(2026, 4, 14, 11, 0, 0))
+            .due
+            .is_empty()
+    );
+    assert_eq!(
+        ring(&clocks, &mut delivery, local(2026, 4, 14, 12, 0, 0))
+            .due
+            .len(),
+        1
+    );
+    assert!(
+        ring(
+            &clocks,
+            &mut restarted(&delivery),
+            local(2026, 4, 15, 12, 0, 0)
+        )
+        .due
+        .is_empty(),
+        "a read-only collaborator still delivers a one-shot only once per device"
+    );
 }

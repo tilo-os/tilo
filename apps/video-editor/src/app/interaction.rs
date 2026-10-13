@@ -55,16 +55,20 @@ impl VideoEditorApp {
         // A timecode being typed owns the keyboard: every key either edits it,
         // commits it, or abandons it. Nothing else fires meanwhile, so typing
         // "1:30" cannot also split a clip and add a marker on the way.
-        if let Some(entry) = self.goto_entry.as_mut() {
+        if let Some(field) = self.goto_entry.as_ref() {
             match key {
                 Key::Named(NamedKey::Escape) => {
                     self.goto_entry = None;
                 }
                 Key::Named(NamedKey::Backspace) => {
-                    ui::text_edit::delete_last_grapheme(entry);
+                    if let Some(field) = self.goto_entry.as_mut() {
+                        let mut value = field.value().to_string();
+                        ui::text_edit::delete_last_grapheme(&mut value);
+                        field.set_text(&value);
+                    }
                 }
                 Key::Named(NamedKey::Enter) => {
-                    let typed = entry.clone();
+                    let typed = field.value().to_string();
                     match crate::timecode::parse(&typed, self.project.fps) {
                         Some(t) => {
                             self.playhead = t.clamp(0.0, self.project.duration().max(t));
@@ -78,12 +82,7 @@ impl VideoEditorApp {
                         None => self.navigation.goto_notice = true,
                     }
                 }
-                Key::Character(c)
-                    if entry.len() < 12 && c.chars().all(|ch| ch.is_ascii_digit() || ch == ':') =>
-                {
-                    entry.push_str(c);
-                    self.navigation.goto_notice = false;
-                }
+                // Every other key was the field's: it edits the timecode.
                 _ => {}
             }
             return true;
@@ -361,7 +360,7 @@ impl VideoEditorApp {
             }
             // G opens a timecode field: type a time, press Enter, land there.
             Key::Character(c) if c.eq_ignore_ascii_case("g") && !ctrl => {
-                self.goto_entry = Some(String::new());
+                self.goto_entry = Some(goto_field(""));
                 true
             }
             Key::Named(NamedKey::Escape) => {
@@ -379,6 +378,7 @@ impl VideoEditorApp {
                 } else if self.inspector_split() == SplitLayout::Overlay
                     && self.inspector_flap.is_open(SplitLayout::Overlay)
                 {
+                    self.reconcile_flaps();
                     self.inspector_flap.close();
                 } else {
                     self.selection.clear();
@@ -400,33 +400,30 @@ impl VideoEditorApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> GotoLayout {
-        let type_sizes = dialog_type(tr, theme);
+        let type_sizes = dialog_type(theme);
         let sp = &theme.tokens.spacing;
-        let (s1, s2, s3, s4) = (
-            f64::from(sp.s1),
-            f64::from(sp.s2),
-            f64::from(sp.s3),
-            f64::from(sp.s4),
-        );
-        let line_xs = line_height(tr, type_sizes.xs);
-        let timecode_line = line_height(tr, type_sizes.xl);
-        // Three measured lines — caption, the timecode, the hint — each one
-        // spacing step apart, inside the card's inset; so the field grows
-        // with the text instead of drawing its 2× timecode through its hint.
-        let h = s3 + line_xs + s1 + timecode_line + s1 + line_xs + s3;
+        let (s1, s2, s4) = (f64::from(sp.s1), f64::from(sp.s2), f64::from(sp.s4));
+        let line_xs = line_height(tr, &type_sizes.xs);
+        // The field is a text field set in the timecode's own role, as tall
+        // as its line plus the field's inset.
+        let field_h = line_height(tr, &type_sizes.xl) + s4;
+        // Caption, field, hint — each one spacing step apart, inside the
+        // card's inset; so the card grows with the text.
+        let h = s4 + line_xs + s1 + field_h + s1 + line_xs + s4;
         let w = GOTO_CARD_W.min(self.rect.width() - 2.0 * s4);
         // Anchored just above the transport, whose playhead time it edits.
         let y1 = r.transport.y0 - s2;
         let cx = self.rect.center().x;
         let card = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
-        let label_top = card.y0 + s3;
+        let label_top = card.y0 + s4;
         let entry_top = label_top + line_xs + s1;
-        let hint_top = entry_top + timecode_line + s1;
+        let entry = Rect::new(card.x0 + s4, entry_top, card.x1 - s4, entry_top + field_h);
+        let hint_top = entry.y1 + s1;
         GotoLayout {
             card,
             type_sizes,
             label_top,
-            entry_top,
+            entry,
             hint_top,
         }
     }
@@ -455,7 +452,6 @@ impl VideoEditorApp {
             // out is the Cancel it shows.
             let hit = self
                 .with_dialog_layout(super::VideoEditorApp::discard_layout)
-                .flatten()
                 .and_then(|l| l.modal.hit(p));
             let choice = match hit {
                 Some(ModalHit::Action(0)) => DiscardChoice::Cancel,
@@ -479,19 +475,16 @@ impl VideoEditorApp {
         // itself keeps the click, as every modal card in the fleet does.
         if self.navigation.help_open {
             let dismisses = self
-                .with_dialog_layout(|app, tr, theme| app.help_layout(tr, theme).modal.dismisses(p))
-                .unwrap_or(false);
+                .with_dialog_layout(|app, tr, theme| app.help_layout(tr, theme).modal.dismisses(p));
             if dismisses {
                 self.navigation.help_open = false;
             }
             return;
         }
         if self.goto_entry.is_some() {
-            let outside = self
-                .with_dialog_layout(|app, tr, theme| {
-                    !app.goto_layout(r, tr, theme).card.contains(p)
-                })
-                .unwrap_or(false);
+            let outside = self.with_dialog_layout(|app, tr, theme| {
+                !app.goto_layout(r, tr, theme).card.contains(p)
+            });
             if outside {
                 self.goto_entry = None;
             }
@@ -509,8 +502,8 @@ impl VideoEditorApp {
             self.presentation.export_open = true;
             return;
         }
-        // Hamburger toggle (overlay layout only).
-        if r.bin_overlay && r.menu_btn.contains(p) {
+        // The media bin's show/hide toggle, in every layout.
+        if r.menu_btn.contains(p) {
             self.toggle_bin();
             return;
         }
@@ -523,8 +516,8 @@ impl VideoEditorApp {
             self.close_bin_overlay();
             return;
         }
-        // Inspector toggle (overlay layout only).
-        if r.inspector_overlay && r.inspector_btn.contains(p) {
+        // The inspector's show/hide toggle, in every layout.
+        if r.inspector_btn.contains(p) {
             self.toggle_inspector();
             return;
         }
@@ -568,7 +561,9 @@ impl VideoEditorApp {
             return;
         }
         // Media bin (only when it's on-screen: docked, or overlay open).
-        if bin_visible {
+        // A row scrolled out of the bin's list is not under the pointer, even
+        // where its rect runs on past the pane.
+        if bin_visible && VideoEditorApp::bin_viewport(r).contains(p) {
             for (mid, rect) in self.bin_item_rects(r) {
                 if rect.contains(p) {
                     self.selected_media = Some(mid);
@@ -650,7 +645,7 @@ impl VideoEditorApp {
         // walks the playhead through the places the mix went over, wrapping
         // round — which is the difference between a warning you can act on
         // and one you can only be annoyed by.
-        if self.mix.clipped() && VideoEditorApp::clip_flag_rect(r).contains(p) {
+        if self.mix.clipped() && self.clip_flag_rect(r).contains(p) {
             self.go_to_next_clipping();
             return;
         }
@@ -671,14 +666,16 @@ impl VideoEditorApp {
                 .clamp(0.0, self.project.duration());
             return;
         }
-        // Timeline gutter: add-track buttons and per-track mute pills.
-        if r.gutter.contains(p) {
-            for (kind, rect) in self.add_track_buttons(r) {
-                if rect.contains(p) {
-                    self.add_track(kind);
-                    return;
-                }
+        // The measured add-track controls may extend from the gutter into
+        // the lanes. Their actual painted bounds own the press there too.
+        for (kind, rect) in self.add_track_buttons(r) {
+            if rect.contains(p) {
+                self.add_track(kind);
+                return;
             }
+        }
+        // Timeline gutter: per-track mute, lock and solo.
+        if r.gutter.contains(p) {
             for (tid, _kind, lane) in self.lane_rects(r) {
                 let header = VideoEditorApp::track_head_rect(r, &lane);
                 if header.contains(p) {
@@ -851,11 +848,12 @@ impl VideoEditorApp {
     )]
     pub(super) fn press_inspector(&mut self, r: &Regions, p: Point) {
         // The fixed identity card is context, not a hidden control surface.
-        // Do not let a translated row behind it receive a click.
-        if !self.inspector_viewport(r).contains(p) {
+        // Do not let a translated row behind it receive a click, nor a row
+        // the body leaves out because it is only part-way in view.
+        let l = self.inspector_layout(r);
+        if !self.inspector_shown_body(r, &l).contains(p) {
             return;
         }
-        let l = self.inspector_layout(r);
         // The markers section and the section folds are project-level, so
         // they answer to a press whether or not a clip is selected. Every
         // control below this point edits the selection and needs one.
@@ -927,7 +925,7 @@ impl VideoEditorApp {
                 && hit_slider(track, p)
             {
                 self.drag = Some(drag);
-                let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                let v = slider_value_at(track, p.x);
                 self.preview_param(param, v);
                 return;
             }
@@ -941,7 +939,7 @@ impl VideoEditorApp {
             && hit_slider(track, p)
         {
             self.drag = Some(Drag::FadeIn);
-            let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+            let frac = slider_value_at(track, p.x);
             self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
             return;
         }
@@ -949,7 +947,7 @@ impl VideoEditorApp {
             && hit_slider(track, p)
         {
             self.drag = Some(Drag::FadeOut);
-            let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+            let frac = slider_value_at(track, p.x);
             self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
             return;
         }
@@ -957,7 +955,7 @@ impl VideoEditorApp {
             && hit_slider(track, p)
         {
             self.drag = Some(Drag::TransitionLen);
-            let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+            let frac = slider_value_at(track, p.x);
             let max = self.transition_len_max();
             self.preview_edit(move |c| c.transition_duration = (frac * max).max(0.01));
             return;
@@ -1007,9 +1005,8 @@ impl VideoEditorApp {
                 self.drag = Some(Drag::EffectAmount {
                     idx: i,
                     effect: effect.id,
-                    expected_amount_bits: effect.amount.to_bits(),
                 });
-                let v = ((p.x - slider.x0) / slider.width()).clamp(0.0, 1.0);
+                let v = slider_value_at(slider, p.x);
                 self.preview_edit(move |c| {
                     if let Some(e) = c.effects.get_mut(i) {
                         e.amount = v;
@@ -1063,7 +1060,7 @@ impl VideoEditorApp {
         for (f, track) in l.nums.clone() {
             if hit_slider(track, p) {
                 self.drag = Some(Drag::Num(f));
-                let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                let frac = slider_value_at(track, p.x);
                 self.set_num(f, f.at_frac(frac));
                 return;
             }
@@ -1260,9 +1257,7 @@ impl VideoEditorApp {
     pub(super) fn press_export(&mut self, state: &AutoCommit, p: Point) {
         // Laid out from the current state, as the next frame will paint it —
         // see `chrome_theme`.
-        let Some(l) = self.with_dialog_layout(super::VideoEditorApp::export_layout) else {
-            return;
-        };
+        let l = self.with_dialog_layout(super::VideoEditorApp::export_layout);
         match l.modal.hit(p) {
             // The close control, or a click outside the card, dismisses. A
             // render in flight is not abandoned by that: it keeps reporting
@@ -1308,4 +1303,19 @@ impl VideoEditorApp {
             None => {}
         }
     }
+}
+
+/// The go-to field: the toolkit's text field, set in the timecode's role and
+/// admitting only what a timecode is written with, focused so the first key
+/// lands in it.
+pub(super) fn goto_field(initial: &str) -> ui::widget::TextInput {
+    let mut field = ui::widget::TextInput::local()
+        .with_char_filter(|c| c.is_ascii_digit() || c == ':' || c == '.')
+        .with_kind(ui::widget::TextInputKind::Number)
+        .with_text_role(TextRole::Title)
+        .with_placeholder("0:00")
+        .with_accessible_name("Timecode")
+        .with_initial_value(initial);
+    field.set_focus(true);
+    field
 }

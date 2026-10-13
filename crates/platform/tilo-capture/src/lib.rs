@@ -47,79 +47,36 @@ pub enum Feature {
     Scanner,
 }
 
-/// Whether a feature works on this target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Availability {
-    Available,
-    /// Usable once the user allows it (browser permission, macOS TCC).
-    Prompt,
-    Unsupported(&'static str),
-}
+pub use tilo_platform_caps::{Availability, availability, available};
 
 const NO_SCANNER: &str = "document scanners are reached through SANE, on Linux only";
 
-/// Each feature's availability on Linux, macOS and the web, in that order,
-/// for a build with every capability feature enabled.
-pub const CAPABILITIES: &[(Feature, [Availability; 3])] = &[
-    (
-        Feature::Camera,
-        [
-            Availability::Available,
-            Availability::Prompt,
-            Availability::Prompt,
-        ],
-    ),
-    (
-        Feature::Microphone,
-        [
-            Availability::Available,
-            Availability::Prompt,
-            Availability::Prompt,
-        ],
-    ),
-    (
-        Feature::Screen,
-        [
-            Availability::Prompt,
-            Availability::Prompt,
-            Availability::Prompt,
-        ],
-    ),
-    (
-        Feature::Scanner,
-        [
-            Availability::Available,
-            Availability::Unsupported(NO_SCANNER),
-            Availability::Unsupported(NO_SCANNER),
-        ],
-    ),
-];
-
-fn column() -> usize {
-    if cfg!(target_family = "wasm") {
-        2
-    } else {
-        usize::from(cfg!(target_os = "macos"))
+impl tilo_platform_caps::Feature for Feature {
+    /// The feature's availability on Linux, macOS and the web, in that order,
+    /// for a build with every capability feature enabled.
+    fn targets(self) -> [Availability; 3] {
+        use Availability::{Available, Prompt, Unsupported};
+        match self {
+            Self::Camera | Self::Microphone => [Available, Prompt, Prompt],
+            Self::Screen => [Prompt, Prompt, Prompt],
+            Self::Scanner => [Available, Unsupported(NO_SCANNER), Unsupported(NO_SCANNER)],
+        }
     }
-}
 
-/// Whether `feature` works on the running target, in this build.
-#[must_use]
-pub fn availability(feature: Feature) -> Availability {
-    let built = match feature {
-        Feature::Camera => cfg!(any(native_camera, web_page)),
-        Feature::Microphone => cfg!(any(native_microphone, web_page)),
-        Feature::Screen => cfg!(any(native_screen, web_page)),
-        Feature::Scanner => cfg!(sane_scanner) || column() != 0,
-    };
-    if !built {
-        return Availability::Unsupported("this build leaves the capability out");
+    /// Whether the feature works on the running target, in this build.
+    fn availability(self) -> Availability {
+        let built = match self {
+            Self::Camera => cfg!(any(native_camera, web_page)),
+            Self::Microphone => cfg!(any(native_microphone, web_page)),
+            Self::Screen => cfg!(any(native_screen, web_page)),
+            Self::Scanner => cfg!(sane_scanner) || tilo_platform_caps::COLUMN != 0,
+        };
+        if built {
+            self.targets()[tilo_platform_caps::COLUMN]
+        } else {
+            Availability::Unsupported("this build leaves the capability out")
+        }
     }
-    CAPABILITIES
-        .iter()
-        .find(|(f, _)| *f == feature)
-        .and_then(|(_, row)| row.get(column()).copied())
-        .unwrap_or(Availability::Unsupported("unknown feature"))
 }
 
 /// Why a capture could not start or stopped.
@@ -425,6 +382,7 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_platform_caps::Feature as _;
 
     #[test]
     fn frame_admission_refuses_overflow_mismatch_and_oversize() {
@@ -437,10 +395,16 @@ mod tests {
 
     #[test]
     fn availability_follows_the_table_where_built() {
-        for (feature, row) in CAPABILITIES {
-            let got = availability(*feature);
+        for feature in [
+            Feature::Camera,
+            Feature::Microphone,
+            Feature::Screen,
+            Feature::Scanner,
+        ] {
+            let got = availability(feature);
             assert!(
-                got == row[column()] || matches!(got, Availability::Unsupported(_)),
+                got == feature.targets()[tilo_platform_caps::COLUMN]
+                    || matches!(got, Availability::Unsupported(_)),
                 "{feature:?}: {got:?}"
             );
         }

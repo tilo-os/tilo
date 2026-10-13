@@ -39,7 +39,25 @@ const NARROW_SCENARIOS: &[&str] = &[
 ];
 
 #[test]
+fn semantic_markdown_import_reports_original_success_notification() {
+    ui::clock::freeze_for_capture();
+    check(Some("import_success"), (1280, 720)).unwrap();
+    let mut app = TestApp::<NotesShell>::capture_at(Some("import_success"), (1280, 720)).unwrap();
+    // A capture retains its original notification even when frame preparation
+    // exceeds the live toast lifetime. Draw the real app after that delay.
+    std::thread::sleep(ui::widget::toast::DEFAULT_TTL + ui::time::Duration::from_millis(100));
+    app.harness().relayout();
+    assert!(observed(app.harness(), |node| {
+        node.name.as_deref() == Some("Notifications")
+            && node.value.as_deref() == Some("Imported Project brief")
+    }));
+}
+
+#[test]
 fn every_scenario_reaches_its_state() {
+    // Match --shots before starting capture workers: transient notifications
+    // belong to the captured scene and must not expire while it is prepared.
+    ui::clock::freeze_for_capture();
     let mut captures = NotesShell::scenarios()
         .iter()
         .map(|scenario| (Some(*scenario), NotesShell::shot_viewport(Some(scenario))))
@@ -82,12 +100,24 @@ fn every_scenario_reaches_its_state() {
     );
 }
 
+#[test]
+fn imported_note_keeps_its_success_notification_in_capture() {
+    ui::clock::freeze_for_capture();
+    check(Some("import_success"), (1280, 720))
+        .expect("the imported document and its notification are both captured");
+}
+
+#[test]
+fn rename_scenario_keeps_its_real_inline_editor_focused() {
+    check(Some("rename"), (1280, 720)).expect("the real double-click rename remains focused");
+}
+
 fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::capture_at(scenario, viewport)
         .map_err(|error| format!("capture failed: {error:?}"))?;
     let Some(title) = shown_title(scenario) else {
-        let pages = app.read_document(notes::doc::NotesDoc::list_pages);
+        let pages = app.read_document(notes::read::list_pages);
         return if pages.is_empty() {
             Ok(())
         } else {
@@ -95,7 +125,7 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
         };
     };
     let panel = app.read_document(|doc| {
-        let workspace = notes::notebook::project(doc, None)?;
+        let workspace = notes::read::project(doc)?;
         let page = workspace
             .pages()
             .iter()
@@ -120,12 +150,13 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "did not reach its state: {:?}",
+            "did not reach its state: {:?}; accessibility: {:?}",
             blocks
                 .iter()
                 .zip(&rects)
                 .map(|(block, rect)| (&block.kind, block.text(), block.indent(), rect))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            driver.a11y_nodes()
         ))
     }
 }
@@ -226,7 +257,7 @@ fn reached(
             let heights = blocks.iter().zip(rects).all(|(block, rect)| {
                 let (_, text_height) = renderer.measure(
                     block.text(),
-                    block.kind.font_size(),
+                    ui::Theme::dark().tokens.typography.size(block.kind.text_role()),
                     Some(ui::num::f32_of_f64(rect.width())),
                 );
                 rect.height() + 0.5 >= f64::from(text_height)
@@ -331,9 +362,24 @@ fn reached(
                 .is_some_and(|target| target.starts_with("notes.image-edit:"))
         }),
         Some("scrolled") => blocks.len() > 20,
-        Some("drawer") => observed(driver, |node| {
-            node.action_target.as_deref() == Some("notes.drawer") && node.state.checked == Some(true)
-        }),
+        Some("drawer") => {
+            // The retained shell publishes its real toggle rather than the
+            // former manually painted notes.drawer synthetic checkbox.
+            observed(driver, |node| {
+                node.name.as_deref() == Some("Hide sidebar") && !node.state.hidden
+            }) && observed(driver, |node| {
+                node.role == ui::a11y::Role::Tree && !node.state.hidden
+            }) && observed(driver, |node| {
+                // TreeView publishes geometry on the visible rows, not on
+                // its semantic Tree container. Require a genuinely laid-out
+                // row as well as the opened shell's dismiss control.
+                node.role == ui::a11y::Role::TreeItem && !node.state.hidden
+                    && node.bounds.is_some_and(|bounds| {
+                        let rect = bounds.to_rect();
+                        rect.width() > 0.0 && rect.height() > 0.0
+                    })
+            })
+        },
         Some("menu" | "note_menu") => observed(driver, |node| {
             node.role == ui::a11y::Role::Menu && !node.state.hidden
         }),

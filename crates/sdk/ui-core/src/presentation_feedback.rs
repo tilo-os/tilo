@@ -26,7 +26,7 @@ struct Sample {
 }
 
 impl Observer {
-    fn worker_id(&self) -> Option<u64> {
+    pub(crate) fn worker_id(&self) -> Option<u64> {
         Some(self.worker_id)
     }
 
@@ -37,7 +37,7 @@ impl Observer {
             eprintln!("tilo-display-error handoff row is not an object");
             return;
         };
-        crate::native_scenario::log::emit_json("tilo-native-worker-handoff", row);
+        crate::native_scenario::log::emit_timing_json("tilo-native-worker-handoff", row);
     }
 
     pub(crate) fn log_native_present(
@@ -46,7 +46,7 @@ impl Observer {
         cpu_frame_id: Option<u64>,
         bounds: crate::render_thread::timing::CallBounds,
     ) {
-        crate::native_scenario::log::emit_json(
+        crate::native_scenario::log::emit_timing_json(
             "tilo-native-present-call",
             serde_json::json!({
                 "worker_id": self.worker_id(), "worker_frame_ix": worker_frame_ix,
@@ -72,7 +72,7 @@ impl Observer {
         outcome: crate::render_thread::FrameOutcome,
     ) {
         let (receive, start, end) = bounds;
-        crate::native_scenario::log::emit_json(
+        crate::native_scenario::log::emit_timing_json(
             "tilo-native-worker",
             serde_json::json!({
                 "worker_id": self.worker_id(), "worker_frame_ix": worker_frame_ix,
@@ -105,7 +105,7 @@ impl Observer {
         };
         #[cfg(not(all(target_os = "macos", feature = "presentation-feedback")))]
         let readback: Option<(usize, bool, bool)> = None;
-        crate::native_scenario::log::emit_json(
+        crate::native_scenario::log::emit_timing_json(
             "tilo-native-render-config",
             serde_json::json!({
                 "worker_id": self.worker_id(),

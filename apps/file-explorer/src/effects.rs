@@ -20,12 +20,46 @@ use ui::tilo_resource::Effect;
 #[effect(operation = "files.effects")]
 pub enum FilesEffect {
     /// Refresh folder.
-    #[effect(permission = "read", idempotent)]
+    #[effect(kind = "read", idempotent)]
     Refresh,
+    /// Select entries.
+    ///
+    /// Replaces this window's selection with the currently published rows.
+    #[effect(view, returns)]
+    SelectEntries {
+        #[param("Published entry row ids in the folder shown; at most 256")]
+        entries: Vec<String>,
+    },
+    /// Select all.
+    #[effect(view, returns)]
+    SelectAll,
+    /// Clear selection.
+    #[effect(view, returns)]
+    ClearSelection,
+    /// Copy selection.
+    #[effect(kind = "read", job)]
+    CopySelection,
+    /// Cut selection.
+    #[effect(job)]
+    CutSelection,
+    /// File clipboard status.
+    ///
+    /// Returns the workspace's current opaque offer and entry count. It does
+    /// not read payloads, grant access, or change this window's selection.
+    #[effect(kind = "read", job, returns)]
+    ClipboardStatus,
+    /// Recover interrupted clipboard transfers.
+    ///
+    /// Uses this receiving record's durable receipts and current file grants.
+    /// Completed transfers remain in place. Interrupted Cut restores its
+    /// source; Copy and remaining recovery objects appear in Trash.
+    #[effect(job, cancellable, returns)]
+    RecoverClipboardTransfers,
     /// Paste.
     ///
     /// Copies (or moves, after Cut) what the window holds into the folder
     /// shown.
+    #[effect(job, cancellable)]
     Paste,
     /// Go to folder…
     ///
@@ -36,12 +70,18 @@ pub enum FilesEffect {
         #[param("Absolute path of the folder to show")]
         path: String,
     },
+    /// Open Trash.
+    ///
+    /// Shows this workspace's private Trash and the user's already granted
+    /// home Trash. Opening it grants no filesystem access.
+    #[effect(kind = "read", view, returns)]
+    OpenTrash,
     /// Open folder.
     ///
     /// Shows the folder at this absolute path, as go-to does; answers with
     /// its resource and entries.
     #[effect(view, returns)]
-    Open {
+    OpenFolder {
         #[param("Absolute path of the folder to show")]
         path: String,
     },
@@ -94,7 +134,7 @@ pub enum FilesEffect {
     #[effect(view)]
     KeyboardShortcuts,
     /// Open terminal here.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     OpenTerminal,
     /// Undo move to Trash.
     ///
@@ -117,6 +157,20 @@ pub enum FilesEffect {
         #[param("The collaborative record's id")]
         record: String,
     },
+    /// Open containing folder.
+    #[effect(view, row)]
+    RevealRecent {
+        #[param("The Recent entry's published row id")]
+        entry: String,
+    },
+    /// Remove from Recent.
+    ///
+    /// Forgets this device's recent-use entry. The file remains untouched.
+    #[effect(view, row)]
+    ForgetRecent {
+        #[param("The Recent entry's published row id")]
+        entry: String,
+    },
     /// New file from template.
     ///
     /// Creates a file from a template in the folder shown.
@@ -125,7 +179,7 @@ pub enum FilesEffect {
         template: String,
     },
     /// Open with…
-    #[effect(row, permission = "read")]
+    #[effect(row, kind = "read")]
     OpenWith {
         #[param("The entry's row id")]
         entry: String,
@@ -143,19 +197,19 @@ pub enum FilesEffect {
         folder: String,
     },
     /// Copy.
-    #[effect(row, permission = "read")]
+    #[effect(row, kind = "read", job)]
     Copy {
         #[param("The entry's row id")]
         entry: String,
     },
     /// Cut.
-    #[effect(row)]
+    #[effect(row, job)]
     Cut {
         #[param("The entry's row id")]
         entry: String,
     },
     /// Restore.
-    #[effect(row)]
+    #[effect(row, job, cancellable)]
     Restore {
         #[param("The Trash entry's row id")]
         entry: String,
@@ -221,12 +275,24 @@ pub enum FilesEffect {
         entry: String,
     },
     /// Send to a nearby device.
-    #[effect(row, job, permission = "read")]
+    #[effect(row, job, kind = "read")]
     SendTo {
         #[param("The entry's row id")]
         entry: String,
         #[param("The nearby device")]
         target: NearbyTargetHandle,
+    },
+    /// Send a file to an independently verified `AirDrop` lab receiver.
+    /// The compositor, rather than this application's parameters, collects
+    /// the receiver fingerprint and approves exactly one staged file.
+    #[effect(row, job, privileged, kind = "read")]
+    SendAirDrop {
+        #[param("The entry's row id")]
+        entry: String,
+        #[param("The receiver's literal IP address")]
+        address: String,
+        #[param("The receiver's TLS port")]
+        port: u16,
     },
     /// Create one-time share link.
     #[effect(row, job)]
@@ -242,14 +308,20 @@ pub enum FilesEffect {
         #[param("Where to save it")]
         destination: NearbyDestinationHandle,
     },
-    /// Decline an incoming transfer.
-    #[effect(row)]
+    /// Decline an incoming transfer and discard its retained partial bytes.
+    #[effect(row, destructive)]
     DeclineNearby {
         #[param("The incoming transfer")]
         transfer: NearbyTransferHandle,
     },
+    /// Inspect a transfer's current phase and confirmed byte progress.
+    #[effect(row, kind = "read", returns, idempotent)]
+    InspectNearby {
+        #[param("The visible transfer")]
+        transfer: NearbyTransferHandle,
+    },
     /// Retry a transfer.
-    #[effect(row, permission = "read")]
+    #[effect(row, kind = "read")]
     RetryNearby {
         #[param("The failed transfer")]
         transfer: NearbyTransferHandle,

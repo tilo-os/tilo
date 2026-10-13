@@ -1,8 +1,6 @@
 //! Canonical broker surface for host-owned workspace collaboration administration.
 
 use serde::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin};
-use tilo_user_identity::DeviceCert;
 
 pub const APP_ID: &str = "tilo.workspace.collaboration";
 pub const ISSUE_ACTION: &str = "invitation.issue";
@@ -31,11 +29,11 @@ pub struct CollaborationActionDefinition {
 /// Canonical descriptors used by native, Cloud, and normal-OS action brokers.
 pub fn action_definitions() -> Vec<CollaborationActionDefinition> {
     use tilo_actions::{
-        ActionContract, ActionParam, ConfirmationPolicy, ParamType, PermissionRequirement,
-        ResultSpec, RetryPolicy, RiskLevel,
+        ActionContract, ActionKind, ActionParam, ConfirmationPolicy, ParamType, ResultSpec,
+        RetryPolicy, RiskLevel,
     };
     let contract = |risk| ActionContract {
-        permission: PermissionRequirement::Admin,
+        kind: ActionKind::Outside,
         risk,
         confirmation: ConfirmationPolicy::None,
         retry: RetryPolicy::RetryWithInvocationId,
@@ -274,69 +272,6 @@ pub enum CollaborationAdminOperation {
     MediaSetParticipantDenial(MediaDenialInput),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CollaborationAdminRequest {
-    pub room: String,
-    pub invocation: tilo_actions::InvocationId,
-    pub caller: DeviceCert,
-    pub operation: CollaborationAdminOperation,
-}
-
-pub type CollaborationAdminFuture =
-    Pin<Box<dyn Future<Output = Result<serde_json::Value, CollaborationAdminError>> + Send>>;
-
-pub trait CollaborationAdmin: Send + Sync {
-    fn room(&self) -> &str;
-    fn supports_media_governance(&self) -> bool {
-        false
-    }
-    fn execute(&self, request: CollaborationAdminRequest) -> CollaborationAdminFuture;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CollaborationAdminError {
-    Rejected(String),
-    Uncertain(String),
-    Semantic {
-        code: MediaRejectionCode,
-        message: String,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MediaRejectionCode {
-    Stale,
-    AlreadyExists,
-    InvalidState,
-    Binding,
-    Capacity,
-    Exhausted,
-}
-impl MediaRejectionCode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Stale => "media_call_stale",
-            Self::AlreadyExists => "media_call_already_exists",
-            Self::InvalidState => "media_call_invalid_state",
-            Self::Binding => "media_call_binding",
-            Self::Capacity => "media_call_capacity",
-            Self::Exhausted => "media_call_counter_exhausted",
-        }
-    }
-}
-
-impl std::fmt::Display for CollaborationAdminError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Rejected(message) | Self::Uncertain(message) | Self::Semantic { message, .. } => {
-                message.fmt(formatter)
-            }
-        }
-    }
-}
-
-impl std::error::Error for CollaborationAdminError {}
-
 /// Decode one canonical action id and its exact JSON argument.
 ///
 /// # Errors
@@ -473,7 +408,6 @@ mod tests {
                 MEDIA_DENIAL_ACTION
             ]
         );
-        assert_eq!(MediaRejectionCode::Capacity.as_str(), "media_call_capacity");
     }
 
     #[test]

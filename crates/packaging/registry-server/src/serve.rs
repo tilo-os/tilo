@@ -23,9 +23,14 @@
 //! - `GET  /thin/<root>.tapp`     → a reviewed package's thin form, by
 //!   package root.
 //! - `GET  /artifacts/<blake3>.tapp` → an operator-imported full package.
+//! - `GET  /blobs/<blake3>.zst`, `GET /artifacts/<blake3>.tapp.zst` → the
+//!   compressed twin of a payload object or imported package
+//!   (`tilo_app_package::compressed`), as `application/zstd`; 404 when it
+//!   has none, and the client takes the raw object.
 //!
-//! The last three, and `/indexes/`, are content addressed and served as
-//! immutable. `/entries`
+//! The last five, and `/indexes/`, are content addressed and served as
+//! immutable, with exactly one `Cache-Control`, so an edge cache in front
+//! may keep them forever. `/entries`
 //! carries the snapshot hash as its `ETag`, so a client revalidating an
 //! unchanged catalogue receives an empty `304`.
 //!
@@ -221,10 +226,7 @@ pub async fn handle(
         }
         (Method::GET, p) if p.starts_with("/artifacts/") => {
             let name = p.trim_start_matches("/artifacts/").to_owned();
-            read_file(&state, move |state| {
-                content_addressed(&name, |digest| state.inner.storage.load_artifact(digest))
-            })
-            .await
+            read_file(&state, move |state| handle_get_artifact(state, &name)).await
         }
         (Method::PUT, p) if p.starts_with("/uploads/") => {
             let name = p.trim_start_matches("/uploads/").to_owned();
@@ -900,26 +902,24 @@ fn moderation_status(error: &ModerationError) -> Option<StatusCode> {
         | ModerationError::PendingTimestampNotNewer { .. }
         | ModerationError::DuplicateVersionIdentity { .. }
         | ModerationError::VersionHistoryRemoved { .. }
-        | ModerationError::VersionIdentityReused { .. } => Some(StatusCode::CONFLICT),
+        | ModerationError::VersionIdentityReused { .. }
+        | ModerationError::KindChanged { .. } => Some(StatusCode::CONFLICT),
         ModerationError::UnsupportedPackageTarget { .. } => Some(StatusCode::BAD_REQUEST),
+        ModerationError::BotProgram { .. } => Some(StatusCode::UNPROCESSABLE_ENTITY),
         _ => None,
     }
 }
 
-/// `PUT /uploads/<blake3>.tapp`: an allowlisted publisher's signed upload of
-/// a package it signed, kept privately for review
-/// (`registry_types::upload`). Answers `201` with the artifact URL a version
-/// binding these bytes names.
+/// `PUT /uploads/<blake3>.tapp` or `PUT /uploads/<blake3>.program`: an
+/// allowlisted publisher's signed upload of a package it signed, or of a bot
+/// program, kept privately for review (`registry_types::upload`). Answers
+/// `201` with the URL a version binding these bytes names.
 async fn handle_put_upload(
     state: &AppState,
     name: &str,
     req: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, HandlerError> {
-    let Some(digest) = name
-        .strip_suffix(".tapp")
-        .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
-        .map(str::to_ascii_lowercase)
-    else {
+    let Some((digest, kind)) = parse_upload_name(name) else {
         return Ok(empty_response(StatusCode::NOT_FOUND));
     };
     let publisher = header_text(
@@ -960,10 +960,13 @@ async fn handle_put_upload(
             "publisher not in allowlist",
         ));
     }
-    let limit = usize::try_from(
-        tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES.max(tilo_app_package::MAX_APP_TAPP_BYTES),
-    )
-    .unwrap_or(usize::MAX);
+    let limit = match kind {
+        UploadKind::Package => usize::try_from(
+            tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES.max(tilo_app_package::MAX_APP_TAPP_BYTES),
+        )
+        .unwrap_or(usize::MAX),
+        UploadKind::Program => tilo_automation::program::MAX_PROGRAM_BYTES,
+    };
     let body = match Limited::new(req.into_body(), limit).collect().await {
         Ok(body) => body.to_bytes(),
         Err(error) if error.downcast_ref::<LengthLimitError>().is_some() => {
@@ -974,10 +977,72 @@ async fn handle_put_upload(
         }
         Err(error) => return Err(HandlerError::Body(error.to_string())),
     };
-    blocking(state, move |state| {
-        store_upload(state, &publisher, &digest, &body)
+    blocking(state, move |state| match kind {
+        UploadKind::Package => store_upload(state, &publisher, &digest, &body),
+        UploadKind::Program => store_program_upload(state, &digest, &body),
     })
     .await
+}
+
+#[derive(Clone, Copy)]
+enum UploadKind {
+    Package,
+    Program,
+}
+
+fn parse_upload_name(name: &str) -> Option<(String, UploadKind)> {
+    let (digest, extension) = name.rsplit_once('.')?;
+    let kind = match extension {
+        "tapp" => UploadKind::Package,
+        "program" => UploadKind::Program,
+        _ => return None,
+    };
+    (digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| (digest.to_ascii_lowercase(), kind))
+}
+
+/// Keep a bot program for review. Only the canonical encoding of a Shortcut
+/// that passes the structural checks is kept: the entry signs these exact
+/// bytes, so the registry never re-encodes them.
+fn store_program_upload(
+    state: &AppState,
+    digest: &str,
+    body: &[u8],
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    if !blake3::hash(body).to_hex().eq_ignore_ascii_case(digest) {
+        return Ok(text_response(
+            StatusCode::BAD_REQUEST,
+            "upload does not hash to its name",
+        ));
+    }
+    let program = match tilo_automation::program::parse_program(body) {
+        Ok(program) => program,
+        Err(error) => {
+            return Ok(text_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &format!("not a canonical bot program: {error}"),
+            ));
+        }
+    };
+    if let Err(errors) = tilo_automation::program::check_structure(&program) {
+        let reasons: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        return Ok(text_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &reasons.join("; "),
+        ));
+    }
+    state
+        .inner
+        .storage
+        .save_program_upload(body)
+        .map_err(HandlerError::Storage)?;
+    Ok(json_response(
+        StatusCode::CREATED,
+        &serde_json::json!({
+            "blake3": digest,
+            "url": crate::moderation::program_url(&state.inner.identity.base_url, digest),
+        }),
+    ))
 }
 
 fn store_upload(
@@ -1045,6 +1110,19 @@ fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::Publi
 /// downloaded a thin package fetches only the blobs it lacks. Content
 /// addressing makes the response self-verifying; clients check every blob.
 fn handle_get_blob(state: &AppState, name: &str) -> Result<Response<Full<Bytes>>, HandlerError> {
+    if let Some(blake3_hex) = name.strip_suffix(tilo_app_package::compressed::SUFFIX) {
+        return Ok(
+            match state
+                .inner
+                .storage
+                .load_payload_twin(blake3_hex)
+                .map_err(HandlerError::Storage)?
+            {
+                Some(twin) => immutable_response_as(twin, tilo_app_package::compressed::MEDIA_TYPE),
+                None => text_response(StatusCode::NOT_FOUND, "not found"),
+            },
+        );
+    }
     if let Some(blake3_hex) = name.strip_suffix(tilo_app_package::chunks::CHUNKS_SUFFIX) {
         return Ok(
             match state
@@ -1078,6 +1156,33 @@ fn handle_get_blob(state: &AppState, name: &str) -> Result<Response<Full<Bytes>>
         }
         None => Ok(text_response(StatusCode::NOT_FOUND, "not found")),
     }
+}
+
+/// An imported package, or its compressed twin.
+fn handle_get_artifact(
+    state: &AppState,
+    name: &str,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    let storage = &state.inner.storage;
+    match name.strip_suffix(tilo_app_package::compressed::SUFFIX) {
+        Some(raw) => {
+            content_addressed(raw, |digest| storage.load_artifact_twin(digest)).map(compressed_twin)
+        }
+        None => content_addressed(name, |digest| storage.load_artifact(digest)),
+    }
+}
+
+/// Relabel a content-addressed response as the compressed twin it carries.
+/// The body is a zstd frame, not an encoding of the response: no
+/// `Content-Encoding`, so nothing between here and the client decodes it.
+fn compressed_twin(mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
+    if response.status() == StatusCode::OK {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static(tilo_app_package::compressed::MEDIA_TYPE),
+        );
+    }
+    response
 }
 
 /// Content-addressed bytes: the URL names the content, so every cache may

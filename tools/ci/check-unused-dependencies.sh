@@ -8,8 +8,8 @@
 # A dependency can only become unused through an edit inside its crate (its
 # manifest or its sources) or through the workspace manifest that crates
 # inherit from. `--changed` therefore scans the crates that own a changed or
-# deleted path, and every crate when the workspace manifest or this script
-# changes. BASE/BEFORE have the same pull-request/push meaning as the
+# deleted path. Pure literal workspace-member additions scan those new crates;
+# inherited settings, structural changes, or checker changes scan every crate. BASE/BEFORE have the same pull-request/push meaning as the
 # formatting and allow-reason gates.
 set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -53,7 +53,18 @@ if [[ ${1:-} == --changed ]]; then
     full=0
     for path in "${changed[@]}"; do
         case $path in
-            Cargo.toml|tools/ci/check-unused-dependencies.sh) full=1; break ;;
+            tools/ci/check-unused-dependencies.sh|tools/ci/workspace_member_additions.py)
+                full=1; break ;;
+            Cargo.toml)
+                if python3 "$script_dir/workspace_member_additions.py" --root "$repo" "$range" >"$paths"; then
+                    mapfile -d '' added_members <"$paths"
+                    for member in "${added_members[@]}"; do
+                        [[ -n ${generated[$member]:-} ]] || selected[$member]=1
+                    done
+                else
+                    full=1; break
+                fi
+                continue ;;
         esac
         dir=$path
         while [[ $dir == */* ]]; do

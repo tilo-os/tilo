@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::{BufRead, Read, Write};
 use std::path::Path;
-use ui::headless::Driver;
+use ui::headless::FrameHarness;
 use ui::ux_bench::Counts;
 use winit::{
     dpi::PhysicalPosition,
@@ -115,14 +115,14 @@ fn validate_command(raw: &str, viewport: [u32; 2]) -> Result<Command, String> {
     Ok(command)
 }
 
-fn apply(driver: &mut Driver, command: &Command, scale: f64, counts: &mut Counts) {
+fn apply(driver: &mut FrameHarness, command: &Command, scale: f64, counts: &mut Counts) {
     match command {
         Command::Click { x, y } => {
             driver.click_at(*x, *y);
             counts.clicks += 1;
         }
         Command::ContextClick { x, y } => {
-            // Through the production dispatch path (`Driver::send`), like
+            // Through the production dispatch path (`FrameHarness::send`), like
             // `click_at` does for the primary button: move, press, release.
             let device_id = DeviceId::dummy();
             driver.send(&WindowEvent::CursorMoved {
@@ -149,10 +149,7 @@ fn apply(driver: &mut Driver, command: &Command, scale: f64, counts: &mut Counts
             counts.keys += u32::try_from(text.chars().count()).unwrap_or(4096);
         }
         Command::Wheel { x, y, dx, dy } => {
-            driver.send(&WindowEvent::CursorMoved {
-                device_id: DeviceId::dummy(),
-                position: PhysicalPosition::new(x * scale, y * scale),
-            });
+            driver.send(&ui::synthetic_input::cursor_moved(x * scale, y * scale));
             driver.send(&WindowEvent::MouseWheel {
                 device_id: DeviceId::dummy(),
                 delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(
@@ -168,7 +165,7 @@ fn apply(driver: &mut Driver, command: &Command, scale: f64, counts: &mut Counts
 }
 
 fn capture(
-    driver: &mut Driver,
+    driver: &mut FrameHarness,
     out: &Path,
     sequence: u32,
     counts: &Counts,
@@ -178,7 +175,7 @@ fn capture(
     driver.relayout();
     let screenshot = out.join(format!("{sequence:04}.png"));
     let inspection = out.join(format!("{sequence:04}.inspection.json"));
-    driver.render_window_png(&screenshot);
+    driver.render_png(&screenshot);
     if !screenshot.is_file() {
         return Err("renderer did not produce screenshot".into());
     }
@@ -199,7 +196,7 @@ fn emit(output: &mut impl Write, value: &Value) -> Result<(), String> {
 }
 
 pub(super) fn run(
-    driver: &mut Driver,
+    driver: &mut FrameHarness,
     scenario: &ui::ux_bench::Scenario,
     out: &Path,
     mut state: impl FnMut() -> Value,

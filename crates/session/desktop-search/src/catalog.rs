@@ -53,6 +53,12 @@ pub(super) const APPS: &[CatalogApp] = &[
         platforms: &["linux", "macos", "web"],
     },
     CatalogApp {
+        id: "so.tilo.chip-design",
+        name: "Chip Design",
+        category: "Development",
+        platforms: &["linux", "macos", "web"],
+    },
+    CatalogApp {
         id: "so.tilo.clocks",
         name: "Clocks",
         category: "Utility",
@@ -87,6 +93,12 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Diff & Merge",
         category: "Development",
         platforms: &["linux", "macos", "web"],
+    },
+    CatalogApp {
+        id: "so.tilo.discord",
+        name: "Discord",
+        category: "Network",
+        platforms: &["linux"],
     },
     CatalogApp {
         id: "so.tilo.disk-usage",
@@ -137,12 +149,6 @@ pub(super) const APPS: &[CatalogApp] = &[
         platforms: &["linux", "macos", "web"],
     },
     CatalogApp {
-        id: "so.tilo.hot-reload-demo",
-        name: "Hot reload",
-        category: "Utility",
-        platforms: &["linux", "macos"],
-    },
-    CatalogApp {
         id: "so.tilo.imager",
         name: "Disk Imager",
         category: "System",
@@ -164,6 +170,12 @@ pub(super) const APPS: &[CatalogApp] = &[
         id: "so.tilo.maps",
         name: "Maps",
         category: "Utility",
+        platforms: &["linux", "macos", "web"],
+    },
+    CatalogApp {
+        id: "so.tilo.messages",
+        name: "Messages",
+        category: "Network",
         platforms: &["linux", "macos", "web"],
     },
     CatalogApp {

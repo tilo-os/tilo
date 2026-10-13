@@ -39,7 +39,8 @@ impl<H> ActionHostPlane<H> {
     }
 }
 
-impl<H: ActionHost + Send + Sync> AppServingPlane for ActionHostPlane<H> {
+/// `H` is cloned into an answer that waits for an invocation to move.
+impl<H: ActionHost + Clone + Send + Sync + 'static> AppServingPlane for ActionHostPlane<H> {
     fn serve(
         &self,
         _workspace_id: u64,

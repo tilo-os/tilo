@@ -112,6 +112,20 @@ pub struct RelayConfig {
     /// runs for members. Absent: it runs none. Needs `services.compute`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environments: Option<EnvironmentsConfig>,
+
+    /// Web entry base (ending in `/`) of the operator's versioned browser bundle,
+    /// announced in catalogue locators so links are minted under it.
+    /// This is a navigation destination, not an admission or content-access grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_entry: Option<String>,
+    /// Per-person change and content budgets, for a host whose rooms admit
+    /// the public. `None` limits nobody.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_limits: Option<MemberLimitsConfig>,
+    /// Pre-admissions a governed room keeps, spent ones included. A public
+    /// room that pre-admits every visitor raises it. `None` keeps 1024.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_room_grants: Option<usize>,
 }
 
 /// How a relay's compute worker hosts members' environment sessions.
@@ -425,6 +439,34 @@ impl Default for RelayConfig {
             workspaces: Vec::new(),
             peer_relays: Vec::new(),
             environments: None,
+            web_entry: None,
+            member_limits: None,
+            max_room_grants: None,
+        }
+    }
+}
+
+/// Per-person limits a public host applies to members' traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberLimitsConfig {
+    /// Changes refilled per window.
+    pub changes_per_window: u32,
+    /// The window, in seconds.
+    pub window_secs: u32,
+    /// Changes a person may send at once.
+    pub burst: u32,
+    /// Record content bytes a person may send per hour.
+    pub content_bytes_per_hour: u64,
+}
+
+impl Default for MemberLimitsConfig {
+    fn default() -> Self {
+        Self {
+            changes_per_window: 20,
+            window_secs: 10,
+            burst: 40,
+            content_bytes_per_hour: 8 * 1024 * 1024,
         }
     }
 }
@@ -579,11 +621,22 @@ mod tests {
 
     #[test]
     fn shell_authority_config_accepts_exact_local_binding() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tilo-relay/tests/fixtures/shell-proof/failure.json"
-        ))
-        .unwrap();
-        let binding = serde_json::json!({"id": "42", "shell_authority": {"room": fixture["room"], "governor": fixture["authority"]}});
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+        let mut governor = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Native workspace peer".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut governor, &root).unwrap();
+        let binding = serde_json::json!({"id": "42", "shell_authority": {
+            "room": "5e11f00d-7110-4000-8000-000000000001",
+            "governor": governor,
+        }});
         let binding: WorkspaceBinding = serde_json::from_value(binding).unwrap();
         assert_eq!(
             toml::from_str::<WorkspaceBinding>(&toml::to_string(&binding).unwrap()).unwrap(),

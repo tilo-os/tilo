@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
-use tilo_actions::InvocationId;
 use tilo_content::ContentStore;
+use ui::tilo_actions::InvocationId;
 
 use crate::frame::FrameBuf;
 use crate::model::ScannedCode;
@@ -24,7 +24,6 @@ pub struct ScanJob {
 pub enum ScanSource {
     /// The bytes of an image the person chose.
     Bytes(Vec<u8>),
-    Media(String),
     Frame(FrameBuf),
 }
 
@@ -244,8 +243,6 @@ impl WorkerLoop {
             WorkerJob::Scan(job) => {
                 let luma = match job.source {
                     ScanSource::Bytes(bytes) => crate::library::load_luma_bytes(&bytes, 1024),
-                    ScanSource::Media(id) => crate::media::read(&self.content, &id)
-                        .and_then(|bytes| crate::library::load_luma_bytes(&bytes, 1024)),
                     ScanSource::Frame(frame) => Some((
                         crate::frame::luma(&frame),
                         frame.w as usize,
@@ -271,10 +268,7 @@ impl CameraWorker {
     pub fn new(content: ContentStore) -> Self {
         // Every ingress and result queue is bounded. One sleeping event loop
         // replaces the former eager per-feature worker set.
-        let threads = matches!(
-            ui::rt::availability(ui::rt::Feature::Threads),
-            ui::rt::Availability::Available
-        );
+        let threads = ui::rt::available(ui::rt::Feature::Threads);
         let results = if threads { 1 } else { INLINE_RESULTS };
         let (tx, jobs) = std::sync::mpsc::sync_channel::<WorkerJob>(1);
         let (photo_results, rx) = std::sync::mpsc::sync_channel::<PhotoResult>(results);

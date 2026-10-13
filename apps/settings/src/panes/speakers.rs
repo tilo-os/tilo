@@ -27,7 +27,7 @@ use ui::tilo_resource::{self, Effect};
 use ui::time::{Duration, Instant};
 use ui::widget::{Button, Dropdown, Slider, TextInput, Toggle, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::effects::SettingsEffect;
@@ -41,8 +41,8 @@ use crate::speaker_setup::{
     member_status_text, playback_text, role_answer, role_text,
 };
 use crate::widgets::{
-    StatusTone, caption, card, cards, choice_row_described, rows, semantic_status_pill,
-    setting_row, setting_row_described, value_row,
+    StatusTone, caption, card, cards, rows, semantic_status_pill, setting_row,
+    setting_row_described, value_row,
 };
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -220,7 +220,10 @@ const fn role_slug(role: SpeakerRoleSpec) -> &'static str {
 }
 
 fn trim_summary(trim: &SpeakerTrimInfo) -> String {
-    format!("{:.1} ms · {:+.1} dB", trim.delay_ms, trim.gain_db)
+    format!(
+        "{:.1} ms delay, {:+.1} dB gain",
+        trim.delay_ms, trim.gain_db
+    )
 }
 
 /// Metres sound travels per millisecond at room temperature.
@@ -253,7 +256,7 @@ fn measured_text(
             &[("metres", one_decimal(acoustic * SOUND_METRES_PER_MS).into())],
         ));
     }
-    parts.join(" · ")
+    parts.join("\n")
 }
 
 fn microphone_run_text(state: &CalibrationMicrophoneState) -> String {
@@ -328,6 +331,7 @@ impl SpeakersArea {
             Rc::new(std::cell::RefCell::new(SpeakersModel::new(
                 self.cx.clone(),
                 service,
+                !self.cx.reaches_devices(),
             )))
         })
     }
@@ -338,6 +342,13 @@ impl SpeakersArea {
         if let Some(model) = self.model.get() {
             model.borrow_mut().poll_finished();
         }
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
     }
 
     /// One row per set this device leads, offering its calibration and
@@ -370,6 +381,7 @@ pub struct SpeakersModel {
     cx: PaneCx,
     setup: SpeakerSetup,
     service: Arc<dyn SpeakerService>,
+    sample: bool,
     finished_tx: Sender<Finished>,
     finished_rx: Receiver<Finished>,
     in_flight: usize,
@@ -388,12 +400,13 @@ pub struct SpeakersModel {
 }
 
 impl SpeakersModel {
-    fn new(cx: PaneCx, service: Arc<dyn SpeakerService>) -> Self {
+    fn new(cx: PaneCx, service: Arc<dyn SpeakerService>, sample: bool) -> Self {
         let (finished_tx, finished_rx) = channel();
         let mut model = Self {
             cx,
             setup: SpeakerSetup::default(),
             service,
+            sample,
             finished_tx,
             finished_rx,
             in_flight: 0,
@@ -411,6 +424,9 @@ impl SpeakersModel {
             changed: false,
         };
         model.refresh();
+        if sample {
+            model.poll_finished();
+        }
         model
     }
 
@@ -424,6 +440,15 @@ impl SpeakersModel {
         let service = Arc::clone(&self.service);
         let finished = self.finished_tx.clone();
         self.in_flight = self.in_flight.saturating_add(1);
+        // Only the in-memory screenshot/test service runs here. Real broker
+        // calls keep their worker so device I/O never blocks the UI thread.
+        if self.sample {
+            let _ = finished.send(Finished {
+                purpose,
+                result: service.call(command),
+            });
+            return;
+        }
         let spawned = std::thread::Builder::new()
             .name("settings-speakers".into())
             .spawn(move || {
@@ -795,7 +820,7 @@ impl SpeakersModel {
         .with_id("speakers.listening")
         .with_accessible_name(t("speakers-listening-title"))
         .with_placeholder(&listening.label);
-        body.push(choice_row_described(
+        body.push(setting_row_described(
             &t("speakers-listening-title"),
             &t("speakers-listening-description"),
             Box::new(chooser),
@@ -853,10 +878,14 @@ impl SpeakersModel {
                 "speakers.save" => SpeakerFlow::SaveSpeakerSet,
                 _ => SpeakerFlow::ContinueSpeakerSetup,
             };
-            row = row.push(Box::new(self.cx.bind_invocation(
-                Button::new(id, label).primary().with_enabled(enabled),
-                step,
-            )));
+            row = row.push(Box::new(
+                self.cx.bind_invocation(
+                    Button::new(id, label)
+                        .role(ui::widget::ButtonRole::Primary)
+                        .with_enabled(enabled),
+                    step,
+                ),
+            ));
         }
         Box::new(row)
     }
@@ -930,7 +959,7 @@ impl SpeakersModel {
                             &format!("speakers.group.{}.delete", group.id),
                             &t("speakers-delete"),
                         )
-                        .danger(),
+                        .role(ui::widget::ButtonRole::Destructive),
                         SpeakerEffect::DeleteSpeakerSet {
                             group: group.id.clone(),
                         },
@@ -978,10 +1007,13 @@ impl SpeakersModel {
         body.push(Box::new(
             ui::widget::Row::new()
                 .push(Box::new(ui::widget::Spacer::new()))
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new("speakers.begin", &t("speakers-begin")).primary(),
-                    SpeakerFlow::BeginSpeakerSetup,
-                ))),
+                .push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new("speakers.begin", &t("speakers-begin"))
+                            .role(ui::widget::ButtonRole::Primary),
+                        SpeakerFlow::BeginSpeakerSetup,
+                    ),
+                )),
         ));
         sections.push(card(&t("speakers-overview-title"), rows(body)));
         sections
@@ -998,7 +1030,7 @@ impl SpeakersModel {
         .with_id("speakers.arrangement")
         .with_accessible_name(t("speakers-arrangement"));
         let candidates = self.setup.candidates();
-        let mut body = vec![choice_row_described(
+        let mut body = vec![setting_row_described(
             &t("speakers-arrangement"),
             &self.setup.arrangement().description(),
             Box::new(arrangement),
@@ -1068,10 +1100,13 @@ impl SpeakersModel {
             body.push(Box::new(
                 ui::widget::Row::new()
                     .push(Box::new(ui::widget::Spacer::new()))
-                    .push(Box::new(self.cx.bind_invocation(
-                        Button::new("speakers.skip", &t("speakers-next-speaker")).primary(),
-                        SpeakerFlow::SkipSpeaker,
-                    ))),
+                    .push(Box::new(
+                        self.cx.bind_invocation(
+                            Button::new("speakers.skip", &t("speakers-next-speaker"))
+                                .role(ui::widget::ButtonRole::Primary),
+                            SpeakerFlow::SkipSpeaker,
+                        ),
+                    )),
             ));
         } else {
             let mut answers = ui::widget::Row::new();
@@ -1171,9 +1206,9 @@ impl SpeakersModel {
     fn build_name(&self) -> Vec<Box<dyn Widget>> {
         let name = TextInput::from_state(&self.name_state)
             .with_id("speakers.name")
-            .with_placeholder(&t("speakers-name-placeholder"))
+            .with_placeholder(t("speakers-name-placeholder"))
             .with_accessible_name(t("speakers-name"));
-        let mut body = vec![choice_row_described(
+        let mut body = vec![setting_row_described(
             &t("speakers-name"),
             &t("speakers-name-description"),
             Box::new(name),
@@ -1311,12 +1346,15 @@ impl SpeakersModel {
                             group: group.to_owned(),
                         },
                     )))
-                    .push(Box::new(self.cx.bind_invocation(
-                        Button::new("speakers.apply", &t("speakers-apply")).primary(),
-                        SpeakerEffect::ApplyCalibration {
-                            group: group.to_owned(),
-                        },
-                    )));
+                    .push(Box::new(
+                        self.cx.bind_invocation(
+                            Button::new("speakers.apply", &t("speakers-apply"))
+                                .role(ui::widget::ButtonRole::Primary),
+                            SpeakerEffect::ApplyCalibration {
+                                group: group.to_owned(),
+                            },
+                        ),
+                    ));
             }
             Some(CalibrationPhaseInfo::Applied) => {
                 actions = actions.push(Box::new(self.cx.bind_invocation(
@@ -1349,7 +1387,7 @@ impl SpeakersModel {
                                 "speakers-calibrate-button"
                             }),
                         )
-                        .primary()
+                        .role(ui::widget::ButtonRole::Primary)
                         .with_enabled(problem.is_none()),
                         SpeakerFlow::StartCalibration,
                     ),
@@ -1496,10 +1534,8 @@ struct RoomCanvas {
     rect: Rect,
     cursor: Point,
     dragging: Option<usize>,
+    marker_radius: f64,
 }
-
-const CANVAS_HEIGHT: f32 = 260.0; // floor-plan height, not a spacing token
-const DOT_RADIUS: f64 = 11.0; // speaker marker size on the floor plan
 
 impl RoomCanvas {
     fn new(points: ui::LocalState<Vec<(i32, i32)>>, labels: Vec<String>) -> Self {
@@ -1509,6 +1545,7 @@ impl RoomCanvas {
             rect: Rect::ZERO,
             cursor: Point::ZERO,
             dragging: None,
+            marker_radius: f64::from(ui::tokens::Metrics::BASE.icon_md) / 2.0,
         }
     }
 
@@ -1517,7 +1554,7 @@ impl RoomCanvas {
         let half = (self.rect.width() / 2.0)
             .min(self.rect.height() / 2.0)
             .max(1.0);
-        f64::from(ROOM_EXTENT_MM) / (half - DOT_RADIUS).max(1.0)
+        f64::from(ROOM_EXTENT_MM) / (half - self.marker_radius).max(1.0)
     }
 
     fn origin(&self) -> Point {
@@ -1556,15 +1593,18 @@ impl Widget for RoomCanvas {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.marker_radius = f64::from(theme.tokens.metrics.icon_md) / 2.0;
         let node = ui::widget::TaffyTreeExt::leaf_node(
             taffy,
             taffy::Style {
                 size: taffy::Size {
                     width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::length(CANVAS_HEIGHT),
+                    height: taffy::Dimension::length(
+                        theme.tokens.metrics.panel_width_utility * 13.0 / 16.0,
+                    ),
                 },
                 ..Default::default()
             },
@@ -1573,15 +1613,7 @@ impl Widget for RoomCanvas {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1592,21 +1624,8 @@ impl Widget for RoomCanvas {
         _presence: &ui::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.md);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            colors.overlay_subtle,
-            None,
-            &RoundedRect::from_rect(self.rect, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.rect, radius),
-        );
+        let radius = f64::from(theme.tokens.radii.panel);
+        ui::surface::card(scene, transform, self.rect, radius, colors.overlay_subtle);
         let origin = self.origin();
         for ring in [1_000, 2_000, 3_000, 4_000] {
             let ring_radius = f64::from(ring) / self.scale();
@@ -1635,24 +1654,24 @@ impl Widget for RoomCanvas {
             None,
             &Circle::new(origin, 5.0),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("speakers-room-you"),
-            theme.tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((origin.x + 8.0, origin.y + 4.0).into()),
             None,
+            &theme.text(ui::TextRole::Caption),
         );
         let points = self.points.with(Clone::clone);
         for (index, point) in points.iter().enumerate() {
             let center = self.to_screen(*point);
-            let fill = colors.categorical(index);
+            let fill = colors.presence.series(index);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
                 fill,
                 None,
-                &Circle::new(center, DOT_RADIUS),
+                &Circle::new(center, self.marker_radius),
             );
             if self.dragging == Some(index) {
                 scene.stroke(
@@ -1660,17 +1679,19 @@ impl Widget for RoomCanvas {
                     transform,
                     colors.border_focus,
                     None,
-                    &Circle::new(center, DOT_RADIUS + 3.0),
+                    &Circle::new(center, self.marker_radius + 3.0),
                 );
             }
             if let Some(label) = self.labels.get(index) {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     label,
-                    theme.tokens.typography.scale.xs,
                     colors.text_primary,
-                    transform.pre_translate((center.x + DOT_RADIUS + 4.0, center.y - 7.0).into()),
-                    Some(140.0),
+                    transform.pre_translate(
+                        (center.x + self.marker_radius + 4.0, center.y - 7.0).into(),
+                    ),
+                    Some(theme.tokens.metrics.chooser_width),
+                    &theme.text(ui::TextRole::Caption),
                 );
             }
         }
@@ -1679,8 +1700,7 @@ impl Widget for RoomCanvas {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if let Some(index) = self.dragging {
                     let moved = self.to_room(self.cursor);
                     self.points.update(|points| {
@@ -1701,7 +1721,7 @@ impl Widget for RoomCanvas {
                     .iter()
                     .enumerate()
                     .map(|(index, point)| (index, self.to_screen(*point).distance(self.cursor)))
-                    .filter(|(_, distance)| *distance <= DOT_RADIUS * 1.6)
+                    .filter(|(_, distance)| *distance <= self.marker_radius * 1.6)
                     .min_by(|left, right| left.1.total_cmp(&right.1))
                     .map(|(index, _)| index);
                 *ctx.handled |= self.dragging.is_some();
@@ -1724,10 +1744,6 @@ impl Widget for RoomCanvas {
     fn test_id(&self) -> Option<&str> {
         Some("speakers.room")
     }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 }
 
 #[cfg(test)]
@@ -1740,6 +1756,23 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn sample_area_rows_do_not_wait_for_workers() {
+        let profile = tempfile::tempdir().unwrap();
+        let area = SpeakersArea::new(&PaneCx::in_file(profile.path().join("settings.json")));
+        assert_eq!(
+            area.rows().len(),
+            1,
+            "the speaker group publishes on the first read"
+        );
+        let model = area.model().borrow();
+        assert_eq!(
+            model.in_flight, 0,
+            "sample rows are ready when the area reads"
+        );
+        assert_eq!(model.setup.groups().len(), 1);
+    }
 
     /// Answers from a fixed snapshot and records every command.
     struct FakeService {
@@ -1821,6 +1854,7 @@ mod tests {
         SpeakersModel::new(
             PaneCx::in_file(profile.path().join("settings.json")),
             service,
+            false,
         )
     }
 
@@ -1969,7 +2003,17 @@ mod tests {
         assert!(microphone_switch(pane, "shelf").with(|on| *on));
         phone.set(true);
         settle(pane);
-        pane.listening_state.set("phone · Microphone".into());
+        let Step::Calibrate { group } = pane.setup.step() else {
+            panic!("the speaker set must be ready to calibrate");
+        };
+        let phone_label = pane
+            .setup
+            .listening_choices(group)
+            .into_iter()
+            .find(|microphone| microphone.device == "phone")
+            .expect("the phone microphone is available")
+            .label;
+        pane.listening_state.set(phone_label);
         settle(pane);
         microphone_switch(pane, "shelf").set(false);
         settle(pane);

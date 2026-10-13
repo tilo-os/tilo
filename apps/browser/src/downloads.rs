@@ -41,7 +41,7 @@ pub struct DownloadEntry {
 
 impl DownloadEntry {
     pub fn resource_id(&self) -> String {
-        format!("browser.download.{}", self.id)
+        format!("{}/{}", crate::actions::DOWNLOADS_SCOPE, self.id)
     }
 
     pub fn display_name(&self) -> &str {
@@ -287,10 +287,6 @@ mod tests {
 
     /// Download store lifecycle, bounds, restore and destinations.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn download_rows_are_bounded_restart_safe_and_truthful() {
         // Phase `lifecycle_is_stable_bounded_and_restart_safe`.
         {
@@ -300,7 +296,7 @@ mod tests {
             downloads.progress("stable-1", 50, Some(100), 0.5);
             let restored = Downloads::from_stored(downloads.stored());
             let entry = restored.get("stable-1").unwrap();
-            assert_eq!(entry.resource_id(), "browser.download.stable-1");
+            assert_eq!(entry.resource_id(), "browser.downloads/stable-1");
             assert_eq!(entry.status, DownloadStatus::Failed);
         }
 

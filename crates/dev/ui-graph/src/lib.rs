@@ -224,25 +224,27 @@ impl UiDocument {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum UiButtonStyle {
-    #[default]
-    Neutral,
+pub enum UiButtonRole {
     Primary,
-    Danger,
-    Ghost,
+    #[default]
+    Secondary,
+    Destructive,
+    Plain,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum UiTextRole {
-    Caption,
-    Label,
-    #[default]
-    Body,
-    Reading,
+    Display,
+    LargeTitle,
     Title,
     Heading,
-    Display,
+    Subheading,
+    #[default]
+    Body,
+    Label,
+    Caption,
+    Reading,
     Code,
 }
 
@@ -307,8 +309,6 @@ pub enum UiNode {
         text: UiTextSource,
         #[serde(default)]
         role: UiTextRole,
-        #[serde(default)]
-        size: Option<f32>,
     },
     Button {
         id: String,
@@ -331,7 +331,7 @@ pub enum UiNode {
         #[serde(default = "default_true")]
         enabled: bool,
         #[serde(default)]
-        style: UiButtonStyle,
+        role: UiButtonRole,
     },
     TextInput {
         id: String,
@@ -545,8 +545,7 @@ impl UiNode {
                 validate_positive(*width, id, "width")?;
                 validate_positive(*height, id, "height")?;
             }
-            Self::Text { text, size, .. } => {
-                validate_positive(*size, id, "size")?;
+            Self::Text { text, .. } => {
                 if let UiTextSource::Document { path } = text {
                     validate_binding(path, id)?;
                 }
@@ -777,7 +776,6 @@ mod tests {
                         value: "Projects".into(),
                     },
                     role: UiTextRole::Title,
-                    size: None,
                 },
                 UiNode::Row {
                     id: "actions".into(),
@@ -811,7 +809,7 @@ mod tests {
                         click_value: None,
                         navigate: None,
                         enabled: true,
-                        style: UiButtonStyle::Primary,
+                        role: UiButtonRole::Primary,
                     },
                 )
                 .unwrap();
@@ -899,7 +897,7 @@ mod tests {
                             route: "settings".into(),
                         }),
                         enabled: true,
-                        style: UiButtonStyle::Neutral,
+                        role: UiButtonRole::Secondary,
                     },
                 )
                 .unwrap();

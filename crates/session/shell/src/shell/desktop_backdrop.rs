@@ -4,10 +4,10 @@
 //! wallpaper each workspace shows, read from Tilo's own 0600 registry and
 //! cache (the portal's preview file first). Wallpaper is per device.
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 pub use tilo_desktop::backdrop::DesktopBackdrop;
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat as Format};
+use vello::peniko::ImageData;
 
 /// The backdrop for one local workspace, showing its native wallpaper.
 pub fn native_backdrop(workspace_id: impl Into<String>) -> DesktopBackdrop {
@@ -21,6 +21,46 @@ pub fn native_wallpaper(workspace_id: &str) -> Option<ImageData> {
     crate::portal::desktop_services::wallpaper_preview_file_for_workspace(workspace_id)
         .and_then(|path| read_normalised_wallpaper(&path))
         .or_else(|| wallpaper_image_for_workspace(workspace_id, "background"))
+}
+
+/// What a workspace's wallpaper is, as far as its temperature is concerned:
+/// the preview file and its age, and the age of the wallpaper registry.
+/// Cheap to read every few seconds; the image is decoded only when it moves.
+type WallpaperStamp = (
+    Option<std::path::PathBuf>,
+    Option<SystemTime>,
+    Option<SystemTime>,
+);
+
+fn wallpaper_stamp(workspace_id: &str) -> WallpaperStamp {
+    let modified = |path: &std::path::Path| std::fs::metadata(path).ok()?.modified().ok();
+    let preview =
+        crate::portal::desktop_services::wallpaper_preview_file_for_workspace(workspace_id);
+    let preview_modified = preview.as_deref().and_then(modified);
+    let registry_modified = modified(&crate::portal::desktop_services::wallpaper_state_path());
+    (preview, preview_modified, registry_modified)
+}
+
+/// The neutral temperature workspace `workspace_id` takes on this device:
+/// its wallpaper's dominant hue ([`ui::workspace_hue`]), or `None` for a
+/// workspace whose wallpaper has none, which stays neutral. Decodes the
+/// wallpaper only when it changed since the last call for that workspace.
+pub fn native_workspace_hue(workspace_id: &str) -> Option<f32> {
+    type KnownHues = HashMap<String, (WallpaperStamp, Option<f32>)>;
+    static HUES: OnceLock<Mutex<KnownHues>> = OnceLock::new();
+    let stamp = wallpaper_stamp(workspace_id);
+    let hues = HUES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = hues.lock()
+        && let Some((known, hue)) = cache.get(workspace_id)
+        && *known == stamp
+    {
+        return *hue;
+    }
+    let hue = native_wallpaper(workspace_id).and_then(|image| ui::workspace_hue(image.data.data()));
+    if let Ok(mut cache) = hues.lock() {
+        cache.insert(workspace_id.to_owned(), (stamp, hue));
+    }
+    hue
 }
 
 #[derive(Default)]
@@ -91,11 +131,9 @@ fn safe_cache_name(name: &str) -> bool {
 
 fn read_normalised_wallpaper(path: &std::path::Path) -> Option<ImageData> {
     let decoded = ui::png::read_rgba8(path).ok()?;
-    Some(ImageData {
-        data: Blob::new(Arc::new(decoded.rgba)),
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: decoded.width,
-        height: decoded.height,
-    })
+    Some(ui::raster::rgba8(
+        decoded.rgba,
+        decoded.width,
+        decoded.height,
+    ))
 }

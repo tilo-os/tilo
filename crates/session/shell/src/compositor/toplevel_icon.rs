@@ -21,7 +21,7 @@ use smithay::reexports::wayland_protocols::xdg::toplevel_icon::v1::server::{
     xdg_toplevel_icon_manager_v1::{self, XdgToplevelIconManagerV1},
     xdg_toplevel_icon_v1::{self, XdgToplevelIconV1},
 };
-use smithay::reexports::wayland_server::backend::{ClientId, GlobalId, ObjectId};
+use smithay::reexports::wayland_server::backend::{ClientId, ObjectId};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
@@ -29,7 +29,7 @@ use smithay::reexports::wayland_server::{
 };
 use smithay::wayland::compositor as wl_compositor;
 use ui::icons::{AppImage, AppImageSource};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::ImageData;
 
 use crate::compositor::state::State;
 
@@ -45,11 +45,6 @@ const MANAGER_VERSION: u32 = 1;
 /// must keep alive while their icon object lives.
 #[derive(Debug)]
 pub struct ToplevelIconManager {
-    #[allow(
-        dead_code,
-        reason = "held so the global's identity lives as long as the compositor state"
-    )]
-    global: GlobalId,
     /// `(buffer, icon)` for every buffer added to a live icon object.
     watched: Vec<(ObjectId, XdgToplevelIconV1)>,
 }
@@ -57,8 +52,8 @@ pub struct ToplevelIconManager {
 /// Advertise the `xdg_toplevel_icon_manager_v1` global, telling clients the
 /// sizes the tab pill paints at.
 pub fn manager(display: &DisplayHandle) -> ToplevelIconManager {
+    display.create_global::<State, XdgToplevelIconManagerV1, ()>(MANAGER_VERSION, ());
     ToplevelIconManager {
-        global: display.create_global::<State, XdgToplevelIconManagerV1, ()>(MANAGER_VERSION, ()),
         watched: Vec::new(),
     }
 }
@@ -441,14 +436,8 @@ fn client_image(buffer: &WlBuffer) -> Option<ImageData> {
     if width == 0 || width != height || width > MAX_EDGE {
         return None;
     }
-    Some(ImageData {
-        data: Blob::new(Arc::new(rgba)),
-        format: ImageFormat::Rgba8,
-        // `wl_shm` ARGB is premultiplied.
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width,
-        height,
-    })
+    // `wl_shm` ARGB is premultiplied.
+    Some(ui::raster::rgba8_premultiplied(rgba, width, height))
 }
 
 #[cfg(test)]
@@ -456,17 +445,11 @@ mod tests {
     use super::*;
 
     fn square(edge: u32) -> ImageData {
-        ImageData {
-            data: Blob::new(Arc::new(vec![
-                0;
-                usize::try_from(edge.pow(2).saturating_mul(4))
-                    .unwrap()
-            ])),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
-            width: edge,
-            height: edge,
-        }
+        ui::raster::rgba8_premultiplied(
+            vec![0; usize::try_from(edge.pow(2).saturating_mul(4)).unwrap()],
+            edge,
+            edge,
+        )
     }
 
     #[test]

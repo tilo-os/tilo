@@ -54,14 +54,9 @@ mod tests {
         store.with(&checkout.id, |doc| {
             ui::record::init(doc, &checkout.id, &checkout.kind, &room.to_string());
             doc.put(&ROOT, "body", "A durable decision").unwrap();
-            let context = ActionContext::for_resource(
-                "Edit note",
-                checkout.id.as_str(),
-                "note",
-                "Decision log",
-            )
-            .with_app("org.tilo.Notes", "Notes")
-            .with_purpose("Recorded the launch decision");
+            let context = ActionContext::for_resource(checkout.id.as_str(), "note", "Decision log")
+                .with_app("org.tilo.Notes", "Notes")
+                .with_purpose("Recorded the launch decision");
             doc.commit_with(
                 CommitOptions::default()
                     .with_time(time)
@@ -191,13 +186,8 @@ mod tests {
                 Some((before_heads.clone(), pending)),
             );
 
-            let context = ActionContext::for_resource(
-                "Complete edit",
-                record.id.as_str(),
-                "note",
-                "Decision log",
-            )
-            .with_purpose("Finished the whole edit");
+            let context = ActionContext::for_resource(record.id.as_str(), "note", "Decision log")
+                .with_purpose("Finished the whole edit");
             let message = context.change_message().unwrap();
             let committed = records
                 .with(&record.id, |doc| {
@@ -360,10 +350,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn causal_frontier_detects_persists_and_unions_changes() {
         // Phase `causal_frontier_detects_new_record_changes_and_scoped_tree_exceptions`.
         {

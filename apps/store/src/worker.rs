@@ -1,5 +1,5 @@
-//! Serialized package/catalog actor. All blocking package and network work
-//! crosses this one queue; the UI only performs non-blocking snapshot drains.
+//! Serialized package actor with cooperative catalogue refreshes. Independent
+//! source reads share its authenticated connection; the UI drains snapshots.
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -26,6 +26,8 @@ use crate::sources::{
 };
 use crate::{FlatpakRef, StoreItem};
 
+mod refresh;
+
 const REFRESH_INTERVAL: Duration = Duration::from_secs(900);
 const CACHE_CAP: NonZeroUsize = match NonZeroUsize::new(128) {
     Some(cap) => cap,
@@ -46,12 +48,21 @@ pub enum Request {
         path: Option<PathBuf>,
         contents: Option<String>,
     },
+    ImportPackage(crate::package_import::Input),
+    InstallImported {
+        app: String,
+        root: String,
+    },
     RefreshRemotes,
     RemoteAdd {
         name: String,
         url: String,
     },
     RemoteRemove(String),
+    RemoteSetEnabled {
+        name: String,
+        enabled: bool,
+    },
     /// Boxed: [`StoreItem`] is far larger than every other variant's
     /// payload, and this is a queued message — boxing keeps every
     /// `Request` (and the channel that carries them) sized to the common
@@ -86,6 +97,7 @@ pub type Done = mpsc::Sender<Outcome>;
 pub struct Finished {
     pub status: String,
     pub case: Option<registry_types::ModerationCase>,
+    pub launch: Option<crate::actions::ApplicationLaunch>,
 }
 
 impl Finished {
@@ -93,8 +105,22 @@ impl Finished {
         Self {
             status: status.into(),
             case: None,
+            launch: None,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum DetailUpdate {
+    /// Enrich the app the person already selected; this is not navigation.
+    Requested { id: String, item: Option<StoreItem> },
+    /// Opening a reference resolves its identity and intentionally opens it.
+    OpenedReference(StoreItem),
+    ImportedPackage {
+        item: StoreItem,
+        root: String,
+        version: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -103,21 +129,44 @@ pub struct Snapshot {
     pub status_line: String,
     /// Search responses name their query so stale results can be discarded.
     pub query: Option<String>,
-    pub detail: Option<StoreItem>,
+    pub detail: Option<DetailUpdate>,
     pub remotes: Vec<Remote>,
     pub flatpak_available: bool,
+    pub flatpak_error: Option<String>,
     pub operation_error: Option<String>,
 }
 
 struct QueuedRequest {
     request: Request,
     done: Option<Done>,
+    locale: LocaleContext,
+}
+
+struct LocaleContext {
+    selected: String,
+    pseudo: ui::i18n::PseudoLocale,
+}
+
+impl LocaleContext {
+    fn capture() -> Self {
+        Self {
+            selected: ui::i18n::I18nManager::current_locale(),
+            pseudo: ui::i18n::I18nManager::pseudo_locale(),
+        }
+    }
+
+    fn apply(&self) {
+        crate::resource::STORE_CATALOG.set_locale(&self.selected);
+        ui::i18n::I18nManager::set_pseudo_locale(self.pseudo);
+    }
 }
 
 pub struct StoreWorker {
     requests: mpsc::Sender<QueuedRequest>,
     snapshots: mpsc::Receiver<Snapshot>,
     pending: Arc<AtomicUsize>,
+    #[cfg(test)]
+    wake: WakeHandle,
 }
 
 impl StoreWorker {
@@ -126,25 +175,43 @@ impl StoreWorker {
     /// # Panics
     /// Panics if the OS refuses to spawn a thread (extreme resource
     /// exhaustion): a live Store without its worker has nothing to show.
+    pub fn spawn(directory: StoreDirectory, wake: WakeHandle) -> Self {
+        Self::spawn_with_host(
+            directory,
+            wake,
+            app_host::client::BlockingClient::from_service,
+        )
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "thread spawn failure means the OS is out of resources; the surface attaching the worker has no fallible path to report it on"
     )]
-    pub fn spawn(directory: StoreDirectory, wake: WakeHandle) -> Self {
+    fn spawn_with_host(
+        directory: StoreDirectory,
+        wake: WakeHandle,
+        connect: impl FnOnce() -> Result<app_host::client::BlockingClient, String> + Send + 'static,
+    ) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
         let pending = Arc::new(AtomicUsize::new(1));
+        let locale = LocaleContext::capture();
+        #[cfg(test)]
+        let retained_wake = wake.clone();
         std::thread::Builder::new()
             .name("store-worker".into())
             .spawn({
                 let pending = Arc::clone(&pending);
                 move || {
+                    // Fluent managers are thread-local. Worker status must
+                    // use the same selected app catalogue as its live view.
+                    locale.apply();
                     let snapshots = Snapshots {
                         sender: snapshot_tx,
                         wake,
                         pending,
                     };
-                    run(&request_rx, &snapshots, directory);
+                    run(&request_rx, &snapshots, directory, connect());
                 }
             })
             .expect("spawn store worker");
@@ -152,7 +219,20 @@ impl StoreWorker {
             requests: request_tx,
             snapshots: snapshot_rx,
             pending,
+            #[cfg(test)]
+            wake: retained_wake,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_connected_host(
+        &self,
+        directory: StoreDirectory,
+        fd: std::os::fd::OwnedFd,
+    ) -> Self {
+        Self::spawn_with_host(directory, self.wake.clone(), move || {
+            app_host::client::BlockingClient::from_connected_fd(fd)
+        })
     }
 
     /// Queue `request`; whether the worker is still there to take it.
@@ -168,7 +248,15 @@ impl StoreWorker {
 
     fn queue(&self, request: Request, done: Option<Done>) -> bool {
         self.pending.fetch_add(1, Ordering::Relaxed);
-        if self.requests.send(QueuedRequest { request, done }).is_ok() {
+        if self
+            .requests
+            .send(QueuedRequest {
+                request,
+                done,
+                locale: LocaleContext::capture(),
+            })
+            .is_ok()
+        {
             true
         } else {
             self.pending.fetch_sub(1, Ordering::Relaxed);
@@ -215,8 +303,12 @@ impl Snapshots {
 }
 
 struct State {
+    refresh_requested: bool,
+    /// Passive source hydration must not erase a completed operation's notice.
+    operation_notice: Option<String>,
     host: Option<app_host::client::BlockingClient>,
     opened_ref: Option<FlatpakRef>,
+    imported_package: Option<crate::package_import::ImportedPackage>,
     base_items: Vec<StoreItem>,
     installed: Vec<(String, String)>,
     installed_origins: std::collections::HashMap<String, (String, bool)>,
@@ -235,18 +327,21 @@ struct State {
     item_index: ui::search::ListIndex,
 }
 
-fn run(requests: &mpsc::Receiver<QueuedRequest>, snapshots: &Snapshots, directory: StoreDirectory) {
-    let staging = crate::actions::tapp_staging_dir()
-        .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
-    let _ = std::fs::create_dir_all(&staging);
-    let mut state = State {
-        host: app_host::client::BlockingClient::from_service()
+fn initial_state(
+    directory: StoreDirectory,
+    host: Result<app_host::client::BlockingClient, String>,
+) -> State {
+    State {
+        refresh_requested: false,
+        operation_notice: None,
+        host: host
             .map_err(|error| {
                 tracing::error!(%error, "required app-host capability unavailable");
                 error
             })
             .ok(),
         opened_ref: None,
+        imported_package: None,
         base_items: Vec::new(),
         installed: Vec::new(),
         installed_origins: std::collections::HashMap::new(),
@@ -258,45 +353,193 @@ fn run(requests: &mpsc::Receiver<QueuedRequest>, snapshots: &Snapshots, director
         details: LruCache::new(CACHE_CAP),
         directory,
         item_index: ui::search::ListIndex::default(),
-    };
-    refresh(&mut state);
-    if !send(
-        snapshots,
-        &state,
-        state.base_items.clone(),
-        "Store refreshed.",
-        None,
-        None,
-    ) {
-        return;
     }
+}
+
+fn defer_import(
+    queued: QueuedRequest,
+    deferred: &mut std::collections::VecDeque<QueuedRequest>,
+    state: &State,
+    snapshots: &Snapshots,
+) -> bool {
+    if deferred.len() < 16 {
+        deferred.push_back(queued);
+        return true;
+    }
+    let error = ui::i18n!("store-package-review-busy");
+    let alive = send_tracked(
+        snapshots,
+        state,
+        state.base_items.clone(),
+        &error,
+        None,
+        None,
+        Some(error.clone()),
+    );
+    if let Some(done) = queued.done {
+        let _ = done.send(Err(error));
+    }
+    alive
+}
+
+fn run(
+    requests: &mpsc::Receiver<QueuedRequest>,
+    snapshots: &Snapshots,
+    directory: StoreDirectory,
+    host: Result<app_host::client::BlockingClient, String>,
+) {
+    let staging = crate::actions::tapp_staging_dir()
+        .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
+    let _ = std::fs::create_dir_all(&staging);
+    let mut state = initial_state(directory, host);
+    let mut refresh = Some(refresh::Refresh::start(&state, None));
+    let mut deferred_imports = std::collections::VecDeque::new();
     loop {
-        match requests.recv_timeout(REFRESH_INTERVAL) {
-            Ok(QueuedRequest { request, done }) => {
+        if !poll_refresh(&mut refresh, &mut state, snapshots) {
+            break;
+        }
+        let wait = if refresh.is_some() {
+            Duration::from_millis(25)
+        } else {
+            REFRESH_INTERVAL
+        };
+        let next = if refresh.is_none() && !deferred_imports.is_empty() {
+            deferred_imports
+                .pop_front()
+                .ok_or(mpsc::RecvTimeoutError::Disconnected)
+        } else {
+            requests.recv_timeout(wait)
+        };
+        match next {
+            Ok(QueuedRequest {
+                request,
+                done,
+                locale,
+            }) => {
+                locale.apply();
+                // A freshly opened Store has no verified offers until its initial
+                // source reads finish. Do not mislabel a valid handed file as
+                // unlisted merely because those same normal reads are pending.
+                if matches!(request, Request::ImportPackage(_)) && refresh.is_some() {
+                    if !defer_import(
+                        QueuedRequest {
+                            request,
+                            done,
+                            locale,
+                        },
+                        &mut deferred_imports,
+                        &state,
+                        snapshots,
+                    ) {
+                        break;
+                    }
+                    continue;
+                }
+                if !matches!(request, Request::Detail(_)) {
+                    state.operation_notice = None;
+                }
+                if matches!(request, Request::Refresh) && refresh.is_none() {
+                    refresh = Some(refresh::Refresh::start(&state, done));
+                    continue;
+                }
+                let package_operation = matches!(
+                    request,
+                    Request::Act(..)
+                        | Request::UpdateAll(_)
+                        | Request::InstallImported { .. }
+                        | Request::ImportPackage(_)
+                );
                 let (alive, outcome) = handle(request, &mut state, snapshots, &staging);
+                if package_operation
+                    && let Some(outcome) = &outcome
+                    && !outcome
+                        .as_ref()
+                        .is_ok_and(|finished| finished.launch.is_some())
+                {
+                    state.operation_notice = Some(match outcome {
+                        Ok(finished) => finished.status.clone(),
+                        Err(error) => error.clone(),
+                    });
+                }
                 if let (Some(done), Some(outcome)) = (done, outcome) {
                     let _ = done.send(outcome);
                 }
                 if !alive {
                     break;
                 }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                refresh(&mut state);
-                if !send(
-                    snapshots,
-                    &state,
-                    state.base_items.clone(),
-                    "Store refreshed.",
-                    None,
-                    None,
-                ) {
-                    break;
+                if state.refresh_requested {
+                    state.refresh_requested = false;
+                    if let Some(previous) = refresh.as_mut() {
+                        previous.retire();
+                    } else {
+                        snapshots.pending.fetch_add(1, Ordering::Relaxed);
+                        refresh = Some(refresh::Refresh::start(&state, None));
+                    }
                 }
             }
+            Err(mpsc::RecvTimeoutError::Timeout) if refresh.is_none() => {
+                snapshots.pending.fetch_add(1, Ordering::Relaxed);
+                refresh = Some(refresh::Refresh::start(&state, None));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+fn poll_refresh(
+    active: &mut Option<refresh::Refresh>,
+    state: &mut State,
+    snapshots: &Snapshots,
+) -> bool {
+    let Some(refresh) = active.as_mut() else {
+        return true;
+    };
+    let (changed, finished) = refresh.poll(state);
+    if finished && refresh.is_retired() {
+        if let Some(previous) = active.take() {
+            *active = Some(previous.restart(state));
+        }
+        return true;
+    }
+    if finished {
+        let done = refresh.done.take();
+        *active = None;
+        let label = state
+            .operation_notice
+            .clone()
+            .unwrap_or_else(|| ui::i18n!("store-catalogue-refreshed"));
+        let alive = send(
+            snapshots,
+            state,
+            state.base_items.clone(),
+            &label,
+            None,
+            None,
+        );
+        if let Some(done) = done {
+            // A refresh reports each source's error in the snapshot; it
+            // completes once every source has been attempted, independently
+            // of whether a particular source is offline.
+            let outcome = Ok(Finished::status(label));
+            let _ = done.send(outcome);
+        }
+        return alive;
+    }
+    !changed
+        || snapshots.progress(Snapshot {
+            items: state.base_items.clone(),
+            status_line: state
+                .operation_notice
+                .clone()
+                .unwrap_or_else(|| ui::i18n!("store-catalogue-loading")),
+            query: None,
+            detail: None,
+            remotes: state.remotes.clone(),
+            flatpak_available: state.flatpak_available,
+            flatpak_error: state.flatpak_error.clone(),
+            operation_error: state.catalogue_error.clone(),
+        })
 }
 
 /// Carry out `request`: whether the UI is still there, and how it ended
@@ -313,16 +556,17 @@ fn handle(
 ) -> (bool, Option<Outcome>) {
     match request {
         Request::Refresh => {
-            refresh(state);
-            let alive = send(
+            let error = ui::i18n!("store-refresh-in-progress");
+            let alive = send_tracked(
                 snapshots,
                 state,
                 state.base_items.clone(),
-                "Store refreshed.",
+                &error,
                 None,
                 None,
+                Some(error.clone()),
             );
-            (alive, Some(Ok(Finished::status("Store refreshed."))))
+            (alive, Some(Err(error)))
         }
         Request::BrowseRemote(id) => browse_remote(&id, state, snapshots),
         Request::Search(query) => (search(&query, state, snapshots), None),
@@ -332,7 +576,7 @@ fn handle(
             let (label, detail, error) = match &opened {
                 Ok(item) => (
                     format!("Opened {} from its reference.", item.name),
-                    Some(item.clone()),
+                    Some(DetailUpdate::OpenedReference(item.clone())),
                     None,
                 ),
                 Err(error) => (error.clone(), None, Some(error.clone())),
@@ -347,6 +591,85 @@ fn handle(
                 error,
             );
             (alive, Some(opened.map(|_| Finished::status(label))))
+        }
+        Request::ImportPackage(input) => {
+            state.imported_package = None;
+            let reviewed = input.read().and_then(|bytes| {
+                crate::package_import::review(bytes.clone(), &state.base_items).or_else(
+                    |catalogue_error| {
+                        let host = state.host.as_ref().ok_or(catalogue_error)?;
+                        crate::package_import::review_local(bytes, host)
+                    },
+                )
+            });
+            let (status, detail, error) = match reviewed {
+                Ok(package) => {
+                    let detail = DetailUpdate::ImportedPackage {
+                        item: package.item.clone(),
+                        root: package.expected.package_root.to_hex(),
+                        version: package.expected.version.clone(),
+                    };
+                    state.imported_package = Some(package);
+                    (ui::i18n!("store-package-ready"), Some(detail), None)
+                }
+                Err(error) => (error.clone(), None, Some(error)),
+            };
+            let alive = send_tracked(
+                snapshots,
+                state,
+                state.base_items.clone(),
+                &status,
+                None,
+                detail,
+                error.clone(),
+            );
+            (
+                alive,
+                Some(error.map_or_else(|| Ok(Finished::status(status)), Err)),
+            )
+        }
+        Request::InstallImported { app, root } => {
+            let result = state
+                .imported_package
+                .as_ref()
+                .filter(|package| {
+                    package.expected.app_id == app && package.expected.package_root.to_hex() == root
+                })
+                .ok_or_else(|| ui::i18n!("store-package-review-required"))
+                .and_then(|package| {
+                    // Recheck immutable handed bytes against the latest independent offers.
+                    let host = state
+                        .host
+                        .as_ref()
+                        .ok_or_else(|| ui::i18n!("store-package-unavailable"))?;
+                    if let Some(review) = &package.local {
+                        host.install_local(&package.bytes, review)?;
+                    } else {
+                        let current = crate::package_import::review(
+                            package.bytes.to_vec(),
+                            &state.base_items,
+                        )?;
+                        host.install_offer(&current.registry, &current.expected)?;
+                    }
+                    Ok(Finished::status(ui::i18n!("store-package-installed")))
+                });
+            if result.is_ok() {
+                state.imported_package = None;
+                state.refresh_requested = true;
+            }
+            let status = result
+                .as_ref()
+                .map_or_else(Clone::clone, |finished| finished.status.clone());
+            let alive = send_tracked(
+                snapshots,
+                state,
+                state.base_items.clone(),
+                &status,
+                None,
+                None,
+                result.as_ref().err().cloned(),
+            );
+            (alive, Some(result))
         }
         Request::RefreshRemotes => {
             refresh_flatpak(state);
@@ -384,6 +707,18 @@ fn handle(
             }
             remote_result(snapshots, state, result)
         }
+        Request::RemoteSetEnabled { name, enabled } => {
+            let result = state.host.as_ref().map_or_else(
+                || Err("App service unavailable.".to_string()),
+                |host| host.set_remote_enabled(&name, enabled),
+            );
+            if result.is_ok() {
+                refresh(state);
+            } else {
+                refresh_flatpak(state);
+            }
+            remote_result(snapshots, state, result)
+        }
         Request::RemoteRemove(name) => {
             let result = state.host.as_ref().map_or_else(
                 || Err("App service unavailable.".to_string()),
@@ -412,7 +747,11 @@ fn handle(
                 operation_error,
             );
             let finished = if outcome.ok {
-                Ok(Finished::status(outcome.status_line))
+                Ok(Finished {
+                    status: outcome.status_line,
+                    case: None,
+                    launch: outcome.launch,
+                })
             } else {
                 Err(outcome.status_line)
             };
@@ -430,6 +769,7 @@ fn handle(
                         case.case_id
                     ),
                     case: Some(case),
+                    launch: None,
                 }),
                 Err(error) => Err(format!(
                     "Report was not submitted. {error} The collaborative draft is unchanged; check your identity or connection and retry."
@@ -456,6 +796,7 @@ fn handle(
                         crate::app::moderation_status_label(case.status)
                     ),
                     case: Some(case),
+                    launch: None,
                 })
                 .map_err(|error| {
                     format!(
@@ -475,10 +816,7 @@ fn handle(
             let registries = crate::config::repositories(state.host.as_ref()).unwrap_or_default();
             let outcome = moderation_registry(&registries, &registry_name)
                 .and_then(|registry| {
-                    let now = ui::time::wall()
-                        .duration_since(ui::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
+                    let now = ui::time::unix_now();
                     let mut nonce = [0_u8; 16];
                     SysRng.try_fill_bytes(&mut nonce).map_err(|error| {
                         crate::moderation_client::ModerationClientError::Identity(
@@ -534,7 +872,7 @@ fn open_reference(
                 .map_err(|error| format!("Could not keep the reference: {error}"))?;
             let parsed = FlatpakRef::parse(&contents, PathBuf::new());
             match parsed {
-                Some(reference) if crate::doc_actions::valid_app_id(&reference.app_id) => {
+                Some(reference) if crate::reports::valid_app_id(&reference.app_id) => {
                     let path = directory.join(format!("{}.flatpakref", reference.app_id));
                     tilo_files::native::atomic::write(&path, contents.as_bytes())
                         .map_err(|error| format!("Could not keep the reference: {error}"))?;
@@ -710,7 +1048,8 @@ fn search(query: &str, state: &mut State, snapshots: &Snapshots) -> bool {
         for mut item in flatpak {
             crate::sources::apply_flatpak_origin(&mut item, &state.installed_origins);
             if !items.iter().any(|existing| existing.id == item.id)
-                && !native_names.contains(&item.name.trim().to_ascii_lowercase())
+                && (item.installed.is_installed()
+                    || !native_names.contains(&item.name.trim().to_ascii_lowercase()))
             {
                 items.push(item);
             }
@@ -779,7 +1118,10 @@ fn detail(id: &str, state: &mut State, snapshots: &Snapshots) -> bool {
         state.base_items.clone(),
         &label,
         None,
-        loaded,
+        Some(DetailUpdate::Requested {
+            id: id.to_string(),
+            item: loaded,
+        }),
         operation_error,
     )
 }
@@ -792,6 +1134,10 @@ fn send(
     query: Option<String>,
     detail: Option<StoreItem>,
 ) -> bool {
+    let detail = detail.map(|item| DetailUpdate::Requested {
+        id: item.id.clone(),
+        item: Some(item),
+    });
     send_tracked(snapshots, state, items, status_line, query, detail, None)
 }
 
@@ -817,6 +1163,7 @@ fn update_all(
             detail: None,
             remotes: state.remotes.clone(),
             flatpak_available: state.flatpak_available,
+            flatpak_error: state.flatpak_error.clone(),
             operation_error: None,
         };
         if !snapshots.progress(progress) {
@@ -873,7 +1220,7 @@ fn send_tracked(
     items: Vec<StoreItem>,
     status_line: &str,
     query: Option<String>,
-    detail: Option<StoreItem>,
+    detail: Option<DetailUpdate>,
     operation_error: Option<String>,
 ) -> bool {
     snapshots.send(Snapshot {
@@ -883,6 +1230,7 @@ fn send_tracked(
         detail,
         remotes: state.remotes.clone(),
         flatpak_available: state.flatpak_available,
+        flatpak_error: state.flatpak_error.clone(),
         operation_error: operation_error
             .or_else(|| state.catalogue_error.clone())
             .or_else(|| state.flatpak_error.clone()),
@@ -895,10 +1243,7 @@ fn submit_report(
     envelope: &ReportEnvelope,
 ) -> Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError> {
     let registry = moderation_registry(registries, registry_name)?;
-    let now = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = ui::time::unix_now();
     let envelope_bytes = serde_json::to_vec(envelope)
         .map_err(|_| crate::moderation_client::ModerationClientError::InvalidResponse)?;
     let mut nonce = [0_u8; 16];
@@ -964,16 +1309,7 @@ fn refresh_flatpak(state: &mut State) {
 
 fn refresh(state: &mut State) {
     refresh_flatpak(state);
-    (state.base_items, state.catalogue_error) = collect_items(
-        state.opened_ref.as_ref(),
-        &state.installed,
-        state.host.as_ref(),
-        &state.remotes,
-        &state.installed_origins,
-    );
-    state.searches.clear();
-    state.details.clear();
-    sync_authoritative_catalogue(state);
+    state.refresh_requested = true;
 }
 
 /// Publish the one authoritative catalogue directory. Presentation snapshots
@@ -983,120 +1319,6 @@ fn refresh(state: &mut State) {
 /// after a true `base_items` refresh, never on the UI thread.
 fn sync_authoritative_catalogue(state: &State) {
     state.directory.sync(&state.base_items);
-}
-
-fn collect_items(
-    opened_ref: Option<&FlatpakRef>,
-    installed: &[(String, String)],
-    host: Option<&app_host::client::BlockingClient>,
-    remotes: &[Remote],
-    origins: &std::collections::HashMap<String, (String, bool)>,
-) -> (Vec<StoreItem>, Option<String>) {
-    let mut errors = Vec::new();
-    let registries = match crate::config::repositories(host) {
-        Ok(file) => file.registries,
-        Err(error) => {
-            errors.push(format!("Could not read app repositories: {error}"));
-            Vec::new()
-        }
-    };
-    let installed_tilo = match host.map(app_host::client::BlockingClient::list) {
-        Some(Ok(items)) => items,
-        Some(Err(error)) => {
-            errors.push(format!("Could not read apps on this device: {error}"));
-            Vec::new()
-        }
-        None => {
-            errors.push("App service unavailable.".into());
-            Vec::new()
-        }
-    };
-    let mut tilo_items = Vec::new();
-    for registry in registries.iter().filter(|registry| registry.enabled) {
-        match crate::registry_client::fetch_entries(registry) {
-            Ok(entries) => tilo_items.extend(entries.iter().map(|entry| {
-                tilo_to_store_item_on_channel(
-                    entry,
-                    &registry.name,
-                    &installed_tilo,
-                    registry.channel,
-                )
-            })),
-            Err(error) => errors.push(format!("Could not load {}: {error}", registry.name)),
-        }
-    }
-    // The Store's action surface is also the recovery path for software that
-    // is already here. Never make installed Tilo apps vanish merely because a
-    // configured registry is offline or no longer carries an older package.
-    // Catalogue rows win whenever present because they carry the signed
-    // download/update metadata; these local rows intentionally cannot update.
-    for installed in &installed_tilo {
-        if !tilo_items.iter().any(|item| item.id == installed.id) {
-            tilo_items.push(installed_tilo_to_store_item(installed));
-        }
-    }
-    let flatpak_records = match crate::flathub_client::fetch_popular(200) {
-        Ok(records) => records,
-        Err(error) => {
-            errors.push(format!("Could not load Flathub: {error}"));
-            Vec::new()
-        }
-    };
-    let mut flatpak_items = flatpak_records
-        .iter()
-        .map(|entry| flathub_record_to_item(entry, installed))
-        .collect::<Vec<_>>();
-    // One repository failing must never hide another repository's catalogue.
-    if let Some(host) = host {
-        for remote in remotes.iter().filter(|remote| !remote.disabled) {
-            match host.flatpak_catalogue(&remote.name, remote.user_managed) {
-                Ok(rows) => {
-                    for item in crate::sources::remote_catalogue_items(&rows, remote, installed) {
-                        if !flatpak_items.iter().any(|existing| existing.id == item.id) {
-                            flatpak_items.push(item);
-                        }
-                    }
-                }
-                Err(error) => errors.push(crate::flathub_client::remote_error(remote, &error)),
-            }
-        }
-    }
-    // Popular is a discovery feed, not an installed-app inventory. Preserve
-    // every locally reported Flatpak so launch/remove remain possible during
-    // an API outage and for apps that were never popular.
-    for (app_id, version) in installed {
-        if !flatpak_items.iter().any(|item| item.id == *app_id) {
-            flatpak_items.push(installed_flatpak_to_item(app_id, version));
-        }
-    }
-    if let Some(reference) = opened_ref
-        && !flatpak_items.iter().any(|item| item.id == reference.app_id)
-    {
-        let version = installed
-            .iter()
-            .find_map(|(id, version)| (id == &reference.app_id).then(|| version.clone()));
-        flatpak_items.insert(0, reference.clone().into_store_item(version));
-    }
-    for item in &mut flatpak_items {
-        crate::sources::apply_flatpak_origin(item, origins);
-    }
-    tracing::debug!("{}", registries_summary(&registries));
-    (
-        merge(tilo_items, flatpak_items),
-        (!errors.is_empty()).then(|| errors.join("\n")),
-    )
-}
-
-fn registries_summary(registries: &[RegistryConfig]) -> String {
-    let enabled = registries
-        .iter()
-        .filter(|registry| registry.enabled)
-        .count();
-    format!(
-        "configured registries: {} total / {} enabled",
-        registries.len(),
-        enabled
-    )
 }
 
 #[cfg(test)]
@@ -1119,8 +1341,9 @@ mod tests {
     use super::*;
     use crate::{InstalledState, StoreItemVersion, StoreTrust};
 
-    fn item(id: &str, name: &str) -> StoreItem {
+    pub(super) fn item(id: &str, name: &str) -> StoreItem {
         StoreItem {
+            bot: None,
             id: id.into(),
             name: name.into(),
             description: format!("{name} Store test row"),
@@ -1148,10 +1371,13 @@ mod tests {
         }
     }
 
-    fn state_with_items(items: Vec<StoreItem>, directory: StoreDirectory) -> State {
+    pub(super) fn state_with_items(items: Vec<StoreItem>, directory: StoreDirectory) -> State {
         State {
+            operation_notice: None,
+            refresh_requested: false,
             host: None,
             opened_ref: None,
+            imported_package: None,
             base_items: items,
             installed: Vec::new(),
             installed_origins: std::collections::HashMap::new(),
@@ -1164,6 +1390,163 @@ mod tests {
             directory,
             item_index: ui::search::ListIndex::default(),
         }
+    }
+
+    struct ImportOfferHost {
+        registry: String,
+        expected: app_host::install::InstallExpectation,
+        installs: Arc<AtomicUsize>,
+    }
+
+    impl app_host::app_host_capnp::app_host::Server for ImportOfferHost {
+        fn install_offer(
+            self: capnp::capability::Rc<Self>,
+            params: app_host::app_host_capnp::app_host::InstallOfferParams,
+            mut results: app_host::app_host_capnp::app_host::InstallOfferResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let params = params.get().unwrap();
+            assert_eq!(
+                params.get_registry().unwrap().to_str().unwrap(),
+                self.registry
+            );
+            assert_eq!(
+                params.get_app_id().unwrap().to_str().unwrap(),
+                self.expected.app_id
+            );
+            assert_eq!(
+                params.get_version().unwrap().to_str().unwrap(),
+                self.expected.version
+            );
+            assert_eq!(
+                params.get_expected_root().unwrap(),
+                self.expected.package_root.as_bytes()
+            );
+            assert_eq!(
+                params.get_expected_publisher().unwrap(),
+                self.expected.publisher
+            );
+            assert_eq!(params.get_expected_size_bytes(), self.expected.size_bytes);
+            self.installs.fetch_add(1, Ordering::SeqCst);
+            results.get().set_id(self.expected.package_root.as_bytes());
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn package_import_worker_reviews_before_exact_owned_offer_install() {
+        check_import_worker(crate::package_import::tests::signed_fixture());
+    }
+
+    #[test]
+    fn package_import_published_worker_preserves_verified_offer_install_route() {
+        check_import_worker(crate::package_import::tests::published_fixture());
+    }
+
+    fn check_import_worker((bytes, item): (Vec<u8>, StoreItem)) {
+        use super::*;
+        let reviewed =
+            crate::package_import::review(bytes.clone(), std::slice::from_ref(&item)).unwrap();
+        let installs = Arc::new(AtomicUsize::new(0));
+        let (service, connection) = app_host::testing::ConnectedService::start(ImportOfferHost {
+            registry: reviewed.registry.clone(),
+            expected: reviewed.expected.clone(),
+            installs: installs.clone(),
+        })
+        .unwrap();
+        let mut state = state_with_items(vec![item.clone()], StoreDirectory::default());
+        state.host = Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
+        let (sender, received) = mpsc::channel();
+        let snapshots = Snapshots {
+            sender,
+            wake: WakeHandle::new(),
+            pending: Arc::new(AtomicUsize::new(0)),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (alive, outcome) = handle(
+            Request::ImportPackage(crate::package_import::Input::Bytes(bytes.clone())),
+            &mut state,
+            &snapshots,
+            dir.path(),
+        );
+        assert!(alive && outcome.unwrap().is_ok());
+        assert_eq!(installs.load(Ordering::SeqCst), 0, "opening never installs");
+        assert!(
+            matches!(received.recv().unwrap().detail, Some(DetailUpdate::ImportedPackage { item: shown, .. }) if shown.id == item.id)
+        );
+        let (_, outcome) = handle(
+            Request::InstallImported {
+                app: item.id.clone(),
+                root: "00".repeat(32),
+            },
+            &mut state,
+            &snapshots,
+            dir.path(),
+        );
+        assert!(outcome.unwrap().is_err());
+        assert_eq!(
+            installs.load(Ordering::SeqCst),
+            0,
+            "stale reviewed identity cannot install"
+        );
+        let (_, outcome) = handle(
+            Request::InstallImported {
+                app: item.id.clone(),
+                root: reviewed.expected.package_root.to_hex(),
+            },
+            &mut state,
+            &snapshots,
+            dir.path(),
+        );
+        assert!(outcome.unwrap().is_ok());
+        assert_eq!(installs.load(Ordering::SeqCst), 1);
+        assert!(state.imported_package.is_none() && state.refresh_requested);
+        // A later source change revokes the previously reviewed file.
+        handle(
+            Request::ImportPackage(crate::package_import::Input::Bytes(bytes)),
+            &mut state,
+            &snapshots,
+            dir.path(),
+        );
+        state.base_items.clear();
+        let (_, outcome) = handle(
+            Request::InstallImported {
+                app: item.id,
+                root: reviewed.expected.package_root.to_hex(),
+            },
+            &mut state,
+            &snapshots,
+            dir.path(),
+        );
+        assert!(outcome.unwrap().is_err());
+        assert_eq!(installs.load(Ordering::SeqCst), 1);
+        drop(state);
+        service.shutdown().unwrap();
+    }
+
+    #[test]
+    fn flatpak_observation_failure_reaches_worker_snapshot_separately_from_missing() {
+        let mut state = state_with_items(Vec::new(), StoreDirectory::default());
+        state.flatpak_available = true;
+        refresh_flatpak(&mut state);
+        assert!(!state.flatpak_available);
+        assert!(
+            state
+                .flatpak_error
+                .as_deref()
+                .unwrap()
+                .contains("App service unavailable")
+        );
+        let (sender, received) = mpsc::channel();
+        let snapshots = Snapshots {
+            sender,
+            wake: WakeHandle::new(),
+            pending: Arc::new(AtomicUsize::new(0)),
+        };
+        assert!(send(&snapshots, &state, Vec::new(), "", None, None));
+        let snapshot = received.recv().unwrap();
+        assert_eq!(snapshot.flatpak_error, state.flatpak_error);
+        assert_eq!(snapshot.operation_error, state.flatpak_error);
+        assert!(!snapshot.flatpak_available);
     }
 
     /// LRU eviction, non-blocking requests and the authoritative action directory.

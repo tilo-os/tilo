@@ -21,6 +21,15 @@ use crate::model::{ActionKind, StoreItem, StoreSource};
 pub struct ActionOutcome {
     pub ok: bool,
     pub status_line: String,
+    pub launch: Option<ApplicationLaunch>,
+}
+
+/// A prepared installed application, launched through the Store's original
+/// authenticated workspace channel rather than the package custodian.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplicationLaunch {
+    pub app_id: String,
+    pub package_root: Option<String>,
 }
 
 impl ActionOutcome {
@@ -28,12 +37,14 @@ impl ActionOutcome {
         Self {
             ok: true,
             status_line: msg.into(),
+            launch: None,
         }
     }
     fn fail(msg: impl Into<String>) -> Self {
         Self {
             ok: false,
             status_line: msg.into(),
+            launch: None,
         }
     }
 }
@@ -124,10 +135,10 @@ pub fn download_tapp(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
 /// [`tapp_staging_dir`] in production.
 ///
 /// For `Open`/`Update` on an uncached Tilo app this is: download →
-/// app-host verified install → app-host launch
-/// (launch). For an already-cached app `Open` skips straight to the
-/// launch. Every subprocess result is folded into the returned
-/// [`ActionOutcome`] so the status bubble reflects reality.
+/// app-host verified install → exact prepared launch target. The Store
+/// submits that target on its original authenticated collaboration channel
+/// and waits for actual startup. Already-cached apps preserve their selected
+/// signed package root through the same route.
 pub fn execute(item: &StoreItem, action: ActionKind, staging_dir: &Path) -> ActionOutcome {
     execute_with_host(None, item, action, staging_dir)
 }
@@ -185,26 +196,37 @@ pub fn execute_with_host(
                         return Err("This repository belongs to the device. Ask its administrator to install the app.".into());
                     }
                     host.flatpak_install_remote(name, &item.id, branch)
+                        .map(|_| ui::i18n!("store-app-installed"))
                 } else {
                     host.flatpak(
                         app_host::client::FlatpakAction::Install,
                         &item.id,
                         reference.as_deref(),
                     )
+                    .map(|_| ui::i18n!("store-app-installed"))
                 }
             })
         }
         (ActionKind::FlatpakUpdate, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             host_result(host, |host| {
                 host.flatpak(app_host::client::FlatpakAction::Update, &item.id, None)
+                    .map(|_| ui::i18n!("store-app-updated"))
             })
         }
         (ActionKind::FlatpakOpen, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
-            host_result(host, |host| host.launch_desktop(&item.id))
+            ActionOutcome {
+                ok: true,
+                status_line: format!("Opening {}…", item.name),
+                launch: Some(ApplicationLaunch {
+                    app_id: format!("host:{}", item.id),
+                    package_root: None,
+                }),
+            }
         }
         (ActionKind::FlatpakRemove, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             host_result(host, |host| {
                 host.flatpak(app_host::client::FlatpakAction::Remove, &item.id, None)
+                    .map(|_| ui::i18n!("store-app-removed"))
             })
         }
         (ActionKind::NeedsFlatpakHost, _) => {
@@ -289,7 +311,14 @@ fn open_tilo(
     let Some(package_root) = package_root else {
         return ActionOutcome::fail("installed package could not be resolved");
     };
-    host_result(Some(host), |host| host.launch(package_root))
+    ActionOutcome {
+        ok: true,
+        status_line: format!("Opening {}…", item.name),
+        launch: Some(ApplicationLaunch {
+            app_id: item.id.clone(),
+            package_root: Some(package_root.to_string()),
+        }),
+    }
 }
 
 fn host_result(
@@ -336,6 +365,7 @@ mod tests {
 
     fn tilo_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
+            bot: None,
             id: format!("so.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: String::new(),
@@ -365,6 +395,7 @@ mod tests {
 
     fn flatpak_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
+            bot: None,
             id: format!("org.example.{name}"),
             name: name.into(),
             description: String::new(),

@@ -1,14 +1,13 @@
-//! Headless redraw-cycle benchmark for the widget showcase.
+//! Headless redraw-cycle benchmark over a representative widget tree.
 //!
-//! Builds the same widget tree as `widget_showcase` (minus overlays /
-//! percent-height widgets that don't compose into a bare Column),
-//! then runs N synthetic click → redraw cycles on the
+//! Builds a Column of common widgets (no overlays or percent-height
+//! widgets, which don't compose into a bare Column), then runs N synthetic click → redraw cycles on the
 //! Day/Week/Month `ToggleGroup`. Each cycle measures the cost of:
 //!
 //!   - `handle_event` (click + hover)
 //!   - `compute_layout_with_measure` (taffy re-flow + measure callbacks)
 //!   - `apply_layout` (writes rects into widgets)
-//!   - `draw_with_presence` (widget → vello scene)
+//!   - `draw` (widget → vello scene)
 //!   - `OffscreenRenderer::render`     (vello → wgpu, includes GPU submit)
 //!
 //! Output is a per-phase mean / min / max across iterations, plus a
@@ -22,14 +21,12 @@
 //! Iterations override: `TILO_UI_PERF_ITERS=50`.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use automerge::AutoCommit;
 use chrono::NaiveDate;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::PermissionContext;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -42,23 +39,32 @@ use tilo_ui::widget::{
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::{Blob, Color, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format};
+use vello::peniko::{Color, ImageData as PenikoImage};
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
 
 fn placeholder_image() -> PenikoImage {
     let buf = vec![99u8; 4 * 16 * 16];
-    PenikoImage {
-        data: Blob::new(Arc::new(buf)),
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: 16,
-        height: 16,
-    }
+    tilo_ui::raster::rgba8(buf, 16, 16)
 }
 
 fn caption(key: &'static str) -> Box<dyn Widget> {
     Box::new(Text::new(key))
+}
+
+/// Three avatars (two initials, one picture) and three badges.
+fn avatar_badge_row() -> Box<dyn Widget> {
+    Box::new(
+        Row::new()
+            .push(Box::new(Avatar::person("Quinn Daley", "quinn.daley")))
+            .push(Box::new(Avatar::person("Ada Lovelace", "ada.lovelace")))
+            .push(Box::new(
+                Avatar::person("Sam Okafor", "sam.okafor").with_image(placeholder_image()),
+            ))
+            .push(Box::new(Badge::dot()))
+            .push(Box::new(Badge::count(7)))
+            .push(Box::new(Badge::count(120))),
+    )
 }
 
 fn build_tree() -> Box<dyn Widget> {
@@ -109,15 +115,7 @@ fn build_tree() -> Box<dyn Widget> {
                         .push(Box::new(Spinner::with_size(32.0))),
                 ))
                 .push(caption("row_avatar_badge"))
-                .push(Box::new(
-                    Row::new()
-                        .push(Box::new(Avatar::from_initials("QD", 48.0)))
-                        .push(Box::new(Avatar::from_initials("AL", 48.0)))
-                        .push(Box::new(Avatar::new(placeholder_image(), 48.0)))
-                        .push(Box::new(Badge::dot()))
-                        .push(Box::new(Badge::count(7)))
-                        .push(Box::new(Badge::count(120))),
-                ))
+                .push(avatar_badge_row())
                 .push(caption("row_nav"))
                 .push(Box::new(Breadcrumb::new(vec![
                     "home".into(),
@@ -172,7 +170,6 @@ struct Bench {
     doc: AutoCommit,
     text_renderer: TextRenderer,
     presence: PresenceCtx,
-    perms: PermissionContext,
     theme: Theme,
     scene: Scene,
     renderer: OffscreenRenderer,
@@ -191,7 +188,6 @@ impl Bench {
             root_node,
             text_renderer,
             presence,
-            perms,
             theme,
             scene,
             renderer,
@@ -236,14 +232,7 @@ impl Bench {
 
         let t_draw = tilo_ui::time::now();
         scene.reset();
-        root.draw_with_presence(
-            scene,
-            Affine::IDENTITY,
-            text_renderer,
-            theme,
-            presence,
-            perms,
-        );
+        root.draw(scene, Affine::IDENTITY, text_renderer, theme, presence);
         times.draw_us = t_draw.elapsed().as_micros();
 
         let t_render = tilo_ui::time::now();
@@ -294,7 +283,6 @@ pub fn run(_args: &[String]) {
     let theme = Theme::dark();
     let text_renderer = TextRenderer::new();
     let presence = PresenceCtx::default();
-    let perms = PermissionContext::permissive();
     let doc = AutoCommit::new();
 
     let mut root = build_tree();
@@ -310,7 +298,6 @@ pub fn run(_args: &[String]) {
         doc,
         text_renderer,
         presence,
-        perms,
         theme,
         scene,
         renderer,
@@ -338,7 +325,7 @@ pub fn run(_args: &[String]) {
     let click_x = 240.0;
     let click_y = 280.0;
     let modifiers = Modifiers::default();
-    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
 
     let mut hist: Vec<Phases> = Vec::with_capacity(iters);
     for _ in 0..iters {

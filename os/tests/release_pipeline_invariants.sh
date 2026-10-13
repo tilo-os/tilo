@@ -101,14 +101,16 @@ grep -Fq 'scope=kernel-{0},mode=min,ignore-error=true' "$workflows/build-kernel.
 
 # A cache manifest naming a blob the registry lost fails a build only when the
 # layer's content is needed. The OS build treats exactly that as a cache miss:
-# rebuild without cache-from, rewrite every cache tag, consume either digest.
+# rebuild without cache-from, rewrite every cache tag, consume either digest
+# (or the rechunked image's, #4190, which is made from either).
 uncached=$(awk '/- name: Build the Tilo image without the damaged layer cache/,/# Dev VMs must not wait/' "$os")
 [ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the build toolchain/,/- name: Recognize a missing registry cache blob/' "$os"))" = 5 ] \
   && grep -Fq 'run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"' "$os" \
   && ! grep -Fq 'cache-from:' <<<"$uncached" \
   && [ "$(grep -c 'ignore-error=true' <<<"$uncached")" = 1 ] \
   && ! grep -Fq "'\${{ steps.build.outputs.digest }}'" "$os" \
-  && grep -Fq "'\${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'" "$os" \
+  && grep -Fq "'\${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'" "$os" \
+  && grep -Fq "BUILD_DIGEST: \${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}" <(awk '/- name: Rechunk the image$/,/- name: Publish the dev-trust integration image/' "$os") \
   && ok 'a missing registry cache blob degrades the OS build to an uncached rebuild' \
   || bad 'a lost registry cache blob can still fail the OS build'
 
@@ -287,6 +289,34 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && ok 'desktop PRs keep preflight while native packaging is scheduled or explicit' \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
+# Native package lanes have neither private keys nor OIDC. A separate tag-only
+# broker job signs only successful install-tested artifacts after exact-main proof.
+desktop_signer=$(sed -n '/^  sign-rpm:$/,/^  host-session-e2e:$/p' "$desktop")
+desktop_validate=$(sed -n '/^  validate:$/,/^  package:$/p' "$desktop")
+desktop_package=$(sed -n '/^  package:$/,/^  sign-rpm:$/p' "$desktop")
+signing_boundary_ok=1
+for name in TILO_RPM_SIGNING_KEY_B64 TILO_RPM_SIGNING_KEY_ID; do
+  ! grep -Fq "secrets.$name" "$desktop" || signing_boundary_ok=0
+done
+grep -Fq "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')" <<<"$desktop_signer" \
+  && grep -Fq 'enable-openid-connect: true' <<<"$desktop_signer" \
+  && grep -Fq 'needs: [validate, package]' <<<"$desktop_signer" \
+  && grep -Fq 'dist/rpm/sign-rpms.sh signed-fedora' <<<"$desktop_signer" \
+  && grep -Fq 'vars.TILO_RPM_SIGNING_FINGERPRINT' <<<"$desktop_signer" \
+  && ! grep -Fq 'enable-openid-connect' <<<"$desktop_package" \
+  && ! grep -Fq 'secrets.TILO_RPM_SIGNING' <<<"$desktop_package" \
+  && grep -Fq 'run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin' <<<"$desktop_validate" \
+  && grep -Fq 'needs: validate' <<<"$desktop_package" \
+  && grep -Fq 'needs: [validate, package, sign-rpm, host-session-e2e]' "$desktop" \
+  && grep -Fq "'signed-fedora-44-amd64' || 'fedora-44-amd64'" "$desktop" \
+  && ! grep -Fq -- '--env TILO_RPM_SIGNING' "$repo/dist/ci/run-package-job.sh" \
+  || signing_boundary_ok=0
+if [[ $signing_boundary_ok == 1 ]]; then
+  ok 'desktop isolated broker signs exact-main-qualified tested tag RPMs without exposing a key'
+else
+  bad 'desktop signing boundary or pre-packaging qualification regressed'
+fi
+
 grep -Fq 'publish-os-payload:' "$desktop" \
   && grep -Fq 'PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}' "$desktop" \
   && grep -Fq 'VARIABLE_TOKEN: ${{ secrets.RELEASE_TOKEN }}' "$desktop" \
@@ -300,7 +330,7 @@ grep -Fq 'publish-os-payload:' "$desktop" \
   || bad 'OS releases still rebuild the desktop component'
 
 grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json")' "$os" \
-  && grep -Fq 'Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor)' "$os" \
+  && grep -Fq 'Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor) ]]; then' "$os" \
   && grep -Fq 'predates this commit'"'"'s desktop inputs; building the desktop from source' "$os" \
   && grep -Fq '"source": sys.argv[3]' "$repo/dist/desktop/package-os-payload.sh" \
   && ok 'OS composition reuses the desktop payload only while no Rust or Cargo input changed since it was built' \
@@ -323,7 +353,7 @@ grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 
 ! grep -Fq 'cron:' "$os" \
   && grep -Fq "if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$os" \
   && grep -Fq 'elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then' "$os" \
-  && grep -Fq '$PUBLISHED_REVISION == "$GITHUB_SHA"' "$os" \
+  && grep -Fq '$PUBLISHED_REVISION == "$TILO_IMAGE_SOURCE"' "$os" \
   && grep -Fq "needs.plan.outputs.skip != 'true'" "$os" \
   && grep -Fq '&& ${PLANNED_PUBLISH:-false} == true ) \' "$os" \
   && grep -Fq "(github.event_name == 'schedule' && github.ref == 'refs/heads/main')" "$os" \
@@ -393,7 +423,9 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
 grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq 'cancel-in-progress: false' "$apps" \
   && ! grep -Eq '^  pull_request(_target)?:' "$apps" \
-  && grep -Fq '$package_api/tilo-app-collections/$VERSION/' "$apps" "$apps_publish" \
+  && grep -Fq '$package_api/tilo-app-collections/$collection_version/' "$apps_publish" \
+  && grep -Fq 'collection_version="$VERSION-$bundle_sha"' "$apps_publish" \
+  && grep -Fq 'bundle_sha=$(sha256sum "$bundle"' "$apps_publish" \
   && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" "$apps_publish" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
   && grep -Fq 'if [[ $GITHUB_REF == refs/heads/main ]]; then' "$apps" \
@@ -422,6 +454,8 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && awk '{sub(/\r$/, "")} /^  qualify-collection:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  publish:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
   && ! awk '{sub(/\r$/, "")} /^  publish:/{publish=1} publish && /^    steps:/{steps=1} publish && steps' "$apps" | grep -F 'secrets.REGISTRY_TOKEN' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  recover-publication-97894:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  recover-publication-97894:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
   && ok 'app collections serialize channel updates and remain durable across workflows' \
   || bad 'app releases can cancel a required channel update or cannot be consumed later'
 

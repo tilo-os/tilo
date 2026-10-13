@@ -10,12 +10,7 @@
 //!   `TILO_LIVE_DROPBOX_APP_KEY` (and `TILO_LIVE_DROPBOX_APP_SECRET` for
 //!   confidential apps).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test fixtures"
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
 
 use std::sync::{Arc, Mutex};
 
@@ -90,6 +85,7 @@ impl Fixture for FakeFixture {
             Fault::RateLimited => self.server.inject(FakeFault::RateLimited),
             Fault::ServerError => self.server.inject(FakeFault::ServerError),
             Fault::TruncatedBody => self.server.inject(FakeFault::TruncatedBody),
+            Fault::ClosedEarly => self.server.inject(FakeFault::ClosedEarly),
             Fault::ExpiredCredential => self.server.inject(FakeFault::ExpiredCredential),
             Fault::CursorReset => self.server.reset_cursors(),
         }

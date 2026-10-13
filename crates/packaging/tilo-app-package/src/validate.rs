@@ -55,6 +55,8 @@ pub enum ManifestError {
     DuplicateCapability(String),
     #[error("kind=runtime must not declare a runtime dependency")]
     RuntimeKindHasRuntime,
+    #[error("runtime entrypoint {0:?} must name a safe relative payload file")]
+    RuntimeEntrypoint(String),
     #[error("only kind=runtime packages declare `package.provides`")]
     ProvidesOnNonRuntime,
     #[error(
@@ -103,15 +105,15 @@ pub enum ManifestError {
     EmptyAtspiAcceptanceField { field: &'static str },
     #[error("target: {0}")]
     BadTarget(String),
-    #[error("target.module {0:?} must be a safe payload path ending in `.wasm`")]
+    #[error("target.module {0:?} must be a safe payload path (an `.apk` or `.aab` for android)")]
     BadTargetModule(String),
-    #[error("a web build declares no native `[package.isa]`")]
+    #[error("a build with a `[target]` declares no native `[package.isa]`")]
     TargetWithNativeIsa,
-    #[error("only kind=app and kind=runtime packages have a web build")]
+    #[error("only kind=app packages have a `[target]`")]
     TargetKindUnsupported,
     #[error("target.runtime {target:?} is not a build of package.runtime {declared:?}")]
     TargetRuntimeMismatch { declared: String, target: String },
-    #[error("a web app's entrypoint must be its target.module {0:?}")]
+    #[error("the app's GUI entrypoint must be its target.module {0:?}")]
     TargetEntrypointMismatch(String),
     #[error("target.module {0:?} is not in the payload")]
     TargetModuleMissing(String),
@@ -214,6 +216,17 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         .map_err(|e| ManifestError::BadVersion(m.package.version.clone(), e.to_string()))?;
 
     validate_optional_runtimes(m)?;
+    if m.package.kind == Kind::Runtime
+        && let Some(entrypoint) = &m.entrypoint
+        && entrypoint
+            .bin
+            .to_str()
+            .is_none_or(|path| !crate::package::is_safe_path(path))
+    {
+        return Err(ManifestError::RuntimeEntrypoint(
+            entrypoint.bin.display().to_string(),
+        ));
+    }
 
     match (&m.package.kind, &m.package.runtime) {
         (Kind::Runtime, Some(_)) => return Err(ManifestError::RuntimeKindHasRuntime),
@@ -329,12 +342,7 @@ fn validate_image(m: &Manifest) -> Result<(), ManifestError> {
 /// What the app claims to open and the resource kinds its records hold.
 fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
     for ext in &m.providers.ext {
-        if ext.is_empty()
-            || ext.len() > 64
-            || !ext
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
-        {
+        if !valid_extension(ext) {
             return Err(ManifestError::BadProviderExtension(ext.clone()));
         }
     }
@@ -374,61 +382,12 @@ fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
     registry_target
         .validate()
         .map_err(|error| ManifestError::BadTarget(error.to_string()))?;
-    if registry_types::DESKTOP_PLATFORMS.contains(&target.platform.as_str()) {
-        return validate_desktop_target(m, target);
-    }
-    let runtime = registry_target.web_runtime().ok_or_else(|| {
-        ManifestError::BadTarget(format!(
+    if !registry_types::DESKTOP_PLATFORMS.contains(&target.platform.as_str()) {
+        return Err(ManifestError::BadTarget(format!(
             "platform {:?} is native; native builds declare `[package.isa]` instead",
             target.platform
-        ))
-    })?;
-    if !crate::package::is_safe_path(&target.module)
-        || std::path::Path::new(&target.module)
-            .extension()
-            .is_none_or(|extension| extension != "wasm")
-        || target.module.len() > 255
-    {
-        return Err(ManifestError::BadTargetModule(target.module.clone()));
+        )));
     }
-    if m.package.isa.x86_64.is_some() || m.package.isa.aarch64.is_some() {
-        return Err(ManifestError::TargetWithNativeIsa);
-    }
-    match m.package.kind {
-        Kind::App => {
-            let declared = m.package.runtime.clone().unwrap_or_default();
-            if declared != runtime.release() {
-                return Err(ManifestError::TargetRuntimeMismatch {
-                    declared,
-                    target: target.runtime.clone(),
-                });
-            }
-            let entry = m
-                .entrypoint
-                .as_ref()
-                .and_then(|entry| entry.gui_bin_path())
-                .and_then(|path| path.to_str());
-            if entry != Some(target.module.as_str()) {
-                return Err(ManifestError::TargetEntrypointMismatch(
-                    target.module.clone(),
-                ));
-            }
-        }
-        Kind::Runtime => {}
-        Kind::Service | Kind::FormatProvider | Kind::Plugin | Kind::EnvRuntime | Kind::Tool => {
-            return Err(ManifestError::TargetKindUnsupported);
-        }
-    }
-    Ok(())
-}
-
-/// A Linux, Windows, macOS or Android app: `module` is the executable (for
-/// Android, the `.apk` or `.aab`) the entrypoint names, and `runtime` is the
-/// toolkit release linked into it, as declared.
-fn validate_desktop_target(
-    m: &Manifest,
-    target: &crate::manifest::Target,
-) -> Result<(), ManifestError> {
     let android_package = || {
         std::path::Path::new(&target.module)
             .extension()
@@ -538,7 +497,15 @@ fn validate_atspi_acceptance(m: &Manifest) -> Result<(), ManifestError> {
     Ok(())
 }
 
-fn valid_mime(mime: &str) -> bool {
+pub(crate) fn valid_extension(ext: &str) -> bool {
+    !ext.is_empty()
+        && ext.len() <= 64
+        && ext
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
+}
+
+pub(crate) fn valid_mime(mime: &str) -> bool {
     let Some((top, subtype)) = mime.split_once('/') else {
         return false;
     };
@@ -562,7 +529,7 @@ fn valid_mime_token(token: &str) -> bool {
         })
 }
 
-fn valid_scheme(scheme: &str) -> bool {
+pub(crate) fn valid_scheme(scheme: &str) -> bool {
     let mut chars = scheme.chars();
     !scheme.is_empty()
         && scheme.len() <= 32
@@ -681,6 +648,14 @@ pub fn validate_manifest_with_payload(
     payload_files: &[std::path::PathBuf],
 ) -> Result<(), ManifestError> {
     validate_manifest(m)?;
+    if m.package.kind == Kind::Runtime
+        && let Some(entrypoint) = &m.entrypoint
+        && !payload_files.iter().any(|path| path == &entrypoint.bin)
+    {
+        return Err(ManifestError::RuntimeEntrypoint(
+            entrypoint.bin.display().to_string(),
+        ));
+    }
     if matches!(m.package.kind, Kind::FormatProvider)
         && !payload_files
             .iter()
@@ -838,7 +813,7 @@ mode = "off"
             );
             assert_eq!(
                 manifest.package.optional_runtimes,
-                ["tilo-runtime/2026.10.1-chromium"]
+                ["tilo-runtime/2026.10.9-chromium"]
             );
             assert_eq!(validate_manifest(&manifest), Ok(()));
         }

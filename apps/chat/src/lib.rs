@@ -2,18 +2,19 @@
 //!
 //! A collaborative chat + calls surface tied to workspaces. The
 //! convergent state — workspaces, categories, channels, messages, reactions,
-//! edits + edit history, threads, members and drafts — lives in an
-//! Automerge document ([`doc`]), the room's own record of the chat, changed
-//! only through [`actions::ChatAction`]s. Attachments are content-addressed references:
+//! edits + edit history, threads, members and drafts — is the [`record::Chat`]
+//! model, the room's own record of the chat, changed only through its verbs
+//! and field edits. Attachments are content-addressed references:
 //! the CRDT stores their identity and bounded metadata, while bytes stay in the
 //! app's content store. The [`app::ChatApp`] widget is a projection of that
 //! document plus an input router.
 //!
 //! ## Layout
-//! Two adaptive flaps ([`responsive`]) frame a conversation column: a left
-//! flap (workspace rail + channel sidebar) and a right flap (members /
-//! thread). Each docks beside the content on a wide window and slides over
-//! it behind a scrim on a narrow one — a GNOME Adwaita overlay-flap.
+//! Two toolkit drawers (`ui::widget::SidebarDrawer`) frame a conversation
+//! column: the navigation drawer (workspace rail + channel list) and the
+//! detail drawer (people, or the open thread). Each docks beside the
+//! conversation on a wide window and floats over it behind a scrim on a
+//! narrow one.
 //!
 //! ## Calls
 //! Voice controls send typed local commands to the privileged native media
@@ -38,47 +39,52 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
-pub mod actions;
+mod agent_conversation_surface;
+mod agent_tasks;
 pub mod app;
 pub mod body;
 pub mod call;
 pub mod composer;
 pub mod continuity;
-pub mod doc;
+pub mod demo;
 pub mod effects;
 pub mod events;
+mod external;
+pub mod feedback;
 pub mod geometry;
 pub mod i18n;
 pub mod identity;
 pub mod images;
+mod live_context;
 mod local_voice;
 pub mod mention;
 pub mod model;
+mod moderation;
 pub mod paint;
 pub mod permissions;
 pub mod picker;
 pub mod preferences;
+pub mod projection;
+pub mod record;
 pub mod render_call;
 pub mod render_chat;
 pub mod resource;
-pub mod responsive;
 pub mod semantic_read;
+mod shared_resources;
 
 pub use app::ChatApp;
 
 #[cfg(test)]
 mod component_tests;
+#[cfg(test)]
+mod testing;
 
 mod local_view;
 pub use resource::{Chat, ChatShell};

@@ -10,6 +10,8 @@ support remain incomplete. No service or polkit policy is activated here.
 Install the explicit build prerequisites in vendor/README.md, then:
 
 ```
+python3 crates/session/tilo-ntfs-helper/source_artifact.py
+export TILO_NTFS_SOURCE_OFFLINE=1
 python3 crates/session/tilo-ntfs-helper/tests/build_native_fixtures.py --output /tmp/ntfs-new-fixtures
 TILO_NTFS_FIXTURES=/tmp/ntfs-new-fixtures cargo +1.97.1 test -p tilo-ntfs-helper --tests --offline
 cargo +1.97.1 clippy -p tilo-ntfs-helper --all-targets --offline -- -D warnings
@@ -311,13 +313,16 @@ credentials and proves O_RDONLY cannot open the exact root-owned 0711 session
 parent before exercising the client's search-only O_PATH pins.
 
 `tests/test_stage_install.py` extracts two generated staging bundles, compares
-reproducibility and ownership/modes, verifies both standalone pinned manifests,
+reproducibility and ownership/modes, verifies all three standalone pinned manifests,
 resolves their dependencies offline and builds the extracted helper. Set
-TILO_NTFS_STAGING_BINARY to an existing cross-linked Linux ELF and CARGO_TARGET_DIR
-to an isolated output; existing cross-build variables can also select Linux.
+TILO_NTFS_STAGING_BINARY to an existing cross-linked Linux ELF; the extracted
+crate uses its own target directory. Existing cross-build variables can select Linux.
 It never installs the archive or fetches dependencies. The helper stays at
 `source/` and its parser-free source dependency is shipped at sibling
-`tilo-ntfs-protocol/`, matching the path dependency in the standalone manifest.
+`tilo-ntfs-protocol/`. Its framing dependency is shipped at sibling `wire-frame/`
+with its license, matching the standalone path dependencies. The upstream archive
+is included in the bundle; repository builds can prewarm the checksum-pinned
+source cache as described in `vendor/README.md` before going offline.
 
 ### Administrative one-time Copy consumer (production acceptance UNRUN)
 

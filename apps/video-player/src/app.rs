@@ -3,12 +3,21 @@
 //!
 //! `PlayerApp` is the root widget. The video fills the whole surface — there is
 //! **no persistent app chrome bar** (the OS owns window chrome; HIG §1e wants
-//! video immersive). The media title and the Open action float in a top overlay
-//! that appears with the player's controls and auto-hides during playback, so
-//! immersive video is truly edge-to-edge. It opens files through the XDG
-//! `FileChooser` portal (or a path or URL it is launched on), and keeps
-//! playback in step with everyone who has the same video open through the
-//! shared library's transport.
+//! video immersive). Library, the media title and Open float over the picture
+//! in a strip that appears with the player's controls and auto-hides during
+//! playback (`strip`), and the library itself is a sheet over a scrim
+//! (`library`). With no picture the same area says why: nothing is open, a
+//! first frame is coming, or the open failed. It opens files through the XDG
+//! `FileChooser` portal (or `--open PATH`), and — when a collab session is
+//! attached — keeps playback in sync across peers via the shared [`media`]
+//! transport.
+
+mod library;
+mod strip;
+
+use library::{
+    local_library_accessibility_nodes, shared_accessibility_nodes, shared_accessibility_targets,
+};
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -18,8 +27,7 @@ use taffy::style_helpers::percent;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_clock::unix_now_ms;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::icons::Icon;
@@ -29,24 +37,23 @@ use ui::portal::{
     PortalOutcome,
 };
 use ui::presence::PresenceCtx;
-use ui::surface;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::Spacing;
 use ui::widget::video_player::{PlayerSetting, PlayerSettingEvent};
 use ui::widget::{
-    Button, ButtonFace, FloatingSurfaceProvider, FullscreenProvider, VideoPlayer, Widget,
+    Button, ButtonFace, FloatingSurfaceProvider, FullscreenProvider, SidebarDrawer, VideoPlayer,
+    Widget,
 };
 
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LaunchInput, RunMode,
     Setting, SurfaceCx,
 };
-use ui::tilo_resource::ActionDecl;
+use ui::tilo_resource::{ActionDecl, Id};
 
 use crate::actions::VideoEffect;
 use crate::preferences::{PlayerSettings, RecentMedia};
-use crate::resource::VideoPlayer as PlayerResource;
+use crate::shared::{Library as PlayerResource, library as verbs};
 
 /// The playback preferences the player follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,293 +72,6 @@ impl Default for PlaybackPreferences {
     }
 }
 
-/// A `Spacing::BASE` step as the `f64` this painter's geometry uses.
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: `f64::from` is not const; f32 -> f64 is exact"
-)]
-const fn step(px: f32) -> f64 {
-    px as f64
-}
-
-/// Inset of the floating top overlay (media title + Open) from the video
-/// edges: the section-padding step (HIG §7b `s4`).
-const OVERLAY_MARGIN: f64 = step(Spacing::BASE.s4);
-/// Height (logical px) of the floating Open pill at 1× text.
-const OPEN_BTN_H: f64 = 32.0;
-/// Width (logical px) of the floating Open pill at 1× text.
-const OPEN_BTN_W: f64 = 84.0;
-/// Width (logical px) of the floating Library button at 1× text.
-const LIBRARY_BTN_W: f64 = 88.0;
-/// Horizontal room the shared `Button` face keeps around a label
-/// (`Button::measure`, 15 px a side). Only the label part of a capsule's
-/// authored width scales with text; this padding does not.
-const BUTTON_PAD_X: f64 = 30.0;
-/// Vertical room either side of a floating button's label once the label
-/// outgrows [`OPEN_BTN_H`] (accessibility text scale): `s1`.
-const BUTTON_PAD_Y: f64 = step(Spacing::BASE.s1);
-/// Title ↔ Library capsule, and a row's text ↔ its controls: siblings, `s3`.
-const STRIP_TITLE_GAP: f64 = step(Spacing::BASE.s3);
-/// Label size the floating buttons ask the shared `Button` face for, and the
-/// media title's size. Both are renderer-relative: the renderer applies the
-/// text scale and the default `TextStyle` line height.
-const BUTTON_LABEL_SIZE: f32 = 14.0;
-const TITLE_SIZE: f32 = 15.0;
-
-/// Line height the renderer will give `size` at `text_scale` — the default
-/// `TextStyle` leading on the scaled size, not a local copy of that factor.
-fn line_h(size: f32, text_scale: f64) -> f64 {
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "text scale is clamped to 0.5..=4.0 by Theme"
-    )]
-    let scale = text_scale as f32;
-    ui::text_metrics::line_height_px(size, scale)
-}
-
-/// A floating capsule's width: the shared `Button`'s side padding around the
-/// label's **measured** width when the renderer has measured it (`draw`
-/// caches the two labels per text scale — see `StripLabels`), else the
-/// authored 1× width with only its label part scaled, which is what the
-/// first frame at a new scale uses before any measurement exists.
-fn capsule_w(authored_1x: f64, text_scale: f64, measured_label_w: Option<f64>) -> f64 {
-    match measured_label_w {
-        Some(label_w) => (BUTTON_PAD_X + label_w).max(BUTTON_PAD_X),
-        None => BUTTON_PAD_X + (authored_1x - BUTTON_PAD_X) * text_scale,
-    }
-}
-
-/// The two floating capsule labels measured with the frame's renderer, keyed
-/// by the text scale they were measured at. `apply_layout` has a theme but no
-/// renderer, so `draw` measures and caches these and re-places the strip when
-/// the cache changes; the next `apply_layout` then agrees with paint.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct StripLabels {
-    text_scale: f64,
-    library_w: f64,
-    open_w: f64,
-}
-/// One gutter for everything in the library panel — title, subtitle, tabs, row
-/// text on the left; Close/Clear and each row's Play on the right. The
-/// section-padding step (HIG §7b `s4`).
-const PANEL_GUTTER: f64 = step(Spacing::BASE.s4);
-/// Rows extend `PANEL_ROW_INSET` short of the panel edge and inset their
-/// content by the same amount, so row text and row controls land on
-/// [`PANEL_GUTTER`] while the row card still reads as a row (`s2`).
-const PANEL_ROW_INSET: f64 = step(Spacing::BASE.s2);
-
-/// The floating top strip: one description consumed by `apply_layout` (the
-/// Library/Open rects, which hit-testing and the accessibility export read)
-/// and `paint_overlay` (scrim + title).
-///
-/// Every control shares `center_y`; the scrim always contains the buttons.
-/// Heights are the authored 1× values until the measured label line no longer
-/// fits, then grow just enough to contain it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct TopStrip {
-    center_y: f64,
-    button_h: f64,
-    scrim_h: f64,
-}
-
-impl TopStrip {
-    fn at(y0: f64, text_scale: f64) -> Self {
-        let label_line = line_h(BUTTON_LABEL_SIZE, text_scale);
-        let button_h = OPEN_BTN_H.max(label_line + BUTTON_PAD_Y * 2.0);
-        Self {
-            center_y: y0 + OVERLAY_MARGIN + button_h / 2.0,
-            button_h,
-            scrim_h: button_h + OVERLAY_MARGIN * 2.0,
-        }
-    }
-}
-
-/// Library panel type sizes. Renderer-relative like every legacy
-/// `measure`/`draw_text` size (the renderer applies the text scale), used by
-/// both the geometry (to size boxes from the measured line) and the paint.
-const PANEL_TITLE_SIZE: f32 = 18.0;
-const PANEL_SUBTITLE_SIZE: f32 = 12.0;
-const PANEL_HEADER_BUTTON_SIZE: f32 = 12.0;
-const PANEL_TAB_SIZE: f32 = 13.0;
-const PANEL_ROW_TITLE_SIZE: f32 = 14.0;
-const PANEL_ROW_SUBTITLE_SIZE: f32 = 12.0;
-const PANEL_ROW_CONTROL_SIZE: f32 = 11.0;
-/// Authored 1× panel chrome. Each height is a floor: it holds until the
-/// measured label line (plus its padding) needs more, so nothing moves at 1×
-/// and 200% text stops painting through the next line (title over subtitle,
-/// subtitle over tabs, "Remove" over "Play", 1× row pitch under 2× glyphs).
-const PANEL_WIDTH: f64 = 360.0;
-/// One rhythm for the panel (HIG §7b): the header sits a sibling step
-/// (`s3`) under the panel edge, sections are `s3` apart, controls beside
-/// each other are `s2` apart, and list rows — siblings of equal weight —
-/// keep `s3` between their cards so no two rows touch.
-const PANEL_HEADER_TOP: f64 = step(Spacing::BASE.s3);
-const PANEL_HEADER_BUTTON_H: f64 = 28.0;
-const PANEL_CLOSE_W: f64 = 56.0;
-const PANEL_CLEAR_W: f64 = 50.0;
-const PANEL_BUTTON_GAP: f64 = step(Spacing::BASE.s2);
-const PANEL_SECTION_GAP: f64 = step(Spacing::BASE.s3);
-const PANEL_TAB_H: f64 = 30.0;
-const PANEL_QUEUE_TAB_W: f64 = 86.0;
-const PANEL_RECENT_TAB_W: f64 = 92.0;
-const PANEL_ROW_H: f64 = 58.0;
-const PANEL_ROW_GAP: f64 = step(Spacing::BASE.s3);
-const PANEL_ROW_PAD_Y: f64 = step(Spacing::BASE.s2);
-const PANEL_ROW_TITLE_BOX_H: f64 = 21.0;
-const PANEL_CONTROL_H: f64 = 44.0;
-const PANEL_PLAY_W: f64 = 48.0;
-const PANEL_REMOVE_W: f64 = 50.0;
-/// Vertical room either side of a label inside a panel button / tab.
-const PANEL_LABEL_PAD_Y: f64 = step(Spacing::BASE.s1);
-/// The panel subtitle — measured for its wrapped height in the panel gutter.
-const PANEL_SUBTITLE: &str = "Local to this device · paths never shared";
-/// The floating strip's scrim opacity over the media (the authored 90/255).
-/// The scrim itself is the theme's over-media `surfaces.scrim` — the same
-/// token the shared transport bar uses — so both edges of the window agree.
-const STRIP_SCRIM_ALPHA: f32 = 90.0 / 255.0;
-/// Horizontal room a compact panel control keeps around its measured label
-/// (6 px a side) before its authored width has to grow.
-const PANEL_LABEL_PAD_X: f64 = step(Spacing::BASE.s3);
-
-/// The library panel's labels measured with the frame's renderer at one text
-/// scale and panel width. `apply_layout` has a theme but no renderer, so
-/// `paint_library_panel` measures these, caches them and re-places the panel
-/// when they change; until the first paint at a scale the authored widths,
-/// scaled by the text factor, stand in.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct PanelLabels {
-    text_scale: f64,
-    panel_w: f64,
-    close_w: f64,
-    clear_w: f64,
-    queue_w: f64,
-    recent_w: f64,
-    shared_w: f64,
-    remove_w: f64,
-    play_w: f64,
-    /// The subtitle's wrapped height inside the panel gutter.
-    subtitle_h: f64,
-}
-
-/// The library panel's chrome, derived once from the panel rect (and the
-/// text scale / measured labels) so the hit rects set in `apply_layout` and
-/// the faces painted in `paint_library_panel` cannot drift apart.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct LibraryPanelGeometry {
-    title: Rect,
-    subtitle: Rect,
-    close: Rect,
-    clear: Rect,
-    queue_tab: Rect,
-    recent_tab: Rect,
-    shared_tab: Rect,
-    rows_top: f64,
-    /// One row's surface height (authored 58) — the pitch adds `PANEL_ROW_GAP`.
-    row_h: f64,
-    /// The row title's box under `PANEL_ROW_PAD_Y`; the subtitle box follows it.
-    row_title_box_h: f64,
-    /// The Play / Remove capsules, centred in the row.
-    control_h: f64,
-    play_w: f64,
-    remove_w: f64,
-}
-
-impl LibraryPanelGeometry {
-    fn for_panel(panel: Rect, text_scale: f64, labels: Option<PanelLabels>) -> Self {
-        let labels = labels.filter(|l| {
-            (l.text_scale - text_scale).abs() < f64::EPSILON
-                && (l.panel_w - panel.width()).abs() < 0.5
-        });
-        // Authored width, grown to hold a measured label with `pad` around it;
-        // before any measurement the authored width scales with the text.
-        let grown = |authored: f64, measured: Option<f64>, pad: f64| match measured {
-            Some(label_w) => authored.max(label_w + pad),
-            None => authored * text_scale,
-        };
-        let left = panel.x0 + PANEL_GUTTER;
-        let right = panel.x1 - PANEL_GUTTER;
-        let header_y = panel.y0 + PANEL_HEADER_TOP;
-        let header_button_h = PANEL_HEADER_BUTTON_H
-            .max(line_h(PANEL_HEADER_BUTTON_SIZE, text_scale) + PANEL_LABEL_PAD_Y * 2.0);
-        let title_h = PANEL_HEADER_BUTTON_H.max(line_h(PANEL_TITLE_SIZE, text_scale));
-        let header_h = header_button_h.max(title_h);
-        let close_w = grown(PANEL_CLOSE_W, labels.map(|l| l.close_w), PANEL_LABEL_PAD_X);
-        let clear_w = grown(PANEL_CLEAR_W, labels.map(|l| l.clear_w), PANEL_LABEL_PAD_X);
-        let button_y0 = header_y + (header_h - header_button_h) / 2.0;
-        let close = Rect::new(
-            right - close_w,
-            button_y0,
-            right,
-            button_y0 + header_button_h,
-        );
-        let clear = Rect::new(
-            close.x0 - PANEL_BUTTON_GAP - clear_w,
-            button_y0,
-            close.x0 - PANEL_BUTTON_GAP,
-            button_y0 + header_button_h,
-        );
-        // 1×: 38..54 — the measured single line plus 1 px; a wrapped 200%
-        // subtitle pushes the tabs down instead of painting through them.
-        let subtitle_line =
-            labels.map_or_else(|| line_h(PANEL_SUBTITLE_SIZE, text_scale), |l| l.subtitle_h);
-        let subtitle_y0 = header_y + header_h;
-        let subtitle = Rect::new(left, subtitle_y0, right, subtitle_y0 + subtitle_line + 1.0);
-        let tab_h = PANEL_TAB_H.max(line_h(PANEL_TAB_SIZE, text_scale) + PANEL_LABEL_PAD_Y * 2.0);
-        let tabs_y0 = subtitle.y1 + PANEL_SECTION_GAP;
-        let queue_w = grown(PANEL_QUEUE_TAB_W, labels.map(|l| l.queue_w), BUTTON_PAD_X);
-        let recent_w = grown(PANEL_RECENT_TAB_W, labels.map(|l| l.recent_w), BUTTON_PAD_X);
-        let shared_w = grown(PANEL_RECENT_TAB_W, labels.map(|l| l.shared_w), BUTTON_PAD_X);
-        let mut next_x = left;
-        let mut next_y = tabs_y0;
-        let mut tab = |width: f64| {
-            let width = width.min((right - left).max(0.0));
-            if next_x > left && next_x + width > right {
-                next_x = left;
-                next_y += tab_h + PANEL_BUTTON_GAP;
-            }
-            let rect = Rect::new(next_x, next_y, next_x + width, next_y + tab_h);
-            next_x = rect.x1 + PANEL_BUTTON_GAP;
-            rect
-        };
-        let queue_tab = tab(queue_w);
-        let recent_tab = tab(recent_w);
-        let shared_tab = tab(shared_w);
-        // Rows: 8 px, the title box (21 at 1×), the subtitle line, 8 px.
-        let row_title_box_h =
-            PANEL_ROW_TITLE_BOX_H.max(line_h(PANEL_ROW_TITLE_SIZE, text_scale) + 3.5);
-        let row_h = PANEL_ROW_H.max(
-            PANEL_ROW_PAD_Y * 2.0 + row_title_box_h + line_h(PANEL_ROW_SUBTITLE_SIZE, text_scale),
-        );
-        let control_h =
-            PANEL_CONTROL_H.max(line_h(PANEL_ROW_CONTROL_SIZE, text_scale) + PANEL_ROW_PAD_Y * 2.0);
-        Self {
-            // The title ends before the header's leftmost button slot (Clear,
-            // shown on the Recent tab) so it can never run under either button.
-            title: Rect::new(
-                left,
-                header_y,
-                clear.x0 - PANEL_BUTTON_GAP,
-                header_y + header_h,
-            ),
-            subtitle,
-            close,
-            clear,
-            queue_tab,
-            recent_tab,
-            shared_tab,
-            rows_top: shared_tab.y1 + PANEL_SECTION_GAP,
-            row_h,
-            row_title_box_h,
-            control_h,
-            play_w: grown(PANEL_PLAY_W, labels.map(|l| l.play_w), PANEL_LABEL_PAD_X),
-            remove_w: grown(
-                PANEL_REMOVE_W,
-                labels.map(|l| l.remove_w),
-                PANEL_LABEL_PAD_X,
-            ),
-        }
-    }
-}
 /// A decoder open is asynchronous. Do not turn portal/direct admission into a
 /// false successful history entry until a first picture has actually arrived.
 const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
@@ -424,6 +144,15 @@ enum LibraryTab {
     Shared,
 }
 
+/// What the picture area says when the decoder cannot play a video.
+const DECODER_FAILURE: &str = "The decoder could not play this video.";
+
+/// What the authored capture library lists beside its demo clip.
+const DEMO_QUEUE: &[(&str, &str)] = &[
+    ("https://demo.local/market.mp4", "Market morning"),
+    ("https://demo.local/night-train.mp4", "Night train"),
+];
+
 impl LibraryTab {
     /// The tab's name in the show-library effect.
     fn name(self) -> &'static str {
@@ -440,9 +169,6 @@ impl LibraryTab {
             .find(|tab| tab.name() == name)
     }
 }
-
-/// The shared playlist the player's Watch later button adds to.
-const WATCH_LATER: &str = "watch-later";
 
 /// A player for a window built in `mode`: only a window someone uses
 /// decodes with the system's engine and announces itself to the session's
@@ -464,8 +190,10 @@ fn configured_player(mode: RunMode, autoplay: bool, loop_enabled: bool) -> Video
     player
 }
 
+/// The playback speeds the settings menu offers.
+const PLAYBACK_RATES: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0];
+
 fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enabled: bool) {
-    const RATES: [&str; 8] = ["0.25×", "0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×", "4×"];
     // These settings are implemented by this app, so the shared settings
     // popover is never decorative.
     player.set_setting(PlayerSetting::toggle(
@@ -477,28 +205,31 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
     ));
     player.set_setting(PlayerSetting::toggle(
         "loop",
-        Icon::Refresh,
+        Icon::Repeat1,
         "Repeat current video",
         0,
         loop_enabled,
     ));
     let rate = player.engine().map_or(1.0, media::MediaEngine::rate);
-    let selected = [0.25_f32, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0]
+    let selected = PLAYBACK_RATES
         .iter()
         .position(|candidate| (*candidate - rate).abs() < f32::EPSILON)
         .unwrap_or(3);
     player.set_setting(PlayerSetting::choice(
         "playback-rate",
-        Icon::Refresh,
+        Icon::Gauge,
         "Playback speed",
         0,
-        RATES.into_iter().map(str::to_string).collect(),
+        PLAYBACK_RATES
+            .iter()
+            .map(|rate| format!("{rate}×"))
+            .collect(),
         selected,
     ));
     player.set_setting(PlayerSetting::button(
         "picture-in-picture",
         Icon::PictureInPicture2,
-        "Picture in Picture",
+        "Picture in picture",
         0,
     ));
 }
@@ -512,64 +243,6 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
 )]
 fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
     taffy.new_with_children(style, children).unwrap()
-}
-
-/// Shared title/description/tab rhythm for the custom library panel. Text
-/// metrics are expressed in logical pixels and expanded exactly once by the
-/// active accessibility scale, so paint and hit geometry cannot drift.
-fn library_vertical_metrics(scale: f64, description_lines: usize) -> (f64, f64, f64) {
-    let title_top = 10.0;
-    let title_height = 18.0 * scale;
-    let privacy_top = title_top + title_height + 8.0 * scale;
-    let privacy_line_height = 16.0 * scale;
-    let privacy_bottom = privacy_top + privacy_line_height * description_lines as f64;
-    let tabs_top = privacy_bottom + 12.0 * scale;
-    // Tabs remain generous at the default scale too. These are not merely
-    // decorative filters: Queue, Recent and Shared partition different data
-    // ownership models, so they need the same comfortable target as the row
-    // actions below them.
-    let tab_height = if scale > 1.25 { 50.0 } else { 36.0 };
-    let rows_top = tabs_top + tab_height + if scale > 1.25 { 14.0 } else { 12.0 };
-    (privacy_top, tabs_top, rows_top)
-}
-
-/// Paint one line of panel text vertically centred in `rect`, at the weight
-/// the caller asked for.
-///
-/// The centre comes from the line height the renderer reports for this exact
-/// string, size and weight — the same call that will shape the glyphs — so the
-/// text sits where the rect says at every accessibility scale. (The previous
-/// helper offset the top by `size` as a hand-rolled baseline and discarded the
-/// weight, which is why the panel title floated 17 px below its rect and
-/// painted Regular.)
-fn panel_text(
-    scene: &mut Scene,
-    text_renderer: &mut TextRenderer,
-    transform: Affine,
-    rect: Rect,
-    text: &str,
-    size: f32,
-    color: Color,
-    weight: TextWeight,
-) {
-    // Bound to the rect's width so a long line wraps inside the panel instead
-    // of running past its edge (the 360 px panel's empty-state copy did).
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "panel widths are ordinary logical-pixel values"
-    )]
-    let max_width = Some(rect.width().max(0.0) as f32);
-    let (_, text_h) = text_renderer.measure_weighted(text, size, max_width, weight);
-    let y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
-    text_renderer.draw_text_weighted(
-        scene,
-        text,
-        size,
-        color,
-        transform * Affine::translate((rect.x0, y)),
-        max_width,
-        weight,
-    );
 }
 
 fn video_open_request() -> PickRequest {
@@ -662,19 +335,24 @@ pub struct PlayerApp {
     player: VideoPlayer,
     title: String,
     rect: Rect,
-    /// Accessibility text scale captured from the live theme. Only geometry
-    /// containing text expands; the media surface itself remains unscaled.
-    text_scale: f64,
-    /// The floating Open pill's hit rect (top-right of the video). Only live
-    /// while the overlay is shown.
+    /// The Open button's hit rect (top-right of the video). Zero while there
+    /// is nothing open: the empty state owns Open then.
     open_button_rect: Rect,
     library_button_rect: Rect,
-    /// Measured "Library" / "Open" label widths at the current text scale
-    /// (see `StripLabels`); `None` until the first paint at that scale.
-    strip_labels: Option<StripLabels>,
-    /// Measured library-panel labels (see `PanelLabels`); same lifecycle.
-    panel_labels: Option<PanelLabels>,
-    library_panel_rect: Rect,
+    /// The window's History control, held in the top strip: the strip is this
+    /// app's header row, so the window draws no bar above the picture.
+    history: ui::widget::HistoryOpener,
+    /// Where the History control sits in the strip.
+    history_button_rect: Rect,
+    /// The action of the idle or error state over the picture.
+    status_action_rect: Rect,
+    /// The library sheet: a trailing drawer over the video.
+    drawer: SidebarDrawer,
+    /// Where the sheet's lists scroll to, and how far they can.
+    library_scroll: f64,
+    library_max_scroll: f64,
+    /// The area of the sheet its rows live in; rows outside it do not act.
+    library_list_rect: Rect,
     library_queue_tab_rect: Rect,
     library_recent_tab_rect: Rect,
     library_shared_tab_rect: Rect,
@@ -718,7 +396,7 @@ pub struct PlayerApp {
     /// the framework's door, handed over when the surface is attached.
     dispatcher: Option<Dispatcher<PlayerResource>>,
     /// The shared library as last presented.
-    shared_library: crate::shared::SharedLibrary,
+    shared_library: crate::shared::Library,
     /// What the window is built for: only a live one starts a decoder
     /// service, media controls or collaboration.
     mode: RunMode,
@@ -737,6 +415,9 @@ pub struct PlayerApp {
     /// painted in the no-frame state, preserving a successfully playing video
     /// when a later picker request fails.
     open_error: Option<String>,
+    missing_codec: Option<String>,
+    formats_focused: bool,
+    formats_label: String,
     /// Where files have no path: the kept copy (`crate::kept`) of each
     /// queue or recent entry opened by contents, by entry id.
     kept: HashMap<String, String>,
@@ -1013,7 +694,7 @@ impl PlayerApp {
                 .unwrap_or(0);
             self.player.set_setting(PlayerSetting::choice(
                 "audio-track",
-                Icon::Settings,
+                Icon::Headphones,
                 "Audio track",
                 0,
                 audio_tracks
@@ -1034,7 +715,7 @@ impl PlayerApp {
             options.extend(subtitle_tracks.iter().map(|track| track.label.clone()));
             self.player.set_setting(PlayerSetting::choice(
                 "subtitle-track",
-                Icon::Settings,
+                Icon::MessageSquare,
                 "Subtitles",
                 0,
                 options,
@@ -1085,12 +766,15 @@ impl PlayerApp {
             player,
             title: "No media".to_string(),
             rect: Rect::ZERO,
-            text_scale: 1.0,
             open_button_rect: Rect::ZERO,
             library_button_rect: Rect::ZERO,
-            strip_labels: None,
-            panel_labels: None,
-            library_panel_rect: Rect::ZERO,
+            history: ui::widget::HistoryOpener::new(),
+            history_button_rect: Rect::ZERO,
+            status_action_rect: Rect::ZERO,
+            drawer: SidebarDrawer::new().right().closed().overlay_only(),
+            library_scroll: 0.0,
+            library_max_scroll: 0.0,
+            library_list_rect: Rect::ZERO,
             library_queue_tab_rect: Rect::ZERO,
             library_recent_tab_rect: Rect::ZERO,
             library_shared_tab_rect: Rect::ZERO,
@@ -1119,7 +803,7 @@ impl PlayerApp {
             shot_loading: false,
             pending_pip: None,
             dispatcher: None,
-            shared_library: crate::shared::SharedLibrary::default(),
+            shared_library: crate::shared::Library::default(),
             mode,
             capture_awaits: CaptureAwaits::Nothing,
             capture_launched: None,
@@ -1128,6 +812,9 @@ impl PlayerApp {
             source_generation: 0,
             shown_metadata: DecoderMetadata::default(),
             open_error: None,
+            missing_codec: None,
+            formats_focused: false,
+            formats_label: crate::i18n::t("video-formats-title"),
             kept: HashMap::new(),
             kept_retained,
             kept_recall: None,
@@ -1170,21 +857,26 @@ impl PlayerApp {
     pub(crate) fn stage_capture(&mut self, launched: Option<&str>, scenario: Option<&str>) {
         self.stage_shot_source(launched, scenario);
         self.stage_shot_scenario(scenario);
-        if !matches!(scenario, Some("empty" | "error")) {
+        if !matches!(scenario, Some("empty" | "error" | "missing-codec")) {
             self.player.reveal_controls();
         }
     }
 
     /// A player staged as a capture of `scenario` over the demo clip.
     #[cfg(test)]
-    pub(crate) fn for_shot(scenario: Option<&str>) -> Self {
+    pub(crate) fn for_shot_open(launch: Option<&str>, scenario: Option<&str>) -> Self {
         let mut app = Self::new(RunMode::Capture);
-        app.stage_capture(None, scenario);
+        app.stage_capture(launch, scenario);
         app
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_shot(scenario: Option<&str>) -> Self {
+        Self::for_shot_open(None, scenario)
+    }
+
     fn stage_shot_source(&mut self, launched: Option<&str>, scenario: Option<&str>) {
-        if matches!(scenario, Some("empty" | "error")) {
+        if matches!(scenario, Some("empty" | "error" | "missing-codec")) {
             return;
         }
         if let Some(argument) = launched {
@@ -1240,11 +932,17 @@ impl PlayerApp {
 
     fn stage_shot_scenario(&mut self, scenario: Option<&str>) {
         match scenario {
-            Some("error") => {
-                self.open_error = Some(
-                    "The local decoder could not read this video. Check the file and try again."
-                        .into(),
-                );
+            // Nothing opened: the open itself failed.
+            Some("error") => self.fail_playback(),
+            Some("missing-codec") => {
+                self.fail_playback();
+                self.missing_codec = Some("HEVC".into());
+            }
+            // A video opened and the decoder then gave up on it: the title
+            // and the strip stay, the picture is the failure.
+            Some("native-error") => {
+                self.shot_loading = true;
+                self.fail_playback();
             }
             Some("loading") => self.shot_loading = true,
             Some("playing") => self.player.play(),
@@ -1275,12 +973,12 @@ impl PlayerApp {
                     chapters: vec![
                         crate::actions::ChapterState {
                             id: "intro".into(),
-                            label: "Introduction · 0:00".into(),
+                            label: "Introduction".into(),
                             seconds: 0.0,
                         },
                         crate::actions::ChapterState {
                             id: "scene".into(),
-                            label: "Second act · 0:45".into(),
+                            label: "Second act".into(),
                             seconds: 45.0,
                         },
                     ],
@@ -1289,18 +987,32 @@ impl PlayerApp {
                 self.player.open_settings_menu(None);
             }
             Some("library" | "recent" | "library-focus") => {
-                for (url, title) in [
-                    ("https://demo.local/next.mp4", "Second act"),
-                    ("https://demo.local/finale.mp4", "Closing scene"),
-                ] {
-                    self.ensure_queued(media::Source::Remote { url: url.into() }, title.into());
+                for (url, title) in DEMO_QUEUE {
+                    self.ensure_queued(
+                        media::Source::Remote { url: (*url).into() },
+                        (*title).into(),
+                    );
                 }
-                self.recent = self.queue.iter().rev().cloned().collect();
+                // The clip that is playing leads, then what came before it.
+                self.recent = self
+                    .queue
+                    .iter()
+                    .take(1)
+                    .chain(self.queue.iter().skip(1).rev())
+                    .cloned()
+                    .chain(std::iter::once(LocalMediaEntry {
+                        id: "recent-mountain-pass".into(),
+                        title: "Mountain pass".into(),
+                        source: media::Source::Remote {
+                            url: "https://demo.local/mountain.mp4".into(),
+                        },
+                    }))
+                    .collect();
                 self.library_visible = true;
-                self.library_tab = if scenario == Some("recent") {
-                    LibraryTab::Recent
-                } else {
-                    LibraryTab::Queue
+                self.library_tab = match scenario {
+                    Some("recent") => LibraryTab::Recent,
+                    Some("shared") => LibraryTab::Shared,
+                    _ => LibraryTab::Queue,
                 };
                 if scenario == Some("library-focus") {
                     self.library_focus_id = self.queue.get(1).map(|entry| entry.id.clone());
@@ -1316,7 +1028,7 @@ impl PlayerApp {
     }
 
     /// Show the shared library the document holds.
-    pub(crate) fn present_library(&mut self, state: &crate::shared::SharedLibrary) {
+    pub(crate) fn present_library(&mut self, state: &crate::shared::Library) {
         if state != &self.shared_library {
             self.shared_library = state.clone();
             self.dirty = true;
@@ -1392,6 +1104,21 @@ impl PlayerApp {
         &self.player
     }
 
+    /// Whether a decoded picture is currently on the surface. The `--shots`
+    /// path pumps `sync` until this is true so a real (asynchronously prerolled)
+    /// decode is captured, not a blank frame.
+    pub fn has_media_frame(&self) -> bool {
+        self.player.latest_frame().is_some()
+    }
+
+    /// The picture area says the decoder could not play the video. The
+    /// decoder's own wording is for logs and agents; the person is told what
+    /// it means for them, the same way wherever a decode fails.
+    fn fail_playback(&mut self) {
+        self.open_error = Some(DECODER_FAILURE.into());
+        self.dirty = true;
+    }
+
     fn open_path(&mut self, path: &Path) -> Result<(), String> {
         let source = source_for_path(path);
         let title = source_title(&source);
@@ -1450,6 +1177,7 @@ impl PlayerApp {
             queue_id,
         });
         self.open_error = None;
+        self.missing_codec = None;
         self.dirty = true;
     }
 
@@ -1535,6 +1263,7 @@ impl PlayerApp {
         self.cancel_pending_portal("a direct video open replaced the file picker");
         self.fail_open("a newer video open replaced this decoder request".into());
         self.open_error = None;
+        self.missing_codec = None;
         self.title = title;
         self.current_queue_id = queue_id;
         self.player.open(source);
@@ -1668,6 +1397,7 @@ impl PlayerApp {
     }
 
     fn close_media(&mut self) {
+        self.missing_codec = None;
         self.fail_open("video was closed before decoding a first frame".into());
         let player = configured_player(
             self.mode,
@@ -1714,20 +1444,155 @@ impl PlayerApp {
         }
     }
 
+    fn formats_visible(&self) -> bool {
+        self.missing_codec.is_some() && self.open_error.is_some()
+    }
+
+    fn formats_access_index(&self) -> Option<usize> {
+        self.accessibility()?
+            .children
+            .iter()
+            .position(|node| node.action_target.as_deref() == Some("video-player.formats"))
+    }
+
+    fn focus_player_control(&mut self, path: &[usize]) -> bool {
+        match path {
+            [0] => {
+                self.open_focused = true;
+                self.library_focused = false;
+                self.player.reveal_controls();
+                self.dirty = true;
+                true
+            }
+            [1] => {
+                self.library_focused = true;
+                self.open_focused = false;
+                self.player.reveal_controls();
+                self.dirty = true;
+                true
+            }
+            [2] if self.library_visible => {
+                self.library_focus_id = Some("library-close".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [3] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-queue".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [4] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-recent".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [5] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-shared".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                self.library_focus_id = Some("shared-watch-later".into());
+                self.dirty = true;
+                true
+            }
+            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                self.library_focus_id = Some("shared-bookmark".into());
+                self.dirty = true;
+                true
+            }
+            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                let Some((focus, _, _)) = shared_accessibility_targets(self)
+                    .get(index.saturating_sub(8))
+                    .cloned()
+                else {
+                    return false;
+                };
+                self.library_focus_id = Some(focus);
+                self.dirty = true;
+                true
+            }
+            [index] => {
+                let library_index = index.saturating_sub(6);
+                let play_count = self.library_row_hits.len();
+                self.library_focus_id = if let Some(row) = self.library_row_hits.get(library_index)
+                {
+                    Some(row.id.clone())
+                } else if self.library_tab == LibraryTab::Recent
+                    && !self.recent.is_empty()
+                    && library_index == play_count
+                {
+                    Some("library-clear".into())
+                } else {
+                    let remove_index = library_index.saturating_sub(
+                        play_count
+                            + usize::from(
+                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
+                            ),
+                    );
+                    self.library_row_hits
+                        .iter()
+                        .filter_map(|row| row.remove.as_ref().map(|_| row.id.as_str()))
+                        .nth(remove_index)
+                        .map(|id| format!("library-remove-{id}"))
+                };
+                if self.library_focus_id.is_none() {
+                    return false;
+                }
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn request_status_action(&self) {
+        if self.formats_visible() {
+            self.request(&VideoEffect::OpenFormats);
+        } else {
+            self.request_open_action();
+        }
+    }
+
     fn request_open_action(&self) {
-        self.request(&VideoEffect::Open { path: None });
+        self.request(&VideoEffect::OpenVideo { path: None });
     }
 
     fn request_library_play(&self, item_id: &str) {
-        self.request(&VideoEffect::PlayQueued {
-            item: item_id.to_owned(),
-        });
+        let resource = if self.queue.iter().any(|item| item.id == item_id) {
+            crate::actions::queue_item_resource_id(item_id)
+        } else {
+            crate::actions::recent_item_resource_id(item_id)
+        };
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect_on(
+                &resource,
+                &VideoEffect::PlayQueued {
+                    item: item_id.to_owned(),
+                },
+            );
+        }
     }
 
     fn request_library_remove(&self, item_id: &str) {
-        self.request(&VideoEffect::RemoveQueued {
-            item: item_id.to_owned(),
-        });
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect_on(
+                &crate::actions::queue_item_resource_id(item_id),
+                &VideoEffect::RemoveQueued {
+                    item: item_id.to_owned(),
+                },
+            );
+        }
     }
 
     fn request_library_clear(&self) {
@@ -1761,154 +1626,82 @@ impl PlayerApp {
         });
     }
 
-    /// Submit a shared library edit through the framework's door. The
-    /// library shown follows once the document presents the change.
-    fn dispatch_shared(&self, action: &crate::shared::SharedAction) {
+    /// Submit a shared library verb or field edit through the framework's
+    /// door. The library shown follows once the document presents the
+    /// change.
+    fn dispatch_shared(&self, submit: impl ui::framework::Submit<PlayerResource>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(submit);
         }
     }
 
     fn delete_annotation(&self, id: &str) {
-        self.dispatch_shared(&crate::shared::SharedAction::DeleteAnnotation { id: id.into() });
+        self.dispatch_shared(PlayerResource::DELETE_ANNOTATION.with(Id::from_raw(id)));
     }
 
-    /// Delete playlist `id` with the items it held when the user chose to.
+    /// Delete playlist `id` with its videos.
     fn delete_playlist(&self, id: &str) {
-        self.dispatch_shared(&crate::shared::SharedAction::DeletePlaylist {
-            id: id.into(),
-            observed_item_ids: self
-                .shared_library
-                .items
-                .iter()
-                .filter(|item| item.playlist_id == id)
-                .map(|item| item.id.clone())
-                .collect(),
-        });
+        self.dispatch_shared(PlayerResource::DELETE_PLAYLIST.with(Id::from_raw(id)));
     }
 
-    /// The edits that add the open video to the shared Watch later playlist,
-    /// creating the playlist first when it is missing.
-    fn watch_later_actions(&self) -> Vec<crate::shared::SharedAction> {
-        let Some(media_ref) = self.current_media_ref.clone() else {
-            return Vec::new();
-        };
-        let library = &self.shared_library;
-        let playlist_id = WATCH_LATER.to_string();
-        if library
-            .items
-            .iter()
-            .any(|item| item.playlist_id == playlist_id && item.media_ref == media_ref)
-        {
-            return Vec::new();
-        }
-        let mut actions = Vec::new();
-        if !library
-            .playlists
-            .iter()
-            .any(|playlist| playlist.id == playlist_id)
-        {
-            actions.push(crate::shared::SharedAction::CreatePlaylist {
-                id: playlist_id.clone(),
-                name: "Watch later".into(),
-            });
-        }
-        let position = library
-            .items
-            .iter()
-            .filter(|item| item.playlist_id == playlist_id)
-            .map(|item| item.position)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1024);
-        actions.push(crate::shared::SharedAction::AddPlaylistItem {
-            id: format!(
-                "item-{}-{}",
-                crate::actions::identity_token_for_action(&media_ref),
-                unix_now_ms()
-            ),
-            playlist_id,
+    /// The open video, added to the shared Watch later playlist; `None`
+    /// without an open video or when it is already there.
+    fn watch_later(&self) -> Option<verbs::AddToWatchLater> {
+        let media_ref = self.current_media_ref.clone()?;
+        (!self.shared_library.on_watch_later(&media_ref)).then(|| verbs::AddToWatchLater {
             media_ref,
             title: self.title.clone(),
-            position,
-        });
-        actions
+        })
     }
 
     fn add_current_to_watch_later(&self) {
-        let actions = self.watch_later_actions();
-        if let Some(dispatcher) = &self.dispatcher {
-            // Creating the playlist and adding the video is one step.
-            dispatcher.group(|| {
-                for action in &actions {
-                    dispatcher.apply(action);
-                }
-            });
+        if let Some(add) = self.watch_later() {
+            self.dispatch_shared(PlayerResource::ADD_TO_WATCH_LATER.with(add));
         }
     }
 
     /// A bookmark of the moment the player shows, on the open video.
-    fn bookmark_action(&self) -> Option<crate::shared::SharedAction> {
-        let media_ref = self.current_media_ref.clone()?;
-        let time_ms = self.player.position_ms();
-        Some(crate::shared::SharedAction::CreateAnnotation {
-            id: format!(
-                "annotation-{}-{}-{time_ms}",
-                crate::actions::identity_token_for_action(&media_ref),
-                unix_now_ms()
-            ),
-            media_ref,
-            time_ms,
-            text: String::new(),
+    fn bookmark(&self) -> Option<verbs::AddAnnotation> {
+        Some(verbs::AddAnnotation {
+            media_ref: self.current_media_ref.clone()?,
+            time_ms: self.player.position_ms(),
+            text: None,
         })
     }
 
     fn bookmark_current_time(&self) {
-        if let Some(action) = self.bookmark_action() {
-            self.dispatch_shared(&action);
+        if let Some(bookmark) = self.bookmark() {
+            self.dispatch_shared(PlayerResource::ADD_ANNOTATION.with(bookmark));
         }
     }
 
-    /// The shared library edits bound to the playhead, for the palette and
+    /// The shared library verbs bound to the playhead, for the palette and
     /// agents: bookmark the moment shown, add the open video to Watch later.
     pub(crate) fn playhead_declarations(&self) -> Vec<ActionDecl<PlayerResource>> {
-        if self.current_media_ref.is_none() {
+        let Some(bookmark) = self.bookmark() else {
             return Vec::new();
-        }
-        let media_ref = self.current_media_ref.clone().unwrap_or_default();
-        let time_ms = self.player.position_ms();
-        let watch_later = self.watch_later_actions();
-        let mut declarations = vec![
-            ActionDecl::new(
-                "bookmark-current-time",
-                "Bookmark this moment",
-                Vec::new(),
-                move |_, now_ms| {
-                    Ok(crate::shared::SharedAction::CreateAnnotation {
-                        id: format!(
-                            "annotation-{}-{now_ms}-{time_ms}",
-                            crate::actions::identity_token_for_action(&media_ref)
-                        ),
-                        media_ref: media_ref.clone(),
-                        time_ms,
-                        text: String::new(),
-                    })
-                },
-            )
-            .describe("Add a shared bookmark at the playback time shown."),
-        ];
-        // Only the item when the playlist exists; a missing playlist is
-        // created by the button, which submits both as one step.
-        if let [crate::shared::SharedAction::AddPlaylistItem { .. }] = watch_later.as_slice() {
-            let add = watch_later.into_iter().next();
-            declarations.push(
-                ActionDecl::new(
-                    "add-to-watch-later",
-                    "Add to Watch later",
-                    Vec::new(),
-                    move |_, _| add.clone().ok_or_else(|| "nothing to add".to_owned()),
-                )
-                .describe("Add the open video to the shared Watch later playlist."),
+        };
+        let paths = verbs::AddAnnotation::paths();
+        let mut declarations: Vec<ActionDecl<PlayerResource>> = PlayerResource::ADD_ANNOTATION
+            .bind(paths.media_ref, bookmark.media_ref)
+            .and(paths.time_ms, bookmark.time_ms)
+            .declaration("bookmark-current-time", "Bookmark this moment")
+            .into_iter()
+            .map(|decl| decl.describe("Add a shared bookmark at the playback time shown."))
+            .collect();
+        if let Some(add) = self.watch_later() {
+            let paths = verbs::AddToWatchLater::paths();
+            declarations.extend(
+                PlayerResource::ADD_TO_WATCH_LATER
+                    .bind(paths.media_ref, add.media_ref)
+                    .and(paths.title, add.title)
+                    .declaration(
+                        "add-this-video-to-watch-later",
+                        "Add this video to Watch later",
+                    )
+                    .map(|decl| {
+                        decl.describe("Add the open video to the shared Watch later playlist.")
+                    }),
             );
         }
         declarations
@@ -1926,6 +1719,7 @@ impl PlayerApp {
         })?;
         self.portal_generation = generation;
         self.open_error = None;
+        self.missing_codec = None;
         self.portal_open = Some(PendingPortalOpen {
             channel: if tilo_paths::availability(tilo_paths::Feature::NativePaths)
                 == tilo_paths::Availability::Available
@@ -1997,7 +1791,7 @@ impl PlayerApp {
         {
             pending
                 .reply
-                .finish(outcome.map(|()| tilo_actions::ActionOutput::default()));
+                .finish(outcome.map(|()| ui::tilo_actions::ActionOutput::default()));
         }
     }
 
@@ -2019,11 +1813,11 @@ impl PlayerApp {
             return Err("open a video before using this playback control".into());
         }
         match effect {
-            VideoEffect::Open { path: None } => {
+            VideoEffect::OpenVideo { path: None } => {
                 self.trigger_open(Some(cx.reply()))?;
                 Ok(Effected::Pending)
             }
-            VideoEffect::Open { path: Some(path) } => {
+            VideoEffect::OpenVideo { path: Some(path) } => {
                 self.open_named(&path)?;
                 self.await_open_frame(cx.reply());
                 Ok(Effected::Pending)
@@ -2039,6 +1833,7 @@ impl PlayerApp {
 
     /// Open the video `path` names on this device: a file, or a stream's URL.
     fn open_named(&mut self, path: &str) -> Result<(), String> {
+        self.missing_codec = None;
         let source = source_for_argument(path);
         if let media::Source::LocalFile(file) | media::Source::Workspace(file) = &source
             && !file.is_file()
@@ -2057,6 +1852,13 @@ impl PlayerApp {
     /// controls need an open video, and clearing needs a recent one.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
+        if !self.formats_visible() {
+            statuses.push(EffectStatus::unavailable(
+                VideoEffect::OPEN_FORMATS,
+                "no_missing_decoder",
+                crate::i18n::t("video-formats-unavailable"),
+            ));
+        }
         if !self.player.has_media() {
             for effect in [
                 VideoEffect::CLOSE.id,
@@ -2097,8 +1899,14 @@ impl PlayerApp {
     )]
     fn perform(&mut self, effect: VideoEffect) -> Result<(), String> {
         match effect {
-            VideoEffect::Open { path: Some(path) } => self.open_named(&path)?,
-            VideoEffect::Open { path: None } => self.trigger_open(None)?,
+            VideoEffect::OpenFormats => {
+                if !self.formats_visible() {
+                    return Err(crate::i18n::t("video-formats-unavailable"));
+                }
+                ui::portal::open_uri_detached("settings://updates");
+            }
+            VideoEffect::OpenVideo { path: Some(path) } => self.open_named(&path)?,
+            VideoEffect::OpenVideo { path: None } => self.trigger_open(None)?,
             VideoEffect::PlayQueued { item } => self.open_local_entry(&item)?,
             VideoEffect::RemoveQueued { item } => self.remove_queue_entry(&item)?,
             VideoEffect::ClearRecent => self.clear_recent_history()?,
@@ -2148,9 +1956,9 @@ impl PlayerApp {
                 if let Some(engine) = self.player.engine_mut() {
                     engine.set_rate(rate as f32);
                 }
-                let selected = [0.25_f64, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0]
+                let selected = PLAYBACK_RATES
                     .iter()
-                    .position(|candidate| (*candidate - rate).abs() < f64::EPSILON);
+                    .position(|candidate| (f64::from(*candidate) - rate).abs() < f64::EPSILON);
                 if let Some(selected) = selected {
                     self.player.set_choice_selection("playback-rate", selected);
                 }
@@ -2207,8 +2015,7 @@ impl PlayerApp {
                 let time_ms = self
                     .shared_library
                     .annotations
-                    .iter()
-                    .find(|candidate| candidate.id == annotation)
+                    .get(&Id::from_raw(annotation))
                     .ok_or("the review note is gone")?;
                 if self.current_media_ref.as_deref() != Some(time_ms.media_ref.as_str()) {
                     return Err("this review note belongs to a different video".into());
@@ -2371,13 +2178,13 @@ impl PlayerApp {
                 self.dirty = true;
             }
             TogetherStep::Publish(state) if !dispatcher.read_only() => {
-                dispatcher.apply(&crate::shared::SharedAction::SetTransport {
+                dispatcher.submit(PlayerResource::SET_TRANSPORT.with(verbs::SetTransport {
                     media_ref,
                     playing: state.playing,
                     position_ms: state.position_ms,
                     rate: f64::from(state.rate),
                     epoch_ms: state.epoch_ms,
-                });
+                }));
             }
             TogetherStep::Publish(_) | TogetherStep::Stay => {}
         }
@@ -2446,22 +2253,34 @@ impl PlayerApp {
     /// file-open contract and the user-facing error copy.
     fn drain_player_media_events(&mut self) {
         for event in self.player.take_media_events() {
-            match event {
-                media::MediaEvent::Error(message) => {
-                    self.open_error = Some(message.clone());
-                    self.dirty = true;
-                    self.fail_open(message);
-                }
-                media::MediaEvent::Ended => {
-                    // Queue advancement belongs to the app, but remains gated
-                    // on a real engine end event rather than the current
-                    // playhead looking close to its duration.
-                    self.advance_after_engine_end();
-                }
-                media::MediaEvent::Buffering { .. }
-                | media::MediaEvent::Position { .. }
-                | media::MediaEvent::DurationKnown { .. } => {}
+            self.handle_media_event(event);
+        }
+    }
+
+    fn handle_media_event(&mut self, event: media::MediaEvent) {
+        match event {
+            media::MediaEvent::MissingDecoder { codec } => {
+                self.missing_codec = Some(codec);
+                self.dirty = true;
             }
+            media::MediaEvent::Error(message) => {
+                // The decoder's own wording is for logs and agents; the
+                // person is told what it means for them.
+                tracing::warn!(error = %message, "video player: the decoder reported an error");
+                self.fail_playback();
+                if let Some(pending) = self.media_open.take() {
+                    pending.reply.finish(Err(message));
+                }
+            }
+            media::MediaEvent::Ended => {
+                // Queue advancement belongs to the app, but remains gated
+                // on a real engine end event rather than the current
+                // playhead looking close to its duration.
+                self.advance_after_engine_end();
+            }
+            media::MediaEvent::Buffering { .. }
+            | media::MediaEvent::Position { .. }
+            | media::MediaEvent::DurationKnown { .. } => {}
         }
     }
 
@@ -2477,880 +2296,20 @@ impl PlayerApp {
         }
     }
 
-    /// Whether the floating overlay (media title + Open pill) should show this
-    /// frame. It rides the player's own controls visibility, so it auto-hides
-    /// during immersive playback — and it stays up in the empty state (no frame
-    /// decoded yet) so there is always a way to open a file.
-    fn overlay_visible(&self) -> bool {
-        self.player.controls_visible() || self.player.latest_frame().is_none()
-    }
-
-    /// The floating top strip for the current rect and text scale — the single
-    /// geometry `apply_layout`, `paint_overlay` and the a11y exports agree on.
-    fn top_strip(&self) -> TopStrip {
-        TopStrip::at(self.rect.y0, self.text_scale)
-    }
-
-    /// Place the Library and Open capsules on the strip's centre line. The
-    /// **only** writer of `library_button_rect` / `open_button_rect`: called
-    /// from `apply_layout`, and again from `draw` when a fresh label
-    /// measurement changes the capsule widths, so hit-testing, focus, the
-    /// accessibility export and paint always read the same rects.
-    fn place_top_strip(&mut self) {
-        let strip = self.top_strip();
-        let labels = self
-            .strip_labels
-            .filter(|labels| (labels.text_scale - self.text_scale).abs() < f64::EPSILON);
-        let by0 = strip.center_y - strip.button_h / 2.0;
-        let by1 = strip.center_y + strip.button_h / 2.0;
-        let bx1 = self.rect.x1 - OVERLAY_MARGIN;
-        let open_w = capsule_w(OPEN_BTN_W, self.text_scale, labels.map(|l| l.open_w));
-        let bx0 = (bx1 - open_w).max(self.rect.x0);
-        self.open_button_rect = Rect::new(bx0, by0, bx1, by1);
-        let lx0 = self.rect.x0 + OVERLAY_MARGIN;
-        // Never let the Library rect invert on a surface too narrow for both
-        // capsules: it is published to hit-testing, focus and accessibility.
-        let library_w = capsule_w(LIBRARY_BTN_W, self.text_scale, labels.map(|l| l.library_w));
-        let lx1 = (lx0 + library_w).min(bx0 - OVERLAY_MARGIN).max(lx0);
-        self.library_button_rect = Rect::new(lx0, by0, lx1, by1);
-    }
-
-    /// Measure the two capsule labels with the frame's renderer (the one
-    /// `Button::paint` will draw them with) and, if that differs from what
-    /// `apply_layout` placed with, re-place the strip before painting.
-    fn refresh_strip_labels(&mut self, text_renderer: &mut TextRenderer) {
-        let measured = StripLabels {
-            text_scale: self.text_scale,
-            library_w: f64::from(text_renderer.measure("Library", BUTTON_LABEL_SIZE, None).0),
-            open_w: f64::from(text_renderer.measure("Open", BUTTON_LABEL_SIZE, None).0),
-        };
-        if self.strip_labels != Some(measured) {
-            self.strip_labels = Some(measured);
-            self.place_top_strip();
-        }
-    }
-
-    /// Place the library panel and its header controls. The **only** writer
-    /// of the panel rects: `apply_layout` calls it, and `paint_library_panel`
-    /// calls it again when a fresh label measurement changes the geometry.
-    /// The panel's authored 360 px scales with the text so 200% rows keep
-    /// their two-line shape; below 640 px it takes the whole surface.
-    fn place_library_panel(&mut self) -> LibraryPanelGeometry {
-        let panel_width = if self.rect.width() < 640.0 {
-            self.rect.width()
-        } else {
-            (PANEL_WIDTH * self.text_scale).min(self.rect.width())
-        };
-        self.library_panel_rect = Rect::new(
-            self.rect.x1 - panel_width,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        );
-        let panel = LibraryPanelGeometry::for_panel(
-            self.library_panel_rect,
-            self.text_scale,
-            self.panel_labels,
-        );
-        self.library_close_rect = panel.close;
-        self.library_clear_rect = panel.clear;
-        self.library_queue_tab_rect = panel.queue_tab;
-        self.library_recent_tab_rect = panel.recent_tab;
-        self.library_shared_tab_rect = panel.shared_tab;
-        panel
-    }
-
-    /// Measure the panel's labels with the frame's renderer and, if that
-    /// differs from what `apply_layout` placed with, re-place the panel
-    /// before painting so hit rects and faces agree this frame.
-    fn refresh_panel_labels(&mut self, text_renderer: &mut TextRenderer) -> LibraryPanelGeometry {
-        let panel = self.library_panel_rect;
-        let gutter_w = (panel.width() - 2.0 * PANEL_GUTTER).max(0.0) as f32;
-        let width = |tr: &mut TextRenderer, label: &str, size: f32| {
-            f64::from(tr.measure(label, size, None).0)
-        };
-        let measured = PanelLabels {
-            text_scale: self.text_scale,
-            panel_w: panel.width(),
-            close_w: width(text_renderer, "Close", PANEL_HEADER_BUTTON_SIZE),
-            clear_w: width(text_renderer, "Clear", PANEL_HEADER_BUTTON_SIZE),
-            queue_w: width(text_renderer, "Queue", PANEL_TAB_SIZE),
-            recent_w: width(text_renderer, "Recent", PANEL_TAB_SIZE),
-            shared_w: width(text_renderer, "Shared", PANEL_TAB_SIZE),
-            remove_w: width(text_renderer, "Remove", PANEL_ROW_CONTROL_SIZE),
-            play_w: width(text_renderer, "Play", PANEL_ROW_CONTROL_SIZE).max(width(
-                text_renderer,
-                "Replay",
-                PANEL_ROW_CONTROL_SIZE,
-            )),
-            subtitle_h: f64::from(
-                text_renderer
-                    .measure_weighted(
-                        if self.library_tab == LibraryTab::Shared {
-                            "Shared metadata · media access stays on each device"
-                        } else {
-                            PANEL_SUBTITLE
-                        },
-                        PANEL_SUBTITLE_SIZE,
-                        Some(gutter_w),
-                        TextWeight::Regular,
-                    )
-                    .1,
-            ),
-        };
-        // `place_library_panel` is the one geometry writer; re-running it with
-        // unchanged labels writes the same rects, so no second derivation.
-        self.panel_labels = Some(measured);
-        self.place_library_panel()
-    }
-
-    /// Paint the floating top overlay: the media title (left) over a soft scrim
-    /// and the Open pill (right). Drawn on top of the video, only when
-    /// [`Self::overlay_visible`]. There is no persistent chrome bar — the video
-    /// is edge-to-edge (HIG §1e).
-    fn paint_overlay(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let opacity = if self.player.has_media() {
-            self.player.controls_opacity()
-        } else {
-            1.0
-        };
-        if opacity <= 0.0 {
-            return;
-        }
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            opacity,
-            transform,
-            &self.rect,
-        );
-        // A soft translucent scrim behind the title so it stays legible over
-        // bright frames, without a hard opaque bar. Its height comes from the
-        // same strip description that placed the buttons, so it always
-        // contains them (they used to overhang a fixed 44 px scrim by 2 px).
-        let strip = self.top_strip();
-        let scrim = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y0 + strip.scrim_h,
-        );
-        // Over-media scrim from the theme's `surfaces.scrim` token (the shared
-        // transport bar's scrim, so both window edges agree) with ink chosen
-        // against it — it used to be a literal black with a literal
-        // near-white title.
-        let scrim_color = theme.tokens.colors.surfaces.scrim;
-        let on_scrim = theme.on_surface(scrim_color);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            scrim_color.multiply_alpha(STRIP_SCRIM_ALPHA),
-            None,
-            &scrim,
-        );
-        // Title (left), centred on the strip's one centre line — the line the
-        // Library and Open buttons are centred on — using the line height the
-        // renderer reports for this size rather than the font size.
-        let display_title = if self.player.has_media() {
-            self.title.as_str()
-        } else {
-            "Video Player"
-        };
-        let title_x = self.library_button_rect.x1 + STRIP_TITLE_GAP;
-        let title_budget = (self.open_button_rect.x0 - title_x - OVERLAY_MARGIN)
-            .max(0.0)
-            .min(f64::from(f32::MAX)) as f32;
-        let display_title = text_renderer.elide_to_width(display_title, TITLE_SIZE, title_budget);
-        let (_, title_h) = text_renderer.measure(&display_title, TITLE_SIZE, None);
-        let ty = strip.center_y - f64::from(title_h) / 2.0;
-        text_renderer.draw_text(
-            scene,
-            &display_title,
-            TITLE_SIZE,
-            on_scrim.ink,
-            transform * Affine::translate((title_x, ty)),
-            None,
-        );
-        // Library is the shared Button's neutral face: its own raised fill
-        // carries `text_primary`, so it reads on the dark scrim in every
-        // theme (the ghost face drew `text_primary` straight onto the scrim —
-        // near-black on black in light themes).
-        if self.library_button_rect.width() > 0.0 {
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(self.library_button_rect, "Library")
-                    .radius(self.library_button_rect.height() / 2.0)
-                    .text_size(BUTTON_LABEL_SIZE)
-                    .focused(self.library_focused)
-                    .hovered(self.library_button_rect.contains(self.last_cursor)),
-            );
-        }
-        // Open pill (right), a floating rounded accent button — the shared
-        // primary Button face, so it gains hover/press feedback over the video.
+    /// Where Open is: its button over a video, the empty state's action
+    /// without one.
+    fn open_target_rect(&self) -> Rect {
         if self.open_button_rect.width() > 0.0 {
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(self.open_button_rect, "Open")
-                    .radius(self.open_button_rect.height() / 2.0)
-                    .text_size(BUTTON_LABEL_SIZE)
-                    .weight(TextWeight::Regular)
-                    .primary()
-                    .focused(self.open_focused)
-                    .hovered(self.open_button_rect.contains(self.last_cursor)),
-            );
-        }
-        scene.pop_layer();
-    }
-
-    fn paint_media_status_copy(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if (!self.shot_loading && self.player.latest_frame().is_some())
-            || self.rect.height() < 180.0
-        {
-            return;
-        }
-        let center = self.rect.center();
-        let compact_copy = self.text_scale > 1.25 && self.rect.width() < 520.0;
-        let (title, subtitle) = if let Some(error) = &self.open_error {
-            if compact_copy {
-                ("Couldn't open\nvideo", "Check the file, then\ntry again.")
-            } else {
-                ("Couldn't open video", error.as_str())
-            }
-        } else if self.player.has_media() || self.kept_recall.is_some() {
-            ("Loading video…", "Preparing the first frame")
-        } else if compact_copy {
-            ("Open a video\nto start", "MP4, WebM, MKV,\nMOV and AVI")
+            self.open_button_rect
         } else {
-            ("Open a video to start", "MP4, WebM, MKV, MOV and AVI")
-        };
-        let scale = self.text_scale;
-        let copy_width = (self.rect.width() - 32.0).max(0.0) as f32;
-        let title_lines: Vec<_> = title.lines().collect();
-        let subtitle_lines: Vec<_> = subtitle.lines().collect();
-        let title_step = 24.0 * scale;
-        let subtitle_step = 18.0 * scale;
-        let block_h = title_step * title_lines.len() as f64
-            + 10.0 * scale
-            + subtitle_step * subtitle_lines.len() as f64;
-        let mut baseline = if compact_copy && !self.shot_loading {
-            center.y + 92.0
-        } else {
-            center.y - block_h * 0.5 + 20.0 * scale
-        };
-        for line in title_lines {
-            let line = text_renderer.elide_to_width(line, 20.0, copy_width);
-            let (width, _) = text_renderer.measure(&line, 20.0, None);
-            text_renderer.draw_text(
-                scene,
-                &line,
-                20.0,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((center.x - f64::from(width) * 0.5, baseline)),
-                None,
-            );
-            baseline += title_step;
-        }
-        baseline += 10.0 * scale;
-        for line in subtitle_lines {
-            let line = text_renderer.elide_to_width(line, 13.0, copy_width);
-            let (width, _) = text_renderer.measure(&line, 13.0, None);
-            text_renderer.draw_text(
-                scene,
-                &line,
-                13.0,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((center.x - f64::from(width) * 0.5, baseline)),
-                None,
-            );
-            baseline += subtitle_step;
+            self.status_action_rect
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the compact panel paints and records one matching set of interaction geometry"
-    )]
-    fn paint_library_panel(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if !self.library_visible || self.library_panel_rect.width() <= 0.0 {
-            return;
-        }
-        // Same description `apply_layout` used for the hit rects, refreshed
-        // with this frame's label measurements (which re-places the hit rects
-        // too, so both stay one geometry).
-        let geometry = self.refresh_panel_labels(text_renderer);
-        let colors = &theme.tokens.colors;
-        let panel = self.library_panel_rect;
-        let large_text = self.text_scale > 1.25;
-        // A softly distinguished header stops this persistent side panel from
-        // reading as a pile of ungrouped text over the video. It deliberately
-        // uses theme tokens rather than hard-coded dark paint, preserving the
-        // high-contrast palette.
-        let (_, tabs_top, _) =
-            library_vertical_metrics(self.text_scale, if large_text { 2 } else { 1 });
-        fill_rect(scene, transform, panel, colors.surfaces.raised);
-        // The panel's edge against the video derives from its own surface
-        // (HIG §9.5); a declared `border_standard` on `raised` vanished in
-        // the dark preset.
-        fill_rect(
-            scene,
-            transform,
-            Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + tabs_top - 4.0),
-            colors.neutral[1],
-        );
-        fill_rect(
-            scene,
-            transform,
-            Rect::new(panel.x0, panel.y0, panel.x0 + 1.0, panel.y1),
-            surface::edge_on(colors.surfaces.raised),
-        );
-        panel_text(
-            scene,
-            text_renderer,
-            transform,
-            geometry.title,
-            "Library",
-            PANEL_TITLE_SIZE,
-            colors.text_primary,
-            TextWeight::Semibold,
-        );
-        panel_text(
-            scene,
-            text_renderer,
-            transform,
-            geometry.subtitle,
-            if self.library_tab == LibraryTab::Shared {
-                "Shared metadata · media access stays on each device"
-            } else {
-                PANEL_SUBTITLE
-            },
-            PANEL_SUBTITLE_SIZE,
-            colors.text_dim,
-            TextWeight::Regular,
-        );
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(self.library_close_rect, "Close")
-                .ghost()
-                .text_size(PANEL_HEADER_BUTTON_SIZE)
-                .hovered(self.library_close_rect.contains(self.last_cursor)),
-        );
-        if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(self.library_clear_rect, "Clear")
-                    .ghost()
-                    .text_size(PANEL_HEADER_BUTTON_SIZE)
-                    .focused(self.library_focus_id.as_deref() == Some("library-clear"))
-                    .hovered(self.library_clear_rect.contains(self.last_cursor)),
-            );
-        }
-        let queue_active = self.library_tab == LibraryTab::Queue;
-        for (label, rect, active) in [
-            ("Queue", self.library_queue_tab_rect, queue_active),
-            (
-                "Recent",
-                self.library_recent_tab_rect,
-                self.library_tab == LibraryTab::Recent,
-            ),
-            (
-                "Shared",
-                self.library_shared_tab_rect,
-                self.library_tab == LibraryTab::Shared,
-            ),
-        ] {
-            let mut face = ButtonFace::new(rect, label)
-                .ghost()
-                .text_size(PANEL_TAB_SIZE);
-            if active {
-                face = face.primary();
-            }
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &face.hovered(rect.contains(self.last_cursor)),
-            );
-        }
-        self.library_row_hits.clear();
-        if self.library_tab == LibraryTab::Shared {
-            self.paint_shared_library(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                (panel, large_text, geometry.rows_top),
-            );
-            return;
-        }
-        let entries: Vec<LocalMediaEntry> = match self.library_tab {
-            LibraryTab::Queue => self.queue.clone(),
-            LibraryTab::Recent => self.recent.iter().cloned().collect(),
-            LibraryTab::Shared => Vec::new(),
-        };
-        let narrow_large = large_text && panel.width() < 520.0;
-        let row_surface_h = geometry.row_h
-            + if narrow_large {
-                geometry.control_h + PANEL_ROW_PAD_Y
-            } else {
-                0.0
-            };
-        let mut y = geometry.rows_top;
-        let row_h = row_surface_h + PANEL_ROW_GAP;
-        if entries.is_empty() {
-            panel_text(
-                scene,
-                text_renderer,
-                transform,
-                // Tall enough for the wrapped message at any text scale;
-                // `panel_text` centres the wrapped block inside it.
-                Rect::new(
-                    panel.x0 + PANEL_GUTTER,
-                    y,
-                    panel.x1 - PANEL_GUTTER,
-                    (y + 132.0).min(panel.y1 - PANEL_GUTTER),
-                ),
-                if self.library_tab == LibraryTab::Queue {
-                    "Your queue is empty. Open a video to add it here."
-                } else {
-                    "Recently played videos will appear here after a frame is decoded."
-                },
-                13.0,
-                colors.text_dim,
-                TextWeight::Regular,
-            );
-            return;
-        }
-        for entry in entries
-            .into_iter()
-            .take(crate::actions::CONTEXTUAL_CHILD_LIMIT)
-        {
-            if y + row_surface_h > panel.y1 - PANEL_GUTTER {
-                break;
-            }
-            // Row surface inset `PANEL_ROW_INSET`; its text and controls inset
-            // the same again, landing on `PANEL_GUTTER` like the header and tabs.
-            let rect = Rect::new(
-                panel.x0 + PANEL_ROW_INSET,
-                y,
-                panel.x1 - PANEL_ROW_INSET,
-                y + row_surface_h,
-            );
-            let content_x0 = rect.x0 + PANEL_ROW_INSET;
-            let controls_x1 = rect.x1 - PANEL_ROW_INSET;
-            // Play / Remove centred in the row (7 px in at 1×), widths grown
-            // to the measured labels when those need more than the authored.
-            let control_y0 = if narrow_large {
-                rect.y1 - PANEL_ROW_PAD_Y - geometry.control_h
-            } else {
-                rect.y0 + (geometry.row_h - geometry.control_h) / 2.0
-            };
-            let control_y1 = control_y0 + geometry.control_h;
-            let play = Rect::new(
-                controls_x1 - geometry.play_w,
-                control_y0,
-                controls_x1,
-                control_y1,
-            );
-            let remove = (self.library_tab == LibraryTab::Queue).then_some(Rect::new(
-                play.x0 - PANEL_BUTTON_GAP - geometry.remove_w,
-                control_y0,
-                play.x0 - PANEL_BUTTON_GAP,
-                control_y1,
-            ));
-            // Each row is a card on the raised panel: the base surface is a
-            // contrast step down from the panel and carries its own derived
-            // edge, so rows read as rows at rest, not only under the pointer.
-            surface::card(
-                scene,
-                transform,
-                rect,
-                f64::from(theme.tokens.radii.md),
-                if rect.contains(self.last_cursor) {
-                    theme.bg_hover
-                } else {
-                    colors.surfaces.base
-                },
-            );
-            let active = self.current_queue_id.as_deref() == Some(entry.id.as_str());
-            let text_x1 = if narrow_large {
-                controls_x1
-            } else {
-                remove.map_or(play.x0, |remove| remove.x0) - STRIP_TITLE_GAP
-            };
-            // Elide at the weight the label is drawn with (`panel_text` now
-            // honours `Medium`); Regular advances are narrower and would let
-            // a just-fitting title run into the Remove/Play faces.
-            let label = text_renderer.elide_to_width_weighted(
-                &entry.title,
-                PANEL_ROW_TITLE_SIZE,
-                (text_x1 - content_x0).max(0.0) as f32,
-                TextWeight::Medium,
-            );
-            // Title box under the row's top padding, subtitle box beneath it
-            // to the bottom padding — the same boxes `row_h` was sized from.
-            let title_box = Rect::new(
-                content_x0,
-                rect.y0 + PANEL_ROW_PAD_Y,
-                text_x1,
-                rect.y0 + PANEL_ROW_PAD_Y + geometry.row_title_box_h,
-            );
-            panel_text(
-                scene,
-                text_renderer,
-                transform,
-                title_box,
-                &label,
-                PANEL_ROW_TITLE_SIZE,
-                if active {
-                    colors.accent[6]
-                } else {
-                    colors.text_primary
-                },
-                TextWeight::Medium,
-            );
-            panel_text(
-                scene,
-                text_renderer,
-                transform,
-                Rect::new(
-                    content_x0,
-                    title_box.y1,
-                    text_x1,
-                    if narrow_large {
-                        control_y0 - PANEL_ROW_PAD_Y
-                    } else {
-                        rect.y1 - PANEL_ROW_PAD_Y
-                    },
-                ),
-                if active {
-                    "Playing on this device"
-                } else {
-                    "Local video"
-                },
-                PANEL_ROW_SUBTITLE_SIZE,
-                colors.text_dim,
-                TextWeight::Regular,
-            );
-            if let Some(remove) = remove {
-                Button::paint(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    &ButtonFace::new(remove, "Remove")
-                        .ghost()
-                        .text_size(PANEL_ROW_CONTROL_SIZE)
-                        .focused(
-                            self.library_focus_id.as_deref()
-                                == Some(format!("library-remove-{}", entry.id).as_str()),
-                        )
-                        .hovered(remove.contains(self.last_cursor)),
-                );
-            }
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(
-                    play,
-                    if self.library_tab == LibraryTab::Recent {
-                        "Replay"
-                    } else {
-                        "Play"
-                    },
-                )
-                .primary()
-                .text_size(PANEL_ROW_CONTROL_SIZE)
-                .focused(self.library_focus_id.as_deref() == Some(entry.id.as_str()))
-                .hovered(play.contains(self.last_cursor)),
-            );
-            self.library_row_hits.push(LibraryRowHit {
-                id: entry.id,
-                row: rect,
-                play,
-                remove,
-            });
-            y += row_h;
-        }
-    }
-
-    /// Paints the "Watch later" / "Bookmark time" buttons at the top of the
-    /// shared panel and returns their height.
-    fn paint_shared_actions(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        layout: (Rect, bool, f64),
-    ) -> f64 {
-        let (panel, large_text, y) = layout;
-        let gap = 8.0;
-        let action_h = if large_text { 56.0 } else { 38.0 };
-        let action_w = (panel.width() - 24.0 - gap) * 0.5;
-        self.shared_watch_later_rect =
-            Rect::new(panel.x0 + 12.0, y, panel.x0 + 12.0 + action_w, y + action_h);
-        self.shared_bookmark_rect = Rect::new(
-            self.shared_watch_later_rect.x1 + gap,
-            y,
-            panel.x1 - 12.0,
-            y + action_h,
-        );
-        for (rect, label) in [
-            (self.shared_watch_later_rect, "Watch later"),
-            (self.shared_bookmark_rect, "Bookmark time"),
-        ] {
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(rect, label)
-                    .text_size(11.0)
-                    .primary()
-                    .hovered(rect.contains(self.last_cursor)),
-            );
-        }
-        action_h
-    }
-
-    fn paint_shared_library(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        layout: (Rect, bool, f64),
-    ) {
-        let (panel, large_text, y) = layout;
-        let colors = &theme.tokens.colors;
-        let action_h = self.paint_shared_actions(scene, transform, text_renderer, theme, layout);
-        self.shared_row_hits.clear();
-        let mut row_y = y + action_h + 16.0;
-        let row_h = if large_text { 72.0 } else { 48.0 };
-        let remove_w = if large_text { 92.0 } else { 64.0 };
-        for playlist in self
-            .shared_library
-            .playlists
-            .iter()
-            .take(crate::actions::CONTEXTUAL_CHILD_LIMIT)
-        {
-            if row_y + row_h > panel.y1 - 12.0 {
-                break;
-            }
-            let remove = Rect::new(
-                panel.x1 - 12.0 - remove_w,
-                row_y + 4.0,
-                panel.x1 - 12.0,
-                row_y + row_h - 4.0,
-            );
-            let row = Rect::new(panel.x0 + 12.0, row_y, panel.x1 - 12.0, row_y + row_h);
-            // Shared entries must retain a visible grouping boundary in every
-            // theme, particularly high contrast where an unfilled text row
-            // reads as sparse decoration rather than an actionable item.
-            fill_rect(scene, transform, row, colors.surfaces.base);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                colors.border_standard,
-                None,
-                &row,
-            );
-            panel_text(
-                scene,
-                text_renderer,
-                transform,
-                Rect::new(
-                    panel.x0 + 18.0,
-                    row_y + 4.0,
-                    remove.x0 - 8.0,
-                    row_y + row_h - 4.0,
-                ),
-                &playlist.name,
-                13.0,
-                colors.text_primary,
-                TextWeight::Regular,
-            );
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(remove, "Delete")
-                    .ghost()
-                    .text_size(11.0)
-                    .hovered(remove.contains(self.last_cursor)),
-            );
-            self.shared_row_hits.push(SharedRowHit {
-                id: playlist.id.clone(),
-                jump: None,
-                remove,
-                annotation: false,
-            });
-            row_y += row_h;
-        }
-        self.paint_shared_annotations(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            (panel, row_h, remove_w, &mut row_y),
-        );
-        if self.shared_library.playlists.is_empty() && self.shared_library.annotations.is_empty() {
-            panel_text(
-                scene,
-                text_renderer,
-                transform,
-                Rect::new(panel.x0 + 20.0, row_y, panel.x1 - 20.0, row_y + row_h),
-                "Shared playlists and timestamp notes appear here.",
-                12.0,
-                colors.text_dim,
-                TextWeight::Regular,
-            );
-        }
-    }
-
-    fn paint_shared_annotations(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        layout: (Rect, f64, f64, &mut f64),
-    ) {
-        let (panel, row_h, remove_w, row_y) = layout;
-        for annotation in self
-            .shared_library
-            .annotations
-            .iter()
-            .take(crate::actions::CONTEXTUAL_CHILD_LIMIT)
-        {
-            if *row_y + row_h > panel.y1 - 12.0 {
-                break;
-            }
-            let remove = Rect::new(
-                panel.x1 - 12.0 - remove_w,
-                *row_y + 4.0,
-                panel.x1 - 12.0,
-                *row_y + row_h - 4.0,
-            );
-            let matching_media = self.player.has_media()
-                && self.current_media_ref.as_deref() == Some(annotation.media_ref.as_str());
-            let jump = matching_media.then_some(Rect::new(
-                remove.x0 - 6.0 - remove_w,
-                *row_y + 4.0,
-                remove.x0 - 6.0,
-                *row_y + row_h - 4.0,
-            ));
-            let text = shared_annotation_label(annotation);
-            let row = Rect::new(panel.x0 + 12.0, *row_y, panel.x1 - 12.0, *row_y + row_h);
-            fill_rect(scene, transform, row, theme.tokens.colors.surfaces.base);
-            // Keep the grouping visible even on renderers whose hairline
-            // rectangle stroke lands between device pixels at scaled output.
-            fill_rect(
-                scene,
-                transform,
-                Rect::new(row.x0, row.y0, row.x1, row.y0 + 1.0),
-                theme.tokens.colors.border_standard,
-            );
-            fill_rect(
-                scene,
-                transform,
-                Rect::new(row.x0, row.y1 - 1.0, row.x1, row.y1),
-                theme.tokens.colors.border_standard,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &row,
-            );
-            panel_text(
-                scene,
-                text_renderer,
-                transform,
-                Rect::new(
-                    panel.x0 + 18.0,
-                    *row_y + 4.0,
-                    jump.map_or(remove.x0, |jump| jump.x0) - 8.0,
-                    *row_y + row_h - 4.0,
-                ),
-                &text,
-                12.0,
-                theme.tokens.colors.text_primary,
-                TextWeight::Regular,
-            );
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(remove, "Delete")
-                    .ghost()
-                    .text_size(11.0)
-                    .hovered(remove.contains(self.last_cursor)),
-            );
-            if let Some(jump) = jump {
-                Button::paint(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    &ButtonFace::new(jump, "Jump")
-                        .primary()
-                        .text_size(11.0)
-                        .focused(
-                            self.library_focus_id.as_deref()
-                                == Some(format!("shared-jump-{}", annotation.id).as_str()),
-                        )
-                        .hovered(jump.contains(self.last_cursor)),
-                );
-            }
-            self.shared_row_hits.push(SharedRowHit {
-                id: annotation.id.clone(),
-                jump,
-                remove,
-                annotation: true,
-            });
-            *row_y += row_h;
-        }
-    }
-
-    fn handle_app_pointer(&mut self) -> bool {
-        if self.library_visible && self.library_panel_rect.contains(self.last_cursor) {
+    fn handle_app_pointer(&mut self, _state: &mut ui::widget::Edits<'_>) -> bool {
+        self.drawer.resolve(self.rect);
+        let in_list = self.library_list_rect.contains(self.last_cursor);
+        if self.library_visible && self.drawer.sidebar_contains(self.last_cursor) {
             if self.library_close_rect.contains(self.last_cursor) {
                 self.request_library_hide();
             } else if self.library_queue_tab_rect.contains(self.last_cursor) {
@@ -3368,6 +2327,7 @@ impl PlayerApp {
             {
                 self.bookmark_current_time();
             } else if self.library_tab == LibraryTab::Shared
+                && in_list
                 && let Some(row) = self
                     .shared_row_hits
                     .iter()
@@ -3376,6 +2336,7 @@ impl PlayerApp {
             {
                 self.request_annotation_jump(&row.id);
             } else if self.library_tab == LibraryTab::Shared
+                && in_list
                 && let Some(row) = self
                     .shared_row_hits
                     .iter()
@@ -3391,11 +2352,12 @@ impl PlayerApp {
                 && self.library_clear_rect.contains(self.last_cursor)
             {
                 self.request_library_clear();
-            } else if let Some(row) = self
-                .library_row_hits
-                .iter()
-                .find(|row| row.row.contains(self.last_cursor))
-                .cloned()
+            } else if in_list
+                && let Some(row) = self
+                    .library_row_hits
+                    .iter()
+                    .find(|row| row.row.contains(self.last_cursor))
+                    .cloned()
             {
                 if row
                     .remove
@@ -3407,6 +2369,10 @@ impl PlayerApp {
                 }
             }
             self.dirty = true;
+            return true;
+        }
+        if self.status_action_rect.contains(self.last_cursor) {
+            self.request_status_action();
             return true;
         }
         if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
@@ -3474,151 +2440,10 @@ impl PlayerApp {
     }
 }
 
-/// The row label for a shared timestamp note: its text (or "Bookmark") and
-/// the position in seconds.
-fn shared_annotation_label(annotation: &crate::shared::TimestampAnnotation) -> String {
-    if annotation.text.is_empty() {
-        format!("Bookmark · {:.1}s", annotation.time_ms as f64 / 1000.0)
-    } else {
-        format!(
-            "{} · {:.1}s",
-            annotation.text,
-            annotation.time_ms as f64 / 1000.0
-        )
+impl Default for PlayerApp {
+    fn default() -> Self {
+        Self::new(RunMode::Live)
     }
-}
-
-fn shared_accessibility_targets(app: &PlayerApp) -> Vec<(String, String, Rect)> {
-    let mut targets = Vec::new();
-    for row in &app.shared_row_hits {
-        if row.annotation {
-            if let Some(jump) = row.jump {
-                targets.push((
-                    format!("shared-jump-{}", row.id),
-                    format!("video-player.shared.jump.annotation.{}", row.id),
-                    jump,
-                ));
-            }
-            targets.push((
-                format!("shared-delete-{}", row.id),
-                format!("video-player.shared.delete.annotation.{}", row.id),
-                row.remove,
-            ));
-        } else {
-            targets.push((
-                format!("shared-delete-{}", row.id),
-                format!("video-player.shared.delete.playlist.{}", row.id),
-                row.remove,
-            ));
-        }
-    }
-    targets
-}
-
-fn shared_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::AccessNode> {
-    use ui::a11y::{AccessNode, AccessState, Role};
-    let mut nodes = vec![
-        AccessNode::new(Role::Button)
-            .with_name("Add current video to Watch later")
-            .with_action_target("video-player.shared.watch-later")
-            .with_bounds(app.shared_watch_later_rect)
-            .with_state(AccessState {
-                focusable: true,
-                focused: app.library_focus_id.as_deref() == Some("shared-watch-later"),
-                disabled: !app.player.has_media(),
-                ..Default::default()
-            }),
-        AccessNode::new(Role::Button)
-            .with_name("Bookmark current timestamp")
-            .with_action_target("video-player.shared.bookmark")
-            .with_bounds(app.shared_bookmark_rect)
-            .with_state(AccessState {
-                focusable: true,
-                focused: app.library_focus_id.as_deref() == Some("shared-bookmark"),
-                disabled: !app.player.has_media(),
-                ..Default::default()
-            }),
-    ];
-    nodes.extend(
-        shared_accessibility_targets(app)
-            .into_iter()
-            .map(|(focus, target, rect)| {
-                let is_jump = focus.starts_with("shared-jump-");
-                AccessNode::new(Role::Button)
-                    .with_name(if is_jump {
-                        "Jump to timestamp annotation"
-                    } else if target.contains(".annotation.") {
-                        "Delete timestamp annotation"
-                    } else {
-                        "Delete shared playlist"
-                    })
-                    .with_action_target(target)
-                    .with_bounds(rect)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: app.library_focus_id.as_deref() == Some(focus.as_str()),
-                        ..Default::default()
-                    })
-            }),
-    );
-    nodes
-}
-
-fn local_library_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::AccessNode> {
-    use ui::a11y::{AccessNode, AccessState, Role};
-    let mut nodes: Vec<_> = app
-        .library_row_hits
-        .iter()
-        .map(|row| {
-            let id = &row.id;
-            let title = app
-                .queue
-                .iter()
-                .chain(app.recent.iter())
-                .find(|entry| entry.id == *id)
-                .map_or("Local video", |entry| entry.title.as_str());
-            AccessNode::new(Role::Button)
-                .with_name(format!("Play {title}"))
-                .with_description("Opens this device-local video")
-                .with_action_target(format!("video-player.library.play.{id}"))
-                .with_bounds(row.play)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: app.library_focus_id.as_deref() == Some(id.as_str()),
-                    ..Default::default()
-                })
-        })
-        .collect();
-    if app.library_tab == LibraryTab::Recent && !app.recent.is_empty() {
-        nodes.push(
-            AccessNode::new(Role::Button)
-                .with_name("Clear recent videos")
-                .with_description("Removes recent-history entries from this device")
-                .with_action_target("video-player.library.clear")
-                .with_bounds(app.library_clear_rect)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: app.library_focus_id.as_deref() == Some("library-clear"),
-                    ..Default::default()
-                }),
-        );
-    }
-    nodes.extend(app.library_row_hits.iter().filter_map(|row| {
-        row.remove.map(|remove| {
-            AccessNode::new(Role::Button)
-                .with_name("Remove from queue")
-                .with_description("Removes this item from the session-only queue")
-                .with_action_target(format!("video-player.library.remove.{}", row.id))
-                .with_bounds(remove)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: app.library_focus_id.as_deref()
-                        == Some(format!("library-remove-{}", row.id).as_str()),
-                    ..Default::default()
-                })
-        })
-    }));
-    nodes
 }
 
 impl FloatingSurfaceProvider for PlayerApp {
@@ -3644,9 +2469,19 @@ impl FullscreenProvider for PlayerApp {
 }
 
 impl Widget for PlayerApp {
+    fn has_pending_visual_work(&self) -> bool {
+        self.capture_pending()
+            || self
+                .children()
+                .iter()
+                .any(|child| child.has_pending_visual_work())
+    }
+
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls,
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -3668,11 +2503,10 @@ impl Widget for PlayerApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.text_scale = f64::from(theme.text_scale);
+        self.drawer.scale_for(theme);
         // Edge-to-edge: the player fills the whole surface. The app keeps itself
         // in the node map (so it can intercept the floating Open pill) by owning
         // a single-child root that stretches the player to 100%×100%.
-        self.text_scale = f64::from(theme.text_scale);
         let player_node = self.player.build_layout(taffy, theme, node_map);
         let root = parent_node(
             taffy,
@@ -3688,19 +2522,12 @@ impl Widget for PlayerApp {
             &[player_node],
         );
         node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
+        self.history.tree_rebuilt();
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         let Ok(children) = taffy.children(node) else {
             return;
@@ -3710,10 +2537,7 @@ impl Widget for PlayerApp {
             return;
         };
         self.player.apply_layout(taffy, player_node, new_origin);
-        // Floating top strip — Library (left), title, Open pill (right) — all
-        // centred on one line and contained by one scrim (see `TopStrip`).
-        self.place_top_strip();
-        self.place_library_panel();
+        self.drawer.resolve(self.rect);
     }
 
     fn draw(
@@ -3724,19 +2548,17 @@ impl Widget for PlayerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.player
-            .draw(scene, transform, text_renderer, theme, presence);
+        self.sync_library_sheet();
+        self.drawer.tick(theme);
         if self.shot_loading {
-            fill_rect(
-                scene,
-                transform,
-                self.rect,
-                theme.tokens.colors.surfaces.base,
-            );
+            self.paint_letterbox(scene, transform, theme);
+        } else {
+            self.player
+                .draw(scene, transform, text_renderer, theme, presence);
         }
-        self.paint_media_status_copy(scene, transform, text_renderer, theme);
+        self.paint_media_status(scene, transform, text_renderer, theme);
+        self.place_top_strip(text_renderer, theme);
         if self.overlay_visible() {
-            self.refresh_strip_labels(text_renderer);
             self.paint_overlay(scene, transform, text_renderer, theme);
         }
         self.paint_library_panel(scene, transform, text_renderer, theme);
@@ -3747,13 +2569,60 @@ impl Widget for PlayerApp {
             self.last_cursor =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
+        let history_hovered = self.history.is_hovered();
+        // The library paints above the strip and its scrim owns background
+        // input. In particular its Close face overlaps the trailing History
+        // face, so that covered control must not consume the library click.
+        let history_rect = if self.overlay_visible() && !self.library_visible {
+            self.history_button_rect
+        } else {
+            Rect::ZERO
+        };
+        if self
+            .history
+            .handle_event(event, history_rect, ctx.scale_factor)
+        {
+            *ctx.handled = true;
+            self.dirty = true;
+            return;
+        }
+        self.dirty |= history_hovered != self.history.is_hovered();
+        // The library drawer reads its own dismissals (a press on the scrim,
+        // Escape); the library's hide action is what closes it, so the
+        // drawer stays open until that action lands.
+        self.drawer.resolve(self.rect);
+        let drawer_open = self.drawer.is_open();
+        if self.drawer.handle_event(event, ctx) {
+            if drawer_open && !self.drawer.is_open() {
+                self.drawer.open();
+                self.request_library_hide();
+            }
+            self.dirty = true;
+            *ctx.handled = true;
+            return;
+        }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
         } = event
-            && self.handle_app_pointer()
+            && self.handle_app_pointer(&mut ctx.state)
         {
+            *ctx.handled = true;
+            return;
+        }
+        if let WindowEvent::MouseWheel { delta, .. } = event
+            && self.library_visible
+            && self.drawer.sidebar_contains(self.last_cursor)
+        {
+            let step = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, lines) => {
+                    f64::from(*lines) * self.library_list_rect.width() / 8.0
+                }
+                winit::event::MouseScrollDelta::PixelDelta(pixels) => pixels.y / ctx.scale_factor,
+            };
+            self.library_scroll = (self.library_scroll - step).clamp(0.0, self.library_max_scroll);
+            self.dirty = true;
             *ctx.handled = true;
             return;
         }
@@ -3773,12 +2642,23 @@ impl Widget for PlayerApp {
         }
     }
 
+    /// The player, and the window's History control at its place in the
+    /// strip, so it is addressable like any control; the strip paints it
+    /// and routes its pointer through the opener.
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.player as &dyn Widget]
+        let mut children = vec![&self.player as &dyn Widget];
+        if let Some(history) = self.history.button() {
+            children.push(history);
+        }
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.player as &mut (dyn Widget + '_)]
+        let mut children = vec![&mut self.player as &mut (dyn Widget + '_)];
+        if let Some(history) = self.history.button_mut() {
+            children.push(history);
+        }
+        children
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -3788,7 +2668,7 @@ impl Widget for PlayerApp {
                 .with_name("Open video")
                 .with_description("Ctrl+O")
                 .with_action_target("video-player.open")
-                .with_bounds(self.open_button_rect)
+                .with_bounds(self.open_target_rect())
                 .with_state(AccessState {
                     focusable: true,
                     focused: self.open_focused,
@@ -3858,6 +2738,20 @@ impl Widget for PlayerApp {
             }
             children.extend(local_library_accessibility_nodes(self));
         }
+        children.extend(self.history.accessibility(self.history_button_rect));
+        if self.formats_visible() && self.status_action_rect.width() > 0.0 {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(self.formats_label.clone())
+                    .with_action_target("video-player.formats")
+                    .with_bounds(self.status_action_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.formats_focused,
+                        ..Default::default()
+                    }),
+            );
+        }
         Some(
             AccessNode::new(Role::Group)
                 .with_name(if self.player.has_media() {
@@ -3870,8 +2764,13 @@ impl Widget for PlayerApp {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        if let [index] = path
+            && self.formats_access_index() == Some(*index)
+        {
+            return Some(self.status_action_rect);
+        }
         match path {
-            [0] => Some(self.open_button_rect),
+            [0] => Some(self.open_target_rect()),
             [1] => Some(self.library_button_rect),
             [2] if self.library_visible => Some(self.library_close_rect),
             [3] if self.library_visible => Some(self.library_queue_tab_rect),
@@ -3916,104 +2815,17 @@ impl Widget for PlayerApp {
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        match path {
-            [0] => {
-                self.open_focused = true;
-                self.library_focused = false;
-                self.player.reveal_controls();
-                self.dirty = true;
-                true
-            }
-            [1] => {
-                self.library_focused = true;
-                self.open_focused = false;
-                self.player.reveal_controls();
-                self.dirty = true;
-                true
-            }
-            [2] if self.library_visible => {
-                self.library_focus_id = Some("library-close".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [3] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-queue".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [4] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-recent".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [5] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-shared".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                self.library_focus_id = Some("shared-watch-later".into());
-                self.dirty = true;
-                true
-            }
-            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                self.library_focus_id = Some("shared-bookmark".into());
-                self.dirty = true;
-                true
-            }
-            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                let Some((focus, _, _)) = shared_accessibility_targets(self)
-                    .get(index.saturating_sub(8))
-                    .cloned()
-                else {
-                    return false;
-                };
-                self.library_focus_id = Some(focus);
-                self.dirty = true;
-                true
-            }
-            [index] => {
-                let library_index = index.saturating_sub(6);
-                let play_count = self.library_row_hits.len();
-                self.library_focus_id = if let Some(row) = self.library_row_hits.get(library_index)
-                {
-                    Some(row.id.clone())
-                } else if self.library_tab == LibraryTab::Recent
-                    && !self.recent.is_empty()
-                    && library_index == play_count
-                {
-                    Some("library-clear".into())
-                } else {
-                    let remove_index = library_index.saturating_sub(
-                        play_count
-                            + usize::from(
-                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
-                            ),
-                    );
-                    self.library_row_hits
-                        .iter()
-                        .filter_map(|row| row.remove.as_ref().map(|_| row.id.as_str()))
-                        .nth(remove_index)
-                        .map(|id| format!("library-remove-{id}"))
-                };
-                if self.library_focus_id.is_none() {
-                    return false;
-                }
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            _ => false,
+        if let [index] = path
+            && self.formats_access_index() == Some(*index)
+        {
+            self.formats_focused = true;
+            self.open_focused = false;
+            self.library_focused = false;
+            self.dirty = true;
+            return true;
         }
+        self.formats_focused = false;
+        self.focus_player_control(path)
     }
 
     fn perform_semantic_action(
@@ -4023,7 +2835,12 @@ impl Widget for PlayerApp {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
+        if target == "video-player.formats" && matches!(action, ui::a11y::Action::Activate) {
+            self.request(&VideoEffect::OpenFormats);
+            true
+        } else if self.history.perform_semantic_action(target, action) {
+            true
+        } else if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
             self.request_open_action();
             true
         } else if target == "video-player.library" && matches!(action, ui::a11y::Action::Activate) {
@@ -4095,7 +2912,12 @@ impl Widget for PlayerApp {
     }
 
     fn tooltip(&self) -> Option<&str> {
-        if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
+        if self.formats_visible() && self.status_action_rect.contains(self.last_cursor) {
+            return Some(self.formats_label.as_str());
+        }
+        if (self.overlay_visible() && self.open_button_rect.contains(self.last_cursor))
+            || self.status_action_rect.contains(self.last_cursor)
+        {
             Some("Open video (Ctrl+O)")
         } else if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
             Some(if self.library_visible {
@@ -4166,6 +2988,10 @@ impl Widget for PlayerApp {
         "PlayerApp"
     }
 
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -4187,19 +3013,137 @@ impl Widget for PlayerApp {
         // Playback and the portal are the only frame-rate work; a paused
         // player wakes for a peer's change when the document presents it.
         self.player.needs_animation_frame()
+            || self.drawer.is_animating()
             || self.portal_open.is_some()
             || self.media_open.is_some()
     }
 
-    fn has_pending_visual_work(&self) -> bool {
-        self.player.has_pending_visual_work() || self.capture_pending()
+    fn needs_idle_sync(&self) -> bool {
+        self.mode == RunMode::Live && self.current_media_ref.is_some()
     }
 }
 
+/// The top strip is the window's header row: it holds the History control
+/// the host offers, over the picture, hiding with the other controls.
+impl ui::widget::controls::ActionControls for PlayerApp {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.history.take()
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        ui::widget::semantic_action_bindings(self.accessibility())
+    }
+}
+
+impl ui::widget::WindowHeader for PlayerApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+            self.dirty = true;
+        }
+    }
+}
+
+impl PlayerApp {}
+
 #[cfg(test)]
 mod tests {
+    use super::strip::TopStrip;
     use super::*;
     use ui::headless::Framed;
+
+    #[test]
+    fn a_missing_decoder_exposes_one_formats_action_and_clears_on_a_new_open() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut app = PlayerApp::new(RunMode::Capture);
+            app.handle_media_event(media::MediaEvent::MissingDecoder {
+                codec: "HEVC".into(),
+            });
+            assert!(
+                !app.formats_visible(),
+                "the decoder has not reported failure yet"
+            );
+            app.handle_media_event(media::MediaEvent::Error("decoder missing".into()));
+            let mut framed = Framed::new(
+                ui::State::new(),
+                app,
+                ui::headless::viewport((960.0, 640.0)),
+                theme,
+            );
+            assert!(
+                framed.open_button_rect.width() > 0.0,
+                "another video stays reachable"
+            );
+            let open = framed.open_button_rect;
+            let formats = framed.status_action_rect;
+            assert!(
+                open.x1 <= formats.x0
+                    || formats.x1 <= open.x0
+                    || open.y1 <= formats.y0
+                    || formats.y1 <= open.y0,
+                "Open and the formats remedy have distinct painted targets"
+            );
+            let root = framed.accessibility().expect("player accessibility");
+            let offers: Vec<_> = root
+                .children
+                .iter()
+                .filter(|node| node.action_target.as_deref() == Some("video-player.formats"))
+                .collect();
+            assert_eq!(offers.len(), 1, "one visible decoder remedy");
+            assert_eq!(
+                offers[0].name.as_deref(),
+                Some("Play more video and audio formats")
+            );
+            assert!(
+                framed.status_action_rect.width() > 0.0 && framed.status_action_rect.height() > 0.0
+            );
+            assert!(framed.effect_statuses().iter().all(|status| *status
+                != EffectStatus::unavailable(
+                    VideoEffect::OPEN_FORMATS,
+                    "no_missing_decoder",
+                    crate::i18n::t("video-formats-unavailable")
+                )));
+            let index = framed
+                .formats_access_index()
+                .expect("the formats control is addressable");
+            assert!(framed.focus_synthetic_accessibility(&[index]));
+            assert!(framed.formats_focused);
+            assert!(!framed.open_focused, "Formats focus excludes Open focus");
+            assert!(
+                framed.focus_synthetic_accessibility(&[0]),
+                "the original Open accessibility target keeps its index"
+            );
+            assert!(
+                framed.open_focused && !framed.formats_focused,
+                "returning to Open clears Formats focus"
+            );
+            let tree = framed
+                .accessibility()
+                .expect("focused player accessibility");
+            assert_eq!(
+                tree.children[0].action_target.as_deref(),
+                Some("video-player.open")
+            );
+            assert!(tree.children[0].state.focused);
+            assert!(!tree.children[index].state.focused);
+            assert_eq!(
+                framed.synthetic_accessibility_rect(&[index]),
+                Some(framed.status_action_rect)
+            );
+            framed
+                .open_named("/tilo-test-absent-video.mp4")
+                .expect_err("a new failed file open");
+            assert!(
+                !framed.formats_visible(),
+                "the prior decoder does not describe the new file"
+            );
+            assert!(framed.effect_statuses().iter().any(|status| *status
+                == EffectStatus::unavailable(
+                    VideoEffect::OPEN_FORMATS,
+                    "no_missing_decoder",
+                    crate::i18n::t("video-formats-unavailable")
+                )));
+        }
+    }
 
     #[test]
     fn opening_sources_sets_identity_without_exposing_paths() {
@@ -4387,23 +3331,24 @@ mod tests {
             app.open_path(Path::new("/tmp/review-cut.mp4"))
                 .expect("source identity");
             let media_ref = app.current_media_ref.clone().expect("durable media ref");
-            app.present_library(&crate::shared::SharedLibrary {
-                annotations: vec![
-                    crate::shared::TimestampAnnotation {
-                        id: "review-marker".into(),
-                        media_ref,
-                        time_ms: 12_500,
-                        text: "Tighten this cut".into(),
-                    },
-                    crate::shared::TimestampAnnotation {
-                        id: "elsewhere".into(),
-                        media_ref: "another-video".into(),
-                        time_ms: 30_000,
-                        text: String::new(),
-                    },
-                ],
-                ..crate::shared::SharedLibrary::default()
-            });
+            let mut library = crate::shared::Library::default();
+            library.annotations.push(
+                Id::from_raw("review-marker"),
+                crate::shared::TimestampAnnotation {
+                    media_ref,
+                    time_ms: 12_500,
+                    text: "Tighten this cut".into(),
+                },
+            );
+            library.annotations.push(
+                Id::from_raw("elsewhere"),
+                crate::shared::TimestampAnnotation {
+                    media_ref: "another-video".into(),
+                    time_ms: 30_000,
+                    text: String::new(),
+                },
+            );
+            app.present_library(&library);
             app.perform(VideoEffect::JumpToAnnotation {
                 annotation: "review-marker".into(),
             })
@@ -4587,16 +3532,16 @@ mod tests {
                     .map(|track| track.label.as_str())
                     .collect::<Vec<_>>(),
                 [
-                    "English stereo · selected",
+                    "English stereo is selected",
                     "Deutsch 5.1",
-                    "English captions · selected"
+                    "English captions is selected"
                 ]
             );
             assert!(
                 tracks.children.iter().all(|track| track
                     .actions
                     .iter()
-                    .all(|action| action.kind != tilo_actions::OperationKind::Document)),
+                    .all(|action| action.kind != ui::tilo_actions::OperationKind::Document)),
                 "a live row never changes the document"
             );
             let source_id = app.current_source_id.clone().unwrap();
@@ -4624,6 +3569,97 @@ mod tests {
         }
     }
 
+    #[test]
+    fn library_sheet_rows_tabs_and_scrim_answer_the_pointer() {
+        use ui::framework::testing::TestApp;
+        fn surface<T>(
+            app: &mut TestApp<crate::resource::VideoPlayerShell>,
+            f: impl FnOnce(&mut PlayerApp) -> T,
+        ) -> T {
+            app.with_surface::<PlayerApp, T>(f).expect("mounted player")
+        }
+        let mut app = TestApp::<crate::resource::VideoPlayerShell>::new().unwrap();
+        surface(&mut app, |player| {
+            // Hermetic authored media, with live framework action admission.
+            player
+                .player
+                .set_engine(media::MediaEngine::new_synthesized());
+            player.stage_capture(None, Some("library"));
+        });
+        app.harness()
+            .relayout_themed(
+                ui::headless::viewport((1200.0, 800.0)),
+                Theme::dark().with_reduce_motion(true),
+            )
+            .unwrap();
+        app.settle();
+        let next = surface(&mut app, |player| player.queue[1].id.clone());
+        let row = surface(&mut app, |player| {
+            player
+                .library_row_hits
+                .iter()
+                .find(|hit| hit.id == next)
+                .cloned()
+                .expect("queued row placed")
+        });
+        app.harness()
+            .click_at(row.play.center().x, row.play.center().y);
+        app.settle();
+        assert_eq!(
+            surface(&mut app, |player| player.current_queue_id.clone()),
+            Some(next.clone()),
+            "row body plays its canonical queue entry"
+        );
+        let remove = surface(&mut app, |player| {
+            player
+                .library_row_hits
+                .iter()
+                .find(|hit| hit.id == next)
+                .and_then(|hit| hit.remove)
+                .expect("queued row removal control")
+        });
+        app.harness().click_at(remove.center().x, remove.center().y);
+        app.settle();
+        assert!(
+            surface(&mut app, |player| player
+                .queue
+                .iter()
+                .all(|entry| entry.id != next)),
+            "remove changes the queue without replaying the row"
+        );
+        let recent = surface(&mut app, |player| player.library_recent_tab_rect.center());
+        app.harness().click_at(recent.x, recent.y);
+        app.settle();
+        assert_eq!(
+            surface(&mut app, |player| player.library_tab_name()),
+            "recent"
+        );
+        let close = surface(&mut app, |player| player.library_close_rect.center());
+        app.harness().click_at(close.x, close.y);
+        app.settle();
+        assert!(!surface(&mut app, |player| player.library_visible));
+        app.effect(&VideoEffect::ShowLibrary {
+            tab: "queue".into(),
+        })
+        .unwrap();
+        assert!(surface(&mut app, |player| player.library_visible));
+        app.harness().click_at(40.0, 400.0);
+        app.settle();
+        assert!(
+            !surface(&mut app, |player| player.library_visible),
+            "the scrim closes the actual hosted library"
+        );
+        assert!(
+            !surface(&mut app, |player| {
+                player.last_cursor = Point::new(40.0, 400.0);
+                player.handle_app_pointer(&mut ui::widget::Edits::lend(
+                    &mut automerge::AutoCommit::new(),
+                ))
+            }),
+            "the closed library no longer captures the same press"
+        );
+    }
+
     /// Run the production layout passes (sync → build → compute → apply) for
     /// `app` at `viewport`, with the accessibility text scale applied the way
     /// the live host applies it.
@@ -4636,220 +3672,128 @@ mod tests {
         )
     }
 
+    /// [`lay_out`] with reduced motion, so a sheet that opens is open in the
+    /// first frame instead of sliding in.
+    fn lay_out_still(app: PlayerApp, viewport: (f32, f32), text_scale: f32) -> Framed<PlayerApp> {
+        Framed::new(
+            ui::State::new(),
+            app,
+            ui::headless::viewport(viewport),
+            Theme::dark()
+                .with_text_scale(text_scale)
+                .with_reduce_motion(true),
+        )
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
-    fn player_chrome_geometry_uses_measured_widths_and_shared_gutters() {
-        // Case `capsules_take_their_measured_label_widths_once_painted`:
-        // 2026-09-17 review: the capsules scaled their authored label part by
-        // the theme factor. Once the frame's renderer has measured the labels
-        // (the paint pass does this), both capsules are the shared Button's
-        // padding around the **measured** label, re-placed on the same centre
-        // line with the same margins — one geometry for hit-testing and paint.
-        {
-            for scale in [1.0_f32, 2.0] {
-                let mut app = lay_out(PlayerApp::for_shot(Some("playing")), (1200.0, 800.0), scale);
-                let estimated = (app.library_button_rect, app.open_button_rect);
-                let mut tr = TextRenderer::new();
-                tr.set_text_scale(scale);
-                app.refresh_strip_labels(&mut tr);
-                let library_w = f64::from(tr.measure("Library", BUTTON_LABEL_SIZE, None).0);
-                let open_w = f64::from(tr.measure("Open", BUTTON_LABEL_SIZE, None).0);
-                let (library, open) = (app.library_button_rect, app.open_button_rect);
+    fn player_chrome_geometry_follows_the_theme_at_every_text_scale() {
+        // Case `top_strip_is_one_centre_line_that_contains_its_buttons`: the
+        // Library and Open buttons share the strip's centre line, sit inside
+        // the fade and keep the strip margin at 100% and 200% text.
+        for scale in [1.0_f32, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let app = lay_out(
+                PlayerApp::for_shot_open(None, Some("playing")),
+                (1200.0, 800.0),
+                scale,
+            );
+            let strip = TopStrip::at(app.rect.y0, &theme);
+            let margin = f64::from(theme.tokens.spacing.s4);
+            let (open, library) = (app.open_button_rect, app.library_button_rect);
+            assert!(
+                library.width() > 0.0 && open.width() > 0.0,
+                "{scale}×: both buttons are placed once painted"
+            );
+            assert!(
+                (open.center().y - strip.center_y).abs() < 0.01
+                    && (library.center().y - strip.center_y).abs() < 0.01,
+                "{scale}×: Open {open:?} and Library {library:?} share the strip centre {}",
+                strip.center_y
+            );
+            assert!(
+                open.y1 <= app.rect.y0 + strip.height && library.y1 <= app.rect.y0 + strip.height,
+                "{scale}×: the fade ({}) contains both buttons",
+                strip.height
+            );
+            assert!(
+                (app.rect.x1 - open.x1 - margin).abs() < 0.01
+                    && (library.x0 - app.rect.x0 - margin).abs() < 0.01,
+                "{scale}×: both buttons keep the strip margin"
+            );
+            assert!(open.x0 > library.x1, "{scale}×: the buttons do not meet");
+        }
+        // Case `library_sheet_stacks_header_tabs_and_rows`: the sheet is one
+        // column: its header, then the tab strip across it, then the rows,
+        // at 100% and 200% text, with the actions clear of one another.
+        for scale in [1.0_f32, 2.0] {
+            let app = lay_out_still(
+                PlayerApp::for_shot_open(None, Some("library")),
+                (1200.0, 800.0),
+                scale,
+            );
+            let sheet = app.drawer.sidebar_rect();
+            assert!(sheet.width() > 0.0, "{scale}×: the sheet is open");
+            for rect in [
+                app.library_close_rect,
+                app.library_queue_tab_rect,
+                app.library_recent_tab_rect,
+                app.library_shared_tab_rect,
+            ] {
                 assert!(
-                    (open.width() - (BUTTON_PAD_X + open_w)).abs() < 0.01
-                        && (library.width() - (BUTTON_PAD_X + library_w)).abs() < 0.01,
-                    "{scale}×: capsules are padding around the measured labels: {library:?} {open:?}"
+                    sheet.contains_rect(rect) && rect.width() > 0.0,
+                    "{scale}×: {rect:?} lies inside the sheet {sheet:?}"
                 );
-                let strip = app.top_strip();
-                assert!(
-                    (open.center().y - strip.center_y).abs() < 0.01
-                        && (library.center().y - strip.center_y).abs() < 0.01
-                        && (app.rect.x1 - open.x1 - OVERLAY_MARGIN).abs() < 0.01
-                        && (library.x0 - app.rect.x0 - OVERLAY_MARGIN).abs() < 0.01,
-                    "{scale}×: re-placed capsules keep the centre line and margins"
-                );
-                // A second measurement at the same scale changes nothing.
-                app.refresh_strip_labels(&mut tr);
-                assert_eq!(
-                    (app.library_button_rect, app.open_button_rect),
-                    (library, open)
-                );
-                let _ = estimated;
             }
-        }
-        // Case `library_panel_geometry_stacks_measured_lines_at_2x`:
-        // 2026-09-17 review: at 200% the library panel painted its title over
-        // the subtitle, the subtitle over the tabs and "Remove" over "Play",
-        // with 1× row pitch under 2× glyphs. The geometry keeps the authored 1×
-        // chrome and grows each part from the measured line at larger text.
-        #[expect(
-            clippy::float_cmp,
-            reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
-        )]
-        {
-            let panel = Rect::new(840.0, 0.0, 1200.0, 800.0);
-            let one = LibraryPanelGeometry::for_panel(panel, 1.0, None);
-            assert_eq!(one.close.height(), PANEL_HEADER_BUTTON_H);
-            // 1× stack on the panel rhythm (`s3` header top, `s3` between
-            // sections): header 12..40, subtitle 40..56, tabs 68..98, rows 110.
-            assert_eq!(one.subtitle.y0, PANEL_HEADER_TOP + PANEL_HEADER_BUTTON_H);
-            assert_eq!(one.subtitle.y0, 40.0);
-            assert_eq!(one.queue_tab.y0, 68.0);
-            assert_eq!(one.queue_tab.height(), PANEL_TAB_H);
-            assert_eq!(one.rows_top, 110.0);
-            assert_eq!(one.row_h, PANEL_ROW_H);
-            assert_eq!(one.control_h, PANEL_CONTROL_H);
-            assert_eq!((one.play_w, one.remove_w), (PANEL_PLAY_W, PANEL_REMOVE_W));
-
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(2.0);
-            let width = |tr: &mut TextRenderer, label: &str, size: f32| {
-                f64::from(tr.measure(label, size, None).0)
-            };
-            let labels = PanelLabels {
-                text_scale: 2.0,
-                panel_w: panel.width(),
-                close_w: width(&mut tr, "Close", PANEL_HEADER_BUTTON_SIZE),
-                clear_w: width(&mut tr, "Clear", PANEL_HEADER_BUTTON_SIZE),
-                queue_w: width(&mut tr, "Queue", PANEL_TAB_SIZE),
-                recent_w: width(&mut tr, "Recent", PANEL_TAB_SIZE),
-                shared_w: width(&mut tr, "Shared", PANEL_TAB_SIZE),
-                remove_w: width(&mut tr, "Remove", PANEL_ROW_CONTROL_SIZE),
-                play_w: width(&mut tr, "Replay", PANEL_ROW_CONTROL_SIZE),
-                subtitle_h: f64::from(
-                    tr.measure_weighted(
-                        PANEL_SUBTITLE,
-                        PANEL_SUBTITLE_SIZE,
-                        Some((panel.width() - 2.0 * PANEL_GUTTER) as f32),
-                        TextWeight::Regular,
-                    )
-                    .1,
-                ),
-            };
-            let two = LibraryPanelGeometry::for_panel(panel, 2.0, Some(labels));
-            let title_line = f64::from(tr.measure("Library", PANEL_TITLE_SIZE, None).1);
             assert!(
-                two.title.height() >= title_line,
-                "2× header holds the title line"
+                app.library_close_rect.y1 <= app.library_queue_tab_rect.y0,
+                "{scale}×: tabs start under the header"
             );
             assert!(
-                two.subtitle.y0 >= two.title.y1 && two.subtitle.height() >= labels.subtitle_h,
-                "2× subtitle starts under the header and holds its wrapped lines: {two:?}"
+                (app.library_queue_tab_rect.x1 - app.library_recent_tab_rect.x0).abs() < 0.01
+                    && (app.library_recent_tab_rect.x1 - app.library_shared_tab_rect.x0).abs()
+                        < 0.01,
+                "{scale}×: tabs form one contiguous strip"
             );
             assert!(
-                two.queue_tab.y0 >= two.subtitle.y1,
-                "2× tabs start under the subtitle"
+                app.library_list_rect.y0 >= app.library_queue_tab_rect.y1,
+                "{scale}×: rows start under the tabs"
             );
-            assert!(
-                two.rows_top >= two.recent_tab.y1,
-                "2× rows start under the tabs"
-            );
-            let row_lines = f64::from(tr.measure("Ag", PANEL_ROW_TITLE_SIZE, None).1)
-                + f64::from(tr.measure("Ag", PANEL_ROW_SUBTITLE_SIZE, None).1);
-            assert!(
-                two.row_h >= row_lines + 2.0 * PANEL_ROW_PAD_Y,
-                "2× rows hold two measured lines: {}",
-                two.row_h
-            );
-            assert!(
-                two.play_w >= labels.play_w + PANEL_LABEL_PAD_X
-                    && two.remove_w >= labels.remove_w + PANEL_LABEL_PAD_X
-                    && two.close.width() >= labels.close_w + PANEL_LABEL_PAD_X,
-                "2× controls hold their measured labels: {two:?}"
-            );
-            assert!(
-                two.control_h <= two.row_h
-                    && two.control_h
-                        >= f64::from(tr.measure("Play", PANEL_ROW_CONTROL_SIZE, None).1),
-                "2× controls fit the row and hold their label"
-            );
-        }
-        // Case `top_strip_is_one_centre_line_that_contains_its_buttons`:
-        // 2026-09-16 alignment review: the title was centred on its font size in
-        // a 44 px scrim while the buttons were `OVERLAY_MARGIN + OPEN_BTN_H`
-        // deep — two centre lines, and the buttons overhung the scrim by 2 px. At
-        // 200% text the 32 px capsules no longer held their 28 px labels.
-        #[expect(
-            clippy::float_cmp,
-            reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
-        )]
-        {
-            let one = TopStrip::at(0.0, 1.0);
-            assert_eq!(
-                one.button_h, OPEN_BTN_H,
-                "1× keeps the authored pill height"
-            );
-            assert_eq!(one.center_y, OVERLAY_MARGIN + OPEN_BTN_H / 2.0);
-            assert_eq!(one.scrim_h, OPEN_BTN_H + 2.0 * OVERLAY_MARGIN);
-
-            // The 2× label line comes from a real renderer at that scale, not from
-            // the same formula the strip uses — so a change to the shared Button's
-            // label size or the default leading would surface here.
-            let two = TopStrip::at(0.0, 2.0);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(2.0);
-            let label_line = f64::from(tr.measure("Library", BUTTON_LABEL_SIZE, None).1);
-            assert!(
-                two.button_h >= label_line + 2.0 * BUTTON_PAD_Y,
-                "2× capsule {} contains a measured {label_line} px label",
-                two.button_h
-            );
-            assert!(two.scrim_h >= two.button_h + 2.0 * OVERLAY_MARGIN);
-
-            for scale in [1.0_f32, 2.0] {
-                let app = lay_out(PlayerApp::for_shot(Some("playing")), (1200.0, 800.0), scale);
-                let strip = app.top_strip();
-                let open = app.open_button_rect;
-                let library = app.library_button_rect;
+            assert_eq!(app.library_row_hits.len(), app.queue.len().min(32));
+            let mut previous_bottom = app.library_list_rect.y0 - app.library_scroll;
+            for row in &app.library_row_hits {
                 assert!(
-                    (open.center().y - strip.center_y).abs() < 0.01
-                        && (library.center().y - strip.center_y).abs() < 0.01,
-                    "{scale}×: Open {open:?} and Library {library:?} share the strip centre {}",
-                    strip.center_y
+                    (row.row.y0 - previous_bottom).abs() < 0.01 && row.row.height() > 0.0,
+                    "{scale}×: rows stack with no gap or overlap"
                 );
+                previous_bottom = row.row.y1;
+                let remove = row.remove.expect("a queued row can be removed");
                 assert!(
-                    open.y1 <= app.rect.y0 + strip.scrim_h
-                        && library.y1 <= app.rect.y0 + strip.scrim_h,
-                    "{scale}×: the scrim ({}) contains both buttons",
-                    strip.scrim_h
-                );
-                assert!(
-                    (app.rect.x1 - open.x1 - OVERLAY_MARGIN).abs() < 0.01
-                        && (library.x0 - app.rect.x0 - OVERLAY_MARGIN).abs() < 0.01,
-                    "{scale}×: both buttons keep the overlay margin"
+                    row.row.contains_rect(remove),
+                    "{scale}×: the remove action sits inside its row"
                 );
             }
         }
-        // Case `library_panel_chrome_shares_one_gutter`:
-        // The library panel used three left insets (title 16, tabs 12, row text
-        // 24) and two right ones (Play 14, Close 12). One description, one gutter.
-        #[expect(
-            clippy::float_cmp,
-            reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
-        )]
+        // Case `library_sheet_follows_its_drawer`: closing the library moves
+        // no hit rect into the video.
         {
-            let panel = Rect::new(840.0, 0.0, 1200.0, 800.0);
-            let g = LibraryPanelGeometry::for_panel(panel, 1.0, None);
-            let left = panel.x0 + PANEL_GUTTER;
-            let right = panel.x1 - PANEL_GUTTER;
-            assert_eq!(g.title.x0, left);
-            assert_eq!(g.subtitle.x0, left);
-            assert_eq!(g.queue_tab.x0, left);
-            assert_eq!(g.close.x1, right);
-            assert_eq!(g.subtitle.x1, right);
-            assert!(g.clear.x1 < g.close.x0, "Clear sits left of Close");
-            assert!(
-                g.title.x1 <= g.clear.x0,
-                "title never runs under the header buttons"
+            let mut app = lay_out_still(
+                PlayerApp::for_shot_open(None, Some("library")),
+                (1200.0, 800.0),
+                1.0,
             );
-
-            let app = lay_out(PlayerApp::for_shot(Some("library")), (1200.0, 800.0), 1.0);
-            assert_eq!(app.library_close_rect, g.close);
-            assert_eq!(app.library_queue_tab_rect, g.queue_tab);
-            assert_eq!(app.library_recent_tab_rect, g.recent_tab);
+            app.perform(VideoEffect::HideLibrary).unwrap();
+            let theme = Theme::dark().with_reduce_motion(true);
+            let mut text = TextRenderer::new();
+            let mut scene = Scene::new();
+            app.sync_library_sheet();
+            app.drawer.tick(&theme);
+            app.paint_library_panel(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            assert_eq!(app.library_close_rect, Rect::ZERO);
+            assert!(app.library_row_hits.is_empty());
         }
         // Case `fresh_player_shows_a_clean_empty_state_with_no_frame`.
         {
@@ -4900,6 +3844,42 @@ mod tests {
             );
             assert!(app.player.is_playing(), "autoplay after open");
         }
+    }
+
+    #[test]
+    fn capture_waits_for_the_requested_file_in_the_shared_visual_lifecycle() {
+        let requested = "/a-missing-tilo-capture-fixture.mp4";
+        let app = PlayerApp::for_shot_open(Some(requested), None);
+        assert!(
+            Widget::has_pending_visual_work(&app),
+            "a real-file capture cannot settle without its actual decoded picture"
+        );
+        assert!(
+            !app.has_media_frame(),
+            "no synthesized demo substitutes for the file"
+        );
+        let loading = PlayerApp::for_shot_open(None, Some("loading"));
+        assert!(
+            !Widget::has_pending_visual_work(&loading),
+            "an explicitly requested loading capture need not await decoding"
+        );
+    }
+
+    #[test]
+    fn capture_scenarios_stage_the_two_failure_states() {
+        // A failed open leaves nothing open; a decoder that gives up on an
+        // opened video keeps its title. Both tell the person the same thing.
+        let failed_open = PlayerApp::for_shot_open(None, Some("error"));
+        assert_eq!(failed_open.open_error.as_deref(), Some(DECODER_FAILURE));
+        assert!(!failed_open.player.has_media());
+        let gave_up = PlayerApp::for_shot_open(None, Some("native-error"));
+        assert_eq!(gave_up.open_error.as_deref(), Some(DECODER_FAILURE));
+        assert!(gave_up.player.has_media());
+        assert_eq!(gave_up.title, "Demo clip");
+        assert!(
+            gave_up.shot_loading,
+            "the picture is held back for the failure"
+        );
     }
 
     #[test]
@@ -5018,7 +3998,6 @@ mod tests {
 
     fn shared(state: media::TransportState) -> crate::shared::SharedTransport {
         crate::shared::SharedTransport {
-            media_ref: "clip".into(),
             playing: state.playing,
             position_ms: state.position_ms,
             rate: f64::from(state.rate),

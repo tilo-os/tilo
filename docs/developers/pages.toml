@@ -34,6 +34,55 @@ nav = "Templates and examples"
 description = "The four templates an app starts from and the runnable examples that each teach one idea."
 
 [[page]]
+slug = "task-start"
+source = "docs/developers/tasks/start.md"
+section = "Quick tasks"
+nav = "Start and reload"
+description = "The offline tilo-app guide start workflow."
+
+[[page]]
+slug = "task-actions"
+source = "docs/developers/tasks/actions.md"
+section = "Quick tasks"
+nav = "Add a capability"
+description = "The offline tilo-app guide actions workflow."
+
+[[page]]
+slug = "task-collaborate"
+source = "docs/developers/tasks/collaborate.md"
+section = "Quick tasks"
+nav = "Collaboration and undo"
+description = "The offline tilo-app guide collaborate workflow: shared state, per-author undo, history and the device transport boundary."
+
+[[page]]
+slug = "task-permissions"
+source = "docs/developers/tasks/permissions.md"
+section = "Quick tasks"
+nav = "Permissions and roles"
+description = "The offline tilo-app guide permissions workflow: live access, action requirements, revocation and agents as ordinary collaborators."
+
+[[page]]
+slug = "task-network"
+source = "docs/developers/tasks/network.md"
+section = "Quick tasks"
+nav = "Fetch data"
+description = "The offline tilo-app guide network workflow: portable HTTP, declared capabilities, network hints and resource effects."
+
+[[page]]
+slug = "task-verify"
+source = "docs/developers/tasks/verify.md"
+section = "Quick tasks"
+nav = "Verify an app"
+description = "The offline tilo-app guide verify workflow."
+
+[[page]]
+slug = "task-publish"
+source = "docs/developers/tasks/publish.md"
+section = "Quick tasks"
+nav = "Submit a release"
+description = "The offline tilo-app guide publish workflow."
+
+[[page]]
 slug = "build-an-app"
 source = "docs/app-development.md"
 section = "Guides"
@@ -53,6 +102,13 @@ source = "crates/sdk/ui-core/HIG.md"
 section = "Guides"
 nav = "Interface guidelines"
 description = "Layout, navigation, text, chrome, system integration and the shared controls every Tilo app builds on."
+
+[[page]]
+slug = "resource-journey"
+source = "docs/sdk-resource-journey.md"
+section = "Guides"
+nav = "A resource workflow"
+description = "One checklist workflow proving validation, host identity, permissions, confirmation, undo, persistence and four shared-control presentations."
 
 [[page]]
 slug = "agent-action-api"

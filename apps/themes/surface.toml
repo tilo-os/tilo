@@ -1,0 +1,82 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "themes.studio"
+label = "Themes"
+version = 1
+fields = [
+  { path = "themes", type = "Collection<Theme>", stored = "collection" },
+  { path = "themes.*.name", type = "String", label = true },
+  { path = "themes.*.dark", type = "bool", readonly = true },
+  { path = "themes.*.high_contrast", type = "bool" },
+  { path = "themes.*.hue", type = "Option<f64>" },
+  { path = "themes.*.chroma", type = "f64" },
+  { path = "themes.*.surfaces", type = "Surfaces", stored = "record" },
+  { path = "themes.*.surfaces.base", type = "f64" },
+  { path = "themes.*.surfaces.content", type = "f64" },
+  { path = "themes.*.surfaces.sidebar", type = "f64" },
+  { path = "themes.*.surfaces.inspector", type = "f64" },
+  { path = "themes.*.surfaces.raised", type = "f64" },
+  { path = "themes.*.surfaces.overlay", type = "f64" },
+  { path = "themes.*.ink", type = "Ink", stored = "record" },
+  { path = "themes.*.ink.primary", type = "f64" },
+  { path = "themes.*.ink.secondary", type = "f64" },
+  { path = "themes.*.ink.tertiary", type = "f64" },
+  { path = "themes.*.status", type = "Status", stored = "record" },
+  { path = "themes.*.status.danger", type = "StatusTone", stored = "record" },
+  { path = "themes.*.status.danger.lightness", type = "f64" },
+  { path = "themes.*.status.danger.chroma", type = "f64" },
+  { path = "themes.*.status.warning", type = "StatusTone", stored = "record" },
+  { path = "themes.*.status.warning.lightness", type = "f64" },
+  { path = "themes.*.status.warning.chroma", type = "f64" },
+  { path = "themes.*.status.success", type = "StatusTone", stored = "record" },
+  { path = "themes.*.status.success.lightness", type = "f64" },
+  { path = "themes.*.status.success.chroma", type = "f64" },
+  { path = "themes.*.status.info", type = "StatusTone", stored = "record" },
+  { path = "themes.*.status.info.lightness", type = "f64" },
+  { path = "themes.*.status.info.chroma", type = "f64" },
+  { path = "themes.*.tint", type = "Option<f64>" },
+  { path = "themes.*.presence", type = "Presence", stored = "record" },
+  { path = "themes.*.presence.lightness", type = "f64" },
+  { path = "themes.*.presence.chroma", type = "f64" },
+  { path = "themes.*.window_radius", type = "f64" },
+  { path = "themes.*.density", type = "f64" },
+  { path = "themes.*.face", type = "String" },
+  { path = "themes.*.base_size", type = "f64" },
+  { path = "themes.*.distinct_letters", type = "Option<bool>" },
+  { path = "themes.*.motion", type = "f64" },
+  { path = "themes.*.blur", type = "f64" },
+  { path = "themes.*.tint_opacity", type = "f64" },
+]
+
+[[resources.verbs]]
+id = "new-theme"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "base", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "reset"
+kind = "undoable"
+params = [
+  { name = "theme", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "theme", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "switch-polarity"
+kind = "undoable"
+params = [
+  { name = "theme", required = true, schema = { type = "string" } },
+  { name = "dark", required = true, schema = { type = "boolean" } },
+]
+

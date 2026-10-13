@@ -15,12 +15,8 @@
 //! ```
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -32,8 +28,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
 /// Walks the `WorkspaceTree` JSON dump untyped, looking for a
 /// `TileContent::Foreign` tab whose `app_id` matches. Untyped because a
@@ -302,71 +298,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for TestClient {
     }
 }
 
-impl Dispatch<wl_compositor::WlCompositor, ()> for TestClient {
-    fn event(
-        _: &mut Self,
-        _: &wl_compositor::WlCompositor,
-        _: wl_compositor::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(TestClient: ignore wl_compositor::WlCompositor);
+delegate_noop!(TestClient: ignore wl_surface::WlSurface);
 
-impl Dispatch<wl_surface::WlSurface, ()> for TestClient {
-    fn event(
-        _: &mut Self,
-        _: &wl_surface::WlSurface,
-        _: wl_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+crate::support::wayland::test_client!(TestClient: ping, configure);
 
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for TestClient {
-    fn event(
-        _: &mut Self,
-        wm_base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            wm_base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for TestClient {
-    fn event(
-        _: &mut Self,
-        xdg_surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            xdg_surface.ack_configure(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TestClient {
-    fn event(
-        _: &mut Self,
-        _: &xdg_toplevel::XdgToplevel,
-        _: xdg_toplevel::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(TestClient: ignore xdg_toplevel::XdgToplevel);
 
 /// Returns whatever it has on timeout so the caller reports the failure.
 fn round_trip_until_bound(

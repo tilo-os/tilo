@@ -445,13 +445,15 @@ pub fn open_ush_session(
         // never the host's shell, which no relay session reaches.
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
+        runs: None,
+        // Native editor custody is participant-private and never relayed.
+        editor_protocol: None,
     };
     let mut line = serde_json::to_vec(&serve)
         .map_err(|error| LaunchError::Failed(format!("encode the request: {error}")))?;
     line.push(b'\n');
     stream.write_all(&line).map_err(failed)?;
-    let (reply, master) =
-        runtime_portal::fd_transport::recv_with_owned_fd(stream.as_raw_fd()).map_err(failed)?;
+    let (reply, master) = runtime_portal::fd_transport::recv_with_fd(&stream).map_err(failed)?;
     let reply = reply
         .split(|byte| *byte == b'\n')
         .next()
@@ -1008,12 +1010,7 @@ mod tests {
             let reply = serde_json::to_vec(&ush::supervisor::ServeResponse::Allowed).unwrap();
             // Even a descriptor cannot turn an allow acknowledgement into
             // the Session response that the request requires.
-            runtime_portal::fd_transport::send_with_fd(
-                stream.as_raw_fd(),
-                &reply,
-                master.as_raw_fd(),
-            )
-            .unwrap();
+            runtime_portal::fd_transport::send_with_fd(&stream, &reply, &master).unwrap();
         });
         let request = GuestRequest {
             session: [1; 16],
@@ -1069,15 +1066,12 @@ mod tests {
                 session: "s".into(),
                 environment: "relay-key".into(),
                 relay_session: None,
+                runs: false,
+                editor_protocol: None,
             })
             .unwrap();
             reply.push(b'\n');
-            runtime_portal::fd_transport::send_with_fd(
-                stream.as_raw_fd(),
-                &reply,
-                master.as_raw_fd(),
-            )
-            .unwrap();
+            runtime_portal::fd_transport::send_with_fd(&stream, &reply, &master).unwrap();
             drop(master);
             (stream, slave)
         });

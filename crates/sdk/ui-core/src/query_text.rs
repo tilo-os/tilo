@@ -12,7 +12,6 @@ use vello::peniko::Color;
 use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::richtext::RichTextLayout;
 use crate::text_edit::{Edit, EditCore, Motion};
@@ -60,13 +59,15 @@ pub struct QueryInk {
 }
 
 impl QueryInk {
-    /// Caret in `accent`, selection bands in `accent` at 30% alpha.
-    pub fn accented(text: Color, placeholder: Color, accent: Color) -> Self {
+    /// Primary ink, the secondary tier for the placeholder, and the
+    /// person's own colour for the caret and selection
+    /// ([`crate::tokens::Intents::you`]).
+    pub fn of(colors: &crate::tokens::Colors) -> Self {
         Self {
-            text,
-            placeholder,
-            selection: accent.with_alpha_factor(0.3),
-            caret: accent,
+            text: colors.text_primary,
+            placeholder: colors.text_dim,
+            selection: colors.intent.selection_tint,
+            caret: colors.intent.you,
         }
     }
 }
@@ -82,6 +83,7 @@ pub struct QueryComposition {
     signature: u64,
     layout_epoch: Option<Arc<()>>,
     caret: Option<Rect>,
+    origin: Point,
 }
 
 impl Default for QueryComposition {
@@ -106,6 +108,7 @@ impl QueryComposition {
             signature: u64::MAX,
             layout_epoch: None,
             caret: None,
+            origin: Point::ZERO,
         }
     }
 
@@ -120,6 +123,29 @@ impl QueryComposition {
         self.caret = None;
         self.signature = u64::MAX;
         self.layout_epoch = None;
+    }
+
+    /// Place an inline query caret using its last shaped, painted layout.
+    /// Stale text or active IME composition keeps the existing selection.
+    pub fn pointer_selection(&self, text: &str, position: Point) -> Option<Selection> {
+        if self.is_composing()
+            || self.layout_text != text
+            || !position.x.is_finite()
+            || !position.y.is_finite()
+        {
+            return None;
+        }
+        let relative = position - self.origin;
+        let layout = self.layout.as_ref()?;
+        if relative.x.abs() > f64::from(f32::MAX) || relative.y.abs() > f64::from(f32::MAX) {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "finite local text-layout pixel coordinates fit the f32 shaping API"
+        )]
+        let position = layout.hit_position(relative.x as f32, relative.y as f32);
+        Some(Selection::collapsed(position.byte.min(text.len())))
     }
 
     /// Load the owner's selection into the core, clamped onto `text`.
@@ -398,6 +424,7 @@ impl QueryComposition {
             rect.x0 - scroll_x,
             rect.center().y - f64::from(layout.height()) / 2.0,
         );
+        self.origin = origin;
         let caret = Rect::new(
             origin.x + f64::from(caret_x),
             origin.y + f64::from(caret_top),
@@ -455,6 +482,17 @@ impl QueryComposition {
         self.caret = show_caret.then_some(caret);
     }
 
+    /// Private text/selection equality without retaining a query snapshot.
+    pub fn ime_edit_fingerprint(
+        &self,
+        text: &str,
+        selection: &Selection,
+        key: &[u8; 32],
+    ) -> Option<[u8; 32]> {
+        (!self.is_composing())
+            .then(|| crate::ime::edit_fingerprint(text, selection.anchor, selection.cursor, key))
+    }
+
     pub fn ime_cursor_rect(&self) -> Option<Rect> {
         self.caret
     }
@@ -474,26 +512,40 @@ impl QueryComposition {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deferred_input_query_refuses_composition_and_pins_selection() {
+        let mut composition = super::QueryComposition::new();
+        let mut selection = crate::text_selection::Selection::collapsed(5);
+        let stamp = composition
+            .ime_edit_fingerprint("hello", &selection, &[4; 32])
+            .unwrap();
+        selection.anchor = 0;
+        assert_ne!(
+            composition
+                .ime_edit_fingerprint("hello", &selection, &[4; 32])
+                .unwrap(),
+            stamp
+        );
+        composition.core.set_preedit("draft", Some((5, 5)));
+        assert!(
+            composition
+                .ime_edit_fingerprint("hello", &selection, &[4; 32])
+                .is_none()
+        );
+    }
+
     use super::*;
     use crate::text_render::{FontChoice, TextRenderer};
     use vello::Scene;
     use vello::kurbo::Affine;
 
     fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let event = crate::synthetic_input::key_event(
+            logical_key,
+            text.map(Into::into),
+            ElementState::Pressed,
         );
-        event.logical_key = logical_key;
-        event.text = text.map(Into::into);
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(event)
     }
 
     #[test]
@@ -898,7 +950,7 @@ mod tests {
 
     #[test]
     fn unchanged_browser_query_reshapes_after_font_failure_and_install() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let root = crate::font_catalog::checkout_root();
         let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
             .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
             .unwrap();

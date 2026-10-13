@@ -83,6 +83,9 @@ case "$hardware_profile" in
     [[ "$firmware_candidate" =~ ^code\.tilo\.so/tilo/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}$ \
        && "$firmware_manifest" =~ ^[0-9a-f]{64}$ ]] \
       || { printf 'Lenovo provenance requires pinned board firmware\n' >&2; exit 1; } ;;
+  orangepi-3b-v2-1)
+    [ "$release_architecture" = aarch64 ] && [ -z "$firmware_candidate$firmware_manifest" ] \
+      || { printf 'Orange Pi provenance requires native aarch64 and repository firmware\n' >&2; exit 1; } ;;
   *) printf 'unsupported hardware profile in provenance\n' >&2; exit 1 ;;
 esac
 case "$windows_input_class" in
@@ -109,6 +112,11 @@ printf '%s' "$release_children" | jq -e '
   exit 1
 }
 
+hardware_definition=""
+if [ "$hardware_profile" = orangepi-3b-v2-1 ]; then
+  hardware_definition="$(sha256sum "$(dirname "$0")/../hardware/profiles/$hardware_profile.json" | cut -d' ' -f1)"
+fi
+
 jq -n \
   --arg source "git+ssh://code.tilo.so/tilo/tilo@$GITHUB_SHA" \
   --arg digest "$RELEASE_DIGEST" \
@@ -119,6 +127,7 @@ jq -n \
   --arg desktop_payload "$desktop_payload" \
   --arg sbom_hash "$sbom_hash" \
   --arg hardware_profile "$hardware_profile" \
+  --arg hardware_definition "$hardware_definition" \
   --arg release_architecture "$release_architecture" \
   --arg firmware_candidate "$firmware_candidate" \
   --arg firmware_manifest "$firmware_manifest" \
@@ -136,6 +145,8 @@ jq -n \
           else {architecture: $release_architecture, hardwareProfile: $hardware_profile,
                 firmwareManifestSha256: $firmware_manifest}
           end
+        + if $hardware_definition == "" then {}
+          else {hardwareDefinitionSha256: $hardware_definition} end
         + if ($release_children | length) == 0 then {}
           else {children: $release_children}
           end

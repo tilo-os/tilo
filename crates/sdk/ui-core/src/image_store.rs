@@ -20,10 +20,7 @@ use crate::wake::WakeHandle;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
-use vello::peniko::{
-    BlendMode, Blob, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage,
-    ImageFormat as Format,
-};
+use vello::peniko::{BlendMode, Fill, ImageBrush, ImageData as PenikoImage};
 
 /// Fetches the raw encoded bytes for a URL, or `None` on failure. Invoked as
 /// background work, so it may block on I/O.
@@ -129,6 +126,35 @@ fn insert_settled(cache: &mut CacheState, url: String, slot: Slot) {
     cache.slots.insert(url, SlotEntry { slot, last_used });
 }
 
+/// Loads in flight across every store in the process, so a capture can wait
+/// for the thumbnails a frame asked for before it is written
+/// ([`loads_in_flight`]).
+static LOADS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// Loads in flight (queued or decoding) across every [`ImageStore`] in the
+/// process. A screenshot capture waits, within a bound, until this is zero.
+#[must_use]
+pub fn loads_in_flight() -> usize {
+    LOADS_IN_FLIGHT.load(Ordering::SeqCst)
+}
+
+/// One store's in-flight count, mirrored into [`LOADS_IN_FLIGHT`].
+struct Pending(AtomicUsize);
+
+impl Pending {
+    fn add(&self, n: usize) {
+        self.0.fetch_add(n, Ordering::SeqCst);
+        LOADS_IN_FLIGHT.fetch_add(n, Ordering::SeqCst);
+    }
+    fn sub(&self, n: usize) {
+        self.0.fetch_sub(n, Ordering::SeqCst);
+        LOADS_IN_FLIGHT.fetch_sub(n, Ordering::SeqCst);
+    }
+    fn get(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 #[derive(Default)]
 struct RequestIdentity {
     reserved: AtomicBool,
@@ -138,7 +164,7 @@ struct Shared {
     slots: Mutex<CacheState>,
     /// Count of in-flight (queued or decoding) loads, for `is_idle` /
     /// `block_until_idle` and to know when to keep animation frames flowing.
-    pending: AtomicUsize,
+    pending: Pending,
     wake: WakeHandle,
 }
 
@@ -146,7 +172,7 @@ impl Shared {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             slots: Mutex::new(CacheState::default()),
-            pending: AtomicUsize::new(0),
+            pending: Pending(AtomicUsize::new(0)),
             wake: WakeHandle::new(),
         })
     }
@@ -170,7 +196,7 @@ impl Shared {
         } else {
             cache.slots.remove(url);
         }
-        self.pending.fetch_sub(1, Ordering::SeqCst);
+        self.pending.sub(1);
         drop(cache);
         if authorized {
             self.wake.wake();
@@ -346,7 +372,7 @@ impl HostImageLoader {
         let request = Arc::new(RequestIdentity::default());
         entry.slot = Slot::Loading(request.clone());
         self.in_flight.insert(url.into(), request);
-        self.shared.pending.fetch_add(1, Ordering::SeqCst);
+        self.shared.pending.add(1);
         true
     }
 
@@ -474,18 +500,6 @@ thread_local! {
 }
 
 impl ImageStore {
-    /// Install a legacy host factory for thumbnail-sized browser images.
-    ///
-    /// New hosts that also serve document attachments should use
-    /// [`with_host_factory_with_max_dimension`](Self::with_host_factory_with_max_dimension)
-    /// so [`with_max_dimension`](Self::with_max_dimension) retains its bound.
-    pub fn with_host_factory<R>(
-        factory: std::rc::Rc<dyn Fn() -> Self>,
-        construct: impl FnOnce() -> R,
-    ) -> R {
-        Self::with_host_factory_with_max_dimension(std::rc::Rc::new(move |_| factory()), construct)
-    }
-
     /// Construct app caches under a host's asynchronous service while retaining
     /// the requested decoded-image bound and component wake custody.
     pub fn with_host_factory_with_max_dimension<R>(
@@ -599,7 +613,7 @@ impl ImageStore {
                 last_used,
             },
         );
-        self.shared.pending.fetch_add(1, Ordering::SeqCst);
+        self.shared.pending.add(1);
         drop(slots);
         // Never block the UI thread behind image I/O. A full queue removes the
         // provisional Loading slot so a later frame can retry; a loader that
@@ -620,7 +634,7 @@ impl ImageStore {
                     matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, &request))
                 }) {
                     cache.slots.remove(url);
-                    self.shared.pending.fetch_sub(1, Ordering::SeqCst);
+                    self.shared.pending.sub(1);
                 }
             }
             Err(TrySendError::Disconnected(_)) => {
@@ -641,7 +655,7 @@ impl ImageStore {
 
     /// Number of in-flight loads (queued or decoding).
     pub fn pending(&self) -> usize {
-        self.shared.pending.load(Ordering::SeqCst)
+        self.shared.pending.get()
     }
 
     /// Whether every requested load has settled.
@@ -683,13 +697,11 @@ fn validated_slot(decoded: Option<tilo_image_codec::DecodedImage>, max_dimension
     if limits.validate(&decoded).is_err() {
         return Slot::Failed;
     }
-    Slot::Ready(PenikoImage {
-        data: Blob::new(Arc::new(decoded.rgba)),
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: decoded.width,
-        height: decoded.height,
-    })
+    Slot::Ready(crate::raster::rgba8(
+        decoded.rgba,
+        decoded.width,
+        decoded.height,
+    ))
 }
 
 fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
@@ -789,13 +801,7 @@ mod tests {
     }
 
     fn logical_image(width: u32, height: u32) -> PenikoImage {
-        PenikoImage {
-            data: Blob::new(Arc::new(vec![0, 0, 0, 0])),
-            format: Format::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width,
-            height,
-        }
+        crate::raster::rgba8(vec![0, 0, 0, 0], width, height)
     }
 
     /// Encode a solid `w`×`h` RGBA PNG in-memory (no network) so the store's

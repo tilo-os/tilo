@@ -43,28 +43,25 @@ display-night-light = Nachtlicht
 display-night-light-schedule = Sonnenuntergang bis Sonnenaufgang
 display-night-light-schedule-desc = Nachtlicht nach dem Zeitplan für Tag und Nacht unter Darstellung ein- und ausschalten
 display-night-light-warmth = Nachtlicht-Wärme
-display-night-light-temp-subtle = Dezent · 4500 K
-display-night-light-temp-warm = Warm · 3700 K
-display-night-light-temp-very-warm = Sehr warm · 2800 K
-display-night-light-caption = Nachtlicht färbt die ganze Oberfläche. Automatische Helligkeit folgt dem Umgebungslichtsensor des Kernels mit Glättung und Totzone.
+display-night-light-temp-subtle = Dezent (4500 K)
+display-night-light-temp-warm = Warm (3700 K)
+display-night-light-temp-very-warm = Sehr warm (2800 K)
 display-rotation = Drehung
 display-rotation-landscape = Querformat
 display-rotation-portrait-right = Hochformat rechts
 display-rotation-upside-down = Auf dem Kopf
 display-rotation-portrait-left = Hochformat links
 
-display-card-title = Bildschirme
 display-none = Keine Bildschirme an diesem Gerät erkannt.
-display-caption-switch = Super+P wechselt jederzeit zwischen Erweitern, Spiegeln und nur einem Bildschirm.
-display-caption-second = Schließen Sie einen zweiten Bildschirm an, um zu erweitern oder zu spiegeln.
-display-caption-port = Schließen Sie einen Bildschirm an einen freien Anschluss an, um zu erweitern oder zu spiegeln.
 display-use = Diesen Bildschirm nutzen
 display-primary = Primärbildschirm
+display-primary-marker = Hauptbildschirm
+display-mode-label = { $width } × { $height }, { $hertz } Hz
 display-scale = Skalierung
 display-position = Position
 display-mirroring = Spiegeln
 display-colour-profile = Farbprofil
-display-colour-profile-empty = Systemvorgabe · keine gültigen ICC-Profile erkannt
+display-colour-profile-empty = Systemvorgabe, keine gültigen ICC-Profile erkannt
 display-keep-title = Diese Bildschirmeinstellung behalten?
 display-keep-caption = Jeder Bildschirm sollte sichtbar sein. Die vorherige Anordnung wird in { $seconds } Sekunden wiederhergestellt, wenn Sie diese nicht behalten.
 display-keep-ok = Alles sieht richtig aus
@@ -162,9 +159,9 @@ input-pad-button-show-map = Tastenbelegung anzeigen
 input-pad-no-buttons = Dieses Pad meldet keine Tasten
 input-pad-mode-button-description = Schaltet Ringe, Streifen und Tasten in den nächsten Modus
 input-pad-ring = Ring { $number }
-input-pad-ring-mode = Ring { $number } · Modus { $mode }
+input-pad-ring-mode = Ring { $number }, Modus { $mode }
 input-pad-strip = Streifen { $number }
-input-pad-strip-mode = Streifen { $number } · Modus { $mode }
+input-pad-strip-mode = Streifen { $number }, Modus { $mode }
 input-pad-dial-nothing = Nichts tun
 input-pad-dial-scroll = Scrollen
 input-pad-dial-zoom = Zoomen
@@ -184,8 +181,6 @@ shortcut-new-window = Neues Fenster
 shortcut-add-tab = Tab hier hinzufügen
 shortcut-duplicate-tab = Tab duplizieren
 shortcut-open-terminal = Terminal öffnen
-shortcut-global-search = Globale Suche
-shortcut-lock = Sperren
 shortcut-workspace-wheel = Arbeitsbereichsrad
 shortcut-display-layout = Anzeigeanordnung
 shortcut-capture-screenshot = Bildschirmfoto aufnehmen
@@ -196,9 +191,9 @@ shortcut-explore-workspace-history = Arbeitsbereichsverlauf erkunden
 shortcut-guide = Tastaturhilfe
 shortcut-stop-remote-input = Alle Ferneingaben beenden
 shortcut-toggle-mouse-keys = Maustasten umschalten
-shortcut-name-search = Globale Suche
+shortcut-name-search = Überall suchen
 shortcut-name-workspace-overview = Übersicht
-shortcut-name-lock = Sperren
+shortcut-name-lock = Bildschirm sperren
 shortcut-name-quick-settings = Schnelleinstellungen
 shortcut-name-shortcut-help = Desktop-Hilfe
 shortcut-name-focus-previous-window = Vorheriges Fenster fokussieren
@@ -249,20 +244,21 @@ shortcut-category-apps = Apps
 shortcut-category-capture = Aufnahme
 shortcut-category-accessibility = Bedienungshilfen
 settings-shortcut-unassigned = Nicht belegt
+settings-shortcut-or = oder
 settings-shortcuts-vim = Vim-Navigation (H J K L)
 settings-shortcuts-actions = Aktionen
 settings-shortcuts-actions-caption = Der Tastatur-Auslöser eines gespeicherten Kurzbefehls belegt hier seine Tastenkombination; ändere oder entferne ihn im Kurzbefehl.
 
 # Geräte: was jeder Kontinuitätsschalter teilt
-continuity-clipboard-description = Kopierte Texte und Bilder mit dem aktuellen zertifizierten Gerät teilen.
-continuity-notifications-description = Inhalte und Aktionen von Benachrichtigungen auf das aktuelle Gerät spiegeln.
-continuity-wifi-settings-description = Gespeicherte Netzwerke und passende persönliche Einstellungen anbieten.
-continuity-media-description = Wiedergabe fortsetzen, Mediensteuerung anbieten und das Lautsprecher-Timing für Lautsprechergruppen und Audio auf anderen Geräten synchron halten.
-continuity-display-input-description = Diesem Gerät erlauben, einen Bildschirm zu erweitern oder Eingaben von anderen Geräten anzunehmen.
-continuity-file-transfer-description = Ausdrücklich gesendete Dateien zwischen deinen zertifizierten Geräten annehmen.
-continuity-realtime-sessions-description = Laufende Anrufe und andere Live-Sitzungen von Apps übergeben.
-continuity-typed-gamepad-description = Typisierte Gamepad-Ereignisse weiterleiten, niemals einen untypisierten Eingabestrom.
-continuity-app-continuations-description = App-Platzierung und einen begrenzten Fortsetzungsstand für deine zertifizierten Geräte anbieten.
+continuity-clipboard-description = Kopierte Texte und Bilder zwischen deinen Geräten teilen.
+continuity-notifications-description = Benachrichtigungen dieses Geräts auf deinen anderen Geräten anzeigen.
+continuity-wifi-settings-description = Gespeicherte WLAN-Netzwerke und persönliche Einstellungen teilen.
+continuity-media-description = Wiedergabe auf einem anderen Gerät fortsetzen und über dessen Lautsprecher abspielen.
+continuity-display-input-description = Ein anderes Gerät als zusätzlichen Bildschirm, Tastatur und Maus nutzen.
+continuity-file-transfer-description = Dateien zwischen deinen Geräten senden.
+continuity-realtime-sessions-description = Anrufe und andere Live-Sitzungen übergeben.
+continuity-typed-gamepad-description = Einen Controller von einem anderen Gerät nutzen.
+continuity-app-continuations-description = In einer App auf einem anderen Gerät dort weitermachen, wo du aufgehört hast.
 
 # Speakers pane
 speakers-overview-title = Lautsprecher auf deinen Geräten
@@ -271,10 +267,9 @@ speakers-media-off = Schalte Medien unter Geräte & Sync ein, um über Lautsprec
 speakers-begin = Lautsprecher einrichten
 speakers-member-summary = { $device } ({ $role })
 speakers-ready-count = { $ready } von { $total } bereit
-speakers-set-up-elsewhere = { $summary } · eingerichtet auf { $leader }
-speakers-clock-failed-detail = { $summary } · kann nicht synchron spielen: { $reason }
+speakers-set-up-elsewhere = { $summary }, eingerichtet auf { $leader }
+speakers-clock-failed-detail = { $summary }, kann nicht synchron spielen: { $reason }
 speakers-calibrate-button = Kalibrieren
-speakers-keep = Behalten
 speakers-delete = Löschen
 speakers-delete-arm = Löschen…
 speakers-back = Zurück
@@ -317,7 +312,7 @@ speakers-member-offline = Offline
 speakers-member-output-missing = Ausgang getrennt
 speakers-member-unavailable = Medienübergabe ist dort ausgeschaltet
 speakers-member-not-certified = Keines deiner Geräte
-speakers-member-role-trim = { $role } · { $trim }
+speakers-member-role-trim = { $role }, { $trim }
 speakers-playback-playing = Spielt
 speakers-playback-connecting = Verbindet…
 speakers-playback-syncing = Uhren werden abgeglichen…
@@ -343,6 +338,8 @@ speakers-layout-intro = Zieh jeden Lautsprecher dorthin, wo er steht. Du sitzt a
 speakers-layout-x = { $label }: von links nach rechts
 speakers-layout-y = { $label }: von hinten nach vorn
 speakers-layout-play = Abspielen
+speakers-layout-across = Links nach rechts
+speakers-layout-depth = Vorne nach hinten
 speakers-layout-play-on = Einen Ton auf { $label } abspielen
 speakers-layout-crowded = Zwei Lautsprecher können nicht an genau derselben Stelle stehen
 speakers-room-you = Du
@@ -351,7 +348,6 @@ speakers-name = Name
 speakers-name-description = Wird überall angezeigt, wo du auf diesen Lautsprechern abspielen kannst
 speakers-name-placeholder = Wohnzimmer
 speakers-default-name = Lautsprecher
-speakers-name-join-note = Deine anderen Geräte fragen jeweils einmal, ob sie beitreten sollen. Dort spielt nichts, bevor du zustimmst.
 speakers-name-empty = Gib den Lautsprechern einen Namen
 speakers-name-too-long = Verwende einen kürzeren Namen
 speakers-name-unidentified = Gib an, welcher Lautsprecher { $speaker } ist
@@ -403,12 +399,13 @@ speakers-run-microphone-awaiting = Wartet auf Erlaubnis auf dem Gerät
 speakers-run-microphone-declined = Auf dem Gerät abgelehnt
 speakers-run-microphone-listening = Hört zu …
 speakers-run-microphone-used = Hat { $heard } Lautsprecher gehört
-speakers-run-microphone-used-rejected = Hat { $heard } Lautsprecher gehört · { $rejected } widersprüchliche Messwerte beiseitegelassen
+speakers-run-microphone-used-rejected = Hat { $heard } Lautsprecher gehört, { $rejected } widersprüchliche Messwerte beiseitegelassen
 speakers-run-microphone-not-heard = Nichts gehört: zu weit entfernt
 speakers-run-microphone-failed = Konnte nicht mithören: { $reason }
 speakers-run-waiting-for-microphones = Erlaube es auf jedem Gerät, das fragt, oder brich ab und schalte das Mikrofon aus.
 
 # Navigation: sidebar sections, categories and the page heading
+settings-nav-name = Einstellungskategorien
 settings-search-placeholder = Einstellungen durchsuchen
 settings-section-connectivity = Verbindungen
 settings-section-devices = Geräte
@@ -447,18 +444,33 @@ settings-category-notifications = Benachrichtigungen
 settings-category-notifications-subtitle = Banner, Vorschauen, Töne und „Bitte nicht stören“
 settings-category-default-apps = Apps & Dateien
 settings-category-default-apps-subtitle = Deine bevorzugten Apps für Links und Dateitypen
-settings-personal-apps-scope = Persönlich
-settings-personal-apps-applies-to = Gilt für
-settings-personal-apps-applies-value = Deine Identität auf jedem Gerät
-settings-personal-apps-scope-caption = Ein Arbeitsbereich kann eine gemeinsame Wahl festlegen. In den Arbeitsbereich-Einstellungen kannst du ihr folgen, zu dieser persönlichen Wahl zurückkehren oder für diesen Arbeitsbereich eine andere App wählen.
 settings-personal-apps-open-workspace = App-Regeln des aktuellen Arbeitsbereichs öffnen
-settings-personal-apps-files-title = Dateien und Links öffnen mit
-settings-personal-apps-choice-follows = Deine Wahl folgt dir, solange dieser Arbeitsbereich keine andere App wählt.
+settings-personal-apps-files-title = Dateien öffnen mit
+settings-personal-apps-links-title = Links öffnen mit
 settings-personal-apps-empty = Derzeit erklärt keine installierte Anwendung einen unterstützten Datei- oder Linktyp. Vorgaben erscheinen hier, sobald Apps installiert sind.
-settings-personal-apps-ext-files = .{ $ext }-Dateien
-settings-personal-apps-scheme-links = { $scheme }:-Links
-settings-personal-apps-undo-name = Persönliche Standard-Apps
-settings-personal-apps-undo-action = Standard-Apps ändern
+settings-personal-apps-ext-files = { $ext ->
+    [html] Webseiten
+    [htm] Webseiten
+    [jpg] JPEG-Bilder
+    [jpeg] JPEG-Bilder
+    [png] PNG-Bilder
+    [gif] GIF-Bilder
+    [webp] WebP-Bilder
+    [svg] SVG-Bilder
+    [pdf] PDF-Dokumente
+    [md] Markdown-Dokumente
+    [txt] Textdateien
+    [rs] Quellcode
+   *[other] { $ext }-Dateien
+ }
+settings-personal-apps-scheme-links = { $scheme ->
+    [http] Weblinks
+    [https] Sichere Weblinks
+    [mailto] E-Mail-Links
+    [tel] Telefonlinks
+    [webcal] Kalenderlinks
+   *[other] { $scheme }-Links
+ }
 settings-category-storage = Speicher
 settings-category-storage-subtitle = Apps, Daten, Cache und synchronisierte Dateien
 settings-category-external-accounts = Externe Konten
@@ -479,14 +491,15 @@ settings-users-error-title = Diese Änderung konnte nicht übernommen werden
 settings-users-add = Benutzer hinzufügen
 settings-users-empty-accounts = Auf diesem Gerät wurden keine normalen Anmeldekonten gefunden.
 settings-users-login-accounts = Anmeldekonten
-settings-users-empty-identities = Keine Signaturidentität vorhanden. Die Identitätseinrichtung läuft in deiner persönlichen Sitzung; sie läuft nie als root.
+settings-users-empty-identities = Noch keine Signaturidentität. Du richtest sie in deiner eigenen Sitzung ein.
 settings-users-identities-title = Deine Tilo-Identitäten
-settings-users-protection-secret-service = Secret Service ist bevorzugt. Ist der Desktop-Schlüsselbund gesperrt, hält das Signieren an und bittet die Sitzung um Entsperren; Tilo kopiert diesen Schlüssel nie still ins App-Verzeichnis.
-settings-users-protection-broker-file = Diese Sitzung nutzt für mindestens eine Identität den kompatiblen Datei-Fallback. Der Signatur-Broker isoliert ihn von Apps, aber er ist im Ruhezustand nicht verschlüsselt. Installiere und entsperre einen freedesktop-Secret-Service, damit künftige Identitäten im Desktop-Schlüsselbund liegen.
-settings-users-protection-hardware = Hardware-gesichert heißt, der installierte Anbieter hat diese Identität tatsächlich versiegelt. Ein vorhandenes TPM allein gilt nie als Beweis.
-settings-users-protection-title = Signaturschutz
-settings-users-boundary-title = Identitätsgrenze
-settings-users-boundary-body = Ein Anmeldekonto kann mehrere Identitäten haben. Die aktive Identität gilt nur für neu gestartete Apps; laufende Apps behalten ihren bisherigen Autor. Arbeitsbereiche können einschränken, welche Identität eintreten darf, aber nicht den Schlüssel einer anderen lesen. Apps erhalten eine kurzlebige Signaturverbindung für die gewählte Identität — nie den privaten Schlüssel oder das Identitätsverzeichnis.
+settings-users-protection-broker-file = Einige Schlüssel liegen in einer privaten, unverschlüsselten Datei. Entsperre deinen Schlüsselbund, um sie zu schützen.
+settings-users-protection-service = Durch deinen Schlüsselbund geschützt
+settings-users-protection-file = In einer privaten Datei gespeichert
+settings-users-protection-hardware-backed = Durch Hardware geschützt
+settings-users-protection-legacy = Muss geschützt werden
+settings-users-protection-unavailable = Nicht verfügbar
+settings-users-protection-device-certificate = Signiert mit dem Zertifikat dieses Geräts
 settings-users-placeholder-full-name = Vollständiger Name
 settings-users-placeholder-username = anmeldename
 settings-users-placeholder-password = Mindestens 10 Zeichen
@@ -496,7 +509,7 @@ settings-users-add-form-title = Anmeldekonto hinzufügen
 settings-users-full-name = Vollständiger Name
 settings-users-username = Benutzername
 settings-users-password = Passwort
-settings-users-password-note = Das Passwort wird aus dem Settings-Zustand gelöscht, bevor es die authentifizierte Systemgrenze überschreitet. Neue Konten starten als Standard.
+settings-users-password-note = Neue Konten beginnen als Standard.
 settings-users-make-standard = Zum Standard machen
 settings-users-make-administrator = Zum Administrator machen
 settings-users-disable-autologin = Automatische Anmeldung aus
@@ -506,49 +519,38 @@ settings-users-remove-account-and-files = Konto und Dateien entfernen
 settings-users-remove-ellipsis = Entfernen…
 settings-users-role-administrator = Administrator
 settings-users-role-standard = Standard
-settings-users-signed-in =  · angemeldet
-settings-users-uid-line = { $username } · UID { $uid }{ $you }
+settings-users-signed-in-as = Angemeldet als { $username }
 settings-users-identity-active = Aktiv
 settings-users-identity-available = Verfügbar
 settings-users-identity-use = Verwenden
 settings-users-identity-remove = Identität entfernen
 settings-users-identity-protect = Jetzt schützen
-settings-users-identity-detail = { $id } · Schlüssel { $key }… · { $threshold }-von-{ $total } · { $protection }
 settings-users-updated = Benutzerkonto aktualisiert.
-settings-users-stale-command = Einen veralteten Benutzerverwaltungsbefehl ignoriert.
 settings-users-account-gone = Das Benutzerkonto ist nicht mehr vorhanden.
 settings-users-identity-store-unavailable = Der Identitätsspeicher ist nicht verfügbar.
 
 # Notifications chrome. Focus clock times stay 24h identifiers.
-notif-delivery = Zustellung
-notif-dnd-title = Nicht stören
 notif-dnd = Nicht stören
 notif-dnd-desc = Alle Banner und Töne stumm, bis Sie es ausschalten
-notif-status-silenced = Stumm
-notif-status-banners-off = Banner aus
-notif-status-active = Aktiv
 notif-banners-title = Banner
 notif-show-banners = Banner zeigen
 notif-show-banners-desc = Banner einblenden, wenn eine Benachrichtigung kommt
 notif-previews = Nachrichteninhalt zeigen
 notif-previews-desc = Den Text im Banner zeigen, nicht nur die App
-notif-delivery-title = Sperrbildschirm und Shell
+notif-delivery-title = Zustellung
 notif-lock-screen = Auf dem Sperrbildschirm zeigen
 notif-lock-screen-desc = Nur eine geschwärzte Anzahl, solange die Sitzung gesperrt ist
-notif-sounds = Benachrichtigungstöne
-notif-sounds-pipewire = Über die PipeWire-Sitzungsroute verfügbar
-notif-sounds-missing = Nicht verfügbar: PipeWire-Soundwerkzeuge installieren
+notif-sounds-missing = Benachrichtigungstöne sind auf diesem Gerät nicht verfügbar
 notif-play-sounds = Töne abspielen
 notif-play-sounds-desc = Aktuelles Desktop-Klangthema und Audioweg nutzen
 notif-badges = Benachrichtigungsabzeichen
-notif-badges-desc = Geprüfte App-Zähler in Shell-Flächen, die Abzeichen können
-notif-focus-title = Fokusplan
+notif-badges-desc = Ungelesene Zähler auf App-Symbolen anzeigen
+notif-focus-title = Fokus
 notif-focus-enabled = Geplante Ruhezeiten
 notif-focus-enabled-desc = Banner und Töne automatisch zurückhalten
 notif-focus-from = Von
 notif-focus-until = Bis
 notif-focus-days = Tage
-notif-focus-caption = Der Plan folgt der Ortszeit. Freigegebene Prioritäts-Apps dürfen weiter benachrichtigen; eine App kann sich nicht selbst als Priorität markieren.
 notif-days-every = Jeden Tag
 notif-days-weekdays = Werktage
 notif-days-weekends = Wochenende
@@ -556,7 +558,6 @@ notif-mute-off = Nicht stumm
 notif-mute-1h = Für 1 Stunde
 notif-mute-8h = Für 8 Stunden
 notif-mute-24h = Für 24 Stunden
-notif-app-verified = Geprüfte Anwendung
 notif-app-banners = Banner erlauben
 notif-app-banners-desc = Die globale Bannerwahl für diese Anwendung überschreiben
 notif-app-previews = Vorschau zeigen
@@ -564,24 +565,20 @@ notif-app-previews-desc = Nachrichteninhalt dieser Anwendung erlauben
 notif-app-sounds = Töne abspielen
 notif-app-sounds-desc = Die globale Tonwahl für diese Anwendung überschreiben
 notif-app-badges = Abzeichen zeigen
-notif-app-badges-desc = Geprüfte ungelesene Zähler in unterstützten Shell-Flächen
+notif-app-badges-desc = Ungelesene Zähler für diese App anzeigen
 notif-app-priority = Priorität während Fokus
-notif-app-priority-desc = Diese geprüfte Anwendung durch den Fokusplan lassen
+notif-app-priority-desc = Diese App durch geplante Ruhezeiten lassen
 notif-app-contacts = Prioritätskontakte
-notif-app-contacts-desc = Dieser geprüften Kommunikations-App erlauben, Absender zu nennen; nur Favoriten in Kontakte durchbrechen den Fokus
+notif-app-contacts-desc = Dieser App erlauben, deine Favoriten zu erkennen; sie durchbrechen die Ruhezeiten
 notif-app-mute = Vorübergehend stumm
 notif-app-allowed = Banner und ihr Inhalt sind gerade erlaubt.
 notif-app-hidden = Banner sind erlaubt, der Inhalt bleibt verborgen.
 notif-app-history = Benachrichtigungen gehen ohne Banner in den Verlauf.
 notif-apps-title = Anwendungen
 notif-apps-empty = Pro-App-Steuerung erscheint, sobald eine paketierte Anwendung installiert ist.
-notif-apps-caption = Regeln nutzen geprüfte Tilo-, System- oder Flatpak-Identitäten — nie den Namen, den eine App in eine Benachrichtigung schreibt.
-notif-how-title = So gilt das
-notif-how-caption = Diese Wahl liest die Benachrichtigungsschicht des Compositors, damit jede geprüfte App dieselbe Zustellung hat. Nicht stören überstimmt die einzelnen Banner- und Tonschalter.
 notif-priority-title = Prioritätskontakte
 notif-priority-source = Quelle
 notif-priority-source-value = Favoriten in Kontakte
-notif-priority-caption = Kontakte veröffentlicht ein geschwärztes, gesalzenes Prioritätsregister an die Shell. Rohe Adressen liegen dort nicht. Nur Kommunikations-Apps, die Sie oben zulassen, dürfen einen Absender behaupten; die Shell prüft ihn gegen das Register.
 
 # Updates pane
 mesh-role-personal = Persönliches Gerät
@@ -600,16 +597,16 @@ mesh-runtime-ready = Bereit
 mesh-from = Von { $origin }
 mesh-resolved = Aufgelöst zu { $winner }; weicht ab von { $others }{ $suffix }
 mesh-and-more =  und { $n } weitere
-mesh-wifi-row = WLAN · { $ssid }
+mesh-wifi-row = WLAN: { $ssid }
 mesh-wifi-sealed = Versiegeltes { $security }-Profil. { $detail }
 mesh-provenance-err = Roaming-Herkunft ist nicht verfügbar; es wird keine Konflikentscheidung gezeigt: { $error }
 mesh-revoke-retired = Ausgemustert
 mesh-revoke-lost = Verloren
 mesh-revoke-stolen = Gestohlen
 mesh-revoke-compromised = Kompromittiert
-mesh-last-seen-now = Offline · Zuletzt gerade eben gesehen
-mesh-last-seen-min = Offline · Zuletzt vor { $n } Min. gesehen
-mesh-last-seen-h = Offline · Zuletzt vor { $n } Std. gesehen
+mesh-last-seen-now = Offline, zuletzt gerade eben gesehen
+mesh-last-seen-min = Offline, zuletzt vor { $n } Min. gesehen
+mesh-last-seen-h = Offline, zuletzt vor { $n } Std. gesehen
 mesh-badge-syncing = Synchronisiert
 mesh-badge-online = Online
 mesh-badge-checking = Prüfung
@@ -618,10 +615,9 @@ mesh-badge-offline = Offline
 mesh-continue-title = Auf Geräten fortsetzen
 mesh-activity = Arbeitsbereichs- und App-Aktivität
 mesh-sync-auto = Automatisch synchronisieren
-mesh-activity-caption = Nimm offene Arbeitsbereiche, App-Tabs, Leseposition und Wiedergabe auf jedem Gerät wieder auf, das mit deiner Identität angemeldet ist.
 mesh-files = Dateien
 mesh-download-opened = Beim Öffnen herunterladen
-mesh-this-device = Dieses Gerät
+mesh-this-device = Rolle
 mesh-this-device-desc = Normal nutzen, synchronisieren solange es wach ist, oder daraus das immer verfügbare Zuhause für Arbeitsbereiche und Dateien machen.
 mesh-home-peer = Heimgerät
 mesh-home-ready = Alle ausgewählten Arbeitsbereichsdateien sind hier verfügbar.
@@ -637,7 +633,7 @@ mesh-role-hint-server = Offene Arbeitsbereiche und App-Fortschritt bleiben von d
 mesh-workspaces-empty = Deine Arbeitsbereiche erscheinen hier, sobald sie geöffnet werden.
 mesh-keep-workspace = Diesen Arbeitsbereich von diesem Gerät verfügbar halten
 mesh-pairing = Wird gekoppelt…
-mesh-approve = { $label } freigeben · { $code }
+mesh-approve = { $label } freigeben ({ $code })
 mesh-pair-home = Heimserver koppeln
 mesh-add-device = Gerät hinzufügen
 mesh-personal-caption = Wähle auf dem neuen Gerät „Meine vorhandene Tilo-Identität verwenden“. Vergleiche den sechsstelligen Code in der Nähe und gib ihn hier frei. Offene Arbeitsbereiche und vertrauenswürdige Heimgeräte erscheinen automatisch.
@@ -645,45 +641,37 @@ mesh-status-revoked = Widerrufen
 mesh-status-this-device = Dieses Gerät
 mesh-status-home-server = Heimserver
 mesh-status-trusted = Vertrauenswürdig
-mesh-fingerprint = Identitätsfingerabdruck · { $id }
+mesh-fingerprint = Identitätsfingerabdruck: { $id }
 mesh-revoke-access = Zugriff widerrufen
 mesh-decommission = Außer Betrieb nehmen
 mesh-why-ending = Warum endet der Zugriff?
 mesh-why-ending-desc = Dieser Grund wird in die Gerätehistorie signiert und kann später nicht geändert werden.
 mesh-access-ends = Zugriff endet dauerhaft
-mesh-access-ends-desc = Das Gerät empfängt und schreibt keine neuen Arbeitsbereichsänderungen mehr. Daten, die schon darauf sind, werden nicht ferngelöscht; ändere bei Verlust oder Diebstahl auch Kontopasswörter.
-mesh-cancel = Abbrechen
 mesh-device-list-err = Geräteliste nicht verfügbar: { $error }
-mesh-device-list-empty = Dieses Gerät erscheint hier, sobald die Identitätseinrichtung abgeschlossen ist.
-mesh-no-target = Kein zertifiziertes Ziel
-mesh-add-target = Füge ein weiteres persönliches Gerät hinzu, damit es ein zulässiges Continuity-Ziel wird.
-mesh-certified = Von deiner Tilo-Identität zertifiziert · Fingerabdruck { $id }. Private Schlüssel und Kopplungsdaten erscheinen hier nie.
-mesh-source-missing = Diese Quelle ist in der zertifizierten Geräteflotte noch nicht vorhanden.
-mesh-source-detail = { $label } · zertifizierter Fingerabdruck { $id }
-mesh-allow-continuity = Continuity von diesem Gerät erlauben
-mesh-allow-continuity-desc = Zentraler gerätelokaler Hauptschalter. Aus schaltet jede Facette sofort, ohne einzelne Entscheidungen zu vergessen.
+mesh-device-list-empty = Dieses Gerät erscheint hier, sobald die Einrichtung abgeschlossen ist.
+mesh-no-target = Kein anderes Gerät
+mesh-add-target = Füge ein weiteres Gerät hinzu, um mit ihm zu teilen.
+mesh-certified = Von deiner Tilo-Identität zertifiziert, Fingerabdruck { $id }.
+mesh-source-missing = Dieses Gerät ist noch nicht in deiner Geräteliste.
+mesh-source-detail = { $label }, zertifizierter Fingerabdruck { $id }
+mesh-allow-continuity = Mit deinen anderen Geräten teilen
+mesh-allow-continuity-desc = Ausschalten, um alles auf einmal zu beenden.
 mesh-facet-active = { $desc } Aktiv für { $target }.
-mesh-facet-prepared = { $desc } Vorbereitet, aber vom Hauptschalter gestoppt.
-mesh-facet-off = { $desc } Auf diesem Gerät aus.
-mesh-privacy-stay = Diese Hardware- und Datenschutzeinstellungen bleiben auf diesem Gerät. Die Einstellungssynchronisation kopiert sie nicht.
+mesh-facet-prepared = { $desc } Pausiert, solange das Teilen aus ist.
+mesh-facet-off = { $desc }
 mesh-current-target = Aktuelles Ziel
 mesh-source = Quelle
-mesh-no-active-until = Keine Funktion wird aktiv, bis ein weiteres nicht widerrufenes zertifiziertes Gerät verfügbar ist.
-mesh-audit-empty = Noch keine lokalen Continuity-Steuerungsänderungen aufgezeichnet.
-mesh-audit-change = Lokale Richtlinienänderung
-mesh-audit-caption = Nur die letzten 24 Steuerungsänderungen bleiben auf diesem Gerät. Zwischenablagedaten, Benachrichtigungstext, Dateinamen, Sitzungszugangsdaten, Adressen und Eingabeinhalte werden nie protokolliert.
-mesh-roaming-empty = Auf diesem Gerät wurde noch keine Roaming-Einstellungsentscheidung veröffentlicht.
-mesh-roaming-none = Es roamingen keine persönlichen Einstellungen oder gespeicherten WLAN-Profile.
-mesh-roaming-caption = Einstellungskonflikte nutzen die neueste zertifizierte Revision, dann die Geräteidentität als stabilen Gleichstand. WLAN-Zeilen enthalten nur Profilmetadaten; Passwörter und versiegelte Umschläge kommen nie in die Einstellungen.
+mesh-audit-empty = Noch keine Änderungen am Teilen.
+mesh-roaming-empty = Noch werden keine Einstellungen auf dieses Gerät übertragen.
+mesh-roaming-none = Es werden keine persönlichen Einstellungen oder gespeicherten WLAN-Netzwerke übertragen.
 mesh-home-caption = Wähle „Heimserver koppeln“, während dein neuer Tilo-Server startet. Er erhält Identität und Vollsync-Einrichtung automatisch.
 mesh-paired-homes = Gekoppelte Heimserver
-mesh-privacy-title = Continuity-Datenschutz
-mesh-route-title = Aktuelle Continuity-Route
-mesh-roaming-title = Roaming-Einstellungen und WLAN
-mesh-activity-title = Letzte Continuity-Aktivität
-mesh-add-personal = Persönliches Gerät hinzufügen
-mesh-trusted-title = Deine vertrauenswürdigen Geräte
-mesh-availability-title = Geräteverfügbarkeit
+mesh-privacy-title = Mit deinen Geräten teilen
+mesh-route-title = Aktuelles Ziel
+mesh-roaming-title = Roaming-Einstellungen
+mesh-activity-title = Letzte Aktivität
+mesh-trusted-title = Deine Geräte
+mesh-availability-title = Dieses Gerät
 mesh-synced-title = Synchronisierte Arbeitsbereiche
 mesh-home-nas = Heimserver oder NAS
 mesh-rename = Umbenennen
@@ -718,35 +706,36 @@ continuity-wifi-settings = WLAN und Einstellungen
 continuity-media = Medien
 continuity-display-input = Bildschirm und Eingabe
 continuity-file-transfer = Dateiübertragung
-continuity-realtime-sessions = Echtzeitsitzungen
-continuity-typed-gamepad = Typisierte Gamepad-Weiterleitung
-continuity-app-continuations = App-Fortsetzungen
-continuity-all = Gesamte Continuity
-continuity-audit-allowed = { $subject } erlaubt · lokaler Eintrag { $at }
-continuity-audit-stopped = { $subject } gestoppt · lokaler Eintrag { $at }
-settings-appearance-theme-card = Erscheinungsbild
-settings-appearance-theme = Thema
+continuity-realtime-sessions = Live-Sitzungen
+continuity-typed-gamepad = Controller
+continuity-app-continuations = App-Übergabe
+continuity-all = Alles Teilen
+continuity-audit-allowed = { $subject } erlaubt
+continuity-audit-stopped = { $subject } gestoppt
+settings-appearance-theme-card = Thema
+settings-appearance-mode = Erscheinungsbild
+settings-appearance-mode-light = Hell
+settings-appearance-mode-dark = Dunkel
+settings-appearance-mode-automatic = Automatisch
+settings-appearance-dark-theme = Dunkles Thema
+settings-appearance-light-theme = Helles Thema
+settings-appearance-colour-card = Deine Farbe
+settings-appearance-size-card = Größe
+settings-appearance-density = Dichte
+settings-appearance-density-compact = Kompakt
+settings-appearance-density-regular = Normal
+settings-appearance-density-roomy = Großzügig
 settings-appearance-ui-scale = UI-Skalierung
+settings-appearance-reduce-transparency = Transparenz reduzieren
+settings-appearance-reduce-transparency-desc = Menüs, Fenster und Blätter undurchsichtig machen
+settings-appearance-distinct-letters = Ähnliche Zeichen immer unterscheiden
+settings-appearance-distinct-letters-desc = I, l und 1 sowie 0 und O in allem Text unterscheidbar setzen, nicht nur in Namen, Codes und Links
 settings-appearance-text-size = Textgröße
 settings-appearance-text-small = Klein
 settings-appearance-text-default = Standard
 settings-appearance-text-large = Groß
 settings-appearance-text-larger = Größer
-settings-appearance-access-card = Barrierefreiheit
-settings-appearance-high-contrast = Hoher Kontrast
-settings-appearance-high-contrast-desc = Kontrast für sehbehinderte Nutzer maximieren
-settings-appearance-reduce-motion = Bewegung reduzieren
-settings-appearance-reduce-motion-desc = Animationen und Übergänge überspringen
-settings-appearance-applied-card = Angewandtes Thema
-settings-appearance-active-theme = Aktives Thema
-settings-appearance-text-scale = Textskalierung
-settings-appearance-reduced-motion = Reduzierte Bewegung
-settings-appearance-on = Ein
-settings-appearance-off = Aus
-settings-appearance-shared-card = Wird mit deinen Apps geteilt
-settings-appearance-shared-body = Thema, Kontrast, Bewegung, UI-Skalierung und Textgröße liest der Compositor und jede Tilo-App, damit das ganze System dem Look folgt, den du hier wählst. Die UI-Skalierung vergrößert die gesamte Oberfläche und wirkt mit der eigenen Skalierung jedes Bildschirms zusammen; die Textgröße ändert zusätzlich die Schrift.
 settings-appearance-wallpaper-card = Hintergrundbild
-settings-appearance-wallpaper-body = Wähle ein Bild für den Desktop. Ein Arbeitsbereich ist, mit wem du arbeitest — ein eigenes Bild zeigt auf einen Blick, in welchem geteilten Arbeitsbereich du bist.
 settings-appearance-use-for = Verwenden für
 settings-appearance-show-on = Anzeigen auf
 settings-appearance-scope-workspace = Dieser Arbeitsbereich
@@ -770,21 +759,18 @@ settings-appearance-night-starts = Nacht beginnt
 settings-appearance-today = Heute
 settings-appearance-today-value = Tag ab { $day }, Nacht ab { $night }
 settings-appearance-schedule-no-location = Deine Zeitzone liefert keinen Ort, daher läuft der Tag nach den eigenen Zeiten. Das automatische Thema und ein geplantes Nachtlicht folgen diesem Zeitplan.
-settings-appearance-schedule-follow = Das automatische Thema und ein geplantes Nachtlicht folgen diesem Zeitplan.
 settings-appearance-day-night-card = Tag und Nacht
 a11y-vision-title = Sehen
 a11y-high-contrast = Hoher Kontrast
 a11y-high-contrast-desc = Kontrast für sehbehinderte Nutzer maximieren
 a11y-reduce-motion = Bewegung reduzieren
 a11y-reduce-motion-desc = Animationen und Übergänge überspringen
-a11y-text-size = Textgröße
 a11y-colour-filter = Farbfilter
 a11y-magnifier = Lupe
 a11y-magnifier-view = Lupenansicht
 a11y-pointer-title = Zeiger
 a11y-mouse-keys = Maustasten
 a11y-mouse-keys-desc = Zeiger mit dem Ziffernblock bewegen
-a11y-mouse-keys-caption = Ziffernblock 1–9 bewegt den Zeiger und beschleunigt beim Halten; 5 klickt, + doppelklickt, 0 hält die Taste und . lässt sie los. / * − wählen die linke, mittlere oder rechte Taste. Umschalt+Alt+Num-Lock schaltet Maustasten ein oder aus.
 a11y-large-cursor = Großer Zeiger
 a11y-large-cursor-desc = Mauszeiger vergrößern, damit er leichter zu finden ist
 a11y-cursor-size = Zeigergröße
@@ -821,16 +807,12 @@ a11y-focus-highlight = Anwendungs-Fokushervorhebung
 a11y-focus-highlight-status = Für Nicht-Tilo-Anwendungen noch nicht verfügbar
 a11y-live-captions = Live-Untertitel
 a11y-live-captions-status = Nicht verfügbar — keine lokale Spracherkennung installiert
-a11y-shared-title = Mit Ihren Apps gemeinsam
-a11y-shared-caption = Seheinstellungen sind dieselben Werte wie in Darstellung — eine Änderung hier oder dort gilt gemeinsam. Zeigergröße, Maustasten sowie Einrast-, Verzöger- und Prellfilter wendet die Eingabeschicht des Compositors an. Farbfilter, Lupe und Zeigerhilfen sind finale Compositor-Effekte. Die Einfügemarkenbreite gehört zum gemeinsamen Toolkit. Der Bildschirmleser lädt in jeder Tilo-App neu, visuelle Hinweise zeichnet die Shell. Die Bildschirmtastatur ist ein isolierter Systemdienst: der Compositor startet sie auf einem privaten Eingabemethoden-Socket und hält ihre Fläche aus Arbeitsflächen-Kacheln. Nicht unterstützte Fähigkeiten stehen ausdrücklich da, statt als tote Schalter gespeichert zu werden.
 settings-about-unknown = unbekannt
 settings-about-identity-card = Arbeitsbereich-Identität
 settings-about-person = Person
 settings-about-not-connected = Nicht verbunden
 settings-about-identity = Identität
-settings-about-identity-caption = Das ist die Identität, die für den aktuellen Arbeitsbereich gewählt ist. Apps erhalten ihr öffentliches Profil; privates Signaturmaterial bleibt außerhalb der Sandbox.
 settings-about-backup-card = Identitäts-Sicherung
-settings-about-backup-caption = Erstelle eine verschlüsselte tragbare Kopie deiner Identität. Tilo fragt nach einer Passphrase, lässt dich den Speicherort wählen und prüft die Kopie, bevor es den Erfolg bestätigt.
 settings-about-backup-button = Verschlüsselte Sicherung erstellen…
 settings-about-system-card = System
 settings-about-os = Betriebssystem
@@ -840,8 +822,13 @@ settings-about-uptime = Laufzeit
 settings-about-hardware-card = Hardware
 settings-about-processor = Prozessor
 settings-about-memory = Speicher
-accounts-intro = Verbinden Sie E-Mail, Kalender und Dateien einmal und nutzen Sie sie in passenden Apps. Kontodaten und Anmeldedaten bleiben auf diesem Gerät; sie werden nie mit einem Arbeitsbereich oder Mitarbeitenden geteilt.
-accounts-vault-local = Der Secret Service des Desktops ist nicht verfügbar, daher nutzt diese Sitzung einen nur für Sie geltenden lokalen Tresorschlüssel. Installieren oder entsperren Sie einen Secret Service für eine stärkere Schlüsselverwahrung.
+accounts-browser-identity-title = Tilo-Identitäten im Browser
+accounts-browser-identity-about = Öffentliche Kontoauswahl für bestehende Browser-Anmeldungen. Das Ausblenden oder Entfernen einer Auswahl widerruft weder die Anmeldung noch Ressourcenberechtigungen.
+accounts-browser-identity-hide = Aus Browser-Kontoauswahl ausblenden
+accounts-browser-identity-show = In Browser-Kontoauswahl anzeigen
+accounts-browser-identity-remove = Aus Browser-Kontoauswahl entfernen
+
+accounts-vault-local = Es ist kein Schlüsselbund verfügbar, deshalb liegen Passwörter in einer privaten Datei auf diesem Gerät. Entsperre oder installiere einen Schlüsselbund für besseren Schutz.
 accounts-empty-sample = Sie haben noch keine Konten. Die Einträge unten sind Beispiele — mit „Hinzufügen“ legen Sie ein echtes an.
 accounts-empty = Sie haben noch keine Konten. Mit „Hinzufügen“ verbinden Sie das erste.
 accounts-remove-title = Konto entfernen?
@@ -849,7 +836,7 @@ accounts-remove-body = { $name } wird von diesem Gerät entfernt. Lokal zwischen
 accounts-remove-confirm = Von diesem Gerät entfernen
 accounts-cancel = Abbrechen
 accounts-add = Konto hinzufügen
-accounts-kind-empty = Noch keine { $kind }-Konten.
+accounts-add-title = Konto hinzufügen
 accounts-best-effort-icloud = Mit Vorbehalt: iCloud Drive hat keine öffentliche API, daher nutzt Tilo die Web-API von iCloud.com. Das kann aufhören zu funktionieren, bis Tilo aktualisiert wird.
 accounts-status-example = Beispiel
 accounts-status-disabled = Deaktiviert
@@ -860,16 +847,20 @@ accounts-status-reauth = Erneut anmelden
 accounts-status-error = Aufmerksamkeit nötig
 accounts-status-never = Noch nicht geprüft
 accounts-best-effort = Mit Vorbehalt
-accounts-sync-none = Keine Anwendung hat für dieses Konto eine Synchronisation gemeldet.
 accounts-sync-never = nie abgeschlossen
 accounts-sync-when = Letzte erfolgreiche Synchronisation: { $when }
-accounts-sync-when-msg = Letzte erfolgreiche Synchronisation: { $when } · { $message }
+accounts-sync-when-msg = Letzte erfolgreiche Synchronisation { $when }: { $message }
 accounts-reauth = Erneut anmelden
 accounts-reauth-icloud = Erneut authentifizieren
 accounts-edit = Bearbeiten
 accounts-check-server = Server prüfen
 accounts-verify = Anmeldung prüfen
 accounts-remove = Entfernen
+accounts-status-paused = Synchronisierung pausiert
+accounts-sync-now = Jetzt synchronisieren
+accounts-pause-sync = Synchronisierung pausieren
+accounts-resume-sync = Synchronisierung fortsetzen
+accounts-cloud-unavailable = Der Cloud-Kontodienst läuft nicht
 accounts-display-name = Anzeigename
 accounts-email = E-Mail-Adresse
 accounts-username = Benutzername
@@ -885,11 +876,9 @@ accounts-save = Konto speichern
 accounts-form-add = { $kind }-Konto hinzufügen
 accounts-form-edit = { $kind }-Konto bearbeiten
 accounts-save-error = Speichern fehlgeschlagen: { $error }
-accounts-form-caption = Pflichtfelder, der sichere Endpunkt und die Anmeldedaten werden mit einer begrenzten Protokollanmeldung geprüft, bevor etwas gespeichert wird. Anmeldedaten und Entwürfe bleiben auf dem Gerät; sie gelangen nie in den Zusammenarbeitsstand oder die Kontometadaten.
 accounts-reauth-password = Neues Passwort oder App-Passwort
 accounts-reauth-account = Konto
 accounts-reauth-credential = Anmeldedaten
-accounts-reauth-caption = Das ersetzt ein vorhandenes Passwort oder App-Passwort im Konto-Tresor des Betriebssystems. Konten, die sich im Browser oder mit einer Apple-ID anmelden, bieten stattdessen eine neue Anmeldung.
 accounts-reauth-error = Anmeldedaten konnten nicht aktualisiert werden: { $error }
 accounts-reauth-save = Anmeldedaten aktualisieren
 accounts-reauth-title = Gespeichertes Passwort ersetzen
@@ -897,10 +886,6 @@ accounts-checking = Konto wird vor dem Speichern geprüft…
 accounts-checking-reauth = Ersatz-Anmeldedaten werden geprüft…
 accounts-gone = Konto existiert nicht mehr
 accounts-timeout = Verbindungsprüfung abgelaufen
-accounts-just-now = gerade eben
-accounts-min-ago = vor { $count } Min.
-accounts-h-ago = vor { $count } Std.
-accounts-d-ago = vor { $count } T.
 accounts-kind-mail = E-Mail
 accounts-kind-caldav = Kalender (CalDAV)
 accounts-kind-webdav = Dateien (WebDAV)
@@ -937,26 +922,20 @@ agent-reason-tight = Ein kompaktes Modell lässt Platz für den Desktop und Arbe
 agent-reason-unsupported = Dieses Gerät meldet nicht genug Speicher für zuverlässige lokale Inferenz.
 agent-accel-checked = Wird bei der Installation vom Modelldienst geprüft
 agent-manager-unavailable = Modelldienst nicht verfügbar: { $error }
-agent-notice-service-down = Der lokale Modelldienst ist nicht verfügbar ({ $error }). Installiere oder starte tilo-model-manager, um Hardware zu prüfen, Modelle zu installieren oder den lokalen Modelllebenszyklus zu verwalten.
-agent-notice-refresh-err = Lokale Modelle konnten nicht aktualisiert werden: { $error }
+agent-notice-service-down = Lokale Modelle sind auf diesem Gerät gerade nicht verfügbar.
+agent-notice-refresh-err = Lokale Modelle konnten nicht aktualisiert werden.
 agent-accel-match = Signierte Hardwareübereinstimmung
-agent-accel-available = Tilo hat einen zu diesem Gerät passenden signierten Beschleunigerstapel gefunden. Die Einrichtung staged ein neues unveränderliches Systemabbild; sie installiert keinen Treiber ins laufende System.
 agent-accel-setup = Beschleuniger einrichten
 agent-accel-ready = Bereit zur Einrichtung
 agent-accel-preparing = Beschleunigerunterstützung wird vorbereitet
-agent-accel-queued-caption = Die Anfrage ist in der Warteschlange. Du kannst die Einstellungen verlassen, während Tilo das signierte Systemabbild prüft und staged.
 agent-accel-queued = In der Warteschlange
 agent-accel-staging-label = Beschleunigerunterstützung wird staged
-agent-accel-staging-caption = Tilo erstellt die nächste Boot-Bereitstellung. Der aktuelle Desktop läuft weiter wie gewohnt.
 agent-accel-staging = Wird staged
 agent-accel-restart-caption = Die Beschleunigerunterstützung ist für den nächsten Start bereit. Starte über das System-Energiemenü neu, wenn es passt; Tilo prüft die gestartete Bereitstellung, bevor sie aktiv heißt.
 agent-accel-restart = Neustart erforderlich
-agent-accel-active-caption = Der signierte Beschleunigerstapel ist aktiv und die lokale Modelleinrichtung kann ihn nutzen.
 agent-accel-active = Aktiv
-agent-accel-error-retry = In das laufende System wurde nichts installiert. Erneut versuchen prüft dieses Gerät wieder gegen die signierte Hardware-Richtlinie.
 agent-accel-retry = Beschleuniger-Einrichtung erneut versuchen
 agent-accel-title = Beschleunigerunterstützung
-agent-hw-fit = Hardware-Eignung
 agent-hw-memory = Systemspeicher
 agent-hw-accel = Beschleuniger
 agent-hw-accel-mem = Beschleunigerspeicher
@@ -964,7 +943,6 @@ agent-hw-storage = Verfügbarer Speicherplatz
 agent-gib = { $n } GiB
 agent-rec-model = Empfohlenes Modell
 agent-rec-waiting = Warte auf den signierten Modellkatalog
-agent-rec-waiting-caption = Die Einrichtung bleibt deaktiviert, bis der lokale Modelldienst eine geprüfte, unveränderliche Modellversion meldet.
 agent-setup-unavailable = Einrichtung nicht verfügbar
 agent-rec-title = Empfohlen für dieses Gerät
 agent-service-unavailable = Dienst nicht verfügbar
@@ -981,11 +959,7 @@ agent-model-status = Status
 agent-model-storage = Speicher
 agent-progress-downloading = { $name } wird heruntergeladen
 agent-progress-installing = { $name } wird installiert
-agent-download-progress = { $done } von { $total } heruntergeladen · diese Seite kann verlassen werden
-agent-error-retry-caption = Erneut versuchen setzt geprüfte Dateien fort, wo möglich. Entfernen löscht den lokalen Snapshot dieses Modells.
-agent-ready-running-caption = Für Agenten über das lokale Tilo-Gateway verfügbar. Arbeitsbereichsberechtigungen gelten weiter für jede Aufgabe.
-agent-ready-stopped-caption = Installiert und geprüft. Starte es, wenn Agenten es nutzen sollen; gestoppte Modelle belegen keinen Beschleunigerspeicher.
-agent-hosted-intro = Gehostete und kompatible Endpunkte gehören nur zu diesem Gerät. Zugangsdaten bleiben Verweise im Systemtresor.
+agent-download-progress = { $done } von { $total } heruntergeladen. Du kannst diese Seite verlassen.
 agent-add-anthropic = Anthropic hinzufügen
 agent-add-compatible = Kompatible API hinzufügen
 agent-placeholder-name = Anbietername
@@ -999,6 +973,15 @@ agent-model-busy = Das ist mit diesem Modell gerade nicht möglich.
 agent-provider-not-default = Nur ein aktivierter Anbieter mit Modell kann Standard sein.
 agent-provider-details-required = Ein Anbieter braucht einen Namen und einen Endpunkt.
 agent-provider-saved = Anbieterdetails gespeichert.
+agent-request-limits-title = Grenzen für Modellanfragen
+agent-request-limits-caption = Begrenzen Sie die Ausgabe pro Anfrage und die Planungsdauer auf höchstens 15 Minuten. Aufrufer können eine kürzere Frist wählen. Der Laufzeitkontext beschreibt die Konfiguration; er beweist nicht, dass eine Eingabe hineinpasst. Leere Werte stellen die Standardwerte wieder her.
+agent-source-context = Kontextkapazität des Modells
+agent-runtime-context = Konfigurierter Laufzeitkontext
+agent-plan-timeout = Maximale Planungsdauer (Millisekunden)
+agent-output-allowance = Maximale Ausgabetokens
+agent-context-unknown = Nicht angegeben
+agent-request-limits-clear = Standardwerte wiederherstellen
+agent-request-limits-invalid = Geben Sie eine Ausgabegrenze zwischen 1 und 65536 ein. Der Laufzeitkontext muss zur Modellkapazität passen, darf höchstens 1048576 betragen und muss größer als die Ausgabegrenze sein. Die Planungsdauer muss zwischen 1 und 900000 Millisekunden liegen.
 agent-provider-save-err = Anbieterdetails wurden nicht gespeichert: { $error }
 agent-disable = Deaktivieren
 agent-enable = Aktivieren
@@ -1019,14 +1002,13 @@ agent-default-current = Standard für neue Aufgaben
 agent-use-default = Als Standard verwenden
 agent-config-issue = Anbieterkonfiguration: { $message }
 agent-hosted-title = Gehostete und kompatible Anbieter
-agent-private-title = Von Grund auf privat
-agent-private-caption = Hier konfigurierte Modelle liefern nur Inferenz. Sie geben einem Agenten keinen Zugriff auf einen Arbeitsbereich, eine App, Datei, Nachricht oder ein Gerät.
-agent-local-inference = Lokale Inferenz
-agent-local-gateway = Nur-Loopback-Tilo-Modell-Gateway
+agent-private-title = Datenschutz
+agent-local-inference = Lokale Modelle
+agent-local-gateway = Bleiben auf diesem Gerät
 agent-downloads = Downloads
-agent-downloads-value = Explizit, festgelegt und hier sichtbar
-agent-service-down-title = Lokaler Modelldienst nicht verfügbar
-agent-service-down-body = Installiere oder starte tilo-model-manager, um Hardware zu prüfen, Modelle zu installieren oder den lokalen Modelllebenszyklus zu verwalten. Vorhandene gehostete Anbieter bleiben unten verfügbar.
+agent-downloads-value = Nur mit deiner Zustimmung
+agent-service-down-title = Lokale Modelle nicht verfügbar
+agent-service-down-body = Lokale Modelle lassen sich auf diesem Gerät gerade nicht verwalten. Gehostete Anbieter funktionieren weiterhin.
 agent-service-title = Lokaler Modelldienst
 agent-models-empty-title = Modelle auf diesem Gerät
 agent-models-empty = Keine lokalen Modelle installiert. Die Einrichtung zeigt Download, Speicher, Quelle, Revision und Lizenz, bevor sich etwas ändert.
@@ -1048,7 +1030,6 @@ sound-volume = Lautstärke
 sound-mute = Stumm
 sound-balance = Balance
 sound-mono = Mono-Audio
-sound-mono-caption = Fasst links und rechts in dieser Sitzung zusammen. Die Sitzung stellt die physische Ausgabe wieder her, wenn Sie es ausschalten.
 sound-test-hide = Lautsprechertest ausblenden
 sound-test-show = Lautsprecher testen…
 sound-test-left = Links
@@ -1059,9 +1040,7 @@ sound-input-activity = Eingangsaktivität: { $percent } %
 sound-mic-idle = Der Mikrofontest speichert kein Audio
 sound-mic-stop = Test beenden
 sound-mic-test = Mikrofon testen
-sound-mic-caption = Der Test liest acht Sekunden lang einen Pegel in den Speicher. Er speichert kein Audio und leitet das Mikrofon nicht an Lautsprecher.
 sound-echo = Echo in Anrufen vermindern
-sound-echo-caption = Anrufe hören Ihre Stimme ohne den Klang Ihrer Lautsprecher. Aufnahme-Apps behalten das unverarbeitete Mikrofon.
 sound-hardware = Gerätefähigkeiten
 sound-profile = PipeWire-Geräteprofil
 sound-choose-profile = Profil wählen
@@ -1078,7 +1057,6 @@ sound-speakers-open = Lautsprecher einrichten…
 sound-system = Systemklänge
 sound-system-missing = Dieses Gerät kann keine Systemklänge spielen. Dafür braucht es die PipeWire-Soundwerkzeuge.
 sound-theme = Klangthema
-sound-system-caption = Benachrichtigungstöne folgen außerdem der Wahl jeder App unter Benachrichtigungen. Nicht stören und Fokuszeiten halten Unterbrechungen zurück; Lautstärke-Rückmeldung, der Screenshot-Auslöser und schwacher Akku spielen weiter.
 sound-event-notification = Benachrichtigungen
 sound-event-message = Neue Nachrichten
 sound-event-volume = Lautstärke-Rückmeldung
@@ -1103,7 +1081,6 @@ sound-notice-in-vol-err = Eingangspegel konnte nicht geändert werden: { $error 
 sound-notice-muted = Ausgabe stumm.
 sound-notice-unmuted = Ausgabe nicht mehr stumm.
 sound-notice-mute-err = Stummschaltung konnte nicht geändert werden: { $error }
-sound-notice-balance = Ausgabe-Balance auf { $percent } % gesetzt.
 sound-notice-mono-on = Mono-Ausgabe eingeschaltet.
 sound-notice-mono-off = Mono-Ausgabe ausgeschaltet.
 sound-notice-mono-active = Mono-Ausgabe ist in dieser Sitzung aktiv.
@@ -1127,7 +1104,6 @@ sound-notice-in-device = Audio-Eingabegerät geändert.
 sound-notice-in-device-err = Eingabegerät konnte nicht geändert werden: { $error }
 sound-notice-profile = Audiogeräteprofil geändert.
 sound-notice-profile-err = Audiogeräteprofil konnte nicht geändert werden: { $error }
-sound-notice-vol-err = Lautstärke konnte nicht geändert werden: { $error }
 sound-notice-test-started = { $channel }-Lautsprechertest gestartet.
 settings-bluetooth-card = Bluetooth
 settings-bluetooth-cancel-pairing = Kopplung abbrechen
@@ -1137,18 +1113,16 @@ settings-bluetooth-connect = Verbinden
 settings-bluetooth-connected = Verbunden
 settings-bluetooth-paired = Gekoppelt
 settings-bluetooth-nearby = In der Nähe
-settings-bluetooth-status-battery = { $status } · Akku { $level } %
+settings-bluetooth-status-battery = { $status }, Akku { $level } %
 settings-bluetooth-less = Weniger
 settings-bluetooth-details = Details
 settings-bluetooth-address = Adresse
 settings-bluetooth-signal = Signal
 settings-bluetooth-signal-dbm = { $rssi } dBm
 settings-bluetooth-trust = Diesem Gerät vertrauen
-settings-bluetooth-trust-caption = Ein vertrautes Gerät darf zuvor erlaubte Dienste ohne erneute Bestätigung nutzen. Das erzwingt keine erneute Verbindung.
 settings-bluetooth-rename = Umbenennen
 settings-bluetooth-forget-confirm = Vergessen bestätigen
 settings-bluetooth-forget = Vergessen…
-settings-bluetooth-audio-caption = Ton zeigt Profile und Codecs nur, wenn PipeWire auswählbare Fähigkeiten meldet.
 settings-bluetooth-looking = Suche nach Geräten in der Nähe…
 settings-bluetooth-empty = Keine Geräte gefunden. Versetze ein Gerät in den Kopplungsmodus und starte die Suche.
 settings-bluetooth-stop = Suche beenden
@@ -1190,12 +1164,12 @@ settings-bluetooth-forgot = { $name } vergessen.
 settings-bluetooth-forget-failed = { $name } konnte nicht vergessen werden: { $error }
 settings-bluetooth-forget-ask = { $name } vergessen? Das entfernt Bindung und Schlüssel.
 input-keyboard-title = Tastatur
+input-keyboard-caption = Wähle, wie schnell gehaltene Tasten wiederholt werden.
 input-active-source = Aktive Eingabequelle
 input-key-repeat = Wiederholgeschwindigkeit
 input-key-repeat-off = Wiederholung ist aus — Schieberegler bewegen, um sie einzuschalten
-input-key-repeat-rate = { $rate } Tasten pro Sekunde · beginnt nach { $delay } ms
+input-key-repeat-rate = { $rate } Tasten pro Sekunde, beginnt nach { $delay } ms
 input-key-repeat-faster = Schnelleres Wiederholen beginnt früher
-input-keyboard-caption = Änderungen gelten für diese Sitzung über den Compositor. Bei mehreren Quellen wechselt Super+Alt+Leertaste zur nächsten und merkt sie sich.
 input-compose-key = Compose-Taste
 input-compose-disabled = Aus
 input-compose-ralt = Rechte Alt-Taste
@@ -1216,7 +1190,7 @@ input-spell-auto-desc = Nur sehr sichere Korrekturen nach Leertaste, Satzzeichen
 input-spell-language = Sprache der Rechtschreibprüfung
 input-spell-language-session = Sprache der Sitzung
 input-spell-caption = Rücktaste sofort danach stellt das ursprüngliche Wort wieder her. Passwörter sind immer ausgenommen; andere strukturierte Felder nur, wenn die App das erlaubt.
-input-sources-title = Tastaturbelegung
+input-sources-title = Eingabequellen
 input-sources-active = Aktiv
 input-sources-remove = Entfernen
 input-sources-add = Sprache, Layout oder Eingabemethode hinzufügen
@@ -1236,18 +1210,17 @@ net-connectivity-offline = Offline
 net-connectivity-portal = Anmeldung erforderlich
 net-connectivity-limited = Eingeschränkte Verbindung
 net-connectivity-full = Mit dem Internet verbunden
-net-portal-caption = Dieses Netzwerk verlangt eine Anmeldung im Browser. NetworkManager hält es unterhalb einer voll verbundenen Route, bis die Anmeldung gelingt.
-net-connectivity-caption = Die Konnektivität kommt aus NetworkManager’s Captive-Portal-Prüfung, nicht nur daher, dass eine IP-Adresse da ist.
 net-open-signin = Anmeldeseite öffnen
 net-status = Status
 net-wifi-off = WLAN ist aus
 net-connected-to = Verbunden mit { $ssid }
 net-not-connected = Nicht verbunden
 net-no-wifi-adapter = Kein WLAN-Adapter an diesem Gerät
+net-no-modem = Kein Mobilfunkmodem an diesem Gerät
+net-no-radio = Kein WLAN- oder Mobilfunkadapter an diesem Gerät
 net-applying = Netzwerkänderungen werden angewendet…
 net-refreshing = Wird aktualisiert…
 net-refresh = Aktualisieren
-net-wifi-caption = WLAN-Suche und Verbindung sind Best-Effort über nmcli; gesicherte Netze fragen vor dem Beitritt nach einem Passwort.
 net-wifi = WLAN
 net-wired = Kabelgebunden
 net-airplane = Flugmodus
@@ -1255,7 +1228,7 @@ net-airplane-caption = Schaltet WLAN und Mobilfunk zusammen aus.
 net-hotspot-active = Aktiv
 net-hotspot-off = Aus
 net-hotspot-name = Hotspot-Name
-net-hotspot-password = Passwort · mindestens 8 Zeichen
+net-hotspot-password = Passwort (mindestens 8 Zeichen)
 net-band = Band
 net-band-auto = Automatisch
 net-band-24 = 2,4 GHz
@@ -1266,7 +1239,12 @@ net-share-qr = QR teilen
 net-qr-caption = Zum Beitreten scannen. Der QR-Code enthält das Hotspot-Passwort.
 net-hotspot-clients = Verbundene Geräte
 net-signal-unknown = Signal unbekannt
-net-hotspot-clients-caption = Clientnamen werden nicht aus dem Verkehr geraten. Schalte den Hotspot aus, um alle Clients sofort zu trennen.
+net-signal-weak = schwaches Signal
+net-signal-fair = mittleres Signal
+net-signal-good = gutes Signal
+net-signal-strong = starkes Signal
+net-wifi-detail-secured = Gesichert, { $signal }
+net-wifi-detail-open = Offen, { $signal }
 net-hotspot = WLAN-Hotspot
 net-profiles = Verbindungsprofile
 net-hide-policy = Verbindungsrichtlinie ausblenden
@@ -1274,7 +1252,6 @@ net-show-policy = Verbindungsrichtlinie
 net-no-saved-wifi = Keine gespeicherten WLAN-Netze.
 net-share-devices = Mit meinen Geräten teilen
 net-forget = Vergessen
-net-share-caption = Teilen ist optional und versiegelt nur Netzname, Sicherheitsmodus und Passphrase für deine zertifizierten Geräte. Schnittstelle, MAC, IP, DNS, Proxy und Auto-Connect bleiben auf diesem Gerät.
 net-edit-profile = Profil bearbeiten
 net-policy-for = Verbindungsrichtlinie für { $name }. NetworkManager bleibt die Quelle der Wahrheit.
 net-policy-unread = Die Richtlinienwerte konnten nicht von NetworkManager gelesen werden, daher bietet die Einstellung keinen zerstörerischen Standard-Editor.
@@ -1290,24 +1267,22 @@ net-proxy-url = Automatische Proxy-URL
 net-apply-policy = Richtlinie anwenden
 net-run-diagnostics = Diagnose ausführen
 net-diag-title = Verbindungsdiagnose
-net-diag-nm = NetworkManager
+net-notice-sealed-profile = { $ssid } wurde mit deinen anderen Geräten geteilt.
+net-portal-caption = Dieses Netzwerk erfordert eine Anmeldung im Browser.
 net-diag-internet = Internet
 net-diag-device = Gerät
 net-diag-address = Adresse
 net-diag-gateway = Gateway
 net-diag-dns = DNS
 net-diag-dns-none = Nicht angegeben
-net-diag-idle = Prüft NetworkManager-Zustand, Adresse, Gateway und DNS, ohne Traffic an einen Tilo-Dienst zu senden.
 net-vpn = VPN
 net-vpn-empty = Noch keine VPN-Profile. VPN Studio kann WireGuard- und OpenVPN-Konfigurationen importieren.
 net-open-vpn-studio = VPN Studio öffnen
-net-vpn-caption = Verbinde hier im Alltag. VPN Studio nur für Import, DNS, Routing und Kill-Switch-Regeln.
 net-mobile = Mobilfunk
 net-mobile-caption = Lege das Betreiberprofil über NetworkManager an. Die APN kommt von deinem Anbieter.
 net-profile-name = Profilname
 net-apn = Zugangspunktname (APN)
 net-create-profile = Profil anlegen
-net-sim-pin-caption = Ist die SIM gesperrt, gib die PIN ein. Sie geht direkt an ModemManager über den Systembus und wird nie gespeichert.
 net-sim = SIM
 net-sim-pin = SIM-PIN
 net-unlock-sim = SIM entsperren
@@ -1322,7 +1297,6 @@ net-ca-path = Absoluter Pfad zum CA-Zertifikat
 net-choose-ca = CA-Zertifikat wählen…
 net-password = Passwort
 net-save-connect = Speichern und verbinden
-net-enterprise-caption = Nutze ein Unternehmensnetz für PEAP-, TTLS- oder EAP-TLS-Anmeldung. Die Serverzertifikatsprüfung ist Pflicht.
 net-close-enterprise = Unternehmenseinrichtung schließen
 net-setup-enterprise = Unternehmen einrichten
 net-enterprise = Unternehmens-WLAN
@@ -1332,20 +1306,18 @@ net-connect = Verbinden
 net-join = Beitreten
 net-ethernet = Ethernet
 net-wired-empty = Stecke ein Ethernet-Kabel ein, um eine Kabelverbindung zu nutzen.
-net-connected-speed = Verbunden · { $speed }
+net-connected-speed = Verbunden, { $speed }
 net-interface = Schnittstelle
 net-ipv4 = IPv4
 net-ipv4-unsupported = Die IPv4-Methode dieses Profils wird nicht unterstützt oder konnte nicht gelesen werden; die Einstellung lässt sie unverändert.
 net-auto-ipv4 = Automatisches IPv4
-net-address-prefix = Adresse/Präfix · z. B. 192.0.2.10/24
+net-address-prefix = Adresse/Präfix (z. B. 192.0.2.10/24)
 net-gateway = Gateway
-net-dns-servers = DNS-Server · kommagetrennt
+net-dns-servers = DNS-Server (kommagetrennt)
 net-apply-ip = IP-Einstellungen anwenden
-net-ipv4-caption = NetworkManager prüft und wendet dieses Profil an. Eigenes DNS schaltet das DHCP-DNS nur für diese Verbindung aus.
 net-notice-unavailable = Der Netzwerkstatus ist nicht verfügbar, während das Fenster schließt.
 net-notice-refreshed = Netzwerkliste aktualisiert.
 net-notice-refresh-err = Netzwerkliste konnte nicht aktualisiert werden: { $error }
-net-notice-stopped = Eine Netzwerkänderung wurde gestoppt: { $error }
 net-notice-wifi-on = WLAN eingeschaltet.
 net-notice-wifi-off = WLAN ausgeschaltet.
 net-notice-wifi-err = WLAN-Leistung konnte nicht geändert werden: { $error }
@@ -1384,7 +1356,6 @@ net-subject-saved-wifi = gespeichertes WLAN-Profil
 net-subject-mobile = Mobilfunkprofil
 net-subject-sim = SIM
 net-subject-enterprise = Unternehmens-WLAN
-net-notice-sealed-profile = { $ssid } ist für deine zertifizierten Geräte versiegelt. Gerätespezifische Profileinstellungen wurden nicht geteilt.
 perm-privacy-hardware = Privatsphäre-Hardware
 perm-camera = Kamera
 perm-microphone = Mikrofon
@@ -1395,8 +1366,8 @@ perm-unavailable = Nicht verfügbar
 perm-kill-hw = Von der Hardware gesperrt
 perm-kill-sw = Von der Software gesperrt
 perm-kill-allowed = Verfügbar
-perm-kill-present = Vorhanden · kein Kill-Switch gemeldet
-perm-kill-missing = Nicht verfügbar
+perm-kill-present = Vorhanden, kein Schalter gemeldet
+perm-kill-missing = Nicht gefunden
 perm-active-use = Aktive Nutzung
 perm-no-active-use = Keine Anwendung nutzt gerade Kamera oder Mikrofon.
 perm-using-camera = Nutzt die Kamera
@@ -1409,25 +1380,24 @@ perm-encrypted = Verschlüsselt
 perm-not-encrypted = Nicht verschlüsselt
 perm-enabled = Aktiviert
 perm-disabled = Deaktiviert
-perm-firewall-firewalld = Aktiv · firewalld
-perm-firewall-nftables = Aktiv · nftables
+perm-firewall-firewalld = Aktiv, firewalld
+perm-firewall-nftables = Aktiv, nftables
 perm-firewall-off = Nicht aktiv
-perm-security-caption = Die detaillierte Firewall-Richtlinie gehört in Firewall; Wiederherstellung und Partitionierung gehören in Sicherungen und Datenträger. Diese Seite zeigt nur den wirksamen Gerätezustand, ohne deren Editoren zu kopieren.
-perm-this-device = Dieses Gerät
-perm-this-device-body = Privatsphäre-Hardware und Sicherheitsstatus gelten für dieses Gerät und Ihre Anmeldung. Sie ändern nicht, wer einen geteilten Arbeitsbereich nutzen darf oder was eine App dort tun darf.
-perm-workspace-intro-title = Arbeitsbereichzugriff · nur Übersicht
-perm-workspace-intro-body = App-Zugriff gilt nur im Arbeitsbereich, in dem die App läuft. Diese Seite fasst ihn nur zusammen; sie kann keine Rechte, Widerrufe oder Rollen ändern. Ändern Sie den Zugriff in den Einstellungen dieses Arbeitsbereichs, wo Personen und Rollen sichtbar sind.
-perm-open-workspace = Aktuellen Arbeitsbereichzugriff öffnen
-perm-no-grants-title = Keine Zugriffsrechte im Arbeitsbereich
-perm-no-grants-body = Keine App hat gerade ein Recht außerhalb der Sandbox. Wenn Sie eines am Compositor-Hinweis zulassen, erscheint es hier — nach Arbeitsbereich und App — mit dem Zugriff und der Dauer.
-perm-no-grants-caption = Nichts hier heißt nichts gewährt: Apps sehen nur den eigenen Arbeitsbereich, bis Sie etwas anderes erlauben.
-perm-unavailable-title = Arbeitsbereichzugriff nicht verfügbar
-perm-unavailable-body = Tilo konnte den aktuellen Zugriffsdatensatz nicht laden und kann daher nicht prüfen, ob eine App zusätzlichen Zugriff hat.
-perm-unavailable-caption = Öffnen Sie den aktuellen Arbeitsbereichzugriff oder versuchen Sie es erneut, sobald die Sitzung fertig gestartet ist.
-perm-grants-summary = { $grants } Rechte in { $workspaces } Arbeitsbereichen
+perm-workspace-intro-title = Arbeitsbereichzugriff
+perm-open-workspace = Arbeitsbereich-Zugriff öffnen
+perm-no-grants-title = Kein Arbeitsbereich-Zugriff
+perm-no-grants-body = Keine App erreicht etwas außerhalb ihres eigenen Arbeitsbereichs. Wenn du einen Zugriff in einer Abfrage genehmigst, erscheint er hier mit seinem Umfang und seiner Dauer.
+perm-unavailable-title = Arbeitsbereich-Zugriff kann nicht geprüft werden
+perm-unavailable-body = Tilo konnte die Zugriffsdaten des Arbeitsbereichs nicht lesen und kann daher nicht sagen, ob eine App zusätzlichen Zugriff hat.
+perm-unavailable-caption = Öffne den Arbeitsbereich-Zugriff oder versuche es erneut, sobald die Desktop-Sitzung vollständig gestartet ist.
+perm-grants-summary = { $grants } { $grants ->
+        [one] Zugriff
+       *[other] Zugriffe
+    } in { $workspaces } { $workspaces ->
+        [one] Arbeitsbereich
+       *[other] Arbeitsbereichen
+    }
 perm-workspace-unnamed = Arbeitsbereich
-perm-enforcement-title = Wo das durchgesetzt wird
-perm-enforcement-caption = Diese Rechte setzt der Compositor durch (Dateien, Zusammenarbeit, Geräte) und der FUSE-Mount, nicht dieses Feld. Das ist eine nur lesende Ansicht der Liste; widerrufen Sie ein Recht in den Arbeitsbereich-Einstellungen des Besitzers.
 perm-kind-files = Dateien
 perm-kind-camera = Kamera
 perm-kind-mic = Mikrofon
@@ -1438,7 +1408,7 @@ perm-kind-action = App-Aktion
 perm-verb-rw = lesen und schreiben
 perm-verb-ro = nur lesen
 perm-any-host = Jeder Host
-perm-action-detail = „{ $action }“ in { $app } nutzen
+perm-action-detail = „{ $action }“ auf { $resource } in { $app } nutzen
 perm-expiry-always = Immer
 perm-expiry-temp = Vorübergehend
 perm-expiry-logout = Bis zur Abmeldung
@@ -1457,17 +1427,12 @@ power-status = Status
 power-cycles = Ladezyklen
 power-health = Akkuzustand
 power-health-unknown = Von diesem Gerät nicht gemeldet
-power-history-caption = Ladeverlauf · letzte 30 Tage · höchstens alle 15 Minuten. Gerätenamen und Seriennummern werden nicht gespeichert.
+power-history-title = Ladung, letzte 30 Tage
 power-charge-cap = Ladegrenze
-power-charge-cap-conservation = Dieses Notebook bietet einen echten Schonmodus; nur dessen Hardware-Stufen werden angezeigt.
-power-charge-cap-huawei = Die Plattform nutzt gekoppelte Start-/Endschwellen; Tilo hält ein sicheres Ladefenster.
-power-charge-cap-start-stop = Der Kernel bietet Start- und Stoppschwellen; Tilo ändert den Start nur, wenn eine niedrigere Grenze das verlangt.
-power-charge-cap-stop = Der Kernel bietet eine Hardware-Stoppschwelle. Eine niedrigere Grenze kann den Akku schonen.
 power-charge-cap-unsupported = Von dieser Hardware nicht unterstützt
 power-profile-title = Energiemodus
 power-profile = Profil
 power-profile-unavailable = Energiemodus-Dienst nicht verfügbar
-power-profile-caption = Nur von diesem Gerät unterstützte Modi. Ausgewogen tauscht Leistung gegen Laufzeit; Energiesparen bevorzugt Laufzeit; Leistung bevorzugt Tempo.
 power-profile-saver = Energiesparen
 power-profile-balanced = Ausgewogen
 power-profile-performance = Leistung
@@ -1477,11 +1442,9 @@ power-suspend-idle = Im Leerlauf bereithalten
 power-suspend-after = Bereitschaft nach
 power-blank = Bildschirm im Leerlauf ausschalten
 power-lock-after = Sperren nach
-power-idle-caption = Leerlaufzeiten wendet die Energieschicht des Compositors an.
 power-saver-suspend = Energiesparen-Bereitschaft
 power-balanced-suspend = Ausgewogen-Bereitschaft
 power-performance-suspend = Leistung-Bereitschaft
-power-profile-idle-caption = Der aktive Energiemodus wählt seine eigene Leerlaufzeit im Compositor; ein Profilwechsel erzeugt keinen zweiten Richtlinieninhaber.
 power-behaviour-title = Energieverhalten
 power-lid = Wenn der Deckel geschlossen wird
 power-power-key = Wenn die Ein-/Aus-Taste gedrückt wird
@@ -1490,7 +1453,7 @@ power-warn-caption = Warnung bei { $warn } %, diese Aktion bei { $critical } %.
 power-devices-title = Energiegeräte
 power-device-battery = Akku
 power-device-ups = USV
-power-device-line = { $kind } · { $capacity } % · { $status }
+power-device-line = { $kind }, { $capacity } %, { $status }
 power-save-failed = Energieeinstellung wurde nicht gespeichert: { $error }
 power-never = Nie
 power-1-minute = 1 Minute
@@ -1505,9 +1468,12 @@ power-action-lock = Bildschirm sperren
 power-action-ignore = Nichts tun
 
 power-status-full = Voll geladen
-power-status-charging = { $capacity } % · Lädt
-power-status-plugged = { $capacity } % · Eingesteckt, lädt nicht
-power-status-battery = { $capacity } % · Im Akkubetrieb
+power-state-charging = Lädt
+power-state-plugged = Eingesteckt, lädt nicht
+power-state-battery = Im Akkubetrieb
+power-status-charging = { $capacity } %, lädt
+power-status-plugged = { $capacity } %, eingesteckt, lädt nicht
+power-status-battery = { $capacity } %, im Akkubetrieb
 power-health-none = Dieser Akku meldet keine vergleichbare Voll- und Nennkapazität.
 power-health-good = Kapazität nahe dem Werkswert; normale Streuung ist zu erwarten.
 power-health-aged = Etwas Kapazität ging durch normale chemische Alterung verloren.
@@ -1530,11 +1496,11 @@ settings-printers-remove-confirm = Drucker entfernen
 settings-printers-add = Hinzufügen
 settings-printers-retry = Erneut
 settings-printers-cancel = Abbrechen
-settings-printers-empty = Keine Drucker eingerichtet. Suche nach sicheren treiberlosen IPP-Geräten in diesem Netzwerk.
-settings-printers-discovering = Suche nach AirPrint/Mopria-kompatiblen IPP-Druckern…
-settings-printers-discover-empty = Nur treiberlose IPP-Drucker werden automatisch angeboten; alte Treiber werden nie still heruntergeladen.
+settings-printers-empty = Noch keine Drucker. Wähle „Drucker suchen“, um in deinem Netzwerk zu suchen.
+settings-printers-discovering = Suche nach Druckern in deinem Netzwerk …
+settings-printers-discover-empty = Drucker in deinem Netzwerk, die keinen Treiber brauchen, erscheinen hier.
 settings-printers-no-jobs = Keine aktiven Druckaufträge.
-settings-printers-no-scanners = Keine SANE-kompatiblen Scanner gefunden. Netzwerkscanner (eSCL/WSD) erscheinen hier über sane-airscan.
+settings-printers-no-scanners = Keine Scanner gefunden.
 settings-printers-state-ready = Bereit
 settings-printers-state-printing = Druckt
 settings-printers-state-paused = Angehalten
@@ -1542,31 +1508,31 @@ settings-printers-state-offline = Offline
 settings-printers-role-default = Standard
 settings-printers-role-configured = Eingerichtet
 settings-printers-not-accepting = Nimmt keine neuen Aufträge an
-settings-printers-default-accepting = Standard · nimmt Aufträge an
+settings-printers-default-accepting = Standard, nimmt Aufträge an
 settings-printers-accepting = Nimmt Aufträge an
-settings-printers-detail-reason = { $role } · { $reason }
-settings-printers-supplies-none = Verbrauchsmaterial: keines eingebaut
+settings-printers-detail-reason = { $role }, { $reason }
+settings-printers-supplies-none = Kein Verbrauchsmaterial eingesetzt
 settings-printers-supplies-list = Verbrauchsmaterial: { $list }
 settings-printers-supply-level = { $name } { $level }%
-settings-printers-supply-unknown = { $name } — Füllstand unbekannt
+settings-printers-supply-unknown = { $name }, Füllstand unbekannt
 settings-printers-supplies-unreported = Dieser Drucker meldet keine Füllstände
-settings-printers-ipp-unavailable = Live-IPP-Details nicht verfügbar
-settings-printers-driverless = Treiberloses IPP
-settings-printers-job-state-missing = Status nicht gemeldet
-settings-printers-job-progress = { $done } von { $total } Seiten · { $percent } %
+settings-printers-ipp-unavailable = Füllstände sind nicht verfügbar
+settings-printers-on-network = In deinem Netzwerk
+settings-printers-job-state-missing = Status unbekannt
+settings-printers-job-progress = { $done } von { $total } Seiten, { $percent } %
 settings-printers-job-done = { $done } Seiten fertig
-settings-printers-job-progress-unknown = Seitenfortschritt nicht gemeldet
+settings-printers-job-progress-unknown = Fortschritt unbekannt
 settings-printers-job-waiting = Wartet
+settings-printers-job-sent = An { $destination } von { $owner } gesendet, { $size }
 settings-printers-job-held = Gehalten
 settings-printers-job-printing = Druckt
 settings-printers-job-stopped = Gestoppt
 settings-printers-job-canceled = Abgebrochen
 settings-printers-job-failed = Fehlgeschlagen
 settings-printers-job-completed = Fertig
-settings-printers-job-unknown = Unbekannter Status
+settings-printers-job-unknown = Status unbekannt
 settings-printers-worker-failed = Druckerstatus konnte nicht gestartet werden: { $error }
 settings-printers-discover-failed = Druckersuche konnte nicht gestartet werden: { $error }
-settings-printers-op-done = Druckeraktion abgeschlossen.
 settings-region-formats-card = Formate
 settings-region-currency = Währung
 settings-region-date-format = Datumsformat
@@ -1592,11 +1558,6 @@ settings-region-preview-time = Zeit
 settings-region-preview-temp = Temperatur
 settings-region-preview-c = 21 °C
 settings-region-preview-f = 70 °F
-settings-region-preview-week = Kalenderwoche beginnt
-settings-region-shared-card = Wird mit deinen Apps geteilt
-settings-region-shared-body = Tabellen nutzen diese Formate für Zellen; Wetter nutzt die Maßeinheiten. Änderungen hier gelten überall, wo diese Apps die gemeinsame Region lesen.
-settings-region-undo-name = Region und Formate
-settings-region-undo-action = Regionaleinstellungen ändern
 
 # Storage pane
 settings-storage-use = Speicherverbrauch
@@ -1630,10 +1591,8 @@ settings-storage-no-reclaimable = Keine freigebbaren synchronisierten Dateien vo
 settings-storage-opened-disks = Datenträger geöffnet.
 settings-storage-opened-backups = Sicherungen geöffnet.
 settings-storage-largest = Größte Einträge
-settings-storage-item-meta = { $size } · { $category }
 settings-storage-no-apps = Auf diesem Gerät wurde kein Tilo-App-Speicher gefunden.
 settings-storage-remove = { $size } entfernen
-settings-storage-cleanup-caption = Nur die unten aufgeführten Cache-Einträge werden entfernt. App-Daten, synchronisierte Dateien und installierte Pakete gehören nie zu dieser Aktion.
 settings-storage-cache-item = Cache-Eintrag
 settings-storage-cleanup-preview = Cache-Bereinigung, Vorschau
 settings-storage-cleanup = Cache-Bereinigung
@@ -1645,73 +1604,48 @@ settings-storage-open-disks = Datenträger öffnen
 settings-storage-backups = Sicherungen
 settings-storage-backups-desc = Sicherungsverlauf, Zeitpläne, Aufbewahrung und Wiederherstellung
 settings-storage-open-backups = Sicherungen öffnen
-settings-storage-tools-caption = Diese öffnen den jeweiligen Fach-Arbeitsbereich über die Shell. Einstellungen verdoppelt keine zerstörerischen Datenträger- oder Wiederherstellungsabläufe.
 time-clock-title = Uhr
 time-auto = Zeit automatisch stellen
 time-24h = 24-Stunden-Uhr
 time-timezone = Zeitzone
 time-current-time = Aktuelle Uhrzeit
 time-current-date = Aktuelles Datum
-time-display-title = Anzeige
-time-clock-format = Uhrformat
-time-clock-24h = 24-Stunden
-time-clock-12h = 12-Stunden
-time-display-caption = Datums- und Zahlenformate gelten systemweit unter Region & Formate; diese Ansicht zeigt die Uhr.
 time-map-title = Zeitzonenkarte
-time-map-empty = Diese tzdata-Installation veröffentlicht keine Kartenkoordinaten. Die durchsuchbare Auswahl bleibt vollständig; Tilo rät den Standort nicht.
 time-map-unavailable = Kartenkoordinaten fehlen; die Auswahl oben bleibt gültig.
-time-map-count = { $mapped } installierte Zonen mit von tzdata veröffentlichten Koordinaten. Hier wählen Sie eine Zone; der Standort wird nicht erkannt. Aliasse bleiben in der Auswahl.
 time-map-a11y-name = Zeitzonenkarte
 time-map-a11y-desc = Installierte IANA-Zeitzonen mit veröffentlichten Koordinaten. Pfeiltasten bewegen, Enter übernimmt; die durchsuchbare Auswahl enthält auch Aliasse ohne Koordinaten.
-time-map-selected = Ausgewählt: { $zone }
-time-source-title = Automatische Zeitquelle
+time-map-place = { $city }, { $region }
+time-source-title = Zeitquelle
 time-sync = Synchronisation
 time-sync-ok = Synchronisiert
 time-sync-waiting = Warte auf Synchronisation
 time-sync-disabled = Automatische Zeit ist aus
-time-sync-unknown = Vom Zeitdienst nicht gemeldet
+time-sync-unknown = Unbekannt
 time-source = Quelle
-time-source-unknown = Vom aktiven NTP-Anbieter nicht gemeldet
-time-source-caption = Zeitzonen stammen aus der installierten IANA-tzdata. Beide Auswahlen senden nur Kennungen aus der Liste von timedated.
+time-source-unknown = Unbekannt
 time-notice-title = Das hat nicht geklappt
 upd-notice-title = Das hat nicht geklappt
-upd-overview = Update-Überblick
-upd-os = Betriebssystem
-upd-os-staged = Update bereitgestellt · Neustart erforderlich
-upd-os-current = Kein bereitgestelltes Update
+upd-os-staged = Update bereit, Neustart erforderlich
+upd-os-current = Aktuell
 upd-firmware = Geräte-Firmware
-upd-firmware-current = Aktuell
-upd-firmware-available = Updates verfügbar
 upd-software = Software-Updates
-upd-ready = Update bereit: { $version }
-upd-restart-apply = Neu starten, um das bereitgestellte Image anzuwenden.
+upd-ready = { $version }: Bereit zur Installation
 upd-restart-update = Neu starten & aktualisieren
-upd-up-to-date = Dein System ist aktuell.
-upd-details = Details
 upd-current-version = Aktuelle Version
 upd-last-checked = Zuletzt geprüft
-upd-release-channel = Release-Kanal
-upd-release-channel-value = Wird von der installierten bootc-Image-Referenz verwaltet
 upd-automatic = Automatische Updates
-upd-unavailable = auf diesem Gerät nicht verfügbar
 upd-schedule = Download-Zeitplan
 upd-schedule-system = Systemzeitplan
 upd-schedule-daily = Täglich
 upd-schedule-weekly = Wöchentlich
 upd-metered = Über getaktete Verbindungen herunterladen
-upd-metered-short = Getaktete Verbindungen
-upd-metered-unavailable = Richtliniendienst ist nicht verfügbar
 upd-check = Nach Updates suchen
 upd-checking = Suche nach Updates…
-upd-lifecycle = Verlauf & Wiederherstellungszustand
-upd-rollback-health = Rollback-Zustand
-upd-not-reported = Nicht gemeldet
+upd-lifecycle = Wiederherstellung
+upd-rollback-health = Rollback-Schutz
 upd-release-notes = Versionshinweise
-upd-no-doc-url = Das Image veröffentlicht keine Dokumentations-URL
-upd-no-bootc-history = Im Systemjournal ist kein bootc-Update-Dienst-Verlauf verfügbar.
 upd-fw-status = Status
-upd-fw-query-failed = Firmware-Bestand konnte nicht abgefragt werden
-upd-fwupd-reported = fwupd meldete: { $error }
+upd-fw-query-failed = Firmware-Updates sind auf diesem Gerät nicht verfügbar
 upd-try-again = Erneut versuchen
 upd-refreshing = Wird aktualisiert…
 upd-fw-current-status = Die Geräte-Firmware ist aktuell
@@ -1723,19 +1657,18 @@ upd-checking-firmware = Firmware wird geprüft…
 upd-update-to = Update auf { $version }
 upd-update-available = Update verfügbar
 upd-before-installing = Vor der Installation: { $problems }
-upd-fw-caption = Firmware wird von fwupd geprüft und installiert. Lass das Gerät verbunden und versetze es nicht in den Ruhezustand, solange die Installation läuft.
 upd-install-firmware = Firmware-Upgrades installieren
 upd-installing = Installation
 upd-installation = Installation
-upd-installed-reboot = Installiert · Neustart erforderlich
+upd-installed-reboot = Installiert, Neustart erforderlich
 upd-installed-ok = Erfolgreich installiert
 upd-fw-history = Firmware-Verlauf
-upd-fw-history-empty = fwupd hat auf diesem Gerät keine Firmware-Transaktion aufgezeichnet.
-upd-fwupd-error = fwupd-Fehler: { $error }
-upd-history-query-failed = Verlauf konnte nicht abgefragt werden
+upd-fw-history-empty = Auf diesem Gerät wurden keine Firmware-Updates installiert.
+upd-fwupd-error = Update fehlgeschlagen: { $error }
+upd-history-query-failed = Der Firmware-Verlauf ist auf diesem Gerät nicht verfügbar
 upd-rollback-title = Zum vorherigen Image zurück
 upd-no-previous = Auf diesem Gerät gibt es noch kein vorheriges Image.
-upd-no-rollback-caption = Eines erscheint nach dem ersten Update. Bis dahin führt der einzige Weg zurück über eine Neuinstallation — deshalb steht das hier, statt einer Schaltfläche, die fehlschlagen würde.
+upd-no-rollback-caption = Nach dem nächsten Update steht eine frühere Version bereit.
 upd-previous-image = Vorheriges Image: { $image }
 upd-rollback-intro = Ein Rollback macht das vorherige Image zum nächsten Startimage. Es wird nichts gelöscht — das aktuelle Image bleibt auf der Festplatte und im Bootmenü.
 upd-roll-back = Zurückrollen…
@@ -1745,37 +1678,37 @@ upd-caveat-files = Deine Dateien und App-Daten werden NICHT zurückgesetzt. Arbe
 upd-caveat-apps = Selbst installierte Apps werden ebenfalls NICHT zurückgesetzt, und eine für ein neueres System gebaute kann erst wieder starten, wenn du sie neu installierst oder vorwärts rollst.
 upd-roll-back-later = Zurückrollen und später neu starten
 upd-help-title = So funktionieren Updates
-upd-help-1 = Tilo-Updates sind atomar: Ein neues Image wird bereitgestellt und beim Neustart angewendet, ein Update installiert sich also nie zur Hälfte.
-upd-help-2 = Wenn ein neues Image dreimal hintereinander keinen Anmeldebildschirm erreicht, geht dieses Gerät von selbst zum vorherigen zurück. Gibt es nichts zum Zurückkehren, startet es im Reparaturmodus statt bei einem schwarzen Bildschirm — du kannst ihn jederzeit im Bootmenü wählen.
-upd-codecs = Zusätzliche Codecs
-upd-codecs-explain = H.264, HEVC und andere patentierte Video- und Audioformate gehören nicht zu Tilo. Wenn du sie installierst, aktivierst du Hardware-Video auf AMD- und Intel-Grafik sowie H.264/HEVC-Wiedergabe und -Kodierung für Videos, Bildschirmfreigabe und Anrufe. Dieses Gerät lädt sie dann direkt von RPM Fusion und Cisco (OpenH264) herunter, unter den Lizenzen dieser Projekte. Tilo hostet oder verteilt diese Pakete nicht.
+upd-help-2 = Wenn ein neues Image dreimal hintereinander keinen Anmeldebildschirm erreicht, geht dieses Gerät von selbst zum vorherigen zurück. Gibt es nichts zum Zurückkehren, startet es stattdessen im Reparaturmodus.
+upd-codecs = Mehr Video- und Audioformate abspielen
+upd-codecs-explain = Wird von den Herausgebern der Formate auf dieses Gerät geladen. Du kannst es hier jederzeit wieder ausschalten.
 upd-status = Status
 upd-progress = Fortschritt: { $percent } %
-upd-installing-codecs = Media-Codecs werden installiert
+upd-installing-codecs = Weitere Formate werden installiert
 upd-codecs-removing = Wird entfernt…
-upd-codecs-checking-driver = Hardware-Treiber wird geprüft…
+upd-codecs-checking-driver = Hardwareunterstützung wird geprüft…
 upd-codecs-starting = Wird gestartet…
-upd-codecs-not-installed = Nicht installiert
-upd-codecs-waiting = Warte auf eine Internetverbindung. Die Installation startet automatisch, sobald dieses Gerät online ist.
+upd-codecs-not-installed = Aus
+upd-codecs-waiting = Warte auf eine Internetverbindung. Es wird von selbst eingeschaltet, sobald dieses Gerät online ist.
 upd-codecs-step = { $label } (Schritt { $step } von { $steps })…
-upd-codecs-downloading = Wird heruntergeladen und installiert…
-upd-codecs-failed = Installation fehlgeschlagen
-upd-codecs-failed-reason = Installation fehlgeschlagen: { $error }
-upd-codecs-installed-hw = Installiert, einschließlich Hardware-H.264/HEVC
-upd-codecs-installed-mesa = Installiert. Hardware-H.264/HEVC wartet auf einen passenden Mesa-Build von RPM Fusion.
-upd-codecs-installed-sw = Installiert (Software-Codecs)
-upd-codecs-refresh-failed = Die letzte Aktualisierung des Codec-Pakets ist fehlgeschlagen: { $error }
-upd-codecs-applies-hw = Apps, die du ab jetzt öffnest, können H.264 und HEVC mit Hardwarebeschleunigung wiedergeben und aufnehmen. Der Desktop selbst lädt den neuen Videotreiber beim Start: Melde dich ab und wieder an, um Hardware-H.264/HEVC für Bildschirmfreigabe und Aufnahme zu nutzen, und öffne bereits laufende Apps neu.
-upd-codecs-applies-sw = Neue Codecs wirken sofort: Anrufe, Bildschirmfreigabe und Videos holen sie beim nächsten Start. Ein Neustart ist nicht nötig.
-upd-codecs-install = Media-Codecs installieren
+upd-codecs-step-bytes = { $label } { $done } von { $total } MB (Schritt { $step } von { $steps })…
+upd-codecs-downloading = Wird heruntergeladen…
+upd-codecs-failed = Konnte nicht installiert werden
+upd-codecs-failed-reason = Konnte nicht installiert werden: { $error }
+upd-codecs-installed-hw = Ein, einschließlich Hardware-H.264/HEVC
+upd-codecs-installed-mesa = Ein. Hardware-H.264/HEVC folgt, sobald ein passender Treiber veröffentlicht ist.
+upd-codecs-installed-sw = Ein
+upd-codecs-refresh-failed = Die letzte Aktualisierung der Formate ist fehlgeschlagen: { $error }
+upd-codecs-applies-hw = Apps, die du ab jetzt öffnest, geben H.264 und HEVC mit Hardwarebeschleunigung wieder und nehmen damit auf. Melde dich ab und wieder an, um es für Bildschirmfreigabe und Aufnahme zu nutzen, und öffne bereits laufende Apps neu.
+upd-codecs-applies-sw = Wirkt sofort: Anrufe, Bildschirmfreigabe und Videos nutzen es beim nächsten Start. Ein Neustart ist nicht nötig.
+upd-codecs-install = Installieren
 upd-codecs-try-again = Erneut versuchen
-upd-codecs-cancel = Installation abbrechen
-upd-codecs-remove = Media-Codecs entfernen
-upd-codecs-refresh = Erneut nach dem Hardware-Treiber suchen
+upd-codecs-cancel = Abbrechen
+upd-codecs-remove = Entfernen
+upd-codecs-refresh = Erneut nach Hardwareunterstützung suchen
 upd-notice-schedule = Download-Zeitplan konnte nicht geändert werden: { $error }
 upd-notice-metered = Richtlinie für getaktete Netze konnte nicht geändert werden: { $error }
-upd-notice-codecs-worker = Das Codec-Paket konnte nicht geändert werden: Worker konnte nicht starten
-upd-notice-codecs = Das Codec-Paket konnte nicht geändert werden: { $error }
+upd-notice-codecs-worker = Die Formate konnten nicht geändert werden: Worker konnte nicht starten
+upd-notice-codecs = Die Formate konnten nicht geändert werden: { $error }
 upd-notice-fw-reboot = Firmware-Installation abgeschlossen. Starte neu, um das Update zu aktivieren.
 upd-notice-fw-ok = Firmware-Installation erfolgreich abgeschlossen.
 upd-notice-fw-failed = Firmware-Installation fehlgeschlagen: { $error }
@@ -1791,10 +1724,10 @@ upd-notice-rollback-ok = Fertig. Das vorherige Image ist das, mit dem dieses Ger
 upd-notice-rollback = Zurückrollen fehlgeschlagen: { $error }
 upd-fw-preparing = { $total } Update(s) werden vorbereitet…
 upd-fw-preparing-tx = Firmware-Transaktion wird vorbereitet…
-upd-health-protected = Geschützt · Fallback verfügbar: { $target }
-upd-health-confirm = Boot-Bestätigung aktiv · noch kein vorheriges Image behalten
-upd-health-fallback = Fallback verfügbar ({ $target }); automatische Bestätigung nicht gemeldet
-upd-health-unknown = Rollback-Schutzstatus wird nicht gemeldet
+upd-health-protected = Geschützt, Rückkehr zu { $target } möglich
+upd-health-confirm = Geschützt, noch kein früheres Image
+upd-health-fallback = Rückkehr zu { $target } möglich
+upd-health-unknown = Nicht gemeldet
 upd-staged-generic = Update für den nächsten Start bereitgestellt
 
 # Werte, die ein Bereich nicht lesen konnte. Jeder ersetzt den Wert, für den
@@ -1811,13 +1744,13 @@ net-profiles-error = Gespeicherte Netzwerke können nicht gelesen werden: { $err
 net-sims-error = SIM-Karten können nicht gelesen werden: { $error }
 upd-status-error = Nach Updates kann nicht gesucht werden: { $error }
 upd-rollback-error = Das vorherige System-Image kann nicht gelesen werden: { $error }
-time-clock-error = Uhr kann nicht gelesen werden: { $error }
 time-status-error = Zeiteinstellungen können nicht gelesen werden: { $error }
 time-zones-error = Zeitzonen können nicht aufgelistet werden: { $error }
 time-zone-unread = Aktuelle Zeitzone unbekannt
 settings-users-read-error = Die Konten dieses Geräts können nicht gelesen werden: { $error }
 settings-users-autologin-error = Automatische Anmeldung kann nicht gelesen werden: { $error }
 settings-bluetooth-read-error = Bluetooth kann nicht gelesen werden: { $error }
+settings-bluetooth-no-adapter = Kein Bluetooth-Adapter an diesem Gerät
 sound-devices-error = Audiogeräte können nicht aufgelistet werden: { $error }
 sound-volume-error = Ausgabelautstärke kann nicht gelesen werden: { $error }
 sound-input-error = Eingangspegel kann nicht gelesen werden: { $error }
@@ -1831,3 +1764,652 @@ settings-printers-read-error = Drucker können nicht aufgelistet werden: { $erro
 settings-printers-jobs-read-error = Druckaufträge können nicht aufgelistet werden: { $error }
 settings-printers-scanners-read-error = Scanner können nicht aufgelistet werden: { $error }
 agent-key-read-error = Ob ein Schlüssel gespeichert ist, kann nicht festgestellt werden: { $error }
+
+display-host-observation-timeout = Der Status der Bildschirmvorschau konnte nicht aktualisiert werden. Prüfe die aktuelle Konfiguration, bevor du fortfährst.
+shortcut-name-dictation-toggle = Diktat starten oder beenden
+shortcut-name-dictation-finish = Diktat beenden
+shortcut-name-dictation-cancel = Diktat abbrechen
+shortcut-name-tab-menu = Tab-Menü öffnen
+
+
+# Network connection guidance
+net-connectivity-caption = Zeigt, ob dieses Gerät das Internet erreichen kann.
+net-wifi-caption = Wähle ein Netzwerk zum Verbinden. Aktualisieren sucht nach Netzwerken in der Nähe.
+net-diag-idle = Starte die Diagnose, um Verbindung, Adresse und DNS zu prüfen.
+net-enterprise-caption = Für Arbeits- oder Schulnetzwerke, die einen Benutzernamen und ein Zertifikat erfordern.
+net-hotspot-clients-caption = Geräte, die gerade mit deinem Hotspot verbunden sind.
+net-share-caption = Teile ein gespeichertes WLAN sicher mit deinen anderen Geräten.
+net-sim-pin-caption = Gib die PIN der ausgewählten SIM ein, um Mobilfunk zu entsperren.
+net-ipv4-caption = Verwende automatische Adressen, sofern dein Netzwerk keine feste Adresse erfordert.
+net-vpn-caption = Wähle ein gespeichertes VPN zum Verbinden. Füge Verbindungen in VPN Studio hinzu.
+
+net-wake-network = Aufwecken über { $name }
+net-wake-disabled = Magic-Packet-Aufwecken für diese Verbindung aktivieren. Ob dieser Computer dadurch aufwacht, muss separat getestet werden.
+net-wake-unverified = Magic-Packet-Aufwecken ist gespeichert und im Treiber aktiviert. Das Aufwecken dieses Computers wurde noch nicht überprüft.
+net-wake-connect-first = Verbinde dich mit diesem Netzwerk, um das Gerät zu prüfen und Aufweckeinstellungen anzuwenden.
+net-wake-unsupported = Der Treiber dieser Verbindung meldet keine Unterstützung für Magic-Packet-Aufwecken.
+net-wake-unavailable = Aufweckeinstellungen konnten nicht gelesen werden.
+net-wake-pending = Die Aufweckeinstellung ist gespeichert, muss aber noch auf diese Verbindung angewendet werden.
+net-wake-saved = Aufweckkonfiguration gespeichert. Das tatsächliche Aufwecken wurde noch nicht überprüft.
+
+# Copy used by Settings panes and their status/error branches.
+a11y-mouse-keys-caption = Mit dem Ziffernblock kannst du den Zeiger bewegen und klicken.
+a11y-shared-caption = Tilo-Apps verwenden diese gemeinsamen Einstellungen zur Barrierefreiheit.
+a11y-shared-title = Überall in Tilo
+a11y-text-size = Textgröße
+accounts-form-caption = Diese Angaben werden für dieses Konto gespeichert.
+accounts-intro = Verbinde Konten für E-Mails, Kalender, Kontakte und Cloud-Speicher.
+accounts-kind-empty = Noch keine Konten für { $kind }.
+accounts-reauth-caption = Ersetze die gespeicherten Zugangsdaten, ohne das Konto zu entfernen.
+accounts-sync-none = Es ist noch kein Synchronisierungsstatus verfügbar.
+agent-accel-active-caption = Die Beschleunigerunterstützung ist auf diesem Gerät aktiv.
+agent-accel-available = Für dieses Gerät ist passende Beschleunigerunterstützung verfügbar.
+agent-accel-error-retry = Prüfe den Fehler oben und versuche die Einrichtung erneut.
+agent-accel-queued-caption = Die Einrichtung wartet. Du kannst Tilo währenddessen weiter nutzen.
+agent-accel-staging-caption = Die Unterstützung wird für dieses Gerät vorbereitet.
+agent-error-retry-caption = Prüfe den Fehler oben und versuche es erneut, wenn du bereit bist.
+agent-hosted-intro = Verbinde einen Modellanbieter, um gehostete Modelle zu nutzen.
+agent-hw-fit = Kompatibilität
+agent-private-caption = Lokale Modelle laufen auf diesem Gerät. Gehostete Modelle senden Anfragen an den gewählten Anbieter.
+agent-ready-running-caption = Das Modell ist bereit und läuft auf diesem Gerät.
+agent-ready-stopped-caption = Das Modell wurde heruntergeladen. Starte es bei Bedarf.
+agent-rec-waiting-caption = Eine Empfehlung erscheint, sobald der Modelldienst verfügbar ist.
+display-caption-port = Schließe einen weiteren Bildschirm an einen verfügbaren Anschluss an, um ihn hier anzuordnen.
+display-caption-second = Schließe einen weiteren Bildschirm an, um deinen Arbeitsbereich zu erweitern.
+display-caption-switch = Ziehe die Bildschirme so, dass ihre Anordnung deinem Arbeitsplatz entspricht.
+display-card-title = Bildschirmanordnung
+display-night-light-caption = Wärmere Farben reduzieren abends das blaue Licht.
+mesh-activity-caption = Setze Aktivitäten in Arbeitsbereichen und Apps auf deinen anderen Geräten fort.
+mesh-add-personal = Persönliches Gerät hinzufügen
+mesh-audit-caption = Die letzten Änderungen zeigen, wie die Gerätefortsetzung eingerichtet wurde.
+mesh-audit-change = Änderung
+mesh-no-active-until = Es ist noch kein Ziel für die Fortsetzung aktiv.
+mesh-privacy-stay = Nur aktivierte Kategorien werden mit deinen Geräten geteilt.
+mesh-roaming-caption = Diese Einstellungen folgen deiner Identität auf verbundenen Geräten.
+notif-app-verified = App-Identität
+notif-apps-caption = Benachrichtigungseinstellungen für einzelne Apps erscheinen hier, sobald Apps verfügbar sind.
+notif-delivery = Zustellung
+notif-dnd-title = Benachrichtigungen stummschalten
+notif-focus-caption = Ruhezeiten gelten an den oben gewählten Tagen und zu den gewählten Uhrzeiten.
+notif-how-caption = Wähle, welche Apps Banner zeigen und Töne abspielen dürfen. Ruhezeiten können beides zurückhalten.
+notif-how-title = So funktionieren Benachrichtigungen
+notif-priority-caption = Wichtige Kontakte stammen aus deinen Kontakteinstellungen.
+notif-sounds = Benachrichtigungstöne
+notif-sounds-pipewire = Verfügbar
+notif-status-active = Benachrichtigungen aktiv
+notif-status-banners-off = Banner aus
+notif-status-silenced = Nicht stören
+perm-enforcement-caption = Tilo prüft den Zugriff an den Grenzen von Arbeitsbereichen und Host-Diensten. Das Entfernen einer Freigabe entzieht diesen Zugriff.
+perm-enforcement-title = So wird der Zugriff begrenzt
+perm-no-grants-caption = Zugriff außerhalb eines Arbeitsbereichs erfordert eine ausdrückliche Freigabe.
+perm-security-caption = Gerätesicherheit und Zugriff auf Arbeitsbereiche werden getrennt verwaltet.
+perm-this-device = Dieses Gerät
+perm-this-device-body = Diese Sicherheitseinstellungen beschreiben dieses Gerät. Sie ändern keine Berechtigungen in anderen Arbeitsbereichen.
+perm-workspace-intro-body = Prüfe den genehmigten App-Zugriff in jedem Arbeitsbereich. Mitwirkende und Rollen verwaltest du im jeweiligen Arbeitsbereich.
+power-charge-cap-conservation = Dieses Gerät verwendet seinen Akkuschonmodus.
+power-charge-cap-huawei = Dieses Gerät steuert das Laden über seine unterstützten Ladegrenzen.
+power-charge-cap-start-stop = Das Laden beginnt unter dem unteren Grenzwert und endet an der gewählten Grenze.
+power-charge-cap-stop = Das Laden endet an der gewählten Grenze.
+power-history-caption = Letzte Akkumesswerte dieses Geräts.
+power-idle-caption = Diese Zeiten gelten, wenn du dieses Gerät nicht bedienst.
+power-profile-caption = Wähle, wie dieses Gerät Leistung und Energieverbrauch abwägt.
+power-profile-idle-caption = Die Zeit bis zum Ruhezustand kann je Energieprofil unterschiedlich sein.
+settings-about-backup-caption = Sichere deine Identität, um sie auf einem anderen Gerät wiederherstellen zu können.
+settings-about-identity-caption = Dieser öffentliche Fingerabdruck kennzeichnet deine Identität, ohne ihre geheimen Schlüssel offenzulegen.
+settings-appearance-high-contrast = Hoher Kontrast
+settings-appearance-off = Aus
+settings-appearance-on = Ein
+settings-appearance-reduce-motion = Bewegung reduzieren
+settings-appearance-reduced-motion = Reduzierte Bewegung
+settings-appearance-text-scale = Textskalierung
+settings-bluetooth-audio-caption = Verwalte Tonausgabe und Mikrofone in den Toneinstellungen.
+settings-bluetooth-refresh-failed = Bluetooth-Geräte konnten nicht aktualisiert werden: { $error }
+settings-bluetooth-trust-caption = Vertrauenswürdige Geräte können sich ohne erneute Kopplung verbinden.
+settings-personal-apps-applies-to = Gilt für
+settings-personal-apps-applies-value = Deine persönlichen App-Einstellungen
+settings-personal-apps-choice-follows = Deine bevorzugte App wird verwendet, sofern der Arbeitsbereich keine eigene Auswahl hat.
+settings-personal-apps-scope = Persönliche Standardwerte
+settings-personal-apps-scope-caption = Standard-Apps eines Arbeitsbereichs werden dort verwaltet.
+settings-printers-driverless = Drucker ohne zusätzlichen Treiber
+settings-region-preview-week = Wochenbeginn
+settings-region-shared-body = Apps verwenden diese Formate für Datum, Uhrzeit, Zahlen und Maße.
+settings-region-shared-card = Gemeinsame Formate
+settings-storage-cleanup-caption = Prüfe die folgenden Cache-Dateien, bevor du sie entfernst.
+settings-storage-item-meta = { $size } · { $category }
+settings-storage-tools-caption = Sichere Dateien mit Sicherungen, bevor du Änderungen am Speicher vornimmst.
+settings-users-boundary-body = Gerätekonten steuern die Anmeldung hier. Mitgliedschaften in Arbeitsbereichen und das Teilen von Identitäten werden getrennt verwaltet.
+settings-users-boundary-title = Konten und Identitäten
+settings-users-identity-detail = { $id } · { $key } · { $threshold } von { $total } Anteilen · { $protection }
+settings-users-protection-hardware = Hardwaregeschützte Identitäten behalten ihren Schlüsselschutz auf dem Gerät.
+settings-users-protection-secret-service = Geheimnisse der Identität können durch den Geheimnisdienst dieses Kontos geschützt werden.
+settings-users-protection-title = Schutz der Identität
+settings-users-signed-in = Angemeldet
+settings-users-uid-line = { $username } · Benutzer { $uid } · { $you }
+sound-echo-caption = Reduziere den Wiedergabeton, den das Mikrofon aufnimmt.
+sound-mic-caption = Teste das gewählte Mikrofon, ohne App-Berechtigungen zu ändern.
+sound-mono-caption = Führe den linken und rechten Kanal für die gewählte Ausgabe zusammen.
+sound-notice-device-gone = Dieses Audiogerät ist nicht mehr verfügbar.
+sound-notice-event-missing = Dieser Systemton ist nicht mehr verfügbar.
+sound-notice-stream-gone = Dieser Audiostream wurde beendet.
+sound-notice-theme-missing = Dieses Klangdesign ist nicht mehr verfügbar.
+sound-system-caption = Wähle, bei welchen Systemereignissen ein Ton abgespielt wird.
+speakers-name-join-note = Der gespeicherte Name kennzeichnet diesen Lautsprecher oder Raum beim Verbinden.
+time-clock-12h = 12-Stunden-Anzeige
+time-clock-24h = 24-Stunden-Anzeige
+time-clock-format = Uhrzeitformat
+time-display-caption = Ändere regionale Datums- und Uhrzeitformate unter Region und Formate.
+time-display-title = Uhrzeitanzeige
+time-map-count = Zeitzonen auf der Karte: { $mapped }
+time-map-empty = Es sind keine Orte für die Zeitzonenkarte verfügbar.
+time-map-selected = Gewählte Zeitzone: { $zone }
+time-source-caption = Der Zeitdienst dieses Geräts meldet den Synchronisierungsstatus.
+upd-details = Aktualisierungsdetails
+upd-firmware-available = Aktualisierungen verfügbar
+upd-firmware-current = Keine Aktualisierungen gemeldet
+upd-fw-caption = Firmware-Aktualisierungen kommen vom Firmware-Dienst dieses Geräts. Befolge dessen Neustartanweisungen, wenn eine Aktualisierung bereit ist.
+upd-fwupd-reported = Der Firmware-Dienst meldete: { $error }
+upd-help-1 = Eine Betriebssystem-Aktualisierung bereitet ein neues Systemabbild vor. Das aktuelle Abbild bleibt verfügbar, bis das neue aktiviert wird.
+upd-metered-short = Getaktete Verbindung
+upd-metered-unavailable = Status nicht verfügbar
+upd-no-bootc-history = Es ist noch kein Verlauf der Systemabbilder verfügbar.
+upd-no-doc-url = Es wurde kein Link zu Versionshinweisen gemeldet.
+upd-not-reported = Nicht gemeldet
+upd-os = Betriebssystem
+upd-overview = Aktualisierungsstatus
+upd-release-channel = Abbildquelle
+upd-release-channel-value = Für dieses Gerät konfiguriert
+upd-restart-apply = Starte bei Gelegenheit neu, um die vorbereitete Systemaktualisierung anzuwenden.
+upd-unavailable = Nicht verfügbar
+upd-up-to-date = Es ist keine Aktualisierung zum Anwenden bereit.
+settings-appearance-wallpaper-body = Wähle das Bild für deinen Arbeitsbereich und den Sperrbildschirm.
+settings-appearance-theme = Erscheinungsbild
+settings-appearance-access-card = Barrierefreiheit
+settings-appearance-high-contrast-desc = Kontrast von Text und Bedienelementen erhöhen
+settings-appearance-reduce-motion-desc = Bewegungen und animierte Übergänge begrenzen
+settings-appearance-active-theme = Aktives Thema
+settings-appearance-applied-card = Aktuelles Erscheinungsbild
+settings-appearance-schedule-follow = Dem Tag- und Nachtzeitplan folgen
+settings-appearance-shared-body = Deine Darstellungseinstellungen folgen dir auf deine Geräte. Das Hintergrundbild kann für einen oder alle Arbeitsbereiche gelten.
+settings-appearance-shared-card = Deine Einstellungen
+input-map-title = Tastaturbelegung
+input-map-layout = Installierte Belegung ansehen
+input-map-model = Physisches Tastaturmodell
+input-map-ansi = ANSI mit 104 Tasten
+input-map-iso = ISO mit 105 Tasten
+input-map-instructions = Drücke Tasten, während diese Seite geöffnet ist, auch während der Layoutsuche. Die Karte zeigt die physische Position, ohne deine Eingabe zu verändern.
+input-map-levels = Vorschau-Ebenen lassen sich wählen oder untersuchen. Der Live-Modus folgt den aktuellen Modifikatoren. Das physische Modell wird ausdrücklich gewählt, nicht erkannt.
+input-map-unavailable = Diese Belegung kann nicht mit dem nativen XKB-Compiler angezeigt werden.
+input-map-apply = Diese Belegung verwenden
+input-map-extra-levels = XKB-Ebenen 5–8 ansehen, wenn vorhanden
+input-map-dead-keys = Tottasten werden mit einem gepunkteten Kreis angezeigt.
+
+input-map-jis = Japanisch mit 106 Tasten
+input-map-korean = Koreanisch mit 106 Tasten
+input-map-live = Aktuelle Tastatur anzeigen
+input-map-level = Modifikatorebene
+
+input-map-live-description = Solange Einstellungen den Fokus hat, folgt diese Karte dem aktuellen Tastaturlayout und den Modifikatoren.
+input-map-preview-description = Vorschau des gewählten Layouts. Wähle eine Ebene oder untersuche eine Taste, um weitere Zeichen zu sehen.
+
+input-map-inspect-key = Physische Taste untersuchen
+input-map-inspection-unavailable = Die aktuellen Zeichen dieser physischen Taste sind nicht verfügbar. Aktiviere das Einstellungsfenster oder wähle eine Layout-Vorschau.
+input-map-current-symbols = Aktuelle Zeichen
+
+
+a11y-dictation-language = Diktatsprache
+a11y-dictation-language-desc = Wähle eine Sprache, um die Erkennung zu verbessern und die Wartezeit zu verkürzen. Die automatische Erkennung deckt weitere unterstützte Sprachen ab. Diktieren nutzt dein Systemmikrofon aus den Klangeinstellungen und fragt vor jeder Aufnahme.
+dictation-language-auto = Automatische Erkennung
+dictation-language-en = Englisch
+dictation-language-de = Deutsch
+dictation-language-fr = Französisch
+dictation-language-es = Spanisch
+dictation-language-ar = Arabisch
+dictation-language-zh = Mandarin-Chinesisch
+dictation-language-ja = Japanisch
+dictation-language-it = Italienisch
+dictation-language-pt = Portugiesisch
+dictation-language-hi = Hindi
+dictation-language-ru = Russisch
+dictation-language-uk = Ukrainisch
+dictation-language-ko = Koreanisch
+dictation-language-tr = Türkisch
+dictation-language-pl = Polnisch
+dictation-language-id = Indonesisch
+dictation-language-vi = Vietnamesisch
+dictation-language-nl = Niederländisch
+dictation-language-bn = Bengalisch
+dictation-language-he = Hebräisch
+dictation-language-fa = Persisch
+dictation-language-th = Thailändisch
+dictation-language-sv = Schwedisch
+dictation-language-cs = Tschechisch
+dictation-language-el = Griechisch
+dictation-language-ta = Tamil
+dictation-language-ur = Urdu
+dictation-language-hu = Ungarisch
+dictation-language-ro = Rumänisch
+dictation-language-fi = Finnisch
+display-devices-title = Bildschirme auf deinen Geräten
+display-device-screen = { $device } · { $screen } · { $status }
+display-device-online = Online
+display-device-offline = Offline
+display-devices-observed = Beobachtete Bildschirmpositionen. Eingabezugriff wird gesondert erteilt.
+
+display-devices-arrange = Einen verbundenen Gerätebildschirm neben Ihren ziehen. Bildschirme desselben Geräts werden zusammen verschoben. Verschieben erlaubt keine Eingabe.
+display-device-move-requested = Position angefordert. Die Anordnung aktualisiert sich, wenn das Gerät seine neue Position bestätigt.
+display-device-move-pending = Bildschirmposition wird gesendet…
+display-device-move-unavailable = Dieser Bildschirm ist offline oder seine Anordnung kann hier nicht geändert werden.
+
+display-device-move-confirmed = Das Gerät hat seine neue Bildschirmposition bestätigt.
+display-device-move-changed = Die Geräteanordnung wurde vor der Bestätigung geändert. Erneut versuchen.
+display-device-move-unconfirmed = Das Gerät hat diese Position nicht bestätigt. Aktualisieren und erneut versuchen.
+
+a11y-dictation-literal = Wörtliches Diktieren
+a11y-dictation-literal-desc = Erkannte Wörter unverändert lassen. Wenn ausgeschaltet, werden eindeutige Zahlenkorrekturen auf Deutsch, Englisch, Französisch oder Spanisch bereinigt, etwa „zwei, äh, nein, drei“ zu „drei“. Namen, Zitate und andere Unflüssigkeiten bleiben unverändert.
+input-dictionary-title = Persönliches Wörterbuch
+input-dictionary-caption = Hinzugefügte Wörter stehen der Rechtschreibprüfung, der Bildschirmtastatur und dem Diktieren auf dem Gerät zur Verfügung. Schreibweise und Groß- und Kleinschreibung bleiben erhalten.
+input-dictionary-unavailable = Dein lokales persönliches Wörterbuch ist in dieser Sitzung nicht verfügbar.
+input-dictionary-word = Wort
+input-dictionary-language = Sprache
+input-dictionary-language-caption = Für alle Sprachen leer lassen oder einen Sprachcode wie en, nl oder fr eingeben.
+input-dictionary-add = Wort hinzufügen
+input-dictionary-save = Speichern
+input-dictionary-remove = Entfernen
+input-dictionary-reset = Alle Wörter entfernen
+input-dictionary-word-placeholder = Ein Wort eingeben
+input-dictionary-all-languages = Alle Sprachen
+
+input-scope-all = Alle Tastaturen
+input-scope-inheritance = Physische Tastaturen nutzen diese Quellen, bis du die eigene Liste einer Tastatur änderst. Die Bildschirmtastatur hat eigene Quellen.
+input-keyboard-scope = Tastatur
+input-source-activate = Aktivieren
+input-sources-selection-description = Wähle eine Quelle zum Ansehen oder Bearbeiten. Ziehe sie, um die Reihenfolge zu ändern.
+input-sources-back = Zurück zu den Eingabequellen
+input-sources-cancel = Abbrechen
+input-sources-unavailable = Die Liste der Eingabequellen konnte nicht angezeigt werden.
+input-osk-qwerty = Englisch (QWERTY)
+input-osk-azerty = Französisch (AZERTY)
+input-osk-preview-description = Die Bildschirmtastatur verwendet diese Buchstabenanordnung. Compose- und Feststelltastenoptionen gelten für physische Tastaturen.
+input-source-options = Layout-Optionen
+input-source-inspection = Tasten untersuchen
+
+input-keyboard-numbered = { $name } ({ $number })
+
+input-source-show = Anzeigen
+input-source-hide = Ausblenden
+
+input-source-add-short = Hinzufügen
+input-source-add-title = Eingabequelle hinzufügen
+
+# Keyboard source editing errors.
+input-error-keyboard-retained = Die Tastatur ist nicht mehr verfügbar; ihre Zuordnung bleibt gespeichert.
+input-error-keyboard-unavailable = Die Tastatur ist derzeit nicht verfügbar.
+input-error-source-unconfigured = Die Quelle ist für diese Tastatur nicht eingerichtet.
+input-error-source-add-unavailable = Die Quelle ist in der Ansicht zum Hinzufügen nicht verfügbar.
+input-error-source-choose = Wähle eine Quelle zum Hinzufügen.
+input-error-source-physical-options = Optionen für physische Tastaturen gelten nicht für die Bildschirmtastatur.
+input-error-source-compose = Ungültige Compose-Taste.
+input-error-source-caps = Ungültiges Verhalten der Feststelltaste.
+input-error-source-option = Ungültige Tastaturoption.
+input-error-source-missing = Die Quelle ist nicht eingerichtet.
+input-error-source-add = Die Quelle kann dieser Tastatur nicht hinzugefügt werden.
+input-error-source-last = Die letzte Quelle kann nicht entfernt werden.
+input-error-source-empty = Es ist keine Quelle mehr vorhanden.
+input-error-source-first = Die Quelle steht bereits an erster Stelle.
+input-error-source-end = Die Quelle steht bereits an letzter Stelle.
+input-error-source-overflow = Die Position der Quelle liegt außerhalb des gültigen Bereichs.
+input-error-source-operation = Dieser Vorgang ist keine Quellenaktion.
+input-error-live-map-physical = Die Live-Ansicht einer physischen Tastatur ist für die Bildschirmtastatur nicht verfügbar.
+
+settings-disk-unlock-title = Entsperren der Festplatte
+settings-disk-unlock-intro = Nach einem Neustart kann eine hier eingerichtete verschlüsselte Festplatte statt mit der Passphrase mit der Zustimmung eines deiner anderen Geräte öffnen.
+settings-disk-unlock-refresh = Aktualisieren
+settings-disk-unlock-loading = Lese, wie die Festplatten dieses Computers entsperren …
+settings-disk-unlock-read-error = Nicht lesbar, wie die Festplatten dieses Computers entsperren: { $error }
+settings-disk-unlock-none = Keine verschlüsselte Festplatte dieses Computers entsperrt mit deinen anderen Geräten.
+settings-disk-unlock-volume = Verschlüsselte Festplatte { $id }
+settings-disk-unlock-secrets = Geheimnisse zum Entsperren
+settings-disk-unlock-sealed = An das TPM gebunden
+settings-disk-unlock-sealed-body = Die Hälfte des Schlüssels auf diesem Computer und die WLAN-Passwörter unten sind an sein TPM gebunden. Nur dieser Computer kann sie lesen, wenn er von Tilo signierte Software startet.
+settings-disk-unlock-cleartext = Im Klartext im Festplatten-Header
+settings-disk-unlock-cleartext-body = Dieser Computer hat kein nutzbares TPM, daher liegen seine Hälfte des Schlüssels und die WLAN-Passwörter unten unverschlüsselt im Festplatten-Header. Wer diese Festplatte in der Hand hat, kann sie lesen. Allein öffnen sie die Festplatte nicht: Eines deiner Geräte muss weiterhin zustimmen.
+settings-disk-unlock-siblings = Beim Start gefragte Geräte
+settings-disk-unlock-no-siblings = Keine
+settings-disk-unlock-networks = WLAN zum Entsperren
+settings-disk-unlock-networks-sealed = Kabelverbindungen werden immer versucht. Beim Start werden nur die hier verwendeten WLANs genutzt; ihre Passwörter sind an das TPM gebunden.
+settings-disk-unlock-networks-cleartext = Kabelverbindungen werden immer versucht. Beim Start werden nur die hier verwendeten WLANs genutzt. Wer diese Festplatte in der Hand hat, kann ihre Passwörter lesen.
+settings-disk-unlock-wifi-error = Gespeicherte WLANs nicht lesbar: { $error }
+settings-disk-unlock-no-wifi = Kein gespeichertes WLAN. Verbinde dich zuerst mit einem, um es zum Entsperren zu nutzen.
+settings-disk-unlock-use = Verwenden
+settings-disk-unlock-stop = Nicht mehr verwenden
+settings-disk-unlock-chosen = Zum Entsperren verwendet
+settings-disk-unlock-unsaved = Auf diesem Computer nicht mehr gespeichert.
+settings-disk-unlock-changing = Ändere die Netzwerke zum Entsperren …
+settings-disk-unlock-change-error = Die Netzwerke zum Entsperren wurden nicht geändert: { $error }
+settings-disk-unlock-saved = Beim Start kann jetzt über { $networks } und Kabelverbindungen entsperrt werden.
+settings-disk-unlock-wired-only = Beim Start wird jetzt nur über Kabelverbindungen entsperrt.
+settings-disk-unlock-refreshed = Entsperren der Festplatte aktualisiert.
+settings-disk-unlock-busy = Eine andere Änderung der Netzwerke zum Entsperren läuft noch.
+settings-disk-unlock-not-authorised = Die Zustimmung eines Administrators wurde nicht erteilt.
+settings-disk-unlock-gone = Diese Festplatte entsperrt nicht mehr mit deinen anderen Geräten.
+settings-disk-unlock-bad-request = Diese Anfrage nennt keine nutzbare Festplatte und kein nutzbares Netzwerk.
+settings-disk-unlock-too-many = Die Antwort nennt mehr Festplatten, als dieser Computer haben kann.
+settings-disk-unlock-malformed = Die Antwort zum Entsperren der Festplatte war nicht lesbar: { $error }
+
+# Gemeinsame Anzeigeanordnung, unabhängig von der Eingabeberechtigung.
+display-shared-title = Deine gemeinsame Anzeigeanordnung
+display-shared-description = Anzeigen behalten die Anordnung ihres Geräts. Einbindung und Reihenfolge folgen dir auf andere Geräte; die Fernsteuerung benötigt eine separate Berechtigung.
+display-shared-include = In die gemeinsame Anordnung aufnehmen
+display-shared-order = Anzeigennummer
+display-shared-read-only = Die gemeinsame Anzeigeübersicht ist schreibgeschützt.
+display-shared-unavailable = Diese Anzeige wird nicht mehr erkannt.
+display-shared-stale = Die Anordnung wurde geändert. Aktualisiere diese Anzeige und versuche es erneut.
+display-shared-order-invalid = Wähle eine Anzeigennummer aus der aktuellen Liste.
+display-shared-save-failed = Die Anordnung konnte nicht gespeichert werden: { $error }
+display-shared-saved = Gemeinsame Anzeigeanordnung gespeichert.
+display-shared-move-stale = Das Gerät hat seine Position bestätigt, aber die gemeinsame Anordnung wurde geändert. Aktualisiere sie und versuche es erneut.
+display-shared-auto-input = Automatische Eingabe von deinen Geräten erlauben
+display-shared-auto-description = Solange eine Anzeige dieses Geräts eingebunden ist, dürfen deine registrierten Geräte es steuern, wenn sie online sind. Kontinuität und Anzeige/Eingabe müssen ebenfalls aktiviert sein. Abgelehnte Geräte bleiben abgelehnt. Diese Auswahl gilt nur hier.
+
+## History: what each change to a settings section did
+
+settings-appearance-prefs-high-contrast = { $new ->
+    [true] Hohen Kontrast eingeschaltet
+   *[false] Hohen Kontrast ausgeschaltet
+}
+settings-appearance-prefs-reduce-motion = { $new ->
+    [true] Weniger Bewegung eingeschaltet
+   *[false] Weniger Bewegung ausgeschaltet
+}
+settings-appearance-prefs-reduce-transparency = { $new ->
+    [true] Weniger Transparenz eingeschaltet
+   *[false] Weniger Transparenz ausgeschaltet
+}
+settings-appearance-prefs-forced-colors = { $new ->
+    [true] Designfarben für Inhalte erzwungen
+   *[false] Designfarben für Inhalte nicht mehr erzwungen
+}
+settings-accessibility-settings-large-cursor = { $new ->
+    [true] Großen Mauszeiger eingeschaltet
+   *[false] Großen Mauszeiger ausgeschaltet
+}
+settings-accessibility-settings-sticky-keys = { $new ->
+    [true] Einrastfunktion eingeschaltet
+   *[false] Einrastfunktion ausgeschaltet
+}
+settings-accessibility-settings-slow-keys = { $new ->
+    [true] Anschlagverzögerung eingeschaltet
+   *[false] Anschlagverzögerung ausgeschaltet
+}
+settings-accessibility-settings-bounce-keys = { $new ->
+    [true] Tastenprellen-Filter eingeschaltet
+   *[false] Tastenprellen-Filter ausgeschaltet
+}
+settings-accessibility-settings-bounce-keys-alert = { $new ->
+    [true] Hinweis beim Tastenprellen eingeschaltet
+   *[false] Hinweis beim Tastenprellen ausgeschaltet
+}
+settings-accessibility-settings-mouse-keys = { $new ->
+    [true] Maustasten eingeschaltet
+   *[false] Maustasten ausgeschaltet
+}
+settings-accessibility-settings-visual-alerts = { $new ->
+    [true] Visuelle Hinweise eingeschaltet
+   *[false] Visuelle Hinweise ausgeschaltet
+}
+settings-accessibility-settings-cursor-crosshair = { $new ->
+    [true] Fadenkreuz am Zeiger eingeschaltet
+   *[false] Fadenkreuz am Zeiger ausgeschaltet
+}
+settings-accessibility-settings-thick-text-caret = { $new ->
+    [true] Breite Schreibmarke eingeschaltet
+   *[false] Breite Schreibmarke ausgeschaltet
+}
+settings-accessibility-settings-switch-control = { $new ->
+    [true] Schaltersteuerung eingeschaltet
+   *[false] Schaltersteuerung ausgeschaltet
+}
+settings-input-prefs-tap-to-click = { $new ->
+    [true] Tippen zum Klicken eingeschaltet
+   *[false] Tippen zum Klicken ausgeschaltet
+}
+settings-input-prefs-tap-drag = { $new ->
+    [true] Tippen und Ziehen eingeschaltet
+   *[false] Tippen und Ziehen ausgeschaltet
+}
+settings-input-prefs-tap-drag-lock = { $new ->
+    [true] Ziehsperre eingeschaltet
+   *[false] Ziehsperre ausgeschaltet
+}
+settings-input-prefs-disable-while-typing = { $new ->
+    [true] Touchpad beim Tippen ausgeschaltet
+   *[false] Touchpad beim Tippen eingeschaltet gelassen
+}
+settings-input-prefs-middle-emulation = { $new ->
+    [true] Mittelklick-Emulation eingeschaltet
+   *[false] Mittelklick-Emulation ausgeschaltet
+}
+settings-input-prefs-left-handed = { $new ->
+    [true] Maustasten für die linke Hand vertauscht
+   *[false] Maustasten für die rechte Hand eingestellt
+}
+settings-input-prefs-touchpad-gestures = { $new ->
+    [true] Touchpad-Gesten eingeschaltet
+   *[false] Touchpad-Gesten ausgeschaltet
+}
+settings-input-prefs-touchpad-enabled = { $new ->
+    [true] Touchpad eingeschaltet
+   *[false] Touchpad ausgeschaltet
+}
+settings-input-prefs-touchpad-disabled-on-external-mouse = { $new ->
+    [true] Touchpad bei angeschlossener Maus ausgeschaltet
+   *[false] Touchpad bei angeschlossener Maus eingeschaltet gelassen
+}
+settings-text-assistance-prefs-check-spelling = { $new ->
+    [true] Rechtschreibprüfung eingeschaltet
+   *[false] Rechtschreibprüfung ausgeschaltet
+}
+settings-text-assistance-prefs-auto-correct = { $new ->
+    [true] Autokorrektur eingeschaltet
+   *[false] Autokorrektur ausgeschaltet
+}
+settings-power-prefs-auto-suspend = { $new ->
+    [true] Automatischen Ruhezustand eingeschaltet
+   *[false] Automatischen Ruhezustand ausgeschaltet
+}
+settings-notification-prefs-do-not-disturb = { $new ->
+    [true] „Nicht stören“ eingeschaltet
+   *[false] „Nicht stören“ ausgeschaltet
+}
+settings-notification-prefs-show-banners = { $new ->
+    [true] Mitteilungsbanner eingeschaltet
+   *[false] Mitteilungsbanner ausgeschaltet
+}
+settings-notification-prefs-show-previews = { $new ->
+    [true] Mitteilungsvorschau eingeschaltet
+   *[false] Mitteilungsvorschau ausgeschaltet
+}
+settings-notification-prefs-play-sounds = { $new ->
+    [true] Mitteilungstöne eingeschaltet
+   *[false] Mitteilungstöne ausgeschaltet
+}
+settings-notification-prefs-show-on-lock-screen = { $new ->
+    [true] Mitteilungen auf dem Sperrbildschirm gezeigt
+   *[false] Mitteilungen auf dem Sperrbildschirm ausgeblendet
+}
+settings-notification-prefs-show-badges = { $new ->
+    [true] Mitteilungsabzeichen eingeschaltet
+   *[false] Mitteilungsabzeichen ausgeschaltet
+}
+settings-notification-prefs-per-app = Mitteilungen einer App geändert
+settings-app-notification-rule-banners = Mitteilungsbanner einer App geändert
+settings-app-notification-rule-sounds = Mitteilungstöne einer App geändert
+settings-app-notification-rule-badges = Kennzeichen einer App geändert
+settings-app-notification-rule-previews = Nachrichtenvorschau einer App geändert
+settings-app-notification-rule-lock-screen = Mitteilungen einer App auf dem Sperrbildschirm geändert
+settings-app-notification-rule-priority = { $new ->
+    [true] Eine App während des Fokus durchgelassen
+   *[false] Eine App während des Fokus nicht mehr durchgelassen
+}
+settings-app-notification-rule-priority-contacts = { $new ->
+    [true] Prioritätskontakte einer App während des Fokus durchgelassen
+   *[false] Prioritätskontakte einer App während des Fokus nicht mehr durchgelassen
+}
+settings-app-notification-rule-muted-until = Stummschaltung einer App geändert
+settings-focus-schedule-enabled = { $new ->
+    [true] Fokuszeiten eingeschaltet
+   *[false] Fokuszeiten ausgeschaltet
+}
+settings-focus-schedule-allow-priority = { $new ->
+    [true] Vorrangige Apps während des Fokus zugelassen
+   *[false] Vorrangige Apps während des Fokus nicht mehr zugelassen
+}
+settings-system-sound-prefs-enabled = { $new ->
+    [true] Systemtöne eingeschaltet
+   *[false] Systemtöne ausgeschaltet
+}
+settings-system-sound-events-notification = { $new ->
+    [true] Mitteilungston eingeschaltet
+   *[false] Mitteilungston ausgeschaltet
+}
+settings-system-sound-events-message = { $new ->
+    [true] Nachrichtenton eingeschaltet
+   *[false] Nachrichtenton ausgeschaltet
+}
+settings-system-sound-events-volume-change = { $new ->
+    [true] Ton bei Lautstärkeänderung eingeschaltet
+   *[false] Ton bei Lautstärkeänderung ausgeschaltet
+}
+settings-system-sound-events-screenshot = { $new ->
+    [true] Bildschirmfoto-Ton eingeschaltet
+   *[false] Bildschirmfoto-Ton ausgeschaltet
+}
+settings-system-sound-events-device-connected = { $new ->
+    [true] Ton beim Anschließen eingeschaltet
+   *[false] Ton beim Anschließen ausgeschaltet
+}
+settings-system-sound-events-device-disconnected = { $new ->
+    [true] Ton beim Trennen eingeschaltet
+   *[false] Ton beim Trennen ausgeschaltet
+}
+settings-system-sound-events-low-battery = { $new ->
+    [true] Ton bei schwachem Akku eingeschaltet
+   *[false] Ton bei schwachem Akku ausgeschaltet
+}
+settings-system-sound-events-error = { $new ->
+    [true] Fehlerton eingeschaltet
+   *[false] Fehlerton ausgeschaltet
+}
+settings-display-prefs-night-light = { $new ->
+    [true] Nachtlicht eingeschaltet
+   *[false] Nachtlicht ausgeschaltet
+}
+settings-display-prefs-night-light-schedule = { $new ->
+    [true] Nachtlicht folgt Tag und Nacht
+   *[false] Nachtlicht folgt nicht mehr Tag und Nacht
+}
+settings-desktop-controls-vim-mode = { $new ->
+    [true] Vim-Tasten für den Desktop eingeschaltet
+   *[false] Vim-Tasten für den Desktop ausgeschaltet
+}
+settings-appearance-prefs-mode = Erscheinungsbild auf { $new } gestellt
+settings-appearance-prefs-dark-theme = { $new } für den dunklen Modus gewählt
+settings-appearance-prefs-light-theme = { $new } für den hellen Modus gewählt
+settings-appearance-prefs-density = Abstandsdichte geändert
+settings-appearance-prefs-text-scale = Textgröße geändert
+settings-appearance-prefs-ui-scale = Größe der Oberfläche geändert
+settings-appearance-prefs-schedule = Beginn von Tag und Nacht geändert
+settings-appearance-prefs-sunrise = Tagesbeginn auf { $new } gestellt
+settings-appearance-prefs-sunset = Nachtbeginn auf { $new } gestellt
+settings-appearance-prefs-wallpaper-scope = Geändert, für welche Arbeitsbereiche ein neues Hintergrundbild gilt
+settings-appearance-prefs-wallpaper-target = Geändert, wo ein neues Hintergrundbild erscheint
+settings-appearance-prefs-distinct-letters = Unterscheidung ähnlicher Buchstaben geändert
+settings-accessibility-settings-cursor-size = Zeigergröße auf { $new } gestellt
+settings-accessibility-settings-on-screen-keyboard = Geändert, wann die Bildschirmtastatur erscheint
+settings-accessibility-settings-bounce-keys-delay-ms = Verzögerung des Tastenprellen-Filters geändert
+settings-accessibility-settings-color-filter = Farbfilter geändert
+settings-accessibility-settings-magnifier-zoom = Lupe auf { $new }× gestellt
+settings-accessibility-settings-magnifier-view = Darstellung der Lupe geändert
+settings-accessibility-settings-switch-key-pair = Tasten der Schaltersteuerung geändert
+settings-accessibility-settings-switch-scan-ms = Abtastung der Schaltersteuerung geändert
+settings-input-prefs-touchpad-natural-scroll = Scrollrichtung des Touchpads geändert
+settings-input-prefs-mouse-natural-scroll = Scrollrichtung der Maus geändert
+settings-input-prefs-pointer-speed = Zeigergeschwindigkeit geändert
+settings-input-prefs-touchpad-pointer-speed = Touchpad-Geschwindigkeit geändert
+settings-input-prefs-mouse-pointer-speed = Mausgeschwindigkeit geändert
+settings-input-prefs-key-repeat = Tastenwiederholung geändert
+settings-input-prefs-accel-profile = Zeigerbeschleunigung geändert
+settings-input-prefs-touchpad-click-method = Klickverhalten des Touchpads geändert
+settings-input-prefs-touchpad-scroll-method = Scrollverhalten des Touchpads geändert
+settings-input-prefs-scroll-speed = Scrollgeschwindigkeit geändert
+settings-text-assistance-prefs-spelling-language = Sprache der Rechtschreibprüfung geändert
+settings-power-prefs-suspend-minutes = Geändert, wann der Rechner in den Ruhezustand geht
+settings-power-prefs-saver-suspend-minutes = Ruhezustand im Energiesparmodus geändert
+settings-power-prefs-balanced-suspend-minutes = Ruhezustand im ausgewogenen Modus geändert
+settings-power-prefs-performance-suspend-minutes = Ruhezustand im Leistungsmodus geändert
+settings-power-prefs-blank-minutes = Geändert, wann der Bildschirm ausgeht
+settings-power-prefs-lock-minutes = Geändert, wann der Bildschirm gesperrt wird
+settings-power-prefs-lid-close-action = Verhalten beim Zuklappen geändert
+settings-power-prefs-power-key-action = Verhalten der Ein-/Aus-Taste geändert
+settings-power-prefs-low-battery-percent = Warnung bei schwachem Akku auf { $new } % gestellt
+settings-power-prefs-critical-battery-percent = Kritischen Akkustand auf { $new } % gestellt
+settings-power-prefs-critical-action = Verhalten bei kritischem Akkustand geändert
+settings-focus-schedule-start-minute = Beginn der Fokuszeit geändert
+settings-focus-schedule-end-minute = Ende der Fokuszeit geändert
+settings-focus-schedule-weekdays = Fokustage geändert
+settings-system-sound-prefs-volume = Lautstärke der Systemtöne geändert
+settings-system-sound-prefs-theme = Klangschema geändert
+settings-audio-prefs-balance = Balance zwischen links und rechts geändert
+settings-display-prefs-night-light-temperature = Wärme des Nachtlichts geändert
+settings-display-prefs-scale = Bildschirmskalierung geändert
+settings-locale-currency = Währung geändert
+settings-locale-date-format = Datumsformat geändert
+settings-locale-time-format = Zeitformat geändert
+settings-locale-measurement = Maßsystem geändert
+settings-locale-number-style = Zahlenformat geändert
+settings-locale-first-day-of-week = Ersten Wochentag geändert
+settings-choose-theme = Design { $theme } gewählt
+settings-set-key-repeat = Tastenwiederholung geändert
+settings-mute-app = Stummschaltung einer App geändert
+settings-allow-continuity = { $on ->
+    [true] Continuity zwischen Geräten erlaubt
+   *[false] Continuity zwischen Geräten beendet
+}
+settings-allow-capability = { $on ->
+    [true] { $capability } für Continuity erlaubt
+   *[false] { $capability } für Continuity beendet
+}
+
+accounts-import-title = Thunderbird-Kontoeinstellungen importieren
+accounts-import-choose = prefs.js auswählen
+accounts-import-about = Konten, Server und Anmeldeverfahren prüfen. Passwörter und Tokens werden nicht importiert. Konten bleiben inaktiv, bis du dich ausdrücklich anmeldest und Synchronisierung und Versand erlaubst.
+accounts-import-reading = Kontometadaten werden gelesen…
+accounts-import-review = Kontoeinstellungen auswählen und für jedes Konto ein Anmeldeverfahren wählen.
+accounts-import-none = In diesen Einstellungen wurden keine IMAP-Konten gefunden.
+accounts-import-auth-unspecified = Thunderbird hat nicht alle Authentifizierungsverfahren angegeben. Wähle ein unterstütztes Anmeldeverfahren; ein Passwortverfahren wird nicht angenommen.
+accounts-import-endpoints = IMAP { $imap }:{ $imap-port } ({ $incoming-transport }) · SMTP { $smtp }:{ $smtp-port } ({ $outgoing-transport })
+accounts-import-logins = Empfangsanmeldung: { $imap-user } · Versandanmeldung: { $smtp-user }
+accounts-import-identity = { $name } — { $email }
+accounts-import-password-choice = Für Passwortanmeldung auswählen
+accounts-import-oauth-choice = Für Browseranmeldung auswählen
+accounts-import-unselect = Konto abwählen
+accounts-import-continue = Ausgewählte Einstellungen importieren
+accounts-import-cancel = Prüfung abbrechen
+accounts-import-saved = { $count } neue Kontoeinstellungen importiert. Bestehende Konten wurden erhalten. Jedes importierte Konto benötigt noch eine ausdrückliche Anmeldung.
+accounts-import-password-step = Gib ein neues Passwort oder App-Passwort direkt hier ein. Speichern erlaubt die Synchronisierung und den Versand für dieses Konto. Keine Thunderbird-Zugangsdaten werden kopiert.
+accounts-import-oauth-step = Öffne Mail, bearbeite dieses Konto und wähle die Browseranmeldung. Microsoft fragt nach IMAP-Zugriff, SMTP-Versand und Offline-Zugriff. Der Metadatenimport führt keine Anmeldung aus.
+accounts-import-stale = Diese Prüfung wurde geändert. Lies die aktuelle Kontoprüfung und versuche es erneut.
+accounts-import-accounts-changed = Konten wurden während der Prüfung geändert. Ermittle und prüfe die Metadaten erneut.
+accounts-import-auth-required = Wähle ausdrücklich ein unterstütztes Authentifizierungsverfahren.
+accounts-import-select = Wähle vor dem Fortfahren mindestens ein Konto aus.
+accounts-import-save-failed = Kontoeinstellungen konnten nicht gespeichert werden. Keine Zugangsdaten wurden importiert.
+accounts-import-read-failed = Thunderbird-Kontometadaten konnten nicht gelesen werden.
+accounts-import-prefs-required = Wähle ausschließlich Thunderbirds normale Datei prefs.js.
+accounts-import-too-large = Diese Kontoeinstellungen überschreiten die Importgrenze.
+accounts-import-malformed = Diese Kontoeinstellungen sind unvollständig oder fehlerhaft.
+accounts-import-unsupported = Diese Server-, Authentifizierungs- oder Transporteinstellung wird nicht unverändert unterstützt. Richte das Konto stattdessen manuell ein.
+accounts-import-duplicate = Zwei ausgewählte Konten verwenden dieselbe Adresse. Wähle eine Konfiguration aus.
+accounts-import-chooser-unavailable = Die Dateiauswahl ist nur in einem interaktiven Einstellungsfenster verfügbar. Ein freigegebener Einstellungspfad kann über die Kontoaktion gelesen werden.
+accounts-import-plain = Unverschlüsselt
+accounts-import-starttls = STARTTLS
+accounts-import-tls = TLS

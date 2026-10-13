@@ -41,8 +41,8 @@ impl BooksApp {
             "narrow" => {
                 // Contents open as an overlay flap; annotations closed so the
                 // scrimmed flap reads clearly against the page.
-                self.toc_flap.snap(true);
-                self.notes_flap.snap(false);
+                self.toc_drawer.snap(true);
+                self.notes_drawer.snap(false);
             }
             "import-error" => {
                 self.load_error = Some(
@@ -65,8 +65,8 @@ impl BooksApp {
                 // the normal and high-contrast references.
                 self.reduce_motion = true;
                 self.page_turn = None;
-                self.toc_flap.snap(true);
-                self.notes_flap.snap(true);
+                self.toc_drawer.snap(true);
+                self.notes_drawer.snap(true);
             }
             "comments" => {
                 self.book_idx = self.book_index(TIDEGLASS);
@@ -94,8 +94,8 @@ impl BooksApp {
     /// A book with 32 chapters, read deep into it, so the contents rail
     /// scrolls to the open one.
     fn stage_long_toc(&mut self) {
-        self.toc_flap.snap(true);
-        self.notes_flap.snap(false);
+        self.toc_drawer.snap(true);
+        self.notes_drawer.snap(false);
         let index = self.book_idx;
         let template = self
             .library
@@ -108,7 +108,6 @@ impl BooksApp {
             Arc::make_mut(book).chapters = (0..32)
                 .map(|index| crate::model::Chapter {
                     title: format!("Chapter {} — a longer voyage", index + 1),
-                    href: format!("chapter-{}.xhtml", index + 1),
                     blocks: template.blocks.clone(),
                 })
                 .collect();
@@ -134,14 +133,14 @@ impl BooksApp {
         match scenario {
             "settings-library" => {
                 // The folders books were opened from, one already watched.
-                self.watched_folders = vec![PathBuf::from("/home/reader/Books")];
-                self.library_paths.clear();
+                self.local_library.watched_folders = vec![PathBuf::from("/home/reader/Books")];
+                self.local_library.books.clear();
                 for (id, path) in [
                     ("book:a", PathBuf::from("/home/reader/Books/one.epub")),
                     ("book:b", PathBuf::from("/home/reader/Downloads/two.epub")),
                     ("book:c", content::workspace_books_dir().join("shared.epub")),
                 ] {
-                    self.library_paths.insert(id.into(), path);
+                    self.local_library.books.insert(id.into(), path);
                 }
             }
             // The installed families, each previewed in its own face.
@@ -149,7 +148,6 @@ impl BooksApp {
             "settings-fonts-rename" => {
                 // An inline rename in progress, typeset in the font's face.
                 let mut field = EditableLabel::new("DejaVu Serif")
-                    .with_font_size(16.0)
                     .with_font_family(FontChoice::Named("DejaVu Serif".into()));
                 field.begin_edit();
                 self.renaming = Some(Rename {
@@ -205,7 +203,7 @@ impl BooksApp {
         self.selected_block = Some(anchor.block);
         if scenario == "note" {
             self.composing = Some(COMPOSED_NOTE);
-            self.note_composer.open(COMPOSED_NOTE, &self.dispatch);
+            self.note_composer.open(COMPOSED_NOTE, Some(&self.dispatch));
         }
     }
 }

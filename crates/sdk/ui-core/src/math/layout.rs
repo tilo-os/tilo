@@ -8,8 +8,14 @@
 //!
 //! Coordinates are local to the field's content origin `(0, 0)`; the caller
 //! translates by the field's on-screen rect.
+//!
+//! Every size here is content: glyphs are measured and painted at exactly
+//! the size the geometry (bars, radicals, delimiters, script offsets) is
+//! built from, never grown again by the reader's text scale, so a caller
+//! that scales an expression scales all of it together. [`layout_wrapped`]
+//! breaks a long expression before its top-level operators.
 
-use crate::text_render::{FontChoice, TextRenderer, TextWeight, UI_MATH_FAMILY};
+use crate::text_render::{FontChoice, TextRenderer, TextStyle, UI_MATH_FAMILY};
 
 use super::model::{Node, Row, Slot};
 
@@ -124,30 +130,24 @@ fn delimiter_padding(size: f32) -> f64 {
     (f64::from(size) * 0.10).max(1.5)
 }
 
+/// The math face at exactly `size`, as content: measured and painted at the
+/// size the layout's geometry uses.
+pub(crate) fn math_style(size: f32) -> TextStyle {
+    TextStyle::new(size)
+        .with_family(FontChoice::Named(UI_MATH_FAMILY.into()))
+        .with_content_size(size)
+}
+
 fn measure_glyph(tr: &mut TextRenderer, ch: char, size: f32) -> f64 {
     let mut buf = [0u8; 4];
     let display = math_display_char(ch);
     let s = display.encode_utf8(&mut buf);
-    let (w, _) = tr.measure_font(
-        s,
-        size,
-        None,
-        TextWeight::Regular,
-        false,
-        &FontChoice::Named(UI_MATH_FAMILY.into()),
-    );
+    let (w, _) = tr.measure_style(s, None, &math_style(size));
     f64::from(w)
 }
 
 fn measure_name(tr: &mut TextRenderer, name: &str, size: f32) -> f64 {
-    let (w, _) = tr.measure_font(
-        name,
-        size,
-        None,
-        TextWeight::Regular,
-        false,
-        &FontChoice::Named(UI_MATH_FAMILY.into()),
-    );
+    let (w, _) = tr.measure_style(name, None, &math_style(size));
     f64::from(w)
 }
 
@@ -212,6 +212,134 @@ pub fn layout(row: &Row, tr: &mut TextRenderer, base_size: f32) -> Layout {
         boxes: frag.boxes,
         gaps: frag.gaps,
     }
+}
+
+/// Whether a top-level row may break before this node: a relation or a
+/// binary operator that is not a sign (it follows an operand).
+fn breaks_before(row: &Row, index: usize) -> bool {
+    let Some(Node::Char(ch)) = row.get(index) else {
+        return false;
+    };
+    let relation = matches!(ch, '=' | '<' | '>' | '≤' | '≥' | '≈' | '≠' | '∈' | '∉');
+    let binary = matches!(ch, '+' | '-' | '−' | '×' | '·' | '±' | '∓' | '÷');
+    if !(relation || binary) || index == 0 {
+        return false;
+    }
+    // A sign right after another operator stays with its operand.
+    !matches!(
+        row.get(index - 1),
+        Some(Node::Char(
+            '=' | '<'
+                | '>'
+                | '≤'
+                | '≥'
+                | '≈'
+                | '≠'
+                | '+'
+                | '-'
+                | '−'
+                | '×'
+                | '·'
+                | '±'
+                | '∓'
+                | '÷'
+        ))
+    )
+}
+
+/// Lay out an expression no wider than `max_width` where it can be: a line
+/// that would run over breaks before a top-level relation or binary
+/// operator, and the continuation lines are indented by one em. Gaps keep
+/// their row indices, so a caret still lands where it did.
+pub fn layout_wrapped(row: &Row, tr: &mut TextRenderer, base_size: f32, max_width: f64) -> Layout {
+    let whole = layout(row, tr, base_size);
+    if whole.width <= max_width || row.len() < 2 {
+        return whole;
+    }
+    // Where each top-level node starts, from the root row's gaps.
+    let starts: Vec<f64> = (0..=row.len())
+        .map(|index| {
+            whole
+                .gaps
+                .iter()
+                .find(|gap| gap.steps.is_empty() && gap.index == index)
+                .map_or(0.0, |gap| gap.x)
+        })
+        .collect();
+    let indent = f64::from(base_size);
+    let mut lines: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0;
+    while start < row.len() {
+        let budget = if lines.is_empty() {
+            max_width
+        } else {
+            (max_width - indent).max(1.0)
+        };
+        let origin = starts.get(start).copied().unwrap_or(0.0);
+        let mut end = row.len();
+        if starts.get(row.len()).copied().unwrap_or(0.0) - origin > budget {
+            // The farthest break that still fits; at least one node a line.
+            let fits = (start + 1..row.len())
+                .filter(|&index| breaks_before(row, index))
+                .take_while(|&index| starts.get(index).copied().unwrap_or(0.0) - origin <= budget)
+                .last();
+            let first_break = (start + 1..row.len()).find(|&index| breaks_before(row, index));
+            if let Some(index) = fits.or(first_break) {
+                end = index;
+            }
+        }
+        lines.push((start, end));
+        start = end;
+    }
+    if lines.len() < 2 {
+        return whole;
+    }
+    let line_gap = line_h(base_size) * 0.25;
+    let mut out = Layout {
+        boxes: Vec::new(),
+        gaps: Vec::new(),
+        width: 0.0,
+        height: 0.0,
+        baseline: 0.0,
+    };
+    let mut top = 0.0;
+    for (line, &(start, end)) in lines.iter().enumerate() {
+        let segment: Row = row
+            .get(start..end)
+            .map(<[Node]>::to_vec)
+            .unwrap_or_default();
+        let frag = layout_row(&segment, &[], tr, base_size);
+        let x = if line == 0 { 0.0 } else { indent };
+        if line == 0 {
+            out.baseline = frag.ascent;
+        }
+        let height = frag.height();
+        for mut b in frag.boxes {
+            b.x += x;
+            b.y += top;
+            out.boxes.push(b);
+        }
+        for mut g in frag.gaps {
+            g.x += x;
+            g.top += top;
+            g.bottom += top;
+            if g.steps.is_empty() {
+                // The segment's leading gap is the previous line's trailing
+                // one; keep a single caret stop per index.
+                if line > 0 && g.index == 0 {
+                    continue;
+                }
+                g.index += start;
+            } else if let Some(first) = g.steps.first_mut() {
+                first.0 += start;
+            }
+            out.gaps.push(g);
+        }
+        out.width = out.width.max(x + frag.width);
+        top += height + line_gap;
+    }
+    out.height = (top - line_gap).max(0.0);
+    out
 }
 
 /// Lay out a row, producing a fragment whose baseline is at local y = ascent.
@@ -1129,10 +1257,6 @@ mod layout_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn functions_operators_scripts_and_delimiters_get_math_spacing_and_baselines() {
         // phase: func_name_and_argument_share_size_and_baseline
         // The 3D default surface `sin(√(x²+y²))` used to render its `sin` at the
@@ -1367,5 +1491,43 @@ mod layout_tests {
                 "delimiter and matrix must share an optical centre"
             );
         }
+    }
+
+    #[test]
+    fn a_long_expression_wraps_before_its_top_level_operators() {
+        let mut tr = TextRenderer::new();
+        let row: Row = "a+b+c+d+e+f+g+h=x".chars().map(Node::Char).collect();
+        let whole = layout(&row, &mut tr, 20.0);
+        let wrapped = layout_wrapped(&row, &mut tr, 20.0, whole.width / 2.0);
+        assert!(wrapped.height > whole.height * 1.5, "it takes more lines");
+        assert!(wrapped.width <= whole.width / 2.0 + 20.0);
+        // Every top-level caret stop survives exactly once.
+        for index in 0..=row.len() {
+            assert_eq!(
+                wrapped
+                    .gaps
+                    .iter()
+                    .filter(|g| g.steps.is_empty() && g.index == index)
+                    .count(),
+                1,
+                "gap {index}"
+            );
+        }
+        // A sign is never split from its operand.
+        let signed: Row = "a=-b".chars().map(Node::Char).collect();
+        assert!(!breaks_before(&signed, 2));
+        assert!(breaks_before(&signed, 1));
+    }
+
+    #[test]
+    fn glyphs_are_measured_at_the_content_size_whatever_the_text_scale() {
+        let mut plain = TextRenderer::new();
+        let mut scaled = TextRenderer::new();
+        scaled.set_text_scale(2.0);
+        assert!(
+            (measure_glyph(&mut plain, 'x', 20.0) - measure_glyph(&mut scaled, 'x', 20.0)).abs()
+                < 0.01,
+            "the renderer's text scale does not grow math glyphs past their geometry"
+        );
     }
 }

@@ -479,13 +479,21 @@ fn selection_identity(selection: &DesktopSelection) -> (String, String, String) 
     )
 }
 
+/// The host as people know it: "Fedora Linux 44 (x86-64)".
 fn host_label(host: &DesktopHost) -> String {
     match (&host.os_release, &host.architecture) {
-        (Ok(os), Ok(architecture)) => format!(
-            "{} {} ({architecture})",
-            os.id,
-            os.version_id.as_deref().unwrap_or("rolling")
-        ),
+        (Ok(os), Ok(architecture)) => {
+            let name = os.name.as_deref().unwrap_or(&os.id);
+            let architecture = match architecture.as_str() {
+                "x86_64" | "amd64" => "x86-64",
+                "aarch64" | "arm64" => "ARM64",
+                other => other,
+            };
+            match os.version_id.as_deref() {
+                Some(version) => format!("{name} {version} ({architecture})"),
+                None => format!("{name} ({architecture})"),
+            }
+        }
         _ => host.operating_system.clone(),
     }
 }
@@ -574,6 +582,7 @@ mod tests {
             os_release: Ok(OsRelease {
                 id: "fedora".into(),
                 version_id: Some("44".into()),
+                name: Some("Fedora Linux".into()),
             }),
             architecture: Ok("aarch64".into()),
             package_manager: Ok(PackageManager::Dnf),
@@ -633,10 +642,6 @@ mod tests {
 
     /// Readiness, recheck, download, progress and authorization outcomes.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn desktop_install_rechecks_downloads_and_reports_distinct_outcomes() {
         // Phase `readiness_publishes_exact_host_version_and_already_installed_status`.
         {
@@ -647,7 +652,7 @@ mod tests {
             let DesktopFlowState::Ready(selection) = flow.state() else {
                 panic!("matching installed package should still be ready for verification")
             };
-            assert_eq!(selection.host, "fedora 44 (aarch64)");
+            assert_eq!(selection.host, "Fedora Linux 44 (ARM64)");
             assert_eq!(selection.release.version, "0.1.9-1.fc44");
             assert!(selection.already_installed);
         }

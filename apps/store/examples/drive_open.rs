@@ -23,10 +23,6 @@ use store::model::{
 use store::worker::Request;
 use store::{StoreApp, StoreEffect};
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "this intentionally linear headless driver documents and verifies the complete visible action-to-worker contract in one place"
-)]
 fn main() {
     let action = std::env::args().nth(1).unwrap_or_else(|| "open".into());
     let id = std::env::var("TILO_STORE_ITEM_ID").unwrap_or_else(|_| "so.tilo.hello".into());
@@ -48,6 +44,7 @@ fn main() {
         InstalledState::Not
     };
     let item = StoreItem {
+        bot: None,
         id: id.clone(),
         name,
         description: "driven by verify-open-flow.sh".into(),
@@ -82,7 +79,7 @@ fn main() {
     // Store checks it against the current item and hands the worker one
     // package operation.
     let (pact, effect) = match action.as_str() {
-        "open" => (ActionKind::Open, StoreEffect::Open { app: id.clone() }),
+        "open" => (ActionKind::Open, StoreEffect::OpenApp { app: id.clone() }),
         "mark-installed" => (
             ActionKind::MarkInstalled,
             StoreEffect::Pin { app: id.clone() },

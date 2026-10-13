@@ -83,6 +83,7 @@ pub struct GamepadAuthorizationView {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceFabricView {
+    pub displays: Vec<settings_store::device_displays::DeviceDisplay>,
     pub bluetooth_authorizations: Vec<BluetoothHandoffAuthorizationView>,
     pub bluetooth_handoffs: Vec<crate::shell::device_fabric_runtime::BluetoothHandoffStatusView>,
     pub gamepad_authorizations: Vec<GamepadAuthorizationView>,
@@ -106,6 +107,8 @@ pub struct DeviceFabricView {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceFabricUiAction {
+    /// Move a peer's native screens from an exact observed revision.
+    MoveDisplay(settings_store::device_displays::DeviceDisplayMove),
     Snapshot,
     /// Bypass presentation caching for semantic action revalidation.
     SnapshotFresh,
@@ -507,7 +510,7 @@ pub(super) fn speaker_group_summary(
         .members
         .iter()
         .filter(|member| {
-            member.state == crate::shell::speaker_group::SpeakerMemberState::AwaitingConsent
+            member.state == crate::shell::speaker_group::SpeakerMemberStatus::AwaitingConsent
         })
         .count();
     let counts: [(&str, ui::i18n::ArgValue); 3] = [

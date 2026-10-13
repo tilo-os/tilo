@@ -1,0 +1,50 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "music.library"
+label = "Music"
+version = 2
+fields = [
+  { path = "recommendations", type = "crate::recommendations::Preferences", stored = "record" },
+  { path = "recommendations.likes", type = "bool" },
+  { path = "recommendations.saved_albums", type = "bool" },
+  { path = "recommendations.followed_artists", type = "bool" },
+  { path = "recommendations.preferred_artists", type = "Set<String>" },
+  { path = "recommendations.dismissed", type = "Set<String>" },
+  { path = "artists", type = "BTreeMap<ArtistId, Artist>", readonly = true },
+  { path = "albums", type = "BTreeMap<AlbumId, Album>", readonly = true },
+  { path = "tracks", type = "BTreeMap<TrackId, Track>", readonly = true },
+  { path = "playlists", type = "Collection<Playlist>", stored = "collection" },
+  { path = "playlists.*.id", type = "PlaylistId", readonly = true },
+  { path = "playlists.*.name", type = "String", label = true },
+  { path = "playlists.*.description", type = "String" },
+  { path = "playlists.*.tracks", type = "Collection<TrackId>", stored = "collection" },
+  { path = "playlists.*.cover", type = "String" },
+  { path = "liked", type = "Set<TrackId>" },
+  { path = "saved_albums", type = "Set<AlbumId>" },
+  { path = "followed_artists", type = "Set<ArtistId>" },
+]
+
+[[resources.verbs]]
+id = "create-playlist"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "track", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "delete-playlist"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "playlist", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "import-track"
+kind = "undoable"
+params = [
+  { name = "song", required = true, schema = { type = "object", additionalProperties = false, properties = { album = { type = "object", additionalProperties = false, properties = { artist_id = { type = "string" }, id = { type = "string" }, title = { type = "string" }, year = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["id", "title", "artist_id", "year"] }, artist = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, genre = { type = "string" }, id = { type = "string" }, monthly_listeners = { type = "integer", minimum = 0 } }, required = ["id", "name", "genre", "monthly_listeners"] }, track = { type = "object", additionalProperties = false, properties = { album_id = { type = "string" }, artist_id = { type = "string" }, duration_s = { type = "integer", maximum = 4294967295, minimum = 0 }, id = { type = "string" }, plays = { type = "integer", minimum = 0 }, title = { type = "string" }, track_no = { type = "integer", maximum = 4294967295, minimum = 0 }, yt_id = { type = "string" } }, required = ["id", "title", "album_id", "artist_id", "track_no", "duration_s", "yt_id", "plays"] } }, required = ["track", "album", "artist"] } },
+]
+

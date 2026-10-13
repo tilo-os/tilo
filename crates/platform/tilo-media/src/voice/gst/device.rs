@@ -164,9 +164,18 @@ impl DevicePipeline {
             .spawn(move || {
                 let pipeline = RunningPipeline(worker_pipeline);
                 if worker_stop.allowed() {
-                    if pipeline.0.set_state(gst::State::Playing).is_err()
-                        || check_bus(&pipeline.0).is_err()
-                    {
+                    tracing::debug!(
+                        capture = needs_sample,
+                        "native voice device transition started"
+                    );
+                    let transition = pipeline.0.set_state(gst::State::Playing);
+                    tracing::debug!(
+                        capture = needs_sample,
+                        transition_ok = transition.is_ok(),
+                        state = ?pipeline.0.current_state(),
+                        "native voice device transition returned"
+                    );
+                    if transition.is_err() || check_bus(&pipeline.0).is_err() {
                         worker_stop.fail();
                     }
                 } else {

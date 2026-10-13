@@ -96,10 +96,6 @@ impl Background {
         Self(Arc::new(executor))
     }
 
-    pub fn from_arc(executor: Arc<dyn Executor>) -> Self {
-        Self(executor)
-    }
-
     /// The executor entered on this thread, or the process-wide
     /// [`ThreadPool`] when none is.
     pub fn current() -> Self {

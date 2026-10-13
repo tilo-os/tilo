@@ -6,16 +6,6 @@
 //! blend buffer for everything under a blend layer. Times both shapes at
 //! the compositor's actual run size.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::time::Instant;
 
 use crate::support::offscreen::OffscreenRenderer;
@@ -86,13 +76,7 @@ fn body(scene: &mut Scene) {
 
 #[test]
 fn dest_in_mask_layer_is_affordable_at_viewport_size() {
-    let Some(mut renderer) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(W, H)
-    }))
-    .ok() else {
-        eprintln!("skip: no wgpu adapter available");
-        return;
-    };
+    let mut renderer = OffscreenRenderer::new(W, H);
 
     // Control: plain clip layer, no blending.
     let mut plain = Scene::new();

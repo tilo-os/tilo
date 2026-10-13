@@ -30,6 +30,25 @@ pub(super) fn outbound_failure(
     }
 }
 
+fn live_document_owners(root: &dyn Widget) -> Vec<crate::history_mode::HistoryOwner> {
+    fn collect(root: &dyn Widget, owners: &mut Vec<crate::history_mode::HistoryOwner>) {
+        for owner in root.history_owner().into_iter().chain(root.record_owners()) {
+            if !owners.iter().any(|known| known.same_owner(&owner)) {
+                owners.push(owner);
+            }
+        }
+        for child in root.children() {
+            collect(child, owners);
+        }
+    }
+    let mut current = vec![];
+    collect(root, &mut current);
+    crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
+        collect(live, &mut current);
+    });
+    current
+}
+
 #[cfg(test)]
 thread_local! {
     pub(crate) static DOCUMENT_ROUTE_REFRESHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -155,7 +174,7 @@ impl App {
                     .find_map(|entry| entry.outbound_failure.as_deref())
             })
             .or_else(|| {
-                if self.document_routes.witness.is_none() {
+                if self.document_routes.witness.is_none() && self.native_document_chrome {
                     Some("Collaboration is unavailable; remote changes are not synchronized.")
                 } else if !self.document_routes.primary.is_empty()
                     || self
@@ -211,6 +230,19 @@ impl App {
             self.autosave_generation,
             &self.state.doc,
         );
+        let routes = self
+            .document_routes
+            .witness
+            .iter()
+            .map(|witness| witness.route.clone())
+            .chain(
+                self.document_routes
+                    .owners
+                    .iter()
+                    .map(|owner| owner.route.clone()),
+            )
+            .collect();
+        self.collaboration.manager.set_document_owner_routes(routes);
         // The exact live owner map exists before any join can deliver callbacks.
         for route in joins {
             self.collaboration.manager.join_route(route);
@@ -219,6 +251,86 @@ impl App {
             self.layout.layout_dirty = true;
         }
     }
+    /// Published operations wait for the actual live owners' initial history.
+    /// Joining a route is insufficient: the owner must apply its capture first.
+    pub(super) fn published_action_history_ready(&mut self) -> bool {
+        self.refresh_document_routes();
+        self.published_action_history_ready_after_refresh()
+    }
+
+    pub(super) fn published_action_history_ready_after_refresh(&self) -> bool {
+        // A later event may replace owners or the primary route in this batch.
+        // Withhold publication until the normal pump reconciles that new custody.
+        if self.document_routes.witness.as_ref() != self.bound_broker_route() {
+            return false;
+        }
+        let route = self
+            .document_routes
+            .witness
+            .as_ref()
+            .map(|witness| &witness.route);
+        live_document_owners(self.root_widget.as_ref())
+            .iter()
+            .all(|owner| {
+                self.document_routes.owners.iter().any(|entry| {
+                    entry
+                        .owners
+                        .iter()
+                        .any(|installed| installed.same_owner(owner))
+                })
+            })
+            && self.collaboration.manager.document_route_ready(route)
+            && self.document_routes.owners.iter().all(|entry| {
+                self.collaboration
+                    .manager
+                    .document_route_ready(Some(&entry.route))
+            })
+    }
+
+    pub(crate) fn native_admission_snapshot(
+        &self,
+    ) -> tilo_startup_metrics::NativeAdmissionSnapshot {
+        let manager = &self.collaboration.manager;
+        let witness = self.document_routes.witness.as_ref();
+        let route = witness.map(|witness| &witness.route);
+        let (enqueued, counts) = manager.action_directory_observation();
+        let installed = self
+            .document_routes
+            .owners
+            .iter()
+            .map(|entry| entry.owners.len())
+            .sum();
+        let continuity = crate::host::environment()
+            .identity
+            .continuity_instance
+            .as_deref()
+            .and_then(|value| value.parse().ok());
+        tilo_startup_metrics::NativeAdmissionSnapshot {
+            process_id: std::process::id(),
+            continuity_instance: continuity,
+            connection: tilo_startup_metrics::NativeAdmissionConnection {
+                manager_connected: manager.is_connected(),
+                custody_reconciled: witness == self.bound_broker_route(),
+            },
+            live_document_owners: live_document_owners(self.root_widget.as_ref()).len(),
+            installed_document_owners: installed,
+            history: tilo_startup_metrics::NativeAdmissionHistory {
+                primary_history_ready: manager.document_route_ready(route),
+                all_owner_histories_ready: self
+                    .document_routes
+                    .owners
+                    .iter()
+                    .all(|entry| manager.document_route_ready(Some(&entry.route))),
+                action_history_ready: self.published_action_history_ready_after_refresh(),
+            },
+            directory: tilo_startup_metrics::NativeAdmissionDirectory {
+                directory_enqueued: enqueued,
+                transport_directory_rpc_successes: counts.map(|counts| counts.0),
+                transport_directory_rpc_failures: counts.map(|counts| counts.1),
+            },
+        }
+    }
+
     fn send_owned_document(
         &mut self,
         route: RouteSpec,
@@ -253,41 +365,25 @@ impl App {
     }
 
     fn queue_owned_documents_after_refresh(&mut self) -> Result<(), &'static str> {
-        fn collect(root: &dyn Widget, owners: &mut Vec<crate::history_mode::HistoryOwner>) {
-            for owner in root.history_owner().into_iter().chain(root.record_owners()) {
-                if !owners.iter().any(|known| known.same_owner(&owner)) {
-                    owners.push(owner);
-                }
-            }
-            for child in root.children() {
-                collect(child, owners);
-            }
-        }
-        // Reconcile can omit a newly unreadable, unroutable or retired owner.
-        // Such omissions cannot serve as proof that every live owner was queued.
-        let mut current = vec![];
-        collect(self.root_widget.as_ref(), &mut current);
-        crate::history_mode::capability::visit_framework_history(
-            self.root_widget.as_ref(),
-            &mut |_, live| collect(live, &mut current),
-        );
+        // Every live owner must have an actual publication route.
+        let current = live_document_owners(self.root_widget.as_ref());
         if current.is_empty() {
             return Ok(());
         }
         if self.document_routes.witness.is_none() {
             return Err("the admitted document route is unavailable");
         }
-        let mut blocked = None;
-        if current.iter().any(|owner| {
-            !self.document_routes.owners.iter().any(|entry| {
-                entry
-                    .owners
-                    .iter()
-                    .any(|installed| installed.same_owner(owner))
+        let mut blocked = current
+            .iter()
+            .any(|owner| {
+                !self.document_routes.owners.iter().any(|entry| {
+                    entry
+                        .owners
+                        .iter()
+                        .any(|installed| installed.same_owner(owner))
+                })
             })
-        }) {
-            blocked = Some("a live document owner has no usable publication route");
-        }
+            .then_some("a live document owner has no usable publication route");
         let mut sends = vec![];
         for entry in &mut self.document_routes.owners {
             let Some(owner) = entry.owners.first() else {
@@ -370,6 +466,7 @@ impl App {
         match self.queue_owned_documents() {
             Ok(()) => true,
             Err(reason) => {
+                tracing::error!(reason, "pre-terminal document publication blocked");
                 self.action_publication_failure = Some(format!(
                     "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
                 ));

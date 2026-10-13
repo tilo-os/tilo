@@ -13,11 +13,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -31,6 +27,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+mod attest;
+
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
@@ -57,8 +55,6 @@ enum TargetPlatform {
     /// Native Tilo OS thin app (`x86_64` or `aarch64`).
     #[default]
     TiloOs,
-    /// WebAssembly side module for the browser toolkit core (`wasm32`).
-    Web,
     /// Self-contained executable for other Linux desktops (`x86_64` or `aarch64`).
     Linux,
     /// Self-contained Windows executable (`x86_64` or `aarch64`).
@@ -80,7 +76,6 @@ impl From<TargetPlatform> for registry_client::Platform {
     fn from(value: TargetPlatform) -> Self {
         match value {
             TargetPlatform::TiloOs => Self::TiloOs,
-            TargetPlatform::Web => Self::Web,
             TargetPlatform::Linux => Self::Linux,
             TargetPlatform::Windows => Self::Windows,
             TargetPlatform::Macos => Self::Macos,
@@ -133,7 +128,7 @@ enum Command {
         /// The release executable.
         #[arg(long)]
         executable: PathBuf,
-        /// `windows` or `macos`.
+        /// `linux`, `windows` or `macos`.
         #[arg(long, value_enum)]
         platform: DesktopPlatform,
         /// `x86_64` or `aarch64`.
@@ -149,46 +144,10 @@ enum Command {
         /// Identity JSON; a fresh keypair is generated when absent.
         #[arg(long)]
         identity: Option<PathBuf>,
-    },
-    /// Pack the web build of an app (or of the toolkit core) from its
-    /// authored manifest and WebAssembly module. The module's
-    /// `tilo.runtime_abi` and `target_features` custom sections become the
-    /// signed `[target]`; nothing in the manifest is web-specific.
-    PackWeb {
-        /// The authored manifest (TOML), the same one the native build uses.
-        #[arg(long)]
-        manifest: PathBuf,
-        /// The app's WebAssembly side module (or the toolkit core module
-        /// for `kind = "runtime"`). Packed at the payload root under its file name.
-        #[arg(long)]
-        module: PathBuf,
-        /// Extra file shipped as `assets/<file name>`; repeatable.
-        #[arg(long = "asset")]
-        assets: Vec<PathBuf>,
-        /// Directory whose files ship under `assets/`, keeping relative paths.
-        #[arg(long)]
-        asset_dir: Option<PathBuf>,
-        /// Output .tapp path.
-        #[arg(short = 'o', long)]
-        output: PathBuf,
-        /// Identity JSON; a fresh keypair is generated when absent.
-        #[arg(long)]
-        identity: Option<PathBuf>,
-        /// Canonical wasm isa, for a module without a `target_features` section.
-        #[arg(long)]
-        wasm_isa: Option<String>,
-        /// Toolkit-core ABI id, `tilo-runtime/<version>+wasm.<32 hex>`, for a
-        /// module without a `tilo.runtime_abi` section; must match the
-        /// section when both exist.
-        #[arg(long)]
-        runtime_abi: Option<String>,
-        /// For `kind = "runtime"`: the release this core must provide,
-        /// `tilo-runtime/<version>`; checked against the ABI id.
-        #[arg(long)]
-        provides: Option<String>,
-        /// Write the thin form (metadata only).
-        #[arg(long)]
-        thin: bool,
+        /// Validate and print an unsigned plan without selecting a signing key
+        /// or writing an archive.
+        #[arg(long, conflicts_with = "identity")]
+        dry_run: bool,
     },
     /// Write the thin form of an existing .tapp (metadata only) to `output`.
     Thin {
@@ -208,6 +167,18 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
         /// The full .tapp to split.
+        file: PathBuf,
+    },
+    /// Write the compressed twin of a .tapp, `<file>.zst` unless `-o` names
+    /// another path: the form clients download first when it sits beside the
+    /// package at its signed URL. The twin is checked to decompress to the
+    /// exact package before it is written; signatures and the registry entry
+    /// still cover only the package.
+    Compress {
+        /// Output path for the twin; `<file>.zst` by default.
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// The .tapp to compress.
         file: PathBuf,
     },
     /// Re-sign an existing .tapp with the given identity, writing the result back into the same file.
@@ -269,6 +240,28 @@ enum Command {
         /// The .tapp to publish.
         file: PathBuf,
     },
+    /// Co-sign an existing complete package with an attestor and its original publisher.
+    /// Payload bytes remain unchanged; the attested manifest gets a new signed root.
+    Attest {
+        /// Original publisher identity JSON; a different publisher is refused.
+        #[arg(long)]
+        publisher_identity: PathBuf,
+        /// Attestor signing identity JSON generated by keygen.
+        #[arg(long)]
+        attestor_identity: PathBuf,
+        /// Attestor ID matching the user's separately enrolled trust record.
+        #[arg(long)]
+        attestor: String,
+        /// Intended recipient trust scope (all, prefix:... or mime:...).
+        /// This verifies scope before signing; recipient trust remains authoritative.
+        #[arg(long)]
+        scope: String,
+        /// Complete input package; incomplete thin packages are refused.
+        file: PathBuf,
+        /// Fresh output; existing files and the input are never overwritten.
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+    },
     /// Generate a publisher identity, written as the JSON --identity accepts elsewhere; refuses to overwrite.
     Keygen {
         /// Where to write the identity JSON.
@@ -280,6 +273,9 @@ enum Command {
     /// registry, collect printed entries into an `entries` file and serve
     /// the directory over HTTP.
     Entry(EntryArgs),
+    /// Print a signed registry entry for a bot program (the Shortcut's
+    /// canonical JSON); with `--action`, wrapped as a request for POST /entries.
+    BotEntry(BotEntryArgs),
     /// Print the registry entry this publisher has waiting for review for a
     /// package id, as `--previous-entry` accepts it; prints nothing when none
     /// is waiting. A newer request replaces the waiting one and must keep its
@@ -339,6 +335,39 @@ struct SealImageArgs {
 }
 
 #[derive(clap::Args)]
+struct BotEntryArgs {
+    /// Publisher identity JSON that signs this entry.
+    #[arg(long)]
+    identity: PathBuf,
+    /// Reverse-DNS id of the bot, such as `so.tilo.bots.discord-bridge`.
+    #[arg(long)]
+    package_id: String,
+    /// Version of this release.
+    #[arg(long)]
+    version: String,
+    /// Registry that serves the program and receives `--upload`.
+    #[arg(long, default_value = "https://apps.tilo.so")]
+    registry: String,
+    /// A connector the program's triggers use, as `<package id>@<min version>`.
+    #[arg(long = "connector")]
+    connectors: Vec<String>,
+    /// JSON presentation metadata, as for `entry`.
+    #[arg(long)]
+    metadata: Option<PathBuf>,
+    /// Wrap the entry in the signed mutation shape accepted by POST /entries.
+    #[arg(long)]
+    action: Option<RegistryAction>,
+    /// Current signed registry entry JSON; required for updates.
+    #[arg(long, requires = "action")]
+    previous_entry: Option<PathBuf>,
+    /// Upload the program to `--registry` before printing.
+    #[arg(long)]
+    upload: bool,
+    /// The program file: a Shortcut as JSON, in any formatting.
+    file: PathBuf,
+}
+
+#[derive(clap::Args)]
 struct EntryArgs {
     /// Public URL the .tapp will be downloadable from.
     #[arg(long)]
@@ -346,12 +375,12 @@ struct EntryArgs {
     /// Publisher identity JSON that signed the tapp and signs this entry.
     #[arg(long)]
     identity: PathBuf,
-    /// Platform family of the tapp: a native Tilo OS build or a web
-    /// build made by `pack-web`.
+    /// Platform family of the tapp: a native Tilo OS build, or a desktop
+    /// or Android build made by `pack-desktop` or `tilo-app package`.
     #[arg(long, value_enum, default_value_t)]
     platform: TargetPlatform,
     /// Target architecture: `x86_64` or `aarch64` (inferred when the
-    /// package manifest declares exactly one), or `wasm32` for web.
+    /// package manifest declares exactly one).
     #[arg(long)]
     arch: Option<String>,
     /// JSON presentation metadata: localized name, product description,
@@ -372,6 +401,13 @@ struct EntryArgs {
     /// Newest pre-releases kept per target; older ones leave the entry.
     #[arg(long, default_value_t = registry_types::retention::DEFAULT_RETAINED_PER_CHANNEL)]
     keep_prereleases: usize,
+    /// Owner-verified catalogue used to reconcile never-published native
+    /// history after four newer releases with offered exact runtimes remain.
+    #[arg(long, requires = "registry_owner_pubkey")]
+    runtime_catalogue: Option<PathBuf>,
+    /// Existing registry owner pin used with --runtime-catalogue.
+    #[arg(long, requires = "runtime_catalogue")]
+    registry_owner_pubkey: Option<String>,
     /// Payload objects of a thin .tapp, as `split` wrote them; they are
     /// hosted beside the .tapp at `--url`.
     #[arg(long)]
@@ -402,31 +438,6 @@ fn main() -> Result<()> {
             identity,
             thin,
         } => cmd_pack(&manifest, &payload, &output, identity.as_deref(), thin),
-        Command::PackWeb {
-            manifest,
-            module,
-            assets,
-            asset_dir,
-            output,
-            identity,
-            wasm_isa,
-            runtime_abi,
-            provides,
-            thin,
-        } => cmd_pack_web(&PackWebArgs {
-            manifest: &manifest,
-            module: &module,
-            assets: &assets,
-            asset_dir: asset_dir.as_deref(),
-            output: &output,
-            identity: identity.as_deref(),
-            options: tilo_app_package::web::WebBuildOptions {
-                isa: wasm_isa.as_deref(),
-                runtime_abi: runtime_abi.as_deref(),
-                provides: provides.as_deref(),
-            },
-            thin,
-        }),
         Command::PackDesktop {
             manifest,
             executable,
@@ -435,6 +446,7 @@ fn main() -> Result<()> {
             isa,
             output,
             identity,
+            dry_run,
         } => cmd_pack_desktop(&PackDesktopArgs {
             manifest: &manifest,
             executable: &executable,
@@ -443,10 +455,12 @@ fn main() -> Result<()> {
             arch: &arch,
             output: &output,
             identity: identity.as_deref(),
+            dry_run,
         }),
         Command::SealImage(args) => cmd_seal_image(&args),
         Command::Thin { output, file } => cmd_thin(&file, &output),
         Command::Split { out, file } => cmd_split(&file, &out),
+        Command::Compress { output, file } => cmd_compress(&file, output.as_deref()),
         Command::Sign { identity, file } => cmd_sign(&identity, &file),
         Command::Verify { trusted_key, file } => cmd_verify(&trusted_key, &file),
         Command::Inspect { file } => cmd_inspect(&file),
@@ -470,8 +484,24 @@ fn main() -> Result<()> {
             dry_run,
             serve,
         ),
+        Command::Attest {
+            publisher_identity,
+            attestor_identity,
+            attestor,
+            scope,
+            file,
+            output,
+        } => attest::run(
+            &publisher_identity,
+            &attestor_identity,
+            &attestor,
+            &scope,
+            &file,
+            &output,
+        ),
         Command::Keygen { out } => cmd_keygen(&out),
         Command::Entry(args) => cmd_entry(&args),
+        Command::BotEntry(args) => cmd_bot_entry(&args),
         Command::Pending(args) => cmd_pending(&args),
     }
 }
@@ -574,81 +604,6 @@ fn cmd_seal_image(args: &SealImageArgs) -> Result<()> {
     Ok(())
 }
 
-struct PackWebArgs<'a> {
-    manifest: &'a Path,
-    module: &'a Path,
-    assets: &'a [PathBuf],
-    asset_dir: Option<&'a Path>,
-    output: &'a Path,
-    identity: Option<&'a Path>,
-    options: tilo_app_package::web::WebBuildOptions<'a>,
-    thin: bool,
-}
-
-fn cmd_pack_web(args: &PackWebArgs<'_>) -> Result<()> {
-    let manifest_src = std::fs::read_to_string(args.manifest)
-        .with_context(|| format!("read manifest {}", args.manifest.display()))?;
-    let mut authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
-    let identity = match args.identity {
-        Some(path) => load_identity(path)?,
-        None => SigningIdentity::generate(),
-    };
-    authored.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
-
-    let module_bytes = std::fs::read(args.module)
-        .with_context(|| format!("read module {}", args.module.display()))?;
-    let module_name = args
-        .module
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            anyhow!(
-                "module path {} has no UTF-8 file name",
-                args.module.display()
-            )
-        })?;
-    let info = tilo_app_package::web::inspect_wasm_module(&module_bytes)
-        .with_context(|| format!("inspect {}", args.module.display()))?;
-    let manifest =
-        tilo_app_package::web::web_manifest(&authored, module_name, &info, &args.options)?;
-
-    let staging = tempfile::tempdir().context("create staging directory")?;
-    std::fs::write(staging.path().join(module_name), &module_bytes)
-        .context("stage WebAssembly module")?;
-    let assets_root = staging.path().join("assets");
-    for asset in args.assets {
-        let name = asset
-            .file_name()
-            .ok_or_else(|| anyhow!("asset {} has no file name", asset.display()))?;
-        std::fs::create_dir_all(&assets_root).context("create assets directory")?;
-        let destination = assets_root.join(name);
-        if destination.exists() {
-            bail!("two assets are named {}", name.to_string_lossy());
-        }
-        std::fs::copy(asset, &destination)
-            .with_context(|| format!("stage asset {}", asset.display()))?;
-    }
-    if let Some(dir) = args.asset_dir {
-        copy_regular_tree(dir, &assets_root)?;
-    }
-
-    let packed = pack(staging.path(), &manifest, &identity)
-        .map_err(|error| anyhow!("pack failed: {error}"))?;
-    let payload: Option<&dyn BlobSource> = if args.thin { None } else { Some(&packed) };
-    write_tapp(args.output, &packed.meta, payload)?;
-    let target = manifest
-        .target
-        .as_ref()
-        .ok_or_else(|| anyhow!("web manifest lost its target"))?;
-    eprintln!(
-        "packed web {} for {} ({} payload blobs)",
-        packed.id(),
-        target.runtime,
-        packed.meta.payload_hashes().len()
-    );
-    Ok(())
-}
-
 /// The desktop systems `pack-desktop` builds for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum DesktopPlatform {
@@ -665,17 +620,13 @@ struct PackDesktopArgs<'a> {
     isa: &'a str,
     output: &'a Path,
     identity: Option<&'a Path>,
+    dry_run: bool,
 }
 
 fn cmd_pack_desktop(args: &PackDesktopArgs<'_>) -> Result<()> {
     let manifest_src = std::fs::read_to_string(args.manifest)
         .with_context(|| format!("read manifest {}", args.manifest.display()))?;
-    let mut authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
-    let identity = match args.identity {
-        Some(path) => load_identity(path)?,
-        None => SigningIdentity::generate(),
-    };
-    authored.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
+    let authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
     let name = args
         .executable
         .file_name()
@@ -692,9 +643,40 @@ fn cmd_pack_desktop(args: &PackDesktopArgs<'_>) -> Result<()> {
         DesktopPlatform::Windows => registry_types::WINDOWS_PLATFORM,
         DesktopPlatform::Macos => registry_types::MACOS_PLATFORM,
     };
-    let manifest = tilo_app_package::desktop::desktop_manifest(
+    let mut manifest = tilo_app_package::desktop::desktop_manifest(
         &authored, platform, args.arch, args.isa, &module,
     )?;
+
+    let executable_bytes = std::fs::metadata(args.executable)?.len();
+    let limit = tilo_app_package::app_size_limit(&manifest)
+        .ok_or_else(|| anyhow!("desktop package has no application size contract"))?;
+    if executable_bytes > limit {
+        bail!("executable is {executable_bytes} bytes; desktop payload limit is {limit} bytes");
+    }
+    if args.dry_run {
+        if args.identity.is_some() {
+            bail!("dry-run cannot select a signing identity");
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "signed": false,
+                "publisher_selected": false,
+                "archive_size_verified": false,
+                "executable": args.executable,
+                "executable_bytes": executable_bytes,
+                "maximum_archive_bytes": limit,
+                "output": args.output,
+                "manifest_toml": manifest.to_toml_string()?,
+            }))?
+        );
+        return Ok(());
+    }
+    let identity = match args.identity {
+        Some(path) => load_identity(path)?,
+        None => SigningIdentity::generate(),
+    };
+    manifest.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
 
     let staging = tempfile::tempdir().context("create staging directory")?;
     std::fs::create_dir_all(staging.path().join("bin")).context("create bin directory")?;
@@ -712,45 +694,43 @@ fn cmd_pack_desktop(args: &PackDesktopArgs<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Copy every regular file under `from` to the same relative path under
-/// `to`. Symlinks and special files are refused: a package ships bytes.
-fn copy_regular_tree(from: &Path, to: &Path) -> Result<()> {
-    let mut pending = vec![PathBuf::new()];
-    while let Some(relative) = pending.pop() {
-        let source = from.join(&relative);
-        for entry in std::fs::read_dir(&source)
-            .with_context(|| format!("read asset directory {}", source.display()))?
-        {
-            let entry = entry.with_context(|| format!("read {}", source.display()))?;
-            let kind = entry.file_type()?;
-            let path = relative.join(entry.file_name());
-            if kind.is_dir() {
-                pending.push(path);
-            } else if kind.is_file() {
-                let destination = to.join(&path);
-                if let Some(parent) = destination.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                if destination.exists() {
-                    bail!("asset {} is given twice", path.display());
-                }
-                std::fs::copy(entry.path(), &destination)
-                    .with_context(|| format!("stage asset {}", entry.path().display()))?;
-            } else {
-                bail!(
-                    "asset {} is not a regular file or directory",
-                    entry.path().display()
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
 fn cmd_thin(file: &Path, output: &Path) -> Result<()> {
     let (tapp, _) = read_tapp(file, false)?;
     write_tapp(output, &tapp.meta, None)?;
     eprintln!("wrote thin {} -> {}", tapp.meta.id, output.display());
+    Ok(())
+}
+
+fn cmd_compress(file: &Path, output: Option<&Path>) -> Result<()> {
+    use tilo_app_package::compressed;
+    let bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
+    tilo_app_package::tapp::read(bytes.as_slice(), &mut tilo_app_package::DiscardBlobs)
+        .with_context(|| format!("{} is not a .tapp", file.display()))?;
+    let twin = compressed::compress(&bytes).context("compress")?;
+    let mut round_trip = Vec::with_capacity(bytes.len());
+    compressed::decompress_bounded(twin.as_slice(), bytes.len() as u64, &mut round_trip)
+        .context("decompress the twin")?;
+    if round_trip != bytes {
+        bail!("the twin of {} does not decompress to it", file.display());
+    }
+    let output = output.map_or_else(
+        || {
+            let mut name = file.as_os_str().to_owned();
+            name.push(compressed::SUFFIX);
+            PathBuf::from(name)
+        },
+        Path::to_path_buf,
+    );
+    let temp = output.with_extension(format!("zst.tmp.{}", std::process::id()));
+    std::fs::write(&temp, &twin).with_context(|| format!("write {}", temp.display()))?;
+    std::fs::rename(&temp, &output).with_context(|| format!("write {}", output.display()))?;
+    eprintln!(
+        "compressed {} -> {}: {} -> {} bytes",
+        file.display(),
+        output.display(),
+        bytes.len(),
+        twin.len()
+    );
     Ok(())
 }
 
@@ -1189,6 +1169,159 @@ fn cmd_pending(args: &PendingArgs) -> Result<()> {
     Ok(())
 }
 
+fn reconcile_entry_history(
+    args: &EntryArgs,
+    entry: &mut registry_types::RegistryEntry,
+    signer: &SigningKey,
+) -> Result<()> {
+    if let Some(catalogue_path) = &args.runtime_catalogue {
+        let bytes = std::fs::read(catalogue_path).context("read runtime catalogue")?;
+        let catalogue: registry_types::SignedRegistrySnapshot =
+            serde_json::from_slice(&bytes).context("decode runtime catalogue")?;
+        let owner = args
+            .registry_owner_pubkey
+            .as_deref()
+            .context("runtime catalogue requires an existing registry owner pin")?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("clock precedes Unix epoch")?
+            .as_secs();
+        registry_types::verify_snapshot(&catalogue, owner, now)
+            .context("verify runtime catalogue against registry owner")?;
+        let dropped = registry_client::runtime_history::reconcile(
+            entry,
+            &catalogue.entries,
+            &args.url,
+            signer,
+        )?;
+        for version in dropped {
+            eprintln!(
+                "reconciled unpublished {}@{} ({}) after four newer offered releases; exact runtime {} is no longer offered",
+                entry.package_id,
+                version.version,
+                version
+                    .target()
+                    .map_or("", |target| target.architecture.as_str()),
+                version
+                    .target()
+                    .and_then(|target| target.runtime.as_deref())
+                    .unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn load_previous_entry(path: &Path) -> Result<registry_types::RegistryEntry> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read previous entry {}", path.display()))?;
+    let entry: registry_types::RegistryEntry =
+        serde_json::from_slice(&bytes).context("decode previous registry entry")?;
+    if !registry_types::verify_entry_signature(&entry) {
+        bail!("previous registry entry has an invalid publisher signature");
+    }
+    Ok(entry)
+}
+
+fn load_entry_metadata(path: &Path) -> Result<registry_client::EntryMetadata> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read entry metadata {}", path.display()))?;
+    serde_json::from_slice(&bytes).context("decode entry metadata JSON")
+}
+
+fn print_entry(
+    entry: &registry_types::RegistryEntry,
+    action: Option<RegistryAction>,
+    signer: &SigningKey,
+) -> Result<()> {
+    let output = action.map_or_else(
+        || serde_json::to_value(entry),
+        |action| {
+            serde_json::to_value(registry_types::sign_change_request(
+                action.into(),
+                entry.clone(),
+                signer,
+            ))
+        },
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).context("encode entry")?
+    );
+    Ok(())
+}
+
+fn release_time() -> u64 {
+    std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_else(tilo_clock::unix_now)
+}
+
+/// Hand-written program files are accepted in any formatting; what gets
+/// hashed, uploaded and bound is always the canonical encoding.
+fn cmd_bot_entry(args: &BotEntryArgs) -> Result<()> {
+    let file = &args.file;
+    let raw = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
+    let shortcut: tilo_automation::Shortcut =
+        serde_json::from_slice(&raw).with_context(|| format!("decode {}", file.display()))?;
+    let canonical = tilo_automation::program::canonical_bytes(&shortcut)?;
+    let connectors = args
+        .connectors
+        .iter()
+        .map(|raw| {
+            let (package_id, min_version) = raw.split_once('@').ok_or_else(|| {
+                anyhow::anyhow!("--connector takes <package id>@<min version>, got {raw}")
+            })?;
+            Ok(registry_types::PackageRequirement {
+                package_id: package_id.to_owned(),
+                min_version: min_version.to_owned(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let signer = load_signing_key(&args.identity)?;
+    if matches!(args.action, Some(RegistryAction::Update)) && args.previous_entry.is_none() {
+        bail!("--previous-entry is required with --action update");
+    }
+    let previous = args
+        .previous_entry
+        .as_deref()
+        .map(load_previous_entry)
+        .transpose()?;
+    let metadata = args
+        .metadata
+        .as_deref()
+        .map(load_entry_metadata)
+        .transpose()?;
+    let release = registry_client::BotRelease {
+        program: &canonical,
+        package_id: &args.package_id,
+        version: &args.version,
+        registry_origin: &args.registry,
+        connectors: &connectors,
+    };
+    let entry = registry_client::build_bot_entry(
+        &release,
+        &signer,
+        previous.as_ref(),
+        metadata.as_ref(),
+        release_time(),
+    )?;
+    if args.upload {
+        registry_client::RegistryClient::new(&args.registry)?
+            .upload_program(&signer, &canonical)?;
+    }
+    print_entry(&entry, args.action, &signer)?;
+    let url = entry
+        .versions
+        .iter()
+        .find(|v| v.version == args.version)
+        .and_then(registry_types::RegistryVersion::bot)
+        .map_or("?", |bot| bot.program_url.as_str());
+    eprintln!("entry: {}@{} -> {url}", entry.package_id, args.version);
+    Ok(())
+}
+
 fn cmd_entry(args: &EntryArgs) -> Result<()> {
     let file = &args.file;
     let url = args.url.as_str();
@@ -1207,27 +1340,9 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
     if matches!(action, Some(RegistryAction::Update)) && previous_entry.is_none() {
         bail!("--previous-entry is required with --action update");
     }
-    let previous = previous_entry
-        .map(|path| {
-            let bytes = std::fs::read(path)
-                .with_context(|| format!("read previous entry {}", path.display()))?;
-            let entry: registry_types::RegistryEntry =
-                serde_json::from_slice(&bytes).context("decode previous registry entry")?;
-            if !registry_types::verify_entry_signature(&entry) {
-                bail!("previous registry entry has an invalid publisher signature");
-            }
-            anyhow::Ok(entry)
-        })
-        .transpose()?;
-    let metadata = metadata
-        .map(|path| {
-            let bytes = std::fs::read(path)
-                .with_context(|| format!("read entry metadata {}", path.display()))?;
-            serde_json::from_slice::<registry_client::EntryMetadata>(&bytes)
-                .context("decode entry metadata JSON")
-        })
-        .transpose()?;
-    let entry = if let Some(objects) = &args.objects {
+    let previous = previous_entry.map(load_previous_entry).transpose()?;
+    let metadata = metadata.map(load_entry_metadata).transpose()?;
+    let mut entry = if let Some(objects) = &args.objects {
         registry_client::build_entry_with_objects(
             registry_client::ThinPackage {
                 tapp: &tapp_bytes,
@@ -1253,23 +1368,89 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
             &retention,
         )?
     };
-    let output = action.map_or_else(
-        || serde_json::to_value(&entry),
-        |action| {
-            serde_json::to_value(registry_types::sign_change_request(
-                action.into(),
-                entry.clone(),
-                &signer,
-            ))
-        },
-    )?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&output).context("encode entry")?
-    );
+    reconcile_entry_history(args, &mut entry, &signer)?;
+    print_entry(&entry, action, &signer)?;
     // `build_entry` always builds exactly one version; `.first()`
     // avoids indexing so a future refactor there can't turn this into a panic.
     let version = entry.versions.first().map_or("?", |v| v.version.as_str());
     eprintln!("entry: {}@{version} -> {url}", entry.package_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod desktop_plan_tests {
+    use super::*;
+
+    #[test]
+    fn desktop_dry_run_refuses_identity_selection() {
+        assert!(
+            Cli::try_parse_from([
+                "tilo-app-package",
+                "pack-desktop",
+                "--manifest",
+                "app.toml",
+                "--executable",
+                "app",
+                "--platform",
+                "linux",
+                "--arch",
+                "x86_64",
+                "--output",
+                "app.tapp",
+                "--dry-run",
+                "--identity",
+                "private.json",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn desktop_dry_run_validates_without_writing_or_signing() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("app.toml");
+        std::fs::write(
+            &manifest,
+            format!(
+                r#"
+[package]
+id = "so.tilo.plan"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp = "tilo-default"
+landlock = "strict"
+[sandbox.net]
+mode = "off"
+[entrypoint]
+bin = "bin/app"
+"#,
+                "00".repeat(32)
+            ),
+        )
+        .unwrap();
+        let executable = dir.path().join("app");
+        std::fs::write(&executable, b"not executed").unwrap();
+        let output = dir.path().join("missing/app.tapp");
+        let mut args = PackDesktopArgs {
+            manifest: &manifest,
+            executable: &executable,
+            platform: DesktopPlatform::Linux,
+            arch: "x86_64",
+            isa: "x86-64-v3",
+            output: &output,
+            identity: None,
+            dry_run: true,
+        };
+        cmd_pack_desktop(&args).unwrap();
+        assert!(!output.parent().unwrap().exists());
+        args.arch = "wasm32";
+        assert!(cmd_pack_desktop(&args).is_err());
+        assert!(!output.exists());
+    }
 }

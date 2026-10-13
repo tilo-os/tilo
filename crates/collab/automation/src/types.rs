@@ -58,7 +58,7 @@ impl Ty {
             ParamType::DateTime => Self::DateTime,
             ParamType::Secret => Self::Secret,
             ParamType::Resource => Self::Resource(None),
-            ParamType::Object => Self::Object(param.schema.clone()),
+            ParamType::Object => Self::Object(param.schema.as_deref().cloned()),
             ParamType::Array => Self::Array(
                 param
                     .schema
@@ -97,7 +97,10 @@ impl Ty {
             ResultSpec::Resource { resource_kind } => {
                 Some((Self::Resource(Some(resource_kind.clone())), None))
             }
-            ResultSpec::None | ResultSpec::Job => None,
+            // A verb answers no value but names the item it created, such
+            // as the message a `post` added, for a later step to act on.
+            ResultSpec::None => Some((Self::Resource(None), None)),
+            ResultSpec::Job => None,
         }
     }
 
@@ -111,7 +114,8 @@ impl Ty {
 /// Whether a value of type `from` can satisfy `param`, and why not.
 pub(crate) fn assignable(from: &Ty, param: &ActionParam) -> Result<(), String> {
     let fits = match (from, param.ty) {
-        (Ty::Null, _) => param.nullable,
+        // An optional parameter takes a null as "not given"; the run omits it.
+        (Ty::Null, _) => param.nullable || !param.required,
         // Plain text may be passed where a secret is wanted; the reverse
         // would leak the secret into an ordinary field.
         (Ty::Any, _)

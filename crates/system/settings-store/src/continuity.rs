@@ -28,10 +28,6 @@ pub enum SettingScope {
     Derived,
 }
 
-/// Backwards-compatible name for consumers that only ask the continuity
-/// question. New code should use [`SettingScope`].
-pub type ContinuityClass = SettingScope;
-
 /// One reviewed leaf in the shared settings schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContinuityPolicy {
@@ -54,6 +50,9 @@ policies! {
         "tilo.accessibility.cursor_size",
         "tilo.accessibility.screen_reader",
         "tilo.accessibility.on_screen_keyboard",
+        // Recognition language describes the person, not a microphone or grant.
+        "tilo.accessibility.dictation_language",
+        "tilo.accessibility.dictation_literal",
         "tilo.accessibility.sticky_keys",
         "tilo.accessibility.slow_keys",
         "tilo.accessibility.bounce_keys",
@@ -72,7 +71,11 @@ policies! {
         "tilo.accessibility.switch_scan_ms",
         "tilo.accessibility.screen_reader_rate",
         "tilo.accessibility.screen_reader_voice",
-        "tilo.appearance.theme",
+        "tilo.appearance.mode",
+        "tilo.appearance.dark_theme",
+        "tilo.appearance.light_theme",
+        "tilo.appearance.custom_themes",
+        "tilo.appearance.density",
         "tilo.appearance.schedule",
         "tilo.appearance.sunrise",
         "tilo.appearance.sunset",
@@ -82,10 +85,11 @@ policies! {
         "tilo.appearance.reduce_motion",
         "tilo.appearance.text_scale",
         "tilo.appearance.ui_scale",
-        "tilo.appearance.app_accents",
+        "tilo.appearance.reduce_transparency",
         "tilo.appearance.forced_colors",
-        "tilo.appearance.workspace_tint",
+        "tilo.appearance.workspace_temperatures",
         "tilo.appearance.studio",
+        "tilo.identity.colour",
         "tilo.locale.currency",
         "tilo.locale.date_format",
         "tilo.locale.time_format",
@@ -100,7 +104,6 @@ policies! {
         "tilo.notifications.show_badges",
         "tilo.notifications.focus",
         "tilo.notifications.per_app",
-        "tilo.input.natural_scroll",
         "tilo.input.touchpad_natural_scroll",
         "tilo.input.mouse_natural_scroll",
         "tilo.input.tap_to_click",
@@ -131,6 +134,9 @@ policies! {
         "tilo.display.night_light",
         "tilo.display.night_light_schedule",
         "tilo.display.night_light_temperature",
+        // Where each of the person's displays sits across their devices.
+        // Each device's own modes and screen layout stay device-local.
+        "tilo.display.arrangement",
         "tilo.shortcuts.bindings",
         "tilo.desktop_controls.vim_mode",
         "tilo.quick_settings.controls",
@@ -150,6 +156,14 @@ policies! {
         "tilo.input.tablets",
         "tilo.input.touchpad_enabled",
         "tilo.input.host_input_migration_version",
+        // Physical model and explicit inspection choices stay with this device.
+        // Assignments identify physical devices on this host, unlike personal source order.
+        "tilo.input.keyboard_assignments",
+        "tilo.input.keyboard_model",
+        "tilo.input.keyboard_preview",
+        "tilo.input.keyboard_preview_extra_levels",
+        "tilo.input.keyboard_preview_level",
+        "tilo.input.keyboard_inspected_key",
         // Like whether the touchpad is on, whether a mouse switches it off
         // says nothing about another device's touchpad.
         "tilo.input.touchpad_disabled_on_external_mouse",
@@ -166,7 +180,6 @@ policies! {
         "tilo.power.critical_battery_percent",
         "tilo.power.critical_action",
         "tilo.updates.auto",
-        "tilo.updates.channel",
         "tilo.appearance.wallpaper_path",
         "tilo.appearance.distribution_defaults",
         "tilo.device.name",
@@ -179,6 +192,7 @@ policies! {
         "tilo.continuity.wifi_settings",
         "tilo.continuity.media",
         "tilo.continuity.display_input",
+        "tilo.continuity.automatic_display_input",
         "tilo.continuity.file_transfer",
         "tilo.continuity.realtime_sessions",
         "tilo.continuity.typed_gamepad",
@@ -395,16 +409,17 @@ mod tests {
                 "tilo.continuity.wifi_settings",
                 "tilo.continuity.media",
                 "tilo.continuity.display_input",
+                "tilo.continuity.automatic_display_input",
                 "tilo.continuity.file_transfer",
                 "tilo.continuity.realtime_sessions",
                 "tilo.continuity.typed_gamepad",
                 "tilo.continuity.app_continuations",
             ] {
-                assert_eq!(classify(key), Some(ContinuityClass::DeviceLocal), "{key}");
+                assert_eq!(classify(key), Some(SettingScope::DeviceLocal), "{key}");
             }
             assert_eq!(
                 classify("tilo.continuity.audit"),
-                Some(ContinuityClass::Derived)
+                Some(SettingScope::Derived)
             );
         }
         // Phase `unknown_settings_fail_closed`.
@@ -454,7 +469,7 @@ mod tests {
         {
             let document = serde_json::json!({
                 "appearance": {
-                    "theme": "Nord",
+                    "mode": "light",
                     "wallpaper_path": "/home/me/private.png",
                     "future_value": "must stay local"
                 },
@@ -466,8 +481,8 @@ mod tests {
             assert_eq!(
                 projected,
                 std::collections::BTreeMap::from([(
-                    "tilo.appearance.theme".to_string(),
-                    serde_json::json!("Nord")
+                    "tilo.appearance.mode".to_string(),
+                    serde_json::json!("light")
                 )])
             );
         }

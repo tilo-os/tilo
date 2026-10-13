@@ -19,11 +19,18 @@ use crate::model::Playback;
 /// user gesture.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceProfile {
+    /// Catalogue choice belongs to this device, never its collaborators.
+    #[serde(default)]
+    pub spotify_catalogue: bool,
     /// The last explicitly opened file belongs only to this device.
     #[serde(default)]
     pub local_file: Option<crate::local_file::LocalFile>,
     #[serde(default)]
     pub playback: Playback,
+    /// Queued catalogue metadata remains private until explicitly saved to the
+    /// library; restoring playback must not depend on a previous search page.
+    #[serde(default)]
+    pub queue_catalogue: Vec<crate::model::CatalogueTrack>,
 }
 
 /// Device-local index for durable media objects. It is deliberately separate
@@ -375,7 +382,10 @@ mod tests {
     fn device_profile_round_trips_locally_and_forces_paused_resume() {
         let dir = std::env::temp_dir().join(format!("tilo-music-profile-{}", std::process::id()));
         let path = dir.join("device-profile.json");
-        let mut profile = DeviceProfile::default();
+        let mut profile = DeviceProfile {
+            spotify_catalogue: true,
+            ..DeviceProfile::default()
+        };
         profile.playback.current = Some("tk_g1".into());
         profile.playback.queue = vec!["tk_g1".into()];
         profile.playback.playing = true;
@@ -384,6 +394,7 @@ mod tests {
         save_device_profile_to(&path, &profile).expect("save local profile");
 
         let loaded = load_device_profile_from(&path);
+        assert!(loaded.spotify_catalogue);
         assert_eq!(loaded.playback.current, profile.playback.current);
         assert_eq!(loaded.playback.position_ms, 12_345);
         assert_eq!(loaded.playback.volume, 37);
@@ -392,10 +403,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn media_cache_is_atomic_bounded_and_rejects_corruption() {
         // Phase `media_cache_is_atomic_content_addressed_and_survives_reload`.
         {

@@ -20,13 +20,28 @@
 )]
 
 #[cfg(target_arch = "wasm32")]
+mod background_work;
+#[cfg(target_arch = "wasm32")]
 mod browser;
+/// Install an already-admitted feedback transport before mounting its desktop.
+/// This Rust host hook is intentionally absent from URL/JSON launch options.
+/// # Errors
+/// Refuses a missing or mismatched certified peer and duplicate registration.
+#[cfg(target_arch = "wasm32")]
+pub fn register_feedback_startup(
+    peer: u32,
+    startup: tilo_desktop::feedback::transport::Startup,
+) -> Result<(), String> {
+    browser::register_feedback_startup(peer, startup)
+}
 #[cfg(target_arch = "wasm32")]
 mod clipboard;
 #[cfg(target_arch = "wasm32")]
 mod crash;
 #[cfg(target_arch = "wasm32")]
 mod desktop;
+#[cfg(target_arch = "wasm32")]
+mod feedback_delivery;
 #[cfg(target_arch = "wasm32")]
 mod files;
 #[cfg(target_arch = "wasm32")]
@@ -36,11 +51,9 @@ mod history;
 #[cfg(target_arch = "wasm32")]
 mod host_services;
 #[cfg(target_arch = "wasm32")]
-#[allow(
-    dead_code,
-    reason = "LIVE_V1 helpers for the desktop_host path; module is wired for snapshot/apply exports while that host is not yet linked into the page runtime"
-)]
-mod live_view;
+mod link;
+#[cfg(target_arch = "wasm32")]
+mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
 #[cfg(target_arch = "wasm32")]

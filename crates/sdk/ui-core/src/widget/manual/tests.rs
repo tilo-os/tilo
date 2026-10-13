@@ -28,8 +28,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
             crate::State::new(),
             Box::new(fixed(Box::new(
                 Button::new("action", "A very long action title")
-                    .on_click(crate::testing::record_click("clicked"))
-                    .fit_content(40.0),
+                    .on_click(crate::testing::record_click("clicked")),
             ))),
             (400, 300),
         );
@@ -82,12 +81,20 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
 
     fn row_and_column_keep_authored_allocation_separate_from_overflow() {
         for child in [
-            Box::new(Column::new().with_no_padding().push(Box::new(
-                Button::new("large", "Large").with_size(250.0, 90.0),
-            ))) as Element,
-            Box::new(Row::new().no_wrap().push(Box::new(
-                Button::new("large", "Large").with_size(250.0, 90.0),
-            ))) as Element,
+            Box::new(
+                Column::new().with_no_padding().push(Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_size(250.0, 90.0),
+                )),
+            ) as Element,
+            Box::new(
+                Row::new().no_wrap().push(Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_size(250.0, 90.0),
+                )),
+            ) as Element,
         ] {
             let harness =
                 FrameHarness::new(crate::State::new(), Box::new(fixed(child)), (400, 300));
@@ -413,7 +420,11 @@ fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
                 height: 60.0,
             })
         })
-        .child(Box::new(Button::new("fixed", "OK").with_size(96.5, 44.25)));
+        .child(Box::new(
+            crate::widget::Container::new()
+                .with_no_padding()
+                .with_size(96.5, 44.25),
+        ));
         let _ = FrameHarness::new(crate::State::new(), Box::new(region), (300, 200));
     }
 
@@ -605,13 +616,12 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
             let presence = PresenceCtx::empty();
             presence.viewport.set(Some(viewport));
             let mut scene = Scene::new();
-            widget.draw_with_presence(
+            widget.draw(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
                 &Theme::dark(),
                 &presence,
-                &crate::permissions::PermissionContext::permissive(),
             );
             assert!(
                 !scene.encoding().draw_tags.is_empty(),
@@ -665,10 +675,7 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
                     top: taffy::LengthPercentageAuto::length(y),
                     ..taffy::Rect::auto()
                 },
-                size: Size {
-                    width: Dimension::length(width),
-                    height: Dimension::length(height),
-                },
+                size: Size::from_lengths(width, height),
                 ..Style::default()
             }
         }
@@ -766,13 +773,12 @@ fn nested_negative_overflow(horizontal: bool) {
     let presence = PresenceCtx::empty();
     presence.viewport.set(Some(viewport));
     let mut scene = Scene::new();
-    outer.draw_with_presence(
+    outer.draw(
         &mut scene,
         Affine::IDENTITY,
         &mut text,
         &Theme::dark(),
         &presence,
-        &crate::permissions::PermissionContext::permissive(),
     );
     assert!(
         !scene.encoding().draw_tags.is_empty(),

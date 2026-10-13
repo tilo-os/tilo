@@ -1,175 +1,146 @@
 //! Root widget for the container manager.
 //!
-//! `ContainersApp` is a single self-laying-out widget that owns the engine
-//! snapshot (containers / images / distroboxes mirrored from rootless
-//! podman) and renders the whole surface — a left navigation rail, a master
-//! list with inline lifecycle actions, a tabbed detail view, a create-
-//! container form, and confirm/create modals. The new-container draft is the
-//! resource's document (see [`crate::doc`]), edited a splice at a time
-//! through the framework's dispatcher; where the user is (section, selection,
-//! detail tab) is this window's own, and the engine projection is transient
-//! host data that stays in memory.
+//! [`ContainersApp`] owns the engine snapshot (containers, images, volumes
+//! and distroboxes mirrored from rootless podman) and presents it in a
+//! [`NavShell`]: the sections are the sidebar, the container list is the
+//! overview and the chosen container is the content (see [`crate::view`]).
+//! Dialogs (confirming a removal, asking for a name, the new-container form,
+//! pull progress) are [`ModalDialog`]s mounted beside the shell.
 //!
-//! The widget hit-tests in `handle_event` against rectangles it recorded
-//! during `draw`, which keeps the dense, data-driven layout (variable row
-//! counts, wrapped port chips, tab strips) under direct control without
-//! fighting a flexbox tree.
+//! The new-container draft is the resource's record (see [`crate::draft`]),
+//! edited a splice at a time through the framework's dispatcher; where the
+//! user is (section, selection, detail tab) is this window's own, and the
+//! engine projection is host data that stays in memory.
 
-use std::sync::mpsc::{Receiver, Sender};
-use ui::time::Instant;
-use ui::widget::{AppModel, ModelPath};
-
-use automerge::{AutoCommit, ObjId};
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
-use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politeness, Role};
-use ui::control_custody::RawControlSlot;
-use ui::framework::{Dispatcher, LiveRow, TextControl};
-use ui::tilo_resource::Effect as _;
+use std::sync::mpsc::{Receiver, Sender};
+use ui::widget::TaffyTreeExt;
 
 use crate::resource::ContainersEffect;
+#[cfg(test)]
+use automerge::AutoCommit;
+use automerge::ObjId;
+use taffy::prelude::*;
+use ui::a11y::{AccessNode, Role};
+use ui::framework::{Dispatcher, LiveRow};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::{ActionAddress, ActionSpec, ControlInvocation, flatten};
-use ui::tilo_resource::TextEdit;
-use ui::widget::command_palette::{CommandEntry, CommandPalette};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::tilo_actions::ActionSpec;
+use ui::tilo_resource::Effect as _;
+use ui::time::Instant;
+use ui::tokens::TextRole;
+use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
 use ui::widget::{
-    FlapState, ModalDialog, PromptBody, SearchField, SplitLayout, Text, TextInput, Widget,
+    AppModel, Column, ModalDialog, ModelPath, ModelView, NavPane, PromptBody, Text, TextInput,
+    Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::Key;
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
-use taffy::prelude::*;
-
-use crate::combobox::ComboState;
-use crate::doc::{CreateDoc, CreateDraft, CreateField};
-use crate::draw;
-use crate::model::{Container, DetailTab, Engine, Section};
-use crate::podman::{self, Action, ImageAction, StreamMsg};
+use crate::draft::CreateField;
+use crate::model::{DetailTab, Engine, Section};
+use crate::podman::{self, Action, StreamMsg};
 use crate::resource::Containers;
-
-const RAIL_WIDTH: f64 = 200.0;
-/// Width of the rail when collapsed — a thin strip that still shows the
-/// section icons and the expand toggle.
-const RAIL_COLLAPSED: f64 = 56.0;
-pub(crate) const HEADER_HEIGHT: f64 = 64.0;
-pub(crate) const ROW_HEIGHT: f64 = 64.0;
-pub(crate) const DETAIL_WIDTH: f64 = 420.0;
-/// Below this width there is not enough room for both the navigation rail and
-/// a useful master/detail surface. Large text gets the same treatment even on
-/// a tablet: preserving readable controls matters more than preserving the
-/// desktop split.
-const COMPACT_VIEWPORT_WIDTH: f64 = 600.0;
-const LARGE_TEXT_BASE_SIZE: f32 = 20.0;
-const TOAST_MS: u128 = 4000;
-
-/// A clickable region recorded during draw and resolved in `handle_event`.
-#[derive(Clone)]
-pub(crate) enum Hit {
-    Section(Section),
-    NewContainer,
-    SelectContainer(String),
-    SelectImage(usize),
-    Action {
-        id: String,
-        action: Action,
-    },
-    /// An image lifecycle action (remove / pull-again), keyed by reference.
-    ImageAct {
-        reference: String,
-        action: ImageAction,
-    },
-    /// Pull the image reference under the cursor (re-pull / update).
-    PullImage(String),
-    /// Pull the reference currently typed into the create-form image field.
-    PullTyped,
-    /// Tag the selected image — opens the tag dialog.
-    TagImage(String),
-    /// Inspect the image (toast/inspect view).
-    InspectImage(String),
-    /// Volume lifecycle.
-    CreateVolume,
-    RemoveVolume(String),
-    /// Attach an interactive shell to a running container in a real terminal.
-    AttachShell(String),
-    DistroEnter(String),
-    DistroCreate,
-    DetailTab(DetailTab),
-    CloseDetail,
-    CreateField(CreateField),
-    CreateSubmit,
-    CreateCancel,
-    /// Toggle the image-combobox suggestion dropdown.
-    ComboToggle,
-    /// Pick option `idx` (into the filtered list) from the combobox.
-    ComboPick(usize),
-    /// Collapse / expand the navigation sidebar.
-    ToggleSidebar,
-    /// Dismiss hit reused by the pull overlay's Close button.
-    PromptCancel,
-}
-
-pub(crate) struct HitRegion {
-    pub(crate) rect: Rect,
-    pub(crate) hit: Hit,
-}
+use crate::view::{self, Intent, Intents};
 
 /// What a destructive confirm targets — a container, an image, or a volume.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ConfirmTarget {
     Container { id: String, action: Action },
     Image { reference: String },
     Volume { name: String },
 }
 
-/// The live destructive-confirm dialog: the shared [`ModalDialog`] plus the
-/// `confirm` / `cancel` cells its action callbacks flip (drained by the host).
-struct ConfirmDlg {
-    dialog: ModalDialog<Text>,
-    confirm: Rc<Cell<bool>>,
-    cancel: Rc<Cell<bool>>,
-}
-
-/// The live text-prompt dialog: the shared [`ModalDialog`] hosting a real
-/// [`PromptBody`] (a genuine [`ui::widget::TextInput`], so caret / selection /
-/// clipboard work), plus the submit / cancel cells its buttons flip.
-struct PromptDlg {
-    dialog: ModalDialog<PromptBody>,
-    submit: Rc<Cell<bool>>,
-    cancel: Rc<Cell<bool>>,
-}
-
-/// A transient confirm dialog for a destructive action.
+/// A pending destructive step, asked about before it runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Confirm {
-    /// Display name shown in the dialog body.
+    /// What is removed, as the person knows it.
     pub(crate) name: String,
-    /// Verb label shown in the title + OK button.
-    pub(crate) verb: String,
     pub(crate) target: ConfirmTarget,
 }
 
+impl Confirm {
+    fn title(&self) -> String {
+        format!("Remove {}?", self.name)
+    }
+
+    fn body(&self) -> &'static str {
+        match self.target {
+            ConfirmTarget::Container { .. } => {
+                "The container and the changes made inside it are deleted. Its volumes stay."
+            }
+            ConfirmTarget::Image { .. } => {
+                "The image is deleted from this computer. You can pull it again later."
+            }
+            ConfirmTarget::Volume { .. } => "The volume and the data stored in it are deleted.",
+        }
+    }
+
+    fn verb(&self) -> &'static str {
+        match self.target {
+            ConfirmTarget::Container { .. } => "Remove container",
+            ConfirmTarget::Image { .. } => "Remove image",
+            ConfirmTarget::Volume { .. } => "Remove volume",
+        }
+    }
+}
+
 /// Kind of text the prompt dialog collects.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PromptKind {
     /// Create a new named volume.
     NewVolume,
-    /// Tag an existing image (`source` carried in `Prompt::context`).
+    /// Tag an existing image (the source is in `Prompt::context`).
     TagImage,
+    /// Pull an image by reference.
+    PullImage,
 }
 
-/// A transient single-line text prompt (new volume name, image tag).
+/// A single-line text prompt (new volume name, image tag, image to pull).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Prompt {
     pub(crate) kind: PromptKind,
-    pub(crate) title: String,
-    pub(crate) placeholder: String,
     pub(crate) value: String,
-    /// Extra context (e.g. the image being tagged).
+    /// The image being tagged.
     pub(crate) context: String,
+}
+
+impl Prompt {
+    fn title(&self) -> String {
+        match self.kind {
+            PromptKind::NewVolume => "New volume".into(),
+            PromptKind::TagImage => format!("Add a tag to {}", self.context),
+            PromptKind::PullImage => "Pull an image".into(),
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self.kind {
+            PromptKind::NewVolume => "Name",
+            PromptKind::TagImage => "New tag",
+            PromptKind::PullImage => "Image",
+        }
+    }
+
+    fn placeholder(&self) -> &'static str {
+        match self.kind {
+            PromptKind::NewVolume => "backups",
+            PromptKind::TagImage => "ghcr.io/northwind/api:edge",
+            PromptKind::PullImage => "docker.io/library/alpine:3.20",
+        }
+    }
+
+    fn primary(&self) -> &'static str {
+        match self.kind {
+            PromptKind::NewVolume => "Create volume",
+            PromptKind::TagImage => "Add tag",
+            PromptKind::PullImage => "Pull image",
+        }
+    }
 }
 
 /// Live progress of a streaming `podman pull`.
@@ -181,16 +152,9 @@ pub(crate) struct PullProgress {
     pub(crate) failed: Option<String>,
 }
 
-/// A transient status toast.
-pub(crate) struct Toast {
-    pub(crate) message: String,
-    pub(crate) error: bool,
-    pub(crate) born: Instant,
-}
-
 /// Background-thread message: a fresh engine probe arrived, or a streaming
 /// op (pull) emitted a line / finished.
-enum Bg {
+pub(crate) enum Bg {
     Snapshot(Engine),
     Pull(StreamMsg),
 }
@@ -285,70 +249,67 @@ impl ControlledCreateRequest {
     }
 }
 
+/// Where the user is: the section, the selected container and its detail
+/// tab. This window's own: never in the document, never shared, never undone.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ViewState {
+    pub section: Section,
+    pub selected: Option<String>,
+    pub tab: DetailTab,
+}
+
+impl Default for ViewState {
+    fn default() -> Self {
+        Self {
+            section: Section::Containers,
+            selected: None,
+            tab: DetailTab::Logs,
+        }
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent, orthogonal flag (live engine vs. \
-              sample data, a past version, and separate open/dirty \
-              states for unrelated overlays); they aren't a state machine, \
-              and grouping them would mean churning every field access across \
-              this widget and panels.rs for no behavioural gain"
+    reason = "independent flags: live engine vs. sample data, a past version, \
+              an open form and a dirty structure"
 )]
 pub struct ContainersApp {
     /// The live (or sample) engine projection.
     pub(crate) engine: Engine,
-    /// Retained, revision-gated search projection. Queries page this index
-    /// instead of rescanning the engine snapshot on every keystroke.
+    /// Bumped whenever `engine` changes.
+    engine_rev: u64,
+    /// Retained, revision-gated search projection.
     rect: Rect,
-    /// Mouse position in logical coords (for hover + hit-testing).
-    pub(crate) cursor: Point,
-    /// Click regions recorded during the last draw.
-    pub(crate) hits: Vec<HitRegion>,
-    /// Per-section scroll offsets (list scroll).
-    pub(crate) list_scroll: f64,
-    pub(crate) detail_scroll: f64,
-    /// Active confirm dialog metadata, if any (name / verb / target).
-    pub(crate) confirm: Option<Confirm>,
-    /// The live confirm dialog (shared [`ModalDialog`]), built lazily from
-    /// `confirm` and torn down when it resolves.
-    confirm_dialog: Option<ConfirmDlg>,
-    /// Active text-prompt metadata, if any (new volume / image tag / pull).
-    pub(crate) prompt: Option<Prompt>,
-    /// The live prompt dialog (shared [`ModalDialog`] hosting a real
-    /// [`PromptBody`]/[`TextInput`]), built lazily from `prompt`.
-    prompt_dialog: Option<PromptDlg>,
-    /// Whether the create-container modal is open.
+    /// The window, rebuilt part by part from the published model.
+    window: ModelView<(Section, bool, bool)>,
+    /// What the window's parts are built from: the model, the narrow
+    /// window's front screen, the intent queue and the scroll positions.
+    parts: view::Parts,
+    /// The engine revision and view last published to the model.
+    published: Option<(u64, ViewState)>,
+    intents: Intents,
+    /// The new-container form. It is retained while closed so its fields
+    /// keep their caret and binding.
+    create: ModalDialog<Column>,
+    /// What the form's image field suggests: the engine's images.
+    installed_images: crate::create_form::InstalledImages,
     pub(crate) create_open: bool,
-    /// Which create field has keyboard focus.
-    pub(crate) create_focus: CreateField,
-    /// The six create-form fields, each showing its draft text and turning
-    /// every edit into a splice of it.
-    pub(crate) create_inputs: [TextControl<TextInput>; CreateField::COUNT],
-    /// The draft as last presented.
-    draft: CreateDraft,
-    /// State of the typeable image combobox inside the create modal.
-    pub(crate) combo: ComboState,
-    /// Live pull progress overlay, if a pull is running.
+    pub(crate) confirm: Option<Confirm>,
+    confirm_dialog: Option<ModalDialog<Text>>,
+    pub(crate) prompt: Option<Prompt>,
+    prompt_dialog: Option<ModalDialog<PromptBody>>,
+    /// Live pull progress, if a pull is running or just finished.
     pub(crate) pull: Option<PullProgress>,
-    /// The header's search affordance. Instead of an inline filter it is a
-    /// launcher that opens the shared Ctrl+K [`CommandPalette`] scoped to
-    /// this app — search does not live in the app.
-    pub(crate) search_field: SearchField,
-    /// The shared command palette, seeded with this app's containers when
-    /// opened. This is the *same* toolkit widget the shell uses for its
-    /// global Ctrl+K overlay, hosted here in app scope.
-    pub(crate) palette: CommandPalette,
-    /// Whether the app-scoped palette overlay is currently open.
-    pub(crate) palette_open: bool,
-    /// In-app lifecycle controls emit the same inert resource intent as Ctrl+K
-    /// and agents. The host re-resolves authority, records the Effect, then
-    /// hands it to the surface's effect handler.
-    pub(crate) pending_control_invocation: RawControlSlot,
-    /// Collapsible sidebar reveal kernel (the shared `ui` flap animation).
-    pub(crate) sidebar_flap: FlapState,
-    /// Wall-clock anchor for advancing the sidebar slide from the draw path.
-    pub(crate) sidebar_tick: Option<Instant>,
-    /// Current toast.
-    pub(crate) toast: Option<Toast>,
+    pull_dialog: Option<ModalDialog<Column>>,
+    pull_dirty: bool,
+    /// The engine effects the window's controls asked the host for, for
+    /// tests of a bare widget.
+    #[cfg(test)]
+    pub(crate) requested: Vec<(String, ContainersEffect)>,
+    /// What a search hit or an agent's `open` named, shown with the next
+    /// frame.
+    opened: Rc<RefCell<Vec<String>>>,
+    pub(crate) toast: Notice,
     /// Background refresh plumbing. `None` in headless/shots mode.
     bg_rx: Option<Receiver<Bg>>,
     bg_tx: Option<Sender<Bg>>,
@@ -356,24 +317,15 @@ pub struct ContainersApp {
     controlled_runtime: Option<Sender<ControlledRuntimeRequest>>,
     #[cfg(test)]
     controlled_immediate_results: Option<Receiver<Result<(), String>>>,
-    last_refresh: Instant,
+    pub(crate) last_refresh: Instant,
     pub(crate) live: bool,
-    /// Whether a structural change happened this frame (forces relayout).
-    pub(crate) structure_dirty: bool,
-    /// Where the user is: the section, the selected container, its tab.
-    pub(crate) view: ViewState,
     /// Showing a past version in History: nothing here is live.
     past: bool,
-    /// Layout mode used by the last drawn frame. Event routing deliberately
-    /// follows this instead of guessing from width alone, because 200% text
-    /// also switches the surface to a single detail pane.
-    compact_layout_active: bool,
-    /// Framework motion policy. Time-driven state still updates through idle
-    /// sync, but decorative toast/progress repaint loops stop when reduced.
-    motion_reduced: bool,
-    /// Keyboard focus for the immediate-mode root; its focused synthetic
-    /// create field becomes the exported accessibility active descendant.
-    has_focus: bool,
+    /// The structure changed (a dialog opened or closed, the shell was
+    /// rebuilt): the host lays the tree out again.
+    structure_dirty: bool,
+    /// Where the user is: the section, the selected container, its tab.
+    pub(crate) view: ViewState,
     /// Where edits of the draft go, once the framework attached the surface.
     dispatcher: Option<Dispatcher<Containers>>,
 }
@@ -384,32 +336,21 @@ impl Default for ContainersApp {
     }
 }
 
-/// Input dependencies are independent of whether the runtime is live.
-#[derive(Clone, Copy)]
-struct InputFactories {
-    text: fn() -> TextInput,
-    search: fn() -> SearchField,
+/// A press of Escape, whatever modifiers are held.
+fn is_escape(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { event: key, .. }
+            if key.state == ElementState::Pressed
+                && key.logical_key == Key::Named(NamedKey::Escape)
+    )
 }
 
-impl InputFactories {
-    fn production() -> Self {
-        Self {
-            text: TextInput::local,
-            search: SearchField::new,
-        }
-    }
-
-    #[cfg(test)]
-    fn controlled() -> Self {
-        Self {
-            text: || {
-                TextInput::local_with_language("en_US")
-                    .with_spellcheck(false)
-                    .with_autocorrect(false)
-            },
-            search: || SearchField::with_language("en_US"),
-        }
-    }
+#[cfg(test)]
+fn controlled_input() -> TextInput {
+    TextInput::local_with_language("en_US")
+        .with_spellcheck(false)
+        .with_autocorrect(false)
 }
 
 impl ContainersApp {
@@ -418,50 +359,51 @@ impl ContainersApp {
     /// podman in a live window, shows a capture's engine, or leaves it empty
     /// for a past version.
     pub fn new() -> Self {
-        Self::with_engine(Engine::default(), InputFactories::production())
+        Self::with_engine(Engine::default(), TextInput::local)
     }
 
     /// The manager over the bundled sample engine, offline: lifecycle
     /// controls change the sample instead of reaching podman.
     pub fn sample() -> Self {
-        Self::with_engine(crate::model::sample_engine(), InputFactories::production())
+        Self::with_engine(crate::model::sample_engine(), TextInput::local)
     }
 
-    fn with_engine(engine: Engine, inputs: InputFactories) -> Self {
-        let create_inputs = CreateField::ALL.map(|field| {
-            let input = (inputs.text)()
-                .with_id(&format!("container_create_{}", field.key()))
-                .with_placeholder(field.placeholder())
-                .with_font_size(13.0)
-                .with_plain_chrome();
-            TextControl::view_only(input, move |doc| CreateDoc::field_obj(doc, field))
-        });
+    fn with_engine(engine: Engine, make_input: fn() -> TextInput) -> Self {
+        let intents = Intents::default();
+        let installed_images = crate::create_form::InstalledImages::new(
+            crate::create_form::image_references(&engine).into(),
+        );
+        let create = Self::create_dialog(&intents, make_input, &installed_images);
+        let parts = view::Parts {
+            model: ui::LocalState::new(view::Model::default()),
+            pane: ui::LocalState::new(NavPane::Overview),
+            intents: intents.clone(),
+            offsets: view::Offsets::default(),
+            sort: ui::LocalState::new(None),
+        };
+        let window = view::window(&parts);
         Self {
             engine,
+            engine_rev: 0,
             rect: Rect::ZERO,
-            cursor: Point::ZERO,
-            hits: Vec::new(),
-            list_scroll: 0.0,
-            detail_scroll: 0.0,
+            window,
+            parts,
+            published: None,
+            intents,
+            create,
+            installed_images,
+            create_open: false,
             confirm: None,
             confirm_dialog: None,
             prompt: None,
             prompt_dialog: None,
-            create_open: false,
-            create_focus: CreateField::Name,
-            create_inputs,
-            draft: CreateDraft::default(),
-            combo: ComboState::default(),
             pull: None,
-            search_field: (inputs.search)()
-                .opens_palette()
-                .with_placeholder(crate::panels::LAUNCHER_PLACEHOLDER),
-            palette: CommandPalette::commands(),
-            palette_open: false,
-            pending_control_invocation: RawControlSlot::replace_one(),
-            sidebar_flap: FlapState::open_when_docked(),
-            sidebar_tick: None,
-            toast: None,
+            pull_dialog: None,
+            pull_dirty: false,
+            #[cfg(test)]
+            requested: Vec::new(),
+            opened: Rc::default(),
+            toast: Notice::default(),
             bg_rx: None,
             bg_tx: None,
             #[cfg(test)]
@@ -470,14 +412,31 @@ impl ContainersApp {
             controlled_immediate_results: None,
             last_refresh: ui::time::now(),
             live: false,
-            structure_dirty: false,
-            view: ViewState::default(),
             past: false,
-            compact_layout_active: false,
-            motion_reduced: false,
-            has_focus: false,
+            structure_dirty: true,
+            view: ViewState::default(),
             dispatcher: None,
         }
+    }
+
+    fn create_dialog(
+        intents: &Intents,
+        make_input: fn() -> TextInput,
+        images: &crate::create_form::InstalledImages,
+    ) -> ModalDialog<Column> {
+        let submit = intents.clone();
+        let cancel = intents.clone();
+        let dismiss = intents.clone();
+        ModalDialog::new(
+            "New container",
+            crate::create_form::form(make_input, images),
+        )
+        .with_test_id("containers-create-dialog")
+        .primary_action("Create container", move || {
+            submit.push(Intent::SubmitCreate);
+        })
+        .secondary_action("Cancel", move || cancel.push(Intent::CloseCreate))
+        .on_dismiss(move || dismiss.push(Intent::CloseCreate))
     }
 
     /// Talk to rootless podman: probe it now, then keep the snapshot fresh
@@ -493,7 +452,7 @@ impl ContainersApp {
     /// Show `engine` in place of the current snapshot.
     pub(crate) fn show_engine(&mut self, engine: Engine) {
         self.engine = engine;
-        self.structure_dirty = true;
+        self.engine_changed();
     }
 
     /// Show a past version: its draft, and no engine, which is this device's
@@ -511,18 +470,17 @@ impl ContainersApp {
 
     /// Edit the draft through `dispatcher` from now on.
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Containers>) {
-        for (field, input) in CreateField::ALL.into_iter().zip(&mut self.create_inputs) {
-            input.attach(crate::resource::create_field_dispatcher(&dispatcher, field));
-        }
+        crate::create_form::for_each_input(self.create.content_mut(), &mut |input| {
+            input.attach(dispatcher.clone());
+        });
         self.dispatcher = Some(dispatcher);
     }
 
     /// The draft as the document holds it now. A past version with a draft
     /// shows the form, which is all it holds.
-    pub(crate) fn present_draft(&mut self, draft: &CreateDraft) {
-        draft.clone_into(&mut self.draft);
+    pub(crate) fn present_draft(&mut self, draft: &crate::draft::CreateDraft) {
         if self.past {
-            self.create_open = !draft.is_empty();
+            self.set_create_open(!draft.is_empty());
         }
     }
 
@@ -530,64 +488,108 @@ impl ContainersApp {
     pub(crate) fn show_section(&mut self, section: Section) {
         self.view.section = section;
         self.view.selected = None;
-        self.list_scroll = 0.0;
-        self.structure_dirty = true;
+        self.parts.pane.set(NavPane::Overview);
+        self.parts.offsets.list.set((0.0, 0.0));
+        self.publish_model();
     }
 
-    /// Select the container `id` (`None` clears the selection).
+    /// Select the container `id` (`None` clears the selection), bringing
+    /// its detail to the front of a narrow window.
     pub(crate) fn select_container(&mut self, id: Option<String>) {
         if id.is_some() {
             self.view.section = Section::Containers;
         }
-        self.view.selected = id;
-        self.detail_scroll = 0.0;
-        self.structure_dirty = true;
+        self.parts.pane.set(if id.is_some() {
+            NavPane::Content
+        } else {
+            NavPane::Overview
+        });
+        if self.view.selected != id {
+            self.view.selected = id;
+            self.parts.offsets.detail.set((0.0, 0.0));
+        }
+        self.publish_model();
     }
 
     /// Show the selected container's `tab`.
     pub(crate) fn show_tab(&mut self, tab: DetailTab) {
         self.view.tab = tab;
-        self.detail_scroll = 0.0;
-        self.structure_dirty = true;
+        self.parts.offsets.detail.set((0.0, 0.0));
+        self.publish_model();
     }
 
-    /// Open the create-container form on its image field.
+    /// Open the new-container form on its image field.
     pub(crate) fn open_create(&mut self) {
-        self.create_open = true;
-        self.focus_create_field(CreateField::Image);
-    }
-
-    /// Replace the text of `field` in the draft, as one edit.
-    pub(crate) fn set_create_field(
-        &mut self,
-        doc: &mut ui::widget::Edits<'_>,
-        field: CreateField,
-        text: &str,
-    ) {
-        let Some(dispatcher) = &self.dispatcher else {
-            return;
-        };
-        let edits = crate::resource::create_field_dispatcher(dispatcher, field);
-        if let Err(error) = edits.apply_now(
-            doc,
-            &TextEdit::ReplaceText {
-                text: text.to_owned(),
-            },
-        ) {
-            self.show_toast(format!("The draft was not changed: {error}"), true);
-        }
-        self.refresh_view(doc);
+        self.set_create_open(true);
     }
 
     /// Empty the draft, once a container was created from it.
-    fn clear_create(&self, doc: &mut ui::widget::Edits<'_>) {
-        if let Some(dispatcher) = &self.dispatcher {
-            let _ = dispatcher.apply_now(doc, &crate::resource::ContainersAction::ClearCreate);
+    fn clear_create(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        if let Err(error) = dispatcher.submit_now(doc, Containers::CLEAR_CREATE.with(())) {
+            self.show_toast(format!("The draft was not cleared: {error}"), true);
         }
     }
 
-    /// The live rows of the engine, a bounded page of them, and an
-    /// in-flight pull.
+    /// Ask the host for `effect` as the live row `row` offers it: it
+    /// checks permission, availability and confirmation, records the effect
+    /// in activity history, and only then does the surface run it.
+    #[cfg_attr(
+        not(test),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            clippy::needless_pass_by_value,
+            reason = "a test also keeps what was asked for"
+        )
+    )]
+    fn request(&mut self, row: String, effect: ContainersEffect) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect_on(&row, &effect);
+        }
+        #[cfg(test)]
+        self.requested.push((row, effect));
+    }
+
+    /// What a search hit or an agent's `open` runs: show the row its
+    /// anchor names, as choosing it does.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
+        let opened = Rc::clone(&self.opened);
+        move |anchor| {
+            if !["container:", "image:", "volume:", "distrobox:"]
+                .iter()
+                .any(|prefix| anchor.starts_with(prefix))
+            {
+                return Err("not a container, image, volume or distrobox");
+            }
+            opened.borrow_mut().push(anchor.to_owned());
+            Ok(())
+        }
+    }
+
+    /// Show what the openers named since the last frame.
+    fn show_opened(&mut self) {
+        let opened = std::mem::take(&mut *self.opened.borrow_mut());
+        for anchor in opened {
+            if let Some(id) = anchor
+                .strip_prefix("container:")
+                .and_then(|rest| rest.strip_suffix(":logs"))
+            {
+                self.select_container(Some(id.to_owned()));
+                self.show_tab(DetailTab::Logs);
+            } else if let Some(id) = anchor.strip_prefix("container:") {
+                self.select_container(Some(id.to_owned()));
+            } else if anchor.starts_with("image:") {
+                self.show_section(Section::Images);
+            } else if anchor.starts_with("volume:") {
+                self.show_section(Section::Volumes);
+            } else if anchor.starts_with("distrobox:") {
+                self.show_section(Section::Distrobox);
+            }
+        }
+    }
+
     pub(crate) fn engine_rows(&self) -> Vec<LiveRow> {
         let live = self.engine.live;
         let mut rows: Vec<LiveRow> = self
@@ -667,75 +669,39 @@ impl ContainersApp {
         None
     }
 
-    /// A live engine with one running container, its detail fetched when
-    /// `hydrated`.
-    #[cfg(test)]
-    pub(crate) fn controlled_engine(connection: &str, hydrated: bool) -> Engine {
-        Engine {
-            live: true,
-            connection: connection.into(),
-            containers: vec![Container {
-                id: "armed-container".into(),
-                name: "Armed container".into(),
-                image: "quay.io/example/armed:1".into(),
-                status: crate::model::ContainerStatus::Running,
-                status_detail: "Up under controlled runtime".into(),
-                command: "/usr/bin/example".into(),
-                created: "controlled".into(),
-                ports: Vec::new(),
-                mounts: Vec::new(),
-                env: if hydrated {
-                    vec![("MODE".into(), "controlled".into())]
-                } else {
-                    Vec::new()
-                },
-                labels: Vec::new(),
-                stats: crate::model::Stats::default(),
-                logs: if hydrated {
-                    vec!["controlled detail".into()]
-                } else {
-                    Vec::new()
-                },
-            }],
-            ..Engine::default()
-        }
-    }
-
-    /// A manager whose podman calls are requests a test answers.
-    #[cfg(test)]
-    pub(crate) fn controlled_runtime_root() -> (
-        Self,
-        Receiver<ControlledRuntimeRequest>,
-        Sender<Result<(), String>>,
-    ) {
-        let engine = Engine {
-            live: true,
-            connection: "controlled Podman".into(),
-            ..Engine::default()
-        };
-        let (bg_tx, bg_rx) = std::sync::mpsc::channel();
-        let (requests_tx, requests_rx) = std::sync::mpsc::channel();
-        let (results_tx, results_rx) = std::sync::mpsc::channel();
-        let mut app = Self::with_engine(engine, InputFactories::controlled());
-        app.live = true;
-        app.bg_tx = Some(bg_tx);
-        app.bg_rx = Some(bg_rx);
-        app.controlled_runtime = Some(requests_tx);
-        app.controlled_immediate_results = Some(results_rx);
-        (app, requests_rx, results_tx)
+    /// The engine changed: the search index and the shell follow it.
+    pub(crate) fn engine_changed(&mut self) {
+        self.engine_rev = self.engine_rev.wrapping_add(1);
+        *self.installed_images.borrow_mut() = crate::create_form::image_references(&self.engine);
     }
 
     pub(crate) fn show_toast(&mut self, message: impl Into<String>, error: bool) {
-        self.toast = Some(Toast {
-            message: message.into(),
-            error,
-            born: ui::time::now(),
-        });
+        let kind = if error {
+            ToastKind::Error
+        } else {
+            ToastKind::Success
+        };
+        self.toast.show(message, kind);
     }
+
+    /// Whether lifecycle affordances are live. The deterministic sample
+    /// stays interactive for demos and tests; a disconnected engine does not
+    /// advertise controls that can only fail.
+    pub(crate) fn engine_controls_available(&self) -> bool {
+        !self.past && (self.engine.live || !self.live)
+    }
+
+    /// Whether the sidebar reports the engine as reachable. The sample shown
+    /// by demos and screenshots stands in for a connected engine.
+    fn connected(&self) -> bool {
+        !self.past && (self.engine.live || !self.live)
+    }
+
+    // ---- background work ------------------------------------------------
 
     /// Kick a background podman re-probe so stats stay fresh without blocking
     /// the UI thread. No-op offline.
-    fn spawn_refresh(&mut self) {
+    pub(crate) fn spawn_refresh(&mut self) {
         if !self.live {
             return;
         }
@@ -755,7 +721,7 @@ impl ContainersApp {
     }
 
     #[cfg(test)]
-    fn controlled_immediate(
+    pub(crate) fn controlled_immediate(
         &self,
         operation: impl Into<String>,
         target: impl Into<String>,
@@ -784,7 +750,7 @@ impl ContainersApp {
 
     /// Drain any background snapshot, preserving per-container detail
     /// (logs/env/mounts) for the selected container that `ps` doesn't carry.
-    fn drain_bg(&mut self) {
+    pub(crate) fn drain_bg(&mut self) {
         let Some(rx) = &self.bg_rx else { return };
         let mut latest = None;
         let mut pull_msgs = Vec::new();
@@ -806,6 +772,7 @@ impl ContainersApp {
             {
                 if newc.logs.is_empty() {
                     newc.logs = old.logs;
+                    newc.logs_error = old.logs_error;
                 }
                 if newc.env.is_empty() {
                     newc.env = old.env;
@@ -815,11 +782,12 @@ impl ContainersApp {
                 }
             }
             self.engine = fresh;
+            self.engine_changed();
         }
     }
 
     /// Hydrate the selected container's detail (logs + inspect) on demand.
-    fn hydrate_selection(&mut self) {
+    pub(crate) fn hydrate_selection(&mut self) {
         let Some(sel) = self.view.selected.clone() else {
             return;
         };
@@ -828,7 +796,7 @@ impl ContainersApp {
             .containers
             .iter()
             .find(|c| c.id == sel)
-            .is_some_and(|c| c.logs.is_empty() && c.env.is_empty());
+            .is_some_and(|c| c.logs.is_empty() && c.logs_error.is_none() && c.env.is_empty());
         if !needs || !self.live {
             return;
         }
@@ -840,45 +808,51 @@ impl ContainersApp {
         let logs = podman::fetch_logs(&sel, 200);
         if let Some(c) = self.engine.containers.iter_mut().find(|c| c.id == sel) {
             podman::inspect_into(c);
-            if !logs.is_empty() {
-                c.logs = logs;
+            match logs {
+                Ok(logs) => {
+                    c.logs = logs;
+                    c.logs_error = None;
+                }
+                Err(error) => {
+                    c.logs_error = Some(error);
+                }
             }
+            self.engine_changed();
         }
     }
 
-    /// Apply a lifecycle action, then re-probe. Destructive ones come through
-    /// the confirm dialog so this is only ever invoked post-confirmation.
-    pub(crate) fn apply_action(&mut self, action: Action, id: &str) {
-        let name = self
-            .engine
+    fn container_name(&self, id: &str) -> String {
+        self.engine
             .find(id)
-            .map_or_else(|| id.to_string(), |c| c.name.clone());
+            .map_or_else(|| id.to_string(), |c| c.name.clone())
+    }
+
+    /// Apply a lifecycle action. Destructive ones come through the confirm
+    /// dialog, so this only runs once the person has agreed.
+    pub(crate) fn apply_action(&mut self, action: Action, id: &str) {
         if self.engine.live {
-            let verb = match action {
-                Action::Start => "start",
-                Action::Stop => "stop",
-                Action::Restart => "restart",
-                Action::Pause => "pause",
-                Action::Unpause => "unpause",
-                Action::Remove => "remove",
+            let container = id.to_owned();
+            let effect = match action {
+                Action::Start => ContainersEffect::Start { container },
+                Action::Stop => ContainersEffect::Stop { container },
+                Action::Restart => ContainersEffect::Restart { container },
+                Action::Pause => ContainersEffect::Pause { container },
+                Action::Unpause => ContainersEffect::Unpause { container },
+                Action::Remove => ContainersEffect::RemoveContainer { container },
             };
-            let _ = self.pending_control_invocation.emit(ControlInvocation {
-                address: ActionAddress::new(format!("container:{id}"), verb),
-                arguments: serde_json::Map::new(),
-            });
-            self.show_toast(format!("{} {} requested", action.label(), name), false);
+            self.request(format!("container:{id}"), effect);
         } else if !self.live {
-            // Offline: reflect the action in the local snapshot so the
-            // sample surface still responds to clicks.
+            // The sample answers the click so a demo responds.
+            let name = self.container_name(id);
             self.apply_action_offline(action, id);
-            self.show_toast(format!("{} {}", action.label(), name), false);
+            self.show_toast(format!("{} {name}", past_tense(action)), false);
         } else {
-            self.show_toast("Container engine is offline", true);
+            self.show_toast("Podman isn't running", true);
         }
     }
 
-    /// Mutate the in-memory snapshot to mirror a lifecycle verb when no
-    /// engine is present. Keeps the demo interactive.
+    /// Mirror a lifecycle verb in the in-memory snapshot when no engine is
+    /// present. Keeps the demo interactive.
     fn apply_action_offline(&mut self, action: Action, id: &str) {
         use crate::model::ContainerStatus as S;
         match action {
@@ -892,8 +866,8 @@ impl ContainersApp {
                         Action::Remove => c.status,
                     };
                     c.status_detail = match c.status {
-                        S::Running => "Up just now".into(),
-                        S::Exited => "Exited (0) just now".into(),
+                        S::Running => "Up less than a second".into(),
+                        S::Exited => "Exited (0) less than a second ago".into(),
                         S::Paused => "Paused".into(),
                         _ => c.status_detail.clone(),
                     };
@@ -903,18 +877,18 @@ impl ContainersApp {
                 }
             }
         }
-        self.structure_dirty = true;
+        self.engine_changed();
     }
 
-    // --- streaming pull -------------------------------------------------
+    // ---- streaming pull -------------------------------------------------
 
-    /// Start a streaming `podman pull` of `reference` on a worker thread,
-    /// opening the progress overlay. Offline it simulates a quick success so
-    /// the demo surface responds.
+    /// Start a streaming `podman pull` of `reference` on a worker thread and
+    /// show its progress. Offline it simulates a quick success so the demo
+    /// responds.
     pub(crate) fn start_pull(&mut self, reference: &str) {
         let reference = reference.trim().to_string();
         if reference.is_empty() {
-            self.show_toast("Enter an image reference to pull", true);
+            self.show_toast("Enter an image to pull", true);
             return;
         }
         self.pull = Some(PullProgress {
@@ -923,6 +897,7 @@ impl ContainersApp {
             done: false,
             failed: None,
         });
+        self.pull_dirty = true;
         if self.live {
             if let Some(tx) = self.bg_tx.clone() {
                 let args = podman::pull_args(&reference);
@@ -948,24 +923,21 @@ impl ContainersApp {
                     let _ = worker.join();
                 });
             }
-        } else {
-            // Offline: deterministic simulated progress so --shots/demo works.
-            if let Some(p) = &mut self.pull {
-                p.lines.push("Getting image source signatures".into());
-                p.lines.push("Copying blob sha256:1a2b3c… done".into());
-                p.lines.push("Writing manifest to image destination".into());
-                p.done = true;
-            }
+        } else if let Some(p) = &mut self.pull {
+            p.lines.push("Getting image source signatures".into());
+            p.lines.push("Copying blob sha256:9fa9226be034 done".into());
+            p.lines.push("Writing manifest to image destination".into());
+            p.done = true;
         }
     }
 
-    /// Fold one streamed pull message into the progress overlay.
+    /// Fold one streamed pull message into the progress.
     fn apply_pull_msg(&mut self, msg: StreamMsg) {
         let Some(p) = &mut self.pull else { return };
+        self.pull_dirty = true;
         match msg {
             StreamMsg::Line(l) => {
                 p.lines.push(l);
-                // Bound the overlay to a readable tail.
                 let n = p.lines.len();
                 if n > 200 {
                     p.lines.drain(0..n - 200);
@@ -979,28 +951,29 @@ impl ContainersApp {
             }
             StreamMsg::Failed(e) => {
                 p.failed = Some(e.clone());
-                self.show_toast(format!("Pull failed: {e}"), true);
+                self.show_toast(format!("Couldn't pull the image: {e}"), true);
             }
         }
     }
 
-    // --- image / volume actions ----------------------------------------
+    // ---- image / volume actions ----------------------------------------
 
     /// Remove an image (post-confirmation). Force-removes so an unused tag
     /// goes even if a stopped container references it.
     pub(crate) fn remove_image(&mut self, reference: &str) {
         if self.engine.live {
-            let _ = self.pending_control_invocation.emit(ControlInvocation {
-                address: ActionAddress::new(format!("image:{reference}"), "remove"),
-                arguments: serde_json::Map::new(),
-            });
-            self.show_toast(format!("Remove {reference} requested"), false);
+            self.request(
+                format!("image:{reference}"),
+                ContainersEffect::RemoveImage {
+                    image: reference.to_owned(),
+                },
+            );
         } else if !self.live {
             self.engine.images.retain(|i| i.reference() != reference);
+            self.engine_changed();
             self.show_toast(format!("Removed {reference}"), false);
-            self.structure_dirty = true;
         } else {
-            self.show_toast("Container engine is offline", true);
+            self.show_toast("Podman isn't running", true);
         }
     }
 
@@ -1008,7 +981,7 @@ impl ContainersApp {
     pub(crate) fn tag_image(&mut self, source: &str, new_tag: &str) {
         let new_tag = new_tag.trim();
         if new_tag.is_empty() {
-            self.show_toast("Enter a new tag", true);
+            self.show_toast("Enter a tag", true);
             return;
         }
         if self.live {
@@ -1020,18 +993,18 @@ impl ContainersApp {
             ) {
                 match result {
                     Ok(()) => self.show_toast(format!("Tagged {source} as {new_tag}"), false),
-                    Err(error) => self.show_toast(format!("Tag failed: {error}"), true),
+                    Err(error) => self.show_toast(format!("Couldn't add the tag: {error}"), true),
                 }
                 self.spawn_refresh();
                 return;
             }
             match podman::tag_image(source, new_tag) {
                 Ok(()) => self.show_toast(format!("Tagged {source} as {new_tag}"), false),
-                Err(e) => self.show_toast(format!("Tag failed: {e}"), true),
+                Err(e) => self.show_toast(format!("Couldn't add the tag: {e}"), true),
             }
             self.spawn_refresh();
         } else {
-            self.show_toast(format!("podman tag {source} {new_tag}"), false);
+            self.show_toast(format!("Tagged {source} as {new_tag}"), false);
         }
     }
 
@@ -1051,78 +1024,100 @@ impl ContainersApp {
             ) {
                 match result {
                     Ok(()) => self.show_toast(format!("Created volume {name}"), false),
-                    Err(error) => self.show_toast(format!("Create failed: {error}"), true),
+                    Err(error) => {
+                        self.show_toast(format!("Couldn't create the volume: {error}"), true);
+                    }
                 }
                 self.spawn_refresh();
                 return;
             }
             match podman::create_volume(name) {
                 Ok(()) => self.show_toast(format!("Created volume {name}"), false),
-                Err(e) => self.show_toast(format!("Create failed: {e}"), true),
+                Err(e) => self.show_toast(format!("Couldn't create the volume: {e}"), true),
             }
             self.spawn_refresh();
         } else {
             self.engine.volumes.push(crate::model::Volume {
                 name: name.to_string(),
                 driver: "local".into(),
-                mountpoint: format!(".../volumes/{name}/_data"),
-                created: "just now".into(),
+                mountpoint: format!(
+                    "/var/home/dev/.local/share/containers/storage/volumes/{name}/_data"
+                ),
+                created: "Just now".into(),
                 in_use_by: 0,
             });
             self.engine.volumes.sort_by(|a, b| a.name.cmp(&b.name));
+            self.engine_changed();
             self.show_toast(format!("Created volume {name}"), false);
-            self.structure_dirty = true;
         }
     }
 
     /// Remove a named volume (post-confirmation).
     pub(crate) fn remove_volume(&mut self, name: &str) {
         if self.engine.live {
-            let _ = self.pending_control_invocation.emit(ControlInvocation {
-                address: ActionAddress::new(format!("volume:{name}"), "remove"),
-                arguments: serde_json::Map::new(),
-            });
-            self.show_toast(format!("Remove volume {name} requested"), false);
+            self.request(
+                format!("volume:{name}"),
+                ContainersEffect::RemoveVolume {
+                    volume: name.to_owned(),
+                },
+            );
         } else if !self.live {
             self.engine.volumes.retain(|v| v.name != name);
+            self.engine_changed();
             self.show_toast(format!("Removed volume {name}"), false);
-            self.structure_dirty = true;
         } else {
-            self.show_toast("Container engine is offline", true);
+            self.show_toast("Podman isn't running", true);
         }
     }
 
-    /// Attach a real interactive shell to a running container by spawning the
-    /// Tilo terminal app running `podman exec -it <id> <shell>`.
+    /// Open a real interactive shell in a running container: the Tilo
+    /// terminal running `podman exec -it <id> /bin/sh`.
     pub(crate) fn attach_shell(&mut self, id: &str) {
-        let short = id.chars().take(12).collect::<String>();
         if self.engine.live {
-            let _ = self.pending_control_invocation.emit(ControlInvocation {
-                address: ActionAddress::new(format!("container:{id}"), "shell"),
-                arguments: serde_json::Map::new(),
-            });
-            self.show_toast(format!("Shell for {short} requested"), false);
+            self.request(
+                format!("container:{id}"),
+                ContainersEffect::Shell {
+                    container: id.to_owned(),
+                },
+            );
         } else if !self.live {
-            self.show_toast(format!("podman exec -it {short} /bin/sh"), false);
+            let name = self.container_name(id);
+            self.show_toast(format!("Opened a shell in {name}"), false);
         } else {
-            self.show_toast("Container engine is offline", true);
+            self.show_toast("Podman isn't running", true);
+        }
+    }
+
+    /// Enter a distrobox in the Tilo terminal.
+    fn enter_distrobox(&mut self, name: &str) {
+        if self.engine.live {
+            self.request(
+                format!("distrobox:{name}"),
+                ContainersEffect::EnterDistrobox {
+                    distrobox: name.to_owned(),
+                },
+            );
+        } else if !self.live {
+            self.show_toast(format!("Entered {name}"), false);
+        } else {
+            self.show_toast("Podman isn't running", true);
         }
     }
 
     pub(crate) fn submit_create(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        let draft = CreateDoc::read(doc);
+        let draft = <Containers as ui::tilo_resource::Resource>::read(doc.doc())
+            .map(|record| record.draft)
+            .unwrap_or_default();
         let Some(args) = draft.run_args() else {
-            self.show_toast("Image is required to create a container", true);
+            self.show_toast("Choose an image to create the container from", true);
             return;
         };
-        let name = draft.get(CreateField::Image).to_owned();
+        let image = draft.get(CreateField::Image).trim().to_owned();
+        self.clear_create(doc);
+        self.set_create_open(false);
         if self.live {
-            // Run `podman run` off the UI thread; report the result back via a
-            // toast streamed through the bg channel, then re-probe.
-            self.show_toast(format!("Creating container from {name}…"), false);
-            self.clear_create(doc);
-            self.create_open = false;
-            self.combo.close();
+            // Run `podman run` off the UI thread, then re-probe.
+            self.show_toast(format!("Creating a container from {image}"), false);
             if let Some(tx) = self.bg_tx.clone() {
                 #[cfg(test)]
                 if let Some(controlled) = &self.controlled_runtime {
@@ -1135,305 +1130,114 @@ impl ContainersApp {
                     return;
                 }
                 std::thread::spawn(move || {
-                    let out = podman::run_once(&args);
-                    // Whatever the result, push a fresh snapshot so the new
-                    // container appears (or the failure is implied by absence).
-                    let _ = out;
+                    let _ = podman::run_once(&args);
                     let _ = tx.send(Bg::Snapshot(podman::probe().engine));
                 });
             }
         } else {
-            self.show_toast(format!("podman {}", args.join(" ")), false);
-            self.clear_create(doc);
-            self.create_open = false;
-            self.combo.close();
+            self.show_toast(format!("Created a container from {image}"), false);
         }
     }
 
-    /// The containers in list order: running first, then by name.
-    pub(crate) fn visible_containers(&self) -> Vec<&Container> {
-        let mut v: Vec<&Container> = self.engine.containers.iter().collect();
-        v.sort_by(|a, b| {
-            b.status
-                .is_running()
-                .cmp(&a.status.is_running())
-                .then_with(|| a.name.cmp(&b.name))
-        });
-        v
-    }
+    // ---- dialogs --------------------------------------------------------
 
-    /// Seed the shared palette with this app's containers and open it.
-    ///
-    /// The palette is the OS-shared Ctrl+K widget; the app only supplies
-    /// the rows (its containers) and consumes the outcome. Enter on a row
-    /// selects that container — the same "find and jump to" the old inline
-    /// search bar did, but through the shared search surface.
-    pub(crate) fn open_container_palette(&mut self) {
-        let resources: Vec<_> = self
-            .engine_rows()
-            .into_iter()
-            .map(LiveRow::into_resource)
-            .collect();
-        let entries: Vec<CommandEntry> = flatten(&resources)
-            .into_iter()
-            .filter(|action| action.action.id == "select-container")
-            .map(|action| CommandEntry::from_flat_action(&action))
-            .collect();
-        self.palette.set_entries(entries);
-        self.palette.open();
-        self.palette_open = true;
+    pub(crate) fn set_create_open(&mut self, open: bool) {
+        if self.create_open == open {
+            return;
+        }
+        self.create_open = open;
+        self.create.set_open(open);
+        self.focus_draft(open.then_some(CreateField::Image));
         self.structure_dirty = true;
     }
 
-    #[cfg(test)]
-    pub(crate) fn dispatch_palette_invocation_for_test(&mut self, doc: &AutoCommit) {
-        let intent = ui::widget::controls::take_control_invocation(self)
-            .expect("palette emitted a resource action");
-        let resources: Vec<_> = self
-            .engine_rows()
-            .into_iter()
-            .map(LiveRow::into_resource)
-            .collect();
-        let spec = ui::tilo_actions::door::resolve(&resources, &intent.address)
-            .expect("palette address resolves");
-        let encoded = spec
-            .build_json(&intent.arguments)
-            .expect("valid palette arguments");
-        let effect =
-            <ContainersEffect as ui::tilo_resource::Effect>::from_payload(&encoded.payload)
-                .expect("a containers effect");
-        self.perform_effect(effect).expect("the effect is done");
-        self.sync(doc, &automerge::ROOT);
+    /// Give keyboard focus to one draft field (or none).
+    pub(crate) fn focus_draft(&mut self, field: Option<CreateField>) {
+        crate::create_form::for_each_input(self.create.content_mut(), &mut |input| {
+            let on = field == Some(input.field());
+            Widget::set_focus(input.input_mut(), on);
+        });
     }
 
-    /// Forward a pointer event to the header search launcher. The launcher
-    /// is a non-editable pill (see [`ui::widget::SearchField::opens_palette`])
-    /// that hit-tests off its own rect, so a throwaway taffy node satisfies
-    /// the `Widget` signature without a real layout tree.
-    fn route_to_launcher(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut ui::widget::Edits<'_>,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-    ) {
-        let mut dummy_taffy: TaffyTree<()> = TaffyTree::new();
-        // A single-leaf throwaway tree; this can't realistically fail, but
-        // skip the forward rather than panic if it ever does.
-        let Ok(dummy_node) = dummy_taffy.new_leaf(Style::default()) else {
-            return;
-        };
-        let mut ignored = false;
-        self.search_field.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor,
-                modifiers: &modifiers,
-                state: doc.reborrow(),
-                path,
-                handled: &mut ignored,
-                focus_target,
-                node_id: dummy_node,
-                taffy: &dummy_taffy,
-            },
-        );
-    }
-}
-
-// =====================================================================
-// Shared-modal dialog wiring (destructive confirm + text prompt)
-// =====================================================================
-
-impl ContainersApp {
-    /// Build the destructive-confirm dialog from the current `confirm`
-    /// metadata. The affirmative button is destructive (danger-coloured).
-    fn build_confirm_dialog(&self) -> Option<ConfirmDlg> {
-        let confirm = self.confirm.as_ref()?;
-        let title = format!("{}?", confirm.verb);
-        let body = format!(
-            "This permanently removes \u{201c}{}\u{201d}. This cannot be undone.",
-            confirm.name
-        );
-        let ok = Rc::new(Cell::new(false));
-        let cancel = Rc::new(Cell::new(false));
-        let dialog = ModalDialog::new(title, Text::new(&body).with_size(13.5))
-            .open(true)
-            .with_max_size(420.0, 190.0)
+    fn rebuild_confirm(&mut self) {
+        self.confirm_dialog = self.confirm.as_ref().map(|confirm| {
+            let accept = self.intents.clone();
+            let cancel = self.intents.clone();
+            let dismiss = self.intents.clone();
+            ModalDialog::new(
+                confirm.title(),
+                Text::new(confirm.body()).with_role(TextRole::Body),
+            )
+            .with_test_id("containers-confirm-dialog")
             .with_destructive(true)
-            .primary_action("Remove", {
-                let c = ok.clone();
-                move || c.set(true)
-            })
-            .secondary_action("Cancel", {
-                let c = cancel.clone();
-                move || c.set(true)
-            })
-            .on_dismiss({
-                let c = cancel.clone();
-                move || c.set(true)
-            });
-        Some(ConfirmDlg {
-            dialog,
-            confirm: ok,
-            cancel,
-        })
-    }
-
-    /// Build the text-prompt dialog from the current `prompt` metadata. The
-    /// field is a real [`PromptBody`]/[`TextInput`], seeded with any staged
-    /// value.
-    fn build_prompt_dialog(&self) -> Option<PromptDlg> {
-        let prompt = self.prompt.as_ref()?;
-        let primary = match prompt.kind {
-            PromptKind::NewVolume if prompt.context == "__pull__" => "Pull",
-            PromptKind::NewVolume => "Create",
-            PromptKind::TagImage => "Tag",
-        };
-        let body = PromptBody::new("", &prompt.placeholder).with_initial(&prompt.value);
-        let submit = Rc::new(Cell::new(false));
-        let cancel = Rc::new(Cell::new(false));
-        let dialog = ModalDialog::new(prompt.title.clone(), body)
+            .primary_action(confirm.verb(), move || accept.push(Intent::ConfirmAccept))
+            .secondary_action("Cancel", move || cancel.push(Intent::ConfirmCancel))
+            .on_dismiss(move || dismiss.push(Intent::ConfirmCancel))
             .open(true)
-            .with_max_size(440.0, 200.0)
-            .primary_action(primary, {
-                let s = submit.clone();
-                move || s.set(true)
-            })
-            .secondary_action("Cancel", {
-                let c = cancel.clone();
-                move || c.set(true)
-            })
-            .on_dismiss({
-                let c = cancel.clone();
-                move || c.set(true)
-            });
-        Some(PromptDlg {
-            dialog,
-            submit,
-            cancel,
-        })
+        });
+        self.structure_dirty = true;
     }
 
-    fn ensure_confirm_dialog(&mut self) {
-        if self.confirm_dialog.is_none() {
-            self.confirm_dialog = self.build_confirm_dialog();
-        }
+    fn rebuild_prompt(&mut self) {
+        self.prompt_dialog = self.prompt.as_ref().map(|prompt| {
+            let submit = self.intents.clone();
+            let cancel = self.intents.clone();
+            let dismiss = self.intents.clone();
+            let body =
+                PromptBody::new(prompt.label(), prompt.placeholder()).with_initial(&prompt.value);
+            ModalDialog::new(prompt.title(), body)
+                .with_test_id("containers-prompt-dialog")
+                .primary_action(prompt.primary(), move || submit.push(Intent::PromptSubmit))
+                .secondary_action("Cancel", move || cancel.push(Intent::PromptCancel))
+                .on_dismiss(move || dismiss.push(Intent::PromptCancel))
+                .open(true)
+        });
+        self.structure_dirty = true;
     }
 
-    fn ensure_prompt_dialog(&mut self) {
-        if self.prompt_dialog.is_none() {
-            self.prompt_dialog = self.build_prompt_dialog();
-        }
-    }
-
-    /// Lay a shared dialog out against the app rect so its box + footer
-    /// buttons resolve. Generic over which dialog slot is active.
-    fn layout_confirm_dialog(&mut self, theme: &Theme, tr: &mut TextRenderer) {
-        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
-            return;
-        }
-        let rect = self.rect;
-        if let Some(cd) = self.confirm_dialog.as_mut() {
-            cd.dialog.layout_in(rect, theme, tr);
-        }
-    }
-
-    fn layout_prompt_dialog(&mut self, theme: &Theme, tr: &mut TextRenderer) {
-        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
-            return;
-        }
-        let rect = self.rect;
-        if let Some(pd) = self.prompt_dialog.as_mut() {
-            pd.dialog.layout_in(rect, theme, tr);
-        }
-    }
-
-    /// Route an event into the open confirm dialog, then apply the flags its
-    /// callbacks set (Enter is a submit convenience).
-    fn route_confirm_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut ui::widget::Edits<'_>,
-        handled: &mut bool,
-    ) {
-        if enter_pressed(event) {
-            self.apply_confirm(doc);
-            *handled = true;
-            return;
-        }
-        self.ensure_confirm_dialog();
-        let viewport = self.rect;
-        let (ok, cancel) = {
-            let Some(cd) = self.confirm_dialog.as_mut() else {
-                return;
+    fn rebuild_pull(&mut self) {
+        let had = self.pull_dialog.is_some();
+        self.pull_dialog = self.pull.as_ref().map(|pull| {
+            let dismiss = self.intents.clone();
+            let title = if pull.failed.is_some() {
+                format!("Couldn't pull {}", pull.reference)
+            } else if pull.done {
+                format!("Pulled {}", pull.reference)
+            } else {
+                format!("Pulling {}", pull.reference)
             };
-            if cd.dialog.dialog_rect() == Rect::ZERO {
-                cd.dialog
-                    .layout_in(viewport, &Theme::dark(), &mut TextRenderer::new());
-            }
-            cd.dialog
-                .handle_detached(event, scale_factor, modifiers, doc, &automerge::ROOT);
-            (cd.confirm.replace(false), cd.cancel.replace(false))
-        };
-        if ok {
-            self.apply_confirm(doc);
-        } else if cancel {
-            self.confirm = None;
-            self.confirm_dialog = None;
+            // One way out: the close control (and Escape). Closing while the
+            // pull runs only hides it; a toast says when it finishes.
+            ModalDialog::new(title, view::pull_body(pull))
+                .with_test_id("containers-pull-dialog")
+                .on_dismiss(move || dismiss.push(Intent::ClosePull))
+                .open(true)
+        });
+        self.pull_dirty = false;
+        if had != self.pull_dialog.is_some() || self.pull_dialog.is_some() {
+            self.structure_dirty = true;
         }
-        *handled = true;
     }
 
-    /// Route an event into the open prompt dialog, then apply the flags its
-    /// callbacks set (Enter is a submit convenience). Reads the committed text
-    /// from the embedded real field.
-    fn route_prompt_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut ui::widget::Edits<'_>,
-        handled: &mut bool,
-    ) {
-        if enter_pressed(event) {
-            self.submit_prompt(doc);
-            *handled = true;
-            return;
-        }
-        self.ensure_prompt_dialog();
-        let viewport = self.rect;
-        let (submit, cancel) = {
-            let Some(pd) = self.prompt_dialog.as_mut() else {
-                return;
-            };
-            if pd.dialog.dialog_rect() == Rect::ZERO {
-                pd.dialog
-                    .layout_in(viewport, &Theme::dark(), &mut TextRenderer::new());
-            }
-            pd.dialog
-                .handle_detached(event, scale_factor, modifiers, doc, &automerge::ROOT);
-            (pd.submit.replace(false), pd.cancel.replace(false))
-        };
-        if submit {
-            self.submit_prompt(doc);
-        } else if cancel {
-            self.prompt = None;
-            self.prompt_dialog = None;
-        }
-        *handled = true;
+    pub(crate) fn ask_confirm(&mut self, confirm: Confirm) {
+        self.confirm = Some(confirm);
+        self.rebuild_confirm();
     }
 
-    /// Apply the pending destructive confirm against the real engine/document.
-    fn apply_confirm(&mut self, doc: &AutoCommit) {
+    pub(crate) fn ask_prompt(&mut self, prompt: Prompt) {
+        self.prompt = Some(prompt);
+        self.rebuild_prompt();
+    }
+
+    /// Apply the pending destructive confirm.
+    fn accept_confirm(&mut self) {
         if let Some(confirm) = self.confirm.take() {
             match confirm.target {
                 ConfirmTarget::Container { id, action } => {
                     self.apply_action(action, &id);
-                    if self.view.selected.as_deref() == Some(id.as_str()) {
+                    if self.view.selected.as_deref() == Some(id.as_str())
+                        && !self.engine.containers.iter().any(|c| c.id == id)
+                    {
                         self.select_container(None);
                     }
                 }
@@ -1441,265 +1245,312 @@ impl ContainersApp {
                 ConfirmTarget::Volume { name } => self.remove_volume(&name),
             }
         }
-        self.confirm_dialog = None;
-        self.refresh_view(doc);
+        self.rebuild_confirm();
     }
 
-    /// Read the prompt's typed value out of the embedded field and commit it.
-    fn submit_prompt(&mut self, doc: &AutoCommit) {
+    /// Commit the prompt's typed value.
+    fn submit_prompt(&mut self) {
         let value = self
             .prompt_dialog
             .as_ref()
-            .map(|pd| pd.dialog.content().value().to_string())
+            .map(|dialog| dialog.content().value().trim().to_owned())
             .unwrap_or_default();
-        self.commit_prompt(value.trim());
-        self.prompt_dialog = None;
-        self.refresh_view(doc);
-    }
-}
-
-/// Whether `event` is a key-press of Enter (the modal submit convenience).
-fn enter_pressed(event: &WindowEvent) -> bool {
-    matches!(
-        event,
-        WindowEvent::KeyboardInput { event: ke, .. }
-            if ke.state == ElementState::Pressed
-                && matches!(ke.logical_key, Key::Named(winit::keyboard::NamedKey::Enter))
-    )
-}
-
-// =====================================================================
-// Accessibility mirror for the immediate-mode surface
-// =====================================================================
-
-impl ContainersApp {
-    /// Stable semantic identity for a painted hit. Dynamic targets use the
-    /// engine object's stable id/reference rather than its visible row index,
-    /// so an assistive technology can retain focus across refreshes/re-sorts.
-    fn semantic_target(&self, hit: &Hit) -> String {
-        match hit {
-            Hit::Section(section) => format!("containers.section:{}", section.as_str()),
-            Hit::NewContainer => "containers.create.open".into(),
-            Hit::SelectContainer(id) => format!("containers.container:{id}:select"),
-            Hit::SelectImage(index) => self.engine.images.get(*index).map_or_else(
-                || format!("containers.image-index:{index}:select"),
-                |image| format!("containers.image:{}:select", image.reference()),
-            ),
-            Hit::Action { id, action } => {
-                format!(
-                    "containers.container:{id}:{}",
-                    action.label().to_ascii_lowercase()
-                )
-            }
-            Hit::ImageAct { reference, action } => {
-                format!(
-                    "containers.image:{reference}:{}",
-                    action.label().to_ascii_lowercase()
-                )
-            }
-            Hit::PullImage(reference) => format!("containers.image:{reference}:pull"),
-            Hit::PullTyped => "containers.image.pull".into(),
-            Hit::TagImage(reference) => format!("containers.image:{reference}:tag"),
-            Hit::InspectImage(reference) => format!("containers.image:{reference}:inspect"),
-            Hit::CreateVolume => "containers.volume.create".into(),
-            Hit::RemoveVolume(name) => format!("containers.volume:{name}:remove"),
-            Hit::AttachShell(id) => format!("containers.container:{id}:shell"),
-            Hit::DistroEnter(name) => format!("containers.distrobox:{name}:enter"),
-            Hit::DistroCreate => "containers.distrobox.create".into(),
-            Hit::DetailTab(tab) => format!("containers.detail.tab:{}", tab.as_str()),
-            Hit::CloseDetail => "containers.detail.close".into(),
-            Hit::CreateField(field) => format!("containers.create.field:{}", field.key()),
-            Hit::CreateSubmit => "containers.create.submit".into(),
-            Hit::CreateCancel => "containers.create.cancel".into(),
-            Hit::ComboToggle => "containers.create.image-options".into(),
-            Hit::ComboPick(index) => format!("containers.create.image-option:{index}"),
-            Hit::ToggleSidebar => "containers.sidebar.toggle".into(),
-            Hit::PromptCancel => "containers.progress.close".into(),
+        let Some(prompt) = self.prompt.take() else {
+            return;
+        };
+        self.rebuild_prompt();
+        match prompt.kind {
+            PromptKind::PullImage => self.start_pull(&value),
+            PromptKind::NewVolume => self.create_volume(&value),
+            PromptKind::TagImage => self.tag_image(&prompt.context, &value),
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one flat match giving every hit region its accessible role, name and description"
-    )]
-    fn semantic_copy(&self, hit: &Hit) -> (Role, String, Option<String>, AccessState) {
-        let focusable = AccessState::new().focusable(true);
-        match hit {
-            Hit::Section(section) => (
-                Role::Tab,
-                section.label().into(),
-                Some(format!(
-                    "Shortcut: {}",
-                    match section {
-                        Section::Containers => 1,
-                        Section::Images => 2,
-                        Section::Volumes => 3,
-                        Section::Distrobox => 4,
-                    }
-                )),
-                focusable.selected(self.view.section == *section),
-            ),
-            Hit::NewContainer => (
-                Role::Button,
-                "New container".into(),
-                Some("Shortcut: N".into()),
-                focusable,
-            ),
-            Hit::SelectContainer(id) => {
-                let container = self.engine.find(id);
-                let name = container.map_or_else(|| id.clone(), |c| c.name.clone());
-                let detail = container
-                    .map(|c| format!("{}; {}; {}", c.image, c.status.label(), c.status_detail));
-                (
-                    Role::ListItem,
+    /// Present the authored screenshot engine on an existing host, with no
+    /// device polling. The framework's live action executor stays installed;
+    /// the offline engine refuses actual Podman lifecycle effects.
+    pub fn stage_sample_engine(&mut self) {
+        self.live = false;
+        self.bg_rx = None;
+        self.bg_tx = None;
+        self.show_engine(crate::model::sample_engine());
+    }
+
+    /// Stage a screenshot scenario (`None` for a plain `--shots`): the
+    /// section, selection and tab it shows, and the dialog it has open. The
+    /// engine and the draft are the scenario's already.
+    pub fn stage_scene(&mut self, scenario: Option<&str>) {
+        let scene = scenario.unwrap_or_default();
+        match scene {
+            "confirm" => {
+                let (name, id) = view::listed_containers(&self.engine).first().map_or_else(
+                    || ("web".to_string(), "web".to_string()),
+                    |c| (c.name.clone(), c.id.clone()),
+                );
+                self.ask_confirm(Confirm {
                     name,
-                    detail,
-                    focusable.selected(self.view.selected.as_deref() == Some(id)),
-                )
+                    target: ConfirmTarget::Container {
+                        id,
+                        action: Action::Remove,
+                    },
+                });
             }
-            Hit::SelectImage(index) => {
-                let image = self.engine.images.get(*index);
-                (
-                    Role::ListItem,
-                    image.map_or_else(|| "Image".into(), crate::model::Image::reference),
-                    image.map(|i| format!("{}; {}", ui::format::bytes(i.size_bytes), i.created)),
-                    focusable,
-                )
+            "prompt" => self.ask_prompt(Prompt {
+                kind: PromptKind::NewVolume,
+                value: "backups".into(),
+                context: String::new(),
+            }),
+            "pull" => {
+                self.pull = Some(PullProgress {
+                    reference: "docker.io/library/alpine:3.20".into(),
+                    lines: vec![
+                        "Trying to pull docker.io/library/alpine:3.20...".into(),
+                        "Getting image source signatures".into(),
+                        "Copying blob sha256:9fa9226be034 2.1 MiB / 3.4 MiB".into(),
+                        "Copying config sha256:1a2b3c4d5e6f done".into(),
+                    ],
+                    done: false,
+                    failed: None,
+                });
+                self.rebuild_pull();
             }
-            Hit::Action { id, action } => (
-                Role::Button,
-                format!(
-                    "{} {}",
-                    action.label(),
-                    self.engine
-                        .find(id)
-                        .map_or(id.as_str(), |c| c.name.as_str())
-                ),
-                None,
-                focusable,
-            ),
-            Hit::ImageAct { reference, action } => (
-                Role::Button,
-                format!("{} {reference}", action.label()),
-                None,
-                focusable,
-            ),
-            Hit::PullImage(reference) => (
-                Role::Button,
-                format!("Pull image {reference}"),
-                Some("Download or update this image".into()),
-                focusable,
-            ),
-            Hit::PullTyped => (
-                Role::Button,
-                "Pull image".into(),
-                Some("Download the image named in the form".into()),
-                focusable,
-            ),
-            Hit::TagImage(reference) => (
-                Role::Button,
-                format!("Tag image {reference}"),
-                None,
-                focusable,
-            ),
-            Hit::InspectImage(reference) => (
-                Role::Button,
-                format!("Inspect image {reference}"),
-                None,
-                focusable,
-            ),
-            Hit::CreateVolume => (Role::Button, "New volume".into(), None, focusable),
-            Hit::RemoveVolume(name) => (
-                Role::Button,
-                format!("Remove volume {name}"),
-                None,
-                focusable,
-            ),
-            Hit::AttachShell(id) => (
-                Role::Button,
-                format!(
-                    "Open shell in {}",
-                    self.engine
-                        .find(id)
-                        .map_or(id.as_str(), |c| c.name.as_str())
-                ),
-                None,
-                focusable,
-            ),
-            Hit::DistroEnter(name) => (
-                Role::Button,
-                format!("Enter distrobox {name}"),
-                None,
-                focusable,
-            ),
-            Hit::DistroCreate => (Role::Button, "Create distrobox".into(), None, focusable),
-            Hit::DetailTab(tab) => (
-                Role::Tab,
-                tab.label().into(),
-                None,
-                focusable.selected(self.view.tab == *tab),
-            ),
-            Hit::CloseDetail => (
-                Role::Button,
-                "Back to containers".into(),
-                Some("Shortcut: Escape".into()),
-                focusable,
-            ),
-            Hit::CreateField(field) => (
-                Role::TextInput,
-                field.label().into(),
-                Some(field.placeholder().into()),
-                focusable.focused(self.create_focus == *field),
-            ),
-            Hit::CreateSubmit => (
-                Role::Button,
-                "Create container".into(),
-                None,
-                focusable.disabled(
-                    self.create_input(CreateField::Image)
-                        .value()
-                        .trim()
-                        .is_empty(),
-                ),
-            ),
-            Hit::CreateCancel => (
-                Role::Button,
-                "Cancel".into(),
-                Some("Shortcut: Escape".into()),
-                focusable,
-            ),
-            Hit::ComboToggle => (
-                Role::ComboBox,
-                "Installed image suggestions".into(),
-                None,
-                focusable.expanded(self.combo.open),
-            ),
-            Hit::ComboPick(index) => {
-                let options = self.engine.image_references();
-                let name = options
-                    .get(*index)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Image option {}", index + 1));
-                (
-                    Role::ListItem,
-                    name,
-                    None,
-                    focusable.selected(self.combo.highlight == *index),
-                )
-            }
-            Hit::ToggleSidebar => (
-                Role::Button,
-                if self.sidebar_flap.is_open(SplitLayout::Docked) {
-                    "Collapse navigation"
+            // The engine did not answer a live window: the pages say so.
+            "empty" => self.live = true,
+            "create" => self.set_create_open(true),
+            _ => {}
+        }
+        let section = match scene {
+            "images" | "pull" => Some(Section::Images),
+            "volumes" | "prompt" => Some(Section::Volumes),
+            "distrobox" => Some(Section::Distrobox),
+            _ => None,
+        };
+        if let Some(section) = section {
+            self.show_section(section);
+        } else if self.view.selected.is_none()
+            && let Some(first) = view::listed_containers(&self.engine).first().copied()
+        {
+            let id = first.id.clone();
+            self.select_container(Some(id));
+            self.show_tab(match scene {
+                "stats" => DetailTab::Stats,
+                "inspect" => DetailTab::Inspect,
+                "terminal" => DetailTab::Terminal,
+                _ => DetailTab::Logs,
+            });
+        }
+    }
+
+    // ---- intents --------------------------------------------------------
+
+    /// Apply what the window's controls asked for.
+    pub(crate) fn drain_intents(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        self.show_opened();
+        let intents = self.intents.take();
+        if intents.is_empty() {
+            return;
+        }
+        for intent in intents {
+            self.apply_intent(doc, intent);
+        }
+        self.publish_model();
+    }
+
+    fn apply_intent(&mut self, doc: &mut ui::widget::Edits<'_>, intent: Intent) {
+        match intent {
+            Intent::ShowSection(section) => self.show_section(section),
+            Intent::Select(id) => self.select_container(id),
+            Intent::ShowTab(tab) => self.show_tab(tab),
+            Intent::Lifecycle { id, action } => {
+                if action.is_destructive() {
+                    let name = self.container_name(&id);
+                    self.ask_confirm(Confirm {
+                        name,
+                        target: ConfirmTarget::Container { id, action },
+                    });
                 } else {
-                    "Expand navigation"
+                    self.apply_action(action, &id);
                 }
-                .into(),
-                Some("Shortcut: B".into()),
-                focusable,
-            ),
-            Hit::PromptCancel => (Role::Button, "Close progress".into(), None, focusable),
+            }
+            Intent::OpenShell(id) => self.attach_shell(&id),
+            Intent::NewContainer => self.set_create_open(true),
+            Intent::PullImage(Some(reference)) => self.start_pull(&reference),
+            Intent::PullImage(None) => self.ask_prompt(Prompt {
+                kind: PromptKind::PullImage,
+                value: String::new(),
+                context: String::new(),
+            }),
+            Intent::TagImage(reference) => self.ask_prompt(Prompt {
+                kind: PromptKind::TagImage,
+                value: String::new(),
+                context: reference,
+            }),
+            Intent::RemoveImage(reference) => self.ask_confirm(Confirm {
+                name: reference.clone(),
+                target: ConfirmTarget::Image { reference },
+            }),
+            Intent::NewVolume => self.ask_prompt(Prompt {
+                kind: PromptKind::NewVolume,
+                value: String::new(),
+                context: String::new(),
+            }),
+            Intent::RemoveVolume(name) => self.ask_confirm(Confirm {
+                name: name.clone(),
+                target: ConfirmTarget::Volume { name },
+            }),
+            Intent::EnterDistrobox(name) => self.enter_distrobox(&name),
+            Intent::SubmitCreate => self.submit_create(doc),
+            Intent::CloseCreate => self.set_create_open(false),
+            Intent::ConfirmAccept => self.accept_confirm(),
+            Intent::ConfirmCancel => {
+                self.confirm = None;
+                self.rebuild_confirm();
+            }
+            Intent::PromptSubmit => self.submit_prompt(),
+            Intent::PromptCancel => {
+                self.prompt = None;
+                self.rebuild_prompt();
+            }
+            Intent::ClosePull => {
+                self.pull = None;
+                self.rebuild_pull();
+            }
+            Intent::Reconnect => self.spawn_refresh(),
         }
+    }
+
+    // ---- view state -----------------------------------------------------
+
+    /// Hand the window what it shows, when that changed.
+    fn publish_model(&mut self) {
+        // A container that left the engine is no longer shown as chosen.
+        let mut view = self.view.clone();
+        view.selected = view.selected.filter(|id| self.engine.find(id).is_some());
+        let published = (self.engine_rev, view.clone());
+        if self.published.as_ref() == Some(&published) {
+            return;
+        }
+        self.published = Some(published);
+        self.parts.model.set(
+            view::Model {
+                engine: Rc::new(self.engine.clone()),
+                view,
+                controls: self.engine_controls_available(),
+                connected: self.connected(),
+                missing: self.live && !self.engine.live,
+                ..view::Model::default()
+            }
+            .digested(),
+        );
+    }
+
+    fn handle_keys(&self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return;
+        };
+        if key.state != ElementState::Pressed
+            || ctx.modifiers.state().control_key()
+            || ctx.modifiers.state().super_key()
+            || ctx.modifiers.state().alt_key()
+        {
+            return;
+        }
+        let intent = match &key.logical_key {
+            Key::Character(ch) => match ch.as_str() {
+                "1" => Some(Intent::ShowSection(Section::Containers)),
+                "2" => Some(Intent::ShowSection(Section::Images)),
+                "3" => Some(Intent::ShowSection(Section::Volumes)),
+                "4" => Some(Intent::ShowSection(Section::Distrobox)),
+                "n" | "N" if self.engine_controls_available() => Some(Intent::NewContainer),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(intent) = intent {
+            self.intents.push(intent);
+            *ctx.handled = true;
+        }
+    }
+
+    /// The dialog on top, if one is open.
+    fn top_dialog_mut(&mut self) -> Option<&mut dyn Widget> {
+        if let Some(dialog) = self.confirm_dialog.as_mut() {
+            return Some(dialog);
+        }
+        if let Some(dialog) = self.prompt_dialog.as_mut() {
+            return Some(dialog);
+        }
+        if let Some(dialog) = self.pull_dialog.as_mut() {
+            return Some(dialog);
+        }
+        if self.create_open {
+            return Some(&mut self.create);
+        }
+        None
+    }
+
+    fn open_dialogs(&self) -> Vec<&dyn Widget> {
+        let mut out: Vec<&dyn Widget> = Vec::new();
+        if self.create_open {
+            out.push(&self.create);
+        }
+        if let Some(dialog) = &self.pull_dialog {
+            out.push(dialog);
+        }
+        if let Some(dialog) = &self.prompt_dialog {
+            out.push(dialog);
+        }
+        if let Some(dialog) = &self.confirm_dialog {
+            out.push(dialog);
+        }
+        out
+    }
+
+    fn open_dialogs_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut out: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        if self.create_open {
+            out.push(&mut self.create);
+        }
+        if let Some(dialog) = &mut self.pull_dialog {
+            out.push(dialog);
+        }
+        if let Some(dialog) = &mut self.prompt_dialog {
+            out.push(dialog);
+        }
+        if let Some(dialog) = &mut self.confirm_dialog {
+            out.push(dialog);
+        }
+        out
+    }
+
+    fn paint_toast(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        window: Rect,
+    ) {
+        self.toast.paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            window,
+            ToastAnchor::BottomCenter,
+        );
+    }
+}
+
+/// How a finished lifecycle verb reads in a toast.
+pub(crate) fn past_tense(action: Action) -> &'static str {
+    match action {
+        Action::Start => "Started",
+        Action::Stop => "Stopped",
+        Action::Restart => "Restarted",
+        Action::Pause => "Paused",
+        Action::Unpause => "Resumed",
+        Action::Remove => "Removed",
     }
 }
 
@@ -1707,9 +1558,374 @@ impl ContainersApp {
 // Widget impl
 // =====================================================================
 
-/// Keep palette authority refreshes proportional to the visible context.
-/// Search retains the complete engine catalogue and `Widget::resource`
-/// materialises an omitted stable identity only when a result is activated.
+impl Widget for ContainersApp {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+        self.drain_intents(edits);
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        {
+            let (_doc, _) = ui::doc::document_ref(state, path);
+            self.drain_bg();
+            // Periodically re-probe the engine. Controlled fixtures own that
+            // cadence through their request channel.
+            if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL && {
+                #[cfg(test)]
+                {
+                    self.controlled_runtime.is_none()
+                }
+                #[cfg(not(test))]
+                {
+                    true
+                }
+            } {
+                self.spawn_refresh();
+            }
+            self.hydrate_selection();
+            if self.pull_dirty {
+                self.rebuild_pull();
+            }
+            self.toast.expire();
+            self.publish_model();
+        }
+        self.window.sync(state, path);
+        self.create.sync(state, path);
+        for dialog in [
+            self.confirm_dialog.as_mut().map(|d| d as &mut dyn Widget),
+            self.prompt_dialog.as_mut().map(|d| d as &mut dyn Widget),
+            self.pull_dialog.as_mut().map(|d| d as &mut dyn Widget),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            dialog.sync(state, path);
+        }
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        {
+            let (_doc, _) = ui::doc::document_ref(state, path);
+            if self.pull_dirty {
+                self.rebuild_pull();
+            }
+        }
+        let window = self.window.update(state, path);
+        window || self.structure_dirty
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.live
+            || self
+                .pull
+                .as_ref()
+                .is_some_and(|p| !p.done && p.failed.is_none())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        let mut needed = false;
+        self.for_each_child(&mut |child| {
+            needed = needed || child.needs_animation_frame();
+        });
+        needed
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let mut earliest = self.toast.deadline();
+        self.for_each_child(&mut |child| {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest = Some(earliest.map_or(deadline, |old: Instant| old.min(deadline)));
+            }
+        });
+        earliest
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let shell = self.window.build_layout(taffy, theme, node_map);
+        let mut children = vec![shell];
+        for dialog in self.open_dialogs_mut() {
+            let node = dialog.build_layout(taffy, theme, node_map);
+            let mut style = taffy.style(node).cloned().unwrap_or_default();
+            style.position = taffy::Position::Absolute;
+            let _ = taffy.set_style(node, style);
+            children.push(node);
+        }
+        let style = Style {
+            display: Display::Flex,
+            size: Size::from_percent(1.0_f32, 1.0_f32),
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let children = taffy.children(node).unwrap_or_default();
+        let at = Point::new(self.rect.x0, self.rect.y0);
+        let mut nodes = children.iter();
+        if let Some(&shell) = nodes.next() {
+            self.window.apply_layout(taffy, shell, at);
+        }
+        for (dialog, &child) in self.open_dialogs_mut().into_iter().zip(nodes) {
+            dialog.apply_layout(taffy, child, at);
+        }
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let mine = std::mem::take(&mut self.structure_dirty);
+        let mut children = false;
+        for child in self.children_mut() {
+            children |= child.take_structure_dirty();
+        }
+        mine || children
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.window.draw(scene, transform, tr, theme, presence);
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for child in self.children_mut() {
+            child.draw_overlay(scene, transform, tr, theme, presence);
+        }
+        let window = presence.viewport.get().unwrap_or(self.rect);
+        self.paint_toast(scene, transform, tr, theme, window);
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
+        let dialogs = self.open_dialogs().len();
+        if dialogs > 0 {
+            // The dialog on top is modal: it receives every event.
+            let node = children.get(dialogs).copied();
+            if let (Some(dialog), Some(node)) = (self.top_dialog_mut(), node) {
+                dialog.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            }
+            *ctx.handled = true;
+        } else {
+            let pane = self.parts.pane.get();
+            if let Some(&node) = children.first() {
+                self.window
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            }
+            // Escape closes the detail the same way at every width: in a
+            // narrow window the shell takes it as Back, and the selection
+            // goes with the screen it was shown on.
+            let went_back = pane == NavPane::Content && self.parts.pane.get() == NavPane::Overview;
+            if is_escape(event) && self.view.selected.is_some() && (went_back || !*ctx.handled) {
+                self.intents.push(Intent::Select(None));
+                *ctx.handled = true;
+            } else if !*ctx.handled {
+                self.handle_keys(event, ctx);
+            }
+        }
+        self.drain_intents(&mut ctx.edits());
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut out: Vec<&dyn Widget> = vec![&self.window];
+        out.extend(self.open_dialogs());
+        out
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(&self.window);
+        for dialog in self.open_dialogs() {
+            visitor(dialog);
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let create_open = self.create_open;
+        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.window];
+        if create_open {
+            out.push(&mut self.create);
+        }
+        if let Some(dialog) = &mut self.pull_dialog {
+            out.push(dialog);
+        }
+        if let Some(dialog) = &mut self.prompt_dialog {
+            out.push(dialog);
+        }
+        if let Some(dialog) = &mut self.confirm_dialog {
+            out.push(dialog);
+        }
+        out
+    }
+
+    fn name(&self) -> &'static str {
+        "ContainersApp"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("containers-root")
+    }
+
+    fn traps_focus(&self) -> bool {
+        !self.open_dialogs().is_empty()
+    }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        let mut root = AccessNode::new(Role::Window)
+            .with_name("Containers")
+            .with_description(&self.engine.connection)
+            .with_bounds(self.rect);
+        root.children.extend(
+            self.toast
+                .access_node()
+                .map(|node| node.with_hashed_key("containers.toast")),
+        );
+        Some(root)
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        for child in self.children_mut() {
+            child.set_motion_reduced(reduced);
+        }
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl ui::widget::controls::ActionControls for ContainersApp {
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        for child in self.children_mut() {
+            ui::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        for child in self.children_mut() {
+            if let Some(invocation) = ui::widget::controls::take_control_invocation(child) {
+                return Some(invocation);
+            }
+        }
+        None
+    }
+}
+
+// =====================================================================
+// Test roots
+// =====================================================================
+
+impl ContainersApp {
+    /// A manager whose podman calls are requests a test answers.
+    #[cfg(test)]
+    pub(crate) fn controlled_runtime_root() -> (
+        Self,
+        Receiver<ControlledRuntimeRequest>,
+        Sender<Result<(), String>>,
+    ) {
+        let engine = Engine {
+            live: true,
+            connection: "controlled Podman".into(),
+            ..Engine::default()
+        };
+        let (bg_tx, bg_rx) = std::sync::mpsc::channel();
+        let (requests_tx, requests_rx) = std::sync::mpsc::channel();
+        let (results_tx, results_rx) = std::sync::mpsc::channel();
+        let mut app = Self::with_engine(engine, controlled_input);
+        app.live = true;
+        app.bg_tx = Some(bg_tx);
+        app.bg_rx = Some(bg_rx);
+        app.controlled_runtime = Some(requests_tx);
+        app.controlled_immediate_results = Some(results_rx);
+        (app, requests_rx, results_tx)
+    }
+
+    /// A live engine with one running container, its detail fetched when
+    /// `hydrated`.
+    #[cfg(test)]
+    pub(crate) fn controlled_engine(connection: &str, hydrated: bool) -> Engine {
+        Engine {
+            live: true,
+            connection: connection.into(),
+            containers: vec![crate::model::Container {
+                id: "armed-container".into(),
+                name: "Armed container".into(),
+                image: "quay.io/example/armed:1".into(),
+                status: crate::model::ContainerStatus::Running,
+                status_detail: "Up under controlled runtime".into(),
+                command: "/usr/bin/example".into(),
+                created: "controlled".into(),
+                ports: Vec::new(),
+                mounts: Vec::new(),
+                env: if hydrated {
+                    vec![("MODE".into(), "controlled".into())]
+                } else {
+                    Vec::new()
+                },
+                labels: Vec::new(),
+                stats: crate::model::Stats::default(),
+                logs_error: None,
+                logs: if hydrated {
+                    vec!["controlled detail".into()]
+                } else {
+                    Vec::new()
+                },
+            }],
+            ..Engine::default()
+        }
+    }
+
+    /// Whether the new-container form is open.
+    pub fn is_create_open(&self) -> bool {
+        self.create_open
+    }
+
+    /// The section shown.
+    pub fn section(&self) -> Section {
+        self.view.section
+    }
+
+    /// The selected container's id.
+    pub fn selected(&self) -> Option<&str> {
+        self.view.selected.as_deref()
+    }
+
+    /// The selected container's detail tab.
+    pub fn tab(&self) -> DetailTab {
+        self.view.tab
+    }
+}
+
 const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 
 /// `effect`, as a row offers it: an engine effect only while the engine
@@ -1725,7 +1941,7 @@ fn offered(effect: &ContainersEffect, engine_live: bool, offline: &str) -> Actio
 
 const ENGINE_OFFLINE: &str = "Container engine actions are unavailable in demo mode";
 
-fn container_row(container: &crate::model::Container, engine_live: bool) -> LiveRow {
+pub(crate) fn container_row(container: &crate::model::Container, engine_live: bool) -> LiveRow {
     let id = || container.id.clone();
     let mut row = LiveRow::new(
         format!("container:{}", container.id),
@@ -1870,1434 +2086,217 @@ impl ContainersApp {
     }
 }
 
-impl Widget for ContainersApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
-
-    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
-        let (doc, _) = ui::doc::document_ref(doc, path);
-        self.drain_bg();
-        // Periodically re-probe the engine for fresh stats / state. Controlled
-        // fixtures own that cadence through the request channel; a wall-clock
-        // tick would race their emptiness asserts under a slow runner.
-        if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL && {
-            #[cfg(test)]
-            {
-                self.controlled_runtime.is_none()
-            }
-            #[cfg(not(test))]
-            {
-                true
-            }
-        } {
-            self.spawn_refresh();
-        }
-        self.hydrate_selection();
-        self.refresh_view(doc);
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        // Keep syncing while live so the background poller's snapshots and
-        // the toast timeout are picked up without needing input. A running
-        // pull also streams in via the bg channel.
-        self.live
-            || self.toast.is_some()
-            || self
-                .pull
-                .as_ref()
-                .is_some_and(|p| !p.done && p.failed.is_none())
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        // Toast fade, the sidebar collapse slide, and live pull progress all
-        // keep the host pumping frames.
-        (!self.motion_reduced && self.toast.is_some())
-            || self.sidebar_flap.is_animating(SplitLayout::Docked)
-            || (!self.motion_reduced
-                && self
-                    .pull
-                    .as_ref()
-                    .is_some_and(|p| !p.done && p.failed.is_none()))
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        // The widget self-lays-out in apply_layout/draw, so it only needs a
-        // single full-bleed leaf node.
-        let node = match taffy.new_leaf(Style {
-            size: Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
-            },
-            ..Default::default()
-        }) {
-            Ok(node) => node,
-            // `new_leaf` only errs when the tree is at capacity; degrade to
-            // an inert node rather than aborting the whole session.
-            Err(_) => NodeId::from(0u64),
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        // Install the host's DPI transform so every draw helper this frame
-        // composes onto it (HiDPI-correct without threading it everywhere).
-        draw::set_base(transform);
-        // Advance the sidebar collapse slide off a real per-frame delta.
-        self.tick_sidebar();
-        // Expire the toast.
-        if let Some(t) = &self.toast
-            && t.born.elapsed().as_millis() > TOAST_MS
-        {
-            self.toast = None;
-        }
-        self.hits.clear();
-        let r = self.rect;
-        let c = &theme.tokens.colors;
-
-        // App background.
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &r);
-
-        // The draw pass has no document access; it renders from the view
-        // snapshot refreshed in `sync` / `handle_event`.
-        let view = self.view.clone();
-
-        // --- Navigation rail ---
-        // Compact is deliberately a navigation rail, not a squeezed desktop
-        // sidebar. It keeps every section one tap away while leaving a full
-        // pane for the current list or detail.
-        let compact = self.uses_compact_layout(theme);
-        self.compact_layout_active = compact;
-        let rail = Rect::new(r.x0, r.y0, r.x0 + self.rail_width_for(compact), r.y1);
-        self.draw_rail(scene, tr, theme, rail, &view, compact);
-
-        // --- Content area ---
-        let content = Rect::new(rail.x1, r.y0, r.x1, r.y1);
-        match view.section {
-            Section::Containers => self.draw_containers(scene, tr, theme, content, &view),
-            Section::Images => self.draw_images(scene, tr, theme, content),
-            Section::Volumes => self.draw_volumes(scene, tr, theme, content),
-            Section::Distrobox => self.draw_distrobox(scene, tr, theme, content),
-        }
-
-        // --- Overlays ---
-        if self.create_open {
-            self.draw_create_modal(scene, tr, theme, presence, r);
-        }
-        if self.pull.is_some() {
-            self.draw_pull_overlay(scene, tr, theme, r);
-        }
-        if self.prompt.is_some() {
-            self.ensure_prompt_dialog();
-            self.layout_prompt_dialog(theme, tr);
-            if let Some(pd) = self.prompt_dialog.as_mut() {
-                pd.dialog.draw(scene, transform, tr, theme, presence);
-            }
-        } else {
-            self.prompt_dialog = None;
-        }
-        if self.confirm.is_some() {
-            self.ensure_confirm_dialog();
-            self.layout_confirm_dialog(theme, tr);
-            if let Some(cd) = self.confirm_dialog.as_mut() {
-                cd.dialog.draw(scene, transform, tr, theme, presence);
-            }
-        } else {
-            self.confirm_dialog = None;
-        }
-        if let Some(toast) = &self.toast {
-            let kind = if toast.error {
-                ToastKind::Error
-            } else {
-                ToastKind::Success
-            };
-            paint_transient(
-                scene,
-                transform,
-                tr,
-                theme,
-                r,
-                ToastAnchor::BottomCenter,
-                &ToastCard::new(&toast.message, kind),
-            );
-        }
-
-        // --- Shared command palette (topmost) ---
-        if self.palette_open {
-            // Dim the app behind the palette for legibility.
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ui::paint::with_alpha(c.surfaces.scrim, 128),
-                None,
-                &r,
-            );
-            let (pw, ph) = self.palette.desired_size();
-            let cx = r.center().x;
-            let top = r.y0 + 88.0;
-            let card = Rect::new(cx - pw / 2.0, top, cx + pw / 2.0, top + ph);
-            self.palette.set_rect(card);
-            self.palette.draw(scene, transform, tr, theme, presence);
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the top-level dispatcher coordinates overlays, shared inputs, and app navigation"
-    )]
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // While open, the shared palette owns all input. It runs against the
-        // live document; an Enter outcome selects the chosen container, and
-        // Escape (or clicking away) closes it.
-        if self.palette_open {
-            let mut dummy_taffy: TaffyTree<()> = TaffyTree::new();
-            // A single-leaf throwaway tree; this can't realistically fail,
-            // but skip the forward rather than panic if it ever does.
-            if let Ok(dummy_node) = dummy_taffy.new_leaf(Style::default()) {
-                self.palette.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        taffy: &dummy_taffy,
-                        ..ctx.reborrow(ctx.path, dummy_node)
-                    },
-                );
-                if !self.palette.is_open() {
-                    self.palette_open = false;
-                }
-            }
-            *ctx.handled = true;
-            self.refresh_view(&ctx.state);
-            return;
-        }
-
-        // Ctrl+K opens the app-scoped palette — the same chord as the shell's
-        // global search, here seeded with this app's resources.
-        if let WindowEvent::KeyboardInput {
-            event: key_event, ..
-        } = event
-            && key_event.state == ElementState::Pressed
-            && ctx.modifiers.state().control_key()
-            && matches!(&key_event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k"))
-        {
-            self.open_container_palette();
-            *ctx.handled = true;
-            self.refresh_view(&ctx.state);
-            return;
-        }
-
-        // A destructive-confirm or text-prompt dialog is modal: while it's up
-        // the shared ModalDialog captures every event (typing, clicks, Esc)
-        // and nothing leaks to the app behind the scrim.
-        if self.confirm.is_some() {
-            self.route_confirm_event(
-                event,
-                ctx.scale_factor,
-                *ctx.modifiers,
-                &mut ctx.state,
-                ctx.handled,
-            );
-            self.refresh_view(&ctx.state);
-            return;
-        }
-        if self.prompt.is_some() {
-            self.route_prompt_event(
-                event,
-                ctx.scale_factor,
-                *ctx.modifiers,
-                &mut ctx.state,
-                ctx.handled,
-            );
-            self.refresh_view(&ctx.state);
-            return;
-        }
-
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                if self.create_open {
-                    for field in CreateField::ALL {
-                        self.route_create_input(
-                            field,
-                            event,
-                            ctx.scale_factor,
-                            *ctx.modifiers,
-                            &mut ctx.state,
-                            ctx.path,
-                            ctx.focus_target,
-                        );
-                    }
-                }
-                // Keep the launcher's pointer position current for its click test.
-                self.route_to_launcher(
-                    event,
-                    ctx.scale_factor,
-                    *ctx.modifiers,
-                    &mut ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                );
-                // Hover changes button shading — request a redraw.
-                *ctx.handled = true;
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
-                };
-                // Scroll the panel under the cursor. A compact selected
-                // container *is* the detail panel, so it must not leak wheel
-                // events into an invisible master list.
-                let compact_detail = self.compact_layout_active
-                    && self.view.section == Section::Containers
-                    && self.view.selected.is_some();
-                if compact_detail
-                    || self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(&ctx.state)
-                {
-                    self.detail_scroll = (self.detail_scroll - dy).max(0.0);
-                } else {
-                    self.list_scroll = (self.list_scroll - dy).max(0.0);
-                }
-                *ctx.handled = true;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                // A click on the search launcher opens the palette instead of
-                // running a list hit.
-                self.route_to_launcher(
-                    event,
-                    ctx.scale_factor,
-                    *ctx.modifiers,
-                    &mut ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                );
-                if self.search_field.take_palette_request() {
-                    self.open_container_palette();
-                    *ctx.handled = true;
-                } else {
-                    self.on_click(&mut ctx.state, ctx.handled);
-                    if self.create_open {
-                        self.route_create_input(
-                            self.create_focus,
-                            event,
-                            ctx.scale_factor,
-                            *ctx.modifiers,
-                            &mut ctx.state,
-                            ctx.path,
-                            ctx.focus_target,
-                        );
-                    }
-                }
-            }
-            WindowEvent::KeyboardInput {
-                event: key_event, ..
-            } => {
-                self.on_key(event, ctx, key_event);
-            }
-            WindowEvent::Ime(_) if self.create_open => {
-                let field = self.create_focus;
-                self.focus_create_field(field);
-                self.route_create_input(
-                    field,
-                    event,
-                    ctx.scale_factor,
-                    *ctx.modifiers,
-                    &mut ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                );
-                *ctx.handled = true;
-            }
-            _ => {}
-        }
-        // Refresh the cached view state after any mutation so the next draw
-        // reflects it (draw has no doc access).
-        self.refresh_view(&ctx.state);
-    }
-
-    fn name(&self) -> &'static str {
-        "ContainersApp"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("containers-root")
-    }
-
-    fn tooltip(&self) -> Option<&str> {
-        let hit = self
-            .hits
-            .iter()
-            .rev()
-            .find(|region| region.rect.contains(self.cursor))?;
-        Some(match &hit.hit {
-            Hit::Section(section) => section.label(),
-            Hit::NewContainer | Hit::DistroCreate | Hit::CreateSubmit => "Create container",
-            Hit::SelectContainer(_) => "Open container details",
-            Hit::SelectImage(_) => "Show image details",
-            Hit::Action { action, .. } => action.label(),
-            Hit::ImageAct { action, .. } => action.label(),
-            Hit::PullImage(_) | Hit::PullTyped => "Pull image",
-            Hit::TagImage(_) => "Tag image",
-            Hit::InspectImage(_) => "Inspect image",
-            Hit::CreateVolume => "Create volume",
-            Hit::RemoveVolume(_) => "Remove volume",
-            Hit::AttachShell(_) => "Open interactive shell",
-            Hit::DistroEnter(_) => "Enter distrobox",
-            Hit::DetailTab(tab) => tab.label(),
-            Hit::CloseDetail => "Back to containers (Esc)",
-            Hit::CreateField(field) => field.label(),
-            Hit::CreateCancel => "Cancel (Esc)",
-            Hit::ComboToggle => "Show installed images",
-            Hit::ComboPick(_) => "Use this image",
-            Hit::ToggleSidebar => "Toggle navigation (B)",
-            Hit::PromptCancel => "Close",
-        })
-    }
-
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.hits
-            .iter()
-            .rev()
-            .any(|region| region.rect.contains(point))
-            .then_some(winit::window::CursorIcon::Pointer)
-    }
-
-    fn traps_focus(&self) -> bool {
-        self.palette_open
-            || self.create_open
-            || self.pull.is_some()
-            || self.prompt.is_some()
-            || self.confirm.is_some()
-    }
-
-    fn modal_capture(&self) -> Option<Rect> {
-        self.traps_focus().then_some(self.rect)
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the immediate-mode accessibility mirror exports the complete visible surface"
-    )]
-    fn accessibility(&self) -> Option<AccessNode> {
-        if self.palette_open {
-            return self.palette.accessibility();
-        }
-        if let Some(dialog) = self
-            .confirm_dialog
-            .as_ref()
-            .and_then(|dialog| dialog.dialog.accessibility())
-        {
-            return Some(dialog);
-        }
-        if let Some(dialog) = self
-            .prompt_dialog
-            .as_ref()
-            .and_then(|dialog| dialog.dialog.accessibility())
-        {
-            return Some(dialog);
-        }
-
-        let modal_prefix = if self.create_open {
-            Some("containers.create.")
-        } else if self.pull.is_some() {
-            Some("containers.progress.")
-        } else {
-            None
-        };
-        let mut targets = std::collections::HashSet::new();
-        let mut controls = Vec::new();
-        if modal_prefix.is_none() && self.search_field.get_rect() != Rect::ZERO {
-            controls.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Open search")
-                    .with_description("Shortcut: Control K or slash")
-                    .with_action_target("containers.search.open")
-                    .with_bounds(self.search_field.get_rect())
-                    .with_state(AccessState::new().focusable(true)),
-            );
-            targets.insert("containers.search.open".to_string());
-        }
-        for region in &self.hits {
-            let target = self.semantic_target(&region.hit);
-            if modal_prefix.is_some_and(|prefix| !target.starts_with(prefix))
-                || !targets.insert(target.clone())
-            {
-                continue;
-            }
-            let (role, name, description, state) = self.semantic_copy(&region.hit);
-            let mut node = AccessNode::new(role)
-                .with_name(name)
-                .with_action_target(target)
-                .with_bounds(region.rect)
-                .with_state(state);
-            if let Some(description) = description {
-                node = node.with_description(description);
-            }
-            if let Hit::CreateField(field) = &region.hit {
-                let input = self.create_input(*field);
-                node = node.with_value(input.value());
-                let (anchor, focus) = input
-                    .selection_anchor_focus_public()
-                    .unwrap_or_else(|| (input.cursor_pos(), input.cursor_pos()));
-                node = node.with_text_selection(anchor, focus);
-            }
-            controls.push(node);
-        }
-
-        let mut children = if let Some(prefix) = modal_prefix {
-            let name = if prefix == "containers.create." {
-                "Create container"
-            } else {
-                "Image pull progress"
-            };
-            vec![
-                AccessNode::new(Role::Dialog)
-                    .with_name(name)
-                    .with_bounds(if prefix == "containers.create." {
-                        crate::presentation::create_form_geometry(self.rect).modal
-                    } else {
-                        self.rect
-                    })
-                    .with_state(AccessState::new().modal(true))
-                    .with_children(controls),
-            ]
-        } else {
-            controls
-        };
-        if let Some(pull) = &self.pull {
-            children.push(pull_progress_node(pull));
-        }
-        if let Some(toast) = &self.toast {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(&toast.message)
-                    .with_live(if toast.error {
-                        Politeness::Assertive
-                    } else {
-                        Politeness::Polite
-                    }),
-            );
-        }
-        Some(
-            AccessNode::new(Role::Window)
-                .with_name("Containers")
-                .with_description(&self.engine.connection)
-                .with_bounds(self.rect)
-                .with_children(children),
-        )
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one semantic target table for every painted a11y control"
-    )]
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &AccessibilityAction,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        let (state, _) = ui::doc::document(state, path);
-        if self.palette_open {
-            return self
-                .palette
-                .perform_semantic_action(target, action, state, &automerge::ROOT);
-        }
-        if self.confirm.is_some() {
-            self.ensure_confirm_dialog();
-            let handled = self.confirm_dialog.as_mut().is_some_and(|dialog| {
-                dialog
-                    .dialog
-                    .perform_semantic_action(target, action, state, &automerge::ROOT)
-            });
-            let (confirm, cancel) = self
-                .confirm_dialog
-                .as_ref()
-                .map_or((false, false), |dialog| {
-                    (dialog.confirm.replace(false), dialog.cancel.replace(false))
-                });
-            if confirm {
-                self.apply_confirm(state);
-            } else if cancel {
-                self.confirm = None;
-                self.confirm_dialog = None;
-            }
-            return handled;
-        }
-        if target == "containers.search.open"
-            && matches!(
-                action,
-                AccessibilityAction::Activate | AccessibilityAction::Focus
-            )
-        {
-            self.open_container_palette();
-            return true;
-        }
-        if self.prompt.is_some() {
-            self.ensure_prompt_dialog();
-            let handled = self.prompt_dialog.as_mut().is_some_and(|dialog| {
-                dialog
-                    .dialog
-                    .perform_semantic_action(target, action, state, &automerge::ROOT)
-            });
-            let (submit, cancel) = self
-                .prompt_dialog
-                .as_ref()
-                .map_or((false, false), |dialog| {
-                    (dialog.submit.replace(false), dialog.cancel.replace(false))
-                });
-            if submit {
-                self.submit_prompt(state);
-            } else if cancel {
-                self.prompt = None;
-                self.prompt_dialog = None;
-            }
-            return handled;
-        }
-        if let Some(field_key) = target.strip_prefix("containers.create.field:") {
-            let Some(field) = CreateField::ALL
-                .into_iter()
-                .find(|field| field.key() == field_key)
-            else {
-                return false;
-            };
-            match action {
-                AccessibilityAction::Focus | AccessibilityAction::Activate => {
-                    self.apply_hit(state, Hit::CreateField(field));
-                    self.refresh_view(state);
-                    return true;
-                }
-                AccessibilityAction::SetValue(value) => {
-                    self.set_create_field(state, field, value);
-                    self.focus_create_field(field);
-                    self.refresh_view(state);
-                    return true;
-                }
-                _ => return false,
-            }
-        }
-        if !matches!(
-            action,
-            AccessibilityAction::Activate | AccessibilityAction::Focus
-        ) {
-            return false;
-        }
-        let hit = self
-            .hits
-            .iter()
-            .find(|region| self.semantic_target(&region.hit) == target)
-            .map(|region| region.hit.clone());
-        if let Some(hit) = hit {
-            self.apply_hit(state, hit);
-            self.refresh_view(state);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn set_motion_reduced(&mut self, reduced: bool) {
-        self.motion_reduced = reduced;
-        if reduced {
-            self.sidebar_flap.settle(SplitLayout::Docked);
-            self.sidebar_tick = None;
-        }
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.has_focus = focused;
-    }
-
-    fn is_focused(&self) -> bool {
-        self.has_focus
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
-    }
-}
-
-impl ui::widget::controls::ActionControls for ContainersApp {
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        self.palette.install_control_custody(domain, attachment);
-        let _ = self
-            .pending_control_invocation
-            .install_custody(domain, attachment);
-    }
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        if let Some(invocation) = self.palette.take_control_invocation() {
-            return Some(invocation);
-        }
-        self.pending_control_invocation.take_legacy_compatibility()
-    }
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        if self.palette_open {
-            self.palette.control_action_bindings()
-        } else {
-            let mut seen = std::collections::HashSet::new();
-            let mut bindings = vec![ui::widget::ControlBindingMetadata::semantic(
-                "containers.search.open",
-            )];
-            bindings.extend(
-                self.hits
-                    .iter()
-                    .filter_map(|region| {
-                        let role = self.semantic_copy(&region.hit).0;
-                        if !matches!(
-                            role,
-                            Role::Button
-                                | Role::ToggleButton
-                                | Role::Checkbox
-                                | Role::RadioButton
-                                | Role::Switch
-                                | Role::ComboBox
-                                | Role::Slider
-                                | Role::SpinButton
-                                | Role::TextInput
-                                | Role::MultilineTextInput
-                        ) {
-                            return None;
-                        }
-                        let control_id = self.semantic_target(&region.hit);
-                        if !seen.insert(control_id.clone()) {
-                            return None;
-                        }
-                        let action = match &region.hit {
-                            Hit::Action { id, action } => Some(ActionAddress::new(
-                                format!("container:{id}"),
-                                match action {
-                                    Action::Start => "start",
-                                    Action::Stop => "stop",
-                                    Action::Restart => "restart",
-                                    Action::Pause => "pause",
-                                    Action::Unpause => "unpause",
-                                    Action::Remove => "remove",
-                                },
-                            )),
-                            Hit::AttachShell(id) => {
-                                Some(ActionAddress::new(format!("container:{id}"), "shell"))
-                            }
-                            Hit::ImageAct { reference, .. } => {
-                                Some(ActionAddress::new(format!("image:{reference}"), "remove"))
-                            }
-                            Hit::RemoveVolume(name) => {
-                                Some(ActionAddress::new(format!("volume:{name}"), "remove"))
-                            }
-                            Hit::DistroEnter(name) => {
-                                Some(ActionAddress::new(format!("distrobox:{name}"), "enter"))
-                            }
-                            _ => None,
-                        };
-                        Some(ui::widget::ControlBindingMetadata {
-                            control_id: control_id.clone(),
-                            kind: action.map_or_else(
-                                || ui::widget::ControlBindingKind::SemanticAction(control_id),
-                                ui::widget::ControlBindingKind::Action,
-                            ),
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            );
-            bindings
-        }
-    }
-}
-
-// =====================================================================
-// Where the user is
-//
-// The section, the selected container and its detail tab are this window's
-// own: never in the document, never shared, never undone.
-// =====================================================================
-
-#[derive(Clone)]
-pub(crate) struct ViewState {
-    pub section: Section,
-    pub selected: Option<String>,
-    pub tab: DetailTab,
-}
-
-impl Default for ViewState {
-    fn default() -> Self {
-        Self {
-            section: Section::Containers,
-            selected: None,
-            tab: DetailTab::Logs,
-        }
-    }
-}
-
-/// The live progress bar announcing an image pull's current status.
-fn pull_progress_node(pull: &PullProgress) -> AccessNode {
-    let status = pull.failed.as_ref().map_or_else(
-        || {
-            if pull.done {
-                format!("Finished pulling {}", pull.reference)
-            } else {
-                pull.lines
-                    .last()
-                    .cloned()
-                    .unwrap_or_else(|| format!("Pulling {}", pull.reference))
-            }
-        },
-        |error| format!("Pull failed: {error}"),
-    );
-    AccessNode::new(Role::ProgressBar)
-        .with_name("Image pull")
-        .with_value(status)
-        .with_live(Politeness::Polite)
-        .with_state(AccessState::new().busy(!pull.done && pull.failed.is_none()))
-}
-
-impl ContainersApp {
-    /// Stage a screenshot scenario (`None` for a plain `--shots`): the
-    /// section, selection and tab it shows, and the overlay it has open. The
-    /// engine and the draft are the scenario's already.
-    pub fn stage_scene(&mut self, scenario: Option<&str>) {
-        let scene = scenario.unwrap_or_default();
-        match scene {
-            "images" | "pull" => self.show_section(Section::Images),
-            "volumes" => self.show_section(Section::Volumes),
-            "distrobox" => self.show_section(Section::Distrobox),
-            "create" | "combo" => {
-                self.open_create();
-                // The image suggestion dropdown, open over the form.
-                self.combo.open = scene == "combo";
-            }
-            "collapsed" => self.sidebar_flap.snap(false),
-            // The shared Ctrl+K palette, seeded with the sample containers.
-            "palette" => self.open_container_palette(),
-            "confirm" => {
-                let (name, id) = self.engine.containers.first().map_or_else(
-                    || ("web".to_string(), "web".to_string()),
-                    |c| (c.name.clone(), c.id.clone()),
-                );
-                self.confirm = Some(Confirm {
-                    name,
-                    verb: "Remove container".into(),
-                    target: ConfirmTarget::Container {
-                        id,
-                        action: Action::Remove,
-                    },
-                });
-            }
-            "prompt" => {
-                self.prompt = Some(Prompt {
-                    kind: PromptKind::NewVolume,
-                    title: "New volume".into(),
-                    placeholder: "my-volume".into(),
-                    value: "backups".into(),
-                    context: String::new(),
-                });
-            }
-            _ => {}
-        }
-        if scene == "pull" {
-            self.pull = Some(PullProgress {
-                reference: "docker.io/library/alpine:3.20".into(),
-                lines: vec![
-                    "Trying to pull docker.io/library/alpine:3.20...".into(),
-                    "Getting image source signatures".into(),
-                    "Copying blob sha256:9fa9226be034 [===========>     ] 2.1MiB / 3.4MiB".into(),
-                    "Copying config sha256:1a2b3c4d5e6f done".into(),
-                ],
-                done: false,
-                failed: None,
-            });
-        }
-        let list_scene = matches!(scene, "images" | "volumes" | "distrobox" | "pull");
-        if !list_scene
-            && let Some(first) = self
-                .engine
-                .containers
-                .iter()
-                .find(|c| c.status.is_running())
-                .or_else(|| self.engine.containers.first())
-        {
-            let id = first.id.clone();
-            self.select_container(Some(id));
-            self.show_tab(match scene {
-                "stats" => DetailTab::Stats,
-                "inspect" => DetailTab::Inspect,
-                "terminal" => DetailTab::Terminal,
-                _ => DetailTab::Logs,
-            });
-        }
-    }
-
-    #[allow(
-        clippy::expect_used,
-        reason = "CreateField::COUNT and CreateField::ALL define the fixed six-slot form together"
-    )]
-    pub(crate) fn create_input_mut(&mut self, field: CreateField) -> &mut TextInput {
-        self.create_inputs
-            .get_mut(field.index())
-            .expect("every CreateField has one shared input")
-            .control_mut()
-    }
-
-    #[allow(
-        clippy::expect_used,
-        reason = "CreateField::COUNT and CreateField::ALL define the fixed six-slot form together"
-    )]
-    pub(crate) fn create_input(&self, field: CreateField) -> &TextInput {
-        self.create_inputs
-            .get(field.index())
-            .expect("every CreateField has one shared input")
-            .control()
-    }
-
-    pub(crate) fn focus_create_field(&mut self, field: CreateField) {
-        self.create_focus = field;
-        let open = self.create_open;
-        for candidate in CreateField::ALL {
-            Widget::set_focus(self.create_input_mut(candidate), candidate == field && open);
-        }
-    }
-
-    pub(crate) fn blur_create_fields(&mut self) {
-        for field in CreateField::ALL {
-            Widget::set_focus(self.create_input_mut(field), false);
-        }
-    }
-
-    /// Hand `event` to the field's control, which submits what it typed
-    /// as a splice of the draft. Typing in the image field opens its
-    /// suggestions.
-    #[allow(
-        clippy::expect_used,
-        reason = "CreateField::COUNT and CreateField::ALL define the fixed six-slot form together"
-    )]
-    pub(crate) fn route_create_input(
-        &mut self,
-        field: CreateField,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut ui::widget::Edits<'_>,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-    ) {
-        let before = self.create_input(field).value().to_string();
-        let mut taffy = TaffyTree::new();
-        let Ok(node) = taffy.new_leaf(Style::default()) else {
-            return;
-        };
-        let mut ignored = false;
-        Widget::handle_event(
-            self.create_inputs
-                .get_mut(field.index())
-                .expect("every CreateField has one shared input"),
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor,
-                modifiers: &modifiers,
-                state: doc.reborrow(),
-                path,
-                handled: &mut ignored,
-                focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        if field == CreateField::Image && self.create_input(field).value() != before {
-            self.combo.open = true;
-            self.combo.highlight = 0;
-        }
-    }
-
-    /// Show the draft's texts in the form's fields, and focus the form's
-    /// field while it is open.
-    pub(crate) fn refresh_view(&mut self, doc: &AutoCommit) {
-        for input in &mut self.create_inputs {
-            input.pull(doc);
-        }
-        if self.create_open {
-            self.focus_create_field(self.create_focus);
-        } else {
-            self.blur_create_fields();
-        }
-    }
-
-    /// Width of the list panel (full content width when no detail is open,
-    /// otherwise content minus the detail column).
-    fn list_area_width(&self, _doc: &AutoCommit) -> f64 {
-        // Event routing has no Theme reference. This conservative viewport
-        // check still prevents wheel events from being routed into an invisible
-        // detail column on phone-sized surfaces; large-text layouts are also
-        // single-pane when drawn.
-        let compact = self.compact_layout_active || self.rect.width() < COMPACT_VIEWPORT_WIDTH;
-        let content_w = (self.rect.width() - self.rail_width_for(compact)).max(0.0);
-        if self.view.selected.is_some() && self.view.section == Section::Containers && !compact {
-            (content_w - DETAIL_WIDTH).max(240.0)
-        } else {
-            content_w
-        }
-    }
-
-    /// The compact breakpoint is intentionally based on both available width
-    /// and the rendered text scale. This makes 200% text a first-class layout
-    /// mode instead of letting it silently overlap a desktop geometry.
-    pub(crate) fn compact_layout_for(viewport_width: f64, base_text_size: f32) -> bool {
-        viewport_width < COMPACT_VIEWPORT_WIDTH || base_text_size >= LARGE_TEXT_BASE_SIZE
-    }
-
-    pub(crate) fn uses_compact_layout(&self, theme: &Theme) -> bool {
-        Self::compact_layout_for(self.rect.width(), theme.tokens.typography.scale.base)
-    }
-
-    /// Whether lifecycle affordances should be painted. The deterministic
-    /// populated sample remains interactive for demos/tests; a genuinely empty
-    /// disconnected engine does not advertise controls that can only fail.
-    pub(crate) fn engine_controls_available(&self) -> bool {
-        self.engine.live
-            || (!self.live
-                && (!self.engine.containers.is_empty()
-                    || !self.engine.images.is_empty()
-                    || !self.engine.volumes.is_empty()
-                    || !self.engine.distroboxes.is_empty()))
-    }
-
-    /// A selected container is a full-page drill-in on compact surfaces. The
-    /// close/back control and Escape return to the list; no content is hidden
-    /// in a sliver beside it.
-    pub(crate) fn uses_single_pane_detail(&self, theme: &Theme) -> bool {
-        self.uses_compact_layout(theme)
-            && self.view.section == Section::Containers
-            && self.view.selected.is_some()
-    }
-
-    pub(crate) fn header_height(&self, theme: &Theme) -> f64 {
-        if self.uses_compact_layout(theme) {
-            120.0
-        } else {
-            HEADER_HEIGHT
-        }
-    }
-
-    pub(crate) fn row_height(theme: &Theme) -> f64 {
-        if theme.tokens.typography.scale.base >= LARGE_TEXT_BASE_SIZE {
-            84.0
-        } else {
-            ROW_HEIGHT
-        }
-    }
-
-    /// The current (animated) navigation-rail width. Eased between fully
-    /// expanded (`RAIL_WIDTH`) and a thin collapsed strip that still shows
-    /// the section icons, using the shared `ui` flap kernel.
-    pub fn rail_width(&self) -> f64 {
-        let reveal = self.sidebar_flap.reveal();
-        RAIL_COLLAPSED + (RAIL_WIDTH - RAIL_COLLAPSED) * reveal
-    }
-
-    fn rail_width_for(&self, compact: bool) -> f64 {
-        if compact {
-            RAIL_COLLAPSED
-        } else {
-            self.rail_width()
-        }
-    }
-
-    /// `true` once the rail has revealed enough to show its text labels.
-    pub fn rail_expanded(&self) -> bool {
-        self.sidebar_flap.reveal() > 0.5
-    }
-
-    /// Toggle the sidebar collapsed/expanded.
-    pub(crate) fn toggle_sidebar(&mut self) {
-        self.sidebar_flap.toggle(SplitLayout::Docked);
-    }
-
-    // --- public test / embedding hooks ---------------------------------
-    //
-    // The app renders with manual hit-testing rather than the retained widget
-    // tree, so its transient UI state isn't reachable through child widgets.
-    // These thin accessors let the e2e suite drive the create flow + combobox
-    // through the same fields the production event path mutates.
-
-    /// Open the create-container modal with the image combobox focused +
-    /// dropdown shown (the create-with-combobox flow).
-    pub fn open_create_with_combo(&mut self) {
-        self.create_open = true;
-        self.focus_create_field(CreateField::Image);
-        self.combo.open = true;
-        self.combo.highlight = 0;
-    }
-
-    /// The section shown.
-    pub fn section(&self) -> Section {
-        self.view.section
-    }
-
-    /// The selected container's id.
-    pub fn selected(&self) -> Option<&str> {
-        self.view.selected.as_deref()
-    }
-
-    /// The selected container's detail tab.
-    pub fn tab(&self) -> DetailTab {
-        self.view.tab
-    }
-
-    /// Whether the create modal is open.
-    pub fn is_create_open(&self) -> bool {
-        self.create_open
-    }
-
-    /// Whether the image combobox suggestion dropdown is showing.
-    pub fn is_combo_open(&self) -> bool {
-        self.combo.open
-    }
-
-    /// Advance the sidebar slide off a real per-frame delta (driven from the
-    /// draw path, mirroring `NavSplit::self_tick`). The first draw sees
-    /// `dt == 0` so the rail never teleports.
-    pub(crate) fn tick_sidebar(&mut self) {
-        let now = ui::time::now();
-        let dt = self
-            .sidebar_tick
-            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
-        self.sidebar_tick = Some(now);
-        self.sidebar_flap.tick(SplitLayout::Docked, dt);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::KeyEvent;
-    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
-    /// Build a synthetic key-press. `handle_event` only inspects
-    /// `logical_key` + `state`; the rest tolerate the zero pattern.
-    fn key_press(logical_key: Key) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+    /// The sample engine, staged as a plain `--shots` opens it.
+    fn staged() -> ContainersApp {
+        let mut app = ContainersApp::sample();
+        app.stage_scene(None);
+        app
     }
 
-    fn dummy_layout() -> (TaffyTree<()>, NodeId) {
-        let mut t = TaffyTree::<()>::new();
-        let n = t.new_leaf(Style::default()).unwrap();
-        (t, n)
+    fn driver(app: ContainersApp) -> ui::headless::FrameHarness {
+        ui::headless::FrameHarness::for_root(ui::State::new(), app, (1280, 800), ui::Theme::dark())
     }
 
-    /// The compact breakpoint preserves tablet and desktop while protecting large text, and compact selection is a full-page drill-in.
-    #[expect(
-        clippy::float_cmp,
-        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
-    )]
+    fn app_of(driver: &mut ui::headless::FrameHarness) -> &mut ContainersApp {
+        driver.root_mut::<ContainersApp>()
+    }
+
     #[test]
-    fn compact_layout_drills_in_and_protects_large_text() {
-        // --- phase: compact_breakpoint_preserves_tablet_desktop_but_protects_large_text ---
-        {
-            let normal = ui::theme::Theme::dark();
-            let large = ui::theme::Theme::dark().with_text_scale(2.0);
-            assert!(
-                !ContainersApp::compact_layout_for(768.0, normal.tokens.typography.scale.base),
-                "a normal-size tablet keeps the familiar split layout"
-            );
-            assert!(
-                ContainersApp::compact_layout_for(390.0, normal.tokens.typography.scale.base),
-                "a phone never receives a squeezed sidebar"
-            );
-            assert!(
-                ContainersApp::compact_layout_for(768.0, large.tokens.typography.scale.base),
-                "200% text gets a readable single-pane layout even on tablet"
-            );
-        }
+    fn keys_and_buttons_move_between_sections_and_open_dialogs() {
+        let mut d = driver(staged());
+        let first = view::listed_containers(&app_of(&mut d).engine)[0]
+            .id
+            .clone();
+        assert_eq!(
+            app_of(&mut d).selected(),
+            Some(first.as_str()),
+            "a demo opens on the first container"
+        );
 
-        // --- phase: compact_selection_is_a_full_page_drill_in ---
-        {
-            let mut app = ContainersApp::sample();
-            app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-            app.view.selected = app
+        d.key("2");
+        assert_eq!(app_of(&mut d).section(), Section::Images);
+        d.click_named("images-pull").unwrap();
+        assert_eq!(
+            app_of(&mut d).prompt.as_ref().map(|p| p.kind),
+            Some(PromptKind::PullImage)
+        );
+        d.key("Escape");
+        assert!(app_of(&mut d).prompt.is_none(), "Escape cancels the prompt");
+
+        d.key("3");
+        assert_eq!(app_of(&mut d).section(), Section::Volumes);
+        d.click_named("volumes-new").unwrap();
+        assert_eq!(
+            app_of(&mut d).prompt.as_ref().map(|p| p.kind),
+            Some(PromptKind::NewVolume)
+        );
+        d.type_text("cache");
+        d.key("Enter");
+        assert!(app_of(&mut d).prompt.is_none());
+        assert!(
+            app_of(&mut d)
                 .engine
-                .containers
-                .first()
-                .map(|container| container.id.clone());
-            let theme = ui::theme::Theme::dark();
-
-            assert!(app.uses_compact_layout(&theme));
-            assert!(app.uses_single_pane_detail(&theme));
-            assert_eq!(app.header_height(&theme), 120.0);
-            assert_eq!(ContainersApp::row_height(&theme), ROW_HEIGHT);
-
-            let large = ui::theme::Theme::dark().with_text_scale(2.0);
-            app.rect = Rect::new(0.0, 0.0, 768.0, 900.0);
-            assert!(app.uses_single_pane_detail(&large));
-            assert_eq!(ContainersApp::row_height(&large), 84.0);
-        }
-    }
-
-    /// The palette seeds one row per container and Enter selects it; confirm and prompt dialogs remove images and create volumes.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    fn palette_and_dialogs_drive_container_operations() {
-        // --- phase: open_palette_seeds_one_row_per_container ---
-        {
-            let mut app = ContainersApp::sample();
-            assert!(!app.palette_open);
-            let count = app.engine.containers.len();
-            assert!(count > 0, "sample engine has containers to search");
-
-            app.open_container_palette();
-            assert!(app.palette_open, "the launcher opens the shared palette");
-
-            let rows: Vec<String> = app
-                .palette
-                .visible_entries()
+                .volumes
                 .iter()
-                .map(|e| e.label.clone())
-                .collect();
-            assert_eq!(rows.len(), count, "one palette row per container");
-            assert!(
-                app.engine
-                    .containers
-                    .iter()
-                    .all(|c| rows.iter().any(|r| r.contains(&c.name))),
-                "every container is reachable through the shared palette"
-            );
-        }
+                .any(|volume| volume.name == "cache"),
+            "the typed name became a volume"
+        );
 
-        // --- phase: enter_on_a_palette_row_selects_that_container ---
-        {
-            let mut app = ContainersApp::sample();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-
-            app.open_container_palette();
-            let expected = app.engine.containers[0].id.clone();
-
-            let (taffy, node) = dummy_layout();
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(
-                &key_press(Key::Named(NamedKey::Enter)),
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            app.dispatch_palette_invocation_for_test(&doc);
-
-            assert!(!app.palette_open, "Enter closes the palette");
-            assert_eq!(
-                app.view.selected.as_deref(),
-                Some(expected.as_str()),
-                "activating a palette row selects that container"
-            );
-        }
-
-        // --- phase: confirm_dialog_primary_removes_image_and_escape_cancels ---
-        {
-            let mut app = ContainersApp::sample();
-            app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let reference = app.engine.images[0].reference();
-            let before = app.engine.images.len();
-            app.confirm = Some(Confirm {
-                name: reference.clone(),
-                verb: "Remove image".into(),
-                target: ConfirmTarget::Image { reference },
-            });
-            // A cursor move builds + lays out the dialog so its primary rect resolves.
-            dispatch(
-                &mut app,
-                &mut doc,
-                &root,
-                &cursor_at(Point::new(10.0, 10.0)),
-            );
-            let primary = app.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
-            dispatch(&mut app, &mut doc, &root, &cursor_at(primary.center()));
-            dispatch(&mut app, &mut doc, &root, &left_press());
-            assert!(
-                app.confirm.is_none(),
-                "confirm closed after the primary click"
-            );
-            assert!(app.confirm_dialog.is_none());
-            assert_eq!(
-                app.engine.images.len(),
-                before - 1,
-                "the image was removed on confirm"
-            );
-
-            let mut b = ContainersApp::sample();
-            b.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
-            let refb = b.engine.images[0].reference();
-            let beforeb = b.engine.images.len();
-            b.confirm = Some(Confirm {
-                name: refb.clone(),
-                verb: "Remove image".into(),
-                target: ConfirmTarget::Image { reference: refb },
-            });
-            dispatch(
-                &mut b,
-                &mut doc,
-                &root,
-                &key_press(Key::Named(NamedKey::Escape)),
-            );
-            assert!(b.confirm.is_none(), "Escape cancelled the confirm");
-            assert_eq!(b.engine.images.len(), beforeb, "Escape removed nothing");
-        }
-
-        // --- phase: prompt_dialog_creates_volume_from_typed_field ---
-        {
-            let mut app = ContainersApp::sample();
-            app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let before = app.engine.volumes.len();
-            app.prompt = Some(Prompt {
-                kind: PromptKind::NewVolume,
-                title: "New volume".into(),
-                placeholder: "my-volume".into(),
-                value: String::new(),
-                context: String::new(),
-            });
-            dispatch(
-                &mut app,
-                &mut doc,
-                &root,
-                &cursor_at(Point::new(10.0, 10.0)),
-            );
-            for ch in ["d", "a", "t", "a"] {
-                dispatch(&mut app, &mut doc, &root, &char_press(ch));
-            }
-            assert_eq!(
-                app.prompt_dialog.as_ref().unwrap().dialog.content().value(),
-                "data",
-                "keystrokes land in the embedded real TextInput",
-            );
-            let primary = app.prompt_dialog.as_ref().unwrap().dialog.primary_rect();
-            dispatch(&mut app, &mut doc, &root, &cursor_at(primary.center()));
-            dispatch(&mut app, &mut doc, &root, &left_press());
-            assert!(app.prompt.is_none(), "prompt closed after submit");
-            assert_eq!(app.engine.volumes.len(), before + 1, "a volume was created");
-            assert!(
-                app.engine.volumes.iter().any(|v| v.name == "data"),
-                "the volume is named from the typed field value",
-            );
-        }
-    }
-
-    // --- shared-ModalDialog confirm / prompt routing --------------------
-
-    fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
-    }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn char_press(ch: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(ch.into());
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(ch.into());
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-    fn dispatch(app: &mut ContainersApp, doc: &mut AutoCommit, root: &ObjId, ev: &WindowEvent) {
-        let (taffy, node) = dummy_layout();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(doc),
-                path: root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
+        d.key("1");
+        assert_eq!(app_of(&mut d).section(), Section::Containers);
+        app_of(&mut d).select_container(Some(first));
+        d.relayout();
+        d.key("Escape");
+        assert!(
+            app_of(&mut d).selected().is_none(),
+            "Escape returns from the detail to the list"
         );
     }
 
-    /// Lifecycle controls emit the exported effect instead of running podman inline, and the resource snapshot is bounded with lazy identity resolution.
+    #[test]
+    fn the_detail_closes_from_its_header_control() {
+        let mut d = driver(staged());
+        assert!(app_of(&mut d).selected().is_some());
+        d.click_named("detail-close").unwrap();
+        assert!(
+            app_of(&mut d).selected().is_none(),
+            "the close control clears the chosen container"
+        );
+        d.relayout();
+        assert!(
+            !d.targets().contains_key("detail-close"),
+            "with nothing chosen there is nothing to close"
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_detail_in_a_narrow_window_too() {
+        let mut d = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            staged(),
+            (390, 844),
+            ui::Theme::dark(),
+        );
+        assert!(app_of(&mut d).selected().is_some());
+        assert_eq!(app_of(&mut d).parts.pane.get(), NavPane::Content);
+        d.key("Escape");
+        assert!(
+            app_of(&mut d).selected().is_none(),
+            "Escape clears the selection as it does in a wide window"
+        );
+        assert_eq!(
+            app_of(&mut d).parts.pane.get(),
+            NavPane::Overview,
+            "and the list is in front again"
+        );
+    }
+
+    #[test]
+    fn log_lines_read_their_severity() {
+        use ui::widget::Tone;
+        assert_eq!(
+            view::line_severity("2026-06-30T13:05:01Z WARN  api::auth: 1 failed login"),
+            Tone::Warning
+        );
+        assert_eq!(
+            view::line_severity("WARNING: Console endpoint is listening on a dynamic port"),
+            Tone::Warning
+        );
+        assert_eq!(
+            view::line_severity("logger=sqlstore level=error msg=\"database locked\""),
+            Tone::Danger
+        );
+        assert_eq!(
+            view::line_severity("2026/06/30 09:14:01 [error] 1#1: open() failed"),
+            Tone::Danger
+        );
+        assert_eq!(
+            view::line_severity("api::http: GET /api/errors 200 12ms"),
+            Tone::Neutral,
+            "a word that only contains a level is not one"
+        );
+    }
+
+    #[test]
+    fn removing_asks_first_and_then_runs_once() {
+        let mut d = driver(staged());
+        let first = view::listed_containers(&app_of(&mut d).engine)[0].clone();
+        assert!(first.status.is_running());
+        d.click_named(&format!("detail-remove-{}", first.id))
+            .unwrap();
+        assert_eq!(
+            app_of(&mut d).confirm.as_ref().map(|c| c.name.clone()),
+            Some(first.name.clone()),
+            "Remove opens the confirmation"
+        );
+        assert!(app_of(&mut d).engine.find(&first.id).is_some());
+        // The dialog opens on its safe answer: Enter keeps the container.
+        d.key("Enter");
+        assert!(app_of(&mut d).confirm.is_none());
+        assert!(
+            app_of(&mut d).engine.find(&first.id).is_some(),
+            "Enter on the opened confirmation cancels"
+        );
+
+        d.click_named(&format!("detail-remove-{}", first.id))
+            .unwrap();
+        let remove = d
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.label() == Some("Remove container")
+                    && node.role() == ui::accesskit::Role::Button
+            })
+            .map(|(id, _)| id)
+            .expect("the confirmation's Remove container action");
+        d.perform_a11y_action(remove, &ui::a11y::Action::Activate)
+            .unwrap();
+        assert!(app_of(&mut d).confirm.is_none());
+        assert!(
+            app_of(&mut d).engine.find(&first.id).is_none(),
+            "the confirmed removal ran"
+        );
+        assert!(
+            app_of(&mut d).selected().is_none(),
+            "the removed container is no longer selected"
+        );
+
+        let stop = view::listed_containers(&app_of(&mut d).engine)[0].clone();
+        app_of(&mut d)
+            .intents
+            .push(Intent::Select(Some(stop.id.clone())));
+        d.relayout();
+        d.click_named(&format!("detail-stop-{}", stop.id)).unwrap();
+        assert!(
+            app_of(&mut d).confirm.is_none(),
+            "stopping is not confirmed"
+        );
+        assert_eq!(
+            app_of(&mut d).engine.find(&stop.id).map(|c| c.status),
+            Some(crate::model::ContainerStatus::Exited)
+        );
+    }
+
+    /// Moving around is the window's own: switching sections leaves the
+    /// selection behind, and a selection opens the containers section.
+    #[test]
+    fn where_the_window_is_stays_local() {
+        let mut app = staged();
+        let id = app.selected().map(ToOwned::to_owned).unwrap();
+        app.show_section(Section::Images);
+        assert_eq!(app.section(), Section::Images);
+        assert!(app.selected().is_none());
+        app.select_container(Some(id.clone()));
+        assert_eq!(app.section(), Section::Containers);
+        assert_eq!(app.selected(), Some(id.as_str()));
+        app.show_tab(DetailTab::Inspect);
+        assert_eq!(app.tab(), DetailTab::Inspect);
+    }
+
     #[test]
     fn lifecycle_effects_and_resources_are_exported_and_bounded() {
         // --- phase: lifecycle_control_emits_the_exported_effect_instead_of_running_podman_inline ---
@@ -3306,13 +2305,16 @@ mod tests {
             app.engine.live = true;
             let id = app.engine.containers[0].id.clone();
             app.apply_action(Action::Stop, &id);
-            let intent = ui::widget::controls::take_control_invocation(&mut app)
-                .expect("the host receives an inert resource intent");
             assert_eq!(
-                intent.address,
-                ActionAddress::new(format!("container:{id}"), "stop")
+                app.requested.last(),
+                Some(&(
+                    format!("container:{id}"),
+                    ContainersEffect::Stop {
+                        container: id.clone()
+                    }
+                )),
+                "the host is asked for the exported effect on the container's row"
             );
-            assert!(intent.arguments.is_empty());
             assert_eq!(
                 app.engine.find(&id).map(|container| container.status),
                 Some(crate::model::ContainerStatus::Running),
@@ -3322,19 +2324,21 @@ mod tests {
 
         // --- phase: resource_snapshot_is_bounded_and_omitted_identity_resolves_lazily ---
         {
+            let limit = RESOURCE_SNAPSHOT_LIMIT;
             let mut app = ContainersApp::sample();
             let template = app.engine.containers[0].clone();
             app.engine.containers.clear();
-            for index in 0..(RESOURCE_SNAPSHOT_LIMIT + 17) {
+            for index in 0..(limit + 17) {
                 let mut container = template.clone();
                 container.id = format!("durable-{index:03}");
                 container.name = format!("Container {index:03}");
                 app.engine.containers.push(container);
             }
+            app.engine_changed();
 
             let rows = app.engine_rows();
-            assert_eq!(rows.len(), RESOURCE_SNAPSHOT_LIMIT);
-            let omitted = format!("container:durable-{:03}", RESOURCE_SNAPSHOT_LIMIT + 16);
+            assert_eq!(rows.len(), limit);
+            let omitted = format!("container:durable-{:03}", limit + 16);
             assert!(rows.iter().all(|row| row.id() != omitted));
             assert_eq!(
                 app.engine_row(&omitted).map(|row| row.id().to_owned()),
@@ -3344,18 +2348,21 @@ mod tests {
             app.engine
                 .containers
                 .retain(|container| format!("container:{}", container.id) != omitted);
+            app.engine_changed();
             assert!(
                 app.engine_row(&omitted).is_none(),
-                "a stale palette address cannot recreate removed authority"
+                "a stale search address cannot recreate removed authority"
             );
             assert!(
                 crate::search::engine_entries(&app.engine)
                     .iter()
-                    .all(|entry| entry
-                        .action
-                        .as_ref()
-                        .is_none_or(|action| action.resource != omitted)),
-                "a removed container is no longer a search hit"
+                    .all(|entry| {
+                        entry
+                            .action
+                            .as_ref()
+                            .is_none_or(|action| action.resource != omitted)
+                    }),
+                "removed containers are absent from canonical search entries"
             );
         }
     }
@@ -3380,7 +2387,7 @@ mod tests {
         request.line("Copying blob 1/1").unwrap();
         request.done().unwrap();
         app.drain_bg();
-        let pull = app.pull.as_ref().expect("retained pull overlay");
+        let pull = app.pull.as_ref().expect("retained pull progress");
         assert_eq!(
             pull.lines.last().map(String::as_str),
             Some("Copying blob 1/1")
@@ -3391,9 +2398,9 @@ mod tests {
             requests.recv().unwrap(),
             ControlledRuntimeRequest::Refresh(_)
         ));
-        let terminal = app.toast.as_ref().map(|toast| toast.born);
+        let terminal = app.toast.deadline();
         app.drain_bg();
-        assert_eq!(app.toast.as_ref().map(|toast| toast.born), terminal);
+        assert_eq!(app.toast.deadline(), terminal);
         assert!(
             requests.try_recv().is_err(),
             "terminal event was reduced once"
@@ -3417,22 +2424,18 @@ mod tests {
     #[test]
     fn controlled_create_runs_the_draft_and_drains_one_snapshot() {
         let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
-        let mut doc = AutoCommit::new();
+        let mut record = ui::tilo_resource::Replica::<Containers>::new();
         for (field, text) in [
             (CreateField::Name, "web"),
             (CreateField::Image, "nginx:1"),
             (CreateField::Ports, "8080:80"),
         ] {
-            ui::tilo_actions::Action::apply(
-                &crate::resource::ContainersAction::EditCreate {
-                    field,
-                    edit: TextEdit::ReplaceText { text: text.into() },
-                },
-                &mut doc,
-            )
-            .unwrap();
+            record
+                .apply(ui::tilo_resource::Invoke::edit(&field.path().replace(text)).unwrap())
+                .unwrap();
         }
-        app.create_open = true;
+        let mut doc = record.doc().clone();
+        app.set_create_open(true);
         app.submit_create(&mut ui::widget::Edits::lend(&mut doc));
         let ControlledRuntimeRequest::Create(request) = requests.recv().unwrap() else {
             panic!("expected one controlled create request");
@@ -3506,18 +2509,44 @@ mod tests {
     }
 
     #[test]
-    fn pending_control_intent_keeps_exact_target_until_host_take() {
+    fn a_lifecycle_control_asks_the_host_for_its_exact_target() {
         let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
         app.apply_action(Action::Restart, "retained-target");
         let doc = AutoCommit::new();
         app.sync(&doc, &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
-        let intent =
-            ui::widget::controls::take_control_invocation(&mut app).expect("retained intent");
-        assert_eq!(intent.address.resource, "container:retained-target");
-        assert_eq!(intent.address.action, "restart");
-        assert!(intent.arguments.is_empty());
-        assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
-        assert!(requests.try_recv().is_err());
+        assert_eq!(
+            app.requested,
+            [(
+                "container:retained-target".to_owned(),
+                ContainersEffect::Restart {
+                    container: "retained-target".into()
+                }
+            )],
+            "one effect on exactly that container's row"
+        );
+        assert!(
+            requests.try_recv().is_err(),
+            "nothing reaches the engine before the host answers"
+        );
+    }
+
+    /// A controlled live engine selects and hydrates its one container.
+    #[test]
+    fn controlled_selection_asks_for_its_detail() {
+        let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
+        app.show_engine(ContainersApp::controlled_engine("controlled Podman", false));
+        app.select_container(Some("armed-container".into()));
+        app.hydrate_selection();
+        assert!(matches!(
+            requests.recv().unwrap(),
+            ControlledRuntimeRequest::SelectedDetails { target } if target == "armed-container"
+        ));
+        app.show_engine(ContainersApp::controlled_engine("controlled Podman", true));
+        app.hydrate_selection();
+        assert!(
+            requests.try_recv().is_err(),
+            "a hydrated container is not asked again"
+        );
     }
 }

@@ -1,5 +1,4 @@
 counter = Value: { $count }
-btn_1 = Click Me
 tab-modified = Unsaved changes
 standalone-search-title = Search
 standalone-history-title = History
@@ -23,6 +22,8 @@ standalone-history-restore-unavailable = This version can't be restored here.
 standalone-history-preview-resource = Document
 host-search = Search…
 host-search-placeholder = Search
+dropdown-search-placeholder = Search choices
+dropdown-search-description = Type to filter choices. Use the arrow keys to choose and Enter to select.
 host-undo = Undo
 host-undo-named = Undo { $change }
 host-redo = Redo
@@ -230,7 +231,6 @@ history-files-error-unavailable = File history is temporarily unavailable
 history-files-error-too-large = Historical preview exceeds the supported size
 history-files-error-no-content = This version has no recorded content reference
 history-files-outcome-applied = Restored revision { $revision } (intent { $intent }). Current converged file content is shown separately. Prior reference: observed revision.
-history-files-outcome-applied-legacy = Restored revision { $revision } (intent { $intent }). Current converged file content is shown separately. Prior reference: legacy content representative; prior authorship unknown.
 history-files-outcome-unchanged = Selected content already matches; no new revision or undo entry
 history-files-outcome-pending = Restore is pending. Check result or retry the same intent
 history-files-outcome-review = Live file changed. Refresh review; the selected old version remains pinned
@@ -239,8 +239,6 @@ history-files-outcome-pending-writes = Pending file edits must settle before res
 history-files-outcome-unsupported-owner = Unsupported checked content owner: { $mapping }
 history-files-outcome-unavailable = Restore acknowledgement is unavailable. Keep this intent and check its result
 history-files-outcome-invalid = Invalid checked restore request; no legacy fallback is available
-
-music-open-audio-file = Open audio file
 
 close-title = Close document
 close-unsaved = Save your changes before closing?
@@ -252,34 +250,6 @@ close-discard = Discard changes
 close-retry = Retry
 close-keep-editing = Keep Editing
 close-broker-disconnected = The save service disconnected. Your document is still open.
-terminal-find-scrollback = Find in scrollback
-terminal-target-host = This device (unconfined)
-terminal-target-default = Default environment
-terminal-target-legacy = legacy VM
-terminal-target-manage = Manage environments…
-terminal-run-on = Run on:
-terminal-run-on-this-device = This device
-terminal-host-awaiting-allow = Waiting for you to allow this device's own shell
-terminal-host-denied = This device's own shell was not allowed
-terminal-no-runtime-status = No environment can start here — press Enter for this device's own shell
-terminal-no-runtime-title = This terminal's environment cannot start on this device.
-terminal-no-runtime-host = Press Enter to open this device's own shell instead (unconfined; Tilo asks you to allow it first),
-terminal-no-runtime-picker = or choose another place from the target menu at the top of this tab.
-terminal-no-runtime-install = An environment needs an env-runtime image: update Tilo, or install one from the app store.
-terminal-env-title = Environments
-terminal-env-tools = Tools
-terminal-env-no-tools = No tools yet — run pkg install inside the environment
-terminal-env-grants = Folders
-terminal-env-no-grants = No folders granted yet — use Grant folder…, or run perm trust-dir inside the environment
-terminal-env-grant = Grant folder…
-terminal-env-grant-title = Choose a folder for this environment
-terminal-env-grant-accept = Grant
-terminal-env-read-only = read-only
-terminal-env-rename = Rename
-terminal-env-open = Open here
-terminal-env-create = Create
-terminal-env-name-placeholder = Name of a new environment
-terminal-env-unavailable = Environments are managed through Tilo's shell runtime, which is not running here.
 
 notes-image-edit = Edit image
 notes-image-done = Done
@@ -302,6 +272,7 @@ block-editor-code-exit-hint = Ctrl+Enter to leave code
 block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Copied
 block-editor-code-keyboard-hint = Ctrl+Enter: write below · Ctrl+Shift+Enter: write above · Tab / Shift+Tab: indent / outdent · Ctrl+Shift+C: copy code
+widget-breadcrumb = Path
 widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
@@ -341,22 +312,7 @@ permission-prompt-always = Always allow
 permission-prompt-deny = Deny
 permission-prompt-requested = { $capability } requested by { $app }
 
-# Relative times, as history and activity rows show them.
-relative-time-just-now = just now
-relative-time-minutes = { $count ->
-        [one] { $count } min ago
-       *[other] { $count } min ago
-    }
-relative-time-hours = { $count ->
-        [one] { $count } h ago
-       *[other] { $count } h ago
-    }
-relative-time-days = { $count ->
-        [one] { $count } d ago
-       *[other] { $count } d ago
-    }
-
-# Coarse relative times ("3 days ago"), as lists and cards show them.
+# Coarse relative times ("3 days ago"), as history rows, lists and cards show them.
 relative-ago-just-now = just now
 relative-ago-minutes = { $count } min ago
 relative-ago-hours = { $count } hr ago
@@ -379,7 +335,23 @@ relative-ago-years = { $count ->
     }
 
 # A software participant in history, presence and activity rows.
+history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
+participant-shortcut = { $name } · Shortcut
+participant-app = { $name } · App
+participant-bot = { $name } · Bot
+# An agent, a Shortcut or an app acting for a person.
+participant-acting-for = { $name }, for { $person }
+interaction-agent = Agent
+interaction-collaborator = Collaborator
+interaction-action-status = { $action } ({ $phase }) - { $name }
+interaction-inspecting = Inspecting
+interaction-applying = Applying
+interaction-waiting = Waiting
+interaction-committed = Committed
+interaction-failed = Failed
+interaction-cancelled = Cancelled
+interaction-progress = { $label } - { $done }/{ $total }
 participant-unknown-agent = Unknown agent
 
 # History as published actions, for the palette, scripts, agents and assistive technology.
@@ -421,11 +393,34 @@ palette-no-results = No results for “{ $query }”
 palette-no-results-hint = Try fewer words, or widen the scope
 
 # Calendar section headings in the workspace activity timeline.
-history-day-today = Today
-history-day-yesterday = Yesterday
+day-yesterday = Yesterday
+day-today = Today
+day-tomorrow = Tomorrow
 history-day-this-week = This week
 history-day-earlier = Earlier
 
+save-status-saving = Saving…
+save-status-saved = Saved
+save-status-failed = Save failed
+save-status-retry = Try again
+save-status-dismiss = Dismiss
+
+# Find bar: the band at the top of a document that finds in it.
+find-bar-name = Find
+find-bar-placeholder = Find
+find-bar-replace-placeholder = Replace with
+find-bar-match-case = Match case
+find-bar-whole-word = Whole word
+find-bar-regex = Regular expression
+find-bar-text = Text
+find-bar-hex = Hex
+find-bar-previous = Previous match
+find-bar-next = Next match
+find-bar-close = Close find
+find-bar-replace = Replace
+find-bar-replace-all = Replace all
+find-bar-position = { $current } of { $total }
+find-bar-no-matches = No matches
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks
@@ -438,3 +433,58 @@ block-editor-replace = Replace
 
 block-editor-replace-all = Replace all
 block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field
+
+dictation-record-once = Record once
+dictation-finish = Finish
+dictation-cancel = Cancel
+
+widget-sidebar-resize = Resize sidebar
+widget-inspector-resize = Resize inspector
+
+dictation-copy-transcript = Copy transcript
+dictation-discard-transcript = Discard transcript
+
+dropdown-no-matches = No matching choices
+host-native-history-unobserved = The original field’s editing history has not been confirmed.
+host-native-history-unconfirmed = This page’s history edit was not confirmed. Inspect the page before trying again.
+host-native-page-history-scope = Undo and redo apply to this page’s editing history. The latest change may be in another field.
+
+# Shared native screen topology canvas
+display-arrangement-name = Display arrangement
+display-arrangement-description = Drag a display to place it beside another. Each display's position menu does the same from the keyboard.
+display-arrangement-empty = No displays to arrange
+display-arrangement-item = Display { $number }: { $name }
+display-arrangement-item-primary = Display { $number }: { $name }, primary
+display-arrangement-item-position = { $width } × { $height } at { $x }, { $y }
+
+device-display-session-unavailable = The Tilo session is unavailable.
+device-display-request-pending = A display placement request is already pending.
+device-display-session-disconnected = The Tilo session disconnected.
+
+app-activate-window = Show this window
+app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
+
+# Shown instead of an app's view while its record does not read as the app expects.
+framework-unreadable = This cannot be opened
+display-arrangement-offline = Offline
+display-arrangement-excluded = Not in layout
+display-arrangement-offline-excluded = Offline · Not in layout
+display-arrangement-item-status = { $position }; { $status }
+display-arrangement-caption-status = { $status } · { $name }
+
+# Search: starting points in the empty applications palette
+search-apps-group-start-here = Start here
+search-apps-group-everyday = Everyday
+search-apps-group-work = Work
+search-apps-group-media = Media
+search-apps-group-system-tools = System tools
+search-apps-group-more-apps = More apps
+search-apps-group-developer-tools = Developer tools
+
+approved-check-reports-disabled = Phase reports unavailable
+
+author-bot-chip = BOT
+author-bot-details = { $bot } (bot, added by { $installer })
+author-bot-details-as = { $name }, via { $bot } (bot, added by { $installer })
+author-bot-linked = Linked to { $person } on Tilo
+author-persona-suffix = { $name } · { $service }

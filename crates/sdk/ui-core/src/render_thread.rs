@@ -26,6 +26,11 @@
     reason = "native host runner: the GPU render worker is a dedicated thread"
 )]
 
+mod cpu_raster;
+#[cfg(test)]
+mod deferred_pipelines_tests;
+mod native_gpu_trace;
+
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{
     Arc,
@@ -47,39 +52,6 @@ use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::util::RenderSurface;
 use vello::{FineDamageRect, RenderParams, Renderer, Scene};
-
-/// A hook run on the render thread *after* vello encodes the frame into its
-/// intermediate texture and *before* that texture is blit to the surface.
-/// It may composite extra GPU content into `target` — used by the browser
-/// to draw its zero-copy `WebView` texture (which vello cannot sample) over
-/// the transparent region the chrome leaves for it.
-pub trait FramePostProcess: Send {
-    fn post_render(
-        &mut self,
-        device: &vello::wgpu::Device,
-        queue: &vello::wgpu::Queue,
-        target: &vello::wgpu::TextureView,
-        width: u32,
-        height: u32,
-    );
-}
-
-static POST_PROCESSOR: std::sync::Mutex<Option<Box<dyn FramePostProcess>>> =
-    std::sync::Mutex::new(None);
-static POST_PROCESSOR_ACTIVE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Called by an app before its window comes up. A no-op for apps that
-/// don't set one, so the shared render path is unchanged for everyone else.
-pub fn set_frame_post_processor(p: Box<dyn FramePostProcess>) {
-    // A poisoned lock means some other caller already panicked while
-    // holding it; there's nothing safe left to do but skip installing the
-    // processor rather than taking this caller down too.
-    if let Ok(mut guard) = POST_PROCESSOR.lock() {
-        *guard = Some(p);
-        POST_PROCESSOR_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
-    }
-}
 
 /// Compile-time `Send` check: a vello/wgpu regression fails to compile rather
 /// than at thread spawn.
@@ -112,8 +84,15 @@ pub enum RenderRequest {
         /// Physical-pixel rectangles. Empty means the retained target is
         /// already current and only needs presenting.
         damage_regions: Vec<Rect>,
+        /// Copies within the retained target, in order, before the damage is
+        /// repainted: what a scroll keeps on screen (`crate::scroll_copy`).
+        /// A whole-surface frame ignores them.
+        scroll_copies: Vec<crate::scroll_copy::DeviceCopy>,
         /// Resize, relayout, structure, or untracked overlay invalidation.
         full_redraw: bool,
+        /// The backdrops the scene's floating surfaces were recorded over
+        /// (`crate::backdrop`), in physical pixels. Empty draws no blur.
+        backdrop: crate::backdrop::BackdropFrame,
         /// Called with the time this frame, or the first later one, is
         /// presented.
         on_present: Option<PresentHook>,
@@ -128,7 +107,17 @@ pub enum RenderRequest {
 /// Why the drawing surface was lost, kept for the window that stops on it.
 static SURFACE_LOSS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Set once this process recorded whether its first frame drew a backdrop.
+static FIRST_FRAME_BACKDROP_RECORDED: AtomicBool = AtomicBool::new(false);
+
 /// Record why the drawing surface was lost; the first reason is the cause.
+/// Whether a window on this adapter rasterizes its frames on the CPU
+/// (`cpu_raster`) and uploads the pixels, instead of running vello's compute
+/// pipelines on an emulated GPU. Vello then draws only backdrop blurs.
+pub(crate) fn rasterizes_on_cpu(adapter: &vello::wgpu::AdapterInfo) -> bool {
+    adapter.device_type == vello::wgpu::DeviceType::Cpu
+}
+
 fn note_surface_loss(reason: String) {
     let mut slot = SURFACE_LOSS
         .lock()
@@ -147,9 +136,9 @@ pub(crate) fn take_surface_loss() -> Option<String> {
 
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "only the native event-loop runner takes a renderer back to reuse"
+        reason = "only the native event-loop runner takes a renderer back to reuse; the worker still hands it back so GPU resources drop on the caller"
     )
 )]
 pub(crate) struct PreparedRenderer {
@@ -194,9 +183,9 @@ pub enum FrameOutcome {
 
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "the native event-loop runner alone reads these; the handle still owns the buffer pool and repaint flag the worker shares"
     )
 )]
 pub struct RenderThreadHandle {
@@ -213,9 +202,9 @@ pub struct RenderThreadHandle {
 /// One atomic reservation preserves both buffers across an aborted redraw.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "the native event-loop runner alone reads the pool; its receiver stays open so the worker can return buffers"
     )
 )]
 pub(crate) struct BufferPool<T> {
@@ -323,6 +312,8 @@ struct DamageCache {
     last_region_count: Option<usize>,
     geometric_capacity: bool,
     coarse_pool_high_water_pixels: u64,
+    /// Scratch space for scroll copies within the retained target.
+    copy_scratch: crate::scroll_copy::CopyScratch,
 }
 
 impl RenderThreadHandle {
@@ -359,21 +350,6 @@ impl RenderThreadHandle {
     }
 }
 
-/// Channel capacities are documented at the module level.
-///
-/// # Errors
-///
-/// Returns an error if the OS refuses to spawn the `ui-render` thread (e.g.
-/// the process is out of resources for new threads).
-pub fn spawn_render_thread(
-    render_cx: RenderContext,
-    surface: RenderSurface<'static>,
-    renderer: Renderer,
-    wake: Arc<dyn Fn() + Send + Sync>,
-) -> Result<RenderThreadHandle, String> {
-    spawn_render_thread_for_window(render_cx, surface, renderer, wake, None)
-}
-
 /// Same worker with the native window retained for standard Wayland feedback.
 #[allow(
     clippy::too_many_lines,
@@ -407,6 +383,10 @@ pub(crate) fn spawn_render_thread_for_window(
             let present_origin = present_dbg.then(crate::time::now);
             let mut frame_ix: u64 = 0;
             let presentation = crate::presentation_feedback::Observer::from_env(window);
+            let mut gpu_trace = presentation
+                .as_ref()
+                .and_then(crate::presentation_feedback::Observer::worker_id)
+                .and_then(native_gpu_trace::Observer::from_environment);
             let native_timing = presentation.as_ref().filter(|_| timing::enabled());
             if let Some(observer) = native_timing {
                 observer.log_native_config(&surface);
@@ -418,12 +398,29 @@ pub(crate) fn spawn_render_thread_for_window(
                 geometric_capacity,
                 ..DamageCache::default()
             };
+            let mut cpu_raster =
+                rasterizes_on_cpu(&render_cx.devices[surface.dev_id].adapter.get_info())
+                    .then(cpu_raster::CpuCanvas::new);
+            if cpu_raster.is_some() {
+                tracing::info!("tilo-ui: CPU fine rasterization selected for software adapter");
+            }
             let mut target_valid = false;
             let mut bump_recovery = bump_recovery::BumpRecovery::default();
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
             let mut keep_renderer = false;
+            // Built with the first frame that draws a floating surface over
+            // the blurred material.
+            let mut backdrop_blur: Option<crate::backdrop::BackdropBlur> = None;
+            let mut had_backdrop = false;
             loop {
-                let wait = bump_recovery.wait();
+                let gpu_poll = gpu_trace
+                    .as_ref()
+                    .is_some_and(native_gpu_trace::Observer::poll_pending);
+                let wait = match (bump_recovery.wait(), gpu_poll) {
+                    (Some(wait), true) => Some(wait.min(std::time::Duration::from_millis(5))),
+                    (None, true) => Some(std::time::Duration::from_millis(5)),
+                    (wait, false) => wait,
+                };
                 let (message, receive_bounds) =
                     timing::around(native_timing.is_some(), || match wait {
                         Some(timeout) => rx.recv_timeout(timeout),
@@ -434,6 +431,12 @@ pub(crate) fn spawn_render_thread_for_window(
                 let msg = match message {
                     Ok(msg) => msg,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if gpu_poll && let Some(observer) = gpu_trace.as_mut() {
+                            if let Some(device) = render_cx.devices.get(surface.dev_id) {
+                                let _ = device.device.poll(vello::wgpu::PollType::Poll);
+                            }
+                            observer.idle_poll(&mut renderer);
+                        }
                         if poll_bump_recovery(
                             &mut bump_recovery,
                             &mut renderer,
@@ -459,8 +462,10 @@ pub(crate) fn spawn_render_thread_for_window(
                     height,
                     base_color,
                     mut damage_regions,
+                    scroll_copies,
                     full_redraw,
                     cpu_frame_id,
+                    backdrop,
                 ) = match msg {
                     RenderRequest::Frame {
                         scene,
@@ -468,8 +473,10 @@ pub(crate) fn spawn_render_thread_for_window(
                         height,
                         base_color,
                         damage_regions,
+                        scroll_copies,
                         full_redraw,
                         cpu_frame_id,
+                        backdrop,
                         on_present,
                     } => {
                         present_hooks.extend(on_present);
@@ -479,8 +486,10 @@ pub(crate) fn spawn_render_thread_for_window(
                             height,
                             base_color,
                             damage_regions,
+                            scroll_copies,
                             full_redraw,
                             cpu_frame_id,
+                            backdrop,
                         )
                     }
                     RenderRequest::Shutdown {
@@ -490,6 +499,30 @@ pub(crate) fn spawn_render_thread_for_window(
                         break;
                     }
                 };
+                // A backdrop is drawn with vello even when the CPU rasterizes
+                // the rest. If the pipelines were left until after the first
+                // present (`create_native_renderer`), start them now on the
+                // init threads: this frame then waits on a parallel build
+                // instead of compiling each pipeline it dispatches alone.
+                if !backdrop.is_empty()
+                    && let Some(device) = render_cx.devices.get(surface.dev_id)
+                {
+                    renderer.start_deferred_pipelines(
+                        &device.device,
+                        crate::pipeline_cache::persist_unsaved,
+                    );
+                }
+                // The process's first frame, the primary window's (its
+                // worker starts before any other window's, as the startup
+                // marks assume): what the next launch's renderer preparation
+                // reads to decide when to build
+                // (`pipeline_cache::first_frame_backdrop`).
+                if frame_ix == 0
+                    && cpu_raster.is_some()
+                    && !FIRST_FRAME_BACKDROP_RECORDED.swap(true, Ordering::AcqRel)
+                {
+                    crate::pipeline_cache::first_frame_backdrop::record(!backdrop.is_empty());
+                }
                 let worker_timing = present_origin.map(|origin| (origin, crate::time::now()));
                 if let Some(observer) = native_timing {
                     timing::handoff::received(
@@ -555,20 +588,34 @@ pub(crate) fn spawn_render_thread_for_window(
                     // Any whole-surface frame answers a pending overflow repaint.
                     worker_full_repaint.store(false, Ordering::SeqCst);
                 }
+                if let Some(observer) = gpu_trace.as_mut() {
+                    observer.observe(&mut renderer, None);
+                }
                 let render_start = present_dbg.then(crate::time::now);
                 let render_host_start = native_timing.and_then(|_| timing::capture());
                 let outcome = render_one_frame(
                     &render_cx,
                     &surface,
-                    &mut renderer,
-                    &mut damage_cache,
+                    FrameRasterizers {
+                        renderer: &mut renderer,
+                        damage_cache: &mut damage_cache,
+                        backdrop_blur: &mut backdrop_blur,
+                        cpu: cpu_raster.as_mut(),
+                    },
                     FrameContent {
                         scene: &scene,
                         width,
                         height,
                         base_color,
                         damage_regions: &damage_regions,
-                        full_redraw,
+                        scroll_copies: &scroll_copies,
+                        // A blurred surface samples everything under it, and
+                        // the frame after one repaints what it covered.
+                        full_redraw: full_redraw
+                            || !target_valid
+                            || !backdrop.is_empty()
+                            || had_backdrop,
+                        backdrop: &backdrop,
                     },
                     FramePresentation {
                         frame_ix,
@@ -578,6 +625,9 @@ pub(crate) fn spawn_render_thread_for_window(
                     },
                 );
                 let render_host_end = native_timing.and_then(|_| timing::capture());
+                if let Some(observer) = gpu_trace.as_mut() {
+                    observer.frame(&mut renderer, frame_ix, cpu_frame_id);
+                }
                 timing::handoff::set(
                     &mut handoff,
                     timing::handoff::Stage::RenderEnd,
@@ -606,6 +656,8 @@ pub(crate) fn spawn_render_thread_for_window(
                 // length at typical refresh rates, nowhere near `u64::MAX`.
                 frame_ix = frame_ix.saturating_add(1);
                 target_valid = outcome == FrameOutcome::Presented;
+                had_backdrop = !backdrop.is_empty();
+                drop(backdrop);
                 if target_valid && !present_hooks.is_empty() {
                     let presented = crate::time::wall();
                     for hook in std::mem::take(&mut present_hooks) {
@@ -615,10 +667,19 @@ pub(crate) fn spawn_render_thread_for_window(
                 if target_valid && !first_present_recorded {
                     first_present_recorded = true;
                     tilo_startup_metrics::mark("first-frame-presented");
+                    // The pipelines the renderer deferred past this frame;
+                    // then the app's pipeline cache holds all it compiled.
+                    if let Some(device) = render_cx.devices.get(surface.dev_id) {
+                        renderer.start_deferred_pipelines(
+                            &device.device,
+                            crate::pipeline_cache::persist_unsaved,
+                        );
+                    }
                     tilo_startup_metrics::dump();
                     if let Some(line) = tilo_startup_metrics::summary_line(&startup_app_name()) {
                         crate::diag!("{line}");
                     }
+                    tilo_startup_metrics::close_startup();
                 }
 
                 // `Scene::reset` clears the encoding without freeing the
@@ -869,7 +930,9 @@ fn rasterize_damage(
         height,
         base_color,
         damage_regions,
+        scroll_copies,
         full_redraw,
+        ..
     } = *frame;
     let full_pixels = u64::from(width).saturating_mul(u64::from(height));
     let render_full = |renderer: &mut Renderer| {
@@ -900,6 +963,29 @@ fn rasterize_damage(
         damage_cache.coarse_pool_high_water_pixels = full_pixels;
         render_full(renderer)?;
         return Ok(full_pixels);
+    }
+    // What a scroll keeps on screen moves before the damage around it is
+    // repainted; the target holds the last presented frame.
+    if !scroll_copies.is_empty() {
+        let mut encoder = device.create_command_encoder(&vello::wgpu::CommandEncoderDescriptor {
+            label: Some("ui-native-scroll-copies"),
+        });
+        if !crate::scroll_copy::encode_copies(
+            device,
+            &mut encoder,
+            retained.texture,
+            &mut damage_cache.copy_scratch,
+            scroll_copies,
+        ) {
+            while let Some(target) = damage_cache.targets.pop() {
+                renderer.invalidate_texture_bindings(&target.view);
+            }
+            damage_cache.last_region_count = Some(0);
+            damage_cache.coarse_pool_high_water_pixels = full_pixels;
+            render_full(renderer)?;
+            return Ok(full_pixels);
+        }
+        queue.submit([encoder.finish()]);
     }
     if damage_regions.is_empty() {
         return Ok(0);
@@ -1150,7 +1236,9 @@ struct FrameContent<'a> {
     height: u32,
     base_color: Color,
     damage_regions: &'a [Rect],
+    scroll_copies: &'a [crate::scroll_copy::DeviceCopy],
     full_redraw: bool,
+    backdrop: &'a crate::backdrop::BackdropFrame,
 }
 
 /// How a presented frame is identified and observed.
@@ -1162,6 +1250,13 @@ struct FramePresentation<'a> {
     observer: Option<&'a crate::presentation_feedback::Observer>,
 }
 
+struct FrameRasterizers<'a> {
+    renderer: &'a mut Renderer,
+    damage_cache: &'a mut DamageCache,
+    backdrop_blur: &'a mut Option<crate::backdrop::BackdropBlur>,
+    cpu: Option<&'a mut cpu_raster::CpuCanvas>,
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one render-thread frame transaction; splitting it would separate acquire/encode/present state and timings"
@@ -1169,11 +1264,16 @@ struct FramePresentation<'a> {
 fn render_one_frame(
     render_cx: &RenderContext,
     surface: &RenderSurface<'static>,
-    renderer: &mut Renderer,
-    damage_cache: &mut DamageCache,
+    rasterizers: FrameRasterizers<'_>,
     frame: FrameContent<'_>,
     present: FramePresentation<'_>,
 ) -> FrameOutcome {
+    let FrameRasterizers {
+        renderer,
+        damage_cache,
+        backdrop_blur,
+        mut cpu,
+    } = rasterizers;
     let FrameContent {
         scene,
         width,
@@ -1248,20 +1348,57 @@ fn render_one_frame(
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-raster-start");
     }
-    let raster_pixels = match rasterize_damage(
-        (&device_handle.device, &device_handle.queue),
-        RetainedTarget {
-            texture: &surface.target_texture,
-            view: &surface.target_view,
-        },
-        renderer,
-        damage_cache,
-        &FrameContent {
-            full_redraw: frame.full_redraw
-                || POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire),
-            ..frame
-        },
-    ) {
+    // Floating surfaces over the blurred material: render, blur and
+    // substitute each one's backdrop before the frame that draws it.
+    let backdrop_stats = (!frame.backdrop.is_empty()).then(|| {
+        backdrop_blur
+            .get_or_insert_with(|| crate::backdrop::BackdropBlur::new(&device_handle.device))
+            .prepare(
+                &device_handle.device,
+                &device_handle.queue,
+                renderer,
+                frame.backdrop,
+                (width, height),
+                frame.base_color,
+            )
+    });
+    let raster_frame = FrameContent {
+        backdrop: &crate::backdrop::BackdropFrame::default(),
+        full_redraw: frame.full_redraw,
+        ..frame
+    };
+    let rasterized = if let Some(canvas) = cpu.as_mut().filter(|_| frame.backdrop.is_empty()) {
+        canvas.rasterize(&raster_frame).inspect(|_| {
+            canvas.upload(&device_handle.queue, &surface.target_texture);
+        })
+    } else {
+        // Backdrop substitutions currently belong to Vello's GPU renderer.
+        // Invalidate retained CPU pixels when that path writes the target.
+        if let Some(canvas) = cpu.as_mut() {
+            canvas.invalidate();
+        }
+        rasterize_damage(
+            (&device_handle.device, &device_handle.queue),
+            RetainedTarget {
+                texture: &surface.target_texture,
+                view: &surface.target_view,
+            },
+            renderer,
+            damage_cache,
+            &raster_frame,
+        )
+        .map_err(|error| error.to_string())
+    };
+    if let Some(blur) = backdrop_blur.as_mut() {
+        blur.release(renderer);
+    }
+    if present_dbg && let Some(stats) = backdrop_stats {
+        eprintln!(
+            "present-backdrop {frame_ix}: substituted={} skipped={} encode={}us",
+            stats.substituted, stats.skipped, stats.encode_us
+        );
+    }
+    let raster_pixels = match rasterized {
         Ok(pixels) => pixels,
         Err(err) => {
             // A programmer bug (bad encoding / ran out of GPU resources); log and
@@ -1273,21 +1410,6 @@ fn render_one_frame(
     };
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-raster-done");
-    }
-
-    // Composite any post-processor content (the browser's zero-copy WebView
-    // texture) into the intermediate texture before it goes to the surface.
-    if POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
-        && let Ok(mut guard) = POST_PROCESSOR.lock()
-        && let Some(p) = guard.as_mut()
-    {
-        p.post_render(
-            &device_handle.device,
-            &device_handle.queue,
-            &surface.target_view,
-            width,
-            height,
-        );
     }
 
     let encode_us = t_encode.map(|t| t.elapsed().as_secs_f64() * 1e6);
@@ -1356,6 +1478,30 @@ fn render_one_frame(
     let submit_us = t_submit.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_present = present_dbg.then(crate::time::now);
+    // The compositor repaints where the copies landed as well as the damage.
+    let presented: std::borrow::Cow<'_, [Rect]> = if frame.scroll_copies.is_empty() {
+        std::borrow::Cow::Borrowed(frame.damage_regions)
+    } else {
+        std::borrow::Cow::Owned(
+            frame
+                .damage_regions
+                .iter()
+                .copied()
+                .chain(
+                    frame
+                        .scroll_copies
+                        .iter()
+                        .map(crate::scroll_copy::DeviceCopy::destination_rect),
+                )
+                .collect(),
+        )
+    };
+    let damage = bounded_present_damage(width, height, &presented)
+        .filter(|_| !frame.full_redraw && frame.backdrop.is_empty());
+    tilo_presentation::set_next_present_damage(
+        &surface.surface,
+        damage.as_deref().unwrap_or_default(),
+    );
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-present-start");
     }
@@ -1421,6 +1567,111 @@ fn render_one_frame(
         tilo_startup_metrics::mark("render-worker-first-poll-done");
     }
     FrameOutcome::Presented
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite framebuffer bounds are rounded outward and clamped to their u32 extent before narrowing"
+)]
+fn bounded_present_damage(
+    width: u32,
+    height: u32,
+    damage: &[Rect],
+) -> Option<Vec<tilo_presentation::DamageRect>> {
+    if width == 0 || height == 0 || damage.is_empty() || damage.len() > 128 {
+        return None;
+    }
+    let mut regions = Vec::with_capacity(damage.len());
+    for rect in damage {
+        if !rect.is_finite() || rect.x1 < rect.x0 || rect.y1 < rect.y0 {
+            return None;
+        }
+        let x = rect.x0.floor().clamp(0.0, f64::from(width)) as u32;
+        let y = rect.y0.floor().clamp(0.0, f64::from(height)) as u32;
+        let x1 = rect.x1.ceil().clamp(0.0, f64::from(width)) as u32;
+        let y1 = rect.y1.ceil().clamp(0.0, f64::from(height)) as u32;
+        if x1 > x && y1 > y {
+            regions.push(Region {
+                x,
+                y,
+                width: x1.saturating_sub(x),
+                height: y1.saturating_sub(y),
+            });
+        }
+    }
+    if regions.is_empty() {
+        return None;
+    }
+    Some(
+        coalesce_regions(regions)
+            .into_iter()
+            .map(|rect| tilo_presentation::DamageRect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod present_damage_tests {
+    use super::{Rect, bounded_present_damage};
+
+    #[test]
+    fn presentation_hints_cover_every_changed_framebuffer_pixel() {
+        let changed = [
+            Rect::new(-4.5, 1.2, 5.1, 7.8),
+            Rect::new(10.7, 12.4, 23.8, 29.2),
+            Rect::new(22.6, 28.1, 35.0, 37.0),
+        ];
+        let hints = bounded_present_damage(32, 32, &changed).expect("bounded damage");
+        // Pixel-cell intersection, independently of the outward-rounding
+        // implementation: every pixel touched by any submitted damage must
+        // be included, including fractional edges and output clipping.
+        for y in 0_u32..32 {
+            for x in 0_u32..32 {
+                let cell = Rect::new(
+                    f64::from(x),
+                    f64::from(y),
+                    f64::from(x.saturating_add(1)),
+                    f64::from(y.saturating_add(1)),
+                );
+                if changed
+                    .iter()
+                    .any(|rect| !rect.intersect(cell).is_zero_area())
+                {
+                    assert!(
+                        hints.iter().any(|hint| {
+                            x >= hint.x
+                                && y >= hint.y
+                                && x < hint.x.saturating_add(hint.width)
+                                && y < hint.y.saturating_add(hint.height)
+                        }),
+                        "changed framebuffer pixel ({x}, {y}) omitted"
+                    );
+                }
+            }
+        }
+        assert!(hints.iter().all(|hint| {
+            hint.x.saturating_add(hint.width) <= 32 && hint.y.saturating_add(hint.height) <= 32
+        }));
+    }
+
+    #[test]
+    fn uncertain_damage_preserves_whole_surface_presentation() {
+        for damage in [
+            vec![],
+            vec![Rect::new(f64::NAN, 0.0, 1.0, 1.0)],
+            vec![Rect::new(0.0, 0.0, f64::INFINITY, 1.0)],
+            vec![Rect::new(3.0, 0.0, 2.0, 1.0)],
+            vec![Rect::new(0.0, 0.0, 1.0, 1.0); 129],
+        ] {
+            assert!(bounded_present_damage(32, 32, &damage).is_none());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1871,6 +2122,9 @@ mod retained_damage_tests {
         scene
     }
 
+    static EMPTY_BACKDROP: std::sync::OnceLock<crate::backdrop::BackdropFrame> =
+        std::sync::OnceLock::new();
+
     fn content<'a>(
         scene: &'a Scene,
         base_color: Color,
@@ -1878,13 +2132,197 @@ mod retained_damage_tests {
         full_redraw: bool,
     ) -> FrameContent<'a> {
         FrameContent {
+            backdrop: EMPTY_BACKDROP.get_or_init(crate::backdrop::BackdropFrame::default),
             scene,
             width: WIDTH,
             height: HEIGHT,
             base_color,
             damage_regions,
+            scroll_copies: &[],
             full_redraw,
         }
+    }
+
+    #[test]
+    fn cpu_raster_damage_upload_matches_full_target_without_vello_fine_raster() {
+        let gpu = crate::offscreen::shared_gpu().expect("GPU context for CPU upload oracle");
+        let (retained, _) = target(&gpu.device);
+        let (oracle, _) = target(&gpu.device);
+        let mut canvas = cpu_raster::CpuCanvas::new();
+        let first = [Item {
+            rect: Rect::new(30.0, 25.0, 75.0, 60.0),
+            color: [220, 60, 30],
+            round: false,
+        }];
+        let mut next = first;
+        next[0].rect = Rect::new(85.0, 25.0, 130.0, 60.0);
+        canvas
+            .rasterize(&content(&scene_of(&first), Color::TRANSPARENT, &[], true))
+            .expect("initial CPU frame");
+        canvas.upload(&gpu.queue, &retained);
+        canvas
+            .rasterize(&content(
+                &scene_of(&next),
+                Color::TRANSPARENT,
+                &[Rect::new(28.0, 23.0, 132.0, 62.0)],
+                false,
+            ))
+            .expect("damaged CPU frame");
+        canvas.upload(&gpu.queue, &retained);
+        let mut full = cpu_raster::CpuCanvas::new();
+        full.rasterize(&content(&scene_of(&next), Color::TRANSPARENT, &[], true))
+            .expect("full CPU oracle");
+        full.upload(&gpu.queue, &oracle);
+        assert_eq!(
+            read(&gpu.device, &gpu.queue, &retained),
+            read(&gpu.device, &gpu.queue, &oracle)
+        );
+    }
+
+    /// A list scrolled by a whole number of device pixels: rows over a flat
+    /// ground (what a scroll copies must translate), the second frame the
+    /// same rows `dy` higher and a new row where the scroll exposed the
+    /// bottom.
+    fn scrolled_rows(dy: f64) -> Scene {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(24, 26, 32),
+            None,
+            &Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
+        );
+        for row in 0..12_u8 {
+            let top = 6.5 + f64::from(row) * 21.25 - dy;
+            let shape = RoundedRect::from_rect(Rect::new(10.3, top, 300.7, top + 17.0), 5.0);
+            let shade = 60_u8.saturating_add(row.saturating_mul(14));
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(shade, 120, 200),
+                None,
+                &shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.25),
+                Affine::IDENTITY,
+                Color::from_rgb8(230, 230, 240),
+                None,
+                &shape,
+            );
+        }
+        scene
+    }
+
+    /// The copy moves the rows that stay on screen and the damage repaints
+    /// the strip the scroll exposed: what the native window presents equals
+    /// a full render of the scrolled scene, on the GPU path and on the CPU
+    /// path a software adapter takes.
+    #[test]
+    fn a_scroll_copy_then_its_damage_matches_a_full_render() {
+        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the copy oracle");
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let base_color = Color::from_rgb8(24, 26, 32);
+        let before = scrolled_rows(0.0);
+        let after = scrolled_rows(14.0);
+        let copies = [crate::scroll_copy::DeviceCopy {
+            x: 0,
+            y: 14,
+            width: WIDTH,
+            height: HEIGHT - 14,
+            dx: 0,
+            dy: -14,
+        }];
+        let exposed = [Rect::new(
+            0.0,
+            f64::from(HEIGHT - 14),
+            f64::from(WIDTH),
+            f64::from(HEIGHT),
+        )];
+        let frame = |scene, damage, copies, full_redraw| FrameContent {
+            scroll_copies: copies,
+            ..content(scene, base_color, damage, full_redraw)
+        };
+
+        let options = || vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::area_only(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        };
+        let mut renderer = Renderer::new(device, options()).unwrap();
+        let (retained_texture, retained_view) = target(device);
+        let retained = RetainedTarget {
+            texture: &retained_texture,
+            view: &retained_view,
+        };
+        let mut cache = DamageCache::default();
+        rasterize_damage(
+            (device, queue),
+            retained,
+            &mut renderer,
+            &mut cache,
+            &frame(&before, &[], &[], true),
+        )
+        .unwrap();
+        let rasterized = rasterize_damage(
+            (device, queue),
+            retained,
+            &mut renderer,
+            &mut cache,
+            &frame(&after, &exposed, &copies, false),
+        )
+        .unwrap();
+        assert!(
+            rasterized < u64::from(WIDTH) * u64::from(HEIGHT) / 2,
+            "the scroll frame rasterizes the exposed strip, not the surface ({rasterized} px)"
+        );
+        let mut oracle = Renderer::new(device, options()).unwrap();
+        let (oracle_texture, oracle_view) = target(device);
+        rasterize_damage(
+            (device, queue),
+            RetainedTarget {
+                texture: &oracle_texture,
+                view: &oracle_view,
+            },
+            &mut oracle,
+            &mut DamageCache::default(),
+            &frame(&after, &[], &[], true),
+        )
+        .unwrap();
+        let expected = read(device, queue, &oracle_texture);
+        assert_eq!(
+            crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+                &read(device, queue, &retained_texture),
+                &expected,
+            ),
+            0,
+            "GPU: the copied frame differs from a full render"
+        );
+
+        let mut canvas = cpu_raster::CpuCanvas::new();
+        let (cpu_texture, _) = target(device);
+        canvas
+            .rasterize(&frame(&before, &[], &[], true))
+            .expect("initial CPU frame");
+        canvas.upload(queue, &cpu_texture);
+        canvas
+            .rasterize(&frame(&after, &exposed, &copies, false))
+            .expect("scrolled CPU frame");
+        canvas.upload(queue, &cpu_texture);
+        let mut full = cpu_raster::CpuCanvas::new();
+        let (cpu_oracle, _) = target(device);
+        full.rasterize(&frame(&after, &[], &[], true))
+            .expect("full CPU oracle");
+        full.upload(queue, &cpu_oracle);
+        assert_eq!(
+            crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+                &read(device, queue, &cpu_texture),
+                &read(device, queue, &cpu_oracle),
+            ),
+            0,
+            "CPU: the copied frame differs from a full render"
+        );
     }
 
     /// A frame that overflowed Vello's bump buffers was presented without
@@ -2147,11 +2585,13 @@ mod retained_damage_tests {
             }
             let scene = scene_of(&items);
             let content = FrameContent {
+                backdrop: &crate::backdrop::BackdropFrame::default(),
                 scene: &scene,
                 width: WIDTH,
                 height: HEIGHT,
                 base_color,
                 damage_regions: &damage,
+                scroll_copies: &[],
                 full_redraw,
             };
             rasterize_damage(
@@ -2174,6 +2614,7 @@ mod retained_damage_tests {
                 &mut oracle,
                 &mut oracle_cache,
                 &FrameContent {
+                    backdrop: &crate::backdrop::BackdropFrame::default(),
                     full_redraw: true,
                     ..content
                 },

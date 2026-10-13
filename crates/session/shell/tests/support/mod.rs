@@ -7,15 +7,14 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+pub mod host;
 pub mod offscreen;
 pub mod snapshot;
+pub mod wayland;
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang
 /// reaches it, however loaded the test machine is.

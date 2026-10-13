@@ -9,13 +9,9 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
-use registry_types::{RegistryEntry, RegistryVersion};
+use registry_types::{RegistryEntry, RegistryVersion, TappArtifact};
 use serde::Serialize;
 use thiserror::Error;
-
-/// Largest web runtime (toolkit core plus its fonts and assets) review will
-/// download. Web apps still obey the application limit once decoded.
-pub const MAX_WEB_RUNTIME_TAPP_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Read size of the streaming copies that move payload objects to storage.
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
@@ -23,9 +19,6 @@ const COPY_BUFFER_BYTES: usize = 64 * 1024;
 #[derive(Clone, Copy, Debug)]
 pub struct InspectionPolicy {
     pub max_package_bytes: u64,
-    /// Download ceiling for web versions, which may be the shared toolkit
-    /// core rather than an app.
-    pub max_web_runtime_bytes: u64,
     /// Distinct payload bytes a `kind = "runtime"` package may reference.
     /// Its payload travels as objects beside a thin `.tapp`, each at most
     /// [`tilo_app_package::chunks::MAX_OBJECT_BYTES`].
@@ -40,7 +33,6 @@ impl Default for InspectionPolicy {
     fn default() -> Self {
         Self {
             max_package_bytes: app_registry::MAX_APP_TAPP_BYTES,
-            max_web_runtime_bytes: MAX_WEB_RUNTIME_TAPP_BYTES,
             max_runtime_payload_bytes: tilo_app_package::MAX_RUNTIME_PAYLOAD_BYTES,
             timeout: Duration::from_secs(30),
             allow_insecure_local: false,
@@ -49,14 +41,10 @@ impl Default for InspectionPolicy {
 }
 
 impl InspectionPolicy {
-    fn download_limit(&self, version: &RegistryVersion) -> u64 {
-        if version.target.is_web() {
-            self.max_package_bytes.max(self.max_web_runtime_bytes)
-        } else if registry_types::DESKTOP_PLATFORMS.contains(&version.target.platform.as_str()) {
+    fn download_limit(&self, tapp: &TappArtifact) -> u64 {
+        if registry_types::DESKTOP_PLATFORMS.contains(&tapp.target.platform.as_str()) {
             self.max_package_bytes
-                .max(tilo_app_package::platform_size_limit(
-                    &version.target.platform,
-                ))
+                .max(tilo_app_package::platform_size_limit(&tapp.target.platform))
         } else {
             self.max_package_bytes
         }
@@ -65,15 +53,11 @@ impl InspectionPolicy {
     /// Ceiling on the distinct payload bytes the package may reference:
     /// the application budget for an app, the runtime payload limit for a
     /// runtime, and the download limit for other kinds, which travel full.
-    fn payload_limit(
-        &self,
-        version: &RegistryVersion,
-        manifest: &tilo_app_package::Manifest,
-    ) -> u64 {
+    fn payload_limit(&self, tapp: &TappArtifact, manifest: &tilo_app_package::Manifest) -> u64 {
         if manifest.package.kind == tilo_app_package::Kind::Runtime {
             return self.max_runtime_payload_bytes;
         }
-        tilo_app_package::app_size_limit(manifest).unwrap_or_else(|| self.download_limit(version))
+        tilo_app_package::app_size_limit(manifest).unwrap_or_else(|| self.download_limit(tapp))
     }
 }
 
@@ -218,8 +202,9 @@ pub fn review_version_bytes(
     version: &RegistryVersion,
     policy: InspectionPolicy,
 ) -> Result<(InspectedVersion, Vec<u8>), BundleReviewError> {
-    let digest = version.tapp_blake3_hex.to_ascii_lowercase();
-    let uploaded = if version
+    let tapp = tapp_of(version)?;
+    let digest = tapp.tapp_blake3_hex.to_ascii_lowercase();
+    let uploaded = if tapp
         .tapp_url
         .ends_with(&format!("/artifacts/{digest}.tapp"))
     {
@@ -233,7 +218,7 @@ pub fn review_version_bytes(
         None
     };
     let bytes = if let Some(bytes) = uploaded {
-        check_size(version, bytes.len() as u64, policy.download_limit(version))?;
+        check_size(version, bytes.len() as u64, policy.download_limit(tapp))?;
         bytes
     } else {
         download_tapp(version, policy)?
@@ -260,11 +245,12 @@ pub fn inspect_stored_bytes(
     bytes: &[u8],
     fetch: Option<InspectionPolicy>,
 ) -> Result<InspectedVersion, BundleReviewError> {
+    let tapp = tapp_of(version)?;
     let meta = inspect_metadata(entry, version, bytes)?;
     let mut lengths = meta.tapp.carried.clone();
     let missing = meta.tapp.missing();
     let policy = fetch.unwrap_or_default();
-    let limit = policy.payload_limit(version, &meta.manifest);
+    let limit = policy.payload_limit(tapp, &meta.manifest);
     let storage_error = |error: crate::StorageError| BundleReviewError::Storage {
         version: version.version.clone(),
         reason: error.to_string(),
@@ -346,28 +332,29 @@ fn download_tapp(
     version: &RegistryVersion,
     policy: InspectionPolicy,
 ) -> Result<Vec<u8>, BundleReviewError> {
-    let limit = policy.download_limit(version);
-    if version.tapp_size_bytes > limit {
+    let tapp = tapp_of(version)?;
+    let limit = policy.download_limit(tapp);
+    if tapp.tapp_size_bytes > limit {
         return Err(BundleReviewError::TooLarge {
             version: version.version.clone(),
-            size: version.tapp_size_bytes,
+            size: tapp.tapp_size_bytes,
             limit,
         });
     }
-    let url = parse_url(&version.tapp_url, policy)?;
-    let fetch = |error: reqwest::Error| fetch_error(&version.tapp_url, &error);
+    let url = parse_url(&tapp.tapp_url, policy)?;
+    let fetch = |error: reqwest::Error| fetch_error(&tapp.tapp_url, &error);
     let mut response = safe_get(&url, policy)?.error_for_status().map_err(fetch)?;
     if let Some(length) = response.content_length() {
         check_size(version, length, limit)?;
     }
-    let read_limit = limit.min(version.tapp_size_bytes).saturating_add(1);
+    let read_limit = limit.min(tapp.tapp_size_bytes).saturating_add(1);
     let mut bytes = Vec::new();
     response
         .by_ref()
         .take(read_limit)
         .read_to_end(&mut bytes)
         .map_err(|error| BundleReviewError::Fetch {
-            url: version.tapp_url.clone(),
+            url: tapp.tapp_url.clone(),
             reason: error.to_string(),
         })?;
     check_size(version, bytes.len() as u64, limit)?;
@@ -460,10 +447,12 @@ fn fetch_payload_blob(
     policy: InspectionPolicy,
     (spent, limit): (u64, u64),
 ) -> Result<u64, BundleReviewError> {
+    let tapp = tapp_of(version)?;
     let objects = Objects {
         storage,
         version,
-        base: parse_url(&version.tapp_url, policy)?,
+        tapp,
+        base: parse_url(&tapp.tapp_url, policy)?,
         policy,
         spent,
         limit,
@@ -478,6 +467,7 @@ fn fetch_payload_blob(
 struct Objects<'a> {
     storage: &'a crate::Storage,
     version: &'a RegistryVersion,
+    tapp: &'a TappArtifact,
     base: reqwest::Url,
     policy: InspectionPolicy,
     spent: u64,
@@ -490,7 +480,7 @@ impl Objects<'_> {
             .base
             .join(name)
             .map_err(|error| BundleReviewError::Url {
-                url: self.version.tapp_url.clone(),
+                url: self.tapp.tapp_url.clone(),
                 reason: error.to_string(),
             })?;
         parse_url(url.as_str(), self.policy)
@@ -694,6 +684,7 @@ fn fetch_error(url: &str, error: &reqwest::Error) -> BundleReviewError {
 }
 
 fn check_size(version: &RegistryVersion, actual: u64, limit: u64) -> Result<(), BundleReviewError> {
+    let tapp = tapp_of(version)?;
     if actual > limit {
         return Err(BundleReviewError::TooLarge {
             version: version.version.clone(),
@@ -701,10 +692,10 @@ fn check_size(version: &RegistryVersion, actual: u64, limit: u64) -> Result<(), 
             limit,
         });
     }
-    if actual != version.tapp_size_bytes {
+    if actual != tapp.tapp_size_bytes {
         return Err(BundleReviewError::SizeMismatch {
             version: version.version.clone(),
-            expected: version.tapp_size_bytes,
+            expected: tapp.tapp_size_bytes,
             actual,
         });
     }
@@ -758,9 +749,10 @@ fn inspect_metadata(
     version: &RegistryVersion,
     bytes: &[u8],
 ) -> Result<app_registry::TappMeta, BundleReviewError> {
+    let tapp = tapp_of(version)?;
     check_size(version, bytes.len() as u64, u64::MAX)?;
     let actual_hash = blake3::hash(bytes).to_hex().to_string();
-    if !version.tapp_blake3_hex.eq_ignore_ascii_case(&actual_hash) {
+    if !tapp.tapp_blake3_hex.eq_ignore_ascii_case(&actual_hash) {
         return Err(BundleReviewError::ContentHashMismatch {
             version: version.version.clone(),
         });
@@ -770,7 +762,7 @@ fn inspect_metadata(
             version: version.version.clone(),
             reason,
         })?;
-    let expected = format!("tapp:{}", version.tapp_root_hash_hex)
+    let expected = format!("tapp:{}", tapp.tapp_root_hash_hex)
         .parse()
         .map_err(|error| BundleReviewError::PackageId {
             version: version.version.clone(),
@@ -797,9 +789,8 @@ fn inspect_metadata(
             expected_version: version.version.clone(),
         });
     }
-    match version.target.platform.as_str() {
+    match tapp.target.platform.as_str() {
         registry_types::TILO_OS_PLATFORM => check_native_target(version, &meta.manifest)?,
-        registry_types::WEB_PLATFORM => check_web_target(version, &meta.manifest, bytes.len())?,
         registry_types::LINUX_PLATFORM
         | registry_types::WINDOWS_PLATFORM
         | registry_types::MACOS_PLATFORM
@@ -815,24 +806,6 @@ fn inspect_metadata(
     Ok(meta)
 }
 
-/// The signed manifest of a web build records exactly the target the version
-/// binds; an app build additionally obeys the application size limit.
-fn check_web_target(
-    version: &RegistryVersion,
-    manifest: &tilo_app_package::Manifest,
-    size: usize,
-) -> Result<(), BundleReviewError> {
-    check_signed_target(version, manifest)?;
-    if !tilo_app_package::tapp_size_allowed(manifest.package.kind, size as u64) {
-        return Err(BundleReviewError::TooLarge {
-            version: version.version.clone(),
-            size: size as u64,
-            limit: tilo_app_package::MAX_APP_TAPP_BYTES,
-        });
-    }
-    Ok(())
-}
-
 /// A Linux, Windows, macOS or Android build is a self-contained executable:
 /// its signed `[target]` names the version exactly, under the desktop size
 /// limit.
@@ -841,8 +814,9 @@ fn check_desktop_target(
     manifest: &tilo_app_package::Manifest,
     size: usize,
 ) -> Result<(), BundleReviewError> {
+    let tapp = tapp_of(version)?;
     check_signed_target(version, manifest)?;
-    let limit = tilo_app_package::platform_size_limit(&version.target.platform);
+    let limit = tilo_app_package::platform_size_limit(&tapp.target.platform);
     if size as u64 > limit {
         return Err(BundleReviewError::TooLarge {
             version: version.version.clone(),
@@ -858,7 +832,8 @@ fn check_signed_target(
     version: &RegistryVersion,
     manifest: &tilo_app_package::Manifest,
 ) -> Result<(), BundleReviewError> {
-    let target = &version.target;
+    let tapp = tapp_of(version)?;
+    let target = &tapp.target;
     if target.validate().is_err() {
         return Err(BundleReviewError::UnsupportedTarget {
             version: version.version.clone(),
@@ -883,7 +858,8 @@ fn check_native_target(
     version: &RegistryVersion,
     manifest: &tilo_app_package::Manifest,
 ) -> Result<(), BundleReviewError> {
-    let target = &version.target;
+    let tapp = tapp_of(version)?;
+    let target = &tapp.target;
     if manifest.target.is_some() {
         return Err(BundleReviewError::TargetMismatch {
             version: version.version.clone(),
@@ -965,6 +941,16 @@ fn public_v6(ip: Ipv6Addr) -> bool {
         || (segments[0] == 0x2001 && segments[1] == 0x0db8))
 }
 
+/// The `.tapp` a version binds. Only a tapp is a package to review; a bot
+/// program goes through the bot checks instead.
+fn tapp_of(version: &RegistryVersion) -> Result<&TappArtifact, BundleReviewError> {
+    version
+        .tapp()
+        .ok_or_else(|| BundleReviewError::UnsupportedTarget {
+            version: version.version.clone(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -979,7 +965,8 @@ mod tests {
             assert_eq!(policy.max_package_bytes, app_registry::MAX_APP_TAPP_BYTES);
 
             let mut entry = sample_entry("https://example.com/app.tapp");
-            entry.versions[0].tapp_size_bytes = app_registry::MAX_APP_TAPP_BYTES + 1;
+            entry.versions[0].tapp_mut().unwrap().tapp_size_bytes =
+                app_registry::MAX_APP_TAPP_BYTES + 1;
             assert!(matches!(
                 inspect_entry(&entry, policy),
                 Err(BundleReviewError::TooLarge { limit, .. })
@@ -993,12 +980,13 @@ mod tests {
                 inspect_entry(&entry, InspectionPolicy::default()),
                 Err(BundleReviewError::Url { .. })
             ));
-            entry.versions[0].tapp_url = "https://user@example.com/app.tapp".into();
+            entry.versions[0].tapp_mut().unwrap().tapp_url =
+                "https://user@example.com/app.tapp".into();
             assert!(matches!(
                 inspect_entry(&entry, InspectionPolicy::default()),
                 Err(BundleReviewError::Url { .. })
             ));
-            entry.versions[0].tapp_url = "https://127.0.0.1/app.tapp".into();
+            entry.versions[0].tapp_mut().unwrap().tapp_url = "https://127.0.0.1/app.tapp".into();
             assert!(matches!(
                 inspect_entry(&entry, InspectionPolicy::default()),
                 Err(BundleReviewError::PrivateAddress(_))
@@ -1023,9 +1011,11 @@ mod tests {
             let (bytes, package_id) = signed_tapp(&identity);
             let mut entry = sample_entry("https://example.com/app.tapp");
             entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
-            entry.versions[0].tapp_root_hash_hex = hex::encode(package_id.as_bytes());
-            entry.versions[0].tapp_size_bytes = bytes.len() as u64;
-            entry.versions[0].tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+            entry.versions[0].tapp_mut().unwrap().tapp_root_hash_hex =
+                hex::encode(package_id.as_bytes());
+            entry.versions[0].tapp_mut().unwrap().tapp_size_bytes = bytes.len() as u64;
+            entry.versions[0].tapp_mut().unwrap().tapp_blake3_hex =
+                blake3::hash(&bytes).to_hex().to_string();
 
             let inspected = inspect_bytes(&entry, &entry.versions[0], &bytes).unwrap();
             assert_eq!(inspected.version, "1.0.0");
@@ -1033,7 +1023,7 @@ mod tests {
             assert_eq!(inspected.sandbox["landlock"], "strict");
 
             let mut wrong_size = entry.versions[0].clone();
-            wrong_size.tapp_size_bytes += 1;
+            wrong_size.tapp_mut().unwrap().tapp_size_bytes += 1;
             assert!(matches!(
                 inspect_bytes(&entry, &wrong_size, &bytes),
                 Err(BundleReviewError::SizeMismatch { .. })
@@ -1060,21 +1050,21 @@ mod tests {
             let mut entry = sample_entry("https://example.com/arm.tapp");
             entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
             let version = &mut entry.versions[0];
-            version.tapp_root_hash_hex = hex::encode(package_id.as_bytes());
-            version.tapp_size_bytes = bytes.len() as u64;
-            version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
-            let target = &mut version.target;
+            version.tapp_mut().unwrap().tapp_root_hash_hex = hex::encode(package_id.as_bytes());
+            version.tapp_mut().unwrap().tapp_size_bytes = bytes.len() as u64;
+            version.tapp_mut().unwrap().tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+            let target = &mut version.tapp_mut().unwrap().target;
             target.architecture = "aarch64".into();
             target.isa = "aarch64-v8.2".into();
             assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
-            entry.versions[0].target.isa = "aarch64-v9".into();
+            entry.versions[0].tapp_mut().unwrap().target.isa = "aarch64-v9".into();
             assert!(matches!(
                 inspect_bytes(&entry, &entry.versions[0], &bytes),
                 Err(BundleReviewError::TargetMismatch { .. })
             ));
             // The interfaces a version claims are the manifest's, exactly.
-            entry.versions[0].target.isa = "aarch64-v8.2".into();
-            entry.versions[0].target.interfaces = vec!["system@1".into()];
+            entry.versions[0].tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
+            entry.versions[0].tapp_mut().unwrap().target.interfaces = vec!["system@1".into()];
             assert!(matches!(
                 inspect_bytes(&entry, &entry.versions[0], &bytes),
                 Err(BundleReviewError::TargetMismatch { .. })
@@ -1091,108 +1081,22 @@ mod tests {
             let mut entry = sample_entry("https://example.com/arm.tapp");
             entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
             let version = &mut entry.versions[0];
-            version.tapp_root_hash_hex = hex::encode(package_id.as_bytes());
-            version.tapp_size_bytes = bytes.len() as u64;
-            version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
-            version.target.architecture = "aarch64".into();
-            version.target.isa = "aarch64-v8.2".into();
+            version.tapp_mut().unwrap().tapp_root_hash_hex = hex::encode(package_id.as_bytes());
+            version.tapp_mut().unwrap().tapp_size_bytes = bytes.len() as u64;
+            version.tapp_mut().unwrap().tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+            version.tapp_mut().unwrap().target.architecture = "aarch64".into();
+            version.tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
             // Recorded before versions carried interfaces: none recorded.
             assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
-            entry.versions[0].target.interfaces = vec!["system@1".into()];
+            entry.versions[0].tapp_mut().unwrap().target.interfaces = vec!["system@1".into()];
             assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
             // Recorded, it must be exactly the manifest's.
-            entry.versions[0].target.interfaces = vec!["system@2".into()];
+            entry.versions[0].tapp_mut().unwrap().target.interfaces = vec!["system@2".into()];
             assert!(matches!(
                 inspect_bytes(&entry, &entry.versions[0], &bytes),
                 Err(BundleReviewError::TargetMismatch { .. })
             ));
         }
-    }
-
-    #[test]
-    fn web_artifact_inspection_binds_the_signed_web_target() {
-        let identity = SigningIdentity::generate();
-        let (native, _) = signed_tapp(&identity);
-        let authored = app_registry::tapp::load(&native).unwrap().manifest;
-        let manifest = tilo_app_package::web::web_manifest(
-            &authored,
-            "editor.wasm",
-            &tilo_app_package::web::WasmModuleInfo {
-                runtime_abi: Some(
-                    "tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into(),
-                ),
-                features: Some(vec!["sign-ext".into()]),
-            },
-            &tilo_app_package::web::WebBuildOptions::default(),
-        );
-        // The fixture declares no runtime; a web app needs one.
-        assert!(manifest.is_err());
-        let mut authored = authored;
-        authored.package.runtime = Some("tilo-runtime/2026.07".into());
-        let manifest = tilo_app_package::web::web_manifest(
-            &authored,
-            "editor.wasm",
-            &tilo_app_package::web::WasmModuleInfo {
-                runtime_abi: Some(
-                    "tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into(),
-                ),
-                features: Some(vec!["sign-ext".into()]),
-            },
-            &tilo_app_package::web::WebBuildOptions::default(),
-        )
-        .unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("editor.wasm"), b"\0asm\x01\0\0\0").unwrap();
-        let packed = pack(dir.path(), &manifest, &identity).unwrap();
-        let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
-        let signed = manifest.target.unwrap();
-
-        let mut entry = sample_entry("https://example.com/editor-web.tapp");
-        entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
-        let version = &mut entry.versions[0];
-        version.tapp_root_hash_hex = hex::encode(packed.id().as_bytes());
-        version.tapp_size_bytes = bytes.len() as u64;
-        version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
-        version.target = registry_types::RegistryTarget {
-            platform: signed.platform,
-            architecture: signed.architecture,
-            isa: signed.isa,
-            runtime: Some(signed.runtime),
-            interfaces: Vec::new(),
-        };
-        assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
-
-        let mut other_abi = entry.versions[0].clone();
-        other_abi.target.runtime =
-            Some("tilo-runtime/2026.07+wasm.ffeeddccbbaa99887766554433221100".into());
-        assert!(matches!(
-            inspect_bytes(&entry, &other_abi, &bytes),
-            Err(BundleReviewError::TargetMismatch { .. })
-        ));
-        let mut as_native = entry.versions[0].clone();
-        as_native.target = registry_types::RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: "x86_64".into(),
-            isa: "x86_64-v3".into(),
-            runtime: Some("tilo-runtime/2026.07".into()),
-            interfaces: Vec::new(),
-        };
-        assert!(matches!(
-            inspect_bytes(&entry, &as_native, &bytes),
-            Err(BundleReviewError::TargetMismatch { .. })
-        ));
-
-        let policy = InspectionPolicy::default();
-        let mut runtime_sized = entry.versions[0].clone();
-        runtime_sized.tapp_size_bytes = app_registry::MAX_APP_TAPP_BYTES + 1;
-        assert_eq!(
-            policy.download_limit(&runtime_sized),
-            MAX_WEB_RUNTIME_TAPP_BYTES
-        );
-        assert_eq!(
-            policy.download_limit(&sample_entry("https://example.com/a.tapp").versions[0]),
-            app_registry::MAX_APP_TAPP_BYTES
-        );
     }
 
     #[test]
@@ -1218,10 +1122,10 @@ mod tests {
         let mut entry = sample_entry("https://example.com/editor-macos.tapp");
         entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
         let version = &mut entry.versions[0];
-        version.tapp_root_hash_hex = hex::encode(packed.id().as_bytes());
-        version.tapp_size_bytes = bytes.len() as u64;
-        version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
-        version.target = registry_types::RegistryTarget {
+        version.tapp_mut().unwrap().tapp_root_hash_hex = hex::encode(packed.id().as_bytes());
+        version.tapp_mut().unwrap().tapp_size_bytes = bytes.len() as u64;
+        version.tapp_mut().unwrap().tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+        version.tapp_mut().unwrap().target = registry_types::RegistryTarget {
             platform: registry_types::MACOS_PLATFORM.into(),
             architecture: "aarch64".into(),
             isa: "aarch64".into(),
@@ -1236,27 +1140,27 @@ mod tests {
             registry_types::ANDROID_PLATFORM,
         ] {
             let mut relabelled = entry.versions[0].clone();
-            relabelled.target.platform = other.into();
+            relabelled.tapp_mut().unwrap().target.platform = other.into();
             assert!(matches!(
                 inspect_bytes(&entry, &relabelled, &bytes),
                 Err(BundleReviewError::TargetMismatch { .. })
             ));
         }
         let mut as_intel = entry.versions[0].clone();
-        as_intel.target.architecture = "x86_64".into();
-        as_intel.target.isa = "x86_64".into();
+        as_intel.tapp_mut().unwrap().target.architecture = "x86_64".into();
+        as_intel.tapp_mut().unwrap().target.isa = "x86_64".into();
         assert!(matches!(
             inspect_bytes(&entry, &as_intel, &bytes),
             Err(BundleReviewError::TargetMismatch { .. })
         ));
         let mut as_tilo_os = entry.versions[0].clone();
-        as_tilo_os.target.platform = registry_types::TILO_OS_PLATFORM.into();
-        as_tilo_os.target.isa = "aarch64-v8.2".into();
+        as_tilo_os.tapp_mut().unwrap().target.platform = registry_types::TILO_OS_PLATFORM.into();
+        as_tilo_os.tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
         assert!(inspect_bytes(&entry, &as_tilo_os, &bytes).is_err());
 
         let policy = InspectionPolicy::default();
         assert_eq!(
-            policy.download_limit(&entry.versions[0]),
+            policy.download_limit(entry.versions[0].tapp().unwrap()),
             tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES.max(policy.max_package_bytes)
         );
     }
@@ -1283,10 +1187,10 @@ mod tests {
         let mut entry = sample_entry("https://example.com/editor-android.tapp");
         entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
         let version = &mut entry.versions[0];
-        version.tapp_root_hash_hex = hex::encode(packed.id().as_bytes());
-        version.tapp_size_bytes = bytes.len() as u64;
-        version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
-        version.target = registry_types::RegistryTarget {
+        version.tapp_mut().unwrap().tapp_root_hash_hex = hex::encode(packed.id().as_bytes());
+        version.tapp_mut().unwrap().tapp_size_bytes = bytes.len() as u64;
+        version.tapp_mut().unwrap().tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+        version.tapp_mut().unwrap().target = registry_types::RegistryTarget {
             platform: registry_types::ANDROID_PLATFORM.into(),
             architecture: "aarch64".into(),
             isa: "aarch64".into(),
@@ -1300,27 +1204,27 @@ mod tests {
             registry_types::MACOS_PLATFORM,
         ] {
             let mut relabelled = entry.versions[0].clone();
-            relabelled.target.platform = other.into();
+            relabelled.tapp_mut().unwrap().target.platform = other.into();
             assert!(matches!(
                 inspect_bytes(&entry, &relabelled, &bytes),
                 Err(BundleReviewError::TargetMismatch { .. })
             ));
         }
         let mut as_x86 = entry.versions[0].clone();
-        as_x86.target.architecture = "x86_64".into();
-        as_x86.target.isa = "x86_64".into();
+        as_x86.tapp_mut().unwrap().target.architecture = "x86_64".into();
+        as_x86.tapp_mut().unwrap().target.isa = "x86_64".into();
         assert!(matches!(
             inspect_bytes(&entry, &as_x86, &bytes),
             Err(BundleReviewError::TargetMismatch { .. })
         ));
         let mut as_tilo_os = entry.versions[0].clone();
-        as_tilo_os.target.platform = registry_types::TILO_OS_PLATFORM.into();
-        as_tilo_os.target.isa = "aarch64-v8.2".into();
+        as_tilo_os.tapp_mut().unwrap().target.platform = registry_types::TILO_OS_PLATFORM.into();
+        as_tilo_os.tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
         assert!(inspect_bytes(&entry, &as_tilo_os, &bytes).is_err());
 
         let policy = InspectionPolicy::default();
         assert_eq!(
-            policy.download_limit(&entry.versions[0]),
+            policy.download_limit(entry.versions[0].tapp().unwrap()),
             tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES.max(policy.max_package_bytes)
         );
     }
@@ -1385,6 +1289,7 @@ type = "gui"
     fn sample_entry(url: &str) -> RegistryEntry {
         RegistryEntry {
             package_id: "so.tilo.editor".into(),
+            kind: registry_types::EntryKind::App,
             name: "Editor".into(),
             description: "Text editor".into(),
             tagline: "Edit together".into(),
@@ -1399,18 +1304,20 @@ type = "gui"
             publisher_pubkey_hex: "aa".repeat(32),
             versions: vec![RegistryVersion {
                 version: "1.0.0".into(),
-                tapp_url: url.into(),
-                tapp_root_hash_hex: "bb".repeat(32),
-                tapp_size_bytes: 10,
                 released_at_unix: 1,
-                tapp_blake3_hex: "cc".repeat(32),
-                target: registry_types::RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: url.into(),
+                    tapp_root_hash_hex: "bb".repeat(32),
+                    tapp_size_bytes: 10,
+                    tapp_blake3_hex: "cc".repeat(32),
+                    target: registry_types::RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),

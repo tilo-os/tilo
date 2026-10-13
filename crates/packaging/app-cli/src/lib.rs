@@ -23,11 +23,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -36,9 +32,9 @@
 /// Release selection shared by catalogue clients and the verified installer.
 pub use tilo_app_package::version::{ReleaseChannel, compare as compare_versions};
 
+pub mod bots;
 pub mod client;
 pub mod config;
-pub mod dev_env;
 pub mod install;
 
 use serde::{Deserialize, Serialize};
@@ -167,11 +163,6 @@ fn os_interfaces() -> Option<&'static registry_types::ProvidedInterfaces> {
         .as_ref()
 }
 
-/// Whether this OS serves every system interface `version` requires.
-pub fn serves_interfaces(version: &registry_types::RegistryVersion) -> bool {
-    os_interfaces().is_none_or(|provided| provided.meets_wire(&version.target.interfaces))
-}
-
 /// [`installable_versions`] on an OS serving `provided`: a version that
 /// requires an interface version the OS does not serve is not offered, so
 /// an update never takes an app past what its system can run.
@@ -181,12 +172,14 @@ fn installable_versions_on<'a>(
     provided: Option<&'a registry_types::ProvidedInterfaces>,
 ) -> impl Iterator<Item = &'a registry_types::RegistryVersion> {
     let runtime_package = registry_types::is_runtime_package_id(&entry.package_id);
+    // Only versions that bind a tapp: a bot entry's program is never an app.
     entry.versions.iter().filter(move |version| {
-        !version.tapp_url.trim().is_empty()
-            && target_supported(version)
-            && (runtime_package || runtime_named(version))
-            && channel.accepts(&version.version)
-            && provided.is_none_or(|provided| provided.meets_wire(&version.target.interfaces))
+        version.tapp().is_some_and(|tapp| {
+            !tapp.tapp_url.trim().is_empty()
+                && target_supported(tapp)
+                && (runtime_package || runtime_named(tapp))
+                && provided.is_none_or(|provided| provided.meets_wire(&tapp.target.interfaces))
+        }) && channel.accepts(&version.version)
     })
 }
 
@@ -195,8 +188,8 @@ fn installable_versions_on<'a>(
 /// ABI, so a version that names only a release (`tilo-runtime/2026.07`)
 /// cannot be matched to a runtime this device can provide; installing it is
 /// how every system app once stopped starting.
-fn runtime_named(version: &registry_types::RegistryVersion) -> bool {
-    version.target.runtime.is_none() || version.target.native_runtime().is_some()
+fn runtime_named(tapp: &registry_types::TappArtifact) -> bool {
+    tapp.target.runtime.is_none() || tapp.target.native_runtime().is_some()
 }
 
 /// Whether the runtime `runtime` (`<name>/<version>`) is installed where the
@@ -205,6 +198,47 @@ pub fn runtime_installed(runtime: &str) -> bool {
     runtime
         .split_once('/')
         .is_some_and(|(_, version)| runtime_bundle::resolve_bundle_path(version).is_some())
+}
+
+/// The version of an app to install when it is opened for the first time:
+/// `newest` when it runs on a runtime this device already has, else the
+/// newest offered version that does, else `newest`.
+///
+/// A thin app runs only against the exact runtime build it names, and the
+/// runtime is rebuilt with every release, so the newest version usually names
+/// a runtime no device has yet: opening it would first download the whole
+/// runtime (hundreds of megabytes) for an app of a few. Every candidate comes
+/// from the same publisher-signed entry and is installed through the same
+/// verified pipeline; this chooses among signed versions, it does not relax
+/// which runtime a version may run on. An update (`app update`) still moves
+/// the app to the newest version and its runtime.
+#[must_use]
+pub fn first_open_offer(newest: &CatalogueApp) -> CatalogueApp {
+    if newest.runtime.as_deref().is_none_or(runtime_installed) {
+        return newest.clone();
+    }
+    // Without the version index the newest version is still a correct
+    // answer, only a slower one.
+    version_offers(&newest.package_id, &newest.registry)
+        .ok()
+        .and_then(|offers| {
+            prefer_installed_runtime(&offers, &newest.version, runtime_installed).cloned()
+        })
+        .unwrap_or_else(|| newest.clone())
+}
+
+/// The newest of `offers`, no newer than `ceiling`, that needs no runtime or
+/// one `installed` reports present.
+pub fn prefer_installed_runtime<'a>(
+    offers: impl IntoIterator<Item = &'a CatalogueApp>,
+    ceiling: &str,
+    installed: impl Fn(&str) -> bool,
+) -> Option<&'a CatalogueApp> {
+    offers
+        .into_iter()
+        .filter(|offer| tilo_app_package::version::compare(&offer.version, ceiling).is_le())
+        .filter(|offer| offer.runtime.as_deref().is_none_or(&installed))
+        .max_by(|a, b| tilo_app_package::version::compare(&a.version, &b.version))
 }
 
 /// The registry `registry_name`'s offer of the runtime `runtime`: a version
@@ -232,7 +266,11 @@ pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<Catalo
         let verified =
             client::fetch_all_versions(registry, &package_id).map_err(|error| error.to_string())?;
         if let Some(offer) = installable_versions(&verified.entry, registry.channel)
-            .filter(|version| version.target.runtime.as_deref() == Some(runtime))
+            .filter(|version| {
+                version
+                    .target()
+                    .is_some_and(|target| target.runtime.as_deref() == Some(runtime))
+            })
             .max_by(|a, b| tilo_app_package::version::compare(&a.version, &b.version))
             .and_then(|version| app_for_version(&verified, version, registry_name))
         {
@@ -251,7 +289,8 @@ fn app_for_version(
     if !v.trust.is_offerable() {
         return None;
     }
-    let target = &version.target;
+    let tapp = version.tapp()?;
+    let target = &tapp.target;
     let locale = preferred_locale();
     let display_name = if v.entry.name.resolve(&locale).is_none() {
         package_store::display_name_for_package_id(&v.entry.package_id)
@@ -273,10 +312,10 @@ fn app_for_version(
             .cloned(),
         version: version.version.clone(),
         registry: registry_name.to_string(),
-        download_url: version.tapp_url.clone(),
-        tapp_root_hash_hex: version.tapp_root_hash_hex.clone(),
-        tapp_size_bytes: version.tapp_size_bytes,
-        tapp_blake3_hex: version.tapp_blake3_hex.clone(),
+        download_url: tapp.tapp_url.clone(),
+        tapp_root_hash_hex: tapp.tapp_root_hash_hex.clone(),
+        tapp_size_bytes: tapp.tapp_size_bytes,
+        tapp_blake3_hex: tapp.tapp_blake3_hex.clone(),
         architecture: target.architecture.clone(),
         isa: target.isa.clone(),
         runtime: target.runtime.clone(),
@@ -313,8 +352,8 @@ pub fn version_offers(package_id: &str, registry_name: &str) -> Result<Vec<Catal
         .collect())
 }
 
-fn target_supported(version: &registry_types::RegistryVersion) -> bool {
-    let target = &version.target;
+fn target_supported(tapp: &registry_types::TappArtifact) -> bool {
+    let target = &tapp.target;
     if target.platform != registry_types::TILO_OS_PLATFORM
         || target.architecture != std::env::consts::ARCH
     {
@@ -465,7 +504,15 @@ pub fn installed_versions() -> Result<std::collections::HashMap<String, String>,
 }
 
 fn installed_manifest_version(path: &std::path::Path) -> Option<String> {
-    launcher::manifest::read_manifest(path)
+    // Runtime packages may have no executable entrypoint. Parse their normal
+    // package manifest rather than requiring the launcher's app-only view.
+    if let Ok(text) = std::fs::read_to_string(path)
+        && let Ok(manifest) = tilo_app_package::Manifest::from_toml_str(&text)
+        && !manifest.package.version.is_empty()
+    {
+        return Some(manifest.package.version);
+    }
+    tilo_app_package::view::read_manifest(path)
         .ok()
         .map(|manifest| manifest.version)
         .filter(|version| !version.is_empty())
@@ -619,6 +666,7 @@ mod tests {
         let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
         let mut e = RegistryEntry {
             package_id: id.into(),
+            kind: registry_types::EntryKind::App,
             name: name.into(),
             description: "does a thing".into(),
             tagline: "Native Tilo OS app".into(),
@@ -633,18 +681,20 @@ mod tests {
             publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
             versions: vec![RegistryVersion {
                 version: "2.0.0".into(),
-                tapp_url: format!("https://apps.tilo.so/artifacts/{id}.tapp"),
-                tapp_root_hash_hex: "ab".repeat(32),
-                tapp_size_bytes: 10,
                 released_at_unix: 5,
-                tapp_blake3_hex: "ef".repeat(32),
-                target: registry_types::RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: std::env::consts::ARCH.into(),
-                    isa: native_baseline_isa().into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: format!("https://apps.tilo.so/artifacts/{id}.tapp"),
+                    tapp_root_hash_hex: "ab".repeat(32),
+                    tapp_size_bytes: 10,
+                    tapp_blake3_hex: "ef".repeat(32),
+                    target: registry_types::RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: std::env::consts::ARCH.into(),
+                        isa: native_baseline_isa().into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 7,
             signature_hex: String::new(),
@@ -669,6 +719,7 @@ mod tests {
             entries: vec![e.clone()],
             owner_signature_hex: String::new(),
             channel_authorization: None,
+            bots_signature_hex: String::new(),
         };
         registry_types::sign_snapshot(&mut snapshot, &owner).unwrap();
         client::classify_snapshot(
@@ -691,8 +742,8 @@ mod tests {
         let mut e = entry("so.tilo.settings", "Settings", vec!["System"]);
         let mut newer = e.versions[0].clone();
         newer.version = "3.0.0".into();
-        newer.target.interfaces = vec!["system@2".into()];
-        e.versions[0].target.interfaces = vec!["system@1".into()];
+        newer.tapp_mut().unwrap().target.interfaces = vec!["system@2".into()];
+        e.versions[0].tapp_mut().unwrap().target.interfaces = vec!["system@1".into()];
         e.versions.push(newer);
         let stable = tilo_app_package::version::ReleaseChannel::Stable;
         let offered = |provided: Option<&registry_types::ProvidedInterfaces>| {
@@ -708,6 +759,28 @@ mod tests {
         assert!(offered(Some(&elsewhere)).is_empty());
         // A host that declares no interfaces judges none.
         assert_eq!(offered(None), ["2.0.0", "3.0.0"]);
+    }
+
+    #[test]
+    fn a_bot_entry_is_never_an_app_offer() {
+        let hash = "ab".repeat(32);
+        let mut bot = entry("so.tilo.bots.echo", "Echo", vec!["Bots"]);
+        bot.kind = registry_types::EntryKind::Bot;
+        bot.versions = vec![registry_types::RegistryVersion {
+            version: "1.0.0".into(),
+            released_at_unix: 1,
+            artifact: registry_types::VersionArtifact::Bot(registry_types::BotArtifact {
+                program_url: registry_types::bot_program_url("https://apps.tilo.so", &hash),
+                program_blake3_hex: hash,
+                program_size_bytes: 10,
+                requires: registry_types::BotRequirements::default(),
+            }),
+        }];
+        assert_eq!(
+            installable_versions(&bot, tilo_app_package::version::ReleaseChannel::Stable).count(),
+            0
+        );
+        assert!(entry_to_app(&verified(bot), "main").is_none());
     }
 
     #[test]
@@ -745,7 +818,7 @@ mod tests {
             assert!(entry_to_app(&verified(e), "main").is_none());
 
             let mut blank = entry("so.tilo.blank", "Blank", vec![]);
-            blank.versions[0].tapp_url = "  ".into();
+            blank.versions[0].tapp_mut().unwrap().tapp_url = "  ".into();
             sign_entry(
                 &mut blank,
                 &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]),
@@ -765,15 +838,16 @@ mod tests {
         let mut e = entry("so.tilo.editor", "Editor", vec![]);
         let mut android = e.versions[0].clone();
         android.version = "9.0.0".into();
-        android.tapp_url = "https://apps.tilo.so/artifacts/editor-android.tapp".into();
-        android.target = registry_types::RegistryTarget {
+        android.tapp_mut().unwrap().tapp_url =
+            "https://apps.tilo.so/artifacts/editor-android.tapp".into();
+        android.tapp_mut().unwrap().target = registry_types::RegistryTarget {
             platform: registry_types::ANDROID_PLATFORM.into(),
             architecture: std::env::consts::ARCH.into(),
             isa: std::env::consts::ARCH.into(),
             runtime: Some("tilo-runtime/2026.07".into()),
             interfaces: Vec::new(),
         };
-        assert!(!target_supported(&android));
+        assert!(!target_supported(android.tapp().unwrap()));
         e.versions.push(android.clone());
         sign_entry(&mut e, &key);
         let app = entry_to_app(&verified(e), "main").expect("the tilo-os build is offered");
@@ -794,13 +868,13 @@ mod tests {
         // Phase `catalogue_selects_latest_release_independent_of_registry_array_order`.
         {
             let mut e = entry("so.tilo.timeline", "Timeline", vec![]);
-            e.versions = vec![
-                RegistryVersion {
-                    version: "1.0.0".into(),
+            let older = RegistryVersion {
+                version: "1.0.0".into(),
+                released_at_unix: 100,
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
                     tapp_url: "https://apps.tilo.so/artifacts/timeline-1.tapp".into(),
                     tapp_root_hash_hex: "11".repeat(32),
                     tapp_size_bytes: 10,
-                    released_at_unix: 100,
                     tapp_blake3_hex: "ef".repeat(32),
                     target: registry_types::RegistryTarget {
                         platform: registry_types::TILO_OS_PLATFORM.into(),
@@ -809,23 +883,17 @@ mod tests {
                         runtime: None,
                         interfaces: Vec::new(),
                     },
-                },
-                RegistryVersion {
-                    version: "2027.01".into(),
-                    tapp_url: "https://apps.tilo.so/artifacts/timeline-new.tapp".into(),
-                    tapp_root_hash_hex: "22".repeat(32),
-                    tapp_size_bytes: 20,
-                    released_at_unix: 200,
-                    tapp_blake3_hex: "fe".repeat(32),
-                    target: registry_types::RegistryTarget {
-                        platform: registry_types::TILO_OS_PLATFORM.into(),
-                        architecture: std::env::consts::ARCH.into(),
-                        isa: native_baseline_isa().into(),
-                        runtime: None,
-                        interfaces: Vec::new(),
-                    },
-                },
-            ];
+                }),
+            };
+            let mut newer = older.clone();
+            newer.version = "2027.01".into();
+            newer.released_at_unix = 200;
+            let tapp = newer.tapp_mut().unwrap();
+            tapp.tapp_url = "https://apps.tilo.so/artifacts/timeline-new.tapp".into();
+            tapp.tapp_root_hash_hex = "22".repeat(32);
+            tapp.tapp_size_bytes = 20;
+            tapp.tapp_blake3_hex = "fe".repeat(32);
+            e.versions = vec![older, newer];
             sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
 
             let app = entry_to_app(&verified(e), "main").expect("offerable latest release");
@@ -944,6 +1012,18 @@ mod tests {
     [package]
     id = "so.tilo.browser"
     version = "1.2.3"
+    kind = "app"
+
+    [publisher]
+    identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+
+    [sandbox]
+    namespaces = []
+    seccomp = "tilo-default"
+    landlock = "strict"
+
+    [sandbox.net]
+    mode = "off"
 
     [entrypoint]
     bin = "bin/browser"
@@ -973,5 +1053,46 @@ mod tests {
                 "partial names must not guess"
             );
         }
+    }
+
+    fn offer_on(version: &str, runtime: Option<&str>) -> CatalogueApp {
+        let mut app = entry_to_app(&verified(entry("so.tilo.notes", "Notes", vec![])), "main")
+            .expect("an offerable entry");
+        app.version = version.into();
+        app.runtime = runtime.map(str::to_string);
+        app
+    }
+
+    #[test]
+    fn first_open_prefers_a_version_on_an_installed_runtime() {
+        let r1 = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
+        let r2 = "tilo-runtime/2026.07+native.22222222222222222222222222222222";
+        let offers = vec![
+            offer_on("0.1.3", Some(r2)),
+            offer_on("0.1.2", Some(r1)),
+            offer_on("0.1.1", Some(r1)),
+        ];
+        let installed = |runtime: &str| runtime == r1;
+        let chosen = prefer_installed_runtime(&offers, "0.1.3", installed).expect("a local fit");
+        assert_eq!(chosen.version, "0.1.2");
+        assert_eq!(chosen.runtime.as_deref(), Some(r1));
+        // Never newer than what was asked for.
+        let chosen = prefer_installed_runtime(&offers, "0.1.1", installed).expect("a local fit");
+        assert_eq!(chosen.version, "0.1.1");
+        // A version that needs no runtime runs anywhere.
+        let fat = vec![offer_on("0.1.3", Some(r2)), offer_on("0.1.0", None)];
+        let chosen = prefer_installed_runtime(&fat, "0.1.3", |_| false).expect("needs no runtime");
+        assert_eq!(chosen.version, "0.1.0");
+    }
+
+    #[test]
+    fn first_open_falls_back_to_newest_without_a_local_runtime() {
+        let r2 = "tilo-runtime/2026.07+native.22222222222222222222222222222222";
+        let r1 = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
+        let offers = vec![offer_on("0.1.3", Some(r2)), offer_on("0.1.2", Some(r1))];
+        assert!(prefer_installed_runtime(&offers, "0.1.3", |_| false).is_none());
+        // A version that needs no runtime is taken as is, without a lookup.
+        let fat = offer_on("0.1.3", None);
+        assert_eq!(first_open_offer(&fat), fat);
     }
 }

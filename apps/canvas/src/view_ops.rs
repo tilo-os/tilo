@@ -8,6 +8,7 @@
 
 use serde_json::{Value, json};
 use ui::TextRenderer;
+use ui::num::f64_of_usize;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect};
 use ui::vello::peniko::Color;
@@ -363,7 +364,7 @@ fn flatten(reference: &[u8], width: u32, inside: Rect, ground: [u8; 3]) -> Vec<u
     for (index, pixel) in reference.chunks_exact(4).enumerate() {
         let x = index % width;
         let y = index / width;
-        let centre = ui::vello::kurbo::Point::new(count(x) + 0.5, count(y) + 0.5);
+        let centre = ui::vello::kurbo::Point::new(f64_of_usize(x) + 0.5, f64_of_usize(y) + 0.5);
         if !inside.contains(centre) {
             out.extend_from_slice(&[0, 0, 0, 0]);
             continue;
@@ -376,10 +377,6 @@ fn flatten(reference: &[u8], width: u32, inside: Rect, ground: [u8; 3]) -> Vec<u
         out.push(255);
     }
     out
-}
-
-fn count(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// The mean colour distance within the reference's frame, overall and per
@@ -612,7 +609,10 @@ pub fn measure(
             if alpha <= 0.0 {
                 continue;
             }
-            let (x, y) = (count(index % width) + 0.5, count(index / width) + 0.5);
+            let (x, y) = (
+                f64_of_usize(index % width) + 0.5,
+                f64_of_usize(index / width) + 0.5,
+            );
             mass += alpha;
             mx += alpha * x;
             my += alpha * y;
@@ -701,7 +701,10 @@ pub fn export(
         art,
         art.bounds(),
         scale,
-        &Options::default(),
+        &Options {
+            bare: export.transparent.unwrap_or(false),
+            ..Options::default()
+        },
     )?;
     let (bytes, format) = match format {
         "png" => (encode_png(&rgba, width, height)?, "png"),
@@ -988,6 +991,16 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         "listed": marks.len(),
         "matching": matching.len(),
     });
+    if inspect.palette == Some(true)
+        && let Value::Object(fields) = &mut answer
+    {
+        let palette = crate::palette::used(matching.iter().copied());
+        fields.insert("palette_colours".into(), json!(palette.len()));
+        fields.insert(
+            "palette".into(),
+            json!(palette.into_iter().take(32).collect::<Vec<_>>()),
+        );
+    }
     if let Some(selection) = selection_info(art)
         && let Value::Object(fields) = &mut answer
     {
@@ -1014,6 +1027,7 @@ fn layer_entry(art: &Artwork, layer: &Layer) -> Value {
     let mut entry = json!({
         "id": layer.id,
         "name": layer.name,
+        "group": layer.group,
         "medium": if layer.medium.is_empty() { "plain" } else { layer.medium.as_str() },
         "marks": art.marks_of(&layer.id).count(),
     });
@@ -1247,6 +1261,7 @@ fn mark_fields(old: &Mark, new: &Mark) -> Vec<String> {
 fn layer_fields(old: &Layer, new: &Layer) -> Vec<String> {
     [
         (old.name != new.name, "name"),
+        (old.group != new.group, "group"),
         (old.order != new.order, "stacking"),
         (old.medium != new.medium, "medium"),
         (old.opacity.to_bits() != new.opacity.to_bits(), "opacity"),

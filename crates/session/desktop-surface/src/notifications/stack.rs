@@ -7,17 +7,21 @@
 //! when it next needs a frame.
 
 use ui::a11y::AccessNode;
+use ui::num::f32_of_f64;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
+use ui::widget::PaintedTargets;
 use ui::widget::toast::ToastCard;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::Fill;
+use winit::event::WindowEvent;
 
 use super::NotificationHost;
 use super::model::{Notification, NotificationSeverity, lock_suppressed_label};
 use crate::i18n::{t, t_args};
+use ui::TextRole;
 
 /// In/out animation duration; matches the desktop's modal entry timing.
 const ANIM_MS: u64 = 220;
@@ -42,6 +46,7 @@ struct PaintCtx<'a> {
     transform: Affine,
     text_renderer: &'a mut TextRenderer,
     theme: &'a Theme,
+    host: &'a dyn NotificationHost,
 }
 
 /// The y-extent of everything painted, so the stack's rect is exactly what
@@ -58,14 +63,21 @@ impl StackBounds {
     }
 }
 
-/// Text-wrap widths are plain float pixel math for the renderer's `f32` wrap
-/// width; the precision this loses is imperceptible at UI scale.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "device-pixel wrap width; f32 is already the renderer's own unit"
-)]
-fn f64_to_f32_lossy(v: f64) -> f32 {
-    v as f32
+#[derive(Clone, Debug)]
+enum BannerTarget {
+    Open(u64),
+    Dismiss(u64),
+    Action(u64, String),
+}
+
+impl BannerTarget {
+    fn key(&self) -> String {
+        match self {
+            Self::Open(id) => format!("notification:{id}:open"),
+            Self::Dismiss(id) => format!("notification:{id}:dismiss"),
+            Self::Action(id, key) => format!("notification:{id}:action:{key}"),
+        }
+    }
 }
 
 /// Top-right banner stack over a host's [`NotificationHost`].
@@ -76,10 +88,17 @@ pub struct NotificationStack {
     /// Per-banner `(id, card, close)` hit rects; cleared every paint so a
     /// stale hit cannot fire after expiry.
     hit_rects: Vec<(u64, Rect, Rect)>,
+    action_rects: Vec<(u64, String, Rect)>,
+    /// What a press on a painted banner does, as buttons for assistive
+    /// technology (and anything else that reads the semantics): each card
+    /// (opening it, labelled by its title) and its action buttons.
+    action_buttons: Vec<(Rect, String)>,
     rect: Rect,
     /// Mirrored from the last paint so the frame and deadline hooks obey
     /// reduced motion without a theme argument.
     reduce_motion: bool,
+    targets: PaintedTargets,
+    target_actions: Vec<(String, BannerTarget)>,
 }
 
 impl NotificationStack {
@@ -89,12 +108,83 @@ impl NotificationStack {
 
     /// Pin the stack into `viewport` (top-right corner, inset).
     pub fn set_viewport(&mut self, viewport: Rect) {
+        if self.viewport != viewport {
+            self.targets.cancel_pointer_press();
+        }
         self.viewport = viewport;
     }
 
     /// Exactly what the last paint covered; zero when nothing was painted.
     pub fn rect(&self) -> Rect {
         self.rect
+    }
+
+    fn register_target(&mut self, target: BannerTarget, rect: Rect, label: &str) {
+        let key = target.key();
+        self.targets.target(&key, rect, label);
+        self.target_actions.push((key, target));
+    }
+
+    /// Retain the matching release when foreground content interrupts a click.
+    pub fn cancel_pointer_press(&mut self) {
+        self.targets.cancel_pointer_press();
+    }
+
+    /// Whether an armed or cancelled banner gesture owns the next release.
+    pub fn wants_pointer_capture(&self) -> bool {
+        self.targets.wants_pointer_capture()
+    }
+
+    fn dispatch_target(host: &dyn NotificationHost, target: &BannerTarget) {
+        let id = match target {
+            BannerTarget::Open(id) | BannerTarget::Dismiss(id) | BannerTarget::Action(id, _) => *id,
+        };
+        let available = {
+            let log = host.log();
+            log.active()
+                .iter()
+                .find(|notice| notice.id == id)
+                .is_some_and(|notice| match target {
+                    BannerTarget::Action(_, key) => host
+                        .actions_for(notice)
+                        .iter()
+                        .any(|(current, _)| current == key),
+                    _ => true,
+                })
+        };
+        if !available || host.session_locked() {
+            return;
+        }
+        match target {
+            BannerTarget::Open(id) => host.activate(*id),
+            BannerTarget::Dismiss(id) => host.dismiss(*id),
+            BannerTarget::Action(id, key) => host.invoke_action(*id, key),
+        }
+    }
+
+    /// Route the real pointer stream through the toolkit's completed-click
+    /// controller. Banners do not take keyboard focus from the application.
+    /// Returns whether hover/press feedback changed.
+    pub fn handle_pointer_event(
+        &mut self,
+        host: &dyn NotificationHost,
+        event: &WindowEvent,
+        scale_factor: f64,
+        handled: &mut bool,
+    ) -> bool {
+        if host.session_locked() {
+            self.targets.cancel_pointer_press();
+        }
+        let changed = self
+            .targets
+            .handle_pointer_event(event, scale_factor, handled);
+        let activated = self.targets.take_activated();
+        for key in activated {
+            if let Some((_, target)) = self.target_actions.iter().find(|(id, _)| *id == key) {
+                Self::dispatch_target(host, target);
+            }
+        }
+        changed
     }
 
     /// Enter/exit alpha + horizontal slide: slides in from the right and
@@ -146,21 +236,20 @@ impl NotificationStack {
         radius: f64,
         count: usize,
     ) -> Rect {
-        let title_size = ctx.theme.tokens.typography.scale.sm;
+        let title_style = ctx.theme.text(TextRole::Caption);
         let card_rect = Rect::new(x0, y, x0 + width, y + TOAST_HEIGHT);
         // A Panel-role floater like the toasts it stands in for (HIG §9.5),
         // so one column is one material.
         ui::surface::panel(ctx.scene, ctx.transform, card_rect, radius, ctx.theme);
         let label = lock_suppressed_label(count);
         // Centre on the measured line, not the font size (HIG §7a).
-        let max_width = f64_to_f32_lossy(width - CARD_PADDING_X * 2.0);
+        let max_width = f32_of_f64(width - CARD_PADDING_X * 2.0);
         let (_, label_h) = ctx
             .text_renderer
-            .measure(&label, title_size, Some(max_width));
-        ctx.text_renderer.draw_text(
+            .measure_style(&label, Some(max_width), &title_style);
+        ctx.text_renderer.draw_style(
             ctx.scene,
             &label,
-            title_size,
             ctx.theme.tokens.colors.text_dim,
             ctx.transform.pre_translate(
                 (
@@ -170,6 +259,7 @@ impl NotificationStack {
                     .into(),
             ),
             Some(max_width),
+            &title_style,
         );
         card_rect
     }
@@ -187,7 +277,7 @@ impl NotificationStack {
         status: &str,
         history_count: usize,
     ) -> Rect {
-        let body_size = ctx.theme.tokens.typography.scale.xs;
+        let body_style = ctx.theme.text(TextRole::Caption);
         let label = if history_count > 0 {
             t_args(
                 "notification-dnd-held",
@@ -197,10 +287,10 @@ impl NotificationStack {
             status.to_string()
         };
         let text_x = x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
-        let max_width = f64_to_f32_lossy(width - (text_x - x0) - CARD_PADDING_X);
+        let max_width = f32_of_f64(width - (text_x - x0) - CARD_PADDING_X);
         let (_, label_h) = ctx
             .text_renderer
-            .measure(&label, body_size, Some(max_width));
+            .measure_style(&label, Some(max_width), &body_style);
         // A Selector-height surface (HIG §9.6: 28) that grows with its
         // measured label plus `s2`, so 200 % type has a pill around it.
         let pill_h =
@@ -218,14 +308,14 @@ impl NotificationStack {
             None,
             &Circle::new(dot_center, DOT_RADIUS),
         );
-        ctx.text_renderer.draw_text(
+        ctx.text_renderer.draw_style(
             ctx.scene,
             &label,
-            body_size,
             ctx.theme.tokens.colors.text_dim,
             ctx.transform
                 .pre_translate((text_x, pill_rect.y0 + (pill_h - f64::from(label_h)) / 2.0).into()),
             Some(max_width),
+            &body_style,
         );
         pill_rect
     }
@@ -242,31 +332,89 @@ impl NotificationStack {
         bounds: &mut StackBounds,
     ) {
         for n in banners {
-            let (alpha, slide_dx) = Self::animation_state(n, now, self.reduce_motion, width);
-            if alpha <= 0.0 {
-                y += TOAST_HEIGHT + TOAST_GAP;
-                continue;
-            }
-            let card_x0 = x0_rest + slide_dx;
-            let card_rect = Rect::new(card_x0, y, card_x0 + width, y + TOAST_HEIGHT);
-            bounds.expand(card_rect.y0, card_rect.y1);
+            let actions = ctx.host.actions_for(n);
             // The stack owns what to show and click routing; the toast
             // widget owns the card's look and hands back the close rect.
+            let mut card = ToastCard::new(&n.title, n.severity.toast_kind())
+                .body(if n.show_preview { &n.body } else { "" })
+                .caption(n.app_name.as_deref().unwrap_or(""))
+                .closable(true)
+                .actionable(!n.actions.is_empty());
+            let close = self.targets.interaction(&BannerTarget::Dismiss(n.id).key());
+            card.close_hovered = close.hovered;
+            card.close_pressed = close.pressed;
+            if let Some((key, label)) = actions.first() {
+                card.primary_action = label;
+                let state = self
+                    .targets
+                    .interaction(&BannerTarget::Action(n.id, key.clone()).key());
+                card.primary_action_hovered = state.hovered;
+                card.primary_action_pressed = state.pressed;
+            }
+            if let Some((key, label)) = actions.get(1) {
+                card.secondary_action = card.primary_action;
+                card.secondary_action_hovered = card.primary_action_hovered;
+                card.secondary_action_pressed = card.primary_action_pressed;
+                card.primary_action = label;
+                let state = self
+                    .targets
+                    .interaction(&BannerTarget::Action(n.id, key.clone()).key());
+                card.primary_action_hovered = state.hovered;
+                card.primary_action_pressed = state.pressed;
+            }
+            let height =
+                ui::widget::toast::minimum_card_height(ctx.text_renderer, ctx.theme, &card)
+                    .max(TOAST_HEIGHT);
+            if y + height > self.viewport.y1 - EDGE_INSET {
+                break;
+            }
+            let (alpha, slide_dx) = Self::animation_state(n, now, self.reduce_motion, width);
+            if alpha <= 0.0 {
+                y += height + TOAST_GAP;
+                continue;
+            }
+            card.alpha = alpha;
+            let card_x0 = x0_rest + slide_dx;
+            let card_rect = Rect::new(card_x0, y, card_x0 + width, y + height);
+            bounds.expand(card_rect.y0, card_rect.y1);
             let hit = ui::widget::toast::paint_card(
                 ctx.scene,
                 ctx.transform,
                 ctx.text_renderer,
                 ctx.theme,
                 card_rect,
-                &ToastCard::new(&n.title, n.severity.toast_kind())
-                    .body(if n.show_preview { &n.body } else { "" })
-                    .caption(n.app_name.as_deref().unwrap_or(""))
-                    .alpha(alpha)
-                    .closable(true)
-                    .actionable(!n.actions.is_empty()),
+                &card,
             );
+            self.register_target(BannerTarget::Open(n.id), card_rect, &n.title);
+            self.action_buttons.push((card_rect, n.title.clone()));
+            self.register_target(
+                BannerTarget::Dismiss(n.id),
+                hit.close_rect,
+                &t("notification-center-dismiss"),
+            );
+            if let Some((key, label)) = actions.first() {
+                let rect = if actions.len() >= 2 {
+                    hit.secondary_action_rect
+                } else {
+                    hit.primary_action_rect
+                };
+                self.register_target(BannerTarget::Action(n.id, key.clone()), rect, label);
+                self.action_rects.push((n.id, key.clone(), rect));
+                self.action_buttons.push((rect, label.clone()));
+            }
+            if let Some((key, label)) = actions.get(1) {
+                self.register_target(
+                    BannerTarget::Action(n.id, key.clone()),
+                    hit.primary_action_rect,
+                    label,
+                );
+                self.action_rects
+                    .push((n.id, key.clone(), hit.primary_action_rect));
+                self.action_buttons
+                    .push((hit.primary_action_rect, label.clone()));
+            }
             self.hit_rects.push((n.id, card_rect, hit.close_rect));
-            y += TOAST_HEIGHT + TOAST_GAP;
+            y += height + TOAST_GAP;
         }
     }
 
@@ -281,6 +429,10 @@ impl NotificationStack {
         theme: &Theme,
     ) {
         self.hit_rects.clear();
+        self.action_rects.clear();
+        self.action_buttons.clear();
+        self.targets.begin_frame();
+        self.target_actions.clear();
         self.reduce_motion = theme.reduce_motion;
         self.rect = Rect::ZERO;
         if self.viewport.area() == 0.0 {
@@ -305,7 +457,7 @@ impl NotificationStack {
         // this pass and restore it below.
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let x0_rest = self.viewport.x1 - EDGE_INSET - width;
         let mut y = self.viewport.y0 + EDGE_INSET;
         let mut ctx = PaintCtx {
@@ -313,6 +465,7 @@ impl NotificationStack {
             transform,
             text_renderer,
             theme,
+            host,
         };
         if locked {
             self.rect = Self::draw_locked_card(&mut ctx, x0_rest, y, width, radius, count);
@@ -338,7 +491,7 @@ impl NotificationStack {
         }
         self.draw_toast_cards(
             &mut ctx,
-            log.active().iter(),
+            log.active().iter().rev(),
             ui::time::now(),
             (x0_rest, width),
             y,
@@ -350,9 +503,16 @@ impl NotificationStack {
         }
     }
 
-    /// Route a press at `p`: the close button dismisses, the card activates.
-    /// Returns whether the press landed on a banner.
+    /// Activate a completed click at p. Interactive hosts forward the full
+    /// pointer stream through `handle_pointer_event` so gestures remain cancellable.
+    /// Returns whether the completed click landed on a banner.
     pub fn click_at(&mut self, host: &dyn NotificationHost, p: Point) -> bool {
+        for (id, key, rect) in &self.action_rects {
+            if rect.contains(p) {
+                host.invoke_action(*id, key);
+                return true;
+            }
+        }
         for &(id, full, close) in &self.hit_rects {
             if close.contains(p) {
                 host.dismiss(id);
@@ -442,7 +602,17 @@ impl NotificationStack {
             AccessNode::new(Role::Group)
                 .with_name(t("notification-stack-a11y"))
                 .with_live(politeness)
-                .with_value(text),
+                .with_value(text)
+                .with_children(
+                    self.action_buttons
+                        .iter()
+                        .map(|(rect, label)| {
+                            AccessNode::new(Role::Button)
+                                .with_name(label.clone())
+                                .with_bounds(*rect)
+                        })
+                        .collect(),
+                ),
         )
     }
 }
@@ -459,6 +629,8 @@ pub(super) mod tests {
         pub log: RefCell<NotificationLog>,
         pub locked: Cell<bool>,
         pub quiet: RefCell<Option<String>>,
+        pub actions: RefCell<Vec<(String, String)>>,
+        pub invoked: RefCell<Vec<(u64, String)>>,
     }
 
     impl TestHost {
@@ -473,6 +645,12 @@ pub(super) mod tests {
     }
 
     impl NotificationHost for TestHost {
+        fn actions_for(&self, _notice: &Notification) -> Vec<(String, String)> {
+            self.actions.borrow().clone()
+        }
+        fn invoke_action(&self, id: u64, key: &str) {
+            self.invoked.borrow_mut().push((id, key.to_owned()));
+        }
         fn log(&self) -> std::cell::Ref<'_, NotificationLog> {
             self.log.borrow()
         }
@@ -548,6 +726,177 @@ pub(super) mod tests {
         );
         stack.hit_rects.clear();
         assert!(!stack.click_at(&host, Point::new(441.0, 189.0)));
+    }
+
+    #[test]
+    fn shared_choice_buttons_route_their_keys_and_retire_stale_geometry() {
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let theme = theme.with_reduce_motion(true).with_text_scale(2.0);
+            let host = TestHost::default();
+            host.actions.replace(vec![
+                ("dismiss".into(), "Dismiss".into()),
+                ("snooze".into(), "Snooze".into()),
+            ]);
+            let id = host.push(Notification::new("Alarm", "Synthetic alarm"));
+            let mut stack = NotificationStack::new();
+            stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 600.0));
+            let mut text = TextRenderer::new();
+            stack.draw(
+                &host,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+            );
+            assert_eq!(
+                stack.action_rects.len(),
+                2,
+                "both real painted controls must exist"
+            );
+            let actions = stack.action_rects.clone();
+            let buttons = stack.accessibility(&host).expect("a live region").children;
+            let mut named: Vec<_> = buttons
+                .iter()
+                .map(|button| (button.role, button.name.clone().unwrap_or_default()))
+                .collect();
+            named.sort_by(|a, b| a.1.cmp(&b.1));
+            assert_eq!(
+                named,
+                [
+                    (ui::a11y::Role::Button, "Alarm".to_owned()),
+                    (ui::a11y::Role::Button, "Dismiss".to_owned()),
+                    (ui::a11y::Role::Button, "Snooze".to_owned())
+                ],
+                "the painted choices are buttons a reader can press"
+            );
+            let card = stack.hit_rects[0].1;
+            for (actual, _, rect) in &actions {
+                assert_eq!(*actual, id);
+                assert!(rect.width() > 0.0 && rect.height() >= 28.0);
+                assert!(card.contains(rect.origin()) && card.x1 >= rect.x1 && card.y1 >= rect.y1);
+            }
+            assert!(actions[0].2.intersect(actions[1].2).area() <= 0.0);
+            for (_, key, rect) in &actions {
+                assert!(stack.click_at(&host, rect.center()));
+                assert_eq!(host.invoked.borrow().last(), Some(&(id, key.clone())));
+            }
+            assert_eq!(
+                host.log().active().len(),
+                1,
+                "host owns durable completion, not the painter"
+            );
+            host.log.borrow_mut().take_active(id);
+            stack.draw(
+                &host,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+            );
+            assert!(stack.action_rects.is_empty());
+            assert!(!stack.click_at(&host, actions[1].2.center()));
+        }
+    }
+
+    #[test]
+    fn scaled_attributed_banner_reserves_text_above_real_action_controls() {
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let theme = theme.with_reduce_motion(true).with_text_scale(2.0);
+            let host = TestHost::default();
+            host.actions.replace(vec![
+                ("dismiss".into(), "Dismiss".into()),
+                ("snooze".into(), "Snooze".into()),
+            ]);
+            host.push(
+                Notification::new("Meeting begins", "Join your workspace")
+                    .with_app_name("Calendar"),
+            );
+            let mut stack = NotificationStack::new();
+            stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 600.0));
+            let mut text = TextRenderer::new();
+            stack.draw(
+                &host,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+            );
+            let card = stack.hit_rects[0].1;
+            let actions_top = stack
+                .action_rects
+                .iter()
+                .map(|(_, _, rect)| rect.y0)
+                .reduce(f64::min)
+                .expect("real shared actions");
+            let content_height: f64 = [
+                ("Calendar", theme.text(TextRole::Caption)),
+                ("Meeting begins", theme.text(TextRole::Label).strong()),
+                ("Join your workspace", theme.text(TextRole::Caption)),
+            ]
+            .into_iter()
+            .map(|(label, style)| f64::from(text.measure_style(label, None, &style).1))
+            .sum();
+            assert!(
+                actions_top - card.y0 >= content_height + 2.0 * f64::from(theme.tokens.spacing.s2),
+                "painted text requires {content_height}px plus padding before actions at {}px",
+                actions_top - card.y0
+            );
+        }
+    }
+
+    #[test]
+    fn persistent_alarm_choices_fit_the_viewport_and_keep_the_newest_alarm_visible() {
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let theme = theme.with_reduce_motion(true).with_text_scale(2.0);
+            let host = TestHost::default();
+            host.actions.replace(vec![
+                ("dismiss".into(), "Dismiss".into()),
+                ("snooze".into(), "Snooze".into()),
+            ]);
+            let mut newest = 0;
+            for index in 0..super::super::MAX_NOTIFICATIONS {
+                newest = host.push(
+                    Notification::new(format!("Alarm {index}"), "Fixture")
+                        .with_dismiss_after(super::super::PERSISTENT_DISMISS),
+                );
+            }
+            let viewport = Rect::new(0.0, 0.0, 320.0, 600.0);
+            let mut stack = NotificationStack::new();
+            stack.set_viewport(viewport);
+            stack.draw(
+                &host,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+            );
+            assert!(
+                !stack.hit_rects.is_empty(),
+                "the newest alarm must actually paint"
+            );
+            assert!(
+                stack.hit_rects.len() < host.log().active().len(),
+                "fixture must exercise capacity"
+            );
+            assert_eq!(stack.hit_rects[0].0, newest);
+            for (_, card, _) in &stack.hit_rects {
+                assert!(
+                    card.y0 >= viewport.y0 && card.y1 <= viewport.y1,
+                    "a painted card escaped the viewport"
+                );
+            }
+            for (_, _, control) in &stack.action_rects {
+                assert!(
+                    control.y0 >= viewport.y0 && control.y1 <= viewport.y1,
+                    "a real alarm choice is unreachable below the viewport"
+                );
+            }
+            assert_eq!(
+                host.log().active().len(),
+                super::super::MAX_NOTIFICATIONS,
+                "fitting banners must not discard alarm data"
+            );
+        }
     }
 
     #[test]

@@ -18,9 +18,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -34,10 +32,12 @@ use shell::compositor::state::{ClientState, State};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, protocol::wl_registry};
+use wayland_client::{
+    Connection, Dispatch, Proxy, QueueHandle, delegate_noop, protocol::wl_registry,
+};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_feedback_v1::{self, ZwpLinuxDmabufFeedbackV1},
-    zwp_linux_dmabuf_v1::{self, ZwpLinuxDmabufV1},
+    zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,17 +84,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
     }
 }
 
-impl Dispatch<ZwpLinuxDmabufV1, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &ZwpLinuxDmabufV1,
-        _: zwp_linux_dmabuf_v1::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(ClientAppState: ignore ZwpLinuxDmabufV1);
 
 impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for ClientAppState {
     fn event(
@@ -233,10 +223,6 @@ fn walk() -> Option<(ClientAppState, std::path::PathBuf)> {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn dmabuf_feedback_advertises_the_render_node_and_compositable_formats() {
     // Phase `dmabuf_global_is_advertised_with_feedback`.
     // Version 3 carries no feedback and therefore no device, and Mesa

@@ -21,9 +21,9 @@ use crate::model::{
 use crate::worker::{CancelQueryResult, DbReply, DbRequest, DbWorker};
 
 /// Which workspace tab the main panel is showing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MainTab {
-    /// SQL editor + results grid.
+    /// SQL editor + results table.
     Query,
     /// Browse rows of the selected table.
     Data,
@@ -176,12 +176,12 @@ impl Session {
 
         // Two example remotes, disconnected (no password, gated on a real
         // server). They demonstrate the sidebar's multi-engine roster.
-        let mut pg = ConnectionProfile::new("Analytics · prod", crate::model::Engine::Postgres);
+        let mut pg = ConnectionProfile::new("Production analytics", crate::model::Engine::Postgres);
         pg.host = "db.internal".into();
         pg.database = "analytics".into();
         pg.user = "reader".into();
         s.connections.push(pg);
-        let mut my = ConnectionProfile::new("Shop · staging", crate::model::Engine::MySql);
+        let mut my = ConnectionProfile::new("Staging shop", crate::model::Engine::MySql);
         my.host = "mysql.staging".into();
         my.database = "shop".into();
         my.user = "app".into();
@@ -241,10 +241,6 @@ impl Session {
                 offset,
                 result,
             } => self.apply_browse_reply(connection_id, schema, table, offset, result),
-            DbReply::Disconnected => {
-                self.connected = false;
-                self.mark_connected(false);
-            }
         }
     }
 
@@ -435,13 +431,20 @@ impl Session {
         self.worker.request(DbRequest::Connect(Box::new(profile)));
     }
 
-    /// Switch the active connection and (re)open its engine on the worker.
-    pub fn select_connection(&mut self, idx: usize) {
-        if idx >= self.connections.len() || idx == self.active {
-            return;
+    /// Make the connection called `name` the active one and leave it
+    /// unopened, as a connect that failed with `message` does.
+    pub fn fail_connecting(&mut self, name: &str, message: &str) {
+        if let Some(index) = self.connections.iter().position(|c| c.name == name) {
+            self.active = index;
         }
-        self.active = idx;
-        self.connect_active();
+        self.connected = false;
+        self.active_query = None;
+        self.query_result = None;
+        self.query_gen += 1;
+        self.data_result = None;
+        self.data_gen += 1;
+        self.set_schema(DatabaseSchema::default());
+        self.status = RunStatus::Error(message.to_owned());
     }
 
     /// Reconcile the connection list from the shared document. Preserves which

@@ -21,15 +21,6 @@ use tilo_desktop_surface::history_log;
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::record::RecordCheckout;
 
-/// Seconds since the epoch, as history stamps changes.
-pub(crate) fn now_seconds() -> i64 {
-    ui::time::SystemTime::now()
-        .duration_since(ui::time::SystemTime::UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok())
-        .unwrap_or_default()
-}
-
 /// What the pane may ask of the page: who is looking, what they have seen,
 /// application names.
 struct PageActivityHost {
@@ -78,7 +69,7 @@ impl ActivityHost for PageActivityHost {
         self.save("activity-departures", departures);
     }
     fn app_display_name(&self, app: &str) -> Option<String> {
-        crate::desktop::application(app).map(|definition| definition.title.into())
+        crate::desktop::known_application(app).map(Into::into)
     }
 }
 

@@ -10,8 +10,8 @@ use crate::model::Project;
 
 const MAIN_RS: &str = r#"//! Entry point for the `ferris-cli` demo.
 //!
-//! A tiny command-line tool that greets the world and counts primes —
-//! just enough to show off real syntax highlighting.
+//! Greets the world, then prints every prime below a limit that you can
+//! set with `--count`.
 
 use std::env;
 
@@ -129,9 +129,6 @@ cargo run -- --count 50
 - `src/main.rs` — argument parsing and the program entry point
 - `src/prime.rs` — a sieve of Eratosthenes
 - `src/greeter.rs` — greeting helpers
-
-> **Note:** this project is bundled with the editor as a live highlighting
-> sample. Edit it freely — changes stay in this session.
 ";
 
 const CONFIG_JSON: &str = r#"{
@@ -162,7 +159,7 @@ exec ./target/release/ferris-cli --count "${COUNT}"
 "#;
 
 const APP_PY: &str = r#"#!/usr/bin/env python3
-"""A small Python twin of the Rust demo, for multi-language highlighting."""
+"""A small Python version of the Rust demo."""
 
 from typing import List
 
@@ -187,6 +184,34 @@ if __name__ == "__main__":
 
 /// The sample project's folder name.
 pub const NAME: &str = "ferris-cli";
+
+/// RTL file opened by the hardware capture, never seeded into a live project.
+pub const HARDWARE_FILE: &str = "rtl/signed_mac.sv";
+
+const SIGNED_MAC_SV: &str = r"// Illustrative RTL fixture, not an accelerator implementation.
+// Signed INT8 operands accumulate into a 32-bit register.
+module signed_mac (
+    input  logic               clk,
+    input  logic               reset_n,
+    input  logic               clear,
+    input  logic               valid,
+    input  logic signed [7:0]  activation,
+    input  logic signed [7:0]  weight,
+    output logic signed [31:0] accumulator
+);
+    logic signed [15:0] product;
+    assign product = activation * weight;
+
+    /* Extend the signed product before accumulation.
+       Overflow wraps; saturation would require a separate contract. */
+    always_ff @(posedge clk) begin
+        if (!reset_n || clear)
+            accumulator <= '0;
+        else if (valid)
+            accumulator <= accumulator + {{16{product[15]}}, product};
+    end
+endmodule
+";
 
 /// Write the sample project's files into a new folder at `root`.
 ///
@@ -226,6 +251,9 @@ pub fn build() -> Project {
     let scripts = p.add_folder(root, "scripts");
     p.add_file(scripts, "build.sh", BUILD_SH);
     p.add_file(scripts, "app.py", APP_PY);
+
+    let rtl = p.add_folder(root, "rtl");
+    p.add_file(rtl, "signed_mac.sv", SIGNED_MAC_SV);
 
     p.add_file(root, "Cargo.toml", CARGO_TOML);
     p.add_file(root, "README.md", README_MD);

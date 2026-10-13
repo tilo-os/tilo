@@ -48,17 +48,7 @@ pub trait AccountService: Send + Sync {
     fn get(&self, app_id: &str, reason: Option<&str>) -> PortalResult<AccountInformation>;
 }
 
-#[derive(Clone)]
-pub struct AccountServiceHandle(Arc<dyn AccountService>);
-
-impl AccountServiceHandle {
-    pub fn new(service: Arc<dyn AccountService>) -> Self {
-        Self(service)
-    }
-    pub fn get(&self, app_id: &str, reason: Option<&str>) -> PortalResult<AccountInformation> {
-        self.0.get(app_id, reason)
-    }
-}
+pub type AccountServiceHandle = Arc<dyn AccountService>;
 
 struct NoAccount;
 impl AccountService for NoAccount {
@@ -137,26 +127,7 @@ pub trait AppChooserService: Send + Sync {
     fn cancel(&self, _handle: &str) {}
 }
 
-#[derive(Clone)]
-pub struct AppChooserServiceHandle(Arc<dyn AppChooserService>);
-impl AppChooserServiceHandle {
-    pub fn new(service: Arc<dyn AppChooserService>) -> Self {
-        Self(service)
-    }
-    pub fn enqueue(
-        &self,
-        request: ApplicationChoiceRequest,
-        reply: oneshot::Sender<PortalResult<ApplicationChoice>>,
-    ) -> PortalResult<()> {
-        self.0.enqueue(request, reply)
-    }
-    pub fn update_choices(&self, handle: &str, choices: &[String]) -> PortalResult<()> {
-        self.0.update_choices(handle, choices)
-    }
-    pub fn cancel(&self, handle: &str) {
-        self.0.cancel(handle);
-    }
-}
+pub type AppChooserServiceHandle = Arc<dyn AppChooserService>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LauncherInstallRequest {
     pub app_id: String,
@@ -182,22 +153,7 @@ pub trait DynamicLauncherService: Send + Sync {
     ) -> PortalResult<LauncherInstallChoice>;
     fn request_install_token(&self, app_id: &str) -> PortalResult<()>;
 }
-#[derive(Clone)]
-pub struct DynamicLauncherServiceHandle(Arc<dyn DynamicLauncherService>);
-impl DynamicLauncherServiceHandle {
-    pub fn new(service: Arc<dyn DynamicLauncherService>) -> Self {
-        Self(service)
-    }
-    pub fn prepare_install(
-        &self,
-        request: &LauncherInstallRequest,
-    ) -> PortalResult<LauncherInstallChoice> {
-        self.0.prepare_install(request)
-    }
-    pub fn request_install_token(&self, app_id: &str) -> PortalResult<()> {
-        self.0.request_install_token(app_id)
-    }
-}
+pub type DynamicLauncherServiceHandle = Arc<dyn DynamicLauncherService>;
 struct NoDynamicLauncher;
 impl DynamicLauncherService for NoDynamicLauncher {
     fn prepare_install(&self, _: &LauncherInstallRequest) -> PortalResult<LauncherInstallChoice> {
@@ -419,16 +375,7 @@ pub struct EmailRequest {
 pub trait EmailService: Send + Sync {
     fn compose(&self, request: &EmailRequest) -> PortalResult<()>;
 }
-#[derive(Clone)]
-pub struct EmailServiceHandle(Arc<dyn EmailService>);
-impl EmailServiceHandle {
-    pub fn new(service: Arc<dyn EmailService>) -> Self {
-        Self(service)
-    }
-    pub fn compose(&self, request: &EmailRequest) -> PortalResult<()> {
-        self.0.compose(request)
-    }
-}
+pub type EmailServiceHandle = Arc<dyn EmailService>;
 struct NoEmail;
 impl EmailService for NoEmail {
     fn compose(&self, _: &EmailRequest) -> PortalResult<()> {
@@ -462,7 +409,7 @@ impl EmailService for ShellEmailService {
                     .find(|workspace| workspace.id == request.workspace_id)?;
                 Some((
                     workspace.room,
-                    workspace.capabilities.clone(),
+                    workspace.launch_grants(tilo_clock::unix_now()),
                     workspace.default_apps.clone(),
                     crate::shell::state::local_user_id_for_room(&workspace.room),
                 ))
@@ -488,7 +435,7 @@ impl EmailService for ShellEmailService {
             );
         }
         add_mail_attachment_grants(
-            &mut capabilities,
+            &mut capabilities.sandbox,
             &handler.package_id,
             &request.attachment_paths,
         );
@@ -510,12 +457,12 @@ fn add_mail_attachment_grants(
     handler_app_id: &str,
     attachment_paths: &[PathBuf],
 ) {
-    use crate::shell::state::{CapOverride, Expiry, Scope, Subject, Verb};
+    use crate::shell::state::{Access, CapOverride, Expiry, Scope, Subject};
     capabilities.extend(attachment_paths.iter().map(|path| {
         CapOverride::grant(
             Subject::app(handler_app_id),
             Scope::FsPath(path.to_string_lossy().into_owned()),
-            Verb::Read,
+            Access::Read,
         )
         .with_id(format!("portal-email:{}", uuid::Uuid::new_v4()))
         .expiring(Expiry::AfterUse)
@@ -739,26 +686,7 @@ pub trait WallpaperService: Send + Sync {
     ) -> PortalResult<()>;
     fn discard_staged_wallpaper(&self, request: &WallpaperRequest, staged: &StagedWallpaper);
 }
-#[derive(Clone)]
-pub struct WallpaperServiceHandle(Arc<dyn WallpaperService>);
-impl WallpaperServiceHandle {
-    pub fn new(service: Arc<dyn WallpaperService>) -> Self {
-        Self(service)
-    }
-    pub fn stage_wallpaper(&self, request: &WallpaperRequest) -> PortalResult<StagedWallpaper> {
-        self.0.stage_wallpaper(request)
-    }
-    pub fn apply_staged_wallpaper(
-        &self,
-        request: &WallpaperRequest,
-        staged: &StagedWallpaper,
-    ) -> PortalResult<()> {
-        self.0.apply_staged_wallpaper(request, staged)
-    }
-    pub fn discard_staged_wallpaper(&self, request: &WallpaperRequest, staged: &StagedWallpaper) {
-        self.0.discard_staged_wallpaper(request, staged);
-    }
-}
+pub type WallpaperServiceHandle = Arc<dyn WallpaperService>;
 struct NoWallpaper;
 impl WallpaperService for NoWallpaper {
     fn stage_wallpaper(&self, _: &WallpaperRequest) -> PortalResult<StagedWallpaper> {
@@ -1011,7 +939,7 @@ pub(crate) fn document_portal_path_from_uri(uri: &str) -> Result<PathBuf, String
 }
 
 fn document_portal_root() -> PathBuf {
-    xdg_paths::xdg::runtime_dir()
+    tilo_paths::xdg::runtime_dir()
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", nix_uid())))
         .join("doc")
 }
@@ -1258,15 +1186,13 @@ pub struct DesktopPortalServices {
 impl Default for DesktopPortalServices {
     fn default() -> Self {
         Self {
-            account: AccountServiceHandle::new(Arc::new(NoAccount)),
-            app_chooser: AppChooserServiceHandle::new(Arc::new(
-                crate::shell::portal_dialog::ShellAppChooserService::global(),
-            )),
-            dynamic_launcher: DynamicLauncherServiceHandle::new(Arc::new(NoDynamicLauncher)),
-            email: EmailServiceHandle::new(Arc::new(NoEmail)),
+            account: Arc::new(NoAccount),
+            app_chooser: Arc::new(crate::shell::portal_dialog::ShellAppChooserService::global()),
+            dynamic_launcher: Arc::new(NoDynamicLauncher),
+            email: Arc::new(NoEmail),
             screenshot: ScreenshotServiceHandle::new(Arc::new(NoScreenshot)),
             settings: SettingsServiceHandle::default(),
-            wallpaper: WallpaperServiceHandle::new(Arc::new(NoWallpaper)),
+            wallpaper: Arc::new(NoWallpaper),
         }
     }
 }
@@ -1277,14 +1203,12 @@ impl DesktopPortalServices {
     /// is available.
     pub fn for_session(tree: crate::shell::state::WorkspaceTreeHandle) -> Self {
         let mut services = Self::default();
-        services.account = AccountServiceHandle::new(Arc::new(WorkspaceAccount {
+        services.account = Arc::new(WorkspaceAccount {
             grants: super::GrantStoreHandle::new(tree.clone()),
-        }));
-        services.dynamic_launcher =
-            DynamicLauncherServiceHandle::new(Arc::new(ShellDynamicLauncherService::for_session()));
-        services.email = EmailServiceHandle::new(Arc::new(ShellEmailService::new(tree.clone())));
-        services.wallpaper =
-            WallpaperServiceHandle::new(Arc::new(ShellWallpaperService::new(tree)));
+        });
+        services.dynamic_launcher = Arc::new(ShellDynamicLauncherService::for_session());
+        services.email = Arc::new(ShellEmailService::new(tree.clone()));
+        services.wallpaper = Arc::new(ShellWallpaperService::new(tree));
         services
     }
 }
@@ -1292,7 +1216,7 @@ impl DesktopPortalServices {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::state::{Expiry, Scope, Subject, Verb};
+    use crate::shell::state::{Access, Expiry, Scope, Subject};
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -1337,7 +1261,7 @@ mod tests {
                 grant.scope,
                 Scope::FsPath("/run/user/1000/doc/abc/report.pdf".into())
             );
-            assert_eq!(grant.verb, Verb::Read);
+            assert_eq!(grant.access, Access::Read);
             assert_eq!(grant.expiry, Expiry::AfterUse);
             assert!(grant.id.starts_with("portal-email:"));
         }
@@ -1519,51 +1443,12 @@ mod tests {
     }
 }
 
-fn jpeg_dimensions(bytes: &[u8]) -> Option<(u16, u16)> {
-    if !bytes.starts_with(&[0xff, 0xd8]) {
-        return None;
-    }
-    let mut index: usize = 2;
-    while index.saturating_add(9) <= bytes.len() {
-        if bytes[index] != 0xff {
-            return None;
-        }
-        while bytes.get(index) == Some(&0xff) {
-            index += 1;
-        }
-        let marker = *bytes.get(index)?;
-        index += 1;
-        if marker == 0xd9 || marker == 0xda {
-            return None;
-        }
-        let length = usize::from(u16::from_be_bytes([
-            *bytes.get(index)?,
-            *bytes.get(index + 1)?,
-        ]));
-        if length < 7 || index.saturating_add(length) > bytes.len() {
-            return None;
-        }
-        if matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) {
-            return Some((
-                u16::from_be_bytes([bytes[index + 5], bytes[index + 6]]),
-                u16::from_be_bytes([bytes[index + 3], bytes[index + 4]]),
-            ));
-        }
-        index += length;
-    }
-    None
-}
 pub(crate) fn valid_icon_payload(bytes: &[u8]) -> bool {
     if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
         return false;
     }
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
-        let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
-        let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
-        return (1..=512).contains(&width) && (1..=512).contains(&height);
-    }
-    if let Some((width, height)) = jpeg_dimensions(&bytes) {
-        return (1..=512).contains(&u32::from(width)) && (1..=512).contains(&u32::from(height));
+    if let Some((format, width, height)) = tilo_content::image_size(bytes) {
+        return matches!(format.extension, "png" | "jpg") && width <= 512 && height <= 512;
     }
     if bytes.len() > 256 * 1024 {
         return false;

@@ -9,32 +9,27 @@
 //!
 //!  * [`SettingsPane`] — a `ui` [`Widget`] that renders process-local
 //!    presentation mirrors of those preferences. Every control submits a
-//!    [`BrowserAction`] through the resource's dispatcher; it never writes
-//!    the document itself.
+//!    field edit at the preference's path through the resource's
+//!    dispatcher; it never writes the document itself.
 //!
 //! The chrome applies the engine side effects of the preferences it is
 //! presented. Clear-history and clear-site-data are explicit one-shot
 //! effects, while closing the pane is an explicit view operation.
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-#[cfg(test)]
-use ui::widget::Edits;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use taffy::{NodeId, Size, Style, TaffyTree};
+use ui::widget::TaffyTreeExt;
 
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
+    Button, Card, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
     Toggle, Widget,
 };
 
-use crate::actions::BrowserAction;
 use crate::resource::Browser;
+use ui::tilo_resource::{self, Model, Path, Refusal};
 
 /// The doors the pane's controls use, injected by Browser. Preferences are
-/// [`BrowserAction`]s submitted through the resource's dispatcher; the
+/// field edits submitted through the resource's dispatcher; the
 /// one-shot effects and closing the pane are the published operations, so
 /// pointer, keyboard and assistive-tech changes take the same path as Ctrl+K
 /// and agents.
@@ -90,20 +85,6 @@ impl SettingsPresentation {
 /// Boxed-widget currency the `ui` tree speaks.
 type El = Box<dyn Widget>;
 
-// === CRDT paths ======================================================
-// Flat scalar/text paths written on the app root object, mirroring the
-// `browser.*` convention in `browser_widget.rs`. Exposed so the chrome
-// can reference the same keys when it seeds or inspects the document.
-
-/// Boolean toggle: block ads & trackers. Written by the ad-block [`Toggle`].
-pub const ADBLOCK_PATH: &str = "settings.adblock";
-/// Boolean toggle: clear history & cookies when the browser exits.
-pub const CLEAR_ON_EXIT_PATH: &str = "settings.clear_on_exit";
-/// Automerge `Text` object holding the search-engine query template.
-pub const SEARCH_ENGINE_PATH: &str = "settings.search_engine";
-/// Automerge `Text` object holding the homepage URL.
-pub const HOMEPAGE_PATH: &str = "settings.homepage";
-
 /// Default search-engine query template. The `?q=` suffix lets the
 /// chrome build a search URL by appending typed terms.
 pub const DEFAULT_SEARCH_ENGINE: &str = "https://duckduckgo.com/?q=";
@@ -115,18 +96,33 @@ pub const DEFAULT_HOMEPAGE: &str = "https://duckduckgo.com";
 /// Durable browser preferences, as the browser document holds them.
 ///
 /// Defaults: ad-blocking on, clear-on-exit off, `DuckDuckGo` for both
-/// search and homepage; a document that never set a preference reads its
-/// default.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// search and homepage; a new browser record starts with them. The
+/// homepage and search engine are always absolute http(s) addresses.
+#[derive(Clone, Debug, PartialEq, Eq, Model)]
+#[model(check = Settings::valid)]
 pub struct Settings {
-    /// Block ads & trackers via the engine's content blocker.
+    /// Ad and tracker blocking: block ads & trackers via the engine's
+    /// content blocker.
     pub adblock_enabled: bool,
-    /// Clear browsing history & cookies on exit.
+    /// Clear data on exit: clear browsing history & cookies on exit.
     pub clear_on_exit: bool,
-    /// Search-engine query template (e.g. `https://duckduckgo.com/?q=`).
+    /// Search engine: the query template (e.g. `https://duckduckgo.com/?q=`).
     pub search_engine: String,
-    /// Homepage URL opened on startup / new tab.
+    /// Homepage: the URL opened on startup / new tab.
     pub homepage: String,
+}
+
+impl Settings {
+    /// A homepage and a search engine are web addresses the engine opens.
+    fn valid(&self) -> Result<(), Refusal> {
+        if crate::actions::normalized_bookmark_url(&self.homepage).is_none() {
+            return Err(Refusal::new("the homepage is an absolute http(s) URL"));
+        }
+        if crate::actions::normalized_bookmark_url(&self.search_engine).is_none() {
+            return Err(Refusal::new("the search engine is an absolute http(s) URL"));
+        }
+        Ok(())
+    }
 }
 
 impl Default for Settings {
@@ -146,16 +142,17 @@ impl Default for Settings {
 /// controls. Typed actions mutate durable settings; local mirrors only
 /// present the action-applied result in this window.
 pub struct SettingsPane {
-    rect: Rect,
+    notices: Vec<crate::notice::Notice>,
     presentation: SettingsPresentation,
     /// Composed child tree, rebuilt on every `build_layout`.
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     actions: SettingsActionBindings,
     /// A device-local persistence failure supplied by Browser after a clear
     /// action. It is deliberately not a CRDT value: other collaborators
     /// cannot diagnose this profile's disk permissions or free space.
     history_clear_error: Option<String>,
     private_window_request: Option<ui::LocalState<bool>>,
+    autofill_request: Option<ui::LocalState<Option<bool>>>,
 }
 
 impl SettingsPane {
@@ -167,12 +164,13 @@ impl SettingsPane {
     /// Construct a pane with a process-local projection of `settings`.
     pub fn with_settings(settings: &Settings) -> Self {
         Self {
-            rect: Rect::ZERO,
+            notices: Vec::new(),
             presentation: SettingsPresentation::from_settings(settings),
-            composed: None,
+            composed: ui::widget::Composed::default(),
             actions: SettingsActionBindings::default(),
             history_clear_error: None,
             private_window_request: None,
+            autofill_request: None,
         }
     }
 
@@ -198,11 +196,10 @@ impl SettingsPane {
         self
     }
 
-    /// Keep New Private Window discoverable when compact chrome moves the
-    /// dedicated toolbar button into Settings.
+    /// Open device-local password or address management through a published view control.
     #[must_use]
-    pub fn with_private_window_request(mut self, request: ui::LocalState<bool>) -> Self {
-        self.private_window_request = Some(request);
+    pub fn with_autofill_request(mut self, request: ui::LocalState<Option<bool>>) -> Self {
+        self.autofill_request = Some(request);
         self
     }
 
@@ -215,15 +212,15 @@ impl SettingsPane {
     /// gap — a plain `.push().push()` renders the rows touching.
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let large_text = theme.text_scale >= 1.5;
-        let action_height = if large_text { 56.0 } else { 36.0 };
         let header = Row::new()
             .push(Box::new(
-                Text::new("Settings").with_size(24.0).with_heading_level(1),
+                Text::new("Settings")
+                    .with_role(ui::TextRole::Title)
+                    .with_heading_level(1),
             ))
             .push(Box::new(Spacer::new()))
             .push(Box::new(button_with_action(
-                Button::new("settings.close", "Done")
-                    .with_size(if large_text { 112.0 } else { 96.0 }, action_height),
+                Button::new("settings.close", "Done").control_size(ui::widget::ControlSize::Large),
                 self.actions.close.clone(),
             )));
 
@@ -236,7 +233,7 @@ impl SettingsPane {
                     "settings.homepage_input",
                     DEFAULT_HOMEPAGE,
                     self.actions.edits.clone(),
-                    homepage_action,
+                    Browser::paths().preferences.homepage,
                 ),
                 field_block(
                     "Search engine",
@@ -244,12 +241,12 @@ impl SettingsPane {
                     "settings.search_engine_input",
                     DEFAULT_SEARCH_ENGINE,
                     self.actions.edits.clone(),
-                    search_engine_action,
+                    Browser::paths().preferences.search_engine,
                 ),
             ]),
         );
 
-        let browsing_controls = browsing_data_controls(&self.actions, large_text, action_height);
+        let browsing_controls = browsing_data_controls(&self.actions, large_text);
         let mut privacy_rows = vec![
             setting_row_described(
                 "Block ads & trackers",
@@ -259,7 +256,7 @@ impl SettingsPane {
                         .with_id("settings.adblock")
                         .with_accessible_name("Block ads & trackers"),
                     self.actions.edits.clone(),
-                    adblock_action,
+                    Browser::paths().preferences.adblock_enabled,
                 )),
                 large_text,
             ),
@@ -271,7 +268,7 @@ impl SettingsPane {
                         .with_id("settings.clear_on_exit")
                         .with_accessible_name("Clear data when the browser closes"),
                     self.actions.edits.clone(),
-                    clear_on_exit_action,
+                    Browser::paths().preferences.clear_on_exit,
                 )),
                 large_text,
             ),
@@ -282,32 +279,53 @@ impl SettingsPane {
                 large_text,
             ),
         ];
+        if let Some(request) = &self.autofill_request {
+            for (id, label, addresses) in [
+                ("browser.credentials.open", "Passwords", false),
+                ("browser.address.open", "Address autofill", true),
+            ] {
+                let request = request.clone();
+                privacy_rows.push(setting_row_described(
+                    label,
+                    "Manage filling on this device; opening does not enable it.",
+                    Box::new(
+                        Button::new(id, "Manage")
+                            .with_accessible_name(label)
+                            .on_view(move || request.set(Some(addresses))),
+                    ),
+                    large_text,
+                ));
+            }
+        }
         if let Some(error) = &self.history_clear_error {
-            privacy_rows.push(Box::new(Text::new(error).with_size(12.0)));
+            privacy_rows.push(Box::new(Text::new(error).with_role(ui::TextRole::Caption)));
         }
         let privacy = card("Privacy & Security", rows(privacy_rows));
 
         let mut body = Column::new()
+            .with_rhythm(ui::tokens::Rhythm::Group)
             .with_intrinsic_height()
             .push(Box::new(header))
-            .push(vgap(20.0))
             .push(general)
-            .push(vgap(CARD_GAP))
             .push(privacy);
         if let Some(request) = self.private_window_request.clone() {
-            body = body.push(vgap(CARD_GAP)).push(card(
+            body = body.push(card(
                 "Windows",
                 rows(vec![setting_row_described(
                     "Private browsing",
                     "Open a separate private window with memory-only browsing state.",
                     Box::new(
                         Button::new("settings.new_private_window", "New Private Window")
-                            .with_size(180.0, 36.0)
+                            .control_size(ui::widget::ControlSize::Regular)
                             .on_effect(move || request.set(true)),
                     ),
                     large_text,
                 )]),
             ));
+        }
+
+        for notice in &self.notices {
+            body = body.push(notice.widget(false));
         }
 
         // Inset from the window edges (a Container's default padding) and
@@ -331,60 +349,36 @@ impl Default for SettingsPane {
 // field — so the pane reads consistently. Repeated vertical rhythm comes from
 // the shared `Section`, matching the system Settings app.
 
-/// Gap between stacked cards.
-const CARD_GAP: f32 = 16.0;
-/// Gap between a card's title and its body.
-const CARD_TITLE_GAP: f32 = 12.0;
-/// Gap between rows inside one card.
-const ROW_GAP: f32 = 12.0;
-
-/// The dim foreground colour, read from the OS dark theme (the builders
-/// run before `draw`, where the live `Theme` would otherwise supply it).
-/// A fixed-height empty box, to inject deliberate vertical space.
-fn vgap(px: f32) -> El {
-    Box::new(Container::new().with_no_padding().with_height(px))
-}
-
-/// A titled card: a heading above a bordered, padded surface holding the
-/// body. Keeping the title inside the background `Container` makes it draw
-/// reliably (a bare `Text` in a column can be dropped by the cached draw).
+/// A named section uses the shared card's heading, inset and surface.
 fn card(title: &str, body: El) -> El {
-    let inner = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(Row::new().push(Box::new(
-            Text::new(title).with_size(16.0).with_heading_level(2),
-        ))))
-        .push(vgap(CARD_TITLE_GAP))
-        .push(body);
-    Box::new(
-        Container::new()
-            .with_background()
-            .with_child(Box::new(inner)),
-    )
+    Box::new(Card::new(body).with_title(title))
 }
 
 /// A vertical stack of rows with explicit inter-row spacing.
 fn rows(items: Vec<El>) -> El {
-    Box::new(Section::with_gap(items, ROW_GAP))
+    Box::new(Section::new(items))
 }
 
 /// A label with a dim helper line beneath it, paired with a trailing
 /// control. The `Spacer` pushes the control to the trailing edge.
 fn setting_row_described(label: &str, description: &str, control: El, large_text: bool) -> El {
     let text_block = Column::new()
+        .with_rhythm(ui::tokens::Rhythm::Tight)
         .with_no_padding()
         .with_intrinsic_height()
-        .push(Box::new(Text::new(label).with_size(14.0)))
-        .push(vgap(2.0))
-        .push(Box::new(Text::new(description).with_size(12.0).dimmed()));
+        .push(Box::new(Text::new(label).with_role(ui::TextRole::Body)))
+        .push(Box::new(
+            Text::new(description)
+                .with_role(ui::TextRole::Caption)
+                .dimmed(),
+        ));
     if large_text {
         Box::new(
             Column::new()
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(text_block))
-                .push(vgap(10.0))
                 .push(control),
         )
     } else {
@@ -397,28 +391,24 @@ fn setting_row_described(label: &str, description: &str, control: El, large_text
     }
 }
 
-fn browsing_data_controls(
-    actions: &SettingsActionBindings,
-    large_text: bool,
-    action_height: f32,
-) -> El {
+fn browsing_data_controls(actions: &SettingsActionBindings, large_text: bool) -> El {
     let clear_history = Box::new(button_with_action(
         Button::new("settings.clear_history", "Clear history")
-            .with_size(if large_text { 240.0 } else { 140.0 }, action_height),
+            .control_size(ui::widget::ControlSize::Large),
         actions.clear_history.clone(),
     ));
     let clear_site_data = Box::new(button_with_action(
         Button::new("settings.clear_cookies", "Request site-data clear")
-            .with_size(if large_text { 300.0 } else { 200.0 }, action_height),
+            .control_size(ui::widget::ControlSize::Large),
         actions.clear_site_data.clone(),
     ));
     if large_text {
         Box::new(
             Column::new()
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(clear_history)
-                .push(vgap(8.0))
                 .push(clear_site_data),
         )
     } else {
@@ -427,28 +417,27 @@ fn browsing_data_controls(
 }
 
 /// A labelled full-width text field: a caption above a [`TextInput`] whose
-/// edits are the preference action `build` makes of the typed value.
+/// edits replace the preference at `path` with the typed value.
 fn field_block(
     label: &str,
     state: &ui::LocalState<String>,
     id: &str,
     placeholder: &str,
     edits: Option<ui::framework::Dispatcher<Browser>>,
-    build: fn(String) -> BrowserAction,
+    path: Path<Browser, String>,
 ) -> El {
     let input = TextInput::from_state(state)
         .with_id(id)
         .with_placeholder(placeholder);
     let input = match edits {
-        Some(edits) => input.on_change(move |value| edits.apply(&build(value.to_string()))),
+        Some(edits) => input.on_change(move |value| edits.submit(path.replace(value))),
         None => input,
     };
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .push(Box::new(Text::new(label).with_size(14.0)))
-            .push(vgap(6.0))
+            .push(Box::new(Text::new(label).with_role(ui::TextRole::Body)))
             .push(Box::new(input)),
     )
 }
@@ -456,28 +445,12 @@ fn field_block(
 fn preference_toggle(
     toggle: Toggle,
     edits: Option<ui::framework::Dispatcher<Browser>>,
-    build: fn(bool) -> BrowserAction,
+    path: Path<Browser, bool>,
 ) -> Toggle {
     match edits {
-        Some(edits) => toggle.on_change(move |enabled| edits.apply(&build(enabled))),
+        Some(edits) => toggle.on_change(move |enabled| edits.submit(path.set(enabled))),
         None => toggle,
     }
-}
-
-fn adblock_action(enabled: bool) -> BrowserAction {
-    BrowserAction::SetAdblock { enabled }
-}
-
-fn clear_on_exit_action(enabled: bool) -> BrowserAction {
-    BrowserAction::SetClearOnExit { enabled }
-}
-
-fn homepage_action(url: String) -> BrowserAction {
-    BrowserAction::SetHomepage { url }
-}
-
-fn search_engine_action(template: String) -> BrowserAction {
-    BrowserAction::SetSearchEngine { template }
 }
 
 fn button_with_action(button: Button, action: Option<tilo_actions::ActionBinding<()>>) -> Button {
@@ -494,101 +467,45 @@ impl Widget for SettingsPane {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition(theme);
-        let child_node = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let composition = self.build_composition(theme);
+        let child_node = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
 
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         // `new_with_children` only fails when a child belongs to a different
         // tree; `child_node` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy.new_with_children(style, &[child_node]).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[child_node], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child_node) = children.first()
-        {
-            c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&child_node) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "SettingsPane"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("settings.root")
     }
+}
+
+impl SettingsPane {
+    pub(crate) fn with_notices(mut self, notices: Vec<crate::notice::Notice>) -> Self {
+        self.notices = notices;
+        self
+    }
+}
+pub(crate) fn page(parts: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
+    Box::new(
+        parts
+            .into_iter()
+            .fold(ui::widget::Page::new(), ui::widget::Page::section),
+    )
 }
 
 #[cfg(test)]
@@ -597,6 +514,7 @@ mod tests {
     use automerge::AutoCommit;
     use automerge::ReadDoc;
     use std::collections::HashMap;
+    use vello::kurbo::Point;
 
     #[test]
     fn preference_defaults_are_sensible() {
@@ -626,8 +544,7 @@ mod tests {
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
             pane.sync(&doc, &root);
-            assert!(doc.get(&root, ADBLOCK_PATH).unwrap().is_none());
-            assert!(doc.get(&root, HOMEPAGE_PATH).unwrap().is_none());
+            assert_eq!(doc.length(&root), 0, "presenting writes no document");
             let presentation = SettingsPresentation::from_settings(&settings);
             assert_eq!(presentation.homepage.with(Clone::clone), settings.homepage);
             assert_eq!(
@@ -676,20 +593,7 @@ mod tests {
             // Drive the real five-pass path: build_layout → compute_layout →
             // apply_layout, then flip the ad-block toggle through the live
             // widget tree and assert the CRDT bool changed.
-            use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
-
-            // Locate the ad-block toggle's rect by walking the live tree.
-            fn find_toggle_rect(w: &dyn Widget, id: &str) -> Option<Rect> {
-                if w.test_id() == Some(id) {
-                    return Some(w.get_rect());
-                }
-                for c in w.children() {
-                    if let Some(r) = find_toggle_rect(c, id) {
-                        return Some(r);
-                    }
-                }
-                None
-            }
+            use winit::event::{ElementState, MouseButton, WindowEvent};
 
             let mut pane = SettingsPane::new();
             let mut doc = AutoCommit::new();
@@ -713,39 +617,25 @@ mod tests {
             // Re-sync so the toggle adopts its retained presentation state.
             pane.sync(&doc, &root);
 
-            let rect = find_toggle_rect(&pane, "settings.adblock")
-                .expect("ad-block toggle is addressable in the tree");
+            let rect = ui::widget::find_test_id(&pane, "settings.adblock")
+                .expect("ad-block toggle is addressable in the tree")
+                .get_rect();
             let center = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mods = winit::event::Modifiers::default();
-            let mut dispatch = |pane: &mut SettingsPane, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                pane.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-            };
-            dispatch(
+            let device = winit::event::DeviceId::dummy();
+            let mut at = ui::testing::Dispatch::new()
+                .doc(&mut doc)
+                .layout(&taffy, node);
+            at.send(
                 &mut pane,
-                WindowEvent::CursorMoved {
+                &WindowEvent::CursorMoved {
                     device_id: device,
                     position: (center.x, center.y).into(),
                 },
             );
-            dispatch(
+            at.send(
                 &mut pane,
-                WindowEvent::MouseInput {
+                &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,

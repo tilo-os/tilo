@@ -25,23 +25,29 @@
 //! The catalogue, search, skin tones and names come from the shared
 //! [`emoji`] crate in the desktop's language.
 
+use ui::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 use ui::time::{Duration, Instant};
 
 use emoji::{Catalogue, Recents, SkinTone};
 use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::text_selection::Selection;
 use ui::theme::Theme;
-use ui::widget::{SearchField, SegmentedFace, SegmentedStyle, ToggleGroup, Widget};
+use ui::widget::{
+    ControlSize, ScrollRegion, SearchField, Segment, SegmentedFace, SegmentedStyle, ToggleGroup,
+    Widget,
+};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::i18n::{t, t_args};
 use crate::text_entry::{self, Edit};
+use ui::TextRole;
 
 /// Matches listed for a query at most.
 const SEARCH_RESULTS: usize = 96;
@@ -110,6 +116,7 @@ struct Section {
 struct Geometry {
     card: Rect,
     field: Rect,
+    body: Rect,
     tabs: Vec<Rect>,
     grid: Rect,
     footer: Rect,
@@ -120,6 +127,17 @@ struct Geometry {
     headings: Vec<(String, f64)>,
     content_height: f64,
     cell: f64,
+}
+
+/// Shaped footer content; geometry uses the same typography as painting.
+struct FooterText {
+    name: String,
+    hint: Vec<String>,
+    hint_width: f64,
+    hint_height: f64,
+    line_height: f64,
+    height: f64,
+    stacked: bool,
 }
 
 /// The picker's state and geometry, routed and painted by the overlay host.
@@ -148,6 +166,13 @@ pub struct EmojiPicker {
     geometry: Geometry,
     spacing: ui::tokens::Spacing,
     metrics: ui::tokens::Metrics,
+    footer_height: f64,
+    group_width: f64,
+    group_strip_width: f64,
+    tab_columns: usize,
+    body_scroll: ScrollRegion,
+    tone_scroll: ScrollRegion,
+    scroll_theme: Theme,
 }
 
 impl Default for EmojiPicker {
@@ -181,6 +206,13 @@ impl EmojiPicker {
             geometry: Geometry::default(),
             spacing: ui::tokens::Spacing::BASE,
             metrics: ui::tokens::Metrics::BASE,
+            footer_height: f64::from(ui::tokens::Metrics::BASE.bar_height),
+            group_width: f64::from(ui::tokens::Metrics::BASE.bar_height),
+            group_strip_width: f64::from(ui::tokens::Metrics::BASE.panel_width_sheet),
+            tab_columns: 1,
+            body_scroll: ScrollRegion::vertical(),
+            tone_scroll: ScrollRegion::vertical(),
+            scroll_theme: Theme::dark(),
         }
     }
 
@@ -204,6 +236,8 @@ impl EmojiPicker {
     /// rectangle in desktop coordinates — when there is one.
     pub fn open_at(&mut self, viewport: Rect, caret: Option<Rect>, locale: &str) {
         self.anchor = caret;
+        self.body_scroll.set_offset(Vec2::ZERO);
+        self.tone_scroll.set_offset(Vec2::ZERO);
         if !self.recents_loaded {
             self.recents_loaded = true;
             if let Some(store) = &self.store {
@@ -228,10 +262,75 @@ impl EmojiPicker {
     /// Close without inserting anything.
     pub fn close(&mut self) {
         self.open = false;
+        self.body_scroll.cancel_interaction();
+        self.tone_scroll.cancel_interaction();
         self.tones = None;
         self.press = None;
         self.hover = None;
         self.search.set_focused(false);
+    }
+
+    /// The visible picker scroll surface through the system's existing scroll door.
+    pub fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        if !self.open {
+            return None;
+        }
+        if self.tones.is_some() {
+            self.tone_scroll.primary_vertical_scroll()
+        } else if self.body_scroll.overflows_vertically() {
+            self.body_scroll.primary_vertical_scroll()
+        } else {
+            Some(ui::widget::PrimaryScrollRegion {
+                key: "primary",
+                owner_generation: None,
+                metrics: ui::widget::ScrollMetrics::new(
+                    self.geometry.content_height,
+                    self.geometry.grid.height(),
+                    self.scroll,
+                ),
+            })
+        }
+    }
+
+    /// Scroll the same surface as pointer input and retire in-flight presses.
+    pub fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        use ui::widget::PrimaryScrollResult;
+        if !self.open {
+            return PrimaryScrollResult::Unsupported;
+        }
+        let result = if self.tones.is_some() {
+            self.tone_scroll.apply_primary_vertical_scroll(action)
+        } else if self.body_scroll.overflows_vertically() {
+            self.body_scroll.apply_primary_vertical_scroll(action)
+        } else {
+            action.apply_to(self, Self::primary_vertical_scroll, |picker, _, next| {
+                picker.scroll = next;
+            })
+        };
+        if matches!(result, PrimaryScrollResult::Changed(_)) {
+            self.press = None;
+            self.hover = None;
+        }
+        result
+    }
+
+    /// Shared scrollbar fades request bounded repainting, never idle frames.
+    pub fn needs_animation_frame(&self) -> bool {
+        self.open
+            && [
+                Some(&self.body_scroll),
+                self.tones.as_ref().map(|_| &self.tone_scroll),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|region| {
+                region.overflows_vertically()
+                    && (region.needs_animation_frame(&self.scroll_theme)
+                        || region.next_wake_deadline(&self.scroll_theme).is_some())
+            })
     }
 
     /// The emoji picked since the last call, oldest first.
@@ -302,7 +401,11 @@ impl EmojiPicker {
     /// The grid rect of item `index` on screen, if it is scrolled into view.
     pub fn emoji_rect(&self, index: usize) -> Option<Rect> {
         let rect = self.screen_cell(index)?;
-        (rect.y0 >= self.geometry.grid.y0 - 0.5 && rect.y1 <= self.geometry.grid.y1 + 0.5)
+        let grid = self.body_screen_rect(self.geometry.grid);
+        (rect.y0 >= grid.y0 - 0.5
+            && rect.y1 <= grid.y1 + 0.5
+            && rect.x0 >= grid.x0 - 0.5
+            && rect.x1 <= grid.x1 + 0.5)
             .then_some(rect)
     }
 
@@ -377,6 +480,7 @@ impl EmojiPicker {
                 .map_or(0.0, |(_, y)| *y)
                 .min(self.max_scroll());
         }
+        self.scroll_selected_into_view();
     }
 
     fn takes_tone(&self, text: &str) -> bool {
@@ -405,6 +509,7 @@ impl EmojiPicker {
             .and_then(|tone| SkinTone::ALL.iter().position(|t| *t == tone))
             .map_or(0, |i| i.saturating_add(1));
         self.selected = index;
+        self.tone_scroll.set_offset(Vec2::ZERO);
         self.tones = Some(Tones {
             anchor: index,
             forms,
@@ -436,22 +541,37 @@ impl EmojiPicker {
     // --- geometry --------------------------------------------------------
 
     fn layout(&mut self) {
+        // A new grid must never complete a press on the old geometry/content.
+        self.press = None;
         let pad = f64::from(self.spacing.s3);
         let gap = f64::from(self.spacing.s2);
         let edge = f64::from(self.spacing.s4);
         let cell = f64::from(self.metrics.panel_row_height);
         let field_h = f64::from(self.metrics.bar_height);
         let tabs_h = f64::from(self.metrics.bar_height);
-        let footer_h = f64::from(self.metrics.bar_height);
-        let heading_h = f64::from(self.metrics.selector_height);
+        let footer_h = self.footer_height.max(f64::from(self.metrics.bar_height));
         let viewport = self.viewport;
-        let width = f64::from(self.metrics.panel_width_sheet)
-            .min(viewport.width() - edge * 2.0)
-            .max(cell * 4.0 + pad * 2.0);
-        let columns = (((width - pad * 2.0) / cell).floor()).max(1.0);
+        let width =
+            f64::from(self.metrics.panel_width_sheet).min((viewport.width() - edge * 2.0).max(0.0));
+        let group_count = self.catalogue.groups().len().max(1);
+        let available_height = (viewport.height() - edge * 2.0).max(0.0);
+        let initial_columns = self.group_column_count(width - pad * 2.0, group_count);
+        let initial_tabs = tabs_h * f64_of_usize(group_count.div_ceil(initial_columns));
+        let initial_fixed = pad * 2.0 + field_h + gap + initial_tabs + gap + gap + footer_h;
+        let constrained = initial_fixed + cell > available_height;
+        let gutter = if constrained {
+            f64::from(self.metrics.scrollbar_gutter)
+        } else {
+            0.0
+        };
+        let body_width = (width - pad * 2.0 - gutter).max(cell);
+        let columns = (body_width / cell).floor().max(1.0);
         let grid_w = columns * cell;
-        let grid_h = cell * f64_from_usize(GRID_ROWS);
-        let height = pad * 2.0 + field_h + gap + tabs_h + gap + grid_h + gap + footer_h;
+        self.tab_columns = self.group_column_count(body_width, group_count);
+        let tabs_h = tabs_h * f64_of_usize(group_count.div_ceil(self.tab_columns));
+        let fixed = pad * 2.0 + field_h + gap + tabs_h + gap + gap + footer_h;
+        let grid_h = (cell * f64_of_usize(GRID_ROWS)).min((available_height - fixed).max(cell));
+        let height = (fixed + grid_h).min(available_height);
         let size = (width, height);
         let card = self.anchor.map_or_else(
             || {
@@ -465,52 +585,37 @@ impl EmojiPicker {
         );
         let inner_x0 = card.x0 + pad;
         let inner_x1 = card.x1 - pad;
+        let body_x1 = inner_x1 - gutter;
         let field = Rect::new(inner_x0, card.y0 + pad, inner_x1, card.y0 + pad + field_h);
         let tabs_y0 = field.y1 + gap;
-        let group_count = self.catalogue.groups().len().max(1);
-        let tab_w = (inner_x1 - inner_x0) / f64_from_usize(group_count);
+        let tab_w = (body_x1 - inner_x0) / f64_of_usize(self.tab_columns);
         let tabs = (0..group_count)
             .map(|i| {
-                let x = inner_x0 + tab_w * f64_from_usize(i);
-                Rect::new(x, tabs_y0, x + tab_w, tabs_y0 + tabs_h)
+                let column = i.checked_rem(self.tab_columns).unwrap_or(0);
+                let row = i.checked_div(self.tab_columns).unwrap_or(0);
+                let x = inner_x0 + tab_w * f64_of_usize(column);
+                let y = tabs_y0 + f64::from(self.metrics.bar_height) * f64_of_usize(row);
+                Rect::new(x, y, x + tab_w, y + f64::from(self.metrics.bar_height))
             })
             .collect();
-        let grid_x0 = card.center().x - grid_w / 2.0;
+        let grid_x0 = inner_x0.midpoint(body_x1) - grid_w / 2.0;
         let grid = Rect::new(
             grid_x0,
             tabs_y0 + tabs_h + gap,
             grid_x0 + grid_w,
             tabs_y0 + tabs_h + gap + grid_h,
         );
-        let footer = Rect::new(inner_x0, grid.y1 + gap, inner_x1, grid.y1 + gap + footer_h);
+        let footer = Rect::new(inner_x0, grid.y1 + gap, body_x1, grid.y1 + gap + footer_h);
+        let body = Rect::new(inner_x0, tabs_y0, inner_x1, (card.y1 - pad).max(tabs_y0));
+        self.body_scroll.set_viewport(body, &self.scroll_theme);
+        self.body_scroll
+            .set_content_size(body.width() - gutter, footer.y1 - body.y0);
 
-        let per_row = usize_from_f64(columns).max(1);
-        let mut cells = vec![Rect::ZERO; self.items.len()];
-        let mut headings = Vec::new();
-        let mut y = 0.0;
-        for section in &self.sections {
-            if let Some(heading) = &section.heading {
-                headings.push((heading.clone(), y));
-                y += heading_h;
-            }
-            for (n, index) in (section.start..section.end).enumerate() {
-                let row = f64_from_usize(n.checked_div(per_row).unwrap_or(0));
-                let col = f64_from_usize(n.checked_rem(per_row).unwrap_or(0));
-                if let Some(slot) = cells.get_mut(index) {
-                    *slot = Rect::new(
-                        col * cell,
-                        y + row * cell,
-                        (col + 1.0) * cell,
-                        y + (row + 1.0) * cell,
-                    );
-                }
-            }
-            let rows = (section.end.saturating_sub(section.start)).div_ceil(per_row);
-            y += f64_from_usize(rows) * cell;
-        }
+        let (cells, headings, y) = self.layout_cells(usize_of_f64(columns).max(1), cell);
         self.geometry = Geometry {
             card,
             field,
+            body,
             tabs,
             grid,
             footer,
@@ -521,7 +626,47 @@ impl EmojiPicker {
         };
         self.search.apply_layout_external(field);
         self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+        self.scroll_selected_into_view();
         self.layout_tones();
+    }
+
+    fn layout_cells(&self, per_row: usize, cell: f64) -> (Vec<Rect>, Vec<(String, f64)>, f64) {
+        let heading_h = f64::from(self.metrics.selector_height);
+        let mut cells = vec![Rect::ZERO; self.items.len()];
+        let mut headings = Vec::new();
+        let mut y = 0.0;
+        for section in &self.sections {
+            if let Some(heading) = &section.heading {
+                headings.push((heading.clone(), y));
+                y += heading_h;
+            }
+            for (n, index) in (section.start..section.end).enumerate() {
+                let row = f64_of_usize(n.checked_div(per_row).unwrap_or(0));
+                let col = f64_of_usize(n.checked_rem(per_row).unwrap_or(0));
+                if let Some(slot) = cells.get_mut(index) {
+                    *slot = Rect::new(
+                        col * cell,
+                        y + row * cell,
+                        (col + 1.0) * cell,
+                        y + (row + 1.0) * cell,
+                    );
+                }
+            }
+            let rows = (section.end.saturating_sub(section.start)).div_ceil(per_row);
+            y += f64_of_usize(rows) * cell;
+        }
+        (cells, headings, y)
+    }
+
+    fn group_column_count(&self, room: f64, group_count: usize) -> usize {
+        let capacity = usize_of_f64((room / self.group_width.max(1.0)).floor())
+            .max(1)
+            .min(group_count);
+        if room >= self.group_strip_width {
+            group_count
+        } else {
+            group_count.div_ceil(group_count.div_ceil(capacity))
+        }
     }
 
     fn layout_tones(&mut self) {
@@ -537,37 +682,98 @@ impl EmojiPicker {
         let Some(tones) = self.tones.as_mut() else {
             return;
         };
-        let width = cell * f64_from_usize(tones.forms.len()) + pad * 2.0;
-        let height = cell + pad * 2.0;
+        let mut columns = usize_of_f64(((card.width() - pad * 2.0) / cell).floor())
+            .max(1)
+            .min(tones.forms.len());
+        let mut rows = tones.forms.len().div_ceil(columns);
+        let gutter = if cell * f64_of_usize(rows) + pad * 2.0 > card.height() {
+            f64::from(self.metrics.scrollbar_gutter)
+        } else {
+            0.0
+        };
+        if gutter > 0.0 {
+            columns = usize_of_f64(((card.width() - pad * 2.0 - gutter) / cell).floor())
+                .max(1)
+                .min(tones.forms.len());
+            rows = tones.forms.len().div_ceil(columns);
+        }
+        let width = cell * f64_of_usize(columns) + pad * 2.0 + gutter;
+        let height = (cell * f64_of_usize(rows) + pad * 2.0).min(card.height());
         let x0 = (anchor_rect.center().x - width / 2.0)
             .min(card.x1 - width)
             .max(card.x0);
-        // Above the emoji, or below it when the card's top is in the way.
-        let y0 = if anchor_rect.y0 - height >= card.y0 {
+        // Prefer above, then below, and finally the nearest bounded position.
+        let desired_y = if anchor_rect.y0 - height >= card.y0 {
             anchor_rect.y0 - height
         } else {
             anchor_rect.y1
         };
+        let y0 = desired_y.min(card.y1 - height).max(card.y0);
         tones.rect = Rect::new(x0, y0, x0 + width, y0 + height);
         tones.cells = (0..tones.forms.len())
             .map(|i| {
-                let x = x0 + pad + cell * f64_from_usize(i);
-                Rect::new(x, y0 + pad, x + cell, y0 + pad + cell)
+                let column = i.checked_rem(columns).unwrap_or(0);
+                let row = i.checked_div(columns).unwrap_or(0);
+                let x = x0 + pad + cell * f64_of_usize(column);
+                let y = y0 + pad + cell * f64_of_usize(row);
+                Rect::new(x, y, x + cell, y + cell)
             })
             .collect();
+        let inner = Rect::new(x0 + pad, y0 + pad, x0 + width - pad, y0 + height - pad);
+        self.tone_scroll.set_viewport(inner, &self.scroll_theme);
+        self.tone_scroll
+            .set_content_size(cell * f64_of_usize(columns), cell * f64_of_usize(rows));
+        if let Some(rect) = tones.cells.get(tones.selected) {
+            self.tone_scroll
+                .scroll_into_view(rect.with_origin((rect.x0 - inner.x0, rect.y0 - inner.y0)));
+        }
+    }
+
+    fn screen_tone_rect(&self, rect: Rect) -> Rect {
+        rect.with_origin((
+            rect.x0 - self.tone_scroll.offset().x,
+            rect.y0 - self.tone_scroll.offset().y,
+        ))
+        .intersect(self.tone_scroll.content_rect())
     }
 
     fn max_scroll(&self) -> f64 {
         (self.geometry.content_height - self.geometry.grid.height()).max(0.0)
     }
 
-    fn screen_cell(&self, index: usize) -> Option<Rect> {
+    fn content_cell(&self, index: usize) -> Option<Rect> {
         let cell = self.geometry.cells.get(index)?;
         let grid = self.geometry.grid;
         Some(cell.with_origin((grid.x0 + cell.x0, grid.y0 + cell.y0 - self.scroll)))
     }
 
+    fn screen_cell(&self, index: usize) -> Option<Rect> {
+        self.content_cell(index).map(|rect| {
+            rect.with_origin((
+                rect.x0 - self.body_scroll.offset().x,
+                rect.y0 - self.body_scroll.offset().y,
+            ))
+        })
+    }
+
+    fn body_screen_rect(&self, rect: Rect) -> Rect {
+        rect.with_origin((
+            rect.x0 - self.body_scroll.offset().x,
+            rect.y0 - self.body_scroll.offset().y,
+        ))
+        .intersect(self.body_scroll.content_rect())
+    }
+
     fn scroll_selected_into_view(&mut self) {
+        if self.items.is_empty() {
+            self.scroll = 0.0;
+            self.body_scroll
+                .scroll_into_view(self.geometry.grid.with_origin((
+                    self.geometry.grid.x0 - self.geometry.body.x0,
+                    self.geometry.grid.y0 - self.geometry.body.y0,
+                )));
+            return;
+        }
         let Some(cell) = self.geometry.cells.get(self.selected).copied() else {
             return;
         };
@@ -589,11 +795,22 @@ impl EmojiPicker {
             self.scroll = cell.y1 - view;
         }
         self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+        let rect = self
+            .content_cell(self.selected)
+            .unwrap_or(self.geometry.grid);
+        self.body_scroll.scroll_into_view(rect.with_origin((
+            rect.x0 - self.geometry.body.x0,
+            rect.y0 - self.geometry.body.y0,
+        )));
     }
 
     fn hit(&self, p: Point) -> Hit {
         if let Some(tones) = &self.tones {
-            if let Some(i) = tones.cells.iter().position(|r| r.contains(p)) {
+            if let Some(i) = tones
+                .cells
+                .iter()
+                .position(|r| self.screen_tone_rect(*r).contains(p))
+            {
                 return Hit::Tone(i);
             }
             if tones.rect.contains(p) {
@@ -607,6 +824,13 @@ impl EmojiPicker {
         if g.field.contains(p) {
             return Hit::Field;
         }
+        if !self.body_scroll.content_rect().contains(p) {
+            return Hit::Card;
+        }
+        let p = Point::new(
+            p.x + self.body_scroll.offset().x,
+            p.y + self.body_scroll.offset().y,
+        );
         if let Some(i) = g.tabs.iter().position(|r| r.contains(p)) {
             return Hit::Tab(i);
         }
@@ -664,9 +888,41 @@ impl EmojiPicker {
         if !self.open {
             return;
         }
+        let mut handled = false;
+        let region = if self.tones.is_some() {
+            &mut self.tone_scroll
+        } else {
+            &mut self.body_scroll
+        };
+        if !matches!(event, WindowEvent::KeyboardInput { .. }) {
+            region.handle_window_event(
+                event,
+                scale_factor,
+                modifiers,
+                &mut handled,
+                &self.scroll_theme,
+            );
+        }
+        if handled {
+            self.press = None;
+            self.hover = None;
+            return;
+        }
+        if matches!(event, WindowEvent::MouseWheel { .. })
+            && self
+                .tones
+                .as_ref()
+                .is_some_and(|tones| cursor.is_some_and(|point| tones.rect.contains(point)))
+        {
+            self.press = None;
+            return;
+        }
         match event {
             WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
-                self.key(&key.logical_key, modifiers);
+                // Opening a tone chooser and confirming it are separate presses.
+                if !key.repeat || key.logical_key != Key::Named(NamedKey::Enter) {
+                    self.key(&key.logical_key, modifiers);
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if let Some(p) = cursor {
@@ -692,7 +948,12 @@ impl EmojiPicker {
             WindowEvent::CursorMoved { .. } => {
                 self.hover = cursor.map(|p| self.hit(p));
             }
+            WindowEvent::Focused(false) => {
+                self.press = None;
+                self.hover = None;
+            }
             WindowEvent::MouseWheel { delta, .. } => {
+                self.press = None;
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.geometry.cell,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
@@ -752,20 +1013,44 @@ impl EmojiPicker {
         let Some(tones) = self.tones.as_mut() else {
             return;
         };
+        self.press = None;
         let last = tones.forms.len().saturating_sub(1);
+        let first_y = tones.cells.first().map_or(0.0, |rect| rect.y0);
+        let columns = tones
+            .cells
+            .iter()
+            .take_while(|rect| rect.y0.to_bits() == first_y.to_bits())
+            .count()
+            .max(1);
         match key {
-            Key::Named(NamedKey::Escape) => self.tones = None,
+            Key::Named(NamedKey::Escape) => {
+                self.tone_scroll.cancel_interaction();
+                self.tones = None;
+            }
             Key::Named(NamedKey::Enter | NamedKey::Space) => self.commit_selected(),
-            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => {
+            Key::Named(NamedKey::ArrowUp) => {
+                if tones.selected >= columns {
+                    tones.selected = tones.selected.saturating_sub(columns);
+                }
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                if tones.selected.checked_div(columns).unwrap_or(0)
+                    < last.checked_div(columns).unwrap_or(0)
+                {
+                    tones.selected = tones.selected.saturating_add(columns).min(last);
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
                 tones.selected = tones.selected.saturating_sub(1);
             }
-            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown | NamedKey::Tab) => {
+            Key::Named(NamedKey::ArrowRight | NamedKey::Tab) => {
                 tones.selected = tones.selected.saturating_add(1).min(last);
             }
             Key::Named(NamedKey::Home) => tones.selected = 0,
             Key::Named(NamedKey::End) => tones.selected = last,
             _ => {}
         }
+        self.layout_tones();
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -897,7 +1182,7 @@ impl EmojiPicker {
             .map(|(i, (group, rect))| {
                 AccessNode::new(Role::Tab)
                     .with_name(group.label())
-                    .with_bounds(*rect)
+                    .with_bounds(self.body_screen_rect(*rect))
                     .with_hashed_key(format!("emoji-group:{}", group.id()))
                     .with_state(AccessState::new().selected(i == self.group))
             })
@@ -919,7 +1204,7 @@ impl EmojiPicker {
             dialog.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.spoken_name(text))
-                    .with_bounds(g.footer)
+                    .with_bounds(self.body_screen_rect(g.footer))
                     .with_live(Politeness::Polite),
             );
         }
@@ -962,7 +1247,7 @@ impl EmojiPicker {
             nodes.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(t("emoji-picker-no-results"))
-                    .with_bounds(self.geometry.grid),
+                    .with_bounds(self.body_screen_rect(self.geometry.grid)),
             );
         }
         nodes
@@ -979,7 +1264,7 @@ impl EmojiPicker {
             .map(|(i, (text, rect))| {
                 AccessNode::new(Role::Button)
                     .with_name(self.spoken_name(text))
-                    .with_bounds(*rect)
+                    .with_bounds(self.screen_tone_rect(*rect))
                     .with_hashed_key(format!("emoji-tone:{text}"))
                     .with_state(
                         AccessState::new()
@@ -1008,6 +1293,102 @@ impl EmojiPicker {
             .filter(|rect| rect.area() > 0.0)
     }
 
+    fn measure_footer(&self, text: &mut TextRenderer, theme: &Theme) -> Option<FooterText> {
+        let selected = self.selected()?;
+        let name = self.spoken_name(selected);
+        let hint = self.hint();
+        let gap = f64::from(self.spacing.s2);
+        let width =
+            (self.geometry.footer.width() - f64::from(self.metrics.bar_height) - gap).max(0.0);
+        let style = theme.tokens.typography.style(TextRole::Caption);
+        let name_style = style.clone().with_weight(TextWeight::Medium);
+        let name_width = f64::from(text.measure_style(&name, None, &name_style).0);
+        let (hint_width, hint_height) = text.measure_style(&hint, None, &style);
+        let stacked = name_width + gap + f64::from(hint_width) > width;
+        let line_height = f64::from(style.line_height_px());
+        let lines = if stacked {
+            text.clamp_to_lines_style(&hint, f32_of_f64(width), usize::MAX, &style)
+        } else {
+            vec![hint]
+        };
+        let height = if stacked {
+            f64::from(self.metrics.bar_height).max(line_height)
+                + gap
+                + line_height * f64_of_usize(lines.len())
+        } else {
+            f64::from(self.metrics.bar_height)
+        };
+        Some(FooterText {
+            name: text.elide_to_width_style(&name, f32_of_f64(width), &name_style),
+            hint: lines,
+            hint_width: f64::from(hint_width),
+            hint_height: f64::from(hint_height),
+            line_height,
+            height,
+            stacked,
+        })
+    }
+
+    fn draw_footer(&self, ctx: &mut PaintCtx<'_>, footer: &FooterText) {
+        let Some(selected) = self.selected() else {
+            return;
+        };
+        let rect = self.geometry.footer;
+        let edge = f64::from(self.metrics.bar_height);
+        let glyph = Rect::new(rect.x0, rect.y0, rect.x0 + edge, rect.y0 + edge);
+        draw_emoji(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            glyph,
+            selected,
+        );
+        let x = glyph.x1 + f64::from(self.spacing.s2);
+        let style = ctx.theme.tokens.typography.style(TextRole::Caption);
+        let name_style = style.clone().with_weight(TextWeight::Medium);
+        let hint_x = if footer.stacked {
+            x
+        } else {
+            (rect.x1 - footer.hint_width).max(x)
+        };
+        let name_y = if footer.stacked {
+            glyph.center().y - f64::from(ctx.theme.tokens.typography.size(TextRole::Caption)) * 0.7
+        } else {
+            rect.center().y - f64::from(ctx.theme.tokens.typography.size(TextRole::Caption)) * 0.7
+        };
+        let name_width = if footer.stacked {
+            rect.x1 - x
+        } else {
+            hint_x - x - f64::from(self.spacing.s2)
+        };
+        ctx.text.draw_style(
+            ctx.scene,
+            &footer.name,
+            ctx.theme.tokens.colors.text_primary,
+            ctx.transform.pre_translate((x, name_y).into()),
+            Some(f32_of_f64(name_width.max(0.0))),
+            &name_style,
+        );
+        let hint_y = if footer.stacked {
+            rect.y0 + edge.max(footer.line_height) + f64::from(self.spacing.s2)
+        } else {
+            rect.center().y - footer.hint_height / 2.0
+        };
+        for (index, line) in footer.hint.iter().enumerate() {
+            ctx.text.draw_style(
+                ctx.scene,
+                line,
+                ctx.theme.tokens.colors.text_dim,
+                ctx.transform.pre_translate(
+                    (hint_x, hint_y + footer.line_height * f64_of_usize(index)).into(),
+                ),
+                None,
+                &style,
+            );
+        }
+    }
+
     // --- paint -----------------------------------------------------------
 
     /// Paint over `viewport`. Geometry follows the theme's spacing and
@@ -1028,6 +1409,12 @@ impl EmojiPicker {
         if !self.open {
             return;
         }
+        if self.scroll_theme != *theme {
+            self.scroll_theme = theme.clone();
+            self.layout();
+        }
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
         if self.spacing != theme.tokens.spacing
             || self.metrics != theme.tokens.metrics
             || self.viewport != viewport
@@ -1037,34 +1424,72 @@ impl EmojiPicker {
             self.viewport = viewport;
             self.layout();
         }
-        // Theme type tokens already carry the user's text scale.
-        let renderer_scale = text_renderer.text_scale();
-        text_renderer.set_text_scale(1.0);
+        let group_width = self
+            .catalogue
+            .groups()
+            .iter()
+            .map(|group| {
+                SegmentedFace::intrinsic_width(
+                    &[group.icon()],
+                    ControlSize::Regular,
+                    text_renderer,
+                    theme,
+                )
+            })
+            .fold(f64::from(self.metrics.bar_height), f64::max);
+        let segments: Vec<Segment> = self
+            .catalogue
+            .groups()
+            .iter()
+            .map(|group| Segment::new(group.icon()))
+            .collect();
+        let group_strip_width = SegmentedFace::partition_segments(
+            Rect::ZERO,
+            &segments,
+            SegmentedStyle::Tabs,
+            ControlSize::Regular,
+            text_renderer,
+            theme,
+        )
+        .iter()
+        .map(Rect::width)
+        .fold(0.0_f64, f64::max)
+            * f64_of_usize(segments.len());
+        if self.group_width.to_bits() != group_width.to_bits()
+            || self.group_strip_width.to_bits() != group_strip_width.to_bits()
+        {
+            self.group_width = group_width;
+            self.group_strip_width = group_strip_width;
+            self.layout();
+        }
+        let footer = self.measure_footer(text_renderer, theme);
+        let footer_height = footer.as_ref().map_or_else(
+            || f64::from(self.metrics.bar_height),
+            |footer| footer.height,
+        );
+        if self.footer_height.to_bits() != footer_height.to_bits() {
+            self.footer_height = footer_height;
+            self.layout();
+        }
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let g = self.geometry.clone();
 
-        let radius = ui::chrome::ChromeRole::Panel.radius(theme, g.card.height());
-        ui::chrome::shell::panel_shadow(scene, transform, g.card, radius, theme, 1.0);
-        let card_shape = RoundedRect::from_rect(g.card, radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::shell::panel_ground(theme),
-            None,
-            &card_shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &card_shape,
-        );
+        ui::chrome::shell::paint_panel(scene, transform, g.card, theme, 1.0);
 
         self.search
             .draw(scene, transform, text_renderer, theme, presence);
 
+        let body_transform = transform
+            .pre_translate((-self.body_scroll.offset().x, -self.body_scroll.offset().y).into());
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &self.body_scroll.content_rect(),
+        );
+        let transform = body_transform;
         let icons: Vec<&str> = self
             .catalogue
             .groups()
@@ -1075,41 +1500,58 @@ impl EmojiPicker {
             Some(Hit::Tab(i)) => Some(i),
             _ => None,
         };
-        ToggleGroup::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &SegmentedFace::new(&g.tabs, &icons, self.group)
-                .style(SegmentedStyle::Underline)
-                .hovered(hovered_tab)
-                .text_size(type_scale.lg)
-                .weight(TextWeight::Regular),
-        );
+        for (row_index, (rects, labels)) in g
+            .tabs
+            .chunks(self.tab_columns)
+            .zip(icons.chunks(self.tab_columns))
+            .enumerate()
+        {
+            let first = row_index.saturating_mul(self.tab_columns);
+            let selection = self
+                .group
+                .checked_sub(first)
+                .filter(|index| *index < rects.len());
+            let hover = hovered_tab
+                .and_then(|index| index.checked_sub(first))
+                .filter(|index| *index < rects.len());
+            ToggleGroup::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &SegmentedFace::new(rects, labels, usize::MAX)
+                    .selection(selection)
+                    .style(SegmentedStyle::Tabs)
+                    .hovered(hover),
+            );
+        }
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &g.grid);
         for (heading, y) in &g.headings {
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 heading,
-                type_scale.xs,
                 colors.text_dim,
                 transform
                     .pre_translate((g.grid.x0 + 4.0, g.grid.y0 + y - self.scroll + 6.0).into()),
-                Some(f64_to_f32(g.grid.width())),
-                TextWeight::Medium,
+                Some(f32_of_f64(g.grid.width())),
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
         }
         for (i, text) in self.items.iter().enumerate() {
-            let Some(rect) = self.screen_cell(i) else {
+            let Some(rect) = self.content_cell(i) else {
                 continue;
             };
             if rect.y1 < g.grid.y0 || rect.y0 > g.grid.y1 {
                 continue;
             }
-            let shape = RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.md));
+            let shape =
+                RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.control));
             if i == self.selected {
-                scene.fill(Fill::NonZero, transform, theme.bg_active, None, &shape);
+                let lift = colors.lift_on(ui::chrome::shell::panel_ground(theme), 1.0);
+                scene.fill(Fill::NonZero, transform, lift, None, &shape);
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.5),
                     transform,
@@ -1118,17 +1560,18 @@ impl EmojiPicker {
                     &shape,
                 );
             } else if self.hover == Some(Hit::Emoji(i)) {
-                scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &shape);
+                let lift = colors.lift_on(ui::chrome::shell::panel_ground(theme), 0.5);
+                scene.fill(Fill::NonZero, transform, lift, None, &shape);
             }
             draw_emoji(scene, transform, text_renderer, theme, rect, text);
         }
         if self.items.is_empty() {
             let message = t("emoji-picker-no-results");
-            let (w, h) = text_renderer.measure(&message, type_scale.sm, None);
-            text_renderer.draw_text(
+            let (w, h) =
+                text_renderer.measure_style(&message, None, &type_scale.style(TextRole::Caption));
+            text_renderer.draw_style(
                 scene,
                 &message,
-                type_scale.sm,
                 colors.text_dim,
                 transform.pre_translate(
                     (
@@ -1138,56 +1581,30 @@ impl EmojiPicker {
                         .into(),
                 ),
                 None,
+                &type_scale.style(TextRole::Caption),
             );
         }
         scene.pop_layer();
 
-        // Footer: the highlighted emoji, its name, and what the keys do.
-        if let Some(text) = self.selected() {
-            let glyph = Rect::new(
-                g.footer.x0,
-                g.footer.y0,
-                g.footer.x0 + g.footer.height(),
-                g.footer.y1,
-            );
-            draw_emoji(scene, transform, text_renderer, theme, glyph, text);
-            let name = self.spoken_name(text);
-            let hint = self.hint();
-            let text_x = glyph.x1 + f64::from(self.spacing.s2);
-            let (hint_w, hint_h) = text_renderer.measure(&hint, type_scale.xs, None);
-            let hint_x = (g.footer.x1 - f64::from(hint_w)).max(text_x);
-            text_renderer.draw_text_weighted(
-                scene,
-                &name,
-                type_scale.sm,
-                colors.text_primary,
-                transform.pre_translate(
-                    (text_x, g.footer.center().y - f64::from(type_scale.sm) * 0.7).into(),
-                ),
-                Some(f64_to_f32(
-                    (hint_x - text_x - f64::from(self.spacing.s2)).max(0.0),
-                )),
-                TextWeight::Medium,
-            );
-            text_renderer.draw_text(
-                scene,
-                &hint,
-                type_scale.xs,
-                colors.text_dim,
-                transform
-                    .pre_translate((hint_x, g.footer.center().y - f64::from(hint_h) / 2.0).into()),
-                None,
+        if let Some(footer) = &footer {
+            self.draw_footer(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                footer,
             );
         }
 
+        scene.pop_layer();
+        let transform = transform.pre_translate(self.body_scroll.offset());
+        self.body_scroll.paint_bars(scene, transform, theme);
+
         if let Some(tones) = &self.tones {
-            let radius = f64::from(theme.tokens.radii.md);
+            let radius = f64::from(theme.tokens.radii.control);
             ui::surface::shadow(
                 scene,
                 transform,
                 tones.rect,
                 radius,
-                &theme.tokens.elevation.e2,
+                &theme.tokens.elevation.floating,
             );
             let shape = RoundedRect::from_rect(tones.rect, radius);
             scene.fill(
@@ -1204,21 +1621,35 @@ impl EmojiPicker {
                 None,
                 &shape,
             );
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                transform,
+                &self.tone_scroll.content_rect(),
+            );
+            let tone_transform = transform
+                .pre_translate((-self.tone_scroll.offset().x, -self.tone_scroll.offset().y).into());
             for (i, (text, rect)) in tones.forms.iter().zip(&tones.cells).enumerate() {
                 if i == tones.selected {
-                    let cell_shape =
-                        RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.md));
-                    scene.fill(Fill::NonZero, transform, theme.bg_active, None, &cell_shape);
+                    let cell_shape = RoundedRect::from_rect(
+                        rect.inset(-2.0),
+                        f64::from(theme.tokens.radii.control),
+                    );
+                    let lift = colors.lift_on(colors.surfaces.raised, 1.0);
+                    scene.fill(Fill::NonZero, transform, lift, None, &cell_shape);
                     scene.stroke(
                         &vello::kurbo::Stroke::new(1.5),
-                        transform,
+                        tone_transform,
                         colors.border_focus,
                         None,
                         &cell_shape,
                     );
                 }
-                draw_emoji(scene, transform, text_renderer, theme, *rect, text);
+                draw_emoji(scene, tone_transform, text_renderer, theme, *rect, text);
             }
+            scene.pop_layer();
+            self.tone_scroll.paint_bars(scene, transform, theme);
         }
         text_renderer.set_text_scale(renderer_scale);
     }
@@ -1243,7 +1674,7 @@ fn draw_emoji(
     rect: Rect,
     text: &str,
 ) {
-    let size = f64_to_f32((rect.height().min(rect.width()) * GLYPH_SCALE).clamp(12.0, 48.0));
+    let size = f32_of_f64((rect.height().min(rect.width()) * GLYPH_SCALE).clamp(12.0, 48.0));
     let (w, h) = text_renderer.measure(text, size, None);
     text_renderer.draw_text(
         scene,
@@ -1259,23 +1690,6 @@ fn draw_emoji(
         ),
         None,
     );
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "grid counts are a few hundred at most"
-)]
-fn f64_from_usize(n: usize) -> f64 {
-    n as f64
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "a column count of a card-sized grid, already floored and at least one"
-)]
-fn usize_from_f64(v: f64) -> usize {
-    v.max(0.0) as usize
 }
 
 /// Where a card of `size` goes for a field whose caret is `caret`: its left
@@ -1306,13 +1720,9 @@ pub fn card_at_caret(
     Rect::from_origin_size((x0, y0), (width, height))
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "card-sized lengths and glyph sizes fit f32"
-)]
-fn f64_to_f32(v: f64) -> f32 {
-    v as f32
-}
+#[cfg(test)]
+#[path = "emoji_picker/constrained_tests.rs"]
+mod constrained_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1375,6 +1785,324 @@ mod tests {
             };
             press(picker, &key, ModifiersState::empty());
         }
+    }
+
+    fn pointer_event(picker: &mut EmojiPicker, state: ElementState, point: Point) {
+        picker.handle_event(
+            &ui::synthetic_input::mouse_input(state, MouseButton::Left),
+            1.0,
+            ModifiersState::empty(),
+            Some(point),
+            Instant::now(),
+        );
+    }
+
+    #[test]
+    fn interrupted_pointer_pick_does_not_insert_after_focus_loss() {
+        let mut picker = opened();
+        typed(&mut picker, "pizza");
+        let cell = picker.emoji_rect(0).expect("visible match").center();
+        pointer_event(&mut picker, ElementState::Pressed, cell);
+        picker.handle_event(
+            &WindowEvent::Focused(false),
+            1.0,
+            ModifiersState::empty(),
+            Some(cell),
+            Instant::now(),
+        );
+        pointer_event(&mut picker, ElementState::Released, cell);
+        assert!(
+            picker.take_commits().is_empty(),
+            "focus loss cancels the pick"
+        );
+        assert!(picker.is_open(), "cancelled pick keeps the search");
+        pointer_event(&mut picker, ElementState::Pressed, cell);
+        pointer_event(&mut picker, ElementState::Released, cell);
+        assert_eq!(picker.take_commits(), ["🍕"], "a fresh click still works");
+        assert!(
+            picker.take_commits().is_empty(),
+            "one completed click inserts once"
+        );
+    }
+
+    #[test]
+    fn interrupted_pointer_pick_does_not_insert_a_replaced_search_result() {
+        let mut picker = opened();
+        typed(&mut picker, "pizza");
+        let cell = picker.emoji_rect(0).expect("visible match").center();
+        pointer_event(&mut picker, ElementState::Pressed, cell);
+        picker.handle_event(
+            &WindowEvent::Ime(winit::event::Ime::Disabled),
+            1.0,
+            ModifiersState::empty(),
+            Some(cell),
+            Instant::now(),
+        );
+        // Search correction through the production keyboard editing path.
+        press(
+            &mut picker,
+            &Key::Character("a".into()),
+            ModifiersState::CONTROL,
+        );
+        typed(&mut picker, "thumbs up");
+        assert_eq!(picker.selected(), Some("👍"));
+        pointer_event(&mut picker, ElementState::Released, cell);
+        assert!(
+            picker.take_commits().is_empty(),
+            "the old press cannot pick a new result"
+        );
+        assert!(picker.is_open());
+        press(
+            &mut picker,
+            &Key::Named(NamedKey::Enter),
+            ModifiersState::empty(),
+        );
+        assert_eq!(
+            picker.take_commits(),
+            ["👍"],
+            "explicit keyboard pick works"
+        );
+    }
+
+    #[test]
+    fn interrupted_pointer_pick_cancels_scroll_resize_and_touch() {
+        #[derive(Clone, Copy, Debug)]
+        enum Interruption {
+            Scroll,
+            Resize,
+            TouchCancel,
+        }
+        for interruption in [
+            Interruption::Scroll,
+            Interruption::Resize,
+            Interruption::TouchCancel,
+        ] {
+            let mut picker = opened();
+            let expected = picker.selected().expect("first emoji").to_owned();
+            let cell = picker.emoji_rect(0).expect("visible first emoji").center();
+            pointer_event(&mut picker, ElementState::Pressed, cell);
+            match interruption {
+                Interruption::Scroll => {
+                    for delta in [-1.0, 1.0] {
+                        picker.handle_event(
+                            &ui::synthetic_input::mouse_wheel(0.0, delta),
+                            1.0,
+                            ModifiersState::empty(),
+                            Some(cell),
+                            Instant::now(),
+                        );
+                    }
+                }
+                Interruption::Resize => {
+                    picker.draw(
+                        &mut Scene::new(),
+                        Affine::IDENTITY,
+                        &mut TextRenderer::new(),
+                        &Theme::dark(),
+                        &PresenceCtx::default(),
+                        Rect::new(0.0, 0.0, 1260.0, 800.0),
+                    );
+                }
+                Interruption::TouchCancel => {
+                    picker.handle_event(
+                        &WindowEvent::Touch(winit::event::Touch {
+                            device_id: winit::event::DeviceId::dummy(),
+                            phase: TouchPhase::Cancelled,
+                            location: winit::dpi::PhysicalPosition::new(cell.x, cell.y),
+                            force: None,
+                            id: 1,
+                        }),
+                        1.0,
+                        ModifiersState::empty(),
+                        Some(cell),
+                        Instant::now(),
+                    );
+                }
+            }
+            pointer_event(&mut picker, ElementState::Released, cell);
+            assert!(
+                picker.take_commits().is_empty(),
+                "{interruption:?} cancels the pick"
+            );
+            assert!(picker.is_open());
+            let fresh = picker
+                .emoji_rect(0)
+                .expect("first emoji remains visible")
+                .center();
+            pointer_event(&mut picker, ElementState::Pressed, fresh);
+            pointer_event(&mut picker, ElementState::Released, fresh);
+            assert_eq!(
+                picker.take_commits(),
+                [expected],
+                "next click works after {interruption:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn enlarged_footer_and_narrow_groups_reserve_their_measured_room() {
+        let mut picker = opened();
+        typed(&mut picker, "thumbs up");
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        picker.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::default(),
+            Rect::new(0.0, 0.0, 320.0, 700.0),
+        );
+        let name = picker.spoken_name(picker.selected().expect("match"));
+        let style = theme.tokens.typography.style(TextRole::Caption);
+        let name_width = f64::from(text.measure_style(&name, None, &style).0);
+        let hint_width = f64::from(text.measure_style(&picker.hint(), None, &style).0);
+        assert!(
+            picker.geometry.footer.height() >= 2.0 * f64::from(style.line_height_px())
+                || name_width + hint_width + f64::from(picker.metrics.bar_height)
+                    < picker.geometry.footer.width(),
+            "footer text must fit or stack"
+        );
+        let labels: Vec<&str> = picker
+            .catalogue
+            .groups()
+            .iter()
+            .map(emoji::Group::icon)
+            .collect();
+        let required = labels
+            .iter()
+            .map(|label| {
+                ui::widget::SegmentedFace::intrinsic_width(
+                    &[*label],
+                    ui::widget::ControlSize::Regular,
+                    &mut text,
+                    &theme,
+                )
+            })
+            .fold(0.0_f64, f64::max);
+        assert!(
+            picker
+                .geometry
+                .tabs
+                .iter()
+                .all(|rect| rect.width() >= required),
+            "group icons need the shared control's measured room"
+        );
+    }
+
+    #[test]
+    fn narrow_groups_keep_shared_intrinsic_targets() {
+        let mut picker = opened();
+        let theme = Theme::light().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        picker.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::default(),
+            Rect::new(0.0, 0.0, 320.0, 700.0),
+        );
+        let required = picker
+            .catalogue
+            .groups()
+            .iter()
+            .map(|group| {
+                ui::widget::SegmentedFace::intrinsic_width(
+                    &[group.icon()],
+                    ui::widget::ControlSize::Regular,
+                    &mut text,
+                    &theme,
+                )
+            })
+            .fold(0.0_f64, f64::max);
+        assert!(
+            picker
+                .geometry
+                .tabs
+                .iter()
+                .all(|rect| rect.width() >= required),
+            "each visible group needs the shared face's measured glyph room"
+        );
+    }
+
+    #[test]
+    fn wrapped_groups_keep_keyboard_pointer_and_accessible_selection_on_resize() {
+        let mut picker = opened();
+        let theme = Theme::light().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        let mut paint = |picker: &mut EmojiPicker, height: f64| {
+            picker.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::default(),
+                Rect::new(0.0, 0.0, 320.0, height),
+            );
+        };
+        paint(&mut picker, 700.0);
+        let group_count = picker.catalogue.groups().len();
+        for _ in 0..group_count.saturating_sub(1) {
+            press(
+                &mut picker,
+                &Key::Named(NamedKey::Tab),
+                ModifiersState::empty(),
+            );
+        }
+        paint(&mut picker, 700.0);
+        assert_eq!(picker.group, group_count.saturating_sub(1));
+        let accessible = picker.accessibility().expect("open picker");
+        let tabs = accessible
+            .children
+            .iter()
+            .find(|node| node.role == Role::TabBar)
+            .expect("shared group semantics")
+            .children
+            .as_slice();
+        assert_eq!(tabs.len(), group_count);
+        assert!(tabs.last().expect("last group").state.selected);
+        for node in tabs {
+            let bounds = node.bounds.expect("every group has painted bounds");
+            assert!(bounds.x0 >= picker.geometry.card.x0 && bounds.x1 <= picker.geometry.card.x1);
+        }
+        let cursor = picker.geometry.tabs.first().expect("first group").center();
+        for state in [ElementState::Pressed, ElementState::Released] {
+            picker.handle_event(
+                &ui::synthetic_input::mouse_input(state, MouseButton::Left),
+                1.0,
+                ModifiersState::empty(),
+                Some(cursor),
+                Instant::now(),
+            );
+        }
+        assert_eq!(picker.group, 0, "pointer chooses the original stable group");
+        for _ in 0..picker.items.len().saturating_sub(1) {
+            press(
+                &mut picker,
+                &Key::Named(NamedKey::ArrowRight),
+                ModifiersState::empty(),
+            );
+        }
+        paint(&mut picker, 480.0);
+        assert!(
+            picker.emoji_rect(picker.selected).is_some(),
+            "resized highlight stays visible"
+        );
+        assert!(
+            picker.geometry.card.y1 <= 480.0,
+            "measured footer stays on screen"
+        );
+        press(
+            &mut picker,
+            &Key::Named(NamedKey::Escape),
+            ModifiersState::empty(),
+        );
+        assert!(!picker.is_open());
+        assert!(
+            picker.take_commits().is_empty(),
+            "group navigation/cancel inserts nothing"
+        );
     }
 
     #[test]
@@ -1649,5 +2377,123 @@ mod tests {
         restarted.attach_store(Box::new(store));
         restarted.open(VIEWPORT, "en-US");
         assert_eq!(restarted.recents(), ["🎉".to_string(), "👍".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod held_submit_tests {
+    use super::*;
+
+    fn send(picker: &mut EmojiPicker, key: Key, repeat: bool, modifiers: ModifiersState) {
+        let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+        event.repeat = repeat;
+        picker.handle_event(
+            &ui::synthetic_input::keyboard_input(event),
+            1.0,
+            modifiers,
+            None,
+            Instant::now(),
+        );
+    }
+
+    fn thumbs_up() -> EmojiPicker {
+        let mut picker = EmojiPicker::new();
+        picker.open(Rect::new(0.0, 0.0, 800.0, 700.0), "en-US");
+        for character in "thumbs up".chars() {
+            send(
+                &mut picker,
+                Key::Character(character.to_string().into()),
+                false,
+                ModifiersState::empty(),
+            );
+        }
+        assert_eq!(picker.selected(), Some("👍"));
+        picker
+    }
+
+    #[test]
+    fn held_shift_enter_does_not_confirm_the_tone_chooser() {
+        let mut picker = thumbs_up();
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            false,
+            ModifiersState::SHIFT,
+        );
+        let forms = picker
+            .tone_forms()
+            .expect("first press opens tones")
+            .to_vec();
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            true,
+            ModifiersState::SHIFT,
+        );
+        assert!(
+            picker.is_open(),
+            "held opening key must not insert and close"
+        );
+        assert!(picker.take_commits().is_empty());
+        send(
+            &mut picker,
+            Key::Named(NamedKey::ArrowRight),
+            true,
+            ModifiersState::empty(),
+        );
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            false,
+            ModifiersState::empty(),
+        );
+        assert_eq!(picker.take_commits(), [forms[1].clone()]);
+        assert!(!picker.is_open());
+    }
+
+    #[test]
+    fn reopened_picker_requires_fresh_submit_and_retains_nested_escape() {
+        let mut picker = thumbs_up();
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            false,
+            ModifiersState::SHIFT,
+        );
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Escape),
+            false,
+            ModifiersState::empty(),
+        );
+        assert!(picker.is_open() && picker.tone_forms().is_none());
+        assert!(picker.take_commits().is_empty());
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Escape),
+            false,
+            ModifiersState::empty(),
+        );
+        assert!(!picker.is_open());
+        picker.open(Rect::new(0.0, 0.0, 800.0, 700.0), "en-US");
+        let selected = picker.selected().expect("a selected emoji").to_owned();
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            true,
+            ModifiersState::empty(),
+        );
+        assert!(
+            picker.is_open(),
+            "orphan repeat must not submit a reopened picker"
+        );
+        assert!(picker.take_commits().is_empty());
+        send(
+            &mut picker,
+            Key::Named(NamedKey::Enter),
+            false,
+            ModifiersState::empty(),
+        );
+        assert_eq!(picker.take_commits(), [selected]);
     }
 }

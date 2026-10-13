@@ -124,8 +124,19 @@ pub struct PlaneStatus {
 pub struct NativePlane {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<Result<()>>>,
+    /// Turns true when the plane thread ends, however it ends.
+    finished: tokio::sync::watch::Receiver<bool>,
     status: Arc<Mutex<PlaneStatus>>,
     mount_point: PathBuf,
+}
+
+/// Marks the plane thread finished when dropped: on return, error or panic.
+struct ExitSignal(tokio::sync::watch::Sender<bool>);
+
+impl Drop for ExitSignal {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
 }
 
 fn mountinfo_has(mount_point: &Path) -> bool {
@@ -282,16 +293,21 @@ impl NativePlane {
             cfg.mount_point.display()
         );
         let stop = Arc::new(AtomicBool::new(false));
+        let (exit, finished) = tokio::sync::watch::channel(false);
         let thread = {
             let stop = Arc::clone(&stop);
             std::thread::Builder::new()
                 .name("native-plane".into())
-                .spawn(move || engine.run(&stop, sync))
+                .spawn(move || {
+                    let _exit = ExitSignal(exit);
+                    engine.run(&stop, sync)
+                })
                 .context("starting the native data plane thread")?
         };
         Ok(Self {
             stop,
             thread: Some(thread),
+            finished,
             status,
             mount_point: cfg.mount_point,
         })
@@ -304,6 +320,15 @@ impl NativePlane {
     /// Whether the plane thread ended on its own (an error).
     pub fn is_finished(&self) -> bool {
         self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
+    /// Resolves once the plane thread has ended on its own (an error). The
+    /// thread signals its own end, so a mount waits on this without the
+    /// once-a-second health tick it used to run.
+    pub async fn finished(&self) {
+        let mut finished = self.finished.clone();
+        // A closed channel means the thread's signal is gone with it.
+        let _ = finished.wait_for(|done| *done).await;
     }
 
     /// Unmounts, publishes what is pending and stops serving placeholders.

@@ -1,0 +1,311 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "chat.workspace"
+label = "Chat"
+version = 1
+fields = [
+  { path = "workspaces", type = "Collection<Workspace>", stored = "collection" },
+  { path = "workspaces.*.name", type = "String", label = true },
+  { path = "workspaces.*.glyph", type = "String" },
+  { path = "workspaces.*.color", type = "u32" },
+  { path = "categories", type = "Collection<Category>", stored = "collection" },
+  { path = "categories.*.workspace", type = "Id", readonly = true },
+  { path = "categories.*.name", type = "String", label = true },
+  { path = "channels", type = "Collection<Channel>", stored = "collection" },
+  { path = "channels.*.workspace", type = "Id", readonly = true },
+  { path = "channels.*.category", type = "Option<Id>" },
+  { path = "channels.*.name", type = "String", label = true },
+  { path = "channels.*.topic", type = "String" },
+  { path = "channels.*.kind", type = "ChannelKind", readonly = true },
+  { path = "channels.*.archived", type = "bool" },
+  { path = "channels.*.conversation_with", type = "Option<Atom>", readonly = true },
+  { path = "messages", type = "Collection<Message>", stored = "collection" },
+  { path = "messages.*.channel", type = "Id", readonly = true },
+  { path = "messages.*.author", type = "Atom", readonly = true },
+  { path = "messages.*.ts", type = "i64", readonly = true },
+  { path = "messages.*.text", type = "String", label = true, readonly = true },
+  { path = "messages.*.body", type = "Json<Vec<ClipBlock>>", readonly = true },
+  { path = "messages.*.edited", type = "bool", readonly = true },
+  { path = "messages.*.history", type = "Json<Vec<Revision>>", readonly = true },
+  { path = "messages.*.parent", type = "Option<Id>", readonly = true },
+  { path = "messages.*.reactions", type = "ui::tilo_resource::Set<Reacted>", readonly = true },
+  { path = "messages.*.mentions", type = "Json<Vec<crate::mention::Mention>>", readonly = true },
+  { path = "messages.*.reference", type = "Json<Option<tilo_reference::ResourceRef>>", readonly = true },
+  { path = "messages.*.source_provider", type = "Option<Atom>", readonly = true },
+  { path = "messages.*.attachment", type = "Json<Option<crate::model::Attachment>>", readonly = true },
+  { path = "messages.*.pinned", type = "bool" },
+  { path = "messages.*.work", type = "Option<Work>", readonly = true, stored = "record" },
+  { path = "messages.*.work.state", type = "Json<Option<Transition>>" },
+  { path = "messages.*.work.reasoning", type = "Json<Option<crate::model::AgentReasoning>>" },
+  { path = "messages.*.work.trace", type = "Keyed<Step>", stored = "keyed" },
+  { path = "messages.*.work.trace.*.id", type = "Atom" },
+  { path = "messages.*.work.trace.*.sequence", type = "u64" },
+  { path = "messages.*.work.trace.*.resource", type = "Atom" },
+  { path = "messages.*.work.trace.*.label", type = "String", label = true },
+  { path = "messages.*.work.trace.*.outcome", type = "Json<Option<crate::model::AgentStepOutcome>>" },
+  { path = "messages.*.appearance", type = "Json<Option<tilo_actions::Appearance>>", readonly = true },
+  { path = "people", type = "Keyed<Person>", stored = "keyed" },
+  { path = "people.*.id", type = "Atom", readonly = true },
+  { path = "people.*.name", type = "String", label = true },
+  { path = "people.*.initials", type = "String" },
+  { path = "people.*.color", type = "u32" },
+  { path = "people.*.status", type = "Presence" },
+  { path = "people.*.agent", type = "bool", readonly = true },
+  { path = "agent_names", type = "BTreeMap<String, String>" },
+  { path = "read", type = "BTreeMap<String, BTreeMap<String, i64>>" },
+  { path = "drafts", type = "BTreeMap<String, RichText>" },
+  { path = "feedback", type = "Collection<FeedbackReport>", stored = "collection" },
+  { path = "feedback.*.submission", type = "Json<Option<ui::feedback::Submission>>", readonly = true },
+  { path = "feedback.*.author", type = "Atom", readonly = true },
+  { path = "feedback.*.ts", type = "i64", readonly = true },
+  { path = "feedback.*.triage", type = "Collection<Triage>", readonly = true, stored = "collection" },
+  { path = "feedback.*.triage.*.author", type = "Atom", readonly = true },
+  { path = "feedback.*.triage.*.ts", type = "i64", readonly = true },
+  { path = "feedback.*.triage.*.update", type = "Json<Option<crate::feedback::TriageUpdate>>", readonly = true },
+  { path = "moderation", type = "moderation_model::Moderation", stored = "record" },
+  { path = "moderation.reports", type = "Keyed<Report>", stored = "keyed" },
+  { path = "moderation.reports.*.id", type = "String", readonly = true },
+  { path = "moderation.reports.*.reporter", type = "String" },
+  { path = "moderation.reports.*.person", type = "String" },
+  { path = "moderation.reports.*.app", type = "Option<String>" },
+  { path = "moderation.reports.*.record", type = "Option<String>" },
+  { path = "moderation.reports.*.item", type = "Option<String>" },
+  { path = "moderation.reports.*.reason", type = "String" },
+  { path = "moderation.reports.*.at_ms", type = "i64" },
+  { path = "moderation.reports.*.decision", type = "Option<String>" },
+  { path = "moderation.decisions", type = "Keyed<Decision>", stored = "keyed" },
+  { path = "moderation.decisions.*.id", type = "String", readonly = true },
+  { path = "moderation.decisions.*.person", type = "String" },
+  { path = "moderation.decisions.*.reports", type = "Json<Vec<String>>" },
+  { path = "moderation.decisions.*.outcome", type = "Outcome" },
+  { path = "moderation.decisions.*.until_ms", type = "Option<i64>" },
+  { path = "moderation.decisions.*.reasoning", type = "String" },
+  { path = "moderation.decisions.*.model", type = "String" },
+  { path = "moderation.decisions.*.reverted", type = "Json<Vec<Reverted>>" },
+  { path = "moderation.decisions.*.by", type = "String" },
+  { path = "moderation.decisions.*.at_ms", type = "i64" },
+  { path = "moderation.decisions.*.overturned_by", type = "Option<String>" },
+  { path = "moderation.decisions.*.overturn_note", type = "Option<String>" },
+  { path = "moderation.decisions.*.overturned_at_ms", type = "Option<i64>" },
+]
+
+[[resources.verbs]]
+id = "begin-chat"
+kind = "undoable"
+params = [
+  { name = "workspace", required = false, schema = { type = ["string", "null"] } },
+  { name = "workspace_name", required = false, schema = { type = ["string", "null"] } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "initials", required = true, schema = { type = "string" } },
+  { name = "color", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "introduce"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "initials", required = true, schema = { type = "string" } },
+  { name = "color", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "name-agent"
+kind = "undoable"
+params = [
+  { name = "participant", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "create-workspace"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "create-category"
+kind = "undoable"
+params = [
+  { name = "workspace", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "create-channel"
+kind = "undoable"
+params = [
+  { name = "workspace", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "category", required = false, schema = { type = ["string", "null"] } },
+  { name = "kind", required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
+]
+
+[[resources.verbs]]
+id = "delete-category"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "category", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "move-channel"
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "up", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "delete-channel"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "start-draft"
+kind = "undoable"
+params = [
+  { name = "key", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "post"
+incoming_message = true
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+  { name = "parent", required = false, schema = { type = ["string", "null"] } },
+  { name = "body", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
+  { name = "attachment", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob"] } },
+]
+
+[[resources.verbs]]
+id = "share-resource"
+incoming_message = true
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "reference", required = true, schema = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, span = { type = ["object", "null"], additionalProperties = false, properties = { end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, unit = { type = "string" } }, required = ["start", "end", "unit"] } }, required = ["kind", "id", "label"] } },
+  { name = "text", required = false, schema = { type = ["string", "null"] } },
+  { name = "source_provider", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "edit-message"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+  { name = "body", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
+]
+
+[[resources.verbs]]
+id = "delete-message"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-message"
+destructive = true
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "report-message"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "reason", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "report-person"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "reason", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "decide-reports"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "reports", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "ruling", required = true, schema = { type = "object", additionalProperties = false, properties = { model = { type = "string" }, outcome = { oneOf = [{ type = "string", const = "no-action" }, { type = "string", const = "restrict" }, { type = "string", const = "ban" }] }, reasoning = { type = "string" }, reverted = { type = "array", items = { type = "object", additionalProperties = false, properties = { app = { type = "string" }, changes = { type = "integer", maximum = 4294967295, minimum = 0 }, record = { type = "string" }, run = { type = "string" } }, required = ["app", "record", "run", "changes"] } }, until_ms = { type = ["integer", "null"] } }, required = ["outcome", "reasoning"] } },
+]
+
+[[resources.verbs]]
+id = "overturn-decision"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "decision", required = true, schema = { type = "string" } },
+  { name = "note", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "react"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "emoji", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "unreact"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "emoji", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "mark-read"
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "seen", required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "record-work"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "work", required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, did = { type = ["string", "null"] }, route = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } }, why = { type = ["string", "null"] } }, required = ["state"] } },
+  { name = "say", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "submit-feedback"
+field = "comments"
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "submission", required = true, schema = {} },
+]
+
+[[resources.verbs]]
+id = "triage"
+kind = "undoable"
+params = [
+  { name = "report", required = true, schema = { type = "string" } },
+  { name = "update", required = true, schema = {} },
+]
+

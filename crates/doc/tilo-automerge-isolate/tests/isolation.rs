@@ -8,9 +8,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -268,6 +266,99 @@ fn missing_dependencies_are_refused_without_a_change_or_queued() {
 }
 
 #[test]
+fn blank_document_retains_only_strictly_valid_orphans() {
+    let isolate = isolate();
+    let mut remote = seeded_doc();
+    let dependency = remote.get_heads();
+    let committed = remote.save();
+    remote.put(ROOT, "later", "pending").unwrap();
+    remote.commit();
+    let orphan = remote.save_after(&dependency);
+    let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0x72; 16]));
+    let actor = doc.get_actor().clone();
+    let before = doc.save();
+    assert_eq!(
+        isolate.apply(&mut doc, &orphan, Dependencies::RequireComplete),
+        Ok(Applied::MissingDependencies)
+    );
+    assert_eq!(doc.save(), before);
+    let mut corrupt = orphan.clone();
+    let mut bad = orphan.clone();
+    let last = bad.len() - 1;
+    bad[last] ^= 0x55;
+    corrupt.extend(bad);
+    assert!(
+        isolate
+            .apply(&mut doc, &corrupt, Dependencies::RetainOrphans)
+            .is_err()
+    );
+    assert_eq!(
+        doc.save(),
+        before,
+        "a malformed tail cannot become an orphan"
+    );
+    assert_eq!(
+        isolate.apply(&mut doc, &orphan, Dependencies::RetainOrphans),
+        Ok(Applied::Changed(false))
+    );
+    assert_eq!(doc.get_missing_deps(&[]), dependency);
+    assert_eq!(doc.get_actor(), &actor);
+    assert_eq!(
+        isolate.apply(&mut doc, &committed, Dependencies::RequireComplete),
+        Ok(Applied::Changed(true))
+    );
+    assert_eq!(doc.get_heads(), remote.get_heads());
+    assert_eq!(doc.get_actor(), &actor);
+    still_admits(&isolate);
+}
+
+#[test]
+fn distinct_orphan_queues_rebuild_their_exact_state() {
+    let isolate = Isolate::new(Limits {
+        workers: 1,
+        ..Limits::default()
+    });
+    let mut seed = seeded_doc();
+    let dependency = seed.get_heads();
+    let committed = seed.save();
+    let mut a = seed.fork();
+    a.put(ROOT, "only-a", "first").unwrap();
+    a.commit();
+    let orphan_a = a.save_after(&dependency);
+    let a_heads = a.get_heads();
+    a.put(ROOT, "a-tail", "second").unwrap();
+    a.commit();
+    let tail_a = a.save_after(&a_heads);
+    let mut b = seed.fork();
+    b.put(ROOT, "only-b", "other queue").unwrap();
+    b.commit();
+    let orphan_b = b.save_after(&dependency);
+    let mut local_a = AutoCommit::new();
+    let mut local_b = AutoCommit::new();
+    for (doc, bytes) in [(&mut local_a, &orphan_a), (&mut local_b, &orphan_b)] {
+        assert_eq!(
+            isolate.apply(doc, bytes, Dependencies::RetainOrphans),
+            Ok(Applied::Changed(false))
+        );
+        assert_eq!(doc.get_missing_deps(&[]), dependency);
+    }
+    let mut finish_a = committed.clone();
+    finish_a.extend(tail_a);
+    assert_eq!(
+        isolate.apply(&mut local_a, &finish_a, Dependencies::RequireComplete),
+        Ok(Applied::Changed(true))
+    );
+    assert_eq!(local_a.get_heads(), a.get_heads());
+    assert!(local_a.get(ROOT, "only-b").unwrap().is_none());
+    assert_eq!(
+        isolate.apply(&mut local_b, &committed, Dependencies::RequireComplete),
+        Ok(Applied::Changed(true))
+    );
+    assert_eq!(local_b.get_heads(), b.get_heads());
+    assert!(local_b.get(ROOT, "only-a").unwrap().is_none());
+}
+
+#[test]
 fn a_malformed_tail_refuses_the_whole_input() {
     let isolate = isolate();
     let mut doc = seeded_doc();
@@ -282,6 +373,43 @@ fn a_malformed_tail_refuses_the_whole_input() {
         Err(Rejected::Invalid(_))
     ));
     assert_eq!(doc.save(), before);
+}
+
+/// Into a document that is not blank, `load_incremental` stops at a chunk
+/// whose stored checksum is wrong and keeps what came before it, without an
+/// error. A change with a bad checksum, new or already known, plain or
+/// compressed, must refuse the whole input instead.
+#[test]
+fn a_bad_change_checksum_refuses_the_whole_input() {
+    let isolate = isolate();
+    let mut doc = seeded_doc();
+    let good = remote_change(&mut doc, "good");
+    let mut remote = doc.fork();
+    remote
+        .put(ROOT, "large", "compressible ".repeat(512))
+        .unwrap();
+    remote.commit();
+    let mut last = remote.get_last_local_change().unwrap();
+    let compressed = last.bytes().to_vec();
+    assert_eq!(compressed[8], 2, "fixture must be a compressed change");
+    let known = doc.get_last_local_change().unwrap().raw_bytes().to_vec();
+    for (what, prefix, mut bad) in [
+        ("new change", good.clone(), remote_change(&mut doc, "bad")),
+        ("known change", good.clone(), known),
+        ("compressed change", good, compressed),
+    ] {
+        bad[4] ^= 0x01;
+        let mut input = prefix;
+        input.extend(bad);
+        let before = doc.save();
+        let outcome = isolate.apply(&mut doc, &input, Dependencies::RetainOrphans);
+        assert!(
+            matches!(outcome, Err(Rejected::Invalid(_))),
+            "{what}: {outcome:?}"
+        );
+        assert_eq!(doc.save(), before, "{what}: a refusal changed the document");
+    }
+    still_admits(&isolate);
 }
 
 /// A document big enough that the worker's allocator frees and shrinks heap
@@ -390,4 +518,100 @@ fn admission_latency() {
         samples[samples.len() / 2],
         samples[samples.len() * 99 / 100]
     );
+}
+
+/// A list `[1]` by actor `aa`: the list is op 1, its item op 2.
+const LIST_BASE: &str = "856f4a83ae6ec86200760101aa0127bb838ff217b4f57fe5bfffa75af586b3da7e148ef1e872591780a55722fcc2060102030213022302400256020b01040204130415052102230234024203560357018001027f007f017f027f007f007f0700017f0000017f0100017f007f016c00010200020101017e02017e001401020000";
+/// A text `"ab"` by actor `aa`: the text is op 1, `a` op 2, `b` op 3.
+const TEXT_BASE: &str = "856f4a83ac2187e60080010101aa011a190725c9e01787574caaf60bf64d2dcea17d67eac3bb9aa2c9ca1318e3c015060102030213022302400256020c010402041104130515052102230234024204560457028001027f007f017f037f007f007f07000102000001020100027f0000017e00027f017400020300030101027f0402017f0002166162030000";
+
+/// A change by the new actor `f0 01` with `ops`, on top of `doc`.
+fn crafted(doc: &mut AutoCommit, start: u64, ops: Vec<automerge::legacy::Op>) -> Vec<u8> {
+    let change = automerge::ExpandedChange {
+        operations: ops,
+        actor_id: ActorId::from(&[0xf0, 1][..]),
+        hash: None,
+        seq: 1,
+        start_op: std::num::NonZeroU64::new(start).unwrap(),
+        time: 0,
+        message: None,
+        deps: doc.get_heads(),
+        extra_bytes: Vec::new(),
+        author: None,
+    };
+    automerge::Change::from(change).raw_bytes().to_vec()
+}
+
+/// List and text changes stock Automerge panics on, or takes into a
+/// document whose next save no longer loads, are refused as invalid rather
+/// than costing a worker; and a delete of a character a peer put a forged
+/// second value on is admitted, where it used to crash the worker.
+#[test]
+fn crafted_sequence_changes_are_refused_without_a_crash() {
+    use automerge::legacy::{ElementId, Key, ObjectId, Op, OpId, OpType, SortedVec};
+    let isolate = isolate();
+    let aa = ActorId::from(&[0xaa][..]);
+    let list = ObjectId::Id(OpId(1, aa.clone()));
+    let put = |key: ElementId, pred: Vec<OpId>, insert: bool| Op {
+        action: OpType::Put(5.into()),
+        obj: list.clone(),
+        key: Key::Seq(key),
+        pred: SortedVec::from(pred),
+        insert,
+    };
+    // The list object itself, which is no element of it.
+    let ghost = ElementId::Id(OpId(1, aa.clone()));
+    let item = ElementId::Id(OpId(2, aa.clone()));
+    let base = hex::decode(LIST_BASE).unwrap();
+    let mut doc = AutoCommit::load(&base).unwrap();
+    let cases = [
+        (
+            "an update of an unknown element",
+            vec![put(ghost.clone(), vec![], false)],
+        ),
+        (
+            "an insert after an unknown element",
+            vec![put(ghost.clone(), vec![], true)],
+        ),
+        (
+            "an update of an unknown element beside a valid one",
+            vec![
+                put(item, vec![OpId(2, aa.clone())], false),
+                put(ghost, vec![], false),
+            ],
+        ),
+    ];
+    for (what, ops) in cases {
+        let change = crafted(&mut doc, 3, ops);
+        let outcome = isolate.apply(&mut doc, &change, Dependencies::RetainOrphans);
+        assert!(
+            matches!(outcome, Err(Rejected::Invalid(_))),
+            "{what}: {outcome:?}"
+        );
+        assert_eq!(doc.save(), base, "{what}: a rejection changed the document");
+    }
+
+    let mut doc = AutoCommit::load(&hex::decode(TEXT_BASE).unwrap()).unwrap();
+    let forged_value = Op {
+        action: OpType::Put("Q".into()),
+        obj: ObjectId::Id(OpId(1, aa.clone())),
+        key: Key::Seq(ElementId::Id(OpId(2, aa))),
+        pred: SortedVec::from(vec![]),
+        insert: false,
+    };
+    let forged = crafted(&mut doc, 4, vec![forged_value]);
+    let mut deleter = doc.fork().with_actor(ActorId::from(&[0xf0, 2][..]));
+    let heads = deleter.get_heads();
+    let (_, text) = deleter.get(ROOT, "t").unwrap().unwrap();
+    deleter.delete(&text, 0).unwrap();
+    deleter.commit();
+    let delete = deleter.save_after(&heads);
+    for change in [forged, delete] {
+        assert_eq!(
+            isolate.apply(&mut doc, &change, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+    }
+    assert_eq!(doc.text(&text).unwrap(), "Qb");
+    still_admits(&isolate);
 }

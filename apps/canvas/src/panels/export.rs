@@ -74,7 +74,7 @@ const JPEG_QUALITY: u8 = 90;
 /// The sizes offered, as pixels per artwork unit.
 pub const SCALES: [f64; 5] = [0.5, 1.0, 2.0, 3.0, 4.0];
 /// The longest side a picture may have.
-pub const MAX_PIXELS: f64 = 8192.0; // a picture size limit in pixels, not on-screen spacing
+pub use crate::content_geometry::MAX_PIXELS;
 
 /// What the export dialog is set to.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -292,7 +292,7 @@ pub fn svg(
 
 /// The dialog's body: format, size, how much and the background, and what
 /// that comes to.
-pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Element {
+pub fn body(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
     let choices = tools.export.clone();
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let format = ui::widget::ToggleGroup::from_state(
@@ -307,7 +307,6 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
             .collect(),
         &choices.format,
     )
-    .with_flexible_width()
     .with_id("canvas-export-format");
     let scale = ui::widget::ToggleGroup::from_state(
         SCALES
@@ -316,13 +315,12 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
             .map(|(index, scale)| {
                 (
                     index,
-                    ui::widget::toggle_group::Segment::new(format!("{scale}×")),
+                    ui::widget::toggle_group::Segment::new(format!("{scale} times")),
                 )
             })
             .collect(),
         &choices.scale,
     )
-    .with_flexible_width()
     .with_id("canvas-export-scale");
     // Exporting the selection needs one.
     let picked = !tools.selection.with(Vec::is_empty);
@@ -345,7 +343,6 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
         .collect(),
         &choices.area,
     )
-    .with_flexible_width()
     .with_id("canvas-export-area");
     let transparent = ui::widget::Checkbox::from_state(&choices.transparent)
         .with_label(lookup("canvas-export-transparent"))
@@ -356,7 +353,7 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(6.0)
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .push(caption(&lookup(label)))
                 .push(control),
         )
@@ -366,13 +363,13 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
     let shown = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(10.0)
+        .with_rhythm(ui::tokens::Rhythm::Related)
         .push(preview(cx, tools))
         .push(Box::new(summary));
     let settings = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(14.0)
+        .with_rhythm(ui::tokens::Rhythm::Sibling)
         .push(field("canvas-export-format-label", Box::new(format)))
         .push(field("canvas-export-size-label", Box::new(scale)))
         .push(field("canvas-export-area-label", Box::new(area)))
@@ -380,13 +377,15 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
     Box::new(
         Row::new()
             .no_wrap()
-            .with_gap(20.0)
+            .with_rhythm(ui::tokens::Rhythm::Section)
             .with_align_items(ui::taffy::AlignItems::Start)
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_width(PREVIEW.0)
-                    .with_child(Box::new(shown)),
+            .push(super::layout::width(
+                Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_child(Box::new(shown)),
+                ),
+                |metrics| metrics.inspector_width,
             ))
             .push(Box::new(
                 Container::new()
@@ -401,7 +400,7 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
 /// The picture the export makes, as it is set now: the whole artwork,
 /// the part in view or the selection, on its ground or on the squares
 /// that say it has none.
-fn preview(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Element {
+fn preview(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
     let choices = tools.export.clone();
     let reads = tools.clone();
     let cut: Rc<RefCell<Option<CutKey>>> = Rc::default();
@@ -436,13 +435,12 @@ fn preview(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Elem
         cut.as_ref()
             .map(|known| (Rc::clone(&known.part), known.region, bare))
     });
-    let thumb = crate::thumb::Thumb::new(tools.renderer.clone(), None, PREVIEW.0, PREVIEW.1)
-        .framed(framing);
-    cx.surface(thumb)
+    let thumb = crate::thumb::Thumb::new(tools.renderer.clone(), None, 0.0, 0.0).framed(framing);
+    super::layout::themed(cx.surface(thumb), |theme, style| {
+        style.size.width = ui::taffy::Dimension::length(theme.tokens.metrics.inspector_width);
+        style.size.height = ui::taffy::Dimension::length(theme.tokens.metrics.overview_width);
+    })
 }
-
-/// The export preview's box.
-const PREVIEW: (f32, f32) = (260.0, 200.0); // a picture's size, not spacing
 
 /// What [`summary`] said last, and for what.
 #[derive(Default)]
@@ -499,7 +497,7 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
     let open = tools
         .sheet
         .with(|sheet| *sheet == Some(crate::tools::Sheet::Export));
-    let threads = ui::rt::availability(ui::rt::Feature::Threads) == ui::rt::Availability::Available;
+    let threads = ui::rt::available(ui::rt::Feature::Threads);
     let bytes = (open && threads)
         .then(|| {
             let text = text.get_or_insert_with(TextRenderer::new);
@@ -513,14 +511,14 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
         })
         .flatten();
     if let Some(bytes) = bytes {
-        said.push_str(" · ");
+        said.push('\n');
         said.push_str(&ui::i18n::I18nManager::format(
             "canvas-export-bytes",
             &[("size", ui::format::bytes_si(bytes).into())],
         ));
     }
     if settings.transparent && !settings.format.transparent() {
-        said.push_str(" · ");
+        said.push('\n');
         said.push_str(&ui::i18n::I18nManager::lookup_plain(
             "canvas-export-jpeg-opaque",
         ));
@@ -538,7 +536,7 @@ struct CutKey {
 
 /// What the export comes to: its size and format, about how many bytes,
 /// or why there is none.
-fn summary(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Text {
+fn summary(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Text {
     let tools = tools.clone();
     let live = cx.live().clone();
     let sizes = RefCell::new(Sizes::default());

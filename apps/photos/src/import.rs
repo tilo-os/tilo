@@ -8,12 +8,12 @@
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_content::ContentStore;
 
 use crate::model::{LibraryPhoto, LocationProvenance, OpenImage, PhotoLocation};
+use crate::strings::tr;
 
 /// Conservative limits for one explicit directory import. They prevent a
 /// mounted photo archive or a malicious directory tree from monopolising the
@@ -93,10 +93,10 @@ pub struct ImportFailure {
 }
 
 impl ImportFailure {
-    fn new(source: PathBuf, message: &str, retryable: bool) -> Self {
+    fn new(source: PathBuf, message: String, retryable: bool) -> Self {
         Self {
             source,
-            message: message.to_owned(),
+            message,
             retryable,
         }
     }
@@ -122,6 +122,10 @@ pub struct ImportReport {
 /// Returns a user-facing message when `root` is not an absolute path to an
 /// accessible, real (non-symlink) directory. Per-item problems are reported
 /// in [`ImportReport::failures`] instead.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the bounded walk keeps every refusal beside the check that makes it"
+)]
 pub fn index_directory<F>(
     root: &Path,
     store: &ContentStore,
@@ -133,14 +137,14 @@ where
     F: FnMut(ImportProgress),
 {
     if !root.is_absolute() {
-        return Err("Select an authorised absolute folder path".to_owned());
+        return Err(tr("photos-import-folder-path"));
     }
-    let unavailable = || "The selected folder is unavailable".to_owned();
+    let unavailable = || tr("photos-import-folder-unavailable");
     let (parent, root_name) = tilo_files::file_at(root).map_err(|_| unavailable())?;
     let root_meta =
         tilo_files::blocking::metadata(&parent, &root_name).map_err(|_| unavailable())?;
     if root_meta.kind != tilo_files::Kind::Dir || root_meta.symlink {
-        return Err("Select a real folder, not a symbolic link".to_owned());
+        return Err(tr("photos-import-folder-link"));
     }
     let tree = tilo_files::Dir::open(tilo_files::Location::Native(root.to_path_buf()))
         .map_err(|_| unavailable())?;
@@ -153,7 +157,8 @@ where
         }
         let directory = root.join(folder.as_str());
         let Ok(entries) = tilo_files::blocking::list(&tree, &folder) else {
-            let failure = ImportFailure::new(directory, "Could not read this folder", true);
+            let failure =
+                ImportFailure::new(directory, tr("photos-import-folder-unreadable"), true);
             report.failures.push(failure);
             continue;
         };
@@ -165,21 +170,22 @@ where
             let path = directory.join(&entry.name);
             let Ok(child) = tilo_files::VPath::new(&entry.name).map(|name| folder.join(&name))
             else {
-                let message = "Could not read one item in this folder";
+                let message = tr("photos-import-item-unreadable");
                 report
                     .failures
                     .push(ImportFailure::new(directory.clone(), message, true));
                 continue;
             };
             let Ok(meta) = tilo_files::blocking::metadata(&tree, &child) else {
-                let failure = ImportFailure::new(path, "Could not inspect this item", true);
+                let failure =
+                    ImportFailure::new(path, tr("photos-import-item-uninspectable"), true);
                 report.failures.push(failure);
                 continue;
             };
             // Refusing links closes traversal loops and avoids silently
             // importing an unrelated tree through a selected directory.
             if meta.symlink {
-                let message = "Symbolic links are not followed during photo import";
+                let message = tr("photos-import-link");
                 report
                     .failures
                     .push(ImportFailure::new(path, message, false));
@@ -189,7 +195,7 @@ where
                 if depth < options.limits.max_depth {
                     stack.push((child, depth + 1));
                 } else {
-                    let message = "This folder is deeper than the safe import limit";
+                    let message = tr("photos-import-too-deep");
                     report
                         .failures
                         .push(ImportFailure::new(path, message, false));
@@ -212,7 +218,7 @@ where
             });
             match index_file(&path, store, options, cancelled) {
                 Ok(indexed) => report.photos.push(indexed),
-                Err(error) if error == "Import cancelled" => {
+                Err(error) if error == tr("photos-import-cancelled") => {
                     report.cancelled = true;
                     break;
                 }
@@ -251,48 +257,44 @@ pub fn index_file(
     cancelled: &AtomicBool,
 ) -> Result<IndexedPhoto, String> {
     if cancelled.load(Ordering::Acquire) {
-        return Err("Import cancelled".to_owned());
+        return Err(tr("photos-import-cancelled"));
     }
-    let (dir, name) =
-        tilo_files::file_at(path).map_err(|_| "Could not read this image".to_owned())?;
-    let meta = tilo_files::blocking::metadata(&dir, &name)
-        .map_err(|_| "Could not read this image".to_owned())?;
+    let (dir, name) = tilo_files::file_at(path).map_err(|_| tr("photos-import-unreadable"))?;
+    let meta =
+        tilo_files::blocking::metadata(&dir, &name).map_err(|_| tr("photos-import-unreadable"))?;
     if meta.kind != tilo_files::Kind::File
         || meta.len == 0
         || meta.len > options.limits.max_encoded_bytes
     {
-        return Err("Image is empty or exceeds the import size limit".to_owned());
+        return Err(tr("photos-import-too-large"));
     }
     let exif = read_exif(path).unwrap_or_default();
     if cancelled.load(Ordering::Acquire) {
-        return Err("Import cancelled".to_owned());
+        return Err(tr("photos-import-cancelled"));
     }
     let bytes = read_bounded(path, options.limits.max_encoded_bytes)?;
     if cancelled.load(Ordering::Acquire) {
-        return Err("Import cancelled".to_owned());
+        return Err(tr("photos-import-cancelled"));
     }
     // Decode once before staging. Header dimensions alone are not a promise
     // that the complete payload is a safe image.
-    let decoded = crate::pixels::decode(&bytes)
-        .ok_or_else(|| "This image cannot be decoded safely".to_owned())?;
+    let decoded = crate::pixels::decode(&bytes).ok_or_else(|| tr("photos-import-unsafe"))?;
     let content = store.put(&bytes).map_err(|error| {
         tracing::warn!(%error, "photos: could not store an imported original");
-        "Photos could not retain these bytes locally".to_owned()
+        tr("photos-import-not-kept")
     })?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
-        .ok_or_else(|| "This image has no usable file name".to_owned())?;
-    let open = OpenImage::from_path(&path.to_string_lossy(), decoded.w, decoded.h)
-        .with_content(content)
-        .portable();
+        .ok_or_else(|| tr("photos-import-no-name"))?;
+    let open = OpenImage::new(&path.to_string_lossy(), decoded.w, decoded.h, content);
     let mut photo = LibraryPhoto::from_image(open);
     name.clone_into(&mut photo.image.name);
     photo.captured_at = exif
         .captured_at
         .as_deref()
-        .and_then(crate::actions::canonical_capture_at_value);
+        .and_then(crate::model::canonical_capture_at_value);
     if options.retain_exif_location {
         photo.location.clone_from(&exif.location);
     }
@@ -389,8 +391,7 @@ fn short_field(field: &exif::Field) -> Option<u16> {
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    crate::files::read_native(path, limit)
-        .ok_or_else(|| "Could not read this image, or it exceeds the import size limit".to_owned())
+    crate::files::read_native(path, limit).ok_or_else(|| tr("photos-import-unreadable-or-large"))
 }
 
 fn supported_image(path: &Path) -> bool {
@@ -402,13 +403,6 @@ fn supported_image(path: &Path) -> bool {
                 "jpg" | "jpeg" | "png" | "webp"
             )
         })
-}
-
-/// A cheap cancellation handle for a UI worker. It is deliberately not a
-/// resource/action: cancellation affects only this device's in-flight job.
-#[must_use]
-pub fn cancellation_token() -> Arc<AtomicBool> {
-    Arc::new(AtomicBool::new(false))
 }
 
 #[cfg(test)]
@@ -495,7 +489,7 @@ mod tests {
             assert_eq!(report.discovered, 1);
             assert_eq!(report.photos.len(), 1);
             assert!(report.limit_reached);
-            assert!(report.photos[0].photo.image.content.is_some());
+            assert!(!report.photos[0].photo.image.content.is_empty());
             assert!(progress.last().is_some_and(|value| value.current.is_none()));
         }
 
@@ -529,7 +523,7 @@ mod tests {
                     |_| {},
                 )
                 .unwrap_err(),
-                "Select an authorised absolute folder path"
+                tr("photos-import-folder-path")
             );
 
             #[cfg(unix)]
@@ -549,7 +543,7 @@ mod tests {
                         |_| {},
                     )
                     .unwrap_err(),
-                    "Select a real folder, not a symbolic link"
+                    tr("photos-import-folder-link")
                 );
             }
         }
@@ -586,12 +580,7 @@ mod tests {
                 (indexed.photo.image.width, indexed.photo.image.height),
                 (2, 3)
             );
-            let hash = indexed
-                .photo
-                .image
-                .content
-                .as_deref()
-                .expect("portable content address");
+            let hash = &indexed.photo.image.content;
             assert_eq!(store.read(hash).as_deref(), Some(source.as_slice()));
         }
     }
@@ -624,7 +613,7 @@ mod tests {
         }));
         assert!(report.failures.iter().any(|failure| {
             failure.source.ends_with("linked.png")
-                && failure.message.contains("Symbolic links")
+                && failure.message == crate::strings::tr("photos-import-link")
                 && !failure.retryable
         }));
     }

@@ -20,6 +20,7 @@
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
 import {createActions} from './actions.mjs';
+import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
 import {createMembership, createWorkspaces} from './membership.mjs';
@@ -30,12 +31,15 @@ import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {currentIdentity, IdentityError} from './root-identity.mjs';
+import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
 
 export {
-  addPasskey, certifyDevice, createIdentity, currentIdentity, IdentityError, installNode, installNodeCertificate, nodeInstallInfo,
-  unlockIdentity,
+  addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
+  installNodeCertificate, MAX_DISPLAY_NAME_BYTES, nodeInstallInfo, publishEnvelope, publishProfile, signInWithPasskey, storagePersisted, unlockIdentity,
 } from './root-identity.mjs';
+// The workspaces a page can open and guest admission, for hosts of this
+// module (Tilo Cloud) that import only the peer.
+export {joinViaHost, listedWorkspaces, spectate, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
 /** A member's cursor colour, from its device key: the same on every page. */
@@ -146,16 +150,22 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
   };
 }
 
+/** How long WebTransport to a host's separate direct origin may take to get ready. */
+const DIRECT_WEBTRANSPORT_BUDGET_MS = 2000;
+
 /**
  * Where a room's live plane is reached from `origin`: its `/moq/live`, both
  * for WebTransport and the HTTPS stream fallback. A room on a loopback
  * `http:` origin (local review) serves WebTransport only on its TLS port
  * (`host.webtransportPort`, pinned by `certificateSha256`); its fallback
- * stays on the plain origin.
+ * stays on the plain origin. A host behind a proxy that passes HTTP only
+ * names the origin QUIC reaches it at directly (`host.webtransportOrigin`):
+ * WebTransport goes there, the fallback stays on the page origin.
  */
 export function liveEndpoints(origin, host = {}) {
   const base = new URL(origin);
   const fallback = new URL(LIVE_PATH, base).href;
+  if (host.webtransportOrigin) return {endpoint: new URL(LIVE_PATH, host.webtransportOrigin).href, fallback};
   if (!isLoopbackHttp(base) || !host.webtransportPort) return {endpoint: fallback, fallback};
   return {endpoint: new URL(LIVE_PATH, `https://${base.hostname}:${host.webtransportPort}`).href, fallback};
 }
@@ -554,12 +564,21 @@ export function createLiveLayer(peer, runtime, room, {
  *                               `profile` to one per identity, `custody` to
  *                               that profile's device key and `runtime` to
  *                               the page host's
+ *                               (without one, `custody` defaults to `profile`'s
+ *                               device key, certified by an approver)
  * @param options.deviceCertificate  `{cert, hostCert}` JSON this device was
  *                               certified with elsewhere (`joinWorkspace`)
  */
 export async function connectPeer(options) {
   const {identity, custody, origin, store, profile} = options;
-  if (!identity || custody) return connect(options);
+  if (custody) return connect(options);
+  if (!identity) {
+    // A device of a person whose root is elsewhere (a paired device): its
+    // key is the profile's own, let go like an identity's below.
+    if (store || !profile) return connect(options);
+    const own = await openDeviceCustody({profile, storage: idbStorage()});
+    return withCustody(own, () => connect({...options, custody: own}), options.signal);
+  }
   // The device key this call opens is the peer's: it is let go when the
   // peer is disposed or fails to connect, so the page can connect again.
   const own = await openDeviceCustody({profile: profile ?? identityProfile(identity, origin), storage: idbStorage()});
@@ -590,7 +609,7 @@ async function connect({
   origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity, deviceCertificate,
   profile, device = 'tilo-browser-device', displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
-  voice: voiceOptions = {},
+  voice: voiceOptions = {}, requireExistingCertificate = false,
 }) {
   userPublicKey ??= identity?.userPublicKey;
   if (identity && userPublicKey !== identity.userPublicKey) {
@@ -626,6 +645,13 @@ async function connect({
     const fallback = createFallbackTransport({fetch: fetcher});
     return createLiveCarriers({
       fetch: fetcher,
+      // A host behind an HTTPS-only proxy without a direct origin announces
+      // no WebTransport: go straight to the HTTPS stream rather than fail a
+      // handshake first.
+      ...(info.webtransportPort || info.webtransportOrigin ? {} : {hasWebTransport: () => false}),
+      // A separate direct origin is the one most likely blocked (UDP
+      // filtered on the visitor's network): give up on it sooner.
+      budgetMs: info.webtransportOrigin ? DIRECT_WEBTRANSPORT_BUDGET_MS : undefined,
       webtransport: createLiveTransport({
         serverCertificateHashes: info.certificateSha256
           ? [{algorithm: 'sha-256', value: unhex(info.certificateSha256)}]
@@ -637,6 +663,7 @@ async function connect({
   let host = JSON.parse(await runtime.hostInfo(post));
   let carriers = carriersFor(host);
   const listeners = new Set();
+  const pendingRecordWaits = new Set();
   let peer;
   let live;
   // Agents this page runs publish under their own namespaces: one layer each.
@@ -774,11 +801,16 @@ async function connect({
   }
 
   async function certificate() {
+    if (requireExistingCertificate && deviceCertificate) throw Error('Resource links require a previously certified device');
     if (deviceCertificate) {
       await store.put(CERTIFICATE, deviceCertificate);
       deviceCertificate = undefined;
     }
     const existing = await store.get(CERTIFICATE);
+    if (requireExistingCertificate) {
+      if (!existing) throw Error('Sign in on this browser and obtain admission before opening a resource link');
+      return existing; // Host checks expiry/revocation; never renew or pair implicitly.
+    }
     if (existing && !(identity && expiresWithinADay(existing))) return existing;
     const issued = identity
       ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
@@ -860,18 +892,27 @@ async function connect({
     throw error;
   }
 
-  async function dispose() {
-    if (disposed) return;
+  let disposal;
+  function dispose() {
+    if (disposal) return disposal;
+    let resolve, reject;
+    disposal = new Promise((done, failed) => { resolve = done; reject = failed; });
     disposed = true;
-    for (const entry of [...surfaces.values()]) dropSurface(entry);
-    unsubscribeStorage?.();
-    agents?.dispose();
-    actions?.dispose();
-    voice?.dispose();
-    stopLive();
-    peer?.dispose();
-    listeners.clear();
-    await storage?.release();
+    // Abort and explicit close can overlap. Every caller joins the same
+    // settlement, installed before teardown can call back into dispose.
+    (async () => {
+      for (const refuse of [...pendingRecordWaits]) refuse(new Error('Shared resource connection closed'));
+      for (const entry of [...surfaces.values()]) dropSurface(entry);
+      unsubscribeStorage?.();
+      agents?.dispose();
+      actions?.dispose();
+      voice?.dispose();
+      stopLive();
+      peer?.dispose();
+      listeners.clear();
+      await storage?.release();
+    })().then(resolve, reject);
+    return disposal;
   }
   signal?.addEventListener('abort', dispose, {once: true});
 
@@ -881,6 +922,20 @@ async function connect({
   });
   const certifiedPeer = {
     get host() { return host; },
+    /** The host origin and room this peer is in, as a link names them; the
+     * room is undefined for a peer that joined none. */
+    origin: new URL(origin).origin,
+    room,
+    /** The person (user root, hex) this device is certified as. */
+    userPublicKey,
+    /** The person's name, as history and presence show it from now on. */
+    get displayName() { return displayName; },
+    setDisplayName(name) {
+      displayName = fitDisplayName(name);
+      peer?.setDisplayName?.(displayName);
+      live?.publishPresence({participant: {kind: 'person', label: (displayName || label).slice(0, 32),
+        color: colorOf(custodyKeyHex()), activity: null}});
+    },
     /** Issue an invitation to the room (`membership.mjs`): resolves to its text. */
     createInvitation: options => membership.createInvitation(options),
     /** The room's members, waiting people and invitations, for its owner
@@ -891,6 +946,9 @@ async function connect({
      * `create(name)`, `enter(room)`; needs no room. */
     workspaces: createWorkspaces({rooms: request => peer.rooms(request)}),
     getSnapshot: () => snapshot,
+    /** How many changes this page made to the room's records and sent:
+     * above zero once the person posted or created something. */
+    authoredChanges: () => peer?.authoredChanges?.() ?? 0,
     /** Diagnostic text of the page's channel membership (not a contract). */
     channelDiagnostics: () => peer?.channelDiagnostics?.() ?? '',
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -913,6 +971,49 @@ async function connect({
     },
     /** The room's app actions (`actions.mjs`), or `undefined` without a room. */
     get actions() { return actions; },
+    /** Bind feedback before mounting the desktop. The destination only selects
+     * an existing text channel: Rust obtains identity and current capabilities
+     * from the authenticated owner. This creates no membership or grant. */
+    async configureFeedback(destination) {
+      if (!room || destination?.room !== room || disposed) throw new Error('Feedback needs this existing room');
+      await certifiedPeer.whenRecord('so.tilo.chat', '', {signal});
+      if (typeof peer?.configureFeedback !== 'function') throw new Error('Feedback delivery is unavailable in this runtime');
+      peer.configureFeedback(JSON.stringify(destination));
+      await untilSnapshot(() => {
+        if (disposed) throw new Error('Feedback connection closed');
+        const status = peer.feedbackStatus();
+        if (status === 'ready') return true;
+        if (status !== 'awaiting authenticated admission') throw new Error(status);
+        return false;
+      }, 30_000, 'Feedback owner admission timed out');
+    },
+    feedbackStatus: () => peer?.feedbackStatus?.() ?? 'unconfigured',
+
+    /** Public address of this admitted session; it conveys no authority. */
+    get resourceScope() {
+      if (disposed || snapshot.phase !== 'ready' || !actions || !room) return undefined;
+      return {origin: new URL(origin).origin, room,
+        hostDevice: hexKey(host.hostCert?.device_public_key)};
+    },
+    /** Fresh permission-filtered metadata for a record-local shared resource.
+     * The host-issued source provider is required; this never joins a room,
+     * grants access, follows a peer or navigates as a side effect. */
+    resolveResource(reference, provider) {
+      const connection = actions;
+      return resolveResourceReference({reference, provider, actions: connection,
+        scope: certifiedPeer.resourceScope,
+        current: () => !disposed && snapshot.phase === 'ready' && actions === connection});
+    },
+    /** Open an exact shared resource through a standalone app's current view
+     * door. Calling this is explicit navigation; it never joins or grants. */
+    openResource(target, reference, provider, action, {signal} = {}) {
+      const connection = actions;
+      return openResourceReference({reference, provider, action, actions: connection, signal,
+        scope: certifiedPeer.resourceScope,
+        current: () => !disposed && snapshot.phase === 'ready' && actions === connection,
+        waitRecord: (app, record) => certifiedPeer.whenRecord(app, record, {signal}),
+        mount: ({app, record}) => certifiedPeer.mountDesktop(target, {app, record, signal})});
+    },
     /** The room's calls (`voice-peer.mjs`), or `undefined` without a room. */
     get voice() { return voice; },
     /** `actions` in the frozen `actionsV1` contract. */
@@ -954,13 +1055,24 @@ async function connect({
     },
     /** Resolves once the host admitted the room (`phase === 'ready'`);
      * rejects when it refused this device. */
-    whenReady() {
+    whenReady({signal, timeoutMs = 30_000} = {}) {
       return new Promise((resolve, reject) => {
-        const check = current => {
-          if (current.phase === 'ready') { listeners.delete(check); resolve(current); }
-          else if (current.phase === 'failed') { listeners.delete(check); reject(new Error(current.error ?? 'the host refused this device')); }
+        let timer;
+        const finish = (error, value) => {
+          clearTimeout(timer); listeners.delete(check); pendingRecordWaits.delete(finish);
+          signal?.removeEventListener('abort', abort);
+          if (error) reject(error); else resolve(value);
         };
-        listeners.add(check);
+        const abort = () => finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+        const check = current => {
+          if (disposed) finish(new Error('Shared resource connection closed'));
+          else if (current.phase === 'ready') finish(undefined, current);
+          else if (current.phase === 'failed') finish(new Error(current.error ?? 'the host refused this device'));
+        };
+        if (signal?.aborted) { abort(); return; }
+        timer = setTimeout(() => finish(new Error('Room admission timed out')), timeoutMs);
+        listeners.add(check); pendingRecordWaits.add(finish);
+        signal?.addEventListener('abort', abort, {once: true});
         check(snapshot);
       });
     },
@@ -970,15 +1082,25 @@ async function connect({
     /** Whether this page holds the room's record `record` of `app`. */
     hasRecord,
     /** Resolves once the room's record `record` of `app` reached this page. */
-    whenRecord(app, record, {timeoutMs = 30_000} = {}) {
+    whenRecord(app, record, {timeoutMs = 30_000, signal} = {}) {
       return new Promise((resolve, reject) => {
+        if (signal?.aborted) { reject(signal.reason); return; }
+        if (disposed) { reject(new Error('Shared resource connection closed')); return; }
         if (hasRecord(app, record)) { resolve(); return; }
-        const check = () => {
-          if (!hasRecord(app, record)) return;
-          clearTimeout(timer); listeners.delete(check); resolve();
+        const source = peer;
+        const finish = (error, failed = error !== undefined) => {
+          clearTimeout(timer); listeners.delete(check); pendingRecordWaits.delete(finish);
+          signal?.removeEventListener('abort', abort);
+          if (failed) reject(error); else resolve();
         };
-        const timer = setTimeout(() => { listeners.delete(check); reject(new Error(`the room sent no ${app} record ${record}`)); }, timeoutMs);
-        listeners.add(check);
+        const abort = () => finish(signal.reason, true);
+        const check = () => {
+          if (peer !== source || snapshot.phase === 'failed') { finish(new Error('Shared resource connection changed')); return; }
+          if (hasRecord(app, record)) finish();
+        };
+        const timer = setTimeout(() => finish(new Error(`the room sent no ${app} record ${record}`)), timeoutMs);
+        listeners.add(check); pendingRecordWaits.add(finish);
+        signal?.addEventListener('abort', abort, {once: true});
       });
     },
     /** The live layer of agent `agent` this page runs (created on first use;
@@ -1005,6 +1127,7 @@ async function connect({
         return {operationId: `retry-asset:${request.surfaceId}:${request.assetId}`};
       }
       if (request?.kind === 'reauthenticate') {
+        if (requireExistingCertificate) throw Error('Sign in through the identity flow before reopening this resource');
         voice?.reset();
         stopLive();
         peer.dispose();
@@ -1048,6 +1171,34 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
   };
 }
 
+/**
+ * Become a new device of the person `userPublicKey` (hex) at the host at
+ * `origin`, with no root on this page: the host relays the request, this
+ * page shows `onPairingCode(code)`, and one of the person's devices that
+ * holds their root approves it. Then, with `admission` (resolving to the
+ * host's `{invitation, admissionToken, origin?}` for the person), the
+ * device joins that workspace as a device of theirs; without, it connects
+ * to `room`. Takes `connectPeer`'s other options; the device key is the
+ * one of `profile` (default the person's profile for that host). Resolves
+ * to the `CertifiedPeer`.
+ */
+export async function pairDevice(options) {
+  const {origin, userPublicKey, label = 'Browser', admission, signal} = options;
+  if (!origin || !userPublicKey) throw new TypeError('origin and userPublicKey are required');
+  const profile = options.profile ?? identityProfile({userPublicKey}, origin);
+  const own = await openDeviceCustody({profile, storage: idbStorage()});
+  return withCustody(own, async () => {
+    const runtime = options.runtime ?? await pageRuntime(options.desktop);
+    const custodyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
+    const certified = await runtime.certifyDevice(httpsPost(origin, options.fetch), userPublicKey, label, custodyForWasm,
+      code => options.onPairingCode?.(code));
+    const common = {...options, identity: undefined, label, profile, custody: own, runtime};
+    if (!admission) return connect({...common, deviceCertificate: certified});
+    const offer = await admission();
+    return join({...common, origin: offer.origin ?? origin, invitation: offer.invitation, admissionToken: offer.admissionToken, certified});
+  }, signal);
+}
+
 const JOIN_REQUESTS = 'tilo-join-requests';
 const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
@@ -1073,13 +1224,16 @@ export async function joinWorkspace(options) {
 
 async function join({
   origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress, pollMs = 2000,
-  admissionToken, runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, ...connectOptions
+  admissionToken, runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, certified, ...connectOptions
 }) {
-  identity ??= currentIdentity();
-  if (!identity) throw new IdentityError('locked', 'Unlock the identity first');
+  // A device certified elsewhere (`certified`, a paired device) asks as
+  // itself; any other asks as the person whose root the page holds.
+  if (!certified) identity ??= currentIdentity();
+  if (!identity && !certified) throw new IdentityError('locked', 'Unlock the identity first');
   if (!origin || !invitation) throw new TypeError('origin and invitation are required');
   runtime ??= await pageRuntime(connectOptions.desktop);
-  profile ??= identityProfile(identity, origin);
+  const person = identity ?? {userPublicKey: hexOf(JSON.parse(certified).cert.user_public_key)};
+  profile ??= identityProfile(person, origin);
   custody ??= await openDeviceCustody({profile, storage: idbStorage()});
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
   const post = httpsPost(origin, fetcher);
@@ -1097,9 +1251,10 @@ async function join({
   };
   signal?.throwIfAborted();
   onProgress?.({phase: 'asking'});
-  const asked = JSON.parse(await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId,
-    (displayName || label).slice(0, 64), label,
-    admissionToken ? new TextEncoder().encode(admissionToken) : undefined));
+  const token = admissionToken ? new TextEncoder().encode(admissionToken) : undefined;
+  const asked = JSON.parse(certified
+    ? await runtime.askToJoinAs(post, bytes, certified, custodyForWasm, requestId, fitDisplayName(displayName || label), token)
+    : await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId, fitDisplayName(displayName || label), fitDisplayName(label), token));
   let reply = asked.reply;
   const device = hexOf(asked.cert.device_public_key);
   while (reply.kind === 'waiting') {
@@ -1118,7 +1273,7 @@ async function join({
   onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});
   const host = JSON.parse(await runtime.hostInfo(post));
   return connect({
-    ...connectOptions, origin, identity, room: reply.room, label, displayName, custody, runtime, signal,
+    ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, room: reply.room, label, displayName, custody, runtime, signal,
     profile: connectOptions.store ? undefined : profile,
     fetch: fetcher, deviceCertificate: JSON.stringify({cert: asked.cert, hostCert: host.hostCert}),
   });

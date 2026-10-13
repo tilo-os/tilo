@@ -3,15 +3,18 @@
 //! the engine layer fills these in, the widgets read them.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Model};
 use uuid::Uuid;
 
 /// Which database engine a connection targets. `SQLite` is fully local and
 /// always available; Postgres and `MySQL` are network engines whose live
 /// drivers are gated behind a sandbox grant (see [`ConnectionProfile`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Engine {
     Sqlite,
+    #[default]
     Postgres,
+    #[model(rename = "mysql")]
     MySql,
 }
 
@@ -21,15 +24,6 @@ impl Engine {
             Engine::Sqlite => "SQLite",
             Engine::Postgres => "PostgreSQL",
             Engine::MySql => "MySQL",
-        }
-    }
-
-    /// Short glyph shown on the connection chip in the sidebar.
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Engine::Sqlite => "lite",
-            Engine::Postgres => "pg",
-            Engine::MySql => "sql",
         }
     }
 
@@ -45,10 +39,9 @@ impl Engine {
         [Engine::Sqlite, Engine::Postgres, Engine::MySql]
     }
 
-    /// Stable string key used when a connection profile is stored in the shared
-    /// Automerge document (see [`crate::doc::ConnectionsDoc`]). Kept distinct
-    /// from [`label`](Self::label) so the on-wire key never shifts with a UI
-    /// rename.
+    /// Stable string key an engine is named by where it is typed: a verb's
+    /// parameter, the record. Kept distinct from [`label`](Self::label) so
+    /// the key never shifts with a UI rename.
     pub fn as_key(self) -> &'static str {
         match self {
             Engine::Sqlite => "sqlite",
@@ -101,7 +94,7 @@ impl ConnectionProfile {
     pub fn sqlite_sample() -> Self {
         Self {
             id: Uuid::new_v4(),
-            name: "Sample · chinook".to_string(),
+            name: "Chinook sample".to_string(),
             engine: Engine::Sqlite,
             host: String::new(),
             port: 0,
@@ -147,69 +140,25 @@ impl ConnectionProfile {
         }
     }
 
+    /// Where the connection goes, as the sidebar's second line: `host:port`
+    /// for a network engine, the file's name for `SQLite`, nothing for the
+    /// bundled sample.
+    pub fn address(&self) -> String {
+        match self.engine {
+            Engine::Sqlite if self.is_sample || self.file_path == ":memory:" => String::new(),
+            Engine::Sqlite => std::path::Path::new(&self.file_path)
+                .file_name()
+                .map_or_else(
+                    || self.file_path.clone(),
+                    |name| name.to_string_lossy().into_owned(),
+                ),
+            Engine::Postgres | Engine::MySql => format!("{}:{}", self.host, self.port),
+        }
+    }
+
     /// Network engines need a sandbox grant before a live handle can open.
     pub fn is_remote(&self) -> bool {
         !matches!(self.engine, Engine::Sqlite)
-    }
-}
-
-/// SQL data-type family, used to pick a type icon + colour in the schema
-/// tree and to right-align numeric result columns.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TypeClass {
-    Integer,
-    Real,
-    Text,
-    Blob,
-    Boolean,
-    DateTime,
-    Numeric,
-    Unknown,
-}
-
-impl TypeClass {
-    /// Classify a raw SQL type declaration the way `SQLite`'s loose typing
-    /// does — substring match against the declared type string.
-    pub fn classify(decl: &str) -> TypeClass {
-        let d = decl.to_ascii_uppercase();
-        if d.contains("INT") {
-            TypeClass::Integer
-        } else if d.contains("BOOL") {
-            TypeClass::Boolean
-        } else if d.contains("CHAR") || d.contains("CLOB") || d.contains("TEXT") {
-            TypeClass::Text
-        } else if d.contains("BLOB") || d.is_empty() {
-            TypeClass::Blob
-        } else if d.contains("REAL") || d.contains("FLOA") || d.contains("DOUB") {
-            TypeClass::Real
-        } else if d.contains("DATE") || d.contains("TIME") {
-            TypeClass::DateTime
-        } else if d.contains("NUMERIC") || d.contains("DECIMAL") || d.contains("MONEY") {
-            TypeClass::Numeric
-        } else {
-            TypeClass::Unknown
-        }
-    }
-
-    /// One-letter type icon glyph rendered in a coloured chip.
-    pub fn icon(self) -> &'static str {
-        match self {
-            TypeClass::Integer => "#",
-            TypeClass::Real => "~",
-            TypeClass::Numeric => "$",
-            TypeClass::Text => "T",
-            TypeClass::Blob => "B",
-            TypeClass::Boolean => "?",
-            TypeClass::DateTime => "@",
-            TypeClass::Unknown => "•",
-        }
-    }
-
-    pub fn is_numeric(self) -> bool {
-        matches!(
-            self,
-            TypeClass::Integer | TypeClass::Real | TypeClass::Numeric | TypeClass::Boolean
-        )
     }
 }
 
@@ -218,7 +167,6 @@ impl TypeClass {
 pub struct ColumnInfo {
     pub name: String,
     pub decl_type: String,
-    pub class: TypeClass,
     pub not_null: bool,
     pub primary_key: bool,
     pub default: Option<String>,
@@ -368,7 +316,7 @@ impl Cell {
             Cell::Integer(i) => i.to_string(),
             Cell::Real(r) => format_real(*r),
             Cell::Text(s) => s.clone(),
-            Cell::Blob(n) => format!("«{n} bytes»"),
+            Cell::Blob(n) => format!("Binary, {n} bytes"),
         }
     }
 
@@ -419,14 +367,14 @@ impl QueryResult {
     pub fn message(&self) -> String {
         if self.is_select {
             format!(
-                "{} rows{} · {:.1} ms",
+                "{} rows{} in {:.1} ms",
                 self.rows.len(),
                 if self.truncated { "+" } else { "" },
                 self.elapsed_ms
             )
         } else {
             let n = self.rows_affected.unwrap_or(0);
-            format!("{n} rows affected · {:.1} ms", self.elapsed_ms)
+            format!("{n} rows affected in {:.1} ms", self.elapsed_ms)
         }
     }
 }
@@ -435,19 +383,9 @@ impl QueryResult {
 mod tests {
     use super::*;
 
-    /// Columns classify integer families, reals display without trailing zeros, hostile text is refused, and profiles report local or network engines.
+    /// Reals display without trailing zeros, hostile text is refused, and profiles report local or network engines.
     #[test]
     fn cell_and_profile_classification() {
-        // --- phase: classify_picks_integer_for_int_family ---
-        {
-            assert_eq!(TypeClass::classify("INTEGER"), TypeClass::Integer);
-            assert_eq!(TypeClass::classify("BIGINT"), TypeClass::Integer);
-            assert_eq!(TypeClass::classify("VARCHAR(255)"), TypeClass::Text);
-            assert_eq!(TypeClass::classify("DATETIME"), TypeClass::DateTime);
-            assert_eq!(TypeClass::classify("NUMERIC(10,2)"), TypeClass::Numeric);
-            assert_eq!(TypeClass::classify(""), TypeClass::Blob);
-        }
-
         // --- phase: cell_display_formats_reals_without_trailing_zeros ---
         {
             assert_eq!(Cell::Real(3.0).display(), "3.0");

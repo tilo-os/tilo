@@ -597,6 +597,17 @@ impl RealtimeEncoder {
                         passed_over = ?tried,
                         "media: real-time encoder selected"
                     );
+                    if !spec.is_hardware() {
+                        crate::hw::fallback::report_realtime(
+                            crate::hw::fallback::Direction::Encode,
+                            config.codec,
+                            config.policy,
+                            realtime_encoders(config.codec),
+                            registry_has,
+                            &tried,
+                            Some((config.width, config.height)),
+                        );
+                    }
                     return Ok(enc);
                 }
                 Err(e) => {
@@ -1320,6 +1331,17 @@ impl RealtimeDecoder {
                         element = %spec.describe(),
                         "media: real-time decoder selected"
                     );
+                    if !spec.is_hardware() {
+                        crate::hw::fallback::report_realtime(
+                            crate::hw::fallback::Direction::Decode,
+                            self.config.codec,
+                            self.config.policy,
+                            realtime_decoders(self.config.codec),
+                            registry_has,
+                            &self.tried,
+                            None,
+                        );
+                    }
                     self.running = Some((r, spec));
                     self.decoder_element = Some(element);
                     return Ok(());
@@ -1484,11 +1506,8 @@ impl RealtimeDecoder {
             startup_timeout()
         };
         let (running, _) = self.running.as_ref().ok_or("no decoder is running")?;
-        let mut newest = None;
         // Anything that arrived late from the previous unit first.
-        if let Some(s) = running.drain()?.pop() {
-            newest = Some(s);
-        }
+        let mut newest = running.drain()?.pop();
         running.push(buffer)?;
         if let Some(s) = running.next_sample(timeout)? {
             newest = Some(s);

@@ -26,6 +26,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::ReadTyped as _;
+use tilo_automerge::read::{map_at, str_at, str_entries};
 use tilo_content::{ContentInputs, ContentMeta, ContentSource};
 
 mod bulk;
@@ -39,7 +41,7 @@ thread_local! { static MARK_READS: std::cell::Cell<usize> = const { std::cell::C
 /// Resolved object ids for the canonical container maps under a document root.
 #[derive(Clone, Debug)]
 pub struct Containers {
-    /// The document root these containers live under (not always `automerge::ROOT` — a host may nest the model); needed to lazily create the blobs map.
+    /// The document root these containers live under (not always `automerge::ROOT` — a host may nest the model).
     pub root: ObjId,
     pub blocks: ObjId,
     pub styles: ObjId,
@@ -48,19 +50,17 @@ pub struct Containers {
     /// Content-addressed binary descriptors (blake3 hex → descriptor). The bytes are binary inputs kept
     /// outside the document, in the caller's content store (see [`tilo_content`]). The map only grows, so it
     /// names every input any version of the document refers to.
-    /// `None` for documents predating the blobs map; created lazily on first [`DocMut::reference_content`].
-    pub blobs: Option<ObjId>,
-    /// Page-header block container (same shape as `blocks`); `None` only for documents predating the region, created lazily on first header write.
-    pub header: Option<ObjId>,
+    pub blobs: ObjId,
+    /// Page-header block container (same shape as `blocks`).
+    pub header: ObjId,
     /// Page-footer block container (same shape as `blocks`), mirroring `header`.
-    pub footer: Option<ObjId>,
-    /// Footnote/endnote container (`Map<note_id, note>`); `None` for documents predating notes, created lazily on first insert.
-    pub notes: Option<ObjId>,
-    /// Comment/annotation container (`Map<comment_id, comment>`). Eager-initialised (unlike `header`/`notes`) so concurrent comment adds converge on one shared object;
-    /// `None` only for documents predating the comments map.
-    pub comments: Option<ObjId>,
-    /// Tracked-changes container (`Map<change_id, change>`). Eager-initialised like `comments`; `None` only for documents predating the changes map.
-    pub changes: Option<ObjId>,
+    pub footer: ObjId,
+    /// Footnote/endnote container (`Map<note_id, note>`).
+    pub notes: ObjId,
+    /// Comment/annotation container (`Map<comment_id, comment>`).
+    pub comments: ObjId,
+    /// Tracked-changes container (`Map<change_id, change>`).
+    pub changes: ObjId,
 }
 
 /// Which page region a block container refers to. The body is the canonical
@@ -360,10 +360,8 @@ pub fn next_counter_for(
     // Header/footer blocks, note ids, and note-body blocks draw from the same per-replica
     // generator, so a seeded generator must scan them too or it could re-mint an existing one.
     for region in [Region::Header, Region::Footer] {
-        if let Some(container) = region_obj(doc, c, region) {
-            for id in block_ids(doc, &container) {
-                bump(&id);
-            }
+        for id in block_ids(doc, region_obj(c, region)) {
+            bump(&id);
         }
     }
     for nid in note_ids(doc, c) {
@@ -551,9 +549,7 @@ fn write_schema(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     // created map is a per-replica object, so two people who concurrently add a
     // footnote — or a comment, a tracked change, a page header — would create
     // two containers and a merge would keep one, which is the same silent loss
-    // the genesis exists to prevent. Documents authored before a container
-    // existed still open: it reads as `None` and is created on first write.
-    // Present-and-empty is indistinguishable from absent to every reader, and
+    // the genesis exists to prevent. Present-and-empty is indistinguishable from absent to every reader, and
     // both office codecs decide a document *has* a header from whether the
     // region materializes blocks, so an empty one exports nothing.
     let notes = doc.put_object(root, KEY_NOTES, ObjType::Map).unwrap();
@@ -567,12 +563,12 @@ fn write_schema(doc: &mut AutoCommit, root: &ObjId) -> Containers {
         styles,
         preserved,
         meta,
-        blobs: Some(blobs),
-        header: Some(header),
-        footer: Some(footer),
-        notes: Some(notes),
-        comments: Some(comments),
-        changes: Some(changes),
+        blobs,
+        header,
+        footer,
+        notes,
+        comments,
+        changes,
     }
 }
 
@@ -627,65 +623,40 @@ pub fn shadowed_containers(doc: &AutoCommit, root: &ObjId) -> Vec<String> {
         .collect()
 }
 
-/// Resolve existing containers under `root`. The blobs map is optional so
-/// documents written before it existed still open (it is then created lazily).
+/// Resolve existing containers under `root`.
 ///
 /// # Errors
-/// Returns [`DocError`] if a required container key (`blocks`/`styles`/`preserved`/`meta`)
-/// is missing under `root` or does not resolve to a map.
+/// Returns [`DocError`] if a container key is missing under `root` or does not
+/// resolve to a map.
 pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<Containers, DocError> {
     Ok(Containers {
         root: root.clone(),
-        blocks: map_at(doc, root, KEY_BLOCKS)?,
-        styles: map_at(doc, root, KEY_STYLES)?,
-        preserved: map_at(doc, root, KEY_PRESERVED)?,
-        meta: map_at(doc, root, KEY_META)?,
-        blobs: opt_map_at(doc, root, KEY_BLOBS),
-        header: opt_map_at(doc, root, KEY_HEADER),
-        footer: opt_map_at(doc, root, KEY_FOOTER),
-        notes: opt_map_at(doc, root, KEY_NOTES),
-        comments: opt_map_at(doc, root, KEY_COMMENTS),
-        changes: opt_map_at(doc, root, KEY_CHANGES),
+        blocks: required_map(doc, root, KEY_BLOCKS)?,
+        styles: required_map(doc, root, KEY_STYLES)?,
+        preserved: required_map(doc, root, KEY_PRESERVED)?,
+        meta: required_map(doc, root, KEY_META)?,
+        blobs: required_map(doc, root, KEY_BLOBS)?,
+        header: required_map(doc, root, KEY_HEADER)?,
+        footer: required_map(doc, root, KEY_FOOTER)?,
+        notes: required_map(doc, root, KEY_NOTES)?,
+        comments: required_map(doc, root, KEY_COMMENTS)?,
+        changes: required_map(doc, root, KEY_CHANGES)?,
     })
 }
 
-fn map_at(doc: &AutoCommit, root: &ObjId, key: &str) -> Result<ObjId, DocError> {
+pub(crate) fn required_map(doc: &AutoCommit, root: &ObjId, key: &str) -> Result<ObjId, DocError> {
     match doc.get(root, key)? {
         Some((Value::Object(ObjType::Map), id)) => Ok(id),
         _ => Err(DocError::Invalid(format!("root.{key} is not a map"))),
     }
 }
 
-/// Resolve an optional map (returns `None` if absent rather than erroring).
-fn opt_map_at(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ObjId> {
-    match doc.get(root, key) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-        _ => None,
-    }
-}
-
-/// Resolve the blobs map object, preferring the cached id and falling back to a
-/// fresh root lookup (so a lazily-created map is still found via reads).
-fn blobs_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
-    if let Some(b) = &c.blobs {
-        return Some(b.clone());
-    }
-    opt_map_at(doc, &c.root, KEY_BLOBS)
-}
-
-/// Resolve a region's block container object, preferring the cached id and falling back to a fresh
-/// root lookup. The body container always exists; header/footer may be `None` until first written.
-fn region_obj(doc: &AutoCommit, c: &Containers, region: Region) -> Option<ObjId> {
+/// A region's block container object.
+fn region_obj(c: &Containers, region: Region) -> &ObjId {
     match region {
-        Region::Body => Some(c.blocks.clone()),
-        Region::Header => c
-            .header
-            .clone()
-            .or_else(|| opt_map_at(doc, &c.root, KEY_HEADER)),
-        Region::Footer => c
-            .footer
-            .clone()
-            .or_else(|| opt_map_at(doc, &c.root, KEY_FOOTER)),
+        Region::Body => &c.blocks,
+        Region::Header => &c.header,
+        Region::Footer => &c.footer,
     }
 }
 
@@ -696,7 +667,7 @@ fn region_block(
     region: Region,
     id: &str,
 ) -> Option<(ObjId, ObjId)> {
-    let container = region_obj(doc, c, region)?;
+    let container = region_obj(c, region).clone();
     let obj = block_obj(doc, &container, id)?;
     Some((container, obj))
 }
@@ -737,73 +708,49 @@ pub fn region_block_len(
 
 /// The ordered block ids of a region (empty when the region is absent).
 pub fn region_blocks_in_order(doc: &AutoCommit, c: &Containers, region: Region) -> Vec<String> {
-    match region_obj(doc, c, region) {
-        Some(obj) => ordered_keys(doc, &obj),
-        None => Vec::new(),
-    }
+    ordered_keys(doc, region_obj(c, region))
 }
 
 /// Materialize a region's blocks into [`BlockView`]s (empty when absent).
 pub fn materialize_region(doc: &AutoCommit, c: &Containers, region: Region) -> Vec<BlockView> {
-    match region_obj(doc, c, region) {
-        Some(obj) => ordered_views(doc, &obj),
-        None => Vec::new(),
-    }
-}
-
-/// Resolve the notes container object, preferring the cached id and falling back to a fresh root lookup.
-fn notes_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
-    c.notes
-        .clone()
-        .or_else(|| opt_map_at(doc, &c.root, KEY_NOTES))
+    ordered_views(doc, region_obj(c, region))
 }
 
 /// Resolve a single note's sub-map object by id.
 fn note_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
-    let notes = notes_obj(doc, c)?;
-    match doc.get(&notes, id) {
-        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
+    let notes = &c.notes;
+    map_at(doc, notes, id)
 }
 
 /// Resolve a note's block container (`note.blocks`) sub-map object.
 fn note_blocks_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
     let note = note_obj(doc, c, id)?;
-    match doc.get(&note, NOTE_BLOCKS) {
-        Ok(Some((Value::Object(ObjType::Map), bid))) => Some(bid),
-        _ => None,
-    }
+    map_at(doc, &note, NOTE_BLOCKS)
 }
 
 /// The note ids present in the document, in a stable (sorted) order so two replicas converge
 /// byte-identically; citation order in the body text is recovered separately from `note-ref` marks.
 pub fn note_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
-    match notes_obj(doc, c) {
-        Some(notes) => {
-            let mut ids: Vec<String> = doc
-                .keys(&notes)
-                .filter(|id| {
-                    matches!(
-                        doc.get(&notes, id),
-                        Ok(Some((Value::Object(ObjType::Map), _)))
-                    )
-                })
-                .collect();
-            ids.sort();
-            ids
-        }
-        None => Vec::new(),
-    }
+    let notes = &c.notes;
+    let mut ids: Vec<String> = doc
+        .keys(notes)
+        .filter(|id| {
+            matches!(
+                doc.get(notes, id),
+                Ok(Some((Value::Object(ObjType::Map), _)))
+            )
+        })
+        .collect();
+    ids.sort();
+    ids
 }
 
 /// A single note's kind (`Footnote`/`Endnote`), or `None` if the id is unknown.
 pub fn note_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<NoteKind> {
     let note = note_obj(doc, c, id)?;
-    match doc.get(&note, NOTE_KIND) {
-        Ok(Some((v, _))) => v.as_str().map(NoteKind::from_str),
-        _ => None,
-    }
+    str_at(doc, &note, NOTE_KIND)
+        .as_deref()
+        .map(NoteKind::from_str)
 }
 
 /// Materialize a note's block sequence (empty if the note has no blocks / is unknown).
@@ -837,22 +784,13 @@ pub fn materialize_notes(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapsho
         .collect()
 }
 
-/// Resolve the comments container object, preferring the cached id and falling back to a fresh root lookup.
-fn comments_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
-    c.comments
-        .clone()
-        .or_else(|| opt_map_at(doc, &c.root, KEY_COMMENTS))
-}
-
 /// A grow-only resolution marker. Unlike deleting the comment map entry alone,
 /// this remains observable when a divergent replica concurrently authors a
 /// reply against its still-live copy of the thread.
 pub fn comment_is_tombstoned(doc: &AutoCommit, c: &Containers, id: &str) -> bool {
-    let Some(comments) = comments_obj(doc, c) else {
-        return false;
-    };
+    let comments = &c.comments;
     let key = format!("{COMMENT_TOMBSTONE_PREFIX}{id}");
-    matches!(doc.get(&comments, key), Ok(Some((value, _))) if value.as_bool() == Some(true))
+    matches!(doc.get(comments, key), Ok(Some((value, _))) if value.as_bool() == Some(true))
 }
 
 /// Resolve a single comment's sub-map object by id.
@@ -860,20 +798,14 @@ fn comment_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
     if comment_is_tombstoned(doc, c, id) {
         return None;
     }
-    let comments = comments_obj(doc, c)?;
-    match doc.get(&comments, id) {
-        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
+    let comments = &c.comments;
+    map_at(doc, comments, id)
 }
 
 /// Resolve a comment's block container (`comment.blocks`) sub-map object.
 fn comment_blocks_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
     let comment = comment_obj(doc, c, id)?;
-    match doc.get(&comment, COMMENT_BLOCKS) {
-        Ok(Some((Value::Object(ObjType::Map), bid))) => Some(bid),
-        _ => None,
-    }
+    map_at(doc, &comment, COMMENT_BLOCKS)
 }
 
 fn comment_reply_obj(
@@ -882,8 +814,8 @@ fn comment_reply_obj(
     comment_id: &str,
     reply_id: &str,
 ) -> Option<ObjId> {
-    let comments = comments_obj(doc, c)?;
-    match doc.get(&comments, reply_id) {
+    let comments = &c.comments;
+    match doc.get(comments, reply_id) {
         Ok(Some((Value::Object(ObjType::Map), reply))) => {
             match doc.get(&reply, COMMENT_REPLY_PARENT) {
                 Ok(Some((parent, _))) if parent.as_str() == Some(comment_id) => Some(reply),
@@ -901,47 +833,34 @@ fn comment_reply_blocks_obj(
     reply_id: &str,
 ) -> Option<ObjId> {
     let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
-    match doc.get(&reply, COMMENT_REPLY_BLOCKS) {
-        Ok(Some((Value::Object(ObjType::Map), blocks))) => Some(blocks),
-        _ => None,
-    }
+    map_at(doc, &reply, COMMENT_REPLY_BLOCKS)
 }
 
 /// The comment ids present in the document, in a stable (sorted) order so two replicas that merged
 /// in different orders materialize byte-identically; anchored ranges are recovered from the `comment` marks.
 pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
-    match comments_obj(doc, c) {
-        Some(comments) => {
-            let mut ids: Vec<String> = doc
-                .keys(&comments)
-                .filter(|id| {
-                    !comment_is_tombstoned(doc, c, id)
-                        && matches!(doc.get(&comments, id), Ok(Some((Value::Object(ObjType::Map), oid))) if !matches!(doc.get(&oid, COMMENT_REPLY_PARENT), Ok(Some(_))))
-                })
-                .collect();
-            ids.sort();
-            ids
-        }
-        None => Vec::new(),
-    }
+    let comments = &c.comments;
+    let mut ids: Vec<String> = doc
+        .keys(comments)
+        .filter(|id| {
+            !comment_is_tombstoned(doc, c, id)
+                && matches!(doc.get(comments, id), Ok(Some((Value::Object(ObjType::Map), oid))) if !matches!(doc.get(&oid, COMMENT_REPLY_PARENT), Ok(Some(_))))
+        })
+        .collect();
+    ids.sort();
+    ids
 }
 
 /// A comment's author display name (empty if unset / unknown id).
 pub fn comment_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let comment = comment_obj(doc, c, id)?;
-    match doc.get(&comment, COMMENT_AUTHOR) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &comment, COMMENT_AUTHOR)
 }
 
 /// A comment's date / timestamp string (empty if unset / unknown id).
 pub fn comment_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let comment = comment_obj(doc, c, id)?;
-    match doc.get(&comment, COMMENT_DATE) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &comment, COMMENT_DATE)
 }
 
 /// The ordered block ids of a comment's content (empty if absent).
@@ -975,10 +894,8 @@ pub fn comment_reply_ids(doc: &AutoCommit, c: &Containers, comment_id: &str) -> 
 /// answer [`comment_reply_ids`] gives for every comment, from one pass over the map.
 pub fn comment_replies_by_parent(doc: &AutoCommit, c: &Containers) -> HashMap<String, Vec<String>> {
     let mut by_parent: HashMap<String, Vec<String>> = HashMap::new();
-    let Some(comments) = comments_obj(doc, c) else {
-        return by_parent;
-    };
-    for item in doc.map_range(&comments, ..) {
+    let comments = &c.comments;
+    for item in doc.map_range(comments, ..) {
         if !matches!(item.value, ValueRef::Object(ObjType::Map)) {
             continue;
         }
@@ -1004,10 +921,7 @@ pub fn comment_reply_author(
     reply_id: &str,
 ) -> Option<String> {
     let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
-    match doc.get(&reply, COMMENT_REPLY_AUTHOR) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &reply, COMMENT_REPLY_AUTHOR)
 }
 
 pub fn comment_reply_date(
@@ -1017,10 +931,7 @@ pub fn comment_reply_date(
     reply_id: &str,
 ) -> Option<String> {
     let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
-    match doc.get(&reply, COMMENT_REPLY_DATE) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &reply, COMMENT_REPLY_DATE)
 }
 
 pub fn comment_reply_blocks_in_order(
@@ -1177,59 +1088,39 @@ pub fn heading_ref_id(block_id: &str) -> String {
     format!("{HEADING_REF_PREFIX}{block_id}")
 }
 
-/// Resolve the changes container object, preferring the cached id and falling back to a fresh root lookup.
-fn changes_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
-    c.changes
-        .clone()
-        .or_else(|| opt_map_at(doc, &c.root, KEY_CHANGES))
-}
-
 /// Resolve a single change's sub-map object by id.
 fn change_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
-    let changes = changes_obj(doc, c)?;
-    match doc.get(&changes, id) {
-        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
+    let changes = &c.changes;
+    map_at(doc, changes, id)
 }
 
 /// The change ids present in the document, in a stable (sorted) order so replicas converge byte-identically;
 /// anchored ranges are recovered separately from the body `ins`/`del` marks.
 pub fn change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
-    match changes_obj(doc, c) {
-        Some(changes) => {
-            let mut ids: Vec<String> = doc
-                .keys(&changes)
-                .filter(|id| {
-                    matches!(
-                        doc.get(&changes, id),
-                        Ok(Some((Value::Object(ObjType::Map), _)))
-                    )
-                })
-                .collect();
-            ids.sort();
-            ids
-        }
-        None => Vec::new(),
-    }
+    let changes = &c.changes;
+    let mut ids: Vec<String> = doc
+        .keys(changes)
+        .filter(|id| {
+            matches!(
+                doc.get(changes, id),
+                Ok(Some((Value::Object(ObjType::Map), _)))
+            )
+        })
+        .collect();
+    ids.sort();
+    ids
 }
 
 /// A change's author display name (empty if unset / unknown id).
 pub fn change_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let change = change_obj(doc, c, id)?;
-    match doc.get(&change, CHANGE_AUTHOR) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &change, CHANGE_AUTHOR)
 }
 
 /// A change's date / timestamp string (empty if unset / unknown id).
 pub fn change_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let change = change_obj(doc, c, id)?;
-    match doc.get(&change, CHANGE_DATE) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &change, CHANGE_DATE)
 }
 
 /// A change's kind (`Ins`/`Del`), or `None` if the id is unknown.
@@ -1239,10 +1130,9 @@ pub fn change_kind(
     id: &str,
 ) -> Option<crate::snapshot::ChangeKind> {
     let change = change_obj(doc, c, id)?;
-    match doc.get(&change, CHANGE_KIND) {
-        Ok(Some((v, _))) => v.as_str().map(crate::snapshot::ChangeKind::from_str),
-        _ => None,
-    }
+    str_at(doc, &change, CHANGE_KIND)
+        .as_deref()
+        .map(crate::snapshot::ChangeKind::from_str)
 }
 
 /// The mark name a change of `kind` anchors with (`ins`/`del`).
@@ -1303,8 +1193,8 @@ fn changes_with_ranges(
 /// A blob's descriptor — what the document holds *instead of* its bytes.
 /// `None` when the document doesn't reference that hash at all, distinct from referencing it without having the content yet.
 pub fn blob_meta(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<ContentMeta> {
-    let blobs = blobs_obj(doc, c)?;
-    match doc.get(&blobs, hash) {
+    let blobs = &c.blobs;
+    match doc.get(blobs, hash) {
         Ok(Some((Value::Object(ObjType::Map), d))) => {
             let str_at = |k: &str| match doc.get(&d, k) {
                 Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -1334,10 +1224,7 @@ pub fn blob_meta(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<Content
 
 /// Every blob hash this document references, whether or not the content is here yet.
 pub fn blob_hashes(doc: &AutoCommit, c: &Containers) -> Vec<String> {
-    match blobs_obj(doc, c) {
-        Some(b) => doc.keys(&b).collect(),
-        None => Vec::new(),
-    }
+    doc.keys(&c.blobs).collect()
 }
 
 /// Every content address the document refers to, in any of its versions: image descriptors and
@@ -1348,10 +1235,7 @@ pub fn referenced_content(doc: &AutoCommit, c: &Containers) -> BTreeSet<String> 
 }
 
 fn block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
-    match doc.get(container, id) {
-        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
+    map_at(doc, container, id)
 }
 
 thread_local! {
@@ -1510,10 +1394,7 @@ pub fn block_order_key_lengths(doc: &AutoCommit, c: &Containers) -> Vec<usize> {
 
 /// Read a document-level meta string (e.g. the serialized stylesheet).
 pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
-    match doc.get(&c.meta, key) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &c.meta, key)
 }
 
 /// The document-wide multi-column layout: `(column_count, optional_gap_px)`. Reads the `meta.columns` /
@@ -1549,53 +1430,28 @@ pub fn columns(doc: &AutoCommit, c: &Containers) -> (u32, Option<f64>) {
 /// `None` for documents that declare no default language; the consumer then falls back to its own locale.
 /// Round-trips through the `.odt` default-paragraph-style `fo:language`/`fo:country` and `.docx` `docDefaults` `w:lang`.
 pub fn language(doc: &AutoCommit, c: &Containers) -> Option<String> {
-    match doc.get(&c.meta, META_LANGUAGE) {
-        Ok(Some((v, _))) => v
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &c.meta, META_LANGUAGE).filter(|s| !s.is_empty())
 }
 
 /// Resolve the document-properties sub-map under `meta` (`meta.props`), if it exists (created lazily on first [`DocMut::set_doc_prop`]).
 fn props_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
-    match doc.get(&c.meta, KEY_PROPS) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-        _ => None,
-    }
+    map_at(doc, &c.meta, KEY_PROPS)
 }
 
 /// Read a single document property (`title`/`author`/… — see [`DOC_PROP_KEYS`](crate::schema::DOC_PROP_KEYS)), or any other string property name a codec stashed. `None` if unset.
 pub fn doc_prop(doc: &AutoCommit, c: &Containers, name: &str) -> Option<String> {
     let props = props_obj(doc, c)?;
-    match doc.get(&props, name) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &props, name)
 }
 
 /// All document properties (`name → value`) as a sorted map, empty if none are set.
 pub fn doc_props(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    if let Some(props) = props_obj(doc, c) {
-        for k in doc.keys(&props) {
-            if let Ok(Some((v, _))) = doc.get(&props, &k)
-                && let Some(s) = v.as_str()
-            {
-                out.insert(k, s.to_string());
-            }
-        }
-    }
-    out
+    props_obj(doc, c).map_or_else(BTreeMap::new, |props| str_entries(doc, &props))
 }
 
 pub fn block_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let obj = block_obj(doc, &c.blocks, id)?;
-    match doc.get(&obj, BLOCK_KIND) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &obj, BLOCK_KIND)
 }
 
 pub fn block_text(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
@@ -1724,8 +1580,8 @@ pub fn has_mark_over(
 }
 
 /// All preserved parts (the lossless preservation layer — verbatim bytes a codec stashed for content it
-/// doesn't model), as `(key, bytes)`. Reconstructed exactly from however the part is stored — the legacy
-/// single-`Bytes` scalar form, or the per-atom segmented `Map` form (see `PRESERVED_SEGMENTS`) — by concatenating segments in stored order.
+/// doesn't model), as `(key, bytes)`, each reconstructed exactly by concatenating its per-atom segments
+/// in stored order.
 ///
 /// A part preserved as a content reference is read from `content`; one whose content is missing there
 /// is left out (and logged), since there are no bytes to re-emit.
@@ -1758,8 +1614,8 @@ pub fn preserved_entry(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Pr
     preserved_inline(doc, c, key).map(PreservedPart::Bytes)
 }
 
-/// Reconstruct one preserved part's verbatim bytes by key: inline parts from the document (both the
-/// legacy `Bytes`-scalar form and the per-atom segmented `Map` form), content references from `content`.
+/// Reconstruct one preserved part's verbatim bytes by key: inline parts from the document, content
+/// references from `content`.
 pub fn preserved_part(
     doc: &AutoCommit,
     c: &Containers,
@@ -1778,81 +1634,42 @@ pub fn preserved_part(
     }
 }
 
-/// A preserved part stored in the document, transparently handling both the legacy `Bytes`-scalar form
-/// and the per-atom segmented `Map` form (concatenating ordered segments).
+/// A preserved part stored in the document: its atoms concatenated in order.
 fn preserved_inline(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Vec<u8>> {
-    match doc.get(&c.preserved, key) {
-        // Per-atom segmented form: `Map<segment_id, {ord: Bytes, bytes: Bytes}>`, sorted by `ord` then concatenated.
-        // CRDT-merge-friendly: each segment is an independent automerge object, so edits to different atoms of the same part merge.
-        Ok(Some((Value::Object(ObjType::Map), part_obj))) => {
-            let mut segs: Vec<(Vec<u8>, String, Vec<u8>)> = doc
-                .keys(&part_obj)
-                .filter_map(|sid| {
-                    let Ok(Some((Value::Object(ObjType::Map), seg_obj))) = doc.get(&part_obj, &sid)
-                    else {
-                        return None;
-                    };
-                    let ord = match doc.get(&seg_obj, PRESERVED_SEG_ORD) {
-                        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                            ScalarValue::Bytes(b) => b.clone(),
-                            _ => Vec::new(),
-                        },
-                        _ => Vec::new(),
-                    };
-                    let bytes = match doc.get(&seg_obj, PRESERVED_SEG_BYTES) {
-                        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                            ScalarValue::Bytes(b) => b.clone(),
-                            _ => return None,
-                        },
-                        _ => return None,
-                    };
-                    Some((ord, sid, bytes))
-                })
-                .collect();
-            // Sort by fractional order key, then segment id as a deterministic tiebreak.
-            segs.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
-            Some(segs.into_iter().flat_map(|(_, _, b)| b).collect())
-        }
-        // Legacy single-blob form: the whole part as one `Bytes` scalar.
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
+    preserved_segments(doc, c, key).map(|segs| segs.into_iter().flat_map(|(_, b)| b).collect())
 }
 
 /// The per-atom segment ids of a preserved part, in source order, paired with each atom's verbatim bytes.
-/// Empty for a part stored in the legacy single-blob form. Lets a codec or test address an individual atom by its stable id.
+/// Empty for a part that is not stored inline. Lets a codec or test address an individual atom by its stable id.
 pub fn preserved_atoms(doc: &AutoCommit, c: &Containers, key: &str) -> Vec<(String, Vec<u8>)> {
+    preserved_segments(doc, c, key).unwrap_or_default()
+}
+
+/// A part's `Map<segment_id, {ord: Bytes, bytes: Bytes}>`, sorted by `ord` (segment id breaks ties), or
+/// `None` when `key` is not an inline part. Each segment is its own automerge object, so edits to
+/// different atoms of one part merge rather than clobber each other.
+fn preserved_segments(
+    doc: &AutoCommit,
+    c: &Containers,
+    key: &str,
+) -> Option<Vec<(String, Vec<u8>)>> {
     let Ok(Some((Value::Object(ObjType::Map), part_obj))) = doc.get(&c.preserved, key) else {
-        return Vec::new();
+        return None;
     };
+    let bytes_at = |obj: &ObjId, prop: &str| doc.bytes_at(obj, prop);
     let mut segs: Vec<(Vec<u8>, String, Vec<u8>)> = doc
         .keys(&part_obj)
         .filter_map(|sid| {
             let Ok(Some((Value::Object(ObjType::Map), seg_obj))) = doc.get(&part_obj, &sid) else {
                 return None;
             };
-            let ord = match doc.get(&seg_obj, PRESERVED_SEG_ORD) {
-                Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                    ScalarValue::Bytes(b) => b.clone(),
-                    _ => Vec::new(),
-                },
-                _ => Vec::new(),
-            };
-            let bytes = match doc.get(&seg_obj, PRESERVED_SEG_BYTES) {
-                Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                    ScalarValue::Bytes(b) => b.clone(),
-                    _ => return None,
-                },
-                _ => return None,
-            };
+            let ord = bytes_at(&seg_obj, PRESERVED_SEG_ORD).unwrap_or_default();
+            let bytes = bytes_at(&seg_obj, PRESERVED_SEG_BYTES)?;
             Some((ord, sid, bytes))
         })
         .collect();
     segs.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
-    segs.into_iter().map(|(_, sid, b)| (sid, b)).collect()
+    Some(segs.into_iter().map(|(_, sid, b)| (sid, b)).collect())
 }
 
 /// A stable, replica-independent id for a preserved atom: its source-order index plus a short content hash.
@@ -2080,30 +1897,6 @@ impl DocRef<'_> {
     reason = "every put/put_object here targets a container id this API itself resolved or just created; see the note above for why threading Result through is out of scope"
 )]
 impl DocMut<'_> {
-    /// Resolve-or-create a region's block container. The body always exists; header/footer maps are created
-    /// lazily on first write and cached back into `Containers` for later reads. Takes `&Containers` by
-    /// value-copy of the relevant id so this doesn't need a mutable borrow of `self.c` (which is shared `&`).
-    fn region_container(&mut self, region: Region) -> ObjId {
-        match region {
-            Region::Body => self.c.blocks.clone(),
-            Region::Header => self.ensure_region(KEY_HEADER, self.c.header.clone()),
-            Region::Footer => self.ensure_region(KEY_FOOTER, self.c.footer.clone()),
-        }
-    }
-
-    fn ensure_region(&mut self, key: &str, cached: Option<ObjId>) -> ObjId {
-        if let Some(obj) = cached {
-            return obj;
-        }
-        // Re-check the live doc in case a prior op in this transaction created it.
-        if let Some(obj) = opt_map_at(self.doc, &self.c.root, key) {
-            return obj;
-        }
-        self.doc
-            .put_object(&self.c.root, key, ObjType::Map)
-            .unwrap()
-    }
-
     /// A fractional key ordered strictly after block `after` (or at the front when `after` is `None`) within
     /// `container`, for block `id`. Uses the in-memory order index so the lookup is O(log n), not an O(n log n)
     /// rescan. The key is salted by `id`, so two replicas placing blocks in one gap at once give them distinct
@@ -2174,13 +1967,7 @@ impl DocMut<'_> {
             let hi = run.hi.clone();
             return Some((between_salted(Some(&run.key), hi.as_deref(), salt), hi));
         }
-        let order_of = |doc: &AutoCommit, obj: &ObjId| match doc.get(obj, BLOCK_ORDER) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Bytes(key) => Some(key.clone()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let order_of = |doc: &AutoCommit, obj: &ObjId| doc.bytes_at(obj, BLOCK_ORDER);
         let after_key = order_of(self.doc, &block_obj(self.doc, container, after)?)?;
         let mut next: Option<(Vec<u8>, String)> = None;
         for item in self.doc.map_range(container, ..) {
@@ -2263,7 +2050,7 @@ impl DocMut<'_> {
     /// # Panics
     /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
     pub fn insert_block_in(&mut self, region: Region, after: Option<&str>, kind: &str) -> String {
-        let container = self.region_container(region);
+        let container = region_obj(self.c, region).clone();
         if self.bulk_active() {
             return self.stage_block(container, after, kind);
         }
@@ -2300,16 +2087,10 @@ impl DocMut<'_> {
         next: Option<&str>,
         kind: &str,
     ) -> String {
-        let container = self.region_container(region);
+        let container = region_obj(self.c, region).clone();
         let key_of = |doc: &AutoCommit, id: &str| {
             let obj = block_obj(doc, &container, id)?;
-            match doc.get(&obj, BLOCK_ORDER) {
-                Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                    ScalarValue::Bytes(key) => Some(key.clone()),
-                    _ => None,
-                },
-                _ => None,
-            }
+            doc.bytes_at(&obj, BLOCK_ORDER)
         };
         let bounds = match (self.bulk_active(), next) {
             (false, Some(next)) => key_of(self.doc, after).zip(key_of(self.doc, next)),
@@ -2366,9 +2147,8 @@ impl DocMut<'_> {
         value: impl Into<ScalarValue>,
     ) {
         if self.bulk_active() {
-            if let Some(container) = region_obj(self.doc, self.c, region) {
-                self.stage_mark(container, block_id, start, end, name, value.into());
-            }
+            let container = region_obj(self.c, region).clone();
+            self.stage_mark(container, block_id, start, end, name, value.into());
             return;
         }
         if let Some(tid) = self.region_text_obj(region, block_id) {
@@ -2401,9 +2181,7 @@ impl DocMut<'_> {
         key: &str,
         value: impl Into<ScalarValue>,
     ) {
-        let Some(container) = region_obj(self.doc, self.c, region) else {
-            return;
-        };
+        let container = region_obj(self.c, region).clone();
         let Some(value) = self.stage_attr(&container, block_id, key, value.into()) else {
             return;
         };
@@ -2420,9 +2198,7 @@ impl DocMut<'_> {
     /// task, a code line that becomes prose). Absent is the attribute's
     /// default, so readers need no tombstone value.
     pub fn remove_attr_in(&mut self, region: Region, block_id: &str, key: &str) {
-        let Some(container) = region_obj(self.doc, self.c, region) else {
-            return;
-        };
+        let container = region_obj(self.c, region).clone();
         if self.unstage_attr(&container, block_id, key) {
             return;
         }
@@ -2453,26 +2229,13 @@ impl DocMut<'_> {
         );
     }
 
-    /// Resolve-or-create the `notes` root container (created lazily on the first note insert).
-    fn notes_container(&mut self) -> ObjId {
-        if let Some(obj) = self.c.notes.clone() {
-            return obj;
-        }
-        if let Some(obj) = opt_map_at(self.doc, &self.c.root, KEY_NOTES) {
-            return obj;
-        }
-        self.doc
-            .put_object(&self.c.root, KEY_NOTES, ObjType::Map)
-            .unwrap()
-    }
-
     /// Create a new note (footnote/endnote) with an empty block sequence and return its freshly-minted id
     /// (filled in via [`Self::insert_note_block`] + [`Self::splice_note_text`]); id shares the body's generator so it never collides.
     ///
     /// # Panics
     /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
     pub fn insert_note(&mut self, kind: NoteKind) -> String {
-        let notes = self.notes_container();
+        let notes = self.c.notes.clone();
         let id = self.ids.mint();
         let note = self
             .doc
@@ -2593,24 +2356,11 @@ impl DocMut<'_> {
         }
     }
 
-    /// Resolve-or-create the `comments` root container (created lazily on the first comment insert).
-    fn comments_container(&mut self) -> ObjId {
-        if let Some(obj) = self.c.comments.clone() {
-            return obj;
-        }
-        if let Some(obj) = opt_map_at(self.doc, &self.c.root, KEY_COMMENTS) {
-            return obj;
-        }
-        self.doc
-            .put_object(&self.c.root, KEY_COMMENTS, ObjType::Map)
-            .unwrap()
-    }
-
     /// Permanently resolve a comment id. The grow-only marker gives delete-wins
     /// semantics when a reply is authored against a divergent copy of the
     /// thread and merged later.
     pub fn tombstone_comment(&mut self, comment_id: &str) {
-        let comments = self.comments_container();
+        let comments = self.c.comments.clone();
         let key = format!("{COMMENT_TOMBSTONE_PREFIX}{comment_id}");
         let _ = self.doc.put(&comments, key, true);
     }
@@ -2622,7 +2372,7 @@ impl DocMut<'_> {
     /// # Panics
     /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
     pub fn insert_comment(&mut self, author: &str, date: &str) -> String {
-        let comments = self.comments_container();
+        let comments = self.c.comments.clone();
         let id = self.ids.mint();
         let comment = self
             .doc
@@ -2674,7 +2424,7 @@ impl DocMut<'_> {
         // is shared from schema creation onward, so concurrent reply inserts
         // never contend on a lazily-created nested object.
         comment_obj(self.doc, self.c, comment_id)?;
-        let replies = self.comments_container();
+        let replies = self.c.comments.clone();
         let id = self.ids.mint();
         let reply = self
             .doc
@@ -2875,19 +2625,6 @@ impl DocMut<'_> {
         }
     }
 
-    /// Resolve-or-create the `changes` root container (created lazily on the first tracked change).
-    fn changes_container(&mut self) -> ObjId {
-        if let Some(obj) = self.c.changes.clone() {
-            return obj;
-        }
-        if let Some(obj) = opt_map_at(self.doc, &self.c.root, KEY_CHANGES) {
-            return obj;
-        }
-        self.doc
-            .put_object(&self.c.root, KEY_CHANGES, ObjType::Map)
-            .unwrap()
-    }
-
     /// Create a tracked-change record of `kind` with an `author` + `date`; returns its freshly-minted id (shares
     /// the body's generator). The body anchor is placed separately via [`Self::add_change_mark`] — callers usually go through [`Self::track_insert`]/[`Self::track_delete`].
     ///
@@ -2899,7 +2636,7 @@ impl DocMut<'_> {
         author: &str,
         date: &str,
     ) -> String {
-        let changes = self.changes_container();
+        let changes = self.c.changes.clone();
         let id = self.ids.mint();
         let change = self
             .doc
@@ -3030,9 +2767,7 @@ impl DocMut<'_> {
 
     /// Delete a change's record from the `changes` container (no-op if absent).
     fn remove_change_record(&mut self, change_id: &str) {
-        if let Some(changes) = changes_obj(self.doc, self.c) {
-            let _ = self.doc.delete(&changes, change_id);
-        }
+        let _ = self.doc.delete(&self.c.changes, change_id);
     }
 
     // ---- bookmarks / cross-references -------------------------------------
@@ -3076,9 +2811,7 @@ impl DocMut<'_> {
     /// Remove every block from a region (clearing a header/footer).
     pub fn clear_region(&mut self, region: Region) {
         self.flush_bulk();
-        let Some(container) = region_obj(self.doc, self.c, region) else {
-            return;
-        };
+        let container = region_obj(self.c, region).clone();
         for id in ordered_keys(self.doc, &container) {
             let _ = self.doc.delete(&container, &id);
         }
@@ -3124,9 +2857,7 @@ impl DocMut<'_> {
     /// behavior against divergent edits of the removed object.
     pub fn tombstone_block_in(&mut self, region: Region, id: &str) {
         self.flush_bulk();
-        let Some(container) = region_obj(self.doc, self.c, region) else {
-            return;
-        };
+        let container = region_obj(self.c, region).clone();
         let key = format!("{BLOCK_TOMBSTONE_PREFIX}{id}");
         let _ = self.doc.put(&container, key, true);
         let _ = self.doc.delete(&container, id);
@@ -3379,19 +3110,12 @@ impl DocMut<'_> {
 
     /// Record that this document refers to the content at `hash`, described by `meta` (what a
     /// renderer needs to reserve space before the bytes arrive). The bytes themselves are the
-    /// caller's to keep in its content store. Idempotent; creates the blobs map lazily for older
-    /// documents. The descriptor is never removed, so the map names every input any version refers to.
+    /// caller's to keep in its content store. Idempotent. The descriptor is never removed, so the map names every input any version refers to.
     ///
     /// # Panics
     /// Panics if `self.c.root` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
     pub fn reference_content(&mut self, hash: &str, meta: &ContentMeta) {
-        let blobs = match blobs_obj(self.doc, self.c) {
-            Some(b) => b,
-            None => self
-                .doc
-                .put_object(&self.c.root, KEY_BLOBS, ObjType::Map)
-                .unwrap(),
-        };
+        let blobs = self.c.blobs.clone();
         // Idempotent by construction: the key is the content hash, so identical bytes address the same descriptor
         // and re-putting it would be pure tombstone churn for no change in meaning.
         if matches!(
@@ -3840,22 +3564,14 @@ mod region_tests {
     use automerge::{AutoCommit, ROOT};
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn headers_and_footers_are_shared_backward_compatible_and_hold_fields() {
-        // Phase `header_footer_are_backward_compatible_and_shared`.
+    fn headers_and_footers_are_shared_and_hold_fields() {
+        // Phase `header_footer_are_shared`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
             // The regions come with the schema rather than being minted on first
             // write, so two people who each add a page header cannot end up with two
             // `root.header` maps and lose one — see `GENESIS_ACTOR`.
-            assert!(
-                c.header.is_some() && c.footer.is_some(),
-                "regions come with the schema"
-            );
             assert!(region_blocks_in_order(&doc, &c, Region::Header).is_empty());
             assert!(materialize_region(&doc, &c, Region::Footer).is_empty());
             let bytes = doc.save();
@@ -3863,36 +3579,6 @@ mod region_tests {
             let c2 = open(&reloaded, &ROOT).unwrap();
             assert!(region_blocks_in_order(&reloaded, &c2, Region::Header).is_empty());
             assert!(materialize_region(&reloaded, &c2, Region::Footer).is_empty());
-
-            // A document authored before the regions existed has no such keys at all; it must still open and read as empty.
-            let mut old = AutoCommit::new();
-            let _ = init(&mut old, &ROOT);
-            old.delete(&ROOT, KEY_HEADER).unwrap();
-            old.delete(&ROOT, KEY_FOOTER).unwrap();
-            old.commit();
-            let mut reopened = AutoCommit::load(&old.save()).unwrap();
-            let oc = open(&reopened, &ROOT).unwrap();
-            assert!(
-                oc.header.is_none() && oc.footer.is_none(),
-                "an older document has no regions"
-            );
-            assert!(region_blocks_in_order(&reopened, &oc, Region::Header).is_empty());
-            let mut ids = IdGen::new(reopened.get_actor().to_hex_string());
-            {
-                let mut dm = DocMut {
-                    doc: &mut reopened,
-                    c: &oc,
-                    ids: &mut ids,
-                };
-                let b = dm.insert_block_in(Region::Header, None, "paragraph");
-                dm.splice_text_in(Region::Header, &b, 0, 0, "migrated");
-            }
-            let migrated = open(&reopened, &ROOT).unwrap();
-            assert_eq!(
-                materialize_region(&reopened, &migrated, Region::Header)[0].text,
-                "migrated",
-                "an older document still takes a header"
-            );
         }
         // Phase `concurrent_headers_on_two_replicas_both_survive`.
         // The reason the regions are not lazily created: two replicas each adding a
@@ -3984,35 +3670,15 @@ mod region_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn notes_anchor_their_content_and_never_remint_ids() {
-        // Phase `notes_container_is_empty_on_fresh_doc_and_backward_compatible`.
+        // Phase `notes_container_is_empty_on_fresh_doc`.
         {
-            use automerge::transaction::Transactable;
             // A fresh doc has an (empty) notes container — created eagerly so concurrent
             // footnote inserts converge on one shared object.
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
-            assert!(c.notes.is_some(), "notes container present on a fresh doc");
             assert!(note_ids(&doc, &c).is_empty(), "but empty");
             assert!(materialize_notes(&doc, &c).is_empty());
-
-            // Backward-compat: a document authored before the notes map existed (no root.notes) must still open and read as having no notes.
-            let mut old = AutoCommit::new();
-            let oc = init(&mut old, &ROOT);
-            let _ = oc; // simulate the old schema by deleting the eagerly-created map
-            old.delete(&ROOT, KEY_NOTES).unwrap();
-            let bytes = old.save();
-            let reloaded = AutoCommit::load(&bytes).unwrap();
-            let c2 = open(&reloaded, &ROOT).unwrap();
-            assert!(
-                c2.notes.is_none(),
-                "old-schema doc opens with no notes container"
-            );
-            assert!(note_ids(&reloaded, &c2).is_empty());
         }
         // Phase `footnote_marker_and_note_content`.
         {
@@ -4103,32 +3769,13 @@ mod region_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn comments_anchor_their_content_and_threads_and_never_remint_ids() {
-        // Phase `comments_container_is_empty_on_fresh_doc_and_backward_compatible`.
+        // Phase `comments_container_is_empty_on_fresh_doc`.
         {
-            use automerge::transaction::Transactable;
             // A fresh doc has an (empty) comments container — eager, so concurrent comment adds converge on one shared object.
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
-            assert!(
-                c.comments.is_some(),
-                "comments container present on a fresh doc"
-            );
             assert!(comment_ids(&doc, &c).is_empty(), "but empty");
             assert!(materialize_comments(&doc, &c).is_empty());
-
-            // Backward-compat: a document authored before the comments map existed must still open and read as having no comments.
-            let mut old = AutoCommit::new();
-            let oc = init(&mut old, &ROOT);
-            let _ = oc;
-            old.delete(&ROOT, KEY_COMMENTS).unwrap();
-            let bytes = old.save();
-            let reloaded = AutoCommit::load(&bytes).unwrap();
-            let c2 = open(&reloaded, &ROOT).unwrap();
-            assert!(
-                c2.comments.is_none(),
-                "old-schema doc opens with no comments container"
-            );
-            assert!(comment_ids(&reloaded, &c2).is_empty());
         }
         // Phase `comment_anchor_and_content`.
         {
@@ -4336,32 +3983,13 @@ mod region_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn tracked_changes_anchor_accept_reject_and_never_remint_ids() {
-        // Phase `changes_container_is_empty_on_fresh_doc_and_backward_compatible`.
+        // Phase `changes_container_is_empty_on_fresh_doc`.
         {
-            use automerge::transaction::Transactable;
             // A fresh doc has an (empty) changes container — eager, for the same convergence reason as comments/notes.
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
-            assert!(
-                c.changes.is_some(),
-                "changes container present on a fresh doc"
-            );
             assert!(change_ids(&doc, &c).is_empty(), "but empty");
             assert!(materialize_changes(&doc, &c).is_empty());
-
-            // Backward-compat: a document authored before the changes map existed must still open and read as having no changes.
-            let mut old = AutoCommit::new();
-            let oc = init(&mut old, &ROOT);
-            let _ = oc;
-            old.delete(&ROOT, KEY_CHANGES).unwrap();
-            let bytes = old.save();
-            let reloaded = AutoCommit::load(&bytes).unwrap();
-            let c2 = open(&reloaded, &ROOT).unwrap();
-            assert!(
-                c2.changes.is_none(),
-                "old-schema doc opens with no changes container"
-            );
-            assert!(change_ids(&reloaded, &c2).is_empty());
         }
         // Phase `tracked_insert_and_delete_anchor_and_metadata`.
         {
@@ -4799,22 +4427,6 @@ mod preserved_tests {
                 .unwrap();
             assert_eq!(p.1, TWO_STYLE_PART);
             assert!(preserved_atoms(&doc, &c, "odt/part/styles.xml").len() >= 2);
-        }
-        // Phase `legacy_blob_form_still_reconstructs`.
-        {
-            // Simulate a document written under the old single-`Bytes`-scalar schema.
-            let (mut doc, c, _ids) = new_doc();
-            doc.put(
-                &c.preserved,
-                "odt/part/settings.xml",
-                ScalarValue::Bytes(TWO_STYLE_PART.to_vec()),
-            )
-            .unwrap();
-            let got = preserved_part(&doc, &c, "odt/part/settings.xml", &tilo_content::NoContent)
-                .unwrap();
-            assert_eq!(got, TWO_STYLE_PART, "legacy blob still re-emits verbatim");
-            // Legacy form exposes no addressable atoms (it's one opaque blob).
-            assert!(preserved_atoms(&doc, &c, "odt/part/settings.xml").is_empty());
         }
         // Phase `different_atom_edits_merge_not_clobber`.
         // THE core win: two replicas import the same part, each rewrites a DIFFERENT

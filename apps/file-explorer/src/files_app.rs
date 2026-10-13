@@ -8,14 +8,15 @@
 //! tree structurally dirty so the App rebuilds the composition on the next
 //! frame. See [`crate::command`].
 
+use ui::num::i64_of_usize;
 use ui::tilo_resource::Effect as _;
+use ui::widget::TaffyTreeExt;
 
 use crate::command::{CommandSink, FileCommand, new_sink};
-use crate::history_panel::HistoryPanel;
 use crate::i18n::{arg, t, t_args};
 use crate::metadata_refresh;
 use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};
-use crate::places_sidebar::{self, FavStore, PlacesSidebar};
+use crate::places_sidebar::{self, FavStore, Places};
 use crate::views::file_view::{FileView, ThumbCtx};
 use crate::{config, favorites, fileops, templates};
 use host_fs::attributes as xattr;
@@ -27,33 +28,94 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use thumbnail::{ThumbKey, ThumbnailService};
 use ui::paint::PaintCtx;
-use ui::tilo_actions::{Availability, Resource};
 #[cfg(test)]
-use ui::tilo_actions::{
-    ConfirmationPolicy, ExecutionMode, OperationKind, PermissionRequirement, ResultSpec,
-    RetryPolicy,
-};
+use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
+use ui::tilo_actions::{Availability, Resource};
 use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, Collaborative, Column, EmptyState, EmptyStateContent, NavShell, ScrollAxis, Scrollable,
-    ShellMode, Spacer, Spinner, Text, TextInput, Widget,
+    SidebarPlacement, Spacer, Spinner, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
-/// Width (logical px) at/above which the places list docks beside the file
-/// view; below it the places list becomes an overlay drawer *over* the file
-/// view, summoned by the hamburger chip. The file list is the content either
-/// way — the places list is navigation, so it never takes the window from it
-/// (`crates/sdk/ui-core/HIG.md` §1a).
-const BODY_BREAKPOINT_PX: f64 = 640.0;
+mod clipboard_client;
+pub use clipboard_client::Receipt as ClipboardReceipt;
+pub(crate) use clipboard_client::UndoRequest;
+mod selection_actions;
+mod shown_selection;
+
+/// The most lines a detail sheet lists.
+const COLLAB_PANEL_MAX_LINES: usize = 20;
 /// Space kept clear at the bottom of the file viewport for the transient
 /// item/status pill. The pill includes its hover shadow, so this is larger
 /// than its measured text capsule: no file label or target may sit beneath it.
-pub const STATUS_BUBBLE_SAFE_INSET_PX: f32 = 64.0;
+pub fn status_bubble_safe_inset(theme: &ui::Theme) -> f32 {
+    theme.tokens.spacing.s16
+}
+/// Close up a menu spec: a separator stands only between two groups, and a
+/// group of one is not a group, so it joins its neighbour rather than being
+/// fenced off by a hairline. (A separator is an item with no label and no
+/// command.)
+fn tidy_menu(spec: Vec<(String, Option<FileCommand>)>) -> Vec<(String, Option<FileCommand>)> {
+    tidy_groups(
+        spec,
+        |item| item.0.is_empty() && item.1.is_none(),
+        || (String::new(), None),
+    )
+}
+
+/// [`tidy_menu`] for any item type: `is_separator` says which items divide
+/// groups and `separator` makes one.
+fn tidy_groups<T>(
+    items: Vec<T>,
+    is_separator: impl Fn(&T) -> bool,
+    separator: impl Fn() -> T,
+) -> Vec<T> {
+    let mut groups: Vec<Vec<T>> = Vec::new();
+    let mut current = Vec::new();
+    for item in items {
+        if is_separator(&item) {
+            if !current.is_empty() {
+                groups.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(item);
+        }
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    let mut merged: Vec<Vec<T>> = Vec::new();
+    let mut carry: Vec<T> = Vec::new();
+    for group in groups {
+        let mut joined = std::mem::take(&mut carry);
+        joined.extend(group);
+        if joined.len() == 1 {
+            carry = joined;
+        } else {
+            merged.push(joined);
+        }
+    }
+    if !carry.is_empty() {
+        match merged.last_mut() {
+            Some(last) => last.extend(carry),
+            None => merged.push(carry),
+        }
+    }
+    let mut out = Vec::new();
+    for (index, group) in merged.into_iter().enumerate() {
+        if index > 0 {
+            out.push(separator());
+        }
+        out.extend(group);
+    }
+    out
+}
+
 /// Long absolute paths clip at narrow widths and obscure the recovery action.
 /// Preserve the recognisable tail here; the full location stays in the path bar
 /// and the root accessibility description.
@@ -64,7 +126,6 @@ const STATE_SURFACE_LOCATION_CHARS: usize = 36;
 /// by [`FileExplorerWidget::resource`] when a caller addresses it directly.
 const MAX_EAGER_ENTRY_RESOURCES: usize = 128;
 /// The most entries one `move` takes.
-const MAX_MOVE_ENTRIES: usize = 256;
 /// The most entry names showing a folder answers with.
 const MAX_ANSWERED_ENTRIES: usize = 64;
 
@@ -85,34 +146,6 @@ enum OpFollowUp {
     Paste { count: usize, cut: bool },
 }
 
-/// The paths of the `wanted` entries in `listing` (row id, name, path),
-/// each named by its row id, its name or its absolute path; refused whole
-/// when one is not there, so a misspelt name changes nothing.
-fn named_entries(
-    listing: &[(String, String, PathBuf)],
-    wanted: &[String],
-) -> Result<Vec<String>, String> {
-    let mut paths = Vec::with_capacity(wanted.len());
-    let mut unknown = Vec::new();
-    for name in wanted {
-        match listing.iter().find(|(id, entry, path)| {
-            id == name || entry == name || path.as_path() == Path::new(name)
-        }) {
-            Some((_, _, path)) => paths.push(path.display().to_string()),
-            None => unknown.push(name.as_str()),
-        }
-    }
-    if unknown.is_empty() {
-        return Ok(paths);
-    }
-    let names: Vec<&str> = listing.iter().map(|(_, name, _)| name.as_str()).collect();
-    Err(format!(
-        "not in the folder shown: {}; nothing changed. Its entries: {}",
-        unknown.join(", "),
-        names.join(", ")
-    ))
-}
-
 /// What doing an effect came to: its answer now, or a job that answers later.
 pub(crate) enum Ran {
     Done(Option<serde_json::Value>),
@@ -123,8 +156,8 @@ type MergePreflightResult = Arc<
     std::sync::Mutex<
         Option<(
             uuid::Uuid,
-            collab_types::FileVersionId,
-            Result<collab_types::MergePreflightProjectionV1, String>,
+            fs_protocol::FileVersionId,
+            Result<fs_protocol::MergePreflightProjectionV1, String>,
         )>,
     >,
 >;
@@ -170,19 +203,18 @@ struct CollabPanel {
     summary: String,
     lines: Vec<String>,
     action: Option<CollabPanelAction>,
-    /// History has its own selectable timeline and detail pane instead of
-    /// being flattened into generic bullet lines.
-    history: Option<HistoryPanel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CollabPanelAction {
+    /// Look at the cloud account with this id again.
+    RecheckAccount(String),
     DestructiveEviction(Vec<PathBuf>),
     PermanentDelete(Vec<PathBuf>),
     EmptyTrash,
     ApplySafeMerge {
         conflict_id: uuid::Uuid,
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
     },
     ChooseNearbyDestination {
         handle: ui::collaboration::NearbyTransferHandle,
@@ -236,19 +268,6 @@ fn retry_row() -> Resource {
     )
 }
 
-/// The retry button beneath a failed listing, bound to [`retry_row`].
-#[allow(
-    clippy::expect_used,
-    reason = "the binding names the action the row it is built from exports"
-)]
-fn retry_button() -> Button {
-    let row = retry_row();
-    let spec = row.actions.first().expect("the retry row has its action");
-    let binding = tilo_actions::ActionBinding::new(&row, spec, |()| serde_json::Map::new())
-        .expect("the retry row exports its action");
-    Button::new(RETRY_ROW, &t("files-try-again")).on_action(binding)
-}
-
 /// The bookmarked places, as [`crate::resource::FileExplorer::children`]
 /// publishes them: each opens in the window.
 pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Vec<Resource> {
@@ -268,7 +287,7 @@ pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Ve
         .collect()
 }
 
-/// Template create Effects for [`crate::resource::FileExplorer::children`].
+/// Template create Effects, rows of the window.
 /// The catalogue is the user's Templates directory, not the live folder listing.
 pub(crate) fn published_template_resources() -> Vec<Resource> {
     let Some(template_dir) = templates::templates_dir() else {
@@ -308,15 +327,6 @@ pub(crate) fn resolve_places(
         .filter_map(|place| crate::places::path_of(place, home, dirs))
         .map(|path| favorites::favorite(path, home.unwrap_or_else(|| Path::new("/")), dirs))
         .collect()
-}
-
-/// The favourites `places` name on this device, for the published tree.
-pub(crate) fn device_places(places: &[String]) -> Vec<favorites::Favorite> {
-    resolve_places(
-        places,
-        crate::model::user_home().as_deref(),
-        &favorites::UserDirs::from_system(),
-    )
 }
 
 fn short_fingerprint(key: &[u8; 32]) -> String {
@@ -377,42 +387,38 @@ fn certified_device_detail(device: &crate::identity_directory::TrustedDevice) ->
     )
 }
 
-fn fluent_count(value: usize) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
-}
-
-fn transfer_phase_label(phase: crate::model::TransferPhase) -> String {
+fn transfer_phase_label(phase: fs_protocol::TransferPhase) -> String {
     t(match phase {
-        crate::model::TransferPhase::Idle => "files-transfer-idle",
-        crate::model::TransferPhase::Queued => "files-transfer-queued",
-        crate::model::TransferPhase::Downloading => "files-transfer-downloading",
-        crate::model::TransferPhase::Uploading => "files-transfer-uploading",
-        crate::model::TransferPhase::Verifying => "files-transfer-verifying",
+        fs_protocol::TransferPhase::Idle => "files-transfer-idle",
+        fs_protocol::TransferPhase::Queued => "files-transfer-queued",
+        fs_protocol::TransferPhase::Downloading => "files-transfer-downloading",
+        fs_protocol::TransferPhase::Uploading => "files-transfer-uploading",
+        fs_protocol::TransferPhase::Verifying => "files-transfer-verifying",
     })
 }
 
-fn grant_status_label(status: crate::model::ShareGrantStatus) -> String {
+fn grant_status_label(status: fs_protocol::ShareGrantStatus) -> String {
     t(match status {
-        crate::model::ShareGrantStatus::Active => "files-grant-active",
-        crate::model::ShareGrantStatus::Expired => "files-grant-expired",
-        crate::model::ShareGrantStatus::Revoked => "files-grant-revoked",
-        crate::model::ShareGrantStatus::Exhausted => "files-grant-exhausted",
+        fs_protocol::ShareGrantStatus::Active => "files-grant-active",
+        fs_protocol::ShareGrantStatus::Expired => "files-grant-expired",
+        fs_protocol::ShareGrantStatus::Revoked => "files-grant-revoked",
+        fs_protocol::ShareGrantStatus::Exhausted => "files-grant-exhausted",
     })
 }
 
-fn conflict_strategy_label(strategy: collab_types::ConflictStrategy) -> String {
+fn conflict_strategy_label(strategy: fs_protocol::ConflictStrategy) -> String {
     t(match strategy {
-        collab_types::ConflictStrategy::KeepCurrent => "files-strategy-keep-current",
-        collab_types::ConflictStrategy::UseOther => "files-strategy-use-other",
-        collab_types::ConflictStrategy::KeepBoth => "files-strategy-keep-both",
-        collab_types::ConflictStrategy::Merge => "files-strategy-merge",
+        fs_protocol::ConflictStrategy::KeepCurrent => "files-strategy-keep-current",
+        fs_protocol::ConflictStrategy::UseOther => "files-strategy-use-other",
+        fs_protocol::ConflictStrategy::KeepBoth => "files-strategy-keep-both",
+        fs_protocol::ConflictStrategy::Merge => "files-strategy-merge",
     })
 }
 
-fn share_permission_label(permission: collab_types::FilePermission) -> String {
+fn share_permission_label(permission: fs_protocol::FilePermission) -> String {
     match permission {
-        collab_types::FilePermission::View => t("files-share-choice-view"),
-        collab_types::FilePermission::Edit => t("files-share-choice-edit"),
+        fs_protocol::FilePermission::View => t("files-share-choice-view"),
+        fs_protocol::FilePermission::Edit => t("files-share-choice-edit"),
     }
 }
 
@@ -425,10 +431,10 @@ fn share_expiry_label(expiry: crate::sharing::ShareExpiryChoice) -> String {
     })
 }
 
-fn named_delivery_status_key(delivery: collab_types::NamedShareDeliveryStateV1) -> &'static str {
+fn named_delivery_status_key(delivery: fs_protocol::NamedShareDeliveryStateV1) -> &'static str {
     match delivery {
-        collab_types::NamedShareDeliveryStateV1::Pending => "files-share-created-pending",
-        collab_types::NamedShareDeliveryStateV1::Delivered => "files-share-created-delivered",
+        fs_protocol::NamedShareDeliveryStateV1::Pending => "files-share-created-pending",
+        fs_protocol::NamedShareDeliveryStateV1::Delivered => "files-share-created-delivered",
     }
 }
 
@@ -449,8 +455,6 @@ pub struct StartupInputs {
 pub enum DocumentOpenRoute {
     /// This embedding deliberately provides no document owner.
     Unavailable,
-    /// Legacy synchronous host route, retained for standalone embeddings.
-    Immediate(Rc<RefCell<DocumentOpener>>),
     /// The shell drains a capability-bound request after the tile releases its
     /// record loan. A different app cannot construct the shell's matching
     /// capability.
@@ -468,6 +472,7 @@ impl HostedFileServices {
                 ui::widget::DocumentOpenCapability::issue(),
             ),
             open_with: None,
+            local_clipboard: true,
         }
     }
 
@@ -489,9 +494,12 @@ impl HostedFileServices {
 pub struct HostedFileServices {
     pub thumbnails: Option<Arc<ThumbnailService>>,
     pub document_opener: DocumentOpenRoute,
-    /// Lists and launches "Open With" applications; absent means the
+    /// Lists and launches "Open with" applications; absent means the
     /// submenu offers nothing rather than guessing.
     pub open_with: Option<crate::open_with::SharedOpenWithRoute>,
+    /// The host supplies the existing native Files clipboard lane. This is
+    /// availability, never a filesystem grant or an invocation authority.
+    pub local_clipboard: bool,
 }
 
 enum FileServices {
@@ -505,7 +513,7 @@ enum FileServices {
 )]
 pub struct FileExplorerWidget {
     framework_history: ui::history_mode::checked_files::FileHistorySource,
-    framework_history_binding: Option<(PathBuf, collab_types::FileRecordId)>,
+    framework_history_binding: Option<(PathBuf, fs_protocol::FileRecordId)>,
     services: FileServices,
     startup_accounts: Option<Vec<crate::remote_accounts::RemoteAccount>>,
     current_path: PathBuf,
@@ -513,6 +521,9 @@ pub struct FileExplorerWidget {
     entries: Vec<Entry>,
     /// Multi-selection over the displayed entry list.
     selection: SelectionModel,
+    shown_selection: shown_selection::ShownSelection,
+    shown_folder: Option<Arc<host_fs::RetainedObject>>,
+    local_clipboard: clipboard_client::Client,
     error: Option<String>,
     is_loading: bool,
     last_click: Option<(usize, Instant)>,
@@ -534,18 +545,30 @@ pub struct FileExplorerWidget {
     /// Carries out the operations queued for this device.
     ops_drain: Option<ui::framework::Projection>,
     /// Operations this window queued, and what it shows when they settle.
-    awaiting_ops: HashMap<String, OpFollowUp>,
+    awaiting_ops: Vec<(crate::file_ops::FileOp, OpFollowUp)>,
     /// Operations already seen carried out, so each settles once here.
     settled_ops: std::collections::HashSet<String>,
+    ops_presented: bool,
     /// What operations came to when this window carried them out itself
     /// (no framework hosts it), for their reverts.
     local_outcomes: HashMap<String, crate::file_ops::Outcome>,
     /// Transient status line (operation results), shown in the footer.
     status: Option<String>,
-    /// Filesystem/xattr changes have no winit event of their own. The widget
-    /// asks the host for this low-frequency wake so sync/availability/share/
-    /// history badges update without burning an animation frame loop.
-    next_metadata_refresh: Instant,
+    /// The next poll of what no change signal covers (see
+    /// [`metadata_refresh`]): a directory its watch does not fully cover,
+    /// the workspace record catalogue, an unwatched identity projection.
+    /// `None` when every source has a change signal, so an idle window with
+    /// an unchanged directory has no deadline at all.
+    next_metadata_refresh: Option<Instant>,
+    /// Reports changes to the open directory's entries and wakes the window.
+    directory_watch: crate::directory_watch::DirectoryWatch,
+    /// Reports changes to the trusted-identity projection's directory.
+    identity_watch: crate::directory_watch::DirectoryWatch,
+    /// The directory watch reported a change that has not been read yet
+    /// (held while a rename or pin drag defers the read).
+    directory_changed: bool,
+    /// When the open directory was last read, for [`metadata_refresh::change_read_gap`].
+    last_directory_read: Instant,
     /// When `Some(i)`, an inline rename of displayed entry `i` is in
     /// progress: the in-place editor is drawn over row/cell `i`. `None` = not
     /// renaming.
@@ -570,34 +593,27 @@ pub struct FileExplorerWidget {
     /// whole name (typing then replaces it, Finder-style).
     rename_select_pending: bool,
     rect: vello::kurbo::Rect,
-    /// The responsive body: `[ places | file view ]`. Held persistently (NOT
-    /// rebuilt inside `build_layout`) so its docked/push state and eased
-    /// reveal survive the per-structure-change rebuild of the panes — the two
-    /// panes are swapped in via `NavShell::set_sidebar` / `set_content` each
-    /// rebuild. Wide docks the places list beside the file view; narrow shows
-    /// one at a time (places → tap a place → the file view pushes in with a
-    /// Back arrow). See the module note on live child swap in `ui::NavShell`.
+    /// The window shell: `[ places | file view ]` under one header row.
+    /// Held persistently (NOT rebuilt inside `build_layout`) so its docked
+    /// state and eased reveal survive the per-structure-change rebuild of the
+    /// panes — the two panes are swapped in via `NavShell::set_sidebar` /
+    /// `set_content` each rebuild. A narrow window turns the places list into
+    /// a drawer the shell summons.
     nav: NavShell,
-    /// The single top bar: nav cluster + the editable path bar + view/sort/menu
-    /// controls. Held **persistently** (not rebuilt each frame) because the path
-    /// bar carries live edit state — the in-progress typed path and its
-    /// completion popover — that must survive the per-structure-change rebuild.
-    toolbar: crate::toolbar::FileToolbar,
+    /// The app's side of the toolbar the shell's content header owns: the nav
+    /// cluster, the editable path bar and the view / sort controls. The toolbar
+    /// itself lives for the window's lifetime (the path bar carries live edit
+    /// state — the in-progress typed path and its completion popover), and
+    /// this handle feeds it the context and reads its control rects back.
+    toolbar: crate::toolbar::ToolbarHandle,
     /// Transient floating status bubble (bottom-right) — the item count /
     /// operation status + selection summary, surfaced on a real change or on
     /// hover then faded, in place of a permanent bottom footer strip so the
     /// file list spans to the window bottom.
     status_bubble: ui::StatusBubble,
-    /// Last label the bubble showed, so it is re-poked only on a real change.
-    last_status_label: String,
-    /// A capture forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
-    /// The row a capture shows hovered.
     staged_hover: Option<usize>,
-    /// A capture shows a file dragged onto the first folder the view lays
-    /// out, once its folder rows are known.
     staged_move_drag: bool,
-    /// Where "New File" templates come from; `None` offers none.
     templates_dir: Option<PathBuf>,
     /// Shared indeterminate progress indicator for the loading state. Its
     /// reduced-motion behaviour and frame scheduling come from `Spinner`.
@@ -612,6 +628,8 @@ pub struct FileExplorerWidget {
     composed_once: bool,
     /// Command queue the interactive children push into.
     cmds: CommandSink,
+    /// Rows a search hit or an agent's `open` asked to show, by their ids.
+    opened: Rc<RefCell<Vec<String>>>,
     /// Set when applying a command changed structure; consumed by
     /// `take_structure_dirty` so the App rebuilds the composition.
     structure_dirty: bool,
@@ -637,13 +655,24 @@ pub struct FileExplorerWidget {
     /// Set while draining commands from a right-press when the press landed on
     /// a sidebar favourite, so the right-press handler opens the favourite menu
     /// (not the file context menu) at the cursor. Consumed each right-press.
-    pending_fav_menu: Option<PathBuf>,
     /// Last cursor position in logical coords (for menu placement + the
     /// context-menu hit-test).
     last_cursor: Point,
     /// Shared, persistent favourites + drag-reorder state (see
     /// [`crate::places_sidebar`]). Cloned into the sidebar each rebuild.
     favs: FavStore,
+    /// The places the shell's list was last built from, and the row chosen in
+    /// it.
+    places_shown: Option<(Vec<ui::widget::NavSection>, Option<String>)>,
+    /// The row the person last chose in the places list itself, so the
+    /// navigation that follows does not rebuild a list that already shows it.
+    places_choice: Rc<RefCell<Option<String>>>,
+    /// A shared places row asked for its own context menu.
+    places_context: Rc<RefCell<Option<(PathBuf, Point)>>>,
+    /// A capture shows a favourite being dragged in the places list.
+    stage_favorite_drag: bool,
+    /// Per-user config dir for persisting favourites + zoom (`None` when the
+    /// environment has no config dir — the UI still works, just doesn't persist).
     /// Icon/row zoom step (see [`crate::config`]); `0` = default.
     zoom_level: i32,
     /// Whether dotfiles are shown.
@@ -700,13 +729,15 @@ pub struct FileExplorerWidget {
     /// projections. `None` means no sheet is open.
     collab_panel: Option<CollabPanel>,
     collab_panel_focused: bool,
+    /// Where the sheet's parts landed at the last paint.
+    collab_layout: Option<ui::widget::ModalLayout>,
     /// Single background share request, run on the app runtime. It never
     /// touches widget state; update/paint/event polling adopts its bounded
     /// result on the UI thread.
     share_result: ui::LatestRequest<Result<crate::sharing::ShareActionResult, String>>,
     share_pending_path: Option<PathBuf>,
     /// Admission of a received bearer link, run on the app runtime.
-    received_share: ui::LatestRequest<Result<collab_types::RecipientSubscriptionStatusV1, String>>,
+    received_share: ui::LatestRequest<Result<fs_protocol::RecipientSubscriptionStatusV1, String>>,
     /// Host-projected names keyed by certified human roots. Labels affect
     /// presentation only; every command and request continues to carry the
     /// root key.
@@ -716,7 +747,7 @@ pub struct FileExplorerWidget {
     history_pending_success: Option<String>,
 
     merge_preflight_result: MergePreflightResult,
-    merge_preflight_pending: Option<(uuid::Uuid, collab_types::FileVersionId)>,
+    merge_preflight_pending: Option<(uuid::Uuid, fs_protocol::FileVersionId)>,
     /// The job of an effect still running (a share link, a nearby send),
     /// answered when its work settles.
     effect_reply: Option<ui::framework::EffectReply>,
@@ -744,6 +775,10 @@ pub struct FileExplorerWidget {
     /// rebuild the composition — would snap the list back to the top. Reset to
     /// `(0, 0)` whenever the directory changes (a new folder starts at top).
     scroll_offset: Rc<Cell<(f32, f32)>>,
+    /// The file list's table, kept across rebuilds with its scroll position,
+    /// column widths and scroll anchor (the list scrolls itself; only the grid
+    /// scrolls under `scroll_offset`).
+    list_slot: crate::views::file_list::ListSlot,
     /// The shared, off-thread thumbnail service (content-addressed cache +
     /// worker pool). Cloned into each rebuilt file view so a folder of images /
     /// PDFs / ebooks shows real previews (and workspace files show the host's
@@ -761,7 +796,7 @@ pub struct FileExplorerWidget {
     /// "Open With" candidates per file type, asked of the host once per
     /// listing rather than once per row.
     open_with_cache: RefCell<HashMap<String, crate::open_with::OpenWithCandidates>>,
-    /// The shared searchable picker behind "Other Application…"; its rows are
+    /// The shared searchable picker behind "Other application…"; its rows are
     /// the published open-with actions of [`Self::app_chooser_target`].
     app_chooser: ui::widget::command_palette::CommandPalette,
     app_chooser_target: Option<PathBuf>,
@@ -822,18 +857,19 @@ impl FileExplorerWidget {
         op: crate::file_ops::FileOp,
         follow: OpFollowUp,
     ) -> Option<crate::file_ops::Outcome> {
-        let id = uuid::Uuid::new_v4().to_string();
-        if let (Some(dispatcher), Some(device)) = (&self.dispatcher, &self.device) {
-            dispatcher.apply(&crate::resource::FilesDocAction::QueueFileOp {
-                id: id.clone(),
-                device: device.clone(),
-                op,
-            });
-            self.awaiting_ops.insert(id, follow);
+        if let (Some(dispatcher), Some(device)) = (&self.dispatcher, &self.device)
+            && let Some(queueing) = crate::resource::FileExplorer::queueing(device, op.clone())
+        {
+            dispatcher.submit(queueing);
+            self.awaiting_ops.push((op, follow));
             return None;
         }
+        let id = uuid::Uuid::new_v4().to_string();
         let reverting = match &op {
-            crate::file_ops::FileOp::Revert { op } => self.local_outcomes.get(op),
+            crate::file_ops::FileOp::Revert { op } => self
+                .local_outcomes
+                .get(op)
+                .map(|outcome| outcome.result().as_slice()),
             _ => None,
         };
         let outcome = crate::file_ops::execute(&op, reverting);
@@ -845,41 +881,61 @@ impl FileExplorerWidget {
     /// Show what the operations carried out since the last presentation
     /// came to: the ones this window queued as it asked, any other (an
     /// agent's, another window's, an undo) as a refreshed listing.
-    pub(crate) fn follow_ops(&mut self, ops: &[crate::file_ops::QueuedOp]) {
-        let first = self.settled_ops.is_empty();
+    pub(crate) fn follow_ops(
+        &mut self,
+        ops: &ui::tilo_resource::Outbox<crate::resource::FileTask, Vec<crate::file_ops::Change>>,
+    ) {
+        let first = !self.ops_presented;
+        self.ops_presented = true;
         let mut changed = false;
-        for queued in ops {
-            let Some(outcome) = &queued.outcome else {
+        let mut clipboard_status = None;
+        for (id, entry) in ops.entries() {
+            let Some(outcome) = &entry.settled else {
                 continue;
             };
-            if !self.settled_ops.insert(queued.id.clone()) || first {
+            if !self.settled_ops.insert(id.as_str().to_owned()) || first {
                 continue;
             }
-            match self.awaiting_ops.remove(&queued.id) {
-                Some(follow) => self.settle_op(&queued.id, follow, outcome),
-                None => changed = true,
+            if let Some(at) = self
+                .awaiting_ops
+                .iter()
+                .position(|(op, _)| *op == entry.value.op)
+            {
+                let (_, follow) = self.awaiting_ops.remove(at);
+                self.settle_op(id.as_str(), follow, outcome);
+            } else {
+                for change in outcome.result() {
+                    match change {
+                        crate::file_ops::Change::ClipboardUndo { .. } => {
+                            clipboard_status = Some("files-clipboard-undone");
+                        }
+                        crate::file_ops::Change::ClipboardTransfer { .. } => {
+                            clipboard_status = Some("files-clipboard-redone");
+                        }
+                        _ => {}
+                    }
+                }
+                changed = true;
             }
         }
         if changed {
             self.refresh();
             self.structure_dirty = true;
         }
+        if let Some(key) = clipboard_status {
+            self.status = Some(t(key));
+        }
     }
 
-    /// Show what the operation `id` came to.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match over what each kind of operation shows when it settles"
-    )]
     fn settle_op(&mut self, id: &str, follow: OpFollowUp, outcome: &crate::file_ops::Outcome) {
         use crate::file_ops::Change;
         self.refresh();
         self.structure_dirty = true;
-        let error = outcome.error().map(str::to_owned);
+        let error = outcome.reason().map(str::to_owned);
         match follow {
             OpFollowUp::NewFolder => match error {
                 None => {
-                    let created = outcome.changes().iter().find_map(|change| match change {
+                    let created = outcome.result().iter().find_map(|change| match change {
                         Change::Created { path } => Some(PathBuf::from(path)),
                         _ => None,
                     });
@@ -887,6 +943,7 @@ impl FileExplorerWidget {
                         self.displayed_entries().iter().position(|e| e.path == path)
                     }) {
                         self.selection.select_only(i);
+                        self.retain_shown_selection();
                         self.begin_rename();
                     }
                     self.status = Some(t("files-created-folder"));
@@ -897,7 +954,7 @@ impl FileExplorerWidget {
             },
             OpFollowUp::Rename => match error {
                 None => {
-                    for change in outcome.changes() {
+                    for change in outcome.result() {
                         if let Change::Moved { from, to } = change {
                             self.recent_moved(Path::new(from), Path::new(to));
                         }
@@ -915,13 +972,13 @@ impl FileExplorerWidget {
             OpFollowUp::Trash { count } => match error {
                 None => {
                     let undoable = outcome
-                        .changes()
+                        .result()
                         .iter()
                         .all(|change| matches!(change, Change::Trashed { entry: Some(_), .. }));
                     self.last_trash_undo = undoable.then(|| id.to_owned());
                     self.status = Some(t_args(
                         "files-moved-to-trash",
-                        &[arg("count", fluent_count(count))],
+                        &[arg("count", i64_of_usize(count))],
                     ));
                 }
                 Some(error) => {
@@ -930,7 +987,7 @@ impl FileExplorerWidget {
             },
             OpFollowUp::Move { destination } => {
                 let moved = outcome
-                    .changes()
+                    .result()
                     .iter()
                     .filter(|change| matches!(change, Change::Moved { .. }))
                     .count();
@@ -938,52 +995,26 @@ impl FileExplorerWidget {
                     None => t_args(
                         "files-moved-to-folder",
                         &[
-                            arg("count", fluent_count(moved)),
+                            arg("count", i64_of_usize(moved)),
                             arg("destination", destination),
                         ],
                     ),
                     Some(_) => t_args(
                         "files-moved-with-failures",
                         &[
-                            arg("moved", fluent_count(moved)),
+                            arg("moved", i64_of_usize(moved)),
                             arg("destination", destination),
-                            arg("failed", fluent_count(1)),
+                            arg("failed", i64_of_usize(1)),
                         ],
                     ),
                 });
             }
-            OpFollowUp::Paste { count, cut } => {
-                let done: Vec<&str> = outcome
-                    .changes()
-                    .iter()
-                    .filter_map(|change| match change {
-                        Change::Moved { from, .. } | Change::Copied { from, .. } => {
-                            Some(from.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                if cut {
-                    self.clipboard
-                        .retain(|path| !done.iter().any(|from| path.as_path() == Path::new(from)));
-                }
-                self.status = Some(if error.is_none() {
-                    t_args("files-pasted", &[arg("count", fluent_count(count))])
-                } else {
-                    t_args(
-                        "files-pasted-with-failures",
-                        &[
-                            arg("count", fluent_count(done.len())),
-                            arg("failed", fluent_count(count - done.len())),
-                        ],
-                    )
-                });
-            }
+            OpFollowUp::Paste { count, cut } => self.settle_paste(count, cut, outcome),
             OpFollowUp::RestoreTrash => {
                 self.status = Some(match error {
                     None => t_args(
                         "files-undo-trash-restored",
-                        &[arg("count", fluent_count(outcome.changes().len()))],
+                        &[arg("count", i64_of_usize(outcome.result().len()))],
                     ),
                     Some(error) => t_args("files-undo-trash-failed", &[arg("error", error)]),
                 });
@@ -991,20 +1022,44 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Filesystem changes an agent or a script asks for, bound to the folder
-    /// shown: document actions, queued for this device and undoable like a
-    /// change made in the window.
+    /// Say how many of `count` were pasted; after Cut, take the moved ones
+    /// off the clipboard (the ones that failed stay, to retry).
+    fn settle_paste(&mut self, count: usize, cut: bool, outcome: &crate::file_ops::Outcome) {
+        use crate::file_ops::Change;
+        let error = outcome.reason();
+        let done: Vec<&str> = outcome
+            .result()
+            .iter()
+            .filter_map(|change| match change {
+                Change::Moved { from, .. } | Change::Copied { from, .. } => Some(from.as_str()),
+                _ => None,
+            })
+            .collect();
+        if cut {
+            self.clipboard
+                .retain(|path| !done.iter().any(|from| path.as_path() == Path::new(from)));
+        }
+        self.status = Some(if error.is_none() {
+            t_args("files-pasted", &[arg("count", i64_of_usize(count))])
+        } else {
+            t_args(
+                "files-pasted-with-failures",
+                &[
+                    arg("count", i64_of_usize(done.len())),
+                    arg("failed", i64_of_usize(count - done.len())),
+                ],
+            )
+        });
+    }
+
     /// Filesystem changes bound to the entry row `row`: rename, move to a
-    /// folder, move to Trash — the same queued, undoable operations as the
-    /// folder's declarations, for an agent acting on the row.
+    /// folder, move to Trash — the resource's queued, undoable verbs with
+    /// this device and the entry bound, for an agent acting on the row.
     pub(crate) fn entry_declarations(
         &self,
         row: &str,
     ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::FileExplorer>> {
-        use crate::file_ops::FileOp;
-        use crate::resource::FilesDocAction;
-        use ui::tilo_actions::{ActionParam, ParamType};
-        use ui::tilo_resource::ActionDecl;
+        use crate::resource::{FileExplorer, file_explorer};
         let Some(device) = self.device.clone() else {
             return Vec::new();
         };
@@ -1019,232 +1074,93 @@ impl FileExplorerWidget {
             return Vec::new();
         };
         let path = entry.path.display().to_string();
-        let queue = move |op: FileOp| FilesDocAction::QueueFileOp {
-            id: uuid::Uuid::new_v4().to_string(),
-            device: device.clone(),
-            op,
-        };
-        let rename = {
-            let queue = queue.clone();
-            let path = path.clone();
-            ActionDecl::new(
-                "rename",
-                t("files-menu-rename"),
-                vec![ActionParam::required(
-                    "name",
-                    ParamType::Text,
-                    "The new name",
-                )],
-                move |args, _| {
-                    let name = args.text("name").filter(|name| !name.trim().is_empty());
-                    Ok(queue(FileOp::Rename {
-                        path: path.clone(),
-                        name: name
-                            .ok_or_else(|| "missing new name".to_owned())?
-                            .to_owned(),
-                    }))
-                },
+        let rename = FileExplorer::RENAME
+            .bind(file_explorer::Rename::paths().device, device.clone())
+            .and(file_explorer::Rename::paths().folder, String::new())
+            .and(file_explorer::Rename::paths().entry, path.clone())
+            .declaration("rename", t("files-menu-rename"));
+        let move_to = FileExplorer::MOVE_ENTRIES
+            .bind(file_explorer::MoveEntries::paths().device, device.clone())
+            .and(file_explorer::MoveEntries::paths().from, String::new())
+            .and(
+                file_explorer::MoveEntries::paths().entries,
+                vec![path.clone()],
             )
-        };
-        let move_to = {
-            let queue = queue.clone();
-            let path = path.clone();
-            ActionDecl::new(
-                "move-to",
-                "Move to folder…",
-                vec![
-                    ActionParam::required(
-                        "folder",
-                        ParamType::Text,
-                        "Absolute path of the folder; the name is kept",
-                    ),
-                    ActionParam::optional(
-                        "create",
-                        ParamType::Boolean,
-                        "Create the folder when it does not exist",
-                    ),
-                ],
-                move |args, _| {
-                    let folder = args.text("folder").unwrap_or_default();
-                    if !Path::new(folder).is_absolute() {
-                        return Err(format!("{folder} is not an absolute path"));
-                    }
-                    Ok(queue(FileOp::Move {
-                        paths: vec![path.clone()],
-                        folder: folder.to_owned(),
-                        create: args.boolean("create").unwrap_or(false),
-                    }))
-                },
-            )
-        };
-        let trash = ActionDecl::new(
-            "trash",
-            t("files-menu-move-trash"),
-            Vec::new(),
-            move |_, _| {
-                Ok(queue(FileOp::Trash {
-                    paths: vec![path.clone()],
-                }))
-            },
-        )
-        .destructive();
-        vec![rename, move_to, trash]
+            .declaration("move-to", "Move to folder…");
+        let trash = FileExplorer::TRASH
+            .bind(file_explorer::Trash::paths().device, device)
+            .and(file_explorer::Trash::paths().folder, String::new())
+            .and(file_explorer::Trash::paths().entries, vec![path])
+            .declaration("trash", t("files-menu-move-trash"))
+            .map(|mut trash| {
+                trash.destructive = true;
+                trash
+            });
+        [rename, move_to, trash].into_iter().flatten().collect()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the four filesystem declarations share one captured listing and device"
-    )]
+    /// Filesystem changes an agent or a script asks for in the folder shown:
+    /// the resource's queued, undoable verbs with this device and the folder
+    /// bound, naming only entries the folder holds.
     pub(crate) fn file_op_declarations(
         &self,
     ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::FileExplorer>> {
-        use crate::file_ops::FileOp;
-        use crate::resource::FilesDocAction;
-        use ui::tilo_actions::{ActionParam, ParamType};
-        use ui::tilo_resource::ActionDecl;
+        use crate::resource::{FileExplorer, file_explorer};
         let Some(device) = self.device.clone() else {
             return Vec::new();
         };
         if self.is_trash_view() || !self.current_path.is_dir() {
             return Vec::new();
         }
-        let folder = self.current_path.clone();
-        let listing: Vec<(String, String, PathBuf)> = self
+        let folder = self.current_path.display().to_string();
+        let names: Vec<serde_json::Value> = self
             .entries
             .iter()
-            .map(|entry| {
-                (
-                    Self::entry_resource_id(entry),
-                    entry.name.clone(),
-                    entry.path.clone(),
-                )
+            .flat_map(|entry| {
+                [
+                    serde_json::Value::String(entry.name.clone()),
+                    serde_json::Value::String(entry.path.display().to_string()),
+                ]
             })
             .collect();
-        let listing = std::sync::Arc::new(listing);
-        let queue = {
-            move |op: FileOp| FilesDocAction::QueueFileOp {
-                id: uuid::Uuid::new_v4().to_string(),
-                device: device.clone(),
-                op,
+        // An entry the folder does not hold is refused at the door, so a
+        // misspelt name changes nothing.
+        let shown = |mut decl: ui::tilo_resource::ActionDecl<FileExplorer>| {
+            for param in &mut decl.params {
+                let schema = match &*param.name {
+                    "entry" => serde_json::json!({ "enum": names }),
+                    "entries" => serde_json::json!({
+                        "items": { "enum": names },
+                        "minItems": 1,
+                        "maxItems": crate::resource::MAX_MOVE_ENTRIES,
+                    }),
+                    _ => continue,
+                };
+                param.schema = Some(std::sync::Arc::new(schema));
             }
+            decl
         };
-        let entry_param = |name: &'static str, what: &'static str| {
-            ActionParam::required(name, ParamType::Text, what)
-        };
-        let new_folder = {
-            let queue = queue.clone();
-            ActionDecl::new(
-                "new-folder",
-                "New folder",
-                vec![entry_param("name", "Name of the new folder")],
-                move |args, _| {
-                    let name = args.text("name").filter(|name| !name.trim().is_empty());
-                    let name = name.ok_or_else(|| "missing folder name".to_owned())?;
-                    Ok(queue(FileOp::NewFolder {
-                        parent: folder.display().to_string(),
-                        name: name.to_owned(),
-                    }))
-                },
-            )
-            .describe("Create a folder in the folder shown.")
-        };
-        let rename = {
-            let queue = queue.clone();
-            let listing = std::sync::Arc::clone(&listing);
-            ActionDecl::new(
-                "rename",
-                "Rename",
-                vec![
-                    entry_param(
-                        "entry",
-                        "The entry: its row id or its name in the folder shown",
-                    ),
-                    entry_param("name", "The new name"),
-                ],
-                move |args, _| {
-                    let entry = args.text("entry").unwrap_or_default();
-                    let path = named_entries(&listing, &[entry.to_owned()])?
-                        .pop()
-                        .ok_or_else(|| "missing entry".to_owned())?;
-                    let name = args.text("name").filter(|name| !name.trim().is_empty());
-                    Ok(queue(FileOp::Rename {
-                        path,
-                        name: name
-                            .ok_or_else(|| "missing new name".to_owned())?
-                            .to_owned(),
-                    }))
-                },
-            )
-            .describe("Rename an entry of the folder shown.")
-        };
-        let entries_param = || {
-            ActionParam::required(
-                "entries",
-                ParamType::Array,
-                "Entries of the folder shown: names, row ids or absolute paths",
-            )
-        };
-        let entries_of = |args: &ui::tilo_actions::ActionArgs| -> Vec<String> {
-            args.array("entries")
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect()
-        };
-        let trash = {
-            let queue = queue.clone();
-            let listing = std::sync::Arc::clone(&listing);
-            ActionDecl::new(
-                "trash",
-                "Move to Trash",
-                vec![entries_param()],
-                move |args, _| {
-                    let paths = named_entries(&listing, &entries_of(args))?;
-                    if paths.is_empty() {
-                        return Err("name at least one entry".into());
-                    }
-                    Ok(queue(FileOp::Trash { paths }))
-                },
-            )
-            .describe("Move entries of the folder shown to Trash; undo puts them back.")
-        };
-        let moving = {
-            let listing = std::sync::Arc::clone(&listing);
-            ActionDecl::new(
-                "move",
-                "Move entries to folder",
-                vec![
-                    entries_param(),
-                    ActionParam::required(
-                        "folder",
-                        ParamType::Text,
-                        "Absolute path of the destination folder; names are kept",
-                    ),
-                    ActionParam::optional(
-                        "create",
-                        ParamType::Boolean,
-                        "Create the destination folder when it does not exist (the default)",
-                    ),
-                ],
-                move |args, _| {
-                    let paths = named_entries(&listing, &entries_of(args))?;
-                    if paths.is_empty() || paths.len() > MAX_MOVE_ENTRIES {
-                        return Err(format!("move takes 1 to {MAX_MOVE_ENTRIES} entries"));
-                    }
-                    let folder = args.text("folder").unwrap_or_default();
-                    if !Path::new(folder).is_absolute() {
-                        return Err(format!("{folder} is not an absolute path"));
-                    }
-                    Ok(queue(FileOp::Move {
-                        paths,
-                        folder: folder.to_owned(),
-                        create: args.boolean("create").unwrap_or(true),
-                    }))
-                },
-            )
-            .describe("Move entries of the folder shown into another folder in one step.")
-        };
-        vec![new_folder, rename, trash, moving]
+        let new_folder = FileExplorer::NEW_FOLDER
+            .bind(file_explorer::NewFolder::paths().device, device.clone())
+            .and(file_explorer::NewFolder::paths().parent, folder.clone())
+            .declaration("new-folder-here", "New folder here");
+        let rename = FileExplorer::RENAME
+            .bind(file_explorer::Rename::paths().device, device.clone())
+            .and(file_explorer::Rename::paths().folder, folder.clone())
+            .declaration("rename-here", "Rename an entry here");
+        let trash = FileExplorer::TRASH
+            .bind(file_explorer::Trash::paths().device, device.clone())
+            .and(file_explorer::Trash::paths().folder, folder.clone())
+            .declaration("trash-here", "Move entries here to Trash");
+        let moving = FileExplorer::MOVE_ENTRIES
+            .bind(file_explorer::MoveEntries::paths().device, device)
+            .and(file_explorer::MoveEntries::paths().from, folder)
+            .declaration("move-here", "Move entries from here to a folder");
+        [new_folder, rename, trash, moving]
+            .into_iter()
+            .flatten()
+            .map(shown)
+            .collect()
     }
 
     /// Show the bookmarked `places`, resolved on this device.
@@ -1263,21 +1179,21 @@ impl FileExplorerWidget {
         crate::places::place_of(path, self.home_path.as_deref(), &self.user_dirs)
     }
 
-    /// Submit a bookmark edit. The sidebar already shows it; the stored
+    /// Submit a bookmark verb. The sidebar already shows it; the stored
     /// places are presented back once it applies (or again unchanged if it
     /// is refused).
-    fn dispatch(&self, action: &crate::resource::FilesDocAction) {
+    fn submit(&self, invoke: ui::tilo_resource::Invoke<crate::resource::FileExplorer>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(invoke);
         }
     }
 
     /// The view preferences this window shows.
     fn current_preferences(&self) -> crate::resource::FilesPreferences {
         crate::resource::FilesPreferences {
-            view: crate::doc::view_mode_token(self.view_mode).to_owned(),
-            sort: crate::doc::sort_key_token(self.sort_by).to_owned(),
-            order: crate::doc::sort_order_token(self.sort_order).to_owned(),
+            view: crate::resource::view_mode_token(self.view_mode).to_owned(),
+            sort: crate::resource::sort_key_token(self.sort_by).to_owned(),
+            order: crate::resource::sort_order_token(self.sort_order).to_owned(),
             zoom: self.zoom_level,
             hidden: self.show_hidden,
         }
@@ -1307,9 +1223,9 @@ impl FileExplorerWidget {
             return;
         }
         self.shown_preferences = Some(stored.clone());
-        self.view_mode = crate::doc::parse_view_mode(&stored.view);
-        let sort_by = crate::doc::parse_sort_key(&stored.sort);
-        let sort_order = crate::doc::parse_sort_order(&stored.order);
+        self.view_mode = crate::resource::parse_view_mode(&stored.view);
+        let sort_by = crate::resource::parse_sort_key(&stored.sort);
+        let sort_order = crate::resource::parse_sort_order(&stored.order);
         if (sort_by, sort_order) != (self.sort_by, self.sort_order) {
             self.sort_by = sort_by;
             self.sort_order = sort_order;
@@ -1340,6 +1256,9 @@ impl FileExplorerWidget {
         account: &crate::remote_accounts::RemoteAccount,
         reauthenticate: bool,
     ) {
+        // The places list shows the account too, as it would from the store.
+        self.startup_accounts = Some(vec![account.clone()]);
+        self.places_shown = None;
         self.show_remote_account_panel(account, reauthenticate);
     }
 
@@ -1348,32 +1267,66 @@ impl FileExplorerWidget {
         account: &crate::remote_accounts::RemoteAccount,
         reauthenticate: bool,
     ) {
-        let title = if reauthenticate {
-            format!("Sign in again: {}", account.label)
+        let service = account.kind.label().to_string();
+        let (title, lines, action) = if reauthenticate {
+            // The one thing to do, said once; Settings is where people sign in.
+            (
+                t_args(
+                    "files-account-sign-in-title",
+                    &[arg("account", account.label.clone())],
+                ),
+                vec![
+                    t_args(
+                        "files-account-sign-in-needed",
+                        &[arg("service", service), arg("host", account.host.clone())],
+                    ),
+                    t("files-account-sign-in-where"),
+                ],
+                Some(CollabPanelAction::RecheckAccount(
+                    account.id.as_str().to_owned(),
+                )),
+            )
         } else {
-            format!("{} files", account.label)
+            let mut lines = vec![
+                t_args(
+                    "files-account-service-at-host",
+                    &[arg("service", service), arg("host", account.host.clone())],
+                ),
+                account.health.unavailable_reason().to_string(),
+            ];
+            if let Some(mount) = &account.mount {
+                lines.push(t_args(
+                    "files-account-folder",
+                    &[arg("path", mount.display().to_string())],
+                ));
+            }
+            (account.label.clone(), lines, None)
         };
-        let mut lines = vec![
-            format!("{} · {}", account.kind.label(), account.host),
-            format!("Status: {}", account.health.label()),
-            account.health.unavailable_reason().to_string(),
-        ];
-        if let Some(mount) = &account.mount {
-            lines.push(format!("Folder: {}", mount.display()));
-        }
-        if reauthenticate {
-            lines.push(
-                "Open Settings → External Accounts and choose Sign in again. Credentials stay in the system vault and are never shown to Files."
-                    .into(),
-            );
-        }
         self.show_collab_panel(CollabPanel {
-            history: None,
             title,
-            summary: "Remote account details".into(),
+            summary: String::new(),
             lines,
-            action: None,
+            action,
         });
+    }
+
+    /// Choose the cloud account row `id` in the places list: open its folder
+    /// when it has one now, else say what is wrong with it.
+    fn show_remote_account(&mut self, id: &str) -> bool {
+        self.refresh_external_search_catalogs();
+        let Some(account) = self.remote_account(id) else {
+            return false;
+        };
+        let reauthenticate =
+            account.health == crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication;
+        match (&account.mount, remote_folder_availability(&account)) {
+            (Some(mount), Availability::Available) => {
+                self.close_collab_panel();
+                self.navigate(mount.clone());
+            }
+            _ => self.show_remote_account_panel(&account, reauthenticate),
+        }
+        true
     }
 
     /// Construct with an explicit persistence directory + home, resolving the
@@ -1451,6 +1404,7 @@ impl FileExplorerWidget {
                 thumbnails,
                 document_opener: DocumentOpenRoute::Unavailable,
                 open_with: None,
+                local_clipboard: false,
             }),
         );
         widget.templates_dir = Some(scene.home.join("Templates"));
@@ -1503,6 +1457,7 @@ impl FileExplorerWidget {
         let remote_accounts = inputs.remote_accounts;
         let remote_accounts_search =
             crate::search_provider::RemoteAccountSearch::new(&remote_accounts);
+        let shown_folder = shown_selection::folder(&cwd);
         let mut entries = if injected {
             crate::model::read_dir_with_workspace_roots(&cwd, &workspace_roots)
         } else {
@@ -1514,12 +1469,30 @@ impl FileExplorerWidget {
         }
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
+        // The places list and the file view are swapped in on the first
+        // `build_layout`; the toolbar is the content header's one action and
+        // stays for the window's lifetime.
+        let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
+        let nav = NavShell::new()
+            .with_id("files.shell")
+            .content_header("", vec![Box::new(actions_widget)])
+            .content_header_leading(Box::new(path_widget));
         let thumbs = match &services {
             FileServices::Legacy => build_thumb_service(config_dir).map(Arc::new),
             FileServices::Hosted(hosted) => hosted.thumbnails.clone(),
         };
         let trusted_humans = inputs.trusted_humans;
         let startup_accounts = injected.then_some(remote_accounts);
+        let retry = retry_row();
+        let binding = retry.actions.first().and_then(|action| {
+            ui::tilo_actions::ActionBinding::static_json(&retry, action, serde_json::Map::new())
+                .ok()
+        });
+        let state_retry = Button::new("files.retry", &t("files-try-again"));
+        let state_retry = match binding {
+            Some(binding) => state_retry.on_action(binding),
+            None => state_retry.with_enabled(false),
+        };
         Self {
             services,
             startup_accounts,
@@ -1527,6 +1500,8 @@ impl FileExplorerWidget {
             home_path: home,
             entries,
             selection: SelectionModel::new(),
+            shown_selection: shown_selection::ShownSelection::default(),
+            shown_folder,
             error: None,
             is_loading: false,
             last_click: None,
@@ -1540,18 +1515,24 @@ impl FileExplorerWidget {
             last_trash_undo: None,
             device: None,
             ops_drain: None,
-            awaiting_ops: HashMap::new(),
+            awaiting_ops: Vec::new(),
             settled_ops: std::collections::HashSet::new(),
+            ops_presented: false,
             local_outcomes: HashMap::new(),
             status: None,
-            next_metadata_refresh: ui::time::now() + metadata_refresh::LIVE_INTERVAL,
+            // Scheduled by the first sync, once the watches exist.
+            next_metadata_refresh: None,
+            directory_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
+            identity_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
+            directory_changed: false,
+            last_directory_read: ui::time::now(),
             renaming: None,
             rename_buffer: String::new(),
             rename_seed_pending: false,
             rename_input: TextInput::local()
                 .with_kind(ui::widget::TextInputKind::Name)
                 .with_id("files.rename_input")
-                .with_placeholder(&t("files-new-name-placeholder")),
+                .with_placeholder(t("files-new-name-placeholder")),
             rename_rect: Rc::new(Cell::new(None)),
             rename_select_pending: false,
             rect: vello::kurbo::Rect::ZERO,
@@ -1561,28 +1542,19 @@ impl FileExplorerWidget {
             // when wide, an overlay drawer over it when narrow. Sidebar width
             // matches the historical fixed sidebar so the docked layout is
             // pixel-stable.
-            nav: NavShell::sidebar_over_content(Box::new(Text::new("")), Box::new(Text::new("")))
-                .with_sidebar_width(places_sidebar::SIDEBAR_WIDTH)
-                // A narrow drawer should read as navigation, not leave a
-                // sliver of obscured list columns competing for attention.
-                // Keep the compact 200px desktop dock, but give phone-width
-                // places enough room for labels and touch targets.
-                .with_narrow_sidebar_width(320.0)
-                .with_breakpoint(BODY_BREAKPOINT_PX)
-                // The docked places list is permanent — no in-sidebar collapse chip;
-                // the hamburger still summons the drawer when narrow.
-                .hide_toggle_when_docked(),
-            toolbar: crate::toolbar::FileToolbar::new(cmds.clone()),
+            nav,
+            toolbar,
             status_bubble: ui::StatusBubble::new(),
-            last_status_label: String::new(),
+            state_spinner: Spinner::new(),
+            state_retry,
             shots_status: false,
             staged_hover: None,
             staged_move_drag: false,
             templates_dir: crate::templates::templates_dir(),
-            state_spinner: Spinner::with_size(28.0),
-            state_retry: retry_button(),
+
             composed_once: false,
             cmds,
+            opened: Rc::default(),
             structure_dirty: false,
             dispatcher: None,
             preferences: None,
@@ -1591,9 +1563,12 @@ impl FileExplorerWidget {
             menu_commands: Vec::new(),
             submenu: ContextMenu::new(),
             submenu_commands: Vec::new(),
-            pending_fav_menu: None,
             last_cursor: Point::ZERO,
             favs: places_sidebar::new_store(favorites),
+            places_shown: None,
+            places_choice: Rc::new(RefCell::new(None)),
+            places_context: Rc::default(),
+            stage_favorite_drag: false,
             zoom_level,
             show_hidden,
             user_dirs,
@@ -1616,6 +1591,7 @@ impl FileExplorerWidget {
             shortcut_menu: crate::shortcut_menu::ShortcutMenuState::default(),
             collab_panel: None,
             collab_panel_focused: false,
+            collab_layout: None,
             share_result: ui::LatestRequest::new(),
             share_pending_path: None,
             received_share: ui::LatestRequest::new(),
@@ -1629,6 +1605,7 @@ impl FileExplorerWidget {
             merge_preflight_result: Arc::new(std::sync::Mutex::new(None)),
             merge_preflight_pending: None,
             effect_reply: None,
+            local_clipboard: clipboard_client::Client::new(),
             accounts_root: None,
             accounts_cache: Vec::new(),
             host_intent: None,
@@ -1637,6 +1614,7 @@ impl FileExplorerWidget {
             next_document_open_token: 0,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
+            list_slot: crate::views::file_list::ListSlot::default(),
             thumbs,
             recent: crate::recent::RecentFiles::default(),
             recent_setting: None,
@@ -1771,6 +1749,24 @@ impl FileExplorerWidget {
             .map(|entry| entry.path.clone())
     }
 
+    /// Recent actions name only a currently presented, still-existing row.
+    /// A retained address cannot navigate or edit another location's history.
+    fn recent_entry_path(&self, resource_id: &str) -> Result<PathBuf, String> {
+        if !self.is_recent_view() {
+            return Err(t("files-recent-action-unavailable"));
+        }
+        self.visible_entry_path(resource_id)
+            .filter(|path| path.exists())
+            .ok_or_else(|| t("files-recent-action-unavailable"))
+    }
+
+    pub(crate) fn run_effect(
+        &mut self,
+        effect: crate::effects::FilesEffect,
+    ) -> Result<Ran, String> {
+        self.run_effect_for(effect, None)
+    }
+
     /// Do `effect`: show a folder, copy or paste, open or share a file. A job (sending to a nearby device, creating a share link)
     /// answers later through the reply [`Self::await_effect`] keeps.
     ///
@@ -1780,21 +1776,59 @@ impl FileExplorerWidget {
         clippy::too_many_lines,
         reason = "one match over the effect vocabulary keeps every caller's door in one auditable place"
     )]
-    pub(crate) fn run_effect(
+    pub(crate) fn run_effect_for(
         &mut self,
         effect: crate::effects::FilesEffect,
+        invocation: Option<tilo_actions::InvocationId>,
     ) -> Result<Ran, String> {
         use crate::effects::FilesEffect;
         let answer = match effect {
+            FilesEffect::ClipboardStatus => return self.snapshot_clipboard(invocation),
+            FilesEffect::RecoverClipboardTransfers => return self.recover_clipboard(invocation),
             FilesEffect::Refresh => {
                 self.refresh();
                 None
             }
+            FilesEffect::SelectEntries { entries } => {
+                self.select_published_entries(&entries)?;
+                Some(self.selection_answer())
+            }
+            FilesEffect::SelectAll => {
+                self.apply_command(FileCommand::SelectAll);
+                self.last_click = None;
+                Some(self.selection_answer())
+            }
+            FilesEffect::ClearSelection => {
+                self.selection.clear();
+                self.retain_shown_selection();
+                self.last_click = None;
+                Some(self.selection_answer())
+            }
+            FilesEffect::CopySelection | FilesEffect::CutSelection => {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+                    return self.publish_clipboard(
+                        invocation,
+                        matches!(effect, FilesEffect::CutSelection),
+                    );
+                }
+                if self.selected_paths().is_empty() {
+                    return Err(t("files-selection-empty"));
+                }
+                self.apply_command(if matches!(effect, FilesEffect::CutSelection) {
+                    FileCommand::Cut
+                } else {
+                    FileCommand::Copy
+                });
+                None
+            }
             FilesEffect::Paste => {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+                    return self.paste_clipboard(invocation);
+                }
                 self.paste()?;
                 None
             }
-            FilesEffect::GoTo { path } | FilesEffect::Open { path } => {
+            FilesEffect::GoTo { path } | FilesEffect::OpenFolder { path } => {
                 let path = PathBuf::from(path);
                 if !path.is_absolute() {
                     return Err(format!("{} is not an absolute path", path.display()));
@@ -1803,6 +1837,17 @@ impl FileExplorerWidget {
                     return Err(format!("{} is not a folder Files can open", path.display()));
                 }
                 self.navigate(path);
+                Some(self.folder_answer())
+            }
+            FilesEffect::OpenTrash => {
+                let path = fileops::trash_dir().ok_or_else(|| t("files-trash-unavailable"))?;
+                self.navigate(path);
+                if let Some(error) = &self.error {
+                    return Err(error.clone());
+                }
+                if self.hosted_clipboard() && host_fs::trash::user_trash_dir().is_none() {
+                    self.status = Some(t("files-user-trash-unavailable"));
+                }
                 Some(self.folder_answer())
             }
             FilesEffect::Up => {
@@ -1885,6 +1930,9 @@ impl FileExplorerWidget {
                 if !self.is_trash_view() {
                     return Err("Empty Trash from the Trash folder".into());
                 }
+                if self.has_native_trash_entries() {
+                    return Err(t("files-native-trash-delete-unavailable"));
+                }
                 // The effect is confirmed by its contract; no second sheet.
                 self.perform_empty_trash();
                 None
@@ -1901,6 +1949,16 @@ impl FileExplorerWidget {
             }
             FilesEffect::Reveal { record } => {
                 self.reveal_record(&record)?;
+                None
+            }
+            FilesEffect::RevealRecent { entry } => {
+                let path = self.recent_entry_path(&entry)?;
+                self.apply_command(FileCommand::RevealInFolder(path));
+                None
+            }
+            FilesEffect::ForgetRecent { entry } => {
+                let path = self.recent_entry_path(&entry)?;
+                self.apply_command(FileCommand::ForgetRecent(path));
                 None
             }
             FilesEffect::NewFromTemplate { template } => {
@@ -1923,17 +1981,43 @@ impl FileExplorerWidget {
                 None
             }
             FilesEffect::Copy { entry } => {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+                    let target = self
+                        .visible_entry_path(&entry)
+                        .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
+                    return self.publish_clipboard_row(invocation, false, &target);
+                }
                 self.entry_command(&entry, |_, _| Some(FileCommand::Copy))?
             }
             FilesEffect::Cut { entry } => {
+                if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+                    let target = self
+                        .visible_entry_path(&entry)
+                        .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
+                    return self.publish_clipboard_row(invocation, true, &target);
+                }
                 self.entry_command(&entry, |_, _| Some(FileCommand::Cut))?
             }
-            FilesEffect::Restore { entry } => self.entry_command(&entry, |files, _| {
-                files
-                    .is_trash_view()
-                    .then_some(FileCommand::RestoreFromTrash)
-            })?,
+            FilesEffect::Restore { entry } => {
+                let target = self
+                    .visible_entry_path(&entry)
+                    .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
+                if self.is_native_trash_entry(&target) {
+                    return self.restore_clipboard_entry(invocation, &target);
+                }
+                self.entry_command(&entry, |files, _| {
+                    files
+                        .is_trash_view()
+                        .then_some(FileCommand::RestoreFromTrash)
+                })?
+            }
             FilesEffect::DeletePermanently { entry } => {
+                let target = self
+                    .visible_entry_path(&entry)
+                    .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
+                if self.is_native_trash_entry(&target) {
+                    return Err(t("files-native-trash-delete-unavailable"));
+                }
                 self.entry_command(&entry, |files, target| {
                     files
                         .is_trash_view()
@@ -1988,6 +2072,23 @@ impl FileExplorerWidget {
                 self.structure_dirty = true;
                 return Ok(Ran::Pending);
             }
+            FilesEffect::SendAirDrop {
+                entry,
+                address,
+                port,
+            } => {
+                self.refuse_while_answering()?;
+                let path = self
+                    .visible_entry_path(&entry)
+                    .ok_or_else(|| t("files-airdrop-source-unavailable"))?;
+                if !path.is_file() {
+                    return Err(t("files-airdrop-file-only"));
+                }
+                self.nearby_send.send_airdrop(&path, address, port)?;
+                self.status = Some(t("files-airdrop-verifying"));
+                self.structure_dirty = true;
+                return Ok(Ran::Pending);
+            }
             FilesEffect::ShareLink { entry } => {
                 self.refuse_while_answering()?;
                 let target = self
@@ -2015,6 +2116,15 @@ impl FileExplorerWidget {
             FilesEffect::DeclineNearby { transfer } => {
                 self.decide_nearby(transfer, None)?;
                 None
+            }
+            FilesEffect::InspectNearby { transfer } => {
+                let status = self
+                    .nearby_send
+                    .transfers()
+                    .iter()
+                    .find(|candidate| candidate.handle == transfer)
+                    .ok_or_else(|| t("files-nearby-transfer-unavailable"))?;
+                Some(serde_json::json!({"transfer": status}))
             }
             FilesEffect::RetryNearby { transfer } => {
                 if !self.nearby_send.transfers().iter().any(|candidate| {
@@ -2081,11 +2191,27 @@ impl FileExplorerWidget {
     }
 
     /// A job answers its caller later; one runs at a time.
-    fn refuse_while_answering(&self) -> Result<(), String> {
+    fn refuse_while_answering(&mut self) -> Result<(), String> {
+        self.retire_cancelled_effect();
         if self.effect_reply.is_some() {
             return Err("another file operation is still running".into());
         }
         Ok(())
+    }
+
+    /// A cancelled caller cannot acknowledge a transfer. Retire its local
+    /// polling state while the host retains the durable recovery receipt.
+    fn retire_cancelled_effect(&mut self) {
+        if self
+            .effect_reply
+            .as_ref()
+            .is_some_and(ui::framework::EffectReply::is_cancelled)
+        {
+            self.effect_reply.take();
+            self.local_clipboard.abandon();
+            self.status = Some(t("files-clipboard-cancelled"));
+            self.structure_dirty = true;
+        }
     }
 
     /// Keep `reply` until the job [`Self::run_effect`] started settles.
@@ -2108,6 +2234,7 @@ impl FileExplorerWidget {
             .position(|entry| entry.path == target)
             .ok_or_else(|| "file entry is no longer visible".to_string())?;
         self.selection.select_only(index);
+        self.retain_shown_selection();
         Ok(())
     }
 
@@ -2129,6 +2256,7 @@ impl FileExplorerWidget {
             .position(|candidate| candidate.path == target)
             .ok_or_else(|| "file entry is no longer visible".to_string())?;
         self.selection.select_only(index);
+        self.retain_shown_selection();
         if !self.apply_command(command) {
             return Err("file operation could not be applied".into());
         }
@@ -2184,6 +2312,7 @@ impl FileExplorerWidget {
             entry.record_id == Some(*record_id.as_bytes()) || entry.path == record.path
         }) {
             self.selection.select_only(index);
+            self.retain_shown_selection();
         }
         Ok(())
     }
@@ -2252,7 +2381,7 @@ impl FileExplorerWidget {
 
     /// Refresh the persistent top bar with the current navigation context
     /// (path, history availability, view mode) before it is laid out.
-    fn update_toolbar(&mut self) {
+    fn update_toolbar(&self) {
         let nav = crate::toolbar::NavAvailability {
             back: !self.history.is_empty(),
             forward: !self.forward.is_empty(),
@@ -2270,32 +2399,62 @@ impl FileExplorerWidget {
         );
     }
 
-    /// The **places** pane (the responsive body's master / overview): the
-    /// modern Favourites / Places list. A single widget that owns
-    /// drag-to-reorder for the favourites (via the shared, persistent
-    /// `FavStore`) so a reorder survives the per-frame rebuild.
-    fn build_places_pane(&self) -> Box<dyn Widget> {
-        Box::new(
-            PlacesSidebar::new(
-                self.favs.clone(),
-                self.current_path.clone(),
-                self.cmds.clone(),
-            )
-            .with_cursor(self.last_cursor)
+    /// What the places list shows now: the Favorites and the locations.
+    fn current_places(&self) -> Places {
+        Places::new(&self.favs, self.current_path.clone())
             .with_workspaces(self.workspace_roots.clone())
             .with_remote_accounts(
                 self.remote_account_snapshot()
                     .into_iter()
-                    .filter(|account| {
-                        matches!(remote_folder_availability(account), Availability::Available)
-                    })
-                    .filter_map(|account| {
-                        let badge = account.health.badge().map(str::to_owned);
-                        account.mount.map(|mount| (account.label, mount, badge))
+                    .map(|account| {
+                        let available = matches!(
+                            remote_folder_availability(&account),
+                            Availability::Available
+                        );
+                        places_sidebar::AccountPlace {
+                            id: account.id.as_str().to_owned(),
+                            label: account.label,
+                            // A folder that cannot be opened has no place to go to.
+                            mount: account.mount.filter(|_| available),
+                            status: account.health.badge().map(str::to_owned),
+                        }
                     })
                     .collect(),
-            ),
-        )
+            )
+    }
+
+    /// Put the **places** pane (the window's sidebar) in the shell. The list
+    /// keeps its own keyboard focus and scroll, so it is replaced only when
+    /// what it shows changes: its places, or the chosen one when the choice
+    /// did not come from the list itself.
+    fn refresh_places_pane(&mut self) {
+        let places = self.current_places();
+        let sections = places.sections();
+        let selected = places.selected_id();
+        if let Some((shown, chosen)) = &self.places_shown
+            && *shown == sections
+            && (*chosen == selected || *self.places_choice.borrow() == selected)
+        {
+            self.places_shown = Some((sections, selected));
+            return;
+        }
+        let drag = std::mem::take(&mut self.stage_favorite_drag)
+            .then(|| places.favorite_drag())
+            .flatten();
+        let context = Rc::clone(&self.places_context);
+        let mut list = places
+            .nav_list(&self.cmds, &self.places_choice)
+            .on_context_menu(move |id, _, at| {
+                if let Some(path) = id.strip_prefix("fav:") {
+                    *context.borrow_mut() = Some((PathBuf::from(path), at));
+                }
+            });
+        if let Some((dragged, before)) = drag {
+            list.stage_drag(&dragged, &before);
+        }
+        self.nav.set_sidebar(Some(Box::new(list)));
+        *self.places_choice.borrow_mut() = None;
+        self.places_shown = Some((sections, selected));
     }
 
     /// The **content** pane (the responsive body's detail): the file list or
@@ -2311,59 +2470,54 @@ impl FileExplorerWidget {
         }
         let displayed = self.displayed_entries();
         let scale = self.zoom_scale();
-        let text_scale = theme.text_scale;
         // `renaming` marks the item edited in place, publishing its label rect
         // into `rename_rect` for the host to draw the shared editor over. The
         // cursor seeds the view's pointer position so a press hit-tests
         // correctly on the frame it is rebuilt (see `FileView::with_cursor`).
         let view = FileView::new(&displayed, &self.selection, &self.cmds)
             .with_scale(scale)
-            .with_text_scale(text_scale)
+            .with_workspace_roots(Rc::from(self.workspace_roots.clone()))
+            .with_hover(self.staged_hover)
+            .with_theme(theme)
             .with_rename(self.renaming, self.rename_rect.clone())
             .with_cursor(self.last_cursor)
             .with_drop_targets(self.drop_targets.clone())
             .with_thumbs(self.thumb_ctx())
-            .with_workspace_roots(Rc::from(self.workspace_roots.as_slice()))
-            .with_hover(self.staged_hover);
-        let view_child: Box<dyn Widget> = match self.view_mode {
+            .with_list(self.list_slot.clone())
+            .with_bottom_inset(f64::from(status_bubble_safe_inset(theme)));
+        // A plain (percent-height) column: this pane is the content column of
+        // the shell, so it must FILL that rect (`percent(1.0)` height).
+        let mut view_col = Column::new().with_vertical_padding(sp.s1);
+        match self.view_mode {
+            // The list is a table that scrolls itself and keeps the status
+            // lane clear below its rows.
             ViewMode::List => {
-                crate::views::list_view::build_list(view, self.sort_by, self.sort_order)
+                view_col = view_col.push(crate::views::list_view::build_list(
+                    view,
+                    self.sort_by,
+                    self.sort_order,
+                ));
             }
-            ViewMode::Grid => crate::views::grid_view::build_grid(view),
-        };
-        // The hamburger chip that summons the places drawer floats over this
-        // pane's top-left in the narrow layout. `NavShell` reserves that band
-        // itself, in the pass that positions the chip — reserving it here
-        // instead would mean asking the shell how wide it was on the *previous*
-        // frame, which is how the list used to be built 44px lower than it was
-        // laid out and then jump the first time anything rebuilt it.
-        // A plain (percent-height) column: this pane is the root of `NavShell`'s
-        // inner layout, sized to the content rect, so it must FILL that rect
-        // (`percent(1.0)` height). `with_fill_remaining_height` (flex-grow from
-        // zero) needs a flex parent to distribute space and would collapse to
-        // its content height here — leaving the `Scrollable` zero-height. Inside
-        // this bounded column the `Scrollable` grows to take the space under the
-        // optional error row.
-        let mut view_col = Column::new()
-            .with_vertical_padding(sp.s1)
-            .with_horizontal_padding(sp.s3, sp.s3);
-        // The list/grid scrolls: pin the scroll viewport to the *remaining*
-        // height of the content column (grow-from-zero) rather than letting it
-        // claim `percent(1.0)`. `fill_parent_height` takes exactly the space
-        // left under the optional error row so a long directory overflows the
-        // viewport and the wheel + scrollbar thumb move the list.
-        view_col = view_col.push(Box::new(
-            Scrollable::new(ScrollAxis::Vertical)
-                .fill_parent_height()
-                .with_persisted_offset(self.scroll_offset.clone())
-                .with_cursor(self.last_cursor)
-                // The status pill is intentionally outside the scrollable's
-                // interactive viewport. Besides making the count easy to
-                // scan, that means it cannot obscure a file name, target, or
-                // keyboard focus ring at the bottom of a compact grid.
-                .with_bottom_content_inset(STATUS_BUBBLE_SAFE_INSET_PX)
-                .with_child(view_child),
-        ));
+            // The grid scrolls: pin the scroll viewport to the *remaining*
+            // height of the content column (grow-from-zero) rather than
+            // letting it claim `percent(1.0)`, so a long directory overflows
+            // the viewport and the wheel + scrollbar thumb move the grid.
+            ViewMode::Grid => {
+                view_col = view_col.push(Box::new(
+                    Scrollable::new(ScrollAxis::Vertical)
+                        .fill_parent_height()
+                        .with_persisted_offset(self.scroll_offset.clone())
+                        .with_cursor(self.last_cursor)
+                        // The status pill is intentionally outside the
+                        // scrollable's interactive viewport. Besides making the
+                        // count easy to scan, that means it cannot obscure a
+                        // file name, target, or keyboard focus ring at the
+                        // bottom of a compact grid.
+                        .with_bottom_content_inset(status_bubble_safe_inset(theme))
+                        .with_child(crate::views::grid_view::build_grid(view)),
+                ));
+            }
+        }
         Box::new(view_col)
     }
 
@@ -2372,16 +2526,21 @@ impl FileExplorerWidget {
     /// current path is shown ONCE — in the path bar at the top — so it is
     /// deliberately not repeated here. Empty string means nothing to surface.
     fn footer_label(&self) -> String {
+        // A folder that did not open, or is still opening, has no count to
+        // report: the state surface says what is happening.
+        if self.error.is_some() || self.is_loading {
+            return String::new();
+        }
         let count = self.entries.len();
         let left = self
             .status
             .clone()
-            .unwrap_or_else(|| t_args("files-item-count", &[arg("count", fluent_count(count))]));
+            .unwrap_or_else(|| t_args("files-item-count", &[arg("count", i64_of_usize(count))]));
         let sel = self.selection.selected().len();
         if sel > 0 {
             t_args(
                 "files-selected-count",
-                &[arg("base", left), arg("count", fluent_count(sel))],
+                &[arg("base", left), arg("count", i64_of_usize(sel))],
             )
         } else {
             left
@@ -2427,7 +2586,7 @@ impl FileExplorerWidget {
     /// in the location bar and the root accessibility description.
     fn state_surface_copy(&self) -> Option<(String, String, bool)> {
         let location = Self::bounded_state_text(
-            &self.current_path.display().to_string(),
+            &crate::model::format_path(&self.current_path, self.home_path.as_deref()),
             STATE_SURFACE_LOCATION_CHARS,
         );
         if self.is_loading {
@@ -2473,7 +2632,7 @@ impl FileExplorerWidget {
         let Some((title, detail, can_retry)) = self.state_surface_copy() else {
             return;
         };
-        let rect = self.nav.overview_content_rect();
+        let rect = self.content_body_rect();
         if rect.width() <= 1.0 || rect.height() <= 1.0 {
             return;
         }
@@ -2494,6 +2653,8 @@ impl FileExplorerWidget {
                     title: &title,
                     message: Some(&detail),
                     action_label: Some(&t("files-try-again")),
+                    error: true,
+                    ..EmptyStateContent::new(&title)
                 },
                 Point::new(-1.0, -1.0),
             );
@@ -2513,17 +2674,21 @@ impl FileExplorerWidget {
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 &EmptyStateContent {
-                    icon: None,
                     title: &title,
                     message: Some(&detail),
-                    action_label: None,
+                    ..EmptyStateContent::new(&title)
                 },
                 self.last_cursor,
             );
             let center = rect.center();
+            let side = f64::from(theme.tokens.metrics.icon_lg) + f64::from(theme.tokens.spacing.s1);
             let spinner_rect = vello::kurbo::Rect::from_center_size(
-                Point::new(center.x, center.y - 62.0),
-                (28.0, 28.0),
+                Point::new(
+                    center.x,
+                    center.y - f64::from(theme.tokens.spacing.s16)
+                        + f64::from(theme.tokens.spacing.s1),
+                ),
+                (side, side),
             );
             self.state_spinner.set_rect(spinner_rect);
             self.state_spinner
@@ -2554,21 +2719,26 @@ impl FileExplorerWidget {
             lines: [
                 "files-shortcuts-primary",
                 "files-shortcuts-navigate",
+                "files-shortcuts-range",
                 "files-shortcuts-grid",
                 "files-shortcuts-open",
+                "files-shortcuts-rename",
+                "files-shortcuts-trash",
                 "files-shortcuts-location",
+                "files-shortcuts-refresh",
                 "files-shortcuts-new-folder",
                 "files-shortcuts-edit",
                 "files-shortcuts-hidden",
                 "files-shortcuts-size",
+                "files-shortcuts-size-reset",
                 "files-shortcuts-context",
                 "files-shortcuts-close",
+                "files-shortcuts-dismiss",
             ]
             .into_iter()
             .map(t)
             .collect(),
             action: None,
-            history: None,
         });
     }
 
@@ -2585,12 +2755,15 @@ impl FileExplorerWidget {
                 })
             }
             CollabPanelAction::EmptyTrash => Some(FileCommand::ConfirmEmptyTrash),
+            CollabPanelAction::RecheckAccount(id) => {
+                Some(FileCommand::RecheckRemoteAccount(id.clone()))
+            }
             CollabPanelAction::ApplySafeMerge {
                 conflict_id,
                 version_id,
             } => Some(FileCommand::ResolveConflict {
                 conflict_id: *conflict_id,
-                strategy: collab_types::ConflictStrategy::Merge,
+                strategy: fs_protocol::ConflictStrategy::Merge,
                 version_id: *version_id,
             }),
             CollabPanelAction::ChooseNearbyDestination { handle } => {
@@ -2609,6 +2782,7 @@ impl FileExplorerWidget {
             }
             CollabPanelAction::PermanentDelete(_) => Some(t("files-permanent-delete-confirm")),
             CollabPanelAction::EmptyTrash => Some(t("files-empty-trash-confirm")),
+            CollabPanelAction::RecheckAccount(_) => Some(t("files-account-check-again")),
             CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe")),
             CollabPanelAction::ChooseNearbyDestination { .. } => {
                 Some(t("files-nearby-choose-destination"))
@@ -2623,6 +2797,7 @@ impl FileExplorerWidget {
             CollabPanelAction::PermanentDelete(_) | CollabPanelAction::EmptyTrash => {
                 Some(t("files-permanent-delete-loss"))
             }
+            CollabPanelAction::RecheckAccount(_) => Some(t("files-account-check-again-detail")),
             CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe-detail")),
             CollabPanelAction::ChooseNearbyDestination { .. } => {
                 Some(t("files-nearby-consent-detail"))
@@ -2661,17 +2836,19 @@ impl FileExplorerWidget {
         self.footer_label()
     }
 
-    /// A capture: force the status bubble fully visible so a single headless
-    /// frame captures the floating chip.
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.status_bubble.poke(ui::time::now());
+    /// `--shots`: stage the status bubble the way a change would, resting on
+    /// it, so a single headless frame captures the floating chip.
+    pub fn debug_show_status_bubble(&mut self) {
+        let now = ui::time::now();
+        let label = self.footer_label();
+        self.status_bubble.show(&label, now);
+        self.status_bubble.set_hover(true, now);
     }
 
-    /// Draw the transient floating status bubble at the window's bottom-right —
-    /// the reclaimed home of the old footer strip. It surfaces on a real change
-    /// (dir load, selection, an operation result) or while the pointer hovers
-    /// the bottom-right band, then fades. Colours come from the theme.
+    /// Paint the transient floating status bubble at the window's
+    /// bottom-right, the reclaimed home of the old footer strip. It surfaces
+    /// on a real change (dir load, selection, an operation result) or while the
+    /// pointer rests on its corner, then fades.
     fn draw_status_bubble(
         &mut self,
         scene: &mut vello::Scene,
@@ -2681,83 +2858,47 @@ impl FileExplorerWidget {
     ) {
         let now = ui::time::now();
         let label = self.footer_label();
-        if label != self.last_status_label {
-            label.clone_into(&mut self.last_status_label);
-            self.status_bubble.poke(now);
-        }
-        if label.is_empty() {
-            return;
-        }
-        // `pill_size` / `draw_pill` hand the size to a scaling renderer, so
-        // unscale the theme token once or the bubble paints at 4× at 200 %.
-        let text_size = theme.tokens.typography.scale.sm / tr.text_scale();
-        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
-        let margin = f64::from(theme.tokens.spacing.s4);
-        let rect = vello::kurbo::Rect::new(
-            self.rect.x1 - margin - w,
-            self.rect.y1 - margin - h,
-            self.rect.x1 - margin,
-            self.rect.y1 - margin,
-        );
-        let zone =
-            vello::kurbo::Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
+        self.status_bubble.show(&label, now);
         // Archive browsing is deliberately read-only. Unlike transient file
         // operation feedback, that fact remains visible for the whole visit.
-        let archive_read_only = crate::archive::location(&self.current_path).is_some();
-        let over = self.shots_status || archive_read_only || zone.contains(self.last_cursor);
-        self.status_bubble.set_hover(over, now);
-        // A status change is still useful with reduced motion; only its
-        // opacity animation is removed. The next normal paint will settle it
-        // to hidden after its linger instead of asking the host for a fade
-        // frame loop.
-        let alpha = if theme.reduce_motion {
-            if self.status_bubble.is_visible(now) {
-                1.0
-            } else {
-                0.0
-            }
+        if self.shots_status || crate::archive::location(&self.current_path).is_some() {
+            self.status_bubble.set_hover(true, now);
         } else {
-            self.status_bubble.alpha(now)
-        };
-        if alpha <= 0.0 {
-            return;
+            self.status_bubble
+                .pointer_moved(self.rect, self.last_cursor, tr, theme, now);
         }
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            alpha,
-            transform,
-            &rect.inflate(12.0, 14.0),
-        );
-        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
-        scene.pop_layer();
+        self.status_bubble
+            .paint(scene, transform, tr, theme, self.rect, now);
     }
 
-    /// An open Places drawer is modal. Replace the translucent right-hand
-    /// scrim with an opaque app-surface continuation so enlarged filenames
-    /// cannot protrude as clipped fragments at the drawer boundary. The
-    /// drawer itself remains fully visible and the same rect remains the
-    /// click-to-dismiss target owned by `NavShell`.
-    fn draw_places_modal_backdrop(
-        &self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        theme: &ui::Theme,
-    ) {
-        if self.nav.mode() != ui::widget::ShellMode::Narrow || !self.nav.is_sidebar_open() {
-            return;
-        }
-        let drawer = self.nav.sidebar_rect();
-        let content = self.nav.overview_rect();
-        if drawer.x1 < content.x1 {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.bg_primary,
-                None,
-                &vello::kurbo::Rect::new(drawer.x1, content.y0, content.x1, content.y1),
-            );
-        }
+    /// Whether the content column is narrower than the direct toolbar
+    /// controls need; they move into the overflow when it is.
+    fn sync_toolbar_compact(&self) {
+        let column = self.nav.geometry().content_column;
+        self.toolbar.set_content_width(column.width());
+    }
+
+    /// Whether `point` is over the places list (docked or drawn as a drawer).
+    fn in_places_list(&self, point: Point) -> bool {
+        self.nav.is_sidebar_open() && self.nav.geometry().sidebar_column.contains(point)
+    }
+
+    /// Whether the places list is open as a drawer over the file view.
+    fn places_drawer_open(&self) -> bool {
+        self.nav.geometry().sidebar == SidebarPlacement::Drawer && self.nav.is_sidebar_open()
+    }
+
+    /// The content column below the shell's header row: where the file view
+    /// and the empty, loading and error surfaces stand.
+    fn content_body_rect(&self) -> vello::kurbo::Rect {
+        let geometry = self.nav.geometry();
+        let column = geometry.content_column;
+        vello::kurbo::Rect::new(
+            column.x0,
+            column.y0 + geometry.header_height,
+            column.x1,
+            column.y1,
+        )
     }
 
     /// A narrow places drawer is a modal flap: the file view and every one of
@@ -2765,7 +2906,7 @@ impl FileExplorerWidget {
     /// this app (rather than by `NavShell`), so make that ownership boundary
     /// explicit instead of accidentally painting it over the flap.
     fn status_bubble_is_occluded_by_places_drawer(&self) -> bool {
-        self.nav.mode() == ShellMode::Narrow && self.nav.is_sidebar_open()
+        self.places_drawer_open()
     }
 
     pub fn current_path(&self) -> PathBuf {
@@ -2839,6 +2980,19 @@ impl FileExplorerWidget {
         if crate::recent::is_location(path) {
             return Ok(self.recent_entries());
         }
+        if self.hosted_clipboard() && fileops::is_trash_dir(path) {
+            let mut entries = read_dir_sync(path)?;
+            if let Some(user_trash) = host_fs::trash::user_trash_dir()
+                && user_trash != path
+            {
+                match std::fs::symlink_metadata(&user_trash) {
+                    Ok(_) => entries.extend(read_dir_sync(&user_trash)?),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            return Ok(entries);
+        }
         if self.startup_accounts.is_some() {
             crate::model::read_dir_with_workspace_roots(path, &self.workspace_roots)
         } else {
@@ -2851,20 +3005,32 @@ impl FileExplorerWidget {
     fn load(&mut self, path: PathBuf) {
         self.is_loading = true;
         self.selection.clear();
+        self.retain_shown_selection();
         self.error = None;
         self.last_click = None;
         self.status = None;
         // A new directory starts at the top; the persisted scroll offset only
         // survives *structural* rebuilds within the same directory.
         self.scroll_offset.set((0.0, 0.0));
+        self.list_slot.reset_scroll();
         self.invalidate_open_with();
         self.close_app_chooser();
         // Opening the Trash for the first time (nothing deleted yet) should show
         // an empty folder, not a "no such directory" error, so materialise it.
-        if matches!(self.services, FileServices::Legacy) && fileops::is_trash_dir(&path) {
+        if fileops::is_trash_dir(&path) {
             let _ = fileops::ensure_trash_dir();
         }
         let recent = crate::recent::is_location(&path);
+        self.shown_folder = shown_selection::folder(&path);
+        // Watch before reading, so a change landing between the two is
+        // reported (and costs one more read) rather than lost.
+        let watched = self.watched_directory(&path);
+        self.directory_watch.point_at(watched.as_deref());
+        self.directory_changed = false;
+        // The new directory's watch decides whether and how often it is
+        // polled; the next sync schedules that.
+        self.next_metadata_refresh = None;
+        self.last_directory_read = ui::time::now();
         let loaded = if let Some((archive_path, prefix)) = crate::archive::location(&path) {
             crate::archive::list_directory(&archive_path, &prefix)
                 .map(|archive_entries| {
@@ -2898,6 +3064,7 @@ impl FileExplorerWidget {
                                 share: None,
                                 history: None,
                                 rich_metadata: None,
+                                observed: None,
                             }
                         })
                         .collect()
@@ -2921,11 +3088,12 @@ impl FileExplorerWidget {
                 // Drop stale entries so the error view isn't backed by the old
                 // directory's contents.
                 self.entries.clear();
+                self.shown_folder = None;
                 self.error = Some(t_args("files-directory-read-failed", &[arg("error", e)]));
             }
         }
         // Always record the path we attempted, even on error, so a Refresh
-        // ("Try Again") retries the same target rather than reloading the
+        // ("Try again") retries the same target rather than reloading the
         // previous valid directory and silently clearing the error.
         self.current_path = path;
         if self.error.is_none() && crate::archive::location(&self.current_path).is_some() {
@@ -2971,29 +3139,99 @@ impl FileExplorerWidget {
         self.load(self.current_path.clone());
     }
 
-    /// Poll the visible directory without treating it as navigation. Stable
-    /// record identity preserves selection across remote rename/move metadata;
-    /// ordinary files fall back to their path. Scroll and transient operation
-    /// status remain untouched.
+    /// Re-read the visible directory without treating it as navigation, when
+    /// its watch reported a change or, where no watch covers it, when its
+    /// poll is due. Stable record identity preserves selection across remote
+    /// rename/move metadata; ordinary files fall back to their path. Scroll
+    /// and transient operation status remain untouched.
     fn refresh_metadata_if_due(&mut self, now: Instant) -> bool {
-        if now < self.next_metadata_refresh {
-            return false;
+        // The first sync after construction starts the watches; changes made
+        // before a watch started are covered by one more read.
+        let watched = self.watched_directory(&self.current_path);
+        if self.directory_watch.point_at(watched.as_deref()) {
+            self.directory_changed = true;
         }
-        // Set the next deadline before doing any I/O.  A transient read error
-        // must not accidentally turn a very large directory into a busy loop.
-        self.next_metadata_refresh = now + metadata_refresh::interval(self.entries.len());
-        let catalog_changed = self
-            .collaborative_record_pager
-            .borrow_mut()
-            .poll_generation();
+        let identities_watched = self.startup_accounts.is_none()
+            && self.identity_watch.point_at(
+                crate::identity_directory::TrustedHumanDirectory::default_path()
+                    .parent()
+                    .filter(|dir| !dir.as_os_str().is_empty()),
+            );
+        // A directory already known to have changed is not drained again
+        // until it is read: its events would only wake the window again.
+        if !self.directory_changed && self.directory_watch.take_changes() {
+            self.directory_changed = true;
+        }
+        let identity_signal = identities_watched || self.identity_watch.take_changes();
+        let poll_due = self.next_metadata_refresh.is_some_and(|due| now >= due);
+        if poll_due || self.next_metadata_refresh.is_none() {
+            // Set the next deadline before doing any I/O.  A transient read
+            // error must not accidentally turn a very large directory into a
+            // busy loop.
+            self.next_metadata_refresh = self.next_poll_interval().map(|interval| now + interval);
+        }
+        let catalog_changed = poll_due
+            && self
+                .collaborative_record_pager
+                .borrow_mut()
+                .poll_generation();
         // `sync` admits the one bounded page for this turn. Keep polling and
         // admission separate so an authority change cannot consume two pages
         // in one UI frame.
-        let identities_changed = self.refresh_trusted_identities(None);
-        if self.renaming.is_some() || self.pin_drag.is_some() {
+        let identities_changed = (identity_signal
+            || (poll_due
+                && self.identity_watch.coverage() != crate::directory_watch::Coverage::Complete))
+            && self.refresh_trusted_identities(None);
+        let directory_polled = poll_due
+            && self.directory_watch.coverage() != crate::directory_watch::Coverage::Complete;
+        let change_readable = self.directory_changed
+            && now
+                >= self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len());
+        if !(directory_polled || change_readable)
+            || self.renaming.is_some()
+            || self.pin_drag.is_some()
+        {
             return identities_changed || catalog_changed;
         }
+        // Drain before reading: a change after this point wakes the window
+        // again and is read next time.
+        let _ = self.directory_watch.take_changes();
+        self.directory_changed = false;
+        self.last_directory_read = now;
         self.refresh_metadata_preserving_view() || identities_changed || catalog_changed
+    }
+
+    /// The directory to watch for `path`'s listing: `None` for listings that
+    /// are not one directory's entries (Recent, an archive, the hosted Trash
+    /// that merges two directories), which are polled instead.
+    fn watched_directory(&self, path: &Path) -> Option<PathBuf> {
+        let virtual_listing = crate::recent::is_location(path)
+            || crate::archive::location(path).is_some()
+            || (self.hosted_clipboard() && fileops::is_trash_dir(path));
+        (!virtual_listing).then(|| path.to_path_buf())
+    }
+
+    /// How often to poll what no change signal covers, or `None` when
+    /// nothing needs polling.
+    fn next_poll_interval(&self) -> Option<Duration> {
+        use crate::directory_watch::Coverage;
+        let entries = self.entries.len();
+        let directory = match self.directory_watch.coverage() {
+            Coverage::Complete => None,
+            // Local edits arrive as events; remote ones (tilo-fs gossip, a
+            // network share) only by reading, as promptly as before.
+            Coverage::Partial => Some(metadata_refresh::interval(entries)),
+            Coverage::None => Some(metadata_refresh::unwatched_interval(entries)),
+        };
+        let catalog = self
+            .collaborative_record_pager
+            .borrow()
+            .has_roots()
+            .then_some(metadata_refresh::BACKGROUND_INTERVAL);
+        let identities = (self.startup_accounts.is_none()
+            && self.identity_watch.coverage() != Coverage::Complete)
+            .then_some(metadata_refresh::BACKGROUND_INTERVAL);
+        [directory, catalog, identities].into_iter().flatten().min()
     }
 
     fn refresh_trusted_identities(&mut self, path: Option<&Path>) -> bool {
@@ -3012,6 +3250,8 @@ impl FileExplorerWidget {
         }
         self.trusted_humans = next;
         self.structure_dirty = true;
+        // File history names its authors from this directory: rebind it.
+        self.framework_history_binding = None;
         true
     }
 
@@ -3069,6 +3309,7 @@ impl FileExplorerWidget {
         self.entries = entries;
         self.selection
             .replace_indices(selected_indices, primary_index);
+        self.retain_shown_selection();
         self.structure_dirty = true;
         true
     }
@@ -3093,6 +3334,7 @@ impl FileExplorerWidget {
             Some(i) => self.selection.select_only(i),
             None => self.selection.clear(),
         }
+        self.retain_shown_selection();
         self.last_click = idx.map(|i| (i, now));
         None
     }
@@ -3100,7 +3342,7 @@ impl FileExplorerWidget {
     pub fn set_sort_by(&mut self, s: SortBy) {
         let changed = self.sort_by != s;
         self.sort_by = s;
-        sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        self.sort_preserving_selection();
         if changed {
             self.store_preferences();
         }
@@ -3110,8 +3352,42 @@ impl FileExplorerWidget {
             SortOrder::Ascending => SortOrder::Descending,
             SortOrder::Descending => SortOrder::Ascending,
         };
-        sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        self.sort_preserving_selection();
         self.store_preferences();
+    }
+
+    fn sort_preserving_selection(&mut self) {
+        // Sorting only permutes this snapshot; paths identify its unchanged
+        // entries without cloning file metadata or reading/hydrating content.
+        let positions: HashMap<_, _> = self
+            .selection
+            .selected_set()
+            .iter()
+            .copied()
+            .chain(self.selection.primary())
+            .chain(self.selection.anchor())
+            .chain(self.renaming)
+            .filter_map(|index| {
+                self.entries
+                    .get(index)
+                    .map(|entry| (entry.path.clone(), index))
+            })
+            .collect();
+        sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        let remapped: HashMap<_, _> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(new, entry)| positions.get(&entry.path).map(|old| (*old, new)))
+            .collect();
+        self.selection
+            .remap_indices(|old| remapped.get(&old).copied());
+        self.retain_shown_selection();
+        self.renaming = self.renaming.and_then(|old| remapped.get(&old).copied());
+        self.rename_rect.set(None);
+        // A previous click's row cannot be used for double-click detection
+        // after reordering: that row may now contain a different file.
+        self.last_click = None;
     }
     pub fn set_view_mode(&mut self, m: ViewMode) {
         if self.view_mode == m {
@@ -3215,6 +3491,7 @@ impl FileExplorerWidget {
             FileCommand::MoveSelection { index, extend } => {
                 if index < self.displayed_entries().len() {
                     self.selection.move_to(index, extend);
+                    self.retain_shown_selection();
                     true
                 } else {
                     false
@@ -3241,9 +3518,9 @@ impl FileExplorerWidget {
                     .filter(|entry| {
                         entry.availability.as_ref().is_some_and(|availability| {
                             if keep_offline {
-                                availability.policy != crate::model::AvailabilityPolicy::Pinned
+                                availability.policy != fs_protocol::AvailabilityPolicy::Pinned
                             } else {
-                                availability.policy == crate::model::AvailabilityPolicy::Pinned
+                                availability.policy == fs_protocol::AvailabilityPolicy::Pinned
                                     && !availability.policy_inherited
                             }
                         })
@@ -3260,7 +3537,7 @@ impl FileExplorerWidget {
                 }
                 let mut failures = Vec::new();
                 for path in &paths {
-                    if let Err(error) = xattr::set(path, crate::model::PIN_XATTR, value) {
+                    if let Err(error) = xattr::set(path, fs_protocol::PIN_XATTR, value) {
                         failures.push(format!("{}: {error}", path.display()));
                     }
                 }
@@ -3268,12 +3545,12 @@ impl FileExplorerWidget {
                     self.status = Some(if value == b"pinned" {
                         t_args(
                             "files-keeping-offline",
-                            &[arg("count", fluent_count(paths.len()))],
+                            &[arg("count", i64_of_usize(paths.len()))],
                         )
                     } else {
                         t_args(
                             "files-using-automatic",
-                            &[arg("count", fluent_count(paths.len()))],
+                            &[arg("count", i64_of_usize(paths.len()))],
                         )
                     });
                 } else {
@@ -3295,14 +3572,14 @@ impl FileExplorerWidget {
                     .filter(|entry| {
                         !entry.is_dir
                             && entry.availability.as_ref().is_some_and(|availability| {
-                                availability.policy == crate::model::AvailabilityPolicy::Automatic
+                                availability.policy == fs_protocol::AvailabilityPolicy::Automatic
                                     && !availability.policy_inherited
                                     && availability.transfer.phase
-                                        == crate::model::TransferPhase::Idle
+                                        == fs_protocol::TransferPhase::Idle
                                     && matches!(
                                         availability.residency,
-                                        crate::model::Residency::Partial { .. }
-                                            | crate::model::Residency::Resident { .. }
+                                        fs_protocol::Residency::Partial { .. }
+                                            | fs_protocol::Residency::Resident { .. }
                                     )
                             })
                     })
@@ -3312,7 +3589,7 @@ impl FileExplorerWidget {
                 let mut safety_refusals = Vec::new();
                 for path in &paths {
                     if let Err(error) =
-                        xattr::set(path, crate::model::AVAILABILITY_CONTROL_XATTR, b"evict")
+                        xattr::set(path, fs_protocol::AVAILABILITY_CONTROL_XATTR, b"evict")
                     {
                         if xattr::ErrorCode::of(&error) == Some(xattr::ErrorCode::Busy) {
                             safety_refusals.push(path.clone());
@@ -3326,7 +3603,7 @@ impl FileExplorerWidget {
                 } else if failures.is_empty() && safety_refusals.is_empty() {
                     t_args(
                         "files-freeing-local-space",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     )
                 } else if failures.is_empty() {
                     t("files-eviction-needs-confirmation")
@@ -3338,11 +3615,10 @@ impl FileExplorerWidget {
                 });
                 if !safety_refusals.is_empty() {
                     self.show_collab_panel(CollabPanel {
-                        history: None,
                         title: t("files-destructive-eviction-title"),
                         summary: t_args(
                             "files-destructive-eviction-summary",
-                            &[arg("count", fluent_count(safety_refusals.len()))],
+                            &[arg("count", i64_of_usize(safety_refusals.len()))],
                         ),
                         lines: vec![
                             t("files-destructive-eviction-no-replica"),
@@ -3360,7 +3636,7 @@ impl FileExplorerWidget {
                 for path in &paths {
                     if let Err(error) = xattr::set(
                         path,
-                        crate::model::AVAILABILITY_CONTROL_XATTR,
+                        fs_protocol::AVAILABILITY_CONTROL_XATTR,
                         b"evict-destructive",
                     ) {
                         failures.push(format!("{}: {error}", path.display()));
@@ -3369,7 +3645,7 @@ impl FileExplorerWidget {
                 self.status = Some(if failures.is_empty() {
                     t_args(
                         "files-destructive-eviction-started",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     )
                 } else {
                     t_args(
@@ -3393,8 +3669,8 @@ impl FileExplorerWidget {
                         entry.availability.as_ref().is_some_and(|availability| {
                             !matches!(
                                 availability.residency,
-                                crate::model::Residency::Resident { .. }
-                            ) && availability.transfer.phase == crate::model::TransferPhase::Idle
+                                fs_protocol::Residency::Resident { .. }
+                            ) && availability.transfer.phase == fs_protocol::TransferPhase::Idle
                         })
                     })
                     .map(|entry| entry.path.clone())
@@ -3402,7 +3678,7 @@ impl FileExplorerWidget {
                 let mut failures = Vec::new();
                 for path in &paths {
                     if let Err(error) =
-                        xattr::set(path, crate::model::AVAILABILITY_CONTROL_XATTR, b"retry")
+                        xattr::set(path, fs_protocol::AVAILABILITY_CONTROL_XATTR, b"retry")
                     {
                         failures.push(format!("{}: {error}", path.display()));
                     }
@@ -3412,7 +3688,7 @@ impl FileExplorerWidget {
                 } else if failures.is_empty() {
                     t_args(
                         "files-retrying-transfers",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     )
                 } else {
                     t_args("files-retry-failed", &[arg("errors", failures.join("; "))])
@@ -3515,17 +3791,17 @@ impl FileExplorerWidget {
                     }
                     if let Some(availability) = &entry.availability {
                         let residency = match availability.residency {
-                            crate::model::Residency::NotResident => {
+                            fs_protocol::Residency::NotResident => {
                                 t("files-residency-metadata-only")
                             }
-                            crate::model::Residency::Partial { resident_bytes } => t_args(
+                            fs_protocol::Residency::Partial { resident_bytes } => t_args(
                                 "files-residency-partly-local",
                                 &[arg(
                                     "bytes",
                                     i64::try_from(resident_bytes).unwrap_or(i64::MAX),
                                 )],
                             ),
-                            crate::model::Residency::Resident { bytes } => t_args(
+                            fs_protocol::Residency::Resident { bytes } => t_args(
                                 "files-residency-local",
                                 &[arg("bytes", i64::try_from(bytes).unwrap_or(i64::MAX))],
                             ),
@@ -3538,7 +3814,7 @@ impl FileExplorerWidget {
                     if let Some(share) = &entry.share {
                         lines.push(t_args(
                             "files-property-sharing",
-                            &[arg("count", fluent_count(share.active_grants()))],
+                            &[arg("count", i64_of_usize(share.active_grants()))],
                         ));
                     }
                     if let Some(history) = &entry.history {
@@ -3549,12 +3825,11 @@ impl FileExplorerWidget {
                                     "versions",
                                     i64::try_from(history.total_versions).unwrap_or(i64::MAX),
                                 ),
-                                arg("conflicts", fluent_count(history.open_conflicts().count())),
+                                arg("conflicts", i64_of_usize(history.open_conflicts().count())),
                             ],
                         ));
                     }
                     self.show_collab_panel(CollabPanel {
-                        history: None,
                         title: t_args("files-properties-title", &[arg("name", entry.name)]),
                         summary: if entry.record_id.is_some() {
                             t("files-properties-collab-summary")
@@ -3576,39 +3851,41 @@ impl FileExplorerWidget {
                     && let Some(availability) = entry.availability
                 {
                     let residency = match availability.residency {
-                        crate::model::Residency::NotResident => t("files-not-stored"),
-                        crate::model::Residency::Partial { resident_bytes } => t_args(
+                        fs_protocol::Residency::NotResident => t("files-not-stored"),
+                        fs_protocol::Residency::Partial { resident_bytes } => t_args(
                             "files-partly-stored",
                             &[arg(
                                 "bytes",
                                 i64::try_from(resident_bytes).unwrap_or(i64::MAX),
                             )],
                         ),
-                        crate::model::Residency::Resident { bytes } => t_args(
+                        fs_protocol::Residency::Resident { bytes } => t_args(
                             "files-stored",
                             &[arg("bytes", i64::try_from(bytes).unwrap_or(i64::MAX))],
                         ),
                     };
                     let policy = match (availability.policy, availability.policy_inherited) {
-                        (crate::model::AvailabilityPolicy::Pinned, true) => {
+                        (fs_protocol::AvailabilityPolicy::Pinned, true) => {
                             t("files-kept-offline-parent")
                         }
-                        (crate::model::AvailabilityPolicy::Pinned, false) => {
-                            t("files-kept-offline")
-                        }
-                        (crate::model::AvailabilityPolicy::Automatic, _) => {
+                        (fs_protocol::AvailabilityPolicy::Pinned, false) => t("files-kept-offline"),
+                        (fs_protocol::AvailabilityPolicy::Automatic, _) => {
                             t("files-automatic-storage")
                         }
                     };
                     let replicas = match availability.replicas {
-                        crate::model::ReplicaEvidence::Unknown => t("files-replica-unverified"),
-                        crate::model::ReplicaEvidence::Known { reachable, durable } => t_args(
-                            "files-replica-counts",
-                            &[
-                                arg("reachable", i64::from(reachable)),
-                                arg("durable", i64::from(durable)),
-                            ],
-                        ),
+                        fs_protocol::ProjectedReplicaEvidence::Unknown => {
+                            t("files-replica-unverified")
+                        }
+                        fs_protocol::ProjectedReplicaEvidence::Known { reachable, durable } => {
+                            t_args(
+                                "files-replica-counts",
+                                &[
+                                    arg("reachable", i64::from(reachable)),
+                                    arg("durable", i64::from(durable)),
+                                ],
+                            )
+                        }
                     };
                     let transfer = availability.transfer.last_error.clone().unwrap_or_else(|| {
                         t_args(
@@ -3620,7 +3897,6 @@ impl FileExplorerWidget {
                         )
                     });
                     self.show_collab_panel(CollabPanel {
-                        history: None,
                         title: t_args("files-availability-title", &[arg("name", entry.name)]),
                         summary: residency,
                         lines: vec![policy, replicas, transfer],
@@ -3654,7 +3930,7 @@ impl FileExplorerWidget {
                 self.spawn_share(async move {
                     crate::sharing::create_one_use_view_link(
                         &socket,
-                        collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
+                        fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record_id)),
                     )
                     .await
                     .map(crate::sharing::ShareActionResult::LinkCreated)
@@ -3682,7 +3958,7 @@ impl FileExplorerWidget {
                     return true;
                 };
                 let display = self.trusted_humans.display_name_or_fingerprint(&person);
-                let recipient_devices: Vec<collab_types::Ed25519PublicKey> = self
+                let recipient_devices: Vec<fs_protocol::Ed25519PublicKey> = self
                     .trusted_humans
                     .human(&person)
                     .map(|human| human.devices.iter().map(|device| device.device).collect())
@@ -3699,10 +3975,10 @@ impl FileExplorerWidget {
                 self.spawn_share(async move {
                     crate::sharing::create_named_share(
                         &socket,
-                        collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
+                        fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record_id)),
                         person,
                         recipient_devices,
-                        collab_types::FilePermission::View,
+                        fs_protocol::FilePermission::View,
                         None,
                     )
                     .await
@@ -3735,7 +4011,7 @@ impl FileExplorerWidget {
                 self.spawn_share(async move {
                     crate::sharing::create_share(
                         &socket,
-                        collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
+                        fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record_id)),
                         request,
                     )
                     .await
@@ -3783,8 +4059,7 @@ impl FileExplorerWidget {
                         let mut lines = Vec::new();
                         for grant in &share.grants {
                             let (subject, devices) = match grant.subject {
-                                crate::model::ShareSubject::Person { person } => {
-                                    let person = collab_types::Ed25519PublicKey::from_bytes(person);
+                                fs_protocol::ShareSubjectProjection::Person { person } => {
                                     self.trusted_humans.human(&person).map_or_else(
                                         || {
                                             (
@@ -3823,13 +4098,13 @@ impl FileExplorerWidget {
                                         },
                                     )
                                 }
-                                crate::model::ShareSubject::BearerLink => {
+                                fs_protocol::ShareSubjectProjection::BearerLink => {
                                     (t("files-anyone-link"), Vec::new())
                                 }
                             };
                             let permission = match grant.permission {
-                                crate::model::FilePermission::View => t("files-can-view"),
-                                crate::model::FilePermission::Edit => t("files-can-edit"),
+                                fs_protocol::FilePermission::View => t("files-can-view"),
+                                fs_protocol::FilePermission::Edit => t("files-can-edit"),
                             };
                             let status = grant_status_label(grant.status);
                             let expiry = grant.expires_at_ms.map_or_else(
@@ -3855,11 +4130,10 @@ impl FileExplorerWidget {
                         lines
                     };
                     self.show_collab_panel(CollabPanel {
-                        history: None,
                         title: t_args("files-sharing-title", &[arg("name", entry.name)]),
                         summary: t_args(
                             "files-sharing-summary",
-                            &[arg("count", fluent_count(active))],
+                            &[arg("count", i64_of_usize(active))],
                         ),
                         lines,
                         action: None,
@@ -3885,28 +4159,39 @@ impl FileExplorerWidget {
             } => {
                 let selected = self.displayed_entries().iter().find_map(|entry| {
                     let history = entry.history.as_ref()?;
-                    if history.record_id != record_id {
+                    if history.record_id.0.to_string() != record_id {
                         return None;
                     }
                     history
                         .versions
                         .iter()
-                        .find(|version| version.id == version_id.0.to_string())
+                        .find(|version| version.id == version_id)
                         .cloned()
                         .map(|version| (version, entry.path.clone()))
                 });
+                let authors = self.trusted_humans.history_authors();
                 let entry = selected.map(|(version, path)| {
-                    let person = collab_types::Ed25519PublicKey::from_bytes(version.actor.person);
-                    let person_label = self.trusted_humans.display_name_or_fingerprint(&person);
-                    let identity = short_fingerprint(&version.actor.person);
-                    let action = t(version.provenance_key());
+                    let person = version.actor.person;
+                    let identity = short_fingerprint(&version.actor.person.0);
+                    // The device that signed the version names who wrote it,
+                    // as the file's History does: an agent's own device reads
+                    // as the agent, on behalf of its person.
+                    let author = authors
+                        .resolve_file_actor(&version.actor.person.0, &version.actor.device.0)
+                        .unwrap_or_else(|| {
+                            ui::widget::HistoryAuthor::new(
+                                self.trusted_humans.display_name_or_fingerprint(&person),
+                                ui::history_source::stable_hue(&identity),
+                                identity.clone(),
+                            )
+                        });
+                    let action = t(crate::model::provenance_key(&version.provenance));
                     let resource_label = path
                         .file_name()
                         .and_then(|name| name.to_str())
                         .unwrap_or("File")
                         .to_string();
                     let context = ui::tilo_actions::ActionContext::for_resource(
-                        action.clone(),
                         record_id.clone(),
                         "files.entry",
                         resource_label.clone(),
@@ -3914,23 +4199,19 @@ impl FileExplorerWidget {
                     .with_app("so.tilo.file-explorer", "Files")
                     .with_facet(ui::tilo_actions::ActionFacet::new(
                         "version",
-                        version.id.clone(),
+                        version.id.0.to_string(),
                     ));
                     ui::widget::HistoryEntry {
                         id: ui::widget::HistoryEntryId(*version_id.0.as_bytes()),
-                        author: ui::widget::HistoryAuthor::new(
-                            person_label,
-                            ui::history_source::stable_hue(&identity),
-                            identity,
-                        ),
+                        author,
                         // This is a signed immutable checkpoint, not a shell
                         // CRDT operation the generic Revert affordance can undo.
-                        op_class: collab_types::OpClass::Compaction,
-                        artifact_kind: collab_types::ArtifactKind::File,
+                        entry_kind: ui::widget::EntryKind::Compaction,
+                        artifact_kind: ui::widget::ArtifactKind::File,
                         timestamp: UNIX_EPOCH
                             .checked_add(Duration::from_millis(version.timestamp_ms))
                             .unwrap_or(UNIX_EPOCH),
-                        summary: format!("{action} · {resource_label}"),
+                        summary: format!("{action}: {resource_label}"),
                         text_delta: None,
                         diff_payload: None,
                         redaction: None,
@@ -3971,7 +4252,6 @@ impl FileExplorerWidget {
                 // before publishing, so reopening an old menu can never commit
                 // a merge whose members or base have changed.
                 self.show_collab_panel(CollabPanel {
-                    history: None,
                     title: t_args("files-merge-review-title", &[arg("name", entry.name)]),
                     summary: t("files-merge-review-checking"),
                     lines: vec![
@@ -4004,12 +4284,12 @@ impl FileExplorerWidget {
                     return true;
                 };
                 let verb = match strategy {
-                    collab_types::ConflictStrategy::KeepCurrent => t("files-keeping-current"),
-                    collab_types::ConflictStrategy::UseOther => t("files-applying-other"),
-                    collab_types::ConflictStrategy::KeepBoth => {
-                        conflict_strategy_label(collab_types::ConflictStrategy::KeepBoth)
+                    fs_protocol::ConflictStrategy::KeepCurrent => t("files-keeping-current"),
+                    fs_protocol::ConflictStrategy::UseOther => t("files-applying-other"),
+                    fs_protocol::ConflictStrategy::KeepBoth => {
+                        conflict_strategy_label(fs_protocol::ConflictStrategy::KeepBoth)
                     }
-                    collab_types::ConflictStrategy::Merge => t("files-merging-versions"),
+                    fs_protocol::ConflictStrategy::Merge => t("files-merging-versions"),
                 };
                 self.history_pending_path = Some(entry.path.clone());
                 self.history_pending_success = Some(t("files-conflict-resolved-signed"));
@@ -4057,6 +4337,8 @@ impl FileExplorerWidget {
             }
             FileCommand::SelectAll => {
                 self.selection.select_all(self.displayed_entries().len());
+                self.retain_shown_selection();
+                self.last_click = None;
                 true
             }
             FileCommand::OpenTerminal => {
@@ -4082,14 +4364,18 @@ impl FileExplorerWidget {
             }
             FileCommand::Delete => self.apply_delete(),
             FileCommand::UndoLastTrash => self.apply_undo_last_trash(),
-            FileCommand::RestoreFromTrash => self.apply_restore_from_trash(),
+            FileCommand::RestoreFromTrash => self.request_restore_from_trash(),
             FileCommand::EmptyTrash => self.request_empty_trash_confirmation(),
             FileCommand::Copy => self.apply_copy(),
             FileCommand::Cut => self.apply_cut(),
             FileCommand::Paste => {
-                if !self.clipboard.is_empty() {
+                if self.can_paste_clipboard() {
                     self.perform(crate::effects::FilesEffect::Paste);
                 }
+                true
+            }
+            FileCommand::RecoverClipboardTransfers => {
+                self.perform(crate::effects::FilesEffect::RecoverClipboardTransfers);
                 true
             }
             FileCommand::ExtractHere => self.apply_extract_here(),
@@ -4175,6 +4461,9 @@ impl FileExplorerWidget {
             }
             FileCommand::RevealInFolder(path) => self.apply_reveal_in_folder(&path),
             FileCommand::ForgetRecent(path) => self.apply_forget_recent(&path),
+            FileCommand::ShowRemoteAccount(id) | FileCommand::RecheckRemoteAccount(id) => {
+                self.show_remote_account(&id)
+            }
             FileCommand::NewFromTemplate(template) => self.apply_new_from_template(&template),
             FileCommand::ArmDrag { path, is_dir, at } => self.apply_arm_drag(path, is_dir, at),
             FileCommand::BeginDrag { path, is_dir } => self.apply_begin_drag(path, is_dir),
@@ -4205,7 +4494,6 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::SetSortOrder(order) => self.apply_set_sort_order(order),
-            FileCommand::OpenFavoriteMenu(path) => self.apply_open_favorite_menu(path),
         }
     }
 
@@ -4214,6 +4502,7 @@ impl FileExplorerWidget {
     fn apply_click(&mut self, index: usize, ctrl: bool, shift: bool) -> bool {
         if ctrl || shift {
             self.selection.apply_click(index, ctrl, shift);
+            self.retain_shown_selection();
             self.last_click = None;
         } else {
             // Capture a multi-selection the press lands inside *before*
@@ -4247,6 +4536,7 @@ impl FileExplorerWidget {
             // Right-press on empty space clears the selection.
             None => self.selection.clear(),
         }
+        self.retain_shown_selection();
         self.last_click = None;
         true
     }
@@ -4268,20 +4558,23 @@ impl FileExplorerWidget {
     /// Trash) first ask before permanently purging it.
     fn apply_delete(&mut self) -> bool {
         let paths = self.selected_paths();
+        if paths.iter().any(|path| self.is_native_trash_entry(path)) {
+            self.status = Some(t("files-native-trash-delete-unavailable"));
+            return true;
+        }
         if !paths.is_empty() {
             if self.is_trash_view() {
                 // Already in the Trash — a second delete is irreversible.
                 // Hold the exact paths in the modal action so a changed
                 // selection cannot silently change what gets destroyed.
                 self.show_collab_panel(CollabPanel {
-                    history: None,
                     title: t_args(
                         "files-permanent-delete-title",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     ),
                     summary: t_args(
                         "files-permanent-delete-summary",
-                        &[arg("count", fluent_count(paths.len()))],
+                        &[arg("count", i64_of_usize(paths.len()))],
                     ),
                     lines: vec![t("files-permanent-delete-loss")],
                     action: Some(CollabPanelAction::PermanentDelete(paths)),
@@ -4320,13 +4613,17 @@ impl FileExplorerWidget {
 
     /// Carry out a previously confirmed permanent deletion from Trash.
     fn apply_permanent_delete(&mut self, paths: &[PathBuf]) -> bool {
+        if paths.iter().any(|path| self.is_native_trash_entry(path)) {
+            self.status = Some(t("files-native-trash-delete-unavailable"));
+            return true;
+        }
         self.last_trash_undo = None;
         match fileops::purge_entries(paths) {
             Ok(n) => {
                 self.refresh();
                 self.status = Some(t_args(
                     "files-permanently-deleted",
-                    &[arg("count", fluent_count(n))],
+                    &[arg("count", i64_of_usize(n))],
                 ));
             }
             Err(e) => {
@@ -4338,6 +4635,27 @@ impl FileExplorerWidget {
 
     /// `FileCommand::RestoreFromTrash` — restore the selection to its
     /// original location.
+    fn is_native_trash_entry(&self, path: &Path) -> bool {
+        self.hosted_clipboard()
+            && host_fs::trash::user_trash_dir()
+                .is_some_and(|root| path.parent() == Some(root.as_path()))
+    }
+
+    fn request_restore_from_trash(&mut self) -> bool {
+        let paths = self.selected_paths();
+        if paths.iter().any(|path| self.is_native_trash_entry(path)) {
+            let [path] = paths.as_slice() else {
+                self.status = Some(t("files-native-restore-select-one"));
+                return true;
+            };
+            self.perform(crate::effects::FilesEffect::Restore {
+                entry: crate::search_provider::entry_resource_id(path),
+            });
+            return true;
+        }
+        self.apply_restore_from_trash()
+    }
+
     fn apply_restore_from_trash(&mut self) -> bool {
         self.last_trash_undo = None;
         let paths = self.selected_paths();
@@ -4345,7 +4663,7 @@ impl FileExplorerWidget {
             match fileops::restore_entries(&paths) {
                 Ok(n) => {
                     self.refresh();
-                    self.status = Some(t_args("files-restored", &[arg("count", fluent_count(n))]));
+                    self.status = Some(t_args("files-restored", &[arg("count", i64_of_usize(n))]));
                 }
                 Err(e) => {
                     self.status = Some(t_args("files-restore-failed", &[arg("error", e)]));
@@ -4359,16 +4677,19 @@ impl FileExplorerWidget {
     /// non-empty Trash. An already-empty Trash is safe feedback, not a
     /// confirmation flow.
     fn request_empty_trash_confirmation(&mut self) -> bool {
+        if self.has_native_trash_entries() {
+            self.status = Some(t("files-native-trash-delete-unavailable"));
+            return true;
+        }
         if self.entries.is_empty() {
             self.status = Some(t("files-trash-already-empty"));
             return true;
         }
         self.show_collab_panel(CollabPanel {
-            history: None,
             title: t("files-empty-trash-title"),
             summary: t_args(
                 "files-empty-trash-summary",
-                &[arg("count", fluent_count(self.entries.len()))],
+                &[arg("count", i64_of_usize(self.entries.len()))],
             ),
             lines: vec![t("files-permanent-delete-loss")],
             action: Some(CollabPanelAction::EmptyTrash),
@@ -4378,6 +4699,10 @@ impl FileExplorerWidget {
 
     /// Carry out a previously confirmed request to empty the Trash.
     fn perform_empty_trash(&mut self) -> bool {
+        if self.has_native_trash_entries() {
+            self.status = Some(t("files-native-trash-delete-unavailable"));
+            return true;
+        }
         self.last_trash_undo = None;
         match fileops::empty_trash() {
             Ok(n) => {
@@ -4385,7 +4710,7 @@ impl FileExplorerWidget {
                 self.status = Some(if n == 0 {
                     t("files-trash-already-empty")
                 } else {
-                    t_args("files-emptied-trash", &[arg("count", fluent_count(n))])
+                    t_args("files-emptied-trash", &[arg("count", i64_of_usize(n))])
                 });
             }
             Err(e) => {
@@ -4412,6 +4737,7 @@ impl FileExplorerWidget {
                 self.refresh();
                 if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
                     self.selection.select_only(i);
+                    self.retain_shown_selection();
                     self.begin_rename();
                 }
                 self.status = Some(t("files-created-file"));
@@ -4499,7 +4825,10 @@ impl FileExplorerWidget {
         if added {
             self.refresh_places_search();
             self.status = Some(t("files-added-favourite"));
-            self.dispatch(&crate::resource::FilesDocAction::AddBookmark { place, at: None });
+            self.submit(
+                crate::resource::FileExplorer::ADD_BOOKMARK
+                    .with(crate::resource::file_explorer::AddBookmark { place, at: None }),
+            );
         }
         true
     }
@@ -4513,9 +4842,7 @@ impl FileExplorerWidget {
         if removed {
             self.refresh_places_search();
             self.status = Some(t("files-removed-favourite"));
-            self.dispatch(&crate::resource::FilesDocAction::RemoveBookmark {
-                place: self.place_for(path),
-            });
+            self.submit(crate::resource::FileExplorer::REMOVE_BOOKMARK.with(self.place_for(path)));
         }
         true
     }
@@ -4538,10 +4865,13 @@ impl FileExplorerWidget {
             favorites::reorder(&mut favs.favorites, from, to);
         }
         self.refresh_places_search();
-        self.dispatch(&crate::resource::FilesDocAction::MoveBookmark {
-            place: self.place_for(&moved),
-            to,
-        });
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.submit(
+                crate::resource::FileExplorer::paths()
+                    .places
+                    .move_to(&crate::resource::bookmark_id(&self.place_for(&moved)), to),
+            );
+        }
         true
     }
 
@@ -4574,22 +4904,30 @@ impl FileExplorerWidget {
 
     /// `FileCommand::Copy` — copy the selection into the clipboard.
     fn apply_copy(&mut self) -> bool {
+        if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+            self.perform(crate::effects::FilesEffect::CopySelection);
+            return true;
+        }
         self.clipboard = self.selected_paths();
         self.clipboard_cut = false;
         self.status = Some(t_args(
             "files-copied",
-            &[arg("count", fluent_count(self.clipboard.len()))],
+            &[arg("count", i64_of_usize(self.clipboard.len()))],
         ));
         true
     }
 
     /// `FileCommand::Cut` — cut the selection into the clipboard.
     fn apply_cut(&mut self) -> bool {
+        if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
+            self.perform(crate::effects::FilesEffect::CutSelection);
+            return true;
+        }
         self.clipboard = self.selected_paths();
         self.clipboard_cut = true;
         self.status = Some(t_args(
             "files-cut",
-            &[arg("count", fluent_count(self.clipboard.len()))],
+            &[arg("count", i64_of_usize(self.clipboard.len()))],
         ));
         true
     }
@@ -4630,13 +4968,13 @@ impl FileExplorerWidget {
         self.status = Some(if failures.is_empty() {
             t_args(
                 "files-archive-extracted",
-                &[arg("count", fluent_count(count))],
+                &[arg("count", i64_of_usize(count))],
             )
         } else {
             t_args(
                 "files-archive-extracted-partial",
                 &[
-                    arg("count", fluent_count(count)),
+                    arg("count", i64_of_usize(count)),
                     arg("failures", failures.join("; ")),
                 ],
             )
@@ -4649,8 +4987,10 @@ impl FileExplorerWidget {
             return false;
         };
         self.selection.clear();
+        self.retain_shown_selection();
         if let Some(index) = self.entries.iter().position(|entry| entry.path == archive) {
             self.selection.select_only(index);
+            self.retain_shown_selection();
             return self.apply_extract_here();
         }
         let parent = archive.parent().unwrap_or(&self.current_path).to_path_buf();
@@ -4670,7 +5010,7 @@ impl FileExplorerWidget {
         self.status = Some(match crate::archive::extract(&archive, &destination) {
             Ok(entries) => t_args(
                 "files-archive-extracted",
-                &[arg("count", fluent_count(entries.len()))],
+                &[arg("count", i64_of_usize(entries.len()))],
             ),
             Err(error) => t_args(
                 "files-archive-extract-failed",
@@ -4758,14 +5098,6 @@ impl FileExplorerWidget {
         true
     }
 
-    /// `FileCommand::OpenFavoriteMenu` — remember the target; the
-    /// right-press handler opens the menu at the cursor once this event's
-    /// commands are drained.
-    fn apply_open_favorite_menu(&mut self, path: PathBuf) -> bool {
-        self.pending_fav_menu = Some(path);
-        false
-    }
-
     /// Set the zoom level (clamped) and persist it.
     fn set_zoom(&mut self, level: i32) {
         let level = config::clamp_zoom(level);
@@ -4796,18 +5128,6 @@ impl FileExplorerWidget {
         self.favs.clone()
     }
 
-    /// Open the right-click context menu at `at` (headless shots demo).
-    #[doc(hidden)]
-    pub fn debug_open_context_menu(&mut self, at: Point) {
-        self.open_context_menu(at);
-    }
-
-    /// Open the shared toolbar overflow menu (headless shots demo).
-    #[doc(hidden)]
-    pub fn debug_open_view_menu(&mut self) {
-        self.open_view_menu();
-    }
-
     /// Seed the local-only Trash Undo affordance for an offscreen review. The
     /// sentinel is deliberately not a real path, so headless rendering never
     /// mutates a user's Trash.
@@ -4826,22 +5146,6 @@ impl FileExplorerWidget {
         self.open_context_menu(at);
         let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, at.y + 66.0);
         self.open_templates_submenu(anchor);
-    }
-
-    /// Open the toolbar's actual ⋯ menu for an offscreen visual review. This
-    /// is intentionally separate from the pointer-context fixture above: the
-    /// two surfaces have different anchors and should never be conflated.
-    #[doc(hidden)]
-    pub fn debug_show_view_menu(&mut self) {
-        self.open_view_menu();
-    }
-
-    /// Begin an active favourite drag from `from` toward `to`, for a mid-drag
-    /// screenshot. Requires the sidebar to have been laid out first (so the
-    /// favourites band geometry is published).
-    #[doc(hidden)]
-    pub fn debug_begin_favorite_drag(&mut self, from: usize, to: usize) -> bool {
-        crate::places_sidebar::debug_begin_drag(&self.favs, from, to)
     }
 
     /// Open the places drawer over the file view (the narrow layout's
@@ -4863,13 +5167,13 @@ impl FileExplorerWidget {
     /// prove the file list is actually on screen.
     #[doc(hidden)]
     pub fn debug_content_rect(&self) -> vello::kurbo::Rect {
-        self.nav.overview_rect()
+        self.nav.geometry().content_column
     }
 
     /// The docked sidebar's resolved rect — the drag-to-pin drop target.
     #[doc(hidden)]
     pub fn debug_sidebar_rect(&self) -> vello::kurbo::Rect {
-        self.nav.sidebar_rect()
+        self.nav.geometry().sidebar_column
     }
 
     /// Whether a drag-to-pin is currently in flight (a folder is being carried
@@ -4929,11 +5233,12 @@ impl FileExplorerWidget {
         self.toolbar.up_button_rect()
     }
 
-    /// The responsive body's current mode (docked-wide vs push-narrow) — for
-    /// tests asserting the sidebar reflows with the window width.
+    /// Where the places list is (docked beside the file view, or a drawer
+    /// over it) — for tests asserting the sidebar reflows with the window
+    /// width.
     #[doc(hidden)]
-    pub fn debug_body_mode(&self) -> ShellMode {
-        self.nav.mode()
+    pub fn debug_body_mode(&self) -> SidebarPlacement {
+        self.nav.geometry().sidebar
     }
 
     /// Select the given displayed-entry indices (headless shots demo).
@@ -4947,6 +5252,7 @@ impl FileExplorerWidget {
                 self.selection.toggle(i);
             }
         }
+        self.retain_shown_selection();
         self.structure_dirty = true;
     }
 
@@ -4989,6 +5295,45 @@ impl FileExplorerWidget {
     pub fn stage_scenario(&mut self, scenario: Option<&str>) {
         let rect = self.rect;
         match scenario {
+            Some("selection-actions") => self.stage_published_selection(),
+            Some(name @ ("selection-sort" | "selection-sorted" | "selection-reversed")) => {
+                self.stage_sort_selection(name);
+            }
+            Some(name @ ("recent" | "recent-menu" | "recent-revealed" | "recent-forgotten")) => {
+                // Capture-only files from the prepared scratch home. Use the
+                // same Recent setting and commands as the live window.
+                let home = self.current_path.clone();
+                let target = home.join("Quarterly report.pdf");
+                self.note_recent(&home.join("Notes.txt"), crate::recent::RecentUse::Opened);
+                self.note_recent(&target, crate::recent::RecentUse::Opened);
+                self.navigate(crate::recent::location());
+                let row = crate::search_provider::entry_resource_id(&target);
+                match name {
+                    "recent-menu" => {
+                        self.debug_select(&[0]);
+                        self.open_context_menu(Point::new(
+                            rect.x0 + rect.width() * 0.45,
+                            rect.y0 + rect.height() * 0.34,
+                        ));
+                        self.context_menu.focus_first_action();
+                    }
+                    "recent-revealed" => {
+                        if let Err(error) = self
+                            .run_effect(crate::effects::FilesEffect::RevealRecent { entry: row })
+                        {
+                            self.set_external_status(error);
+                        }
+                    }
+                    "recent-forgotten" => {
+                        if let Err(error) = self
+                            .run_effect(crate::effects::FilesEffect::ForgetRecent { entry: row })
+                        {
+                            self.set_external_status(error);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Some("grid") => self.set_view_mode(ViewMode::Grid),
             Some("thumbnails" | "thumbnails-fs") => {
                 self.set_view_mode(ViewMode::Grid);
@@ -5051,11 +5396,77 @@ impl FileExplorerWidget {
         }
     }
 
+    fn stage_sort_selection(&mut self, name: &str) {
+        self.set_view_mode(ViewMode::List);
+        self.set_sort_by(SortBy::Name);
+        self.apply_set_sort_order(SortOrder::Ascending);
+        for filename in ["Notes.txt", "Recipes.md"] {
+            if let Some(index) = self.entries.iter().position(|entry| entry.name == filename) {
+                self.apply_command(FileCommand::Click {
+                    index,
+                    ctrl: true,
+                    shift: false,
+                });
+            }
+        }
+        if name != "selection-sort" {
+            self.set_sort_by(SortBy::Size);
+        }
+        if name == "selection-reversed" {
+            self.apply_set_sort_order(SortOrder::Descending);
+        }
+    }
+
+    fn stage_published_selection(&mut self) {
+        use crate::effects::FilesEffect;
+        let entries = self
+            .displayed_entries()
+            .iter()
+            .filter(|entry| matches!(entry.name.as_str(), "Notes.txt" | "Recipes.md"))
+            .map(Self::entry_resource_id)
+            .collect();
+        for effect in [
+            FilesEffect::List,
+            FilesEffect::SortName,
+            FilesEffect::SortAscending,
+            FilesEffect::SelectEntries { entries },
+            FilesEffect::SortSize,
+        ] {
+            if let Err(error) = self.run_effect(effect) {
+                self.set_external_status(error);
+                return;
+            }
+        }
+    }
+
     /// The filesystem work that cannot be done now, as this window's state
     /// says.
     pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
         use crate::effects::FilesEffect;
         let mut statuses = Vec::new();
+        if !self.hosted_clipboard() {
+            statuses.push(Self::clipboard_unavailable(FilesEffect::CLIPBOARD_STATUS));
+            statuses.push(Self::clipboard_unavailable(
+                FilesEffect::RECOVER_CLIPBOARD_TRANSFERS,
+            ));
+            if matches!(self.services, FileServices::Hosted(_)) {
+                statuses.extend([
+                    Self::clipboard_unavailable(FilesEffect::COPY_SELECTION),
+                    Self::clipboard_unavailable(FilesEffect::CUT_SELECTION),
+                    Self::clipboard_unavailable(FilesEffect::COPY),
+                    Self::clipboard_unavailable(FilesEffect::CUT),
+                ]);
+            }
+        }
+        if self.selected_paths().is_empty() {
+            for id in [FilesEffect::COPY_SELECTION, FilesEffect::CUT_SELECTION] {
+                statuses.push(ui::framework::EffectStatus::unavailable(
+                    id,
+                    "selection_empty",
+                    t("files-selection-empty"),
+                ));
+            }
+        }
         if self.last_trash_undo.is_none() {
             statuses.push(ui::framework::EffectStatus::unavailable(
                 FilesEffect::UNDO_TRASH,
@@ -5108,11 +5519,8 @@ impl FileExplorerWidget {
             .primary()
             .and_then(|index| self.displayed_entries().get(index).cloned());
         let selected = entry.and_then(|entry| {
-            let id = entry
-                .history
-                .as_ref()
-                .and_then(|h| uuid::Uuid::parse_str(&h.record_id).ok())?;
-            Some((entry.path, collab_types::FileRecordId(id), entry.name))
+            let id = entry.history.as_ref()?.record_id;
+            Some((entry.path, id, entry.name))
         });
         let identity = selected
             .as_ref()
@@ -5121,7 +5529,13 @@ impl FileExplorerWidget {
             return;
         }
         let target = selected.and_then(|(path, record, label)| {
-            crate::framework_history::target(&path, record, label).ok()
+            crate::framework_history::target(
+                &path,
+                record,
+                label,
+                self.trusted_humans.history_authors(),
+            )
+            .ok()
         });
         self.framework_history_binding = if target.is_some() { identity } else { None };
         self.framework_history.set_target(target);
@@ -5169,8 +5583,12 @@ impl FileExplorerWidget {
     fn finish_drag(&mut self) {
         crate::external_drag::end();
         let target = self.folder_target_at(self.last_cursor);
-        let over_sidebar =
-            self.nav.is_sidebar_open() && self.nav.sidebar_rect().contains(self.last_cursor);
+        let over_sidebar = self.nav.is_sidebar_open()
+            && self
+                .nav
+                .geometry()
+                .sidebar_column
+                .contains(self.last_cursor);
         let paths = std::mem::take(&mut self.drag_paths);
         let origin = self.pin_drag.take();
         self.drag_hover = None;
@@ -5258,7 +5676,7 @@ impl FileExplorerWidget {
         };
         match self.queue(op, OpFollowUp::Paste { count, cut }) {
             Some(outcome) => outcome
-                .error()
+                .reason()
                 .map_or(Ok(()), |error| Err(format!("paste failed: {error}"))),
             None => Ok(()),
         }
@@ -5379,7 +5797,6 @@ impl FileExplorerWidget {
             Some(DocumentOpenRoute::Unavailable) => {
                 Some(Err("Document opening is unavailable".into()))
             }
-            Some(DocumentOpenRoute::Immediate(open)) => Some(open.borrow_mut()(&path)),
             Some(DocumentOpenRoute::Deferred(capability)) => {
                 Some(self.request_deferred_document_open(path.clone(), capability))
             }
@@ -5478,24 +5895,10 @@ impl FileExplorerWidget {
     }
 
     /// Paint the app background and lazily build the composition if it is
-    /// missing (a tab activated after boot never ran `build_layout`). Shared
-    /// by [`Widget::draw`] and [`Widget::draw_with_presence`].
-    fn paint_background(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        theme: &ui::Theme,
-    ) {
-        // Paint the app background so the explorer is self-contained (light
-        // text reads on it, and it looks right over any compositor surface).
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-        // The chrome + body panes are normally built inside `build_layout`.
+    /// missing (a tab activated after boot never ran `build_layout`).
+    fn paint_background(&mut self, theme: &ui::Theme) {
+        // The window ground is the framework's; this only notices that the
+        // chrome + body panes are normally built inside `build_layout`.
         // When this widget is hosted inside a shell's TabBar (e.g. the Files
         // tab on a Tilo shell that boots Notes-active), `build_layout` doesn't
         // run for inactive tabs — so switching to Files later produces a widget
@@ -5509,10 +5912,10 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Draw a centred empty-state in the file area when the current directory
-    /// has no entries (and isn't showing an error) — so an empty folder, and
-    /// especially an empty Trash, reads as intentionally empty rather than
-    /// broken. A muted icon over a short, context-aware line.
+    /// Draw the shared empty state in the file area when the current
+    /// directory has no entries (and isn't showing an error) — so an empty
+    /// folder, and especially an empty Trash, reads as intentionally empty
+    /// rather than broken. A muted icon over one context-aware sentence.
     fn draw_empty_state(
         &self,
         scene: &mut vello::Scene,
@@ -5523,214 +5926,152 @@ impl FileExplorerWidget {
         if !self.entries.is_empty() || self.error.is_some() || self.is_loading {
             return;
         }
-        let rect = self.nav.overview_rect();
+        let rect = self.content_body_rect();
         if rect.width() <= 1.0 || rect.height() <= 1.0 {
             return;
         }
-        let (icon, msg) = if self.is_recent_view() {
-            (ui::icons::Icon::History, self.empty_state_message())
+        let icon = if self.is_recent_view() {
+            ui::icons::Icon::History
         } else if self.is_trash_view() {
-            (ui::icons::Icon::Trash2, self.empty_state_message())
+            ui::icons::Icon::Trash2
         } else {
-            (ui::icons::Icon::Folder, self.empty_state_message())
+            ui::icons::Icon::Folder
         };
-        let tokens = &theme.tokens;
-        let dim = tokens.colors.text_dim;
-        let icon_px = 40.0_f64;
-        // The theme token is already text-scaled and the renderer scales
-        // again, so hand it the nominal size (one scale rule, see
-        // `crate::text_layout`).
-        let text_scale = text_renderer.text_scale();
-        let size = tokens.typography.scale.base / text_scale;
-        let (tw, _) = text_renderer.measure(&msg, size, None);
-        let cx = rect.x0 + rect.width() / 2.0;
-        let cy = rect.y0 + rect.height() / 2.0;
-        // Icon centred above the line.
-        let ix = cx - icon_px / 2.0;
-        let iy = cy - icon_px - 10.0;
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            vello::kurbo::Rect::new(ix, iy, ix + icon_px, iy + icon_px),
-            icon,
-            dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let ty = crate::text_layout::centered_text_y(
-            cy,
-            f64::from(size) * f64::from(text_scale),
-            size,
-            text_scale,
-        );
-        text_renderer.draw_text(
-            scene,
-            &msg,
-            size,
-            dim,
-            transform * vello::kurbo::Affine::translate((cx - f64::from(tw) / 2.0, ty)),
-            None,
+        let message = self.empty_state_message();
+        EmptyState::paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            rect,
+            &EmptyStateContent {
+                icon: Some(icon),
+                ..EmptyStateContent::new(&message)
+            },
+            Point::new(-1.0, -1.0),
         );
     }
 
-    fn collab_panel_rect(&self) -> vello::kurbo::Rect {
-        let line_count = self
-            .collab_panel
-            .as_ref()
-            .map_or(1, |panel| panel.lines.len().clamp(1, 14));
-        let width = self.rect.width().clamp(320.0, 680.0) - 32.0;
-        let action_height = if self
-            .collab_panel
-            .as_ref()
-            .is_some_and(|panel| panel.action.is_some())
-        {
-            58.0
-        } else {
-            0.0
-        };
-        let height = (116.0 + line_count as f64 * 27.0 + action_height)
-            .min(self.rect.height() - 32.0)
-            .max(180.0);
-        let x0 = self.rect.x0 + (self.rect.width() - width) / 2.0;
-        let y0 = self.rect.y0 + (self.rect.height() - height) / 2.0;
-        vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
+    /// The sheet's spec: the title, a close control and, when the panel
+    /// proposes something, its one action.
+    fn collab_panel_spec<'a>(
+        title: &'a str,
+        actions: &'a [ui::widget::ModalAction<'a>],
+        body_height: f64,
+    ) -> ui::widget::ModalSpec<'a> {
+        ui::widget::ModalSpec::new(title)
+            .actions(actions)
+            .body_height(body_height)
     }
 
-    fn collab_panel_action_rect(&self) -> Option<vello::kurbo::Rect> {
-        self.collab_panel.as_ref()?.action.as_ref()?;
-        let panel = self.collab_panel_rect();
-        Some(vello::kurbo::Rect::new(
-            panel.x0 + 24.0,
-            panel.y1 - 50.0,
-            panel.x1 - 24.0,
-            panel.y1 - 14.0,
-        ))
+    /// Height the sheet's body wants at `width`: the summary, then each line
+    /// in its own wrapped row.
+    fn collab_panel_body_height(
+        panel: &CollabPanel,
+        tr: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        width: f32,
+    ) -> f64 {
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let style = theme.text(ui::TextRole::Body);
+        let mut height = 0.0;
+        let mut lines = panel.lines.iter().take(COLLAB_PANEL_MAX_LINES).peekable();
+        if !panel.summary.is_empty() {
+            let (_, summary) = tr.measure_style(&panel.summary, Some(width), &style);
+            height += f64::from(summary);
+            if lines.peek().is_some() {
+                height += f64::from(rhythm.group);
+            }
+        }
+        for (index, line) in lines.enumerate() {
+            if index > 0 {
+                height += f64::from(rhythm.related);
+            }
+            let (_, h) = tr.measure_style(line, Some(width), &style);
+            height += f64::from(h);
+        }
+        height
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "modal painting keeps scene, transform, text and theme together while deriving geometry and hit targets in one pass"
-    )]
-    // Drawing the modal as one routine keeps geometry, focus, and action hit
-    // targets derived from the same bounded panel state.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "modal painting derives geometry, focus, and hit targets from one bounded panel state"
-    )]
+    /// Draw the sheet: the shared modal over its scrim, the panel's summary
+    /// and lines as its body, and the one action in its footer. Records the
+    /// sheet's layout so the event path hit-tests what was painted.
     fn draw_collab_panel(
-        &self,
+        &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
         text_renderer: &mut ui::text_render::TextRenderer,
         theme: &ui::Theme,
     ) {
-        use ui::ColorCompat;
-        use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
-        use vello::peniko::Fill;
+        use ui::widget::modal_dialog;
         let Some(panel) = &self.collab_panel else {
+            self.collab_layout = None;
             return;
         };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base.with_alpha_factor(0.72),
-            None,
-            &self.rect,
+        let action_label = self.collab_panel_action_label();
+        let hovered = |rect: vello::kurbo::Rect| rect.contains(self.last_cursor);
+        let emphasis_safe = matches!(
+            panel.action.as_ref(),
+            Some(
+                CollabPanelAction::ApplySafeMerge { .. }
+                    | CollabPanelAction::ChooseNearbyDestination { .. }
+                    | CollabPanelAction::RecheckAccount(_)
+                    | CollabPanelAction::RetryNearby { .. }
+            )
         );
-        let rect = self.collab_panel_rect();
-        // Panel role (HIG §9.1/§9.5): the sheet is the same material as every
-        // other floating Panel — `panel_ground` under the derived Panel
-        // border, with its elevation — not a raised slot stroked with a
-        // declared border that vanishes on the dark preset.
-        let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-        let shape = RoundedRect::from_rect(rect, radius);
-        ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::panel_ground(theme),
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(rect, radius),
-        );
-        let x = rect.x0 + 24.0;
-        text_renderer.draw_text(
-            scene,
-            &panel.title,
-            theme.tokens.typography.scale.lg,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((x, rect.y0 + 23.0)),
-            Some((rect.width() - 80.0) as f32),
-        );
-        text_renderer.draw_text(
-            scene,
-            &panel.summary,
-            theme.tokens.typography.scale.sm,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((x, rect.y0 + 53.0)),
-            Some((rect.width() - 48.0) as f32),
-        );
+        let mut actions = Vec::new();
+        if let Some(label) = action_label.as_deref() {
+            actions.push(if emphasis_safe {
+                modal_dialog::ModalAction::primary(label)
+            } else {
+                modal_dialog::ModalAction::danger(label)
+            });
+        }
+        let body_width = modal_dialog::body_width(self.rect, modal_dialog::MODAL_MAX_WIDTH, theme);
+        let body_height =
+            Self::collab_panel_body_height(panel, text_renderer, theme, body_width as f32);
+        let spec = Self::collab_panel_spec(&panel.title, &actions, body_height);
+        let layout = modal_dialog::layout(self.rect, &spec, text_renderer, theme);
+        // Hover on the footer action and the close control follows the pointer.
+        if let (Some(action), Some(rect)) = (actions.first_mut(), layout.actions.first()) {
+            action.hovered = hovered(*rect);
+        }
+        let spec = Self::collab_panel_spec(&panel.title, &actions, body_height)
+            .close_hovered(layout.close.is_some_and(hovered));
+        modal_dialog::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
 
-        let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let mut y = rect.y0 + 88.0;
-        for line in panel.lines.iter().take(14) {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &Rect::new(x, y + 5.0, x + 5.0, y + 10.0),
-            );
-            text_renderer.draw_text(
+        let (ink, dim) = modal_dialog::ink(theme);
+        let body = layout.body;
+        let width = body.width() as f32;
+        let text_style = theme.text(ui::TextRole::Body);
+        let mut y = body.y0;
+        if !panel.summary.is_empty() {
+            let (_, summary_h) =
+                text_renderer.measure_style(&panel.summary, Some(width), &text_style);
+            text_renderer.draw_style(
                 scene,
-                line,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y)),
-                Some((rect.width() - 62.0) as f32),
+                &panel.summary,
+                dim,
+                transform * vello::kurbo::Affine::translate((body.x0, y)),
+                Some(width),
+                &text_style,
             );
-            y += 27.0;
-            if y > rect.y1 - 26.0 {
+            y += f64::from(summary_h) + f64::from(theme.tokens.spacing.rhythm.group);
+        }
+        for line in panel.lines.iter().take(COLLAB_PANEL_MAX_LINES) {
+            let (_, line_h) = text_renderer.measure_style(line, Some(width), &text_style);
+            if y + f64::from(line_h) > body.y1 + 0.5 {
                 break;
             }
+            text_renderer.draw_style(
+                scene,
+                line,
+                ink,
+                transform * vello::kurbo::Affine::translate((body.x0, y)),
+                Some(width),
+                &text_style,
+            );
+            y += f64::from(line_h) + f64::from(theme.tokens.spacing.rhythm.related);
         }
-        if let Some(action_rect) = self.collab_panel_action_rect()
-            && let Some(label) = self.collab_panel_action_label()
-        {
-            // The shared button face (HIG §8): the outlined destructive style
-            // for the irreversible actions, the primary for a safe merge.
-            let face = ui::widget::ButtonFace::new(action_rect, &label)
-                .text_size(theme.tokens.typography.scale.sm)
-                .wrap_label();
-            let face = match panel.action.as_ref() {
-                Some(
-                    CollabPanelAction::ApplySafeMerge { .. }
-                    | CollabPanelAction::ChooseNearbyDestination { .. }
-                    | CollabPanelAction::RetryNearby { .. },
-                ) => face.primary(),
-                _ => face.danger_outline(),
-            };
-            ui::widget::Button::paint(scene, transform, text_renderer, theme, &face);
-        }
-        let close_rect = Rect::new(
-            rect.x1 - 42.0,
-            rect.y0 + 12.0,
-            rect.x1 - 14.0,
-            rect.y0 + 40.0,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            close_rect,
-            ui::icons::Icon::X,
-            theme.tokens.colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
+        modal_dialog::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
+        self.collab_layout = Some(layout);
     }
 
     /// Draw the in-place rename editor over the row/cell being renamed. The
@@ -5756,17 +6097,15 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Draw the accent highlight over the folder (or Up affordance) a live drag
-    /// is hovering, so the drop target is unmistakable. Drawn under the ghost.
+    /// Mark the folder (or Up affordance) a live drag is hovering, so the drop
+    /// target is unmistakable: your colour ringed around its row. Drawn under
+    /// the ghost.
     fn draw_drop_highlight(
         &self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
         theme: &ui::Theme,
     ) {
-        use ui::ColorCompat;
-        use vello::kurbo::{Rect, RoundedRect, Stroke};
-        use vello::peniko::Fill;
         let Some(hover) = &self.drag_hover else {
             return;
         };
@@ -5784,24 +6123,18 @@ impl FileExplorerWidget {
                     .flatten()
             });
         let Some(rect) = rect else { return };
-        // A live drop target is state the user did not choose and must notice
-        // (HIG §9.4), so the accent is the right ink here. The face matches
-        // the row highlight's insets so the two never disagree by a pixel.
-        let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let (ix, iy) = (
             f64::from(theme.tokens.spacing.s2),
             f64::from(theme.tokens.spacing.s1) / 2.0,
         );
-        let inset = Rect::new(rect.x0 + ix, rect.y0 + iy, rect.x1 - ix, rect.y1 - iy);
-        let shape = RoundedRect::from_rect(inset, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
+        let face = vello::kurbo::Rect::new(rect.x0 + ix, rect.y0 + iy, rect.x1 - ix, rect.y1 - iy);
+        ui::widget::paint_focus_ring(
+            scene,
             transform,
-            accent.with_alpha_factor(0.25),
-            None,
-            &shape,
+            face,
+            f64::from(theme.tokens.radii.item),
+            theme,
         );
-        scene.stroke(&Stroke::new(2.0), transform, accent, None, &shape);
     }
 
     /// Draw the floating ghost that tracks the cursor during a drag, so it reads
@@ -5819,7 +6152,7 @@ impl FileExplorerWidget {
         let count = self.drag_paths.len().max(1);
         let glyph = ui::icons::icon_for_path(path, path.is_dir());
         let label = if count > 1 {
-            t_args("files-drag-items", &[arg("count", fluent_count(count))])
+            t_args("files-drag-items", &[arg("count", i64_of_usize(count))])
         } else {
             path.file_name().map_or_else(
                 || path.display().to_string(),
@@ -5827,46 +6160,39 @@ impl FileExplorerWidget {
             )
         };
         let tokens = &theme.tokens;
-        let text_scale = text_renderer.text_scale();
-        let size = tokens.typography.scale.base / text_scale;
-        let (tw, th) = text_renderer.measure(&label, size, None);
-        let (pad, icon, gap) = (10.0_f64, 16.0_f64, 8.0_f64);
+        let style = theme.text(ui::TextRole::Label);
+        let (tw, th) = text_renderer.measure_style(&label, None, &style);
+        let pad = f64::from(tokens.spacing.s3);
+        let icon = f64::from(tokens.metrics.icon_sm);
+        let gap = f64::from(tokens.spacing.s2);
         // The pill grows with its measured label so enlarged text stays inside it.
-        let h = (f64::from(th) + 2.0 * f64::from(tokens.spacing.s1)).max(30.0);
+        let h = (f64::from(th) + 2.0 * f64::from(tokens.spacing.s2))
+            .max(ui::widget::ControlSize::Small.height(theme));
         let w = pad + icon + gap + f64::from(tw) + pad;
         // Offset from the cursor so the ghost sits beside, not under, the pointer.
-        let x0 = self.last_cursor.x + 14.0;
-        let y0 = self.last_cursor.y + 6.0;
+        let x0 = self.last_cursor.x + f64::from(tokens.spacing.s3);
+        let y0 = self.last_cursor.y + f64::from(tokens.spacing.s2);
         let rect = Rect::new(x0, y0, x0 + w, y0 + h);
-        // The ghost is genuinely off the surface (HIG §9.3): it casts the
-        // Panel shadow and its edge derives from its own raised face.
-        let radius = f64::from(tokens.radii.md);
-        ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-        ui::surface::card(
-            scene,
-            transform,
-            rect,
-            radius,
-            tokens.colors.surfaces.raised,
-        );
-        let accent = tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+        // The ghost is genuinely off the surface: it floats, with the
+        // floating shadow and material.
+        ui::widget::floating_surface::paint(scene, transform, rect, theme);
         let iy = y0 + (h - icon) / 2.0;
         ui::icons::draw_icon(
             scene,
             transform,
             Rect::new(x0 + pad, iy, x0 + pad + icon, iy + icon),
             glyph,
-            accent,
+            tokens.colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let ty = crate::text_layout::centered_text_y(y0, h, size, text_scale);
-        text_renderer.draw_text(
+        let ty = ui::text_metrics::centered_text_top(y0, h, f64::from(th));
+        text_renderer.draw_style(
             scene,
             &label,
-            size,
             tokens.colors.text_primary,
             transform * Affine::translate((x0 + pad + icon + gap, ty)),
             None,
+            &style,
         );
     }
 
@@ -5949,19 +6275,6 @@ impl CommandRunner for SystemRunner {
         crate::model::fixture_io_guard::ambient_io("SystemRunner::open_default");
         ui::portal::LaunchRequest::open(path).send()
     }
-}
-
-/// Whether `path` is an editable document, per qdoc's codec registry.
-///
-/// A presentation fact only — it drives the document glyph in the icon
-/// column. It deliberately says nothing about *which* app opens the file:
-/// that is the desktop's answer, from the manifests of what is installed,
-/// and the explorer asks for it rather than deciding it (see
-/// [`set_document_opener`]).
-pub fn is_document(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(tilo_doc_codecs::is_supported_ext)
 }
 
 /// Presentation-side lower bound for the daemon's fail-closed merge codecs.
@@ -6101,7 +6414,7 @@ impl FileExplorerWidget {
     )]
     fn context_menu_spec(&self, templates: &[PathBuf]) -> Vec<(String, Option<FileCommand>)> {
         let has_sel = !self.selection.is_empty();
-        let can_paste = !self.clipboard.is_empty();
+        let can_paste = self.can_paste_clipboard();
         let has_templates = !templates.is_empty();
         let in_trash = self.is_trash_view();
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
@@ -6127,7 +6440,7 @@ impl FileExplorerWidget {
                 t("files-archive-extract"),
                 Some(FileCommand::ExtractCurrentArchive),
             ));
-            return spec;
+            return tidy_menu(spec);
         }
 
         // The Trash is a restore/purge surface, not an editing one: offer Open
@@ -6141,17 +6454,29 @@ impl FileExplorerWidget {
                 ));
                 spec.push((String::new(), None));
                 spec.push((t("files-menu-restore"), Some(FileCommand::RestoreFromTrash)));
-                spec.push((
-                    t("files-menu-delete-permanently"),
-                    Some(FileCommand::Delete),
-                ));
+                if !self
+                    .selected_paths()
+                    .iter()
+                    .any(|path| self.is_native_trash_entry(path))
+                {
+                    spec.push((
+                        t("files-menu-delete-permanently"),
+                        Some(FileCommand::Delete),
+                    ));
+                }
             }
             spec.push((String::new(), None));
-            spec.push((t("files-menu-empty-trash"), Some(FileCommand::EmptyTrash)));
-            return spec;
+            if !self.has_native_trash_entries() {
+                spec.push((t("files-menu-empty-trash"), Some(FileCommand::EmptyTrash)));
+            }
+            return tidy_menu(spec);
         }
 
+        // A file's menu is about the file: open it, change it, organise it,
+        // collaborate on it. What belongs to the folder (new items, sorting,
+        // hidden files, a terminal) is the menu of the folder's empty space.
         if has_sel {
+            let single = self.selection.selected().len() == 1;
             spec.push((
                 t("files-menu-open"),
                 self.selection.primary().map(FileCommand::Activate),
@@ -6159,15 +6484,7 @@ impl FileExplorerWidget {
             if self.open_with_available() {
                 spec.push((t("files-menu-open-with"), Some(FileCommand::OpenWithMenu)));
             }
-            spec.push((t("files-menu-rename"), Some(FileCommand::Rename)));
-            spec.push((String::new(), None));
-            spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
-            spec.push((t("files-menu-copy"), Some(FileCommand::Copy)));
-            if self.selection.selected().len() == 1 {
-                spec.push((
-                    t("files-menu-send-nearby"),
-                    Some(FileCommand::OpenNearbySend),
-                ));
+            if single {
                 if !self
                     .shortcut_menu
                     .offered_on(&self.selected_entry_identities())
@@ -6178,7 +6495,20 @@ impl FileExplorerWidget {
                         Some(FileCommand::OpenShortcutsMenu),
                     ));
                 }
+                spec.push((
+                    t("files-menu-send-nearby"),
+                    Some(FileCommand::OpenNearbySend),
+                ));
             }
+            spec.push((String::new(), None));
+            spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
+            spec.push((t("files-menu-copy"), Some(FileCommand::Copy)));
+            if can_paste {
+                spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
+            }
+            spec.push((t("files-menu-rename"), Some(FileCommand::Rename)));
+            spec.push((t("files-menu-move-trash"), Some(FileCommand::Delete)));
+            spec.push((String::new(), None));
             let displayed = self.displayed_entries();
             if self.selection.selected().iter().any(|index| {
                 displayed
@@ -6194,6 +6524,13 @@ impl FileExplorerWidget {
                 t("files-archive-compress"),
                 Some(FileCommand::CompressSelection),
             ));
+            // Favourites: add the single selected folder.
+            if let Some(dir) = self.single_selected_dir() {
+                spec.push((
+                    t("files-menu-add-favourite"),
+                    Some(FileCommand::AddFavorite(dir)),
+                ));
+            }
             let collaborative: Vec<_> = self
                 .selection
                 .selected()
@@ -6204,12 +6541,12 @@ impl FileExplorerWidget {
             if !collaborative.is_empty() {
                 let any_automatic = collaborative.iter().any(|entry| {
                     entry.availability.as_ref().is_some_and(|availability| {
-                        availability.policy == crate::model::AvailabilityPolicy::Automatic
+                        availability.policy == fs_protocol::AvailabilityPolicy::Automatic
                     })
                 });
                 let any_directly_pinned = collaborative.iter().any(|entry| {
                     entry.availability.as_ref().is_some_and(|availability| {
-                        availability.policy == crate::model::AvailabilityPolicy::Pinned
+                        availability.policy == fs_protocol::AvailabilityPolicy::Pinned
                             && !availability.policy_inherited
                     })
                 });
@@ -6235,13 +6572,13 @@ impl FileExplorerWidget {
                 let any_releasable = collaborative.iter().any(|entry| {
                     !entry.is_dir
                         && entry.availability.as_ref().is_some_and(|availability| {
-                            availability.policy == crate::model::AvailabilityPolicy::Automatic
+                            availability.policy == fs_protocol::AvailabilityPolicy::Automatic
                                 && !availability.policy_inherited
-                                && availability.transfer.phase == crate::model::TransferPhase::Idle
+                                && availability.transfer.phase == fs_protocol::TransferPhase::Idle
                                 && matches!(
                                     availability.residency,
-                                    crate::model::Residency::Partial { .. }
-                                        | crate::model::Residency::Resident { .. }
+                                    fs_protocol::Residency::Partial { .. }
+                                        | fs_protocol::Residency::Resident { .. }
                                 )
                         })
                 });
@@ -6255,8 +6592,8 @@ impl FileExplorerWidget {
                     entry.availability.as_ref().is_some_and(|availability| {
                         !matches!(
                             availability.residency,
-                            crate::model::Residency::Resident { .. }
-                        ) && availability.transfer.phase == crate::model::TransferPhase::Idle
+                            fs_protocol::Residency::Resident { .. }
+                        ) && availability.transfer.phase == fs_protocol::TransferPhase::Idle
                     })
                 });
                 if any_retryable {
@@ -6298,8 +6635,8 @@ impl FileExplorerWidget {
                             }),
                         ));
                         for permission in [
-                            collab_types::FilePermission::View,
-                            collab_types::FilePermission::Edit,
+                            fs_protocol::FilePermission::View,
+                            fs_protocol::FilePermission::Edit,
                         ] {
                             for expiry in [
                                 crate::sharing::ShareExpiryChoice::Day,
@@ -6340,8 +6677,8 @@ impl FileExplorerWidget {
                         Some(FileCommand::CreateOneTimeShareLink),
                     ));
                     for permission in [
-                        collab_types::FilePermission::View,
-                        collab_types::FilePermission::Edit,
+                        fs_protocol::FilePermission::View,
+                        fs_protocol::FilePermission::Edit,
                     ] {
                         for expiry in [
                             crate::sharing::ShareExpiryChoice::Day,
@@ -6399,17 +6736,16 @@ impl FileExplorerWidget {
                     for grant in share
                         .grants
                         .iter()
-                        .filter(|grant| grant.status == crate::model::ShareGrantStatus::Active)
+                        .filter(|grant| grant.status == fs_protocol::ShareGrantStatus::Active)
                     {
-                        let Ok(grant_id) = uuid::Uuid::parse_str(&grant.grant_id) else {
-                            continue;
-                        };
+                        let grant_id = grant.grant_id;
                         let subject = match grant.subject {
-                            crate::model::ShareSubject::Person { person } => {
-                                let person = collab_types::Ed25519PublicKey::from_bytes(person);
+                            fs_protocol::ShareSubjectProjection::Person { person } => {
                                 self.trusted_humans.display_name_or_fingerprint(&person)
                             }
-                            crate::model::ShareSubject::BearerLink => t("files-shared-link"),
+                            fs_protocol::ShareSubjectProjection::BearerLink => {
+                                t("files-shared-link")
+                            }
                         };
                         spec.push((
                             t_args("files-revoke-subject", &[arg("subject", subject)]),
@@ -6422,9 +6758,7 @@ impl FileExplorerWidget {
                     if let Some(version_id) = entry.history.as_ref().and_then(|history| {
                         history.versions.iter().rev().find_map(|version| {
                             (!history.heads.contains(&version.id) && version.content_hash.is_some())
-                                .then(|| uuid::Uuid::parse_str(&version.id).ok())
-                                .flatten()
-                                .map(collab_types::FileVersionId)
+                                .then_some(version.id)
                         })
                     }) {
                         spec.push((
@@ -6440,15 +6774,15 @@ impl FileExplorerWidget {
                                 .versions
                                 .iter()
                                 .filter_map(|id| {
-                                    history.versions.iter().find(|version| {
-                                        uuid::Uuid::parse_str(&version.id).ok() == Some(id.0)
-                                    })
+                                    history.versions.iter().find(|version| version.id == *id)
                                 })
                                 .collect::<Vec<_>>();
                             let current = members
                                 .iter()
                                 .copied()
-                                .filter(|version| version.content_hash == Some(current_hash))
+                                .filter(|version| {
+                                    version.content_hash.map(|hash| hash.0) == Some(current_hash)
+                                })
                                 .collect::<Vec<_>>();
                             // An exact unique hash match is the strongest fact
                             // this bounded V1 projection exposes. The daemon
@@ -6460,11 +6794,7 @@ impl FileExplorerWidget {
                             let Some(current_version) = current.first() else {
                                 continue;
                             };
-                            let current_projection_id = current_version.id.as_str();
-                            let Ok(current_id) = uuid::Uuid::parse_str(current_projection_id)
-                            else {
-                                continue;
-                            };
+                            let current_id = current_version.id;
                             spec.push((String::new(), None));
                             spec.push((
                                 t_args(
@@ -6473,57 +6803,55 @@ impl FileExplorerWidget {
                                 ),
                                 Some(FileCommand::ResolveConflict {
                                     conflict_id: conflict.id,
-                                    strategy: collab_types::ConflictStrategy::KeepCurrent,
-                                    version_id: collab_types::FileVersionId(current_id),
+                                    strategy: fs_protocol::ConflictStrategy::KeepCurrent,
+                                    version_id: current_id,
                                 }),
                             ));
                             for other in members
                                 .into_iter()
-                                .filter(|version| version.id != current_projection_id)
+                                .filter(|version| version.id != current_id)
                             {
-                                let Ok(other_id) = uuid::Uuid::parse_str(&other.id) else {
-                                    continue;
-                                };
+                                let other_id = other.id;
                                 spec.push((
                                     t_args(
                                         "files-resolve-use-other",
                                         &[
                                             arg("conflict", short_uuid(conflict.id)),
-                                            arg("device", short_fingerprint(&other.actor.device)),
+                                            arg("device", short_fingerprint(&other.actor.device.0)),
                                         ],
                                     ),
                                     Some(FileCommand::ResolveConflict {
                                         conflict_id: conflict.id,
-                                        strategy: collab_types::ConflictStrategy::UseOther,
-                                        version_id: collab_types::FileVersionId(other_id),
+                                        strategy: fs_protocol::ConflictStrategy::UseOther,
+                                        version_id: other_id,
                                     }),
                                 ));
                                 if merge_supported_path(&entry.path) {
                                     spec.push((
                                         format!(
-                                            "{} · {}",
+                                            "{} ({})",
                                             t("files-merge-review-menu"),
-                                            short_fingerprint(&other.actor.device),
+                                            short_fingerprint(&other.actor.device.0),
                                         ),
                                         Some(FileCommand::ReviewConflictMerge {
                                             conflict_id: conflict.id,
-                                            version_id: collab_types::FileVersionId(other_id),
-                                            other_device: other.actor.device,
+                                            version_id: other_id,
+                                            other_device: other.actor.device.0,
                                         }),
                                     ));
                                 }
                                 spec.push((
                                     format!(
-                                        "{} · {}",
+                                        "{} ({})",
                                         conflict_strategy_label(
-                                            collab_types::ConflictStrategy::KeepBoth,
+                                            fs_protocol::ConflictStrategy::KeepBoth,
                                         ),
-                                        short_fingerprint(&other.actor.device),
+                                        short_fingerprint(&other.actor.device.0),
                                     ),
                                     Some(FileCommand::ResolveConflict {
                                         conflict_id: conflict.id,
-                                        strategy: collab_types::ConflictStrategy::KeepBoth,
-                                        version_id: collab_types::FileVersionId(other_id),
+                                        strategy: fs_protocol::ConflictStrategy::KeepBoth,
+                                        version_id: other_id,
                                     }),
                                 ));
                             }
@@ -6531,42 +6859,49 @@ impl FileExplorerWidget {
                     }
                 }
             }
+            return tidy_menu(spec);
         }
-        if can_paste {
-            spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
-        }
-        spec.push((String::new(), None));
+
+        // The folder's own menu (nothing is selected).
         spec.push((t("files-menu-new-folder"), Some(FileCommand::NewFolder)));
-        // Only offer "New File ▸" when the Templates dir actually has files.
+        // Only offer "New file…" when the Templates dir actually has files.
         if has_templates {
             spec.push((
                 t("files-menu-new-file"),
                 Some(FileCommand::OpenTemplatesMenu),
             ));
         }
-        if has_sel {
-            spec.push((String::new(), None));
-            spec.push((t("files-menu-move-trash"), Some(FileCommand::Delete)));
+        if can_paste {
+            spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
         }
-
-        // Favourites: add the single selected folder, or remove the current
-        // directory when it is a (non-home) favourite.
-        if let Some(dir) = self.single_selected_dir() {
-            spec.push((String::new(), None));
+        if self.hosted_clipboard() {
             spec.push((
-                t("files-menu-add-favourite"),
-                Some(FileCommand::AddFavorite(dir)),
+                t("files-menu-recover-transfers"),
+                Some(FileCommand::RecoverClipboardTransfers),
             ));
-        } else if self.current_is_removable_favourite() {
-            spec.push((String::new(), None));
+        }
+        spec.push((
+            t("files-menu-open-terminal"),
+            Some(FileCommand::OpenTerminal),
+        ));
+        // Remove the current directory from the favourites when it is one.
+        if self.current_is_removable_favourite() {
             spec.push((
                 t("files-menu-remove-favourite"),
                 Some(FileCommand::RemoveFavorite(self.current_path.clone())),
             ));
         }
-
-        // View section: show/hide hidden files.
+        // How the folder is shown. Sorting lives here too: a grid has no
+        // column header, and "Sort by type" is reached only from this menu.
         spec.push((String::new(), None));
+        for (label, by) in [
+            ("files-menu-sort-name", SortBy::Name),
+            ("files-menu-sort-size", SortBy::Size),
+            ("files-menu-sort-type", SortBy::Type),
+            ("files-menu-sort-date", SortBy::Modified),
+        ] {
+            spec.push((t(label), Some(FileCommand::SetSort(by))));
+        }
         spec.push((
             if self.show_hidden {
                 t("files-menu-hide-hidden")
@@ -6575,43 +6910,25 @@ impl FileExplorerWidget {
             },
             Some(FileCommand::ToggleHidden),
         ));
-
-        // Sort section — the only place the sort *key* can be changed in grid
-        // mode (which has no clickable column header) and the only way to
-        // reach "Sort by Type" at all.
-        spec.push((String::new(), None));
-        spec.push((
-            t("files-menu-sort-name"),
-            Some(FileCommand::SetSort(SortBy::Name)),
-        ));
-        spec.push((
-            t("files-menu-sort-size"),
-            Some(FileCommand::SetSort(SortBy::Size)),
-        ));
-        spec.push((
-            t("files-menu-sort-type"),
-            Some(FileCommand::SetSort(SortBy::Type)),
-        ));
-        spec.push((
-            t("files-menu-sort-date"),
-            Some(FileCommand::SetSort(SortBy::Modified)),
-        ));
-        spec.push((String::new(), None));
-        spec.push((
-            t("files-menu-open-terminal"),
-            Some(FileCommand::OpenTerminal),
-        ));
-        spec
+        tidy_menu(spec)
     }
 
-    /// Whether the current directory is the Trash, which swaps the delete
-    /// affordances for Restore / Empty / permanent-delete.
+    /// Host entries cannot be purged through private-data Trash controls.
+    fn has_native_trash_entries(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| self.is_native_trash_entry(&entry.path))
+    }
+
+    /// Whether this view offers Trash operations rather than editing.
     fn is_trash_view(&self) -> bool {
         fileops::is_trash_dir(&self.current_path)
+            || (self.hosted_clipboard()
+                && host_fs::trash::user_trash_dir().as_ref() == Some(&self.current_path))
     }
 
     /// The path of the single selected entry when it is a directory (drives the
-    /// "Add to Favourites" action).
+    /// "Add to Favorites" action).
     fn single_selected_dir(&self) -> Option<PathBuf> {
         let disp = self.displayed_entries();
         let sel = self.selection.selected();
@@ -6648,6 +6965,16 @@ impl FileExplorerWidget {
             .any(|f| !f.is_home && f.path == self.current_path)
     }
 
+    /// The check a menu row for `command` shows: the sort that is in force,
+    /// and whether hidden files are shown. Other commands are not state.
+    fn command_checked(&self, command: Option<&FileCommand>) -> Option<bool> {
+        match command? {
+            FileCommand::SetSort(by) => Some(self.sort_by == *by),
+            FileCommand::ToggleHidden => Some(self.show_hidden),
+            _ => None,
+        }
+    }
+
     fn open_context_menu(&mut self, at: Point) {
         self.submenu.close();
         let spec = self.context_menu_spec(&self.available_templates());
@@ -6660,7 +6987,11 @@ impl FileExplorerWidget {
             } else {
                 // No-op action — the app maps the clicked index to a command
                 // itself (the sink is !Send, so it can't live in the action).
-                menu.push(MenuItem::action(label, || {}));
+                let item = MenuItem::action(label, || {});
+                menu.push(match self.command_checked(cmd.as_ref()) {
+                    Some(checked) => item.with_checked(checked),
+                    None => item,
+                });
                 cmds.push(cmd);
             }
         }
@@ -6830,6 +7161,11 @@ impl FileExplorerWidget {
         flip_y: f64,
     ) {
         self.submenu.close();
+        let spec = tidy_groups(
+            spec,
+            |item| item.0.is_empty() && item.1.is_none(),
+            || (String::new(), None, None),
+        );
         let mut menu = self.new_overlay_menu();
         let mut cmds = Vec::with_capacity(spec.len());
         for (label, cmd, checked) in spec {
@@ -6838,7 +7174,7 @@ impl FileExplorerWidget {
                 cmds.push(None);
             } else {
                 menu.push(match checked {
-                    Some(checked) => MenuItem::checked_action(label, checked, || {}),
+                    Some(checked) => MenuItem::action(label, || {}).with_checked(checked),
                     None => MenuItem::action(label, || {}),
                 });
                 cmds.push(cmd);
@@ -6905,7 +7241,9 @@ impl FileExplorerWidget {
                 Some(self.view_mode == ViewMode::Grid),
             ));
             spec.push((String::new(), None, None));
-            spec.push((t("files-sort-by"), Some(FileCommand::OpenSortMenu), None));
+            // The sort choices sit in this menu itself, each with a check,
+            // rather than behind one row that opens another menu.
+            spec.extend(self.sort_menu_spec(true));
             spec.push((String::new(), None, None));
         }
         if crate::archive::location(&self.current_path).is_some() {
@@ -6930,7 +7268,6 @@ impl FileExplorerWidget {
             ));
         }
         if self.last_trash_undo.is_some() {
-            spec.push((String::new(), None, None));
             spec.push((
                 t("files-undo-move-trash"),
                 Some(FileCommand::UndoLastTrash),
@@ -6943,15 +7280,13 @@ impl FileExplorerWidget {
             Some(FileCommand::ToggleHidden),
             Some(self.show_hidden),
         ));
-        if self.is_trash_view() {
-            spec.push((String::new(), None, None));
+        if self.is_trash_view() && !self.has_native_trash_entries() {
             spec.push((
                 t("files-menu-empty-trash"),
                 Some(FileCommand::EmptyTrash),
                 None,
             ));
         }
-        spec.push((String::new(), None, None));
         spec.push((
             t("files-menu-open-terminal"),
             Some(FileCommand::OpenTerminal),
@@ -6975,12 +7310,24 @@ impl FileExplorerWidget {
             .toolbar
             .sort_menu_rect()
             .map_or(anchor.y, |rect| rect.y0 - 2.0);
+        let spec = self.sort_menu_spec(false);
+        self.open_menu_right_aligned(spec, anchor, flip_y);
+    }
+
+    /// The sort key, then the direction, each with a check on the active
+    /// choice. Within another menu (`inline`) each key says what it sorts
+    /// ("Sort by name"); under the "Sort by" button the bare key is enough.
+    fn sort_menu_spec(&self, inline: bool) -> Vec<(String, Option<FileCommand>, Option<bool>)> {
         let mut spec: Vec<(String, Option<FileCommand>, Option<bool>)> = Vec::new();
+        let key = |bare: &str, inline_label: &str| t(if inline { inline_label } else { bare });
         for (label, by) in [
-            (t("files-sort-name"), SortBy::Name),
-            (t("files-sort-size"), SortBy::Size),
-            (t("files-sort-type"), SortBy::Type),
-            (t("files-sort-date"), SortBy::Modified),
+            (key("files-sort-name", "files-menu-sort-name"), SortBy::Name),
+            (key("files-sort-size", "files-menu-sort-size"), SortBy::Size),
+            (key("files-sort-type", "files-menu-sort-type"), SortBy::Type),
+            (
+                key("files-sort-date", "files-menu-sort-date"),
+                SortBy::Modified,
+            ),
         ] {
             spec.push((
                 label,
@@ -7000,49 +7347,7 @@ impl FileExplorerWidget {
             Some(FileCommand::SetSortOrder(SortOrder::Descending)),
             Some(!asc),
         ));
-        self.open_menu_right_aligned(spec, anchor, flip_y);
-    }
-
-    /// The right-click menu for a sidebar favourite `path`: open it, plus the
-    /// standard "Remove from Favourites" (suppressed for the pinned Home entry,
-    /// which cannot be removed). Anchored at the cursor like any context menu.
-    fn open_favorite_menu(&mut self, path: PathBuf, at: Point) {
-        let is_home = self
-            .favs
-            .borrow()
-            .favorites
-            .iter()
-            .any(|f| f.is_home && f.path == path);
-        let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
-        spec.push((
-            t("files-menu-open"),
-            Some(FileCommand::Navigate(path.clone())),
-        ));
-        if !is_home {
-            spec.push((String::new(), None));
-            spec.push((
-                t("files-menu-remove-favourite"),
-                Some(FileCommand::RemoveFavorite(path)),
-            ));
-        }
-        // A favourite menu opens at the cursor (left-anchored is fine — the
-        // sidebar sits at the window's left edge).
-        self.submenu.close();
-        let mut menu = self.new_overlay_menu();
-        let mut cmds = Vec::with_capacity(spec.len());
-        for (label, cmd) in spec {
-            if cmd.is_none() && label.is_empty() {
-                menu.push(MenuItem::separator());
-                cmds.push(None);
-            } else {
-                menu.push(MenuItem::action(label, || {}));
-                cmds.push(cmd);
-            }
-        }
-        menu.open_at([at.x as f32, at.y as f32]);
-        self.context_menu = menu;
-        self.menu_commands = cmds;
-        layout_menu_widget(&mut self.context_menu);
+        spec
     }
 
     /// If either menu is open, route a left-press to it. Returns true when the
@@ -7080,7 +7385,7 @@ impl FileExplorerWidget {
                 }
                 return true;
             }
-            if let Some(FileCommand::OpenWithMenu) = cmd {
+            if cmd == Some(FileCommand::OpenWithMenu) {
                 let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
                 self.open_open_with_submenu(anchor);
                 return true;
@@ -7133,13 +7438,13 @@ impl FileExplorerWidget {
         } else {
             self.menu_commands.get(index).cloned().flatten()
         };
-        if let Some(FileCommand::OpenTemplatesMenu) = command {
+        if command == Some(FileCommand::OpenTemplatesMenu) {
             let rect = self.context_menu.get_rect();
             self.open_templates_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if let Some(FileCommand::OpenShortcutsMenu) = command {
+        } else if command == Some(FileCommand::OpenShortcutsMenu) {
             let rect = self.context_menu.get_rect();
             self.open_shortcuts_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if let Some(FileCommand::OpenWithMenu) = command {
+        } else if command == Some(FileCommand::OpenWithMenu) {
             let rect = self.context_menu.get_rect();
             let row = self
                 .context_menu
@@ -7194,6 +7499,47 @@ impl FileExplorerWidget {
         clippy::needless_collect,
         reason = "collecting drops the RefCell borrow before the loop; apply_command can itself queue follow-up commands into the same self.cmds sink, and iterating the drain directly would hold the borrow_mut across that and panic"
     )]
+    /// What shows the row a search hit or an agent's `open` names: queued,
+    /// and opened before the next frame is laid out.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+        let opened = Rc::clone(&self.opened);
+        move |anchor| opened.borrow_mut().push(anchor.to_owned())
+    }
+
+    /// Show the row `anchor` names as its own open action does: a place
+    /// opens, a collaborative record is revealed, a remote account shows its
+    /// connection details.
+    ///
+    /// # Errors
+    /// The anchor names no row Files opens, or opening it failed.
+    pub(crate) fn open_anchor(&mut self, anchor: &str) -> Result<(), String> {
+        use crate::effects::FilesEffect;
+        let effect = if anchor.starts_with("files.place:") {
+            FilesEffect::OpenItem {
+                item: anchor.to_owned(),
+            }
+        } else if let Some(record) = anchor.strip_prefix("files.record:") {
+            FilesEffect::Reveal {
+                record: record.to_owned(),
+            }
+        } else if let Some(account) = crate::remote_accounts::account_of_resource(anchor) {
+            FilesEffect::AccountDetails { account }
+        } else {
+            return Err(format!("Files opens no `{anchor}`"));
+        };
+        self.run_effect(effect).map(drop)
+    }
+
+    fn drain_opened(&mut self) -> bool {
+        let opened: Vec<String> = self.opened.borrow_mut().drain(..).collect();
+        for anchor in &opened {
+            if let Err(error) = self.open_anchor(anchor) {
+                self.set_external_status(error);
+            }
+        }
+        !opened.is_empty()
+    }
+
     fn drain_commands(&mut self) -> bool {
         let queued: Vec<FileCommand> = self.cmds.borrow_mut().drain(..).collect();
         let mut dirty = false;
@@ -7315,7 +7661,7 @@ impl FileExplorerWidget {
         &mut self,
         path: PathBuf,
         conflict_id: uuid::Uuid,
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
     ) {
         self.merge_preflight_pending = Some((conflict_id, version_id));
         let result = Arc::clone(&self.merge_preflight_result);
@@ -7423,13 +7769,9 @@ impl FileExplorerWidget {
         let Ok(children) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
-        let (Some(&above_n), Some(&nav_n)) = (children.first(), children.get(1)) else {
+        let Some(&nav_n) = children.first() else {
             return;
         };
-        if !*ctx.handled {
-            self.toolbar
-                .handle_event(event, &mut ctx.reborrow(ctx.path, above_n));
-        }
         if !*ctx.handled {
             self.nav
                 .handle_event(event, &mut ctx.reborrow(ctx.path, nav_n));
@@ -7496,25 +7838,30 @@ impl FileExplorerWidget {
             Key::Named(NamedKey::ArrowDown) if len > 0 => {
                 let next = self.selection.primary().map_or(0, |i| (i + 1).min(len - 1));
                 self.selection.move_to(next, shift);
+                self.retain_shown_selection();
                 true
             }
             Key::Named(NamedKey::ArrowUp) if len > 0 => {
                 let next = self.selection.primary().map_or(0, |i| i.saturating_sub(1));
                 self.selection.move_to(next, shift);
+                self.retain_shown_selection();
                 true
             }
             Key::Named(NamedKey::Home) if len > 0 => {
                 self.selection.move_to(0, shift);
+                self.retain_shown_selection();
                 true
             }
             Key::Named(NamedKey::End) if len > 0 => {
                 self.selection.move_to(len - 1, shift);
+                self.retain_shown_selection();
                 true
             }
             // Escape clears the selection (when there is one); otherwise it is
             // left for the host so it never swallows a no-op.
             Key::Named(NamedKey::Escape) if !self.selection.is_empty() => {
                 self.selection.clear();
+                self.retain_shown_selection();
                 self.last_click = None;
                 true
             }
@@ -7534,6 +7881,7 @@ impl FileExplorerWidget {
             }
             Key::Character(s) if (s == "a" || s == "A") && ctrl => {
                 self.selection.select_all(len);
+                self.retain_shown_selection();
                 true
             }
             Key::Character(s) if (s == "c" || s == "C") && ctrl => {
@@ -7634,19 +7982,19 @@ impl FileExplorerWidget {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        if self.nav.mode() != ShellMode::Narrow || !self.nav.is_sidebar_open() {
+        if !self.places_drawer_open() {
             return false;
         }
         let Ok(children) = ctx.taffy.children(ctx.node_id) else {
             return false;
         };
-        let Some(&nav_node) = children.get(1) else {
+        let Some(&nav_node) = children.first() else {
             return false;
         };
         let path_before = self.current_path.clone();
         self.nav
             .handle_event(event, &mut ctx.reborrow(ctx.path, nav_node));
-        if self.drain_commands() {
+        if self.drain_commands() | self.drain_opened() {
             self.structure_dirty = true;
         }
         if self.current_path != path_before {
@@ -7726,12 +8074,29 @@ impl FileExplorerWidget {
             },
         );
         self.drain_commands();
-        // A right-press over a sidebar favourite pushes `OpenFavoriteMenu`,
-        // which the drain records here; open the favourite's own menu at the
-        // cursor rather than the file-view context menu.
-        if let Some(fav) = self.pending_fav_menu.take() {
-            self.open_favorite_menu(fav, self.last_cursor);
-        } else {
+        let place = self.places_context.borrow_mut().take();
+        if let Some((path, at)) = place {
+            let removable = self
+                .favs
+                .borrow()
+                .favorites
+                .iter()
+                .any(|favorite| favorite.path == path && !favorite.is_home);
+            let mut spec = vec![(
+                t("files-menu-open"),
+                Some(FileCommand::Navigate(path.clone())),
+                None,
+            )];
+            if removable {
+                spec.push((
+                    t("files-menu-remove-favourite"),
+                    Some(FileCommand::RemoveFavorite(path)),
+                    None,
+                ));
+            }
+            // Use the same shared, viewport-constrained menu as the toolbar.
+            self.open_menu_right_aligned(spec, at, at.y);
+        } else if !self.in_places_list(self.last_cursor) {
             self.open_context_menu(self.last_cursor);
         }
         *ctx.handled = true;
@@ -7867,7 +8232,8 @@ impl FileExplorerWidget {
         if self.drain_commands() {
             self.structure_dirty = true;
         }
-        if self.current_path != path_before && self.nav.mode() == ShellMode::Narrow {
+        // Going somewhere leaves the drawer that was open over the files.
+        if self.current_path != path_before && self.places_drawer_open() {
             self.nav.close_sidebar();
         }
     }
@@ -7906,9 +8272,9 @@ impl FileExplorerWidget {
 
     fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
         for transfer in self.nearby_send.transfers() {
-            if let Some(resource) = self.nearby_receiver_resource(transfer) {
-                folder.children.push(resource);
-            }
+            folder
+                .children
+                .push(self.nearby_receiver_resource(transfer));
         }
     }
 
@@ -7919,7 +8285,7 @@ impl FileExplorerWidget {
     fn nearby_receiver_resource(
         &self,
         transfer: &ui::collaboration::NearbyTransferStatus,
-    ) -> Option<Resource> {
+    ) -> Resource {
         use ui::collaboration::NearbyTransferPhase;
 
         let mut resource = Resource::new(
@@ -7930,6 +8296,15 @@ impl FileExplorerWidget {
             "files.nearby-transfer",
             transfer.name.clone(),
         );
+        let mut inspect = crate::effects::row_action(
+            &crate::effects::FilesEffect::InspectNearby {
+                transfer: transfer.handle,
+            },
+            "status",
+            t("files-nearby-status"),
+        );
+        inspect.description = Some(t("files-nearby-status-detail"));
+        resource.actions.push(inspect);
         self.append_nearby_decision_actions(&mut resource, transfer);
         if transfer.phase == NearbyTransferPhase::Failed {
             resource.actions.push(crate::effects::row_action(
@@ -7952,7 +8327,7 @@ impl FileExplorerWidget {
                 t("files-nearby-cancelled"),
             ));
         }
-        (!resource.actions.is_empty()).then_some(resource)
+        resource
     }
 
     #[allow(
@@ -8022,7 +8397,18 @@ impl FileExplorerWidget {
             },
             entry.name.clone(),
         );
-        if let Some(record_id) = record_id {
+        if self.is_recent_view() {
+            resource.actions.push(row_action(
+                &FilesEffect::RevealRecent { entry: id() },
+                crate::search_provider::REVEAL_ACTION,
+                t("files-recent-reveal"),
+            ));
+            resource.actions.push(row_action(
+                &FilesEffect::ForgetRecent { entry: id() },
+                "forget-recent",
+                t("files-recent-forget"),
+            ));
+        } else if let Some(record_id) = record_id {
             resource.actions.push(row_action(
                 &FilesEffect::Reveal {
                     record: record_id.to_string(),
@@ -8050,6 +8436,35 @@ impl FileExplorerWidget {
                 "send-nearby",
                 t("files-menu-send-nearby"),
             ));
+            if entry.path.is_file() && self.nearby_send.airdrop_available() {
+                let effect = FilesEffect::SendAirDrop {
+                    entry: id(),
+                    address: String::new(),
+                    port: 0,
+                };
+                let mut params = effect.bound_asking(&["address", "port"]).params().to_vec();
+                for param in &mut params {
+                    let key = if &*param.name == "address" {
+                        "files-airdrop-address"
+                    } else {
+                        "files-airdrop-port"
+                    };
+                    param.description = t(key).into();
+                    param.schema = Some(
+                        (if &*param.name == "port" {
+                            serde_json::json!({"minimum": 1, "maximum": 65535})
+                        } else {
+                            serde_json::json!({"minLength": 1, "maxLength": 64})
+                        })
+                        .into(),
+                    );
+                }
+                let mut action = effect.bound_asking_params(params);
+                action.description = Some(t("files-airdrop-action-detail"));
+                action.id = "send-airdrop".into();
+                action.label = t("files-action-send-airdrop");
+                resource.actions.push(action);
+            }
             for target in self
                 .nearby_send
                 .targets()
@@ -8069,7 +8484,7 @@ impl FileExplorerWidget {
                 ));
             }
         }
-        let entry_effects: Vec<(FilesEffect, &str, String)> = if self.is_trash_view() {
+        let mut entry_effects: Vec<(FilesEffect, &str, String)> = if self.is_trash_view() {
             vec![
                 (
                     FilesEffect::Restore { entry: id() },
@@ -8112,6 +8527,10 @@ impl FileExplorerWidget {
                 ),
             ]
         };
+        if self.is_native_trash_entry(&entry.path) {
+            entry_effects
+                .retain(|(effect, _, _)| !matches!(effect, FilesEffect::DeletePermanently { .. }));
+        }
         for (effect, action, label) in entry_effects {
             resource.actions.push(row_action(&effect, action, label));
         }
@@ -8121,14 +8540,14 @@ impl FileExplorerWidget {
                 "availability",
                 t("files-availability-title-short"),
             ));
-            if availability.policy == crate::model::AvailabilityPolicy::Automatic {
+            if availability.policy == fs_protocol::AvailabilityPolicy::Automatic {
                 resource.actions.push(row_action(
                     &FilesEffect::KeepOffline { entry: id() },
                     "keep-offline",
                     t("files-keep-offline"),
                 ));
             }
-            if availability.policy == crate::model::AvailabilityPolicy::Pinned
+            if availability.policy == fs_protocol::AvailabilityPolicy::Pinned
                 && !availability.policy_inherited
             {
                 resource.actions.push(row_action(
@@ -8138,13 +8557,13 @@ impl FileExplorerWidget {
                 ));
             }
             let releasable = !entry.is_dir
-                && availability.policy == crate::model::AvailabilityPolicy::Automatic
+                && availability.policy == fs_protocol::AvailabilityPolicy::Automatic
                 && !availability.policy_inherited
-                && availability.transfer.phase == crate::model::TransferPhase::Idle
+                && availability.transfer.phase == fs_protocol::TransferPhase::Idle
                 && matches!(
                     availability.residency,
-                    crate::model::Residency::Partial { .. }
-                        | crate::model::Residency::Resident { .. }
+                    fs_protocol::Residency::Partial { .. }
+                        | fs_protocol::Residency::Resident { .. }
                 );
             if releasable {
                 resource.actions.push(row_action(
@@ -8155,8 +8574,8 @@ impl FileExplorerWidget {
             }
             let retryable = !matches!(
                 availability.residency,
-                crate::model::Residency::Resident { .. }
-            ) && availability.transfer.phase == crate::model::TransferPhase::Idle;
+                fs_protocol::Residency::Resident { .. }
+            ) && availability.transfer.phase == fs_protocol::TransferPhase::Idle;
             if retryable {
                 resource.actions.push(row_action(
                     &FilesEffect::RetryDownload { entry: id() },
@@ -8179,7 +8598,9 @@ impl FileExplorerWidget {
     /// remote accounts, nearby transfers, and the retry of a failed listing.
     /// The folder, its places and templates are the resource's publication.
     fn live_filesystem_extras(&self) -> Vec<Resource> {
-        let mut extras = self.live_entry_resources();
+        let mut extras = published_place_resources(&self.favorites());
+        extras.extend(published_template_resources());
+        extras.extend(self.live_entry_resources());
         extras.extend(self.live_remote_account_resources());
         let mut nearby_root = Resource::new("files.nearby", "files.nearby", "Nearby");
         self.append_nearby_receiver_resources(&mut nearby_root);
@@ -8215,7 +8636,7 @@ impl FileExplorerWidget {
                 let mut resource =
                     Resource::new(resource_id, "files.remote-account", account.label.clone());
                 resource.presentation = Some(tilo_actions::ResourcePresentation {
-                    detail: Some(format!("{} · {}", account.kind.label(), account.host)),
+                    detail: Some(format!("{} at {}", account.kind.label(), account.host)),
                     badge: account.health.badge().map(str::to_owned),
                     preview: None,
                 });
@@ -8253,18 +8674,6 @@ impl FileExplorerWidget {
 mod native_observer;
 
 impl FileExplorerWidget {
-    fn has_action_control_bindings_impl(&self) -> bool {
-        // Own accessibility actions are semantic; preserve the same modal child
-        // exposure as the complete binding inventory.
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = ui::widget::controls::has_action_control_bindings(child);
-            }
-        });
-        found
-    }
-
     fn native_input_snapshot_impl(
         &self,
         _doc: &automerge::AutoCommit,
@@ -8276,18 +8685,30 @@ impl FileExplorerWidget {
 
 impl Collaborative for FileExplorerWidget {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+        self.retire_cancelled_effect();
         let now = ui::time::now();
+        if let Some(result) = self.local_clipboard.timeout(now) {
+            self.complete_clipboard_publication(result);
+        }
         self.nearby_send.poll_if_due(now);
         self.shortcut_menu.poll_if_due(now);
         let mut requests = self.nearby_send.take_requests();
         requests.extend(self.shortcut_menu.take_requests());
+        requests.extend(self.local_clipboard.take_request());
         requests
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        self.retire_cancelled_effect();
+        if let Some(result) = self.local_clipboard.event(event) {
+            self.complete_clipboard_publication(result);
+        }
         let mut changed = self.handle_shortcut_event(event);
         for effect in self.nearby_send.handle_event(event) {
             match effect {
+                crate::nearby_send::NearbyUiEffect::AvailabilityChanged => {
+                    self.structure_dirty = true;
+                }
                 crate::nearby_send::NearbyUiEffect::OpenPicker(targets) => {
                     self.open_nearby_device_picker(&targets);
                     changed = true;
@@ -8332,7 +8753,6 @@ impl Collaborative for FileExplorerWidget {
                                 handle: transfer.handle,
                             },
                         ),
-                        history: None,
                     });
                 }
                 crate::nearby_send::NearbyUiEffect::Failed(transfer) => {
@@ -8350,7 +8770,6 @@ impl Collaborative for FileExplorerWidget {
                         action: Some(CollabPanelAction::RetryNearby {
                             handle: transfer.handle,
                         }),
-                        history: None,
                     });
                 }
                 crate::nearby_send::NearbyUiEffect::Status(message) => {
@@ -8434,7 +8853,6 @@ impl Widget for FileExplorerWidget {
             self.rename_select_pending = false;
         }
 
-        self.toolbar.sync(state, path);
         self.nav.sync(state, path);
 
         // `TextInput` also accepts accessibility SetValue; absorb any local
@@ -8456,11 +8874,19 @@ impl Widget for FileExplorerWidget {
                     .ok()
                     .and_then(|reply| (!reply.is_pending(*token)).then(Instant::now))
             });
-        Some(self.next_metadata_refresh.min(self.nearby_send.next_poll()))
+        // A rename or pin drag defers the read; its end is input of its own,
+        // and a due deadline here would only spin until then.
+        let read_deferred = self.renaming.is_some() || self.pin_drag.is_some();
+        let changed_directory = (self.directory_changed && !read_deferred).then(|| {
+            self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
+        });
+        Some(self.nearby_send.next_poll())
             .into_iter()
+            .chain(self.next_metadata_refresh)
+            .chain(changed_directory)
             .chain(document_open_reply)
+            .chain(self.local_clipboard.next_wake())
             .chain(self.nav.next_wake_deadline())
-            .chain(self.toolbar.next_wake_deadline())
             .min()
     }
 
@@ -8470,82 +8896,29 @@ impl Widget for FileExplorerWidget {
         theme: &ui::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        // Refresh the persistent top bar, then rebuild the footer + swap the
-        // freshly-built body panes into the persistent `nav`. `nav` and the
-        // `toolbar` keep their state across the swap (docked/push state; the
-        // path bar's in-progress edit), so a rebuild triggered by navigation /
-        // sort doesn't snap the body or the path bar back mid-interaction.
+        // Refresh the toolbar's context, then swap the freshly built body
+        // panes into the persistent `nav`. `nav` and the toolbar it owns keep
+        // their state across the swap (docked state; the path bar's
+        // in-progress edit), so a rebuild triggered by navigation / sort
+        // doesn't snap the body or the path bar back mid-interaction.
         self.update_toolbar();
-        // At enlarged text sizes, a permanently docked 200 px Places column
-        // turns useful labels into a wall of truncation and steals the width
-        // needed by file metadata. Promote it to the same labelled hamburger
-        // drawer used on narrow screens. The threshold grows only above 1×,
-        // preserving the normal desktop/tablet breakpoint exactly.
-        self.nav.set_breakpoint(
-            BODY_BREAKPOINT_PX + f64::from((theme.text_scale - 1.0).max(0.0)) * 900.0,
-        );
         self.composed_once = true;
-        self.nav.set_sidebar(Some(self.build_places_pane()));
+        self.refresh_places_pane();
         self.nav.set_content(self.build_content_pane(theme));
 
-        let above_node = self.toolbar.build_layout(taffy, theme, node_map);
+        // The shell fills the window; the item count / selection status floats
+        // in a reserved bottom lane inside the body (see `draw_status_bubble`),
+        // leaving the rest of the body available to the file viewport.
         let nav_node = self.nav.build_layout(taffy, theme, node_map);
-        // No permanent footer band: the item count / selection status floats
-        // in a reserved bottom lane inside the body (see
-        // `draw_status_bubble`), leaving the rest of the body available to
-        // the file viewport.
-
-        // The body fills the height left below the top bar (the toolbar uses
-        // `with_intrinsic_height`).
-        // `NavShell::build_layout` hard-codes a `percent(1.0)` height leaf; in
-        // a column of three that would claim the full height, so override it to
-        // grow into the remaining space instead.
-        // `set_style` only fails when the node id is unknown to this tree;
-        // `nav_node` was just built in it above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "nav_node was just created in this same tree"
-        )]
-        taffy
-            .set_style(
-                nav_node,
-                taffy::Style {
-                    flex_grow: 1.0,
-                    flex_shrink: 1.0,
-                    flex_basis: taffy::Dimension::length(0.0),
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::auto(),
-                    },
-                    min_size: taffy::Size {
-                        width: taffy::Dimension::auto(),
-                        height: taffy::Dimension::length(0.0),
-                    },
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-
         let style = taffy::Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         // `new_with_children` only fails when a child belongs to a
-        // different tree; both children were just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "above_node and nav_node were just created in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(style, &[above_node, nav_node])
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        // different tree; the shell was just built in this one above.
+        taffy.widget_node(style, &[nav_node], node_map, self)
     }
 
     fn apply_layout(
@@ -8554,25 +8927,13 @@ impl Widget for FileExplorerWidget {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        // `node` was created by `build_layout` in this same tree, so a
-        // lookup miss would mean the frame cycle called these out of order.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
-        )]
-        let l = taffy.layout(node).unwrap();
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let base = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node)
-            && let (Some(&above_n), Some(&nav_n)) = (children.first(), children.get(1))
+            && let Some(&nav_n) = children.first()
         {
-            self.toolbar.apply_layout(taffy, above_n, base);
             self.nav.apply_layout(taffy, nav_n, base);
+            self.sync_toolbar_compact();
         }
     }
 
@@ -8586,53 +8947,10 @@ impl Widget for FileExplorerWidget {
     ) {
         self.poll_share_result();
         self.poll_history_result();
-        self.paint_background(scene, transform, theme);
+        self.paint_background(theme);
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
-        self.draw_places_modal_backdrop(scene, transform, theme);
         self.draw_state_surface(scene, transform, text_renderer, theme, presence);
-        // The toolbar is fixed app chrome. Paint it above the body so an
-        // error/empty surface can never obscure its Back, Up, or location
-        // routes at a compact width.
-        self.toolbar
-            .draw(scene, transform, text_renderer, theme, presence);
-        self.draw_empty_state(scene, transform, text_renderer, theme);
-        self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.paint_background(scene, transform, theme);
-        // Recurse with `draw_with_presence` (not the plain `draw`) so the
-        // inner `Scrollable` pushes its viewport rect and the file list culls
-        // rows outside it. The default trait impl would call our own `draw`,
-        // which breaks that chain — a long directory would then emit every
-        // row's glyphs every frame regardless of what's visible.
-        self.nav.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-        self.draw_places_modal_backdrop(scene, transform, theme);
-        self.draw_state_surface(scene, transform, text_renderer, theme, presence);
-        self.toolbar.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
         self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
@@ -8648,8 +8966,6 @@ impl Widget for FileExplorerWidget {
         // Child overlays (the path bar's completion popover, dropdowns) first,
         // then our top-layer context menu (and its flyout) so they composite
         // above everything.
-        self.toolbar
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
         self.nav
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         // Floating status bubble (item count / status + selection), above the
@@ -8662,12 +8978,12 @@ impl Widget for FileExplorerWidget {
         if self.context_menu.is_open() {
             layout_menu_widget(&mut self.context_menu);
             self.context_menu
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         if self.submenu.is_open() {
             layout_menu_widget(&mut self.submenu);
             self.submenu
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         // The drop-target highlight sits on the target folder; the drag ghost
         // floats above everything else.
@@ -8708,12 +9024,11 @@ impl Widget for FileExplorerWidget {
         let panel_was_open = self.collab_panel.is_some();
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
             // An armed press that has travelled far enough becomes a drag.
             if let Some((start, path, is_dir)) = self.armed_drag.clone()
                 && self.pin_drag.is_none()
-                && self.last_cursor.distance(start) > crate::views::file_view::DRAG_THRESHOLD
+                && self.last_cursor.distance(start) > crate::views::file_view::drag_threshold()
             {
                 self.armed_drag = None;
                 self.apply_command(FileCommand::BeginDrag { path, is_dir });
@@ -8724,19 +9039,8 @@ impl Widget for FileExplorerWidget {
         // recovery route. The button's `on_effect` publishes a typed local
         // control action; draining it below enters the ordinary Refresh path.
         if self.error.is_some() {
-            self.state_retry.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: state.reborrow(),
-                    path,
-                    handled: ctx.handled,
-                    focus_target: ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
+            self.state_retry
+                .handle_event(event, &mut ctx.reborrow(path, ctx.node_id));
             if *ctx.handled {
                 self.structure_dirty |= self.drain_commands();
                 return;
@@ -8760,6 +9064,10 @@ impl Widget for FileExplorerWidget {
         }
         if self.collab_panel.is_some() {
             use winit::keyboard::{Key, NamedKey};
+            let hit = self
+                .collab_layout
+                .as_ref()
+                .and_then(|layout| layout.hit(self.last_cursor));
             let activate = match event {
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state == ElementState::Pressed
@@ -8771,10 +9079,7 @@ impl Widget for FileExplorerWidget {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                     ..
-                } if self
-                    .collab_panel_action_rect()
-                    .is_some_and(|rect| rect.contains(self.last_cursor)) =>
-                {
+                } if hit == Some(ui::widget::ModalHit::Action(0)) => {
                     self.collab_panel_action_command()
                 }
                 _ => None,
@@ -8797,16 +9102,10 @@ impl Widget for FileExplorerWidget {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                     ..
-                } => {
-                    let rect = self.collab_panel_rect();
-                    let close_rect = vello::kurbo::Rect::new(
-                        rect.x1 - 48.0,
-                        rect.y0 + 6.0,
-                        rect.x1 - 8.0,
-                        rect.y0 + 46.0,
-                    );
-                    !rect.contains(self.last_cursor) || close_rect.contains(self.last_cursor)
-                }
+                } => self
+                    .collab_layout
+                    .as_ref()
+                    .is_none_or(|layout| layout.dismisses(self.last_cursor)),
                 _ => false,
             };
             if close {
@@ -8859,7 +9158,6 @@ impl Widget for FileExplorerWidget {
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut d = std::mem::take(&mut self.structure_dirty);
-        d |= self.toolbar.take_structure_dirty();
         d |= self.nav.take_structure_dirty();
         d
     }
@@ -8869,15 +9167,12 @@ impl Widget for FileExplorerWidget {
         // frames while it settles; the floating status bubble likewise while it
         // lingers / fades.
         self.nav.needs_animation_frame()
-            || self.toolbar.needs_animation_frame()
             || (self.is_loading && self.state_spinner.needs_animation_frame())
             || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.collaborative_record_pager.borrow().has_more()
-            || self.nav.needs_idle_sync()
-            || self.toolbar.needs_idle_sync()
+        self.collaborative_record_pager.borrow().has_more() || self.nav.needs_idle_sync()
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -8885,7 +9180,6 @@ impl Widget for FileExplorerWidget {
             return Vec::new();
         }
         let v: Vec<&dyn Widget> = vec![
-            &self.toolbar,
             &self.nav,
             // Standalone overlays are not taffy children, but they are semantic
             // children: expose their menu/item nodes while open (closed nodes carry
@@ -8900,12 +9194,8 @@ impl Widget for FileExplorerWidget {
         if self.collab_panel.is_some() {
             return Vec::new();
         }
-        let v: Vec<&mut (dyn Widget + '_)> = vec![
-            &mut self.toolbar,
-            &mut self.nav,
-            &mut self.context_menu,
-            &mut self.submenu,
-        ];
+        let v: Vec<&mut (dyn Widget + '_)> =
+            vec![&mut self.nav, &mut self.context_menu, &mut self.submenu];
         v
     }
 
@@ -8974,12 +9264,12 @@ impl Widget for FileExplorerWidget {
                     ))
                     .with_value(panel.lines.join(". "))
                     .with_live(Politeness::Polite)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.collab_panel_focused,
-                        modal: true,
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.collab_panel_focused)
+                            .modal(true),
+                    )
                     .with_children(children),
             );
         }
@@ -8996,10 +9286,7 @@ impl Widget for FileExplorerWidget {
             } else {
                 Politeness::Polite
             })
-            .with_state(AccessState {
-                busy: self.is_loading,
-                ..Default::default()
-            });
+            .with_state(AccessState::new().busy(self.is_loading));
         if let Some((title, detail, can_retry)) = self.state_surface_copy() {
             let mut state = AccessNode::new(Role::Group)
                 .with_name(title)
@@ -9009,10 +9296,7 @@ impl Widget for FileExplorerWidget {
                 } else {
                     Politeness::Polite
                 })
-                .with_state(AccessState {
-                    busy: self.is_loading,
-                    ..Default::default()
-                });
+                .with_state(AccessState::new().busy(self.is_loading));
             if can_retry {
                 state = state.with_children(vec![
                     AccessNode::new(Role::Button)
@@ -9047,7 +9331,7 @@ impl Widget for FileExplorerWidget {
                 Action::Focus | Action::Activate | Action::ScrollIntoView
             ) {
                 return self.apply_command(FileCommand::SelectHistoryVersion {
-                    version_id: collab_types::FileVersionId(version),
+                    version_id: fs_protocol::FileVersionId(version),
                 });
             }
             return false;
@@ -9123,7 +9407,8 @@ impl ui::widget::controls::ActionControls for FileExplorerWidget {
         })
     }
     fn has_action_control_bindings(&self) -> bool {
-        self.has_action_control_bindings_impl()
+        // Own accessibility actions are semantic; only children emit actions.
+        ui::widget::controls::children_have_action_control_bindings(self)
     }
     // A control a caller invoked through the door (a toolbar button) queued
     // its command; apply it now, as the click it stands for would.
@@ -9175,7 +9460,7 @@ mod tests;
 pub(crate) mod published {
     use super::FileExplorerWidget;
     use crate::effects::FilesEffect;
-    use crate::resource::{FileExplorer, FilesState};
+    use crate::resource::FileExplorer;
     use ui::framework::HostDelivery as _;
     use ui::tilo_actions::Resource;
     use ui::tilo_resource::{Effect as _, Resource as _};
@@ -9186,12 +9471,9 @@ pub(crate) mod published {
         let mut root = ui::tilo_resource::publish::<FileExplorer>(
             FileExplorer::KIND,
             "Files",
-            &FilesState::default(),
+            &FileExplorer::default(),
         );
         root.actions.extend(FilesEffect::specs());
-        // The places as a device whose home is the window's resolves them.
-        root.children
-            .extend(super::published_place_resources(&files.favorites()));
         let _ = doc;
         root.children.extend(files.published_rows());
         vec![root]
@@ -9264,7 +9546,8 @@ pub(crate) mod published {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 #[path = "framework_history_tests.rs"]
 mod framework_history_tests;
 
@@ -9278,5 +9561,36 @@ mod merge_support_tests {
         assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
         assert!(!merge_supported_path(std::path::Path::new("photo.png")));
         assert!(!merge_supported_path(std::path::Path::new("unknown")));
+    }
+}
+
+impl FileExplorerWidget {
+    pub fn debug_begin_favorite_drag(&mut self, from: usize, to: usize) -> bool {
+        let (source, before) = {
+            let favs = self.favs.borrow();
+            let Some(source) = favs.favorites.get(from) else {
+                return false;
+            };
+            let Some(before) = favs.favorites.get(to) else {
+                return false;
+            };
+            if source.is_home || before.is_home {
+                return false;
+            }
+            (
+                format!("fav:{}", source.path.display()),
+                format!("fav:{}", before.path.display()),
+            )
+        };
+        let Some(list) = self.nav.sidebar_mut::<ui::widget::NavList>() else {
+            return false;
+        };
+        list.stage_drag(&source, &before);
+        true
+    }
+
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.shots_status = true;
+        self.debug_show_status_bubble();
     }
 }

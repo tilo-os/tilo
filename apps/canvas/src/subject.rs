@@ -1,6 +1,7 @@
 //! Selecting a picture's subject, and refining a selection's edge to the
-//! picture: found where the action is authored, in the artwork as the
-//! window shows it, like the magic wand.
+//! picture: found by the find-area job in the artwork as the window shows
+//! it, like the magic wand, drawn on the window's thread ([`prepare`]) and
+//! worked out on a background one ([`Prepared::finish`]).
 //!
 //! The subject is found by the on-device segmentation model the person set
 //! up (through the model gateway; nothing leaves the device). Its edge, or
@@ -13,30 +14,29 @@
     reason = "kurbo's float geometry and pixel sizes bounded by the render's"
 )]
 
-use std::cell::RefCell;
+use ui::num::usize_of_f64;
 
 use ui::TextRenderer;
 use ui::vello::kurbo::{Affine, Point};
 
-use crate::actions::CanvasAction;
 use crate::model::{Artwork, Matte};
 use crate::region::{Coverage, Op, Region};
 use crate::render::{Options, Renderer};
 use crate::selection::{Select, UseSelection};
 
-/// The longest side of the picture a subject is found and refined in, in
-/// pixels.
-const SIDE: f64 = 2048.0; // a sampling budget in pixels, not on-screen spacing
 /// The closest a refined edge is looked at, in pixels per unit.
-const MOST_PIXELS_PER_UNIT: f64 = 8.0; // a sampling density, not on-screen spacing
+use crate::content_geometry::MOST_PIXELS_PER_UNIT;
+/// The most a caller may ask an edge be fitted over, in units.
+use crate::content_geometry::MOST_REFINE;
 /// How far a subject's edge is fitted to the picture when the caller names
 /// no reach, in pixels of the picture it is found in.
-pub const REFINE_PIXELS: f64 = 6.0; // a reach in the picture's pixels, not spacing
-/// The most a caller may ask an edge be fitted over, in units.
-const MOST_REFINE: f64 = 200.0; // a reach in artwork units, not spacing
+pub use crate::content_geometry::REFINE_PIXELS;
+/// The longest side of the picture a subject is found and refined in, in
+/// pixels.
+use crate::content_geometry::SIDE;
 
-/// What the model said about the last subject found, for the answer an
-/// agent gets.
+/// What the model said about a subject it found, for the answer the
+/// find-area job gives its caller.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Found {
     pub model: String,
@@ -45,37 +45,8 @@ pub struct Found {
     pub refine_ms: u64,
 }
 
-thread_local! {
-    static LAST: RefCell<Option<Found>> = const { RefCell::new(None) };
-}
-
-/// What the last subject found on this thread took, once.
-pub fn take_found() -> Option<Found> {
-    LAST.with_borrow_mut(Option::take)
-}
-
 /// Where to find the model when none is set up, said in a refusal.
 pub const SET_UP: &str = "settings://models/u2net-subject";
-
-/// The area `select` asks for by subject or refine, and its soft edge,
-/// found here and now (an agent's action waits for it).
-///
-/// # Errors
-/// Returns why: no model is set up (and where to set it up), no subject
-/// was found, the reach is out of range, or the artwork cannot be seen.
-pub fn find(
-    select: &Select,
-    renderer: &mut Renderer,
-    text: &mut TextRenderer,
-    art: &Artwork,
-) -> Result<(Region, Option<Matte>), String> {
-    let subject = select.subject == Some(true);
-    let (area, matte, found) = prepare(select, renderer, text, art)?.finish()?;
-    if subject {
-        LAST.with_borrow_mut(|last| *last = Some(found));
-    }
-    Ok((area, matte))
-}
 
 /// What the artwork shows, ready for the model and the edge filter: the
 /// part drawn on the window's thread; [`Prepared::finish`] does the slow
@@ -107,6 +78,20 @@ pub fn prepare(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
+) -> Result<Prepared, String> {
+    let content = ui::tilo_resource::content::current()
+        .ok_or("the artwork's content store is unavailable")?;
+    prepare_in(select, renderer, text, art, content)
+}
+
+/// Preparation with the originating window's captured store, including
+/// when its snapshot is rendered on a worker thread.
+pub(crate) fn prepare_in(
+    select: &Select,
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    content: tilo_content::ContentStore,
 ) -> Result<Prepared, String> {
     let subject = select.subject == Some(true);
     let refine = select.refine.unwrap_or(0.0);
@@ -146,7 +131,7 @@ pub fn prepare(
     ) * Affine::translate((-view.x0, -view.y0));
     let at = select.at.map(|[x, y]| {
         let cell = to_cells * Point::new(x, y);
-        (index(cell.x), index(cell.y))
+        (usize_of_f64(cell.x), usize_of_f64(cell.y))
     });
     let current = if subject {
         None
@@ -164,8 +149,7 @@ pub fn prepare(
         0.0
     };
     Ok(Prepared {
-        content: ui::tilo_resource::content::current()
-            .ok_or("the artwork's content store is unavailable")?,
+        content,
         rgba,
         width,
         height,
@@ -258,7 +242,7 @@ impl Prepared {
             .map_err(|error| {
                 if error.needs_model() {
                     format!(
-                        "select subject needs the on-device subject model (U²-Net, 176 MB, Apache-2.0), which is not set up: set it up in Settings › Models ({SET_UP}), then select again ({error})"
+                        "select subject needs the on-device subject model (U²-Net, 176 MB, Apache-2.0), which is not set up: set it up in Settings, Agent Models ({SET_UP}), then select again ({error})"
                     )
                 } else {
                     format!("the subject could not be found: {error}")
@@ -347,15 +331,6 @@ fn short(revision: &str) -> &str {
     revision.get(..12).unwrap_or(revision)
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "checked to lie inside the picture before the cast"
-)]
-fn index(value: f64) -> usize {
-    value.floor().max(0.0) as usize
-}
-
 /// `using` as authored: masking (or clearing) by a refined edge, each
 /// picture on the layer it masks has the old background's colour taken out
 /// of its edge first, so the cut-out keeps no halo of it. The cleaned
@@ -364,9 +339,9 @@ fn index(value: f64) -> usize {
 ///
 /// # Errors
 /// Returns why a picture could not be read or cleaned.
-pub fn clean(using: UseSelection) -> Result<CanvasAction, String> {
+pub fn clean(using: &mut UseSelection) -> Result<(), String> {
     if !matches!(using.what.as_str(), "mask" | "clear") || using.defringe == Some(false) {
-        return Ok(CanvasAction::UseSelection(using));
+        return Ok(());
     }
     let pictures = crate::author::with_sight(|_, _, art| {
         let Some(matte) = art
@@ -397,13 +372,10 @@ pub fn clean(using: UseSelection) -> Result<CanvasAction, String> {
     })
     // Without a window there is nothing to clean with; the mask is still made.
     .unwrap_or_default();
-    if pictures.is_empty() {
-        return Ok(CanvasAction::UseSelection(using));
+    if !pictures.is_empty() {
+        using.cleaned = Some(pictures);
     }
-    Ok(CanvasAction::UseSelection(UseSelection {
-        cleaned: Some(pictures),
-        ..using
-    }))
+    Ok(())
 }
 
 /// A matte picture's coverage.

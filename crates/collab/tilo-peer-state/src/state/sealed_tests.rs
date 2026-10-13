@@ -2,6 +2,7 @@
 use super::*;
 use crate::admission_tests::seeded;
 use crate::{InputDisposition, TransportOrigin, peer_handle};
+use collab_types::CommitNamed as _;
 
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -37,7 +38,7 @@ fn sealed(peer: &StatePeer, key: &SigningKey, seq: u64, ciphertext: &[u8]) -> Ne
         collab_types::document_artifact_id(APP, peer.room(), RECORD),
         author,
         collab_types::document_attestation_id(APP, peer.room(), RECORD),
-        OpClass::Splice,
+        OpKind::Change,
         peer_time(),
         seq,
         collab_types::EncryptionMetadata::mls_application(1, channel),
@@ -292,7 +293,7 @@ fn edit(peer: &StatePeer, value: &str) -> Vec<u8> {
     let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "value", value).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "value");
     DocumentMutation::Incremental(doc.save_after(&heads))
         .encode()
         .unwrap()
@@ -312,12 +313,61 @@ fn the_key_holder_admits_the_opened_plaintext_and_keeps_the_record_encrypted() {
     let plaintext = edit(&holder, "opened by its key holder");
     let envelope = envelope_of(sealed(&holder, &a, 2, b"ciphertext"));
     holder
-        .admit_new_opened_local_document(APP, RECORD, envelope, &mut |_| Ok(plaintext.clone()), now)
+        .admit_new_opened_local_document(
+            APP,
+            RECORD,
+            envelope.clone(),
+            &mut |_| Ok(plaintext.clone()),
+            now,
+        )
         .unwrap();
     assert_eq!(value(&holder), "\"opened by its key holder\"");
     assert_eq!(holder.incomplete_reason(), None);
     let mut restored = restore(&holder, now).unwrap();
     assert_eq!(value(&restored), "\"opened by its key holder\"");
+    let original = holder.durable().unwrap();
+    let bounded = crate::BoundedStatePeer::restore(
+        &original,
+        holder.room(),
+        holder.authority(),
+        std::slice::from_ref(holder.authority()),
+        &tilo_user_identity::RevocationList::new(),
+        now,
+        &crate::PeerLimits::default(),
+    )
+    .unwrap();
+    let mut opened = 0;
+    let capture = bounded
+        .read()
+        .capture_document(
+            a.verifying_key().to_bytes(),
+            (APP, RECORD),
+            now,
+            1024 * 1024,
+            &mut |retained| {
+                assert_eq!(
+                    retained, &envelope,
+                    "original signed ciphertext must survive restore"
+                );
+                opened += 1;
+                Ok(plaintext.clone())
+            },
+        )
+        .unwrap();
+    assert_eq!(opened, 1);
+    let mut replayed = automerge::AutoCommit::load(&capture.into_bytes()).unwrap();
+    let mut admitted = automerge::AutoCommit::load(&holder.document(APP, RECORD).unwrap()).unwrap();
+    assert_eq!(
+        replayed.get_heads(),
+        admitted.get_heads(),
+        "the original change graph is replayed"
+    );
+    assert_eq!(
+        holder.durable().unwrap(),
+        original,
+        "a read does not publish or rewrite state"
+    );
+
     assert!(
         restored
             .publish_incremental(APP, RECORD, Vec::new(), &a, now)

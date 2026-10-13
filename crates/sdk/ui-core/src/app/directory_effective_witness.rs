@@ -42,22 +42,9 @@ impl Builder {
         self.bytes(&value.payload);
     }
     fn evidence(&mut self, value: Option<&ContinuationEvidence>) {
-        struct Sink<'a>(&'a mut blake3::Hasher);
-        impl std::io::Write for Sink<'_> {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.update(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
         match value {
             Some(value) => {
-                if value
-                    .write_canonical_identity(&mut Sink(&mut self.digest))
-                    .is_err()
-                {
+                if value.write_canonical_identity(&mut self.digest).is_err() {
                     self.supported = false;
                 }
             }
@@ -215,8 +202,11 @@ mod tests {
         assert_eq!(witness(original.clone()), Some(baseline));
         assert_ne!(witness(fixed(2)), Some(baseline));
         let mut public = original.clone();
-        public.input =
-            ActionInput::Immediate(EncodedAction::encode_operation("test.other", &1).unwrap());
+        public.input = ActionInput::Immediate(
+            EncodedAction::encode_operation("test.other", &1)
+                .unwrap()
+                .into(),
+        );
         assert_ne!(witness(public), Some(baseline));
         let mut operation_type = original.clone();
         operation_type.operation_type = Some("test.other".into());

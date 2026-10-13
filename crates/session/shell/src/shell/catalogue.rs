@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::shell::launcher::{self, LaunchEvent, LaunchEventKind};
-use crate::shell::state::{CapOverride, RoomId};
+use crate::shell::state::RoomId;
 
 /// Much longer than the installed-apps TTL: that re-reads two local
 /// files, this talks to a network service.
@@ -151,6 +151,25 @@ pub fn resolve_catalogue_bin() -> Option<PathBuf> {
     catalogue_bin_candidates().into_iter().find(|p| p.exists())
 }
 
+/// Install an owned service through the same normal registry verifier used
+/// by app search, without opening a window or changing workspace capabilities.
+/// Call only on a worker after the original host's enrollment approval.
+#[cfg(target_os = "linux")]
+pub(crate) fn install_service_package(package: &str) -> std::io::Result<()> {
+    let bin = resolve_catalogue_bin().ok_or(std::io::ErrorKind::NotFound)?;
+    let mut command = std::process::Command::new(bin);
+    command.args(["install", package]);
+    let output =
+        bounded_command::run_prepared(command, None, INSTALL_OUTPUT_LIMIT, INSTALL_TIMEOUT)
+            .map_err(std::io::Error::other)?;
+    if !output.status.success() {
+        return Err(std::io::ErrorKind::Other.into());
+    }
+    invalidate();
+    launcher::invalidate_app_cache();
+    Ok(())
+}
+
 /// Split out from the subprocess so the wire contract is assertable
 /// without spawning anything.
 ///
@@ -166,7 +185,7 @@ fn listing_cache_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("TILO_APP_CACHE_FILE") {
         return Some(PathBuf::from(path));
     }
-    xdg_paths::cache_dir().map(|dir| dir.join("tilo-store/catalogue.json"))
+    tilo_paths::cache_dir().map(|dir| dir.join("tilo-store/catalogue.json"))
 }
 
 fn read_cached_listing(path: &std::path::Path) -> Result<CatalogueListing, String> {
@@ -361,7 +380,7 @@ pub fn take_pending_notice(package_id: &str) -> Option<u64> {
     })
 }
 
-/// `capabilities` is the activating workspace's grant list, captured
+/// `capabilities` is the activating workspace's launch grants, captured
 /// on the frame thread rather than read fresh — an install takes
 /// seconds, and the app must land in the sandbox it was opened from,
 /// not whichever workspace is active when the download finishes.
@@ -369,7 +388,7 @@ pub fn install_and_launch(
     package_id: String,
     display_name: String,
     room: RoomId,
-    capabilities: Vec<CapOverride>,
+    capabilities: collab_types::caps::LaunchGrants,
 ) {
     let Some(bin) = resolve_catalogue_bin() else {
         push_failure(

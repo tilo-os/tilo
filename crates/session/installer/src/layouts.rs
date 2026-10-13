@@ -318,6 +318,11 @@ mod tests {
                 LAYOUTS.len()
             );
         }
+        // Phase `ids_are_the_media_profile_keyboards`.
+        {
+            let ids: Vec<_> = LAYOUTS.iter().map(|l| l.id).collect();
+            assert_eq!(ids, install_profile_model::KEYBOARDS);
+        }
         // Phase `every_layout_has_expected_row_lengths`.
         {
             for l in LAYOUTS {

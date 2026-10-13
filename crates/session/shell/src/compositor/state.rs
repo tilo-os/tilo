@@ -22,6 +22,270 @@ enum ForeignCommitCapture {
 #[derive(Default)]
 struct ForeignCommitCaptures(Mutex<VecDeque<ForeignCommitCapture>>);
 
+/// Set once the surface queued an SHM capture, which may have left a base in
+/// the frame store for its next commit's damage. A commit the capture does
+/// not see clears that base only while this is set, so the many surfaces
+/// never captured do not take the frame store's lock on every commit.
+#[derive(Default)]
+struct ShmCaptureBase(std::sync::atomic::AtomicBool);
+
+/// Record that the surface queued an SHM capture.
+fn mark_shm_capture_base(states: &wl_compositor::SurfaceData) {
+    states
+        .data_map
+        .insert_if_missing_threadsafe(ShmCaptureBase::default);
+    if let Some(base) = states.data_map.get::<ShmCaptureBase>() {
+        base.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A commit the capture never sees still changes the surface: a later SHM
+/// commit's damage is relative to it, not to the last one captured.
+fn forget_uncaptured_shm_base(surface: &WlSurface, surface_id: u64) {
+    let had_base = wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<ShmCaptureBase>()
+            .is_some_and(|base| base.0.swap(false, std::sync::atomic::Ordering::Relaxed))
+    });
+    if had_base {
+        crate::compositor::foreign::store().reset_shm_base(surface_id);
+    }
+}
+
+/// After any captured commit but an SHM buffer (or a commit that changes
+/// nothing), the next SHM commit's damage is not relative to the frame the
+/// SHM capture built: it copies whole.
+fn settle_shm_base(surface_id: u64, association: &ForeignCommitCapture) {
+    if !matches!(
+        association,
+        ForeignCommitCapture::Shm(_) | ForeignCommitCapture::NoBuffer
+    ) {
+        crate::compositor::foreign::store().reset_shm_base(surface_id);
+    }
+}
+
+/// Buffer damage as the frame store records it.
+fn buffer_damage(rects: &[BufferRect]) -> Vec<vello::kurbo::Rect> {
+    rects
+        .iter()
+        .map(|rect| {
+            vello::kurbo::Rect::from_origin_size(
+                (f64::from(rect.loc.x), f64::from(rect.loc.y)),
+                (f64::from(rect.size.w), f64::from(rect.size.h)),
+            )
+        })
+        .collect()
+}
+
+/// Buffer damage as the whole pixels an SHM capture copies, clipped to the
+/// buffer's non-negative quadrant.
+fn shm_regions(rects: &[BufferRect]) -> Vec<crate::compositor::surface_readback::ShmRegion> {
+    rects
+        .iter()
+        .filter_map(|rect| {
+            let x = rect.loc.x.max(0);
+            let y = rect.loc.y.max(0);
+            let right = rect.loc.x.saturating_add(rect.size.w);
+            let bottom = rect.loc.y.saturating_add(rect.size.h);
+            Some(crate::compositor::surface_readback::ShmRegion {
+                x: usize::try_from(x).ok()?,
+                y: usize::try_from(y).ok()?,
+                width: usize::try_from(right.saturating_sub(x)).ok()?,
+                height: usize::try_from(bottom.saturating_sub(y)).ok()?,
+            })
+        })
+        .collect()
+}
+
+type BufferRect = smithay::utils::Rectangle<i32, smithay::utils::Buffer>;
+
+/// The commit's damage in buffer pixels. Buffer-coordinate rectangles
+/// (`wl_surface.damage_buffer`) are taken as they are. Surface-coordinate
+/// ones (`wl_surface.damage`) cover `buffer_scale` buffer pixels per
+/// surface pixel while no viewport (`viewported`) crops or scales the
+/// buffer; with one, or with a transformed or offset buffer, or no damage,
+/// the whole buffer is damaged rather than guessing the conversion.
+fn pending_buffer_rects(
+    attrs: &wl_compositor::SurfaceAttributes,
+    viewported: bool,
+) -> Option<Vec<BufferRect>> {
+    if attrs.buffer_transform
+        != smithay::reexports::wayland_server::protocol::wl_output::Transform::Normal
+        || attrs
+            .buffer_delta
+            .is_some_and(|delta| delta.x != 0 || delta.y != 0)
+        || attrs.damage.is_empty()
+        || attrs.damage.len() > 128
+    {
+        return None;
+    }
+    attrs
+        .damage
+        .iter()
+        .map(|damage| {
+            let rect = match damage {
+                wl_compositor::Damage::Buffer(rect) => *rect,
+                wl_compositor::Damage::Surface(rect) if !viewported => {
+                    surface_rect_in_buffer(*rect, attrs.buffer_scale)?
+                }
+                wl_compositor::Damage::Surface(_) => return None,
+            };
+            (rect.size.w > 0 && rect.size.h > 0).then_some(rect)
+        })
+        .collect()
+}
+
+/// Whether the commit's viewport crops or scales the buffer: surface-local
+/// damage then has no plain conversion to buffer pixels.
+fn pending_viewport(states: &wl_compositor::SurfaceData) -> bool {
+    let mut viewport = states
+        .cached_state
+        .get::<smithay::wayland::viewporter::ViewportCachedState>();
+    let pending = viewport.pending();
+    let set = pending.src.is_some() || pending.dst.is_some();
+    drop(viewport);
+    set
+}
+
+/// A surface-local rectangle in the pixels of an untransformed buffer drawn
+/// at `scale` buffer pixels per surface pixel. Clients damage "everything"
+/// as `i32::MAX`-sized rectangles, so the scaling saturates.
+fn surface_rect_in_buffer(
+    rect: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    scale: i32,
+) -> Option<BufferRect> {
+    if scale < 1 {
+        return None;
+    }
+    let scaled = |value: i32| value.saturating_mul(scale);
+    Some(BufferRect::new(
+        (scaled(rect.loc.x), scaled(rect.loc.y)).into(),
+        (scaled(rect.size.w), scaled(rect.size.h)).into(),
+    ))
+}
+
+#[cfg(test)]
+mod commit_damage_tests {
+    use super::{BufferRect, pending_buffer_rects, wl_compositor};
+    use smithay::utils::{Logical, Rectangle};
+
+    fn commit(damage: Vec<wl_compositor::Damage>, scale: i32) -> wl_compositor::SurfaceAttributes {
+        let mut attrs = wl_compositor::SurfaceAttributes::default();
+        attrs.damage = damage;
+        attrs.buffer_scale = scale;
+        attrs
+    }
+
+    fn surface(x: i32, y: i32, w: i32, h: i32) -> wl_compositor::Damage {
+        wl_compositor::Damage::Surface(Rectangle::<i32, Logical>::new((x, y).into(), (w, h).into()))
+    }
+
+    fn buffer(x: i32, y: i32, w: i32, h: i32) -> BufferRect {
+        BufferRect::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn surface_damage_covers_its_buffer_pixels_at_the_buffer_scale() {
+        let attrs = commit(
+            vec![
+                surface(10, 20, 30, 4),
+                wl_compositor::Damage::Buffer(buffer(1, 2, 3, 4)),
+            ],
+            2,
+        );
+        assert_eq!(
+            pending_buffer_rects(&attrs, false),
+            Some(vec![buffer(20, 40, 60, 8), buffer(1, 2, 3, 4)])
+        );
+    }
+
+    #[test]
+    fn surface_damage_under_a_viewport_damages_the_whole_buffer() {
+        let attrs = commit(vec![surface(10, 20, 30, 4)], 1);
+        assert_eq!(pending_buffer_rects(&attrs, true), None);
+        // Buffer damage needs no conversion, viewport or not.
+        let attrs = commit(vec![wl_compositor::Damage::Buffer(buffer(1, 2, 3, 4))], 1);
+        assert_eq!(
+            pending_buffer_rects(&attrs, true),
+            Some(vec![buffer(1, 2, 3, 4)])
+        );
+    }
+
+    #[test]
+    fn damaging_everything_in_surface_pixels_saturates() {
+        let attrs = commit(vec![surface(0, 0, i32::MAX, i32::MAX)], 2);
+        assert_eq!(
+            pending_buffer_rects(&attrs, false),
+            Some(vec![buffer(0, 0, i32::MAX, i32::MAX)])
+        );
+    }
+}
+
+/// What a commit says about its surface's opacity: the opaque region the
+/// commit applies and how its buffer maps onto the surface.
+struct DeclaredOpacity {
+    region: Option<wl_compositor::RegionAttributes>,
+    scale: i32,
+    transform: smithay::reexports::wayland_server::protocol::wl_output::Transform,
+}
+
+impl DeclaredOpacity {
+    fn of(attrs: &wl_compositor::SurfaceAttributes) -> Self {
+        Self {
+            region: attrs.opaque_region.clone(),
+            scale: attrs.buffer_scale,
+            transform: attrs.buffer_transform,
+        }
+    }
+
+    /// `dmabuf` as the commit attaches it to the surface `states` describe:
+    /// with the surface's colour description, and opaque when the region
+    /// covers the surface it gives under the pending viewport.
+    fn commit(
+        &self,
+        states: &wl_compositor::SurfaceData,
+        dmabuf: Dmabuf,
+    ) -> crate::compositor::foreign::DmabufCommit {
+        let colorimetry = states
+            .data_map
+            .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
+            .and_then(
+                crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry,
+            )
+            .map(|(colorimetry, _)| colorimetry);
+        let viewport = *states
+            .cached_state
+            .get::<smithay::wayland::viewporter::ViewportCachedState>()
+            .pending();
+        let opaque = self.covers((dmabuf.width(), dmabuf.height()), &viewport);
+        crate::compositor::foreign::DmabufCommit {
+            buffer: dmabuf,
+            colorimetry,
+            opaque,
+        }
+    }
+
+    /// The opaque region covers the whole surface a `buffer` of this size
+    /// gives: the buffer's alpha is padding
+    /// ([`crate::compositor::opaque_region`]).
+    fn covers(
+        &self,
+        buffer: (u32, u32),
+        viewport: &smithay::wayland::viewporter::ViewportCachedState,
+    ) -> bool {
+        crate::compositor::opaque_region::covers(
+            self.region.as_ref(),
+            crate::compositor::opaque_region::surface_extent(
+                buffer,
+                self.scale,
+                self.transform,
+                viewport,
+            ),
+        )
+    }
+}
+
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Format, Modifier};
@@ -60,7 +324,8 @@ use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::input_method::{
-    InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopupSurface,
+    InputMethodHandler, InputMethodManagerState, InputMethodSeat,
+    PopupSurface as InputMethodPopupSurface,
 };
 use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
 use smithay::wayland::session_lock::{
@@ -168,31 +433,17 @@ pub(crate) struct OutputPresentationSurface {
 
 pub(crate) use crate::shell::floating::*;
 
-/// Read the persisted `HiDPI` display scale from the shared settings store.
+/// The persisted `HiDPI` display scale in a settings document.
 ///
-/// The Settings app writes `~/.config/tilo/settings.json` with a
-/// `"display"` object carrying a `"scale"` number (1.0=100%, …); the
-/// compositor reads the same file via `settings_store`, resolving the same
-/// XDG rule the apps use. Any read/parse failure or out-of-range value falls back to `1.0`.
-fn load_display_scale() -> f64 {
-    let Some(path) = settings_store::settings_path() else {
-        return 1.0;
-    };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return 1.0;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return 1.0;
-    };
-    match json
-        .get("display")
-        .and_then(|d| d.get("scale"))
-        .and_then(serde_json::Value::as_f64)
-    {
-        // Clamp to the Settings control's range (100%-200%, with margin) so an out-of-band value can't wedge the UI.
-        Some(scale) if (0.5..=3.0).contains(&scale) => scale,
-        _ => 1.0,
-    }
+/// The Settings app writes a `"display"` object carrying a `"scale"` number
+/// (1.0=100%, …); the compositor follows the same document through its live
+/// settings snapshot. An absent or out-of-range value falls back to `1.0`.
+pub fn display_scale_from(document: &serde_json::Map<String, serde_json::Value>) -> f64 {
+    document
+        .get(settings_store::hardware::DISPLAY_SECTION)
+        .and_then(serde_json::Value::as_object)
+        .and_then(settings_store::display_scale::user_scale)
+        .unwrap_or(1.0)
 }
 
 /// Bridges the `ext_session_lock_v1` protocol handler (running inside the
@@ -245,6 +496,76 @@ pub(crate) struct TrackedPopup {
     parent: SurfaceId,
     geometry: Rectangle<i32, Logical>,
     grabbed: bool,
+}
+
+/// Everything the capture protection of transient surfaces is derived
+/// from, as of the last [`State::sync_capture_protection`] pass. Compared
+/// field by field on each wakeup without allocating, taking the tree lock
+/// or the store's protection lock; any difference re-derives, so a newly
+/// mapped popup, a reparented one, a secret field gaining focus, an app
+/// asking for protection or a renamed tab is never missed.
+#[derive(Default, PartialEq)]
+pub(crate) struct CaptureProtectionInputs {
+    /// The focused text field declares its content secret.
+    secret_field: bool,
+    osk: Option<SurfaceId>,
+    /// The workspace tree's write generation and the store's protection
+    /// epoch: which app each tiled surface belongs to, and which apps and
+    /// surfaces are protected.
+    versions: (u64, u64),
+    input_method_popups: Vec<(SurfaceId, Option<SurfaceId>)>,
+    popups: Vec<(SurfaceId, bool, SurfaceId)>,
+    /// Floating toplevels and their apps.
+    floating: Vec<(SurfaceId, String)>,
+}
+
+impl CaptureProtectionInputs {
+    fn capture(state: &State, secret_field: bool, versions: (u64, u64)) -> Self {
+        Self {
+            secret_field,
+            osk: state.osk_surface,
+            versions,
+            input_method_popups: state.capture_protection_input_method_popups().collect(),
+            popups: state.capture_protection_popups().collect(),
+            floating: state
+                .floating_toplevels
+                .iter()
+                .map(|toplevel| (toplevel.surface_id, toplevel.app_id.clone()))
+                .collect(),
+        }
+    }
+
+    fn matches(&self, state: &State, secret_field: bool, versions: (u64, u64)) -> bool {
+        self.secret_field == secret_field
+            && self.osk == state.osk_surface
+            && self.versions == versions
+            && self
+                .input_method_popups
+                .iter()
+                .copied()
+                .eq(state.capture_protection_input_method_popups())
+            && self
+                .popups
+                .iter()
+                .copied()
+                .eq(state.capture_protection_popups())
+            && self
+                .floating
+                .iter()
+                .map(|(surface, app_id)| (*surface, app_id.as_str()))
+                .eq(state
+                    .floating_toplevels
+                    .iter()
+                    .map(|toplevel| (toplevel.surface_id, toplevel.app_id.as_str())))
+    }
+}
+
+/// [`State::sync_capture_protection`]'s memory between wakeups.
+#[derive(Default)]
+pub(crate) struct CaptureProtectionSync {
+    last: Option<CaptureProtectionInputs>,
+    #[cfg(test)]
+    passes: usize,
 }
 
 #[derive(Clone)]
@@ -419,6 +740,46 @@ mod personal_fabric_input_holder_tests {
 /// session.
 pub(crate) const CLOSING_FRAME_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum InputMethodPreeditState {
+    #[default]
+    Inactive,
+    Pending {
+        previous: bool,
+        next: bool,
+    },
+    Active,
+}
+
+impl InputMethodPreeditState {
+    fn stage(&mut self, next: bool) {
+        let previous = match *self {
+            Self::Active => true,
+            Self::Inactive => false,
+            Self::Pending { previous, .. } => previous,
+        };
+        *self = Self::Pending { previous, next };
+    }
+
+    fn finish(&mut self, accepted: bool) {
+        if let Self::Pending { previous, next } = *self {
+            *self = if if accepted { next } else { previous } {
+                Self::Active
+            } else {
+                Self::Inactive
+            };
+        }
+    }
+}
+
+impl InputMethodPreeditState {
+    pub(crate) fn is_active(self) -> bool {
+        // Staged requests cannot end an already accepted composition before
+        // their Commit passes the real client, serial and active-field gates.
+        matches!(self, Self::Active | Self::Pending { previous: true, .. })
+    }
+}
+
 pub struct State {
     /// Calloop loop handle — for registering input devices, session signals, libinput sources, etc.
     pub loop_handle: LoopHandle<'static, Self>,
@@ -473,6 +834,11 @@ pub struct State {
     /// whose dma-bufs the compositor can actually read. Not advertising is
     /// the honest answer there: Mesa falls back to its `wl_shm` software path instead of offering dmabufs it would have to reject.
     pub dmabuf_global: Option<DmabufGlobal>,
+    /// The feedback each surface gets from [`Self::dmabuf_global`]: the
+    /// default, or a scanout tranche for the fullscreen client a display
+    /// could scan out ([`Self::update_scanout_feedback`]). `None` whenever
+    /// the global is.
+    pub scanout_feedback: Option<crate::compositor::scanout_feedback::ScanoutFeedback>,
     /// The render node handed to clients as
     /// `zwp_linux_dmabuf_feedback_v1.main_device`, or the reason none was —
     /// kept so the boot log, state dump and integration tests read the *decision* rather than re-deriving it.
@@ -608,8 +974,8 @@ pub struct State {
     /// icon for its tab; see [`crate::compositor::toplevel_icon`].
     pub toplevel_icon_manager: crate::compositor::toplevel_icon::ToplevelIconManager,
     /// Current display scale factor (`HiDPI`), sent to clients as the
-    /// preferred `wp_fractional_scale`. Read once at session start from the
-    /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
+    /// preferred `wp_fractional_scale`. Follows the shared settings
+    /// (`display.scale`, see [`display_scale_from`]), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
     pub scale: f64,
     /// Every output as `(position, size, scale)` in the logical desktop,
     /// mirrored from the backend.
@@ -730,6 +1096,7 @@ pub struct State {
     /// Every text input's declared content type, for telling a secret
     /// field from an ordinary one.
     pub(crate) text_fields: crate::compositor::text_commit::TextFields,
+    pub(crate) private_text_input: crate::compositor::private_text_input::PrivateTextInput,
     /// Text the shell is committing into the focused field.
     pub(crate) text_commit: crate::compositor::text_commit::TextCommit,
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
@@ -738,6 +1105,18 @@ pub struct State {
     /// Text commits the on-screen keyboard has made into focused fields this
     /// session: what a person typed on it, counted but never kept.
     pub osk_commits: u64,
+    /// Whether the trusted composing input method has a live, uncommitted
+    /// preedit. This is content-free protocol state used only to keep an
+    /// exact same-owner floating handoff from deactivating the composer.
+    pub(crate) input_method_preedit: InputMethodPreeditState,
+    /// Client holding the seat's single admitted input-method-v2 resource.
+    /// A second resource retires the connection instead of being allowed to
+    /// mutate protocol observations after Smithay marked it unavailable.
+    pub(crate) input_method_resource_client: Option<ClientId>,
+    /// Serial Smithay has most recently sent to the admitted input method.
+    /// This mirrors only content-free protocol ordering; mismatches fail
+    /// closed by retaining the last committed preedit state.
+    pub(crate) input_method_serial: u32,
     /// Whether one of the shell's own text fields holds the seat's
     /// text-input focus (see `compositor::shell_text_input`).
     pub(crate) shell_field_active: bool,
@@ -759,7 +1138,11 @@ pub struct State {
     pub(crate) pending_floating_toplevels: Vec<PendingFloatingToplevel>,
     /// Live app-owned secondary surfaces, outside the normal workspace tree.
     pub(crate) floating_toplevels: Vec<FloatingToplevel>,
+    pub(crate) native_agent_markers: HashMap<u64, super::native::NativeAgentMarkerSource>,
     pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
+    floating_focus_handoffs: HashMap<(u64, String), floating_focus::SourceFocus>,
+    /// What transient surfaces' capture protection was last derived from.
+    capture_protection_sync: CaptureProtectionSync,
 }
 
 pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
@@ -778,6 +1161,17 @@ pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
 }
 
 impl State {
+    pub(crate) fn surface_launch_custody(
+        &self,
+        surface_id: u64,
+    ) -> Option<crate::shell::launcher::VerifiedLaunchCustody> {
+        self.client_input
+            .surface(surface_id)?
+            .client()?
+            .get_data::<ClientState>()?
+            .launch_custody
+    }
+
     pub(crate) fn authorize_floating_toplevel(&mut self, pending: PendingFloatingToplevel) {
         self.pending_floating_toplevels.retain(|candidate| {
             candidate.connection != pending.connection || candidate.public_id != pending.public_id
@@ -799,12 +1193,14 @@ impl State {
         let pending = self.pending_floating_toplevels.remove(index);
         self.client_input.promote_to_overlay(surface_id);
         let surface = FloatingToplevel {
+            owner: pending.owner,
             surface_id,
             token: pending.token,
             connection: pending.connection,
             public_id: pending.public_id,
             app_id: pending.app_id,
             content_rect: pending.content_rect,
+            input_rect: pending.input_rect,
             rect: pending.rect,
             transfer_frame: pending.transfer_frame,
             transfer_source: pending.transfer_source,
@@ -813,6 +1209,73 @@ impl State {
         };
         self.floating_toplevels.push(surface);
         true
+    }
+
+    pub(crate) fn floating_owner_for_surface(
+        &self,
+        surface_id: u64,
+    ) -> Result<Arc<FloatingToplevelOwner>, &'static str> {
+        let client = self
+            .surface_handles
+            .get(&surface_id)
+            .and_then(WlSurface::client)
+            .ok_or("floating source has no current Wayland connection")?;
+        let (_, room) = authenticated_toplevel_identity(client.get_data::<ClientState>(), None)?;
+        Ok(Arc::new(FloatingToplevelOwner {
+            client: client.id(),
+            room,
+        }))
+    }
+
+    fn resolve_toplevel_identity(
+        &self,
+        surface_id: u64,
+        client: Option<&smithay::reexports::wayland_server::Client>,
+        announced: Option<String>,
+    ) -> Result<(Option<String>, Option<crate::shell::state::RoomId>), &'static str> {
+        let owner = announced
+            .as_deref()
+            .and_then(floating_capability_token)
+            .and_then(|token| {
+                self.pending_floating_toplevels
+                    .iter()
+                    .find(|pending| pending.token == token)
+                    .map(|pending| (pending.owner.as_deref(), pending.app_id.as_str()))
+                    .or_else(|| {
+                        self.floating_toplevels
+                            .iter()
+                            .find(|surface| {
+                                surface.token == token && surface.surface_id == surface_id
+                            })
+                            .map(|surface| (surface.owner.as_deref(), surface.app_id.as_str()))
+                    })
+            });
+        authenticated_floating_toplevel_identity(client, announced, owner)
+    }
+
+    pub(crate) fn validate_floating_resume_owner(
+        &self,
+        connection: u64,
+        public_id: &str,
+        owner: Option<&FloatingToplevelOwner>,
+    ) -> Result<(), &'static str> {
+        let previous = self
+            .pending_floating_toplevels
+            .iter()
+            .find(|pending| pending.connection == connection && pending.public_id == public_id)
+            .map(|pending| pending.owner.as_deref())
+            .or_else(|| {
+                self.floating_toplevels
+                    .iter()
+                    .find(|surface| {
+                        surface.connection == connection && surface.public_id == public_id
+                    })
+                    .map(|surface| surface.owner.as_deref())
+            });
+        if owner.is_none() || previous.is_some_and(|previous| previous != owner) {
+            return Err("floating capability cannot change its source owner");
+        }
+        Ok(())
     }
 
     fn mark_floating_toplevel_presented(&mut self, surface_id: u64) {
@@ -829,7 +1292,7 @@ impl State {
         surface.presented = true;
         if !surface.suspended {
             self.floating_toplevel_events
-                .push(FloatingToplevelEvent::Mapped(surface.clone()));
+                .push(FloatingToplevelEvent::Mapped(Box::new(surface.clone())));
         }
     }
 
@@ -839,15 +1302,27 @@ impl State {
         public_id: &str,
         rect: vello::kurbo::Rect,
         content_rect: vello::kurbo::Rect,
+        input_rect: Option<vello::kurbo::Rect>,
     ) -> bool {
+        if ui::floating_surface::protocol_input_rect(
+            rect,
+            input_rect.map(ui::floating_surface::protocol_rect_array),
+        )
+        .is_err()
+        {
+            return false;
+        }
         if let Some(surface) = self
             .floating_toplevels
             .iter_mut()
             .find(|surface| surface.connection == connection && surface.public_id == public_id)
         {
-            let changed = surface.rect != rect || surface.content_rect != content_rect;
+            let changed = surface.rect != rect
+                || surface.content_rect != content_rect
+                || surface.input_rect != input_rect;
             surface.rect = rect;
             surface.content_rect = content_rect;
+            surface.input_rect = input_rect;
             return changed;
         }
         if let Some(pending) = self
@@ -855,12 +1330,48 @@ impl State {
             .iter_mut()
             .find(|pending| pending.connection == connection && pending.public_id == public_id)
         {
-            let changed = pending.rect != rect || pending.content_rect != content_rect;
+            let changed = pending.rect != rect
+                || pending.content_rect != content_rect
+                || pending.input_rect != input_rect;
             pending.rect = rect;
             pending.content_rect = content_rect;
+            pending.input_rect = input_rect;
             return changed;
         }
         false
+    }
+
+    /// Suspend carries geometry, not a new input declaration. Preserve and
+    /// translate the last authenticated constraint rather than widening it.
+    pub(crate) fn update_retained_floating_geometry(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        rect: vello::kurbo::Rect,
+        content_rect: vello::kurbo::Rect,
+    ) -> bool {
+        let previous = self
+            .floating_toplevels
+            .iter()
+            .find(|surface| surface.connection == connection && surface.public_id == public_id)
+            .map(|surface| (surface.content_rect, surface.input_rect))
+            .or_else(|| {
+                self.pending_floating_toplevels
+                    .iter()
+                    .find(|surface| {
+                        surface.connection == connection && surface.public_id == public_id
+                    })
+                    .map(|surface| (surface.content_rect, surface.input_rect))
+            });
+        let Some((previous_content, input_rect)) = previous else {
+            return false;
+        };
+        let input_rect = ui::floating_surface::translate_input_rect(
+            input_rect,
+            previous_content.origin(),
+            content_rect.origin(),
+        );
+        self.update_floating_toplevel_rect(connection, public_id, rect, content_rect, input_rect)
     }
 
     /// Hide one app-owned surface without invalidating its capability or
@@ -872,6 +1383,7 @@ impl State {
         public_id: &str,
         return_frame: Option<FloatingTransferFrame>,
     ) -> bool {
+        self.arm_floating_return_focus(connection, public_id);
         if let Some(frame) = return_frame
             && let Some(surface) = self
                 .floating_toplevels
@@ -899,12 +1411,14 @@ impl State {
         connection: u64,
         public_id: &str,
     ) -> bool {
-        complete_floating_return_entries(
+        let focus_ready = self.floating_return_presented(connection, public_id);
+        let changed = complete_floating_return_entries(
             &mut self.pending_floating_toplevels,
             &mut self.floating_toplevels,
             connection,
             public_id,
-        )
+        );
+        changed || focus_ready
     }
 
     /// Release the source-frame gate only after the app's primary render
@@ -947,7 +1461,41 @@ impl State {
         )
     }
 
+    /// Distinguish a fresh request from a refused retained capability. Callers
+    /// must not mint replacement authority after incompatible retained geometry.
+    pub(crate) fn resume_floating_request(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        geometry: (vello::kurbo::Rect, vello::kurbo::Rect),
+        transfer_frame: Option<FloatingTransferFrame>,
+        transfer_source: Option<FloatingTransferSource>,
+    ) -> Result<Option<String>, &'static str> {
+        let retained =
+            self.floating_toplevels
+                .iter()
+                .any(|surface| surface.connection == connection && surface.public_id == public_id)
+                || self.pending_floating_toplevels.iter().any(|surface| {
+                    surface.connection == connection && surface.public_id == public_id
+                });
+        let resumed = self.resume_floating_toplevel(
+            connection,
+            public_id,
+            geometry.0,
+            geometry.1,
+            transfer_frame,
+            transfer_source,
+        );
+        if retained && resumed.is_none() {
+            Err("floating resume rejected incompatible input geometry")
+        } else {
+            Ok(resumed)
+        }
+    }
+
     pub(crate) fn dismiss_floating_toplevel(&mut self, connection: u64, public_id: &str) -> bool {
+        self.floating_focus_handoffs
+            .remove(&(connection, public_id.to_owned()));
         dismiss_floating_entries(
             &mut self.pending_floating_toplevels,
             &mut self.floating_toplevels,
@@ -957,6 +1505,8 @@ impl State {
     }
 
     pub(crate) fn dismiss_floating_connection(&mut self, connection: u64) -> bool {
+        self.floating_focus_handoffs
+            .retain(|(owner, _), _| *owner != connection);
         let pending_before = self.pending_floating_toplevels.len();
         let live_before = self.floating_toplevels.len();
         self.pending_floating_toplevels
@@ -987,6 +1537,26 @@ impl State {
         let now = std::time::Instant::now();
         let until = now.checked_add(CLOSING_FRAME_GRACE).unwrap_or(now);
         self.closing_toplevels.insert(id, until);
+        if let Some(pid) = toplevel
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+            && !self
+                .xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .any(|other| {
+                    other.wl_surface() != toplevel.wl_surface()
+                        && !self
+                            .closing_toplevels
+                            .contains_key(&crate::compositor::state::surface_id(other.wl_surface()))
+                        && other.wl_surface().client().and_then(|client| {
+                            client.get_data::<ClientState>().and_then(|state| state.pid)
+                        }) == Some(pid)
+                })
+        {
+            crate::shell::launcher::note_native_writer_retiring(pid);
+        }
         toplevel.send_close();
         self.release_frame_callbacks(toplevel.wl_surface());
     }
@@ -1022,13 +1592,11 @@ impl State {
         fired
     }
 
-    /// The user or the shell closed the window showing `surface_id`: its tab
-    /// goes, and the client and every sheet over it are asked to close.
+    /// Ask the client showing `surface_id` to close. Its tab remains available
+    /// for a deferred save decision until actual destruction removes it.
     pub fn close_surface_on_request(&mut self, surface_id: u64) {
-        let _ = {
-            let mut tree = self.workspace_tree.write();
-            tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id)
-        };
+        // xdg close is a request, not admission. Destruction owns durable
+        // removal so a client's save/refusal decision stays visible.
         if let Some(toplevel) = self
             .xdg_shell_state
             .toplevel_surfaces()
@@ -1102,11 +1670,21 @@ impl State {
             serde_json::json!({"surface": id, "root_surface": root, "app_id": app_id, "role": role})
         };
         let keyboard = self.seat.get_keyboard();
+        let pointer = self.seat.get_pointer();
+        let (grab_kind, grab_surface, buttons_down) = self.client_input.pointer_custody();
         serde_json::json!({
             "keyboard": keyboard.as_ref().and_then(smithay::input::keyboard::KeyboardHandle::current_focus).map(describe),
             "routed_keyboard_surface": self.client_input.keyboard_focus(),
+            "pointer_observable": pointer.is_some(),
+            "pointer": pointer.as_ref().and_then(smithay::input::pointer::PointerHandle::current_focus).map(describe),
+            "routed_pointer_surface": self.client_input.pointer_focus(),
+            "pointer_grab": pointer.as_ref().map(|_| serde_json::json!({"kind": grab_kind, "surface": grab_surface})),
+            "pointer_buttons_down": pointer.as_ref().map(|_| buttons_down),
             "text_input": self.seat.text_input().focus().map(describe),
             "text_input_active": self.text_input_active(),
+            "input_method_connected": self.input_method_resource_client.is_some(),
+            "input_method_keyboard_grabbed": self.seat.input_method().keyboard_grabbed(),
+            "input_method_preedit_active": self.input_method_preedit.is_active(),
             "on_screen_keyboard_surface": self.osk_surface,
         })
     }
@@ -1156,7 +1734,8 @@ impl State {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
         let mut dmabuf_state = DmabufState::new();
-        let (dmabuf_device, dmabuf_global) = Self::init_dmabuf(&display_handle, &mut dmabuf_state);
+        let (dmabuf_device, dmabuf_global, scanout_feedback) =
+            Self::init_dmabuf(&display_handle, &mut dmabuf_state);
 
         // Register a real seat with a pointer device for `apply_remote_input` to inject into; name matches the wayland.rs sibling for consistency.
         let mut seat = seat_state.new_wl_seat(&display_handle, "tilo-desktop");
@@ -1172,6 +1751,7 @@ impl State {
         // dedicated socket acceptor, and only the kind that currently owns
         // the seat (see `compositor::input_method`) sees them at all.
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
+        crate::compositor::private_text_input::PrivateTextInput::register(&display_handle);
         let seat_input_method = crate::compositor::input_method::SeatInputMethod::default();
         let input_method_manager_state =
             InputMethodManagerState::new::<Self, _>(&display_handle, {
@@ -1193,8 +1773,6 @@ impl State {
         let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
         let toplevel_icon_manager = crate::compositor::toplevel_icon::manager(&display_handle);
         let (session_lock_state, output_management) = Self::privileged_globals(&display_handle);
-        // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
-        let scale = load_display_scale();
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
@@ -1225,6 +1803,7 @@ impl State {
             shm_state,
             dmabuf_state,
             dmabuf_global,
+            scanout_feedback,
             dmabuf_device,
             seat_state,
             text_input_manager_state,
@@ -1267,7 +1846,9 @@ impl State {
             idle_inhibit_manager,
             idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors::default(),
             toplevel_icon_manager,
-            scale,
+            // The session sets the persisted scale from its live settings
+            // ([`display_scale_from`]); a bare `State` advertises 100%.
+            scale: 1.0,
             output_layout: Vec::new(),
             output_sizes: HashMap::new(),
             output_rects: HashMap::new(),
@@ -1306,16 +1887,23 @@ impl State {
             seat_input_method,
             trusted_input_method_clients: Vec::new(),
             text_fields: crate::compositor::text_commit::TextFields::default(),
+            private_text_input: crate::compositor::private_text_input::PrivateTextInput::default(),
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
             osk_commits: 0,
+            input_method_preedit: InputMethodPreeditState::Inactive,
+            input_method_resource_client: None,
+            input_method_serial: 0,
             shell_field_active: false,
             shell_field_keys: Vec::new(),
             virtual_keymaps: std::collections::HashMap::new(),
             closing_toplevels: HashMap::new(),
             pending_floating_toplevels: Vec::new(),
+            floating_focus_handoffs: HashMap::new(),
             floating_toplevels: Vec::new(),
+            native_agent_markers: HashMap::new(),
             floating_toplevel_events: Vec::new(),
+            capture_protection_sync: CaptureProtectionSync::default(),
         };
         state.activate_keyboard_source(initial_keyboard_index);
         state
@@ -1340,7 +1928,11 @@ impl State {
     fn init_dmabuf(
         display_handle: &DisplayHandle,
         dmabuf_state: &mut DmabufState,
-    ) -> (Result<RenderNode, ProbeError>, Option<DmabufGlobal>) {
+    ) -> (
+        Result<RenderNode, ProbeError>,
+        Option<DmabufGlobal>,
+        Option<crate::compositor::scanout_feedback::ScanoutFeedback>,
+    ) {
         // `zwp_linux_dmabuf_v1`. Two things have to be right for a GPU client:
         //
         // 1. **A main device.** Mesa dropped `wl_drm`, so
@@ -1371,54 +1963,59 @@ impl State {
         })
         .collect();
         let dmabuf_device = crate::compositor::render_node::probe();
-        let dmabuf_global =
-            match &dmabuf_device {
-                Ok(node) => {
-                    match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
-                        Ok(feedback) => {
-                            // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
-                            crate::compositor::render_node::set_advertised(node.path.clone());
-                            crate::compositor::gpu_health::record_dmabuf(Ok(&node.path));
-                            tracing::info!(
-                                target: "shell::compositor::dmabuf",
-                                device = %node.path.display(),
-                                driver = node.driver.as_deref().unwrap_or("<unknown>"),
-                                dev = node.dev,
-                                formats = dmabuf_formats.len(),
-                                "advertising zwp_linux_dmabuf_v1 with feedback"
-                            );
-                            Some(dmabuf_state.create_global_with_default_feedback::<Self>(
-                                display_handle,
-                                &feedback,
-                            ))
-                        }
-                        Err(e) => {
-                            crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
-                            // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
-                            tracing::error!(
-                                target: "shell::compositor::dmabuf",
-                                error = %e,
-                                "could not build dmabuf feedback; not advertising dmabuf — \
-                                 GPU clients will fall back to wl_shm"
-                            );
-                            None
-                        }
+        let mut scanout_feedback = None;
+        let dmabuf_global = match &dmabuf_device {
+            Ok(node) => {
+                match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
+                    Ok(feedback) => {
+                        // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
+                        crate::compositor::render_node::set_advertised(node.path.clone());
+                        crate::compositor::gpu_health::record_dmabuf(Ok(&node.path));
+                        tracing::info!(
+                            target: "shell::compositor::dmabuf",
+                            device = %node.path.display(),
+                            driver = node.driver.as_deref().unwrap_or("<unknown>"),
+                            dev = node.dev,
+                            formats = dmabuf_formats.len(),
+                            "advertising zwp_linux_dmabuf_v1 with feedback"
+                        );
+                        let global = dmabuf_state
+                            .create_global_with_default_feedback::<Self>(display_handle, &feedback);
+                        scanout_feedback =
+                            Some(crate::compositor::scanout_feedback::ScanoutFeedback::new(
+                                node.dev,
+                                dmabuf_formats,
+                                feedback,
+                            ));
+                        Some(global)
                     }
-                }
-                Err(e) => {
-                    if !matches!(e, ProbeError::NoRenderNodes | ProbeError::NoRenderer(_)) {
+                    Err(e) => {
                         crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
+                        // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
+                        tracing::error!(
+                            target: "shell::compositor::dmabuf",
+                            error = %e,
+                            "could not build dmabuf feedback; not advertising dmabuf — \
+                             GPU clients will fall back to wl_shm"
+                        );
+                        None
                     }
-                    tracing::warn!(
-                        target: "shell::compositor::dmabuf",
-                        reason = %e,
-                        "not advertising zwp_linux_dmabuf_v1 — GPU clients will render \
-                         through wl_shm (software) instead"
-                    );
-                    None
                 }
-            };
-        (dmabuf_device, dmabuf_global)
+            }
+            Err(e) => {
+                if !matches!(e, ProbeError::NoRenderNodes | ProbeError::NoRenderer(_)) {
+                    crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
+                }
+                tracing::warn!(
+                    target: "shell::compositor::dmabuf",
+                    reason = %e,
+                    "not advertising zwp_linux_dmabuf_v1 — GPU clients will render \
+                     through wl_shm (software) instead"
+                );
+                None
+            }
+        };
+        (dmabuf_device, dmabuf_global, scanout_feedback)
     }
 
     /// Add a keyboard device to `seat` from the persisted XKB settings,
@@ -1442,6 +2039,7 @@ impl State {
         let repeat_rate_hz = i32::try_from(repeat_rate).unwrap_or(i32::MAX);
         match seat.add_keyboard(
             XkbConfig {
+                model: &keyboard_settings.model,
                 layout: &keyboard_settings.layouts,
                 variant: &keyboard_settings.variants,
                 options: keyboard_settings.options.clone(),
@@ -1489,10 +2087,18 @@ impl State {
     /// working keymap in place.
     pub fn reload_keyboard_settings(&mut self) {
         let settings = crate::compositor::backend::drm::input_config::KeyboardSettings::load();
+        self.apply_keyboard_settings(settings);
+    }
+
+    pub(crate) fn apply_keyboard_settings(
+        &mut self,
+        settings: crate::compositor::backend::drm::input_config::KeyboardSettings,
+    ) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
-        let same_keymap = self.applied_keyboard.layouts == settings.layouts
+        let same_keymap = self.applied_keyboard.model == settings.model
+            && self.applied_keyboard.layouts == settings.layouts
             && self.applied_keyboard.variants == settings.variants
             && self.applied_keyboard.options == settings.options;
         let compiled = if same_keymap {
@@ -1502,6 +2108,7 @@ impl State {
             keyboard.set_xkb_config(
                 self,
                 XkbConfig {
+                    model: &settings.model,
                     layout: &settings.layouts,
                     variant: &settings.variants,
                     options: settings.options.clone(),
@@ -1896,7 +2503,7 @@ impl State {
             });
         }
         // Surfaces no longer placed lose their cached scale, so a re-placed one is recomputed, not resurrected at its last value.
-        let live: Vec<u64> = placements.iter().map(|(id, _)| *id).collect();
+        let live: HashSet<u64> = placements.iter().map(|(id, _)| *id).collect();
         self.surface_scales.retain(|id, _| live.contains(id));
     }
 
@@ -1908,19 +2515,32 @@ impl State {
 
     /// Whether shared window `surface` must reach its viewers as the
     /// placeholder instead of its pixels.
+    ///
+    /// The app behind a tiled surface comes from the input router's cache of
+    /// the tree, without the tree lock. Until the loop folds a tree write
+    /// into that cache, the tree itself is read, so a renamed or newly
+    /// adopted tab is never judged by a stale app id.
     pub fn is_surface_capture_protected(&self, surface: SurfaceId) -> bool {
-        let app_id = {
-            let tree = self.workspace_tree.read();
-            tab_binding::app_id_for_surface(&tree, surface).map(str::to_owned)
-        }
-        .or_else(|| {
+        let floating = || {
             self.floating_toplevels
                 .iter()
                 .find(|toplevel| toplevel.surface_id == surface)
-                .map(|toplevel| toplevel.app_id.clone())
-        });
-        crate::compositor::foreign::store()
-            .is_capture_protected(surface, app_id.as_deref().unwrap_or_default())
+                .map(|toplevel| toplevel.app_id.as_str())
+        };
+        let store = crate::compositor::foreign::store();
+        if self
+            .client_input
+            .app_ids_current(self.workspace_tree.generation())
+        {
+            let app_id = self.client_input.app_id(surface).or_else(floating);
+            return store.is_capture_protected(surface, app_id.unwrap_or_default());
+        }
+        let tiled = {
+            let tree = self.workspace_tree.read();
+            tab_binding::app_id_for_surface(&tree, surface).map(str::to_owned)
+        };
+        let app_id = tiled.as_deref().or_else(floating);
+        store.is_capture_protected(surface, app_id.unwrap_or_default())
     }
 
     /// A share session's next frame: the window's pixels, or the themed
@@ -2732,7 +3352,13 @@ impl State {
                         ForeignCommitCapture::Dmabuf(token) => {
                             store().capture_commit_associated(surface_id, buffer, Some(token))
                         }
-                        ForeignCommitCapture::Shm(_) => CaptureOutcome::Queued,
+                        ForeignCommitCapture::Shm(generation) => {
+                            if store().note_shm_committed(surface_id, generation) {
+                                CaptureOutcome::Queued
+                            } else {
+                                CaptureOutcome::Failed("SHM commit generation is not queued".into())
+                            }
+                        }
                         ForeignCommitCapture::NoBuffer
                         | ForeignCommitCapture::Failed
                         | ForeignCommitCapture::Removed => {
@@ -3387,9 +4013,9 @@ impl State {
         true
     }
 
-    /// Deliver a raw keycode press/release to the seat keyboard. Shared by
-    /// the `RemoteDesktop` keycode + keysym paths; passed straight through to
-    /// smithay's `KeyboardHandle::input`, the same convention `network::wayland::WaylandServer::handle_input` and [`Self::apply_remote_input`]'s `Key` arm use.
+    /// Deliver a Linux evdev keycode press/release to the seat keyboard. Shared by
+    /// the `RemoteDesktop` and personal-fabric paths. Convert to Smithay's XKB
+    /// keycode convention by adding eight, as the other remote input paths do.
     fn inject_seat_key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
@@ -3399,10 +4025,14 @@ impl State {
         } else {
             KeyState::Released
         };
-        let _: Option<()> =
-            keyboard.input(self, keycode.into(), key_state, serial, time, |_, _, _| {
-                smithay::input::keyboard::FilterResult::<()>::Forward
-            });
+        let _: Option<()> = keyboard.input(
+            self,
+            keycode.saturating_add(8).into(),
+            key_state,
+            serial,
+            time,
+            |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+        );
         true
     }
 
@@ -3421,7 +4051,9 @@ impl State {
             for raw in 8u32..=255 {
                 let kc: Keycode = raw.into();
                 if xkb.raw_syms_for_key_in_layout(kc, layout).contains(&target) {
-                    return Some(raw);
+                    // This helper returns evdev, like the keycode portal and
+                    // personal-fabric paths. Injection applies the XKB offset.
+                    return Some(raw.saturating_sub(8));
                 }
             }
             None
@@ -3861,6 +4493,33 @@ impl State {
             .committed(surface, surface_id, pixels);
     }
 
+    /// Tell the fullscreen client what the display can scan out, after each
+    /// frame is built: `offer` is the frame's scanout candidate with the
+    /// plane of the output it covers ([`crate::compositor::scanout_feedback::offer`]).
+    /// The fullscreen surface gets a scanout tranche while it is that
+    /// candidate and its buffer is opaque; on the frame it stops being
+    /// either — covered by chrome or a popup, translucent, out of
+    /// fullscreen — it gets the default feedback back. Without a dmabuf
+    /// global, or without a plane, every surface keeps the default.
+    pub fn update_scanout_feedback(
+        &mut self,
+        offer: Option<crate::compositor::scanout_feedback::ScanoutOffer>,
+    ) {
+        let Some(feedback) = self.scanout_feedback.as_mut() else {
+            return;
+        };
+        let offered = offer.and_then(|offer| {
+            let target = self
+                .fullscreen_target
+                .as_ref()
+                .filter(|target| target.surface_id == offer.surface)?;
+            let surface = target.surface.wl_surface();
+            crate::compositor::scanout_feedback::ScanoutOpacity::of(surface)
+                .then(|| (surface.clone(), offer.plane))
+        });
+        feedback.offer(offered.as_ref().map(|(surface, plane)| (surface, plane)));
+    }
+
     fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
         let surface_id = crate::compositor::state::surface_id(surface);
         // `new_toplevel` registers the protocol surface before adopting it
@@ -3878,9 +4537,10 @@ impl State {
             || self.is_output_presentation_surface(surface_id)
             || self.is_transient_surface(surface_id);
         if !captured_here {
+            forget_uncaptured_shm_base(surface, surface_id);
             return;
         }
-        let (association, blocker) = wl_compositor::with_states(surface, |states| {
+        let (association, capture) = wl_compositor::with_states(surface, |states| {
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
@@ -3901,46 +4561,47 @@ impl State {
                     return (association, None);
                 }
             };
+            let rects = pending_buffer_rects(attrs.pending(), pending_viewport(states));
+            let declared = DeclaredOpacity::of(attrs.pending());
             drop(attrs);
+            let damage = rects.as_deref().map(buffer_damage);
+            let regions = rects.as_deref().map(shm_regions);
             let Some(client) = surface.client() else {
                 return (ForeignCommitCapture::Failed, None);
             };
-            if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned() {
-                let colorimetry = states
-                    .data_map
-                    .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
-                    .and_then(crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry)
-                    .map(|(colorimetry, _)| colorimetry);
-                if let Some((token, barrier)) = crate::compositor::foreign::store()
-                    .prepare_dmabuf_capture(surface_id, client, dmabuf, colorimetry)
+            let commit = smithay::wayland::dmabuf::get_dmabuf(&buffer)
+                .ok()
+                .map(|dmabuf| declared.commit(states, dmabuf.clone()));
+            crate::compositor::scanout_feedback::ScanoutOpacity::record(states, commit.as_ref());
+            if let Some(commit) = commit {
+                if let Some(capture) = crate::compositor::foreign::store()
+                    .prepare_dmabuf_capture_with_damage(surface_id, client, commit, damage)
                 {
                     // `with_states` holds Smithay's PrivateSurfaceData mutex.
                     // `add_blocker` takes that same non-reentrant mutex, so it
                     // must happen after this callback returns. Doing it here
                     // self-deadlocked the compositor on the first GPU-backed
                     // app commit (most visibly Chat).
-                    return (ForeignCommitCapture::Dmabuf(token), Some(barrier));
+                    return (ForeignCommitCapture::Dmabuf(capture.token), Some(capture));
                 }
                 return (ForeignCommitCapture::Failed, None);
             }
-            match crate::compositor::surface_readback::copy_shm_frame(&buffer) {
-                Ok(frame) => {
-                    if let Some(generation) =
-                        crate::compositor::foreign::store().prepare_shm_capture(surface_id, frame)
-                    {
-                        (ForeignCommitCapture::Shm(generation), None)
-                    } else {
-                        (ForeignCommitCapture::Failed, None)
-                    }
-                }
-                Err(error) => {
-                    crate::compositor::foreign::store().note_failure(surface_id, error.to_string());
-                    (ForeignCommitCapture::Failed, None)
-                }
+            match crate::compositor::foreign::store().capture_shm_commit(
+                surface_id,
+                &buffer,
+                damage,
+                regions.as_deref(),
+            ) {
+                Some(generation) => (ForeignCommitCapture::Shm(generation), None),
+                None => (ForeignCommitCapture::Failed, None),
             }
         });
-        if let Some(blocker) = blocker {
-            wl_compositor::add_blocker(surface, blocker);
+        settle_shm_base(surface_id, &association);
+        if let Some(capture) = capture {
+            wl_compositor::add_blocker(surface, capture.barrier);
+            if let Some(fence) = capture.fence {
+                self.watch_dmabuf_fence(fence, surface_id, capture.token);
+            }
         }
         if matches!(
             association,
@@ -3968,13 +4629,75 @@ impl State {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push_back(association);
             }
+            if matches!(association, ForeignCommitCapture::Shm(_)) {
+                mark_shm_capture_base(states);
+            }
         });
+    }
+
+    /// Take hold of the buffer the commit just applied on `surface` when the
+    /// frame it published is drawn from that buffer itself. Left in the
+    /// surface state, Smithay would give it back the moment the next commit
+    /// applies, while a queued frame can still draw it; held here, it goes
+    /// back once the last frame that drew it finished
+    /// ([`crate::shell::gpu_frames`]). Runs last in the commit handler, after
+    /// everything that reads the applied buffer.
+    fn hold_drawn_buffer(surface: &WlSurface, surface_id: u64) {
+        let store = crate::compositor::foreign::store();
+        let Some(frame) = store.take_unheld_frame(surface_id) else {
+            return;
+        };
+        let buffer = wl_compositor::with_states(surface, |states| {
+            take_new_buffer(
+                &mut states
+                    .cached_state
+                    .get::<wl_compositor::SurfaceAttributes>()
+                    .current()
+                    .buffer,
+            )
+        });
+        if let Some(buffer) = buffer {
+            crate::compositor::foreign::hold_buffer(buffer, &frame);
+        } else {
+            // Never draw from a buffer the client may reuse.
+            tracing::warn!(
+                target: "shell::compositor::foreign",
+                surface_id,
+                "a client frame's buffer was not current when its commit applied; not drawing it"
+            );
+            store.withdraw_unheld_frame(surface_id, &frame);
+        }
+    }
+
+    /// Start the capture of commit `token` on `surface_id` when its buffer's
+    /// implicit fence signals. The loop watches the fence, so no thread waits
+    /// on a client's GPU and a slow client holds up only its own commits.
+    fn watch_dmabuf_fence(
+        &self,
+        fence: smithay::backend::allocator::dmabuf::DmabufSource,
+        surface_id: u64,
+        token: u64,
+    ) {
+        let watched = self.loop_handle.insert_source(fence, move |(), _, _| {
+            crate::compositor::foreign::dmabuf_fence_signalled(surface_id, token);
+            Ok(())
+        });
+        if let Err(error) = watched {
+            tracing::warn!(
+                target: "shell::compositor::foreign",
+                surface_id,
+                error = %error.error,
+                "could not watch a client buffer's fence; capturing it on the worker"
+            );
+            crate::compositor::foreign::dmabuf_fence_unwatched(surface_id, token);
+        }
     }
 
     /// Re-evaluate transactions whose off-thread buffer capture completed.
     /// Called by the compositor loop on its owning thread; worker threads only
     /// flip barriers and enqueue owning client handles.
     pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
+        crate::compositor::foreign::give_back_released_buffers();
         let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
         let changed =
             crate::compositor::foreign::take_published_shm_frames() | !completed.is_empty();
@@ -4023,6 +4746,10 @@ pub struct ClientState {
     /// Durable workspace room from the same host-owned launch record. A client
     /// cannot select or change this through Wayland protocol state.
     pub workspace_id: Option<String>,
+    /// Exact supervised launch which owns this Wayland connection. Combined
+    /// with `workspace_id` and `package_id`, this distinguishes independent
+    /// processes of the same app without trusting a client-provided token.
+    pub(crate) launch_custody: Option<crate::shell::launcher::VerifiedLaunchCustody>,
     /// Whether package/app-id equality is part of this connection's sandbox
     /// boundary. Unconfined host launches keep their desktop compatibility ids.
     pub enforce_package_id: bool,
@@ -4034,6 +4761,9 @@ pub struct ClientState {
     /// Used to recognise xwayland-satellite after its last toplevel dies
     /// while leftover X clients (Wine) still hold the X socket.
     pub pid: Option<u32>,
+    /// Kernel process lifetime observed when this connection was admitted.
+    /// A reused PID can never authorize a mapped-file diagnostic.
+    pub pid_start_time: Option<u64>,
     /// Set when the connection is a legacy VM's Wayland forwarder: every app
     /// id it announces becomes `legacy.<guest>.<app id>`. Claiming this only
     /// lowers what a window is trusted with, so it needs no proof.
@@ -4056,9 +4786,11 @@ impl Default for ClientState {
             input_method: None,
             package_id: None,
             workspace_id: None,
+            launch_custody: None,
             enforce_package_id: false,
             executable: None,
             pid: None,
+            pid_start_time: None,
             legacy_guest: None,
             touch_bound: std::sync::atomic::AtomicBool::new(false),
         }
@@ -4067,7 +4799,16 @@ impl Default for ClientState {
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+    fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
+        tracing::debug!(
+            ?client_id,
+            connection = self.index,
+            pid = self.pid,
+            privileged = self.privileged,
+            ?reason,
+            "Wayland client disconnected"
+        );
+    }
 }
 
 impl ClientState {
@@ -4078,15 +4819,26 @@ impl ClientState {
 
     /// Per-client state for an ordinary app whose process ancestry was
     /// authenticated at the public socket boundary.
+    #[cfg(test)]
     pub(crate) fn attributed_arc(
         identity: crate::shell::launcher::VerifiedLaunchIdentity,
+        pid: u32,
+    ) -> Arc<Self> {
+        Self::attributed_with_custody_arc(identity, None, pid)
+    }
+
+    pub(crate) fn attributed_with_custody_arc(
+        identity: crate::shell::launcher::VerifiedLaunchIdentity,
+        launch_custody: Option<crate::shell::launcher::VerifiedLaunchCustody>,
         pid: u32,
     ) -> Arc<Self> {
         Arc::new(Self {
             package_id: Some(identity.package_id),
             workspace_id: identity.workspace_id,
+            launch_custody,
             enforce_package_id: identity.confined,
             pid: Some(pid),
+            pid_start_time: crate::shell::launcher::proc_stat(pid).map(|(_, start)| start),
             ..Self::default()
         })
     }
@@ -4201,6 +4953,38 @@ fn launched_package(client: Option<&ClientState>) -> Option<String> {
     client.package_id.clone()
 }
 
+fn authenticated_floating_toplevel_identity(
+    client: Option<&smithay::reexports::wayland_server::Client>,
+    announced: Option<String>,
+    owner: Option<(Option<&FloatingToplevelOwner>, &str)>,
+) -> Result<(Option<String>, Option<crate::shell::state::RoomId>), &'static str> {
+    let state = client.and_then(|client| client.get_data::<ClientState>());
+    if let Some((owner, app_id)) = owner {
+        let owner = owner.ok_or("floating capability has no source owner")?;
+        let client = client.ok_or("floating capability has no requesting client")?;
+        if client.id() != owner.client {
+            return Err("floating capability belongs to another Wayland connection");
+        }
+        let (canonical, room) = authenticated_toplevel_identity(state, None)?;
+        if room != owner.room
+            || state.is_some_and(|state| {
+                state.enforce_package_id && canonical.as_deref() != Some(app_id)
+            })
+        {
+            return Err("floating capability owner identity changed");
+        }
+        return Ok((announced, room));
+    }
+    authenticated_toplevel_identity(state, announced)
+}
+
+#[cfg(test)]
+#[path = "floating_identity_tests.rs"]
+mod floating_identity_tests;
+
+#[path = "floating_focus.rs"]
+mod floating_focus;
+
 fn authenticated_toplevel_identity(
     client: Option<&ClientState>,
     announced_app_id: Option<String>,
@@ -4235,6 +5019,20 @@ fn authenticated_toplevel_identity(
         return Err("Wayland app id does not match the authenticated package");
     }
     Ok((Some(package_id.to_string()), Some(room)))
+}
+
+/// Take the buffer out of `slot` when it holds a newly attached one, leaving
+/// any other assignment in place.
+fn take_new_buffer(
+    slot: &mut Option<wl_compositor::BufferAssignment>,
+) -> Option<smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer> {
+    match slot.take() {
+        Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => Some(buffer),
+        other => {
+            *slot = other;
+            None
+        }
+    }
 }
 
 // Handler trait impls.
@@ -4303,6 +5101,7 @@ impl CompositorHandler for State {
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
         self.capture_committed_foreign_pixels(surface, surface_id);
         if !is_shared {
+            Self::hold_drawn_buffer(surface, surface_id);
             return;
         }
         // Pull the most recent buffer assignment: `NewBuffer(b)` is freshly-attached; `Removed` means detach — drop the tracker slot.
@@ -4377,6 +5176,7 @@ impl CompositorHandler for State {
         // encoder the same tick — without this the encoder waits for the
         // render loop's next damage sweep, a full-frame stall. Delegated to `tick_share_session_for_surface` to keep the pump logic testable without a real `WlSurface`.
         let _ = self.tick_share_session_for_surface(surface_id);
+        Self::hold_drawn_buffer(surface, surface_id);
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
@@ -4384,6 +5184,7 @@ impl CompositorHandler for State {
         let root = foreign_root(surface);
         self.drop_transients_for_surface(id);
         self.surface_handles.remove(&id);
+        self.retire_floating_focus_source(id);
         self.presentation_feedback.destroyed(id);
         self.surface_tracker.forget(id);
         self.unregister_share_session(id);
@@ -4454,6 +5255,18 @@ impl DmabufHandler for State {
             "dmabuf imported and accepted"
         );
     }
+
+    fn new_surface_feedback(
+        &mut self,
+        surface: &WlSurface,
+        _global: &DmabufGlobal,
+    ) -> Option<smithay::wayland::dmabuf::DmabufFeedback> {
+        // A surface offered a plane before it asked for feedback gets the
+        // scanout tranche with its first batch.
+        self.scanout_feedback
+            .as_ref()
+            .and_then(|feedback| feedback.for_new_surface(surface))
+    }
 }
 
 impl ShmHandler for State {
@@ -4468,6 +5281,57 @@ impl ShmHandler for State {
 /// accidentally being promoted.
 fn trusted_osk_identity(surface: &WlSurface, app_id: Option<&str>) -> bool {
     osk_identity_is_trusted(app_id, trusted_osk_connection(surface))
+}
+
+struct SurfaceAdoptionId(uuid::Uuid);
+
+pub(crate) fn surface_adoption_id(surface: &WlSurface) -> Option<uuid::Uuid> {
+    surface.data::<smithay::wayland::compositor::SurfaceUserData>()?;
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<SurfaceAdoptionId>()
+            .map(|identity| identity.0)
+    })
+}
+
+fn ensure_surface_adoption_id(surface: &WlSurface) -> Option<uuid::Uuid> {
+    surface.data::<smithay::wayland::compositor::SurfaceUserData>()?;
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .insert_if_missing(|| SurfaceAdoptionId(uuid::Uuid::new_v4()));
+    });
+    surface_adoption_id(surface)
+}
+
+fn observe_toplevel_startup(surface: &ToplevelSurface) {
+    if let Some(client) = surface.wl_surface().client()
+        && let Some(state) = client.get_data::<ClientState>()
+        && let Some(pid) = state.pid
+    {
+        let adoption = state
+            .package_id
+            .as_ref()
+            .zip(state.workspace_id.as_ref())
+            .filter(|_| {
+                state.enforce_package_id
+                    && !state.privileged
+                    && state.pid_start_time.is_some_and(|expected| {
+                        crate::shell::launcher::proc_stat(pid)
+                            .is_some_and(|(_, start)| start == expected)
+                    })
+            })
+            .and_then(|(package, room)| {
+                Some(tilo_action_broker::services::LaunchAdoption {
+                    adoption_id: ensure_surface_adoption_id(surface.wl_surface())?,
+                    surface_id: surface_id(surface.wl_surface()),
+                    package_id: package.clone(),
+                    room: room.clone(),
+                })
+            });
+        crate::shell::launcher::record_startup_window(pid, adoption);
+    }
 }
 
 fn trusted_osk_connection(surface: &WlSurface) -> bool {
@@ -4667,44 +5531,102 @@ impl State {
     /// protected while the focused field declares its content secret (a
     /// password, a PIN or hidden text), and an input method's popup also
     /// while the window it serves is protected.
-    pub fn sync_capture_protection(&self) {
+    ///
+    /// Re-derived only when something it depends on changed since the last
+    /// pass (see [`CaptureProtectionInputs`]); otherwise a wakeup takes
+    /// neither the tree lock nor the store's protection lock.
+    pub fn sync_capture_protection(&mut self) {
         let secret_field = self.active_field_content_type().is_sensitive();
         let store = crate::compositor::foreign::store();
-        if let Some(keyboard) = self.osk_surface {
-            store.set_surface_capture_protected(keyboard, secret_field);
-        }
-        for popup in self
-            .input_method_popups
-            .iter()
-            .filter(|popup| popup.alive())
+        // Loaded before anything they guard is read: a change racing this
+        // pass advances them again and is folded in on the next wakeup.
+        let versions = (
+            self.workspace_tree.generation(),
+            store.capture_protection_epoch(),
+        );
+        if self
+            .capture_protection_sync
+            .last
+            .as_ref()
+            .is_some_and(|last| last.matches(self, secret_field, versions))
         {
-            let parent_protected = popup.get_parent().is_some_and(|parent| {
-                self.is_surface_capture_protected(surface_id(&parent.surface))
-            });
-            store.set_surface_capture_protected(
-                surface_id(popup.wl_surface()),
-                secret_field || parent_protected,
-            );
+            return;
         }
+        #[cfg(test)]
+        {
+            self.capture_protection_sync.passes =
+                self.capture_protection_sync.passes.saturating_add(1);
+        }
+        let mut protected = Vec::new();
+        if let Some(keyboard) = self.osk_surface {
+            protected.push((keyboard, secret_field));
+        }
+        for (popup, parent) in self.capture_protection_input_method_popups() {
+            let parent_protected =
+                parent.is_some_and(|parent| self.is_surface_capture_protected(parent));
+            protected.push((popup, secret_field || parent_protected));
+        }
+        // Nested popups chain to their toplevel through every tracked popup,
+        // live or not; a malformed graph is bounded exactly as
+        // `popup_parent_rect` bounds it.
+        let parents: HashMap<SurfaceId, SurfaceId> = self
+            .popups
+            .iter()
+            .map(|popup| (surface_id(popup.surface.wl_surface()), popup.parent))
+            .collect();
         for popup in self.popups.iter().filter(|popup| popup.surface.alive()) {
             let mut root = popup.parent;
-            // Nested popups chain to their toplevel; a malformed graph is
-            // bounded exactly as `popup_parent_rect` bounds it.
             for _ in 0..16 {
-                match self
-                    .popups
-                    .iter()
-                    .find(|candidate| surface_id(candidate.surface.wl_surface()) == root)
-                {
-                    Some(parent) => root = parent.parent,
+                match parents.get(&root) {
+                    Some(parent) => root = *parent,
                     None => break,
                 }
             }
-            store.set_surface_capture_protected(
+            protected.push((
                 surface_id(popup.surface.wl_surface()),
                 self.is_surface_capture_protected(root),
-            );
+            ));
         }
+        store.set_surfaces_capture_protected(&protected);
+        self.capture_protection_sync.last = Some(CaptureProtectionInputs::capture(
+            self,
+            secret_field,
+            versions,
+        ));
+    }
+
+    /// Live input-method popups and the surface each one serves.
+    fn capture_protection_input_method_popups(
+        &self,
+    ) -> impl Iterator<Item = (SurfaceId, Option<SurfaceId>)> + '_ {
+        self.input_method_popups
+            .iter()
+            .filter(|popup| popup.alive())
+            .map(|popup| {
+                (
+                    surface_id(popup.wl_surface()),
+                    popup.get_parent().map(|parent| surface_id(&parent.surface)),
+                )
+            })
+    }
+
+    /// Every tracked xdg popup: its surface, whether it is alive, and its
+    /// parent.
+    fn capture_protection_popups(&self) -> impl Iterator<Item = (SurfaceId, bool, SurfaceId)> + '_ {
+        self.popups.iter().map(|popup| {
+            (
+                surface_id(popup.surface.wl_surface()),
+                popup.surface.alive(),
+                popup.parent,
+            )
+        })
+    }
+
+    /// Passes [`Self::sync_capture_protection`] has made that re-derived
+    /// protection rather than finding nothing changed.
+    #[cfg(test)]
+    pub(crate) const fn capture_protection_passes(&self) -> usize {
+        self.capture_protection_sync.passes
     }
 
     #[doc(hidden)]
@@ -4741,6 +5663,13 @@ impl State {
         &mut self,
         owner: Option<crate::compositor::input_method::TrustedInputMethod>,
     ) {
+        if self.seat_input_method.get() != owner {
+            self.cancel_active_dictation();
+            self.input_method_preedit = InputMethodPreeditState::Inactive;
+            self.input_method_resource_client = None;
+            self.input_method_serial = 0;
+            self.text_fields.protocol_focus_left();
+        }
         self.seat_input_method.set(owner);
         let handle = self.display_handle.clone();
         self.trusted_input_method_clients.retain(|(id, kind)| {
@@ -4832,6 +5761,7 @@ impl State {
             .retain(|popup| !removed.contains(&surface_id(popup.wl_surface())));
         for id in removed {
             self.client_input.unregister_transient(id);
+            self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
             crate::compositor::foreign::store().forget(id);
         }
     }
@@ -5324,12 +6254,12 @@ impl XdgShellHandler for State {
         let (identity, package) = if let Some(client) = surface.wl_surface().client() {
             let client_state = client.get_data::<ClientState>();
             (
-                authenticated_toplevel_identity(client_state, announced_app_id),
+                self.resolve_toplevel_identity(surface_id, Some(&client), announced_app_id),
                 launched_package(client_state),
             )
         } else {
             (
-                authenticated_toplevel_identity(None, announced_app_id),
+                self.resolve_toplevel_identity(surface_id, None, announced_app_id),
                 None,
             )
         };
@@ -5382,6 +6312,7 @@ impl XdgShellHandler for State {
                 if adopted.is_none() {
                     tracing::warn!(surface_id, %room, "rejected Wayland toplevel for a stale workspace");
                     self.client_input.unregister_toplevel(surface_id);
+                    self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
                     surface.send_close();
                     return;
                 }
@@ -5406,6 +6337,7 @@ impl XdgShellHandler for State {
 
         // Start the clock the deferred opening configure is bounded against — adoption is when the wait becomes worth giving up on.
         crate::compositor::foreign::store().note_adopted(surface_id);
+        observe_toplevel_startup(&surface);
         if let Some(app_id) = app_id_log.as_deref() {
             crate::shell::launcher::record_host_window_open(surface_id, app_id);
         }
@@ -5424,6 +6356,23 @@ impl XdgShellHandler for State {
         let person_reached_it = self
             .clients_given_input
             .contains(&client_index_of(surface_id));
+        if let Some(pid) = surface
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+            && !self
+                .xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .any(|other| {
+                    other.wl_surface() != surface.wl_surface()
+                        && other.wl_surface().client().and_then(|client| {
+                            client.get_data::<ClientState>().and_then(|state| state.pid)
+                        }) == Some(pid)
+                })
+        {
+            crate::shell::launcher::note_native_writer_retiring(pid);
+        }
         crate::shell::launcher::note_surface_gone(surface_id, asked_to_close || person_reached_it);
         self.release_sheets_of_destroyed(surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
@@ -5444,6 +6393,8 @@ impl XdgShellHandler for State {
             .position(|candidate| candidate.surface_id == surface_id)
         {
             let surface = self.floating_toplevels.remove(index);
+            self.floating_focus_handoffs
+                .remove(&(surface.connection, surface.public_id.clone()));
             self.floating_toplevel_events
                 .push(FloatingToplevelEvent::Destroyed {
                     connection: surface.connection,
@@ -5480,6 +6431,7 @@ impl XdgShellHandler for State {
         crate::compositor::foreign::store().forget(surface_id);
         // Drop the input router's handle so no event can target a dead surface, and queue the chrome-side tab reap for next tick.
         self.client_input.unregister_toplevel(surface_id);
+        self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
@@ -5495,9 +6447,9 @@ impl XdgShellHandler for State {
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
         let identity = if let Some(client) = surface.wl_surface().client() {
-            authenticated_toplevel_identity(client.get_data::<ClientState>(), new_app_id)
+            self.resolve_toplevel_identity(surface_id, Some(&client), new_app_id)
         } else {
-            authenticated_toplevel_identity(None, new_app_id)
+            self.resolve_toplevel_identity(surface_id, None, new_app_id)
         };
         let Ok((Some(app_id), _)) = identity else {
             tracing::warn!(surface_id, "ignored unauthenticated Wayland app-id change");
@@ -5880,7 +6832,9 @@ impl SeatHandler for State {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {}
+    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {
+        self.cancel_active_dictation();
+    }
 
     fn cursor_image(
         &mut self,
@@ -5917,6 +6871,7 @@ impl InputMethodHandler for State {
         self.input_method_popups
             .retain(|popup| popup.wl_surface() != surface.wl_surface());
         self.client_input.unregister_transient(id);
+        self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
         crate::compositor::foreign::store().forget(id);
     }
 
@@ -6058,9 +7013,62 @@ smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
     smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2:
     smithay::wayland::input_method::InputMethodManagerGlobalData
 ] => InputMethodManagerState);
-smithay::reexports::wayland_server::delegate_dispatch!(State: [
-    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2: ()
-] => InputMethodManagerState);
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        (),
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        request: smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::Request,
+        data: &(),
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        let get_input_method = matches!(
+            request,
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::Request::GetInputMethod { .. }
+        );
+        let duplicate = get_input_method && state.input_method_resource_client.is_some();
+        if get_input_method && !duplicate {
+            state.input_method_resource_client = Some(client.id());
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+        }
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+            (),
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+        if duplicate {
+            state.input_method_resource_client = None;
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+            state.display_handle.backend_handle().kill_client(
+                client.id(),
+                DisconnectReason::ConnectionClosed,
+            );
+        }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        data: &(),
+    ) {
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+            (),
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
 smithay::reexports::wayland_server::delegate_dispatch!(State: [
     smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2:
     smithay::wayland::input_method::InputMethodKeyboardUserData<State>
@@ -6086,6 +7094,26 @@ impl
         data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
     ) {
         use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request;
+        match &request {
+            Request::SetPreeditString { text, .. } => {
+                state.input_method_preedit.stage(!text.is_empty());
+            }
+            Request::CommitString { .. } => {
+                state.input_method_preedit.stage(false);
+            }
+            Request::Commit { serial } => {
+                let mut has_active_text_input = false;
+                state
+                    .seat
+                    .text_input()
+                    .with_active_text_input(|_, _| has_active_text_input = true);
+                let accepted = state.input_method_resource_client.as_ref() == Some(&client.id())
+                    && *serial == state.input_method_serial
+                    && has_active_text_input;
+                state.input_method_preedit.finish(accepted);
+            }
+            _ => {}
+        }
         if matches!(request, Request::CommitString { .. })
             && client.get_data::<ClientState>().is_some_and(|data| {
                 data.input_method
@@ -6107,6 +7135,12 @@ impl
         resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
         data: &smithay::wayland::input_method::InputMethodUserData<State>,
     ) {
+        if state.input_method_resource_client.as_ref() == Some(&client) {
+            state.input_method_resource_client = None;
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+        }
         <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
             smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
             smithay::wayland::input_method::InputMethodUserData<State>,
@@ -7691,6 +8725,37 @@ mod keycap_layout_tests {
     }
 
     #[test]
+    fn model_only_reload_preserves_the_declared_physical_model() {
+        let temp = tempfile::tempdir().expect("temp");
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("XDG_CONFIG_HOME", temp.path());
+        let settings = settings_store::settings_path().expect("settings path");
+        std::fs::create_dir_all(settings.parent().expect("config dir")).expect("config dir");
+        write_input(&settings, "us");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        for model in ["jp106", "kr106", "pc104", "pc105"] {
+            settings_store::update_section(
+                "input",
+                serde_json::json!({"keyboard_model": model})
+                    .as_object()
+                    .expect("input section")
+                    .clone(),
+            )
+            .expect("persist model");
+            state.reload_keyboard_settings();
+            assert_eq!(state.applied_keyboard.model, model);
+            assert_eq!(state.applied_keyboard.layouts, "us,de");
+            assert_eq!(state.applied_keyboard.active_index, 0);
+        }
+        // The installed PC models have distinct geometry. Their evdev keymap
+        // bytes may be identical, so Smithay correctly suppresses duplicate
+        // keymap FDs. Geometry is tested against native compiled model data
+        // in Settings; actual symbol/mask ownership has its own Winit wire test.
+    }
+
+    #[test]
     fn key_names_follow_every_layout_switch_live() {
         let temp = tempfile::tempdir().expect("temp");
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -7723,6 +8788,127 @@ mod keycap_layout_tests {
         assert_eq!(label(), "Strg+Alt+Entf");
         // The stored chord never changed.
         assert_eq!(power.display(), "Ctrl+Alt+Delete");
+    }
+}
+
+/// The compositor loop re-derives state from the workspace tree and the
+/// surface registries only after something it depends on changed.
+#[cfg(test)]
+mod loop_gating_tests {
+    use super::*;
+    use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::wayland_server::Display;
+
+    fn make_state() -> State {
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        State::new(event_loop.handle(), display.handle())
+    }
+
+    #[test]
+    fn update_surface_scales_drops_unplaced_surfaces() {
+        let mut state = make_state();
+        state.update_surface_scales(&[(1, (0.0, 0.0)), (2, (10.0, 10.0)), (2, (10.0, 10.0))]);
+        let mut placed = state.surface_scales.keys().copied().collect::<Vec<_>>();
+        placed.sort_unstable();
+        assert_eq!(placed, vec![1, 2]);
+        state.update_surface_scales(&[(2, (10.0, 10.0))]);
+        assert_eq!(
+            state.surface_scales.keys().copied().collect::<Vec<_>>(),
+            vec![2],
+            "a surface no longer placed loses its cached scale"
+        );
+        state.update_surface_scales(&[]);
+        assert!(state.surface_scales.is_empty());
+    }
+
+    #[test]
+    fn a_wakeup_without_a_tree_write_walks_nothing() {
+        const SURFACE: u64 = 0x0188_0001;
+        const APP: &str = "org.example.LoopGating";
+        let mut state = make_state();
+        let tree = state.workspace_tree.clone();
+        state.client_input.refresh_from_tree(&tree);
+        let walks = state.client_input.tree_walks();
+        assert_eq!(walks, 1, "the first wakeup derives everything once");
+        for _ in 0..100 {
+            assert!(!state.client_input.refresh_from_tree(&tree));
+        }
+        assert_eq!(
+            state.client_input.tree_walks(),
+            walks,
+            "wakeups with no tree write and no surface change walk nothing"
+        );
+
+        crate::shell::tab_binding::adopt_toplevel_at(
+            &mut tree.write(),
+            SURFACE,
+            Some(APP.into()),
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        assert!(
+            !state.client_input.app_ids_current(tree.generation()),
+            "a tree written since the last wakeup is not answered from the cache"
+        );
+        state.client_input.refresh_from_tree(&tree);
+        assert_eq!(state.client_input.tree_walks(), walks.saturating_add(1));
+        assert!(state.client_input.app_ids_current(tree.generation()));
+        assert_eq!(state.client_input.app_id(SURFACE), Some(APP));
+        for _ in 0..100 {
+            state.client_input.refresh_from_tree(&tree);
+        }
+        assert_eq!(state.client_input.tree_walks(), walks.saturating_add(1));
+    }
+
+    #[test]
+    fn capture_protection_is_rederived_only_after_an_input_changed() {
+        const KEYBOARD: u64 = 0x0188_0002;
+        const CONNECTION: u64 = 0x0188_0C02;
+        const APP: &str = "org.example.LoopGatingProtected";
+        let store = crate::compositor::foreign::store();
+        let mut state = make_state();
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 1);
+        for _ in 0..100 {
+            state.sync_capture_protection();
+        }
+        assert_eq!(
+            state.capture_protection_passes(),
+            1,
+            "wakeups that change nothing take neither the tree nor the protection lock"
+        );
+
+        drop(state.workspace_tree.write());
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            2,
+            "a tree write may have renamed a protected window's tab"
+        );
+
+        state.osk_surface = Some(KEYBOARD);
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            3,
+            "a new keyboard surface"
+        );
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 3);
+
+        store.request_app_capture_protection(CONNECTION, APP, true);
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            4,
+            "an app asked for protection"
+        );
+        store.release_capture_protection(CONNECTION);
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 5, "and gave it up");
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 5);
+        store.forget(KEYBOARD);
     }
 }
 

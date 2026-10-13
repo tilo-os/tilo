@@ -5,13 +5,9 @@ use crate::font_catalog::{FontCatalog, configured_font_system_with_catalog};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use cosmic_text::fontdb::{ID, Source};
 use skrifa::{FontRef, MetadataProvider, Tag};
-use std::path::PathBuf;
 
 fn catalog() -> FontCatalog {
-    FontCatalog::controlled_fixture(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
-        "en-US",
-    )
+    FontCatalog::controlled_fixture(crate::font_catalog::checkout_root(), "en-US")
 }
 
 fn renderer() -> TextRenderer {
@@ -123,10 +119,8 @@ fn font_sources_and_collection_indices_are_shared_with_emitted_runs() {
         for id in ids {
             renderer.font_system.db_mut().remove_face(id);
         }
-        let bytes = std::fs::read(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/fonts/NotoSansCJK-VF.ttc"),
-        )
-        .unwrap();
+        let bytes =
+            std::fs::read(crate::font_catalog::checkout_root().join("NotoSansCJK-VF.ttc")).unwrap();
         let owner: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
         assert_eq!(
             renderer
@@ -996,4 +990,175 @@ fn assert_same_origins(painted: &[(u32, f32, f32)], shaped: &[(u32, f32, f32)], 
             shaped.2
         );
     }
+}
+
+#[test]
+fn matched_fallbacks_paint_at_the_size_they_were_shaped_at() {
+    let mut renderer = renderer();
+    let style = named_style(UI_SANS_FAMILY);
+    let runs = renderer.shaped_runs("Report Отчёт Αναφορά", None, &style);
+    let sizes: Vec<f32> = runs.iter().map(|run| run.size).collect();
+    assert!(sizes.contains(&style.size), "{sizes:?}");
+    assert_eq!(
+        sizes.iter().filter(|size| **size != style.size).count(),
+        1,
+        "Cyrillic is x-height matched, Greek is the UI face's own: {sizes:?}"
+    );
+    // Measurement and paint come from the same shaped buffer.
+    let (width, _) = renderer.measure_style("Report Отчёт Αναφορά", None, &style);
+    let last = runs.last().and_then(|run| run.glyphs.last()).unwrap();
+    assert!(last.x < width);
+}
+
+#[test]
+fn condensed_text_is_shaped_at_the_width_it_is_drawn() {
+    let mut renderer = renderer();
+    let text = "paypa1.com/l0gin SN 0O1I-l0O8";
+    let normal = named_style("Tilo Sans");
+    let condensed = named_style("Tilo Sans").with_font_variation(OpenTypeTag::WIDTH, 75.0);
+    let normal_width = renderer.measure_style(text, None, &normal).0;
+    let condensed_width = renderer.measure_style(text, None, &condensed).0;
+    // Tilo Sans' condensed `n` is 442 units against 599. Shaped at the
+    // default width, condensed text kept the normal advances and drew its
+    // narrow glyphs spaced out.
+    assert!(
+        condensed_width < normal_width * 0.85,
+        "condensed {condensed_width} against normal {normal_width}"
+    );
+    for (width, stretch) in [
+        (75.0, cosmic_text::Stretch::Condensed),
+        (80.0, cosmic_text::Stretch::Condensed),
+        (90.0, cosmic_text::Stretch::SemiCondensed),
+        (100.0, cosmic_text::Stretch::Normal),
+    ] {
+        assert_eq!(stretch_for_width(width), stretch, "{width}");
+    }
+}
+
+#[test]
+fn the_generic_sans_follows_the_theme_ui_face() {
+    let mut renderer = renderer();
+    let generic = TextStyle::new(20.0);
+    let default_face = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
+    renderer.set_ui_face(UI_HYPERLEGIBLE_FAMILY);
+    let hyperlegible = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
+    assert!(
+        (default_face - hyperlegible).abs() > 1.0,
+        "{default_face} vs {hyperlegible}"
+    );
+    renderer.set_ui_face("No Such Family");
+    let unchanged = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
+    assert!((unchanged - hyperlegible).abs() < f32::EPSILON);
+}
+
+/// A face with the distinct I and l and slashed zero, so the setting and
+/// security surfaces show in the glyphs.
+fn features_renderer() -> TextRenderer {
+    let mut renderer = renderer();
+    renderer.font_system.db_mut().load_font_data(
+        include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/TiloSansFeaturesFixture-Regular.ttf"
+        ))
+        .to_vec(),
+    );
+    renderer
+}
+
+fn shaped_ids(renderer: &mut TextRenderer, text: &str, style: &TextStyle) -> Vec<u16> {
+    let style = renderer.scaled_style(style);
+    let prepared = renderer.shape_buffer(text, None, &style);
+    prepared
+        .buffer
+        .layout_runs()
+        .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.glyph_id))
+        .collect()
+}
+
+fn rich_ids(renderer: &mut TextRenderer, text: &str, style: &TextStyle) -> Vec<u16> {
+    // Widgets ask for the layout epoch before shaping on their own.
+    let _ = renderer.layout_epoch();
+    RichTextLayout::shape_plain(&mut renderer.font_system, text, style, None)
+        .buffer
+        .layout_runs()
+        .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.glyph_id))
+        .collect()
+}
+
+#[test]
+fn the_distinct_letters_setting_reaches_every_shaping_path() {
+    let mut renderer = features_renderer();
+    let style = named_style("Tilo Sans Features Fixture");
+    let plain = shaped_ids(&mut renderer, "Il0", &style);
+    let distinct = shaped_ids(
+        &mut renderer,
+        "Il0",
+        &style.clone().with_kind(TextKind::Url),
+    );
+    assert_ne!(plain, distinct);
+    assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
+
+    let epoch = Arc::clone(renderer.layout_epoch());
+    renderer.set_distinct_letters(true);
+    assert!(renderer.distinguishes_letters());
+    assert!(
+        !Arc::ptr_eq(&epoch, renderer.layout_epoch()),
+        "widget layouts reshape when the setting changes"
+    );
+    assert_eq!(shaped_ids(&mut renderer, "Il0", &style), distinct);
+    assert_eq!(rich_ids(&mut renderer, "Il0", &style), distinct);
+
+    renderer.set_distinct_letters(false);
+    assert!(!renderer.distinguishes_letters());
+    assert_eq!(shaped_ids(&mut renderer, "Il0", &style), plain);
+
+    // Another renderer on the thread keeps its own setting.
+    let mut other = features_renderer();
+    other.set_distinct_letters(true);
+    assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
+    assert_eq!(rich_ids(&mut other, "Il0", &style), distinct);
+}
+
+#[test]
+fn security_surfaces_distinguish_whatever_the_setting() {
+    let mut renderer = features_renderer();
+    let style = named_style("Tilo Sans Features Fixture");
+    let plain = shaped_ids(&mut renderer, "Il0", &style);
+    let distinct = shaped_ids(
+        &mut renderer,
+        "Il0",
+        &style.clone().with_kind(TextKind::Url),
+    );
+    let inside = renderer.security_surface(|renderer| {
+        assert!(renderer.distinguishes_letters());
+        (
+            shaped_ids(renderer, "Il0", &style),
+            rich_ids(renderer, "Il0", &style),
+        )
+    });
+    assert_eq!(inside, (distinct.clone(), distinct.clone()));
+    assert!(!renderer.distinguishes_letters());
+    assert_eq!(shaped_ids(&mut renderer, "Il0", &style), plain);
+    // A custom-painted security surface marks its style instead.
+    assert_eq!(
+        shaped_ids(&mut renderer, "Il0", &style.clone().on_security_surface()),
+        distinct
+    );
+}
+
+#[test]
+fn identifiers_in_a_label_are_set_apart_with_no_kind_declared() {
+    let mut renderer = features_renderer();
+    let style = named_style("Tilo Sans Features Fixture");
+    let prose = shaped_ids(&mut renderer, "Il0 ", &style);
+    let line = shaped_ids(&mut renderer, "Il0 https://Il0.example", &style);
+    let url = shaped_ids(
+        &mut renderer,
+        "Il0",
+        &style.clone().with_kind(TextKind::Url),
+    );
+    assert_eq!(line[..4], prose[..]);
+    // "https://" is eight glyphs; the host that follows starts with Il0.
+    assert_eq!(line[12..15], url[..]);
+    assert_ne!(line[12..15], prose[..3]);
 }

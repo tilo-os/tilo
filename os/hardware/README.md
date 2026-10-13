@@ -236,11 +236,30 @@ builds mainline U-Boot for `orangepi-3b-rk3566` and
 UKI. The first partition must start at or after LBA 32768; a closer partition
 is refused before any loader byte is written.
 
-CI builds this profile from an explicit `workflow_dispatch` with
-`hardware_profile=orangepi-3b-v2-1` on the native ARM64 runner. The image is
-one aarch64 disk at generation 1. It does not enter the generic `latest` /
-`genN` series. Dispatch it with publication left off; a signed board channel
-is separate from that disk build.
+The main development ARM lane builds an unsigned, unvalidated Orange Pi disk
+candidate. It is not a release or an accepted device update.
+
+A signed source-pinned board image uses Build / OS's explicit main-branch
+`workflow_dispatch` with `release=true` and `hardware_profile=orangepi-3b-v2-1`.
+Leave Lenovo firmware inputs empty: Orange Pi firmware and loader inputs are
+checksum-pinned in the repository. The native release ARM lane independently
+rebuilds, seals and disk-installs the board image, then uses the existing release
+signer, SBOM, freshness and provenance checks. Promotion verifies the exact
+source, aarch64 profile and hardware-definition hash before publishing
+`code.tilo.so/tilo/tilo:orangepi-3b-v2-1-<full-source-commit>` by preserved digest.
+Registry/signing access failures stop the lane; no development trust is accepted.
+Orange Pi uses the ordinary public Tilo image repository with repository-pinned
+firmware. The owner-visibility restriction applies to independently imported Lenovo
+firmware; selecting Orange Pi cannot admit those Lenovo firmware inputs.
+
+This is a generation-1 immutable board reference, outside generic `latest` /
+`genN`. It neither changes the generic rollback floor nor automatically updates
+an installed board. A board DTB cannot boot QEMU virt: disk-install/reproduction
+checks are not physical boot qualification. Before activating it on hardware,
+verify the existing device's profile/DTB, authenticated update route, runtime
+cohort, retained previous deployment and recovery path, then physically test
+cold boot, display/input and update/rollback. Preserve device identity and data.
+No flash or device update is performed by promotion.
 
 ```sh
 TILO_BUILD_ARCH=aarch64 TILO_HARDWARE_PROFILE=orangepi-3b-v2-1 \
@@ -249,8 +268,8 @@ TILO_BUILD_ARCH=aarch64 TILO_HARDWARE_PROFILE=orangepi-3b-v2-1 \
 ```
 
 `TILO_BUILD_ARCH` is only for an x86 builder that emulates aarch64. A native
-ARM builder leaves it unset. CI dispatches `hardware_profile=orangepi-3b-v2-1`
-with publication left off.
+ARM builder leaves it unset. Local builds do not publish; use the explicit protected release dispatch above
+for a signed image.
 
 The update-reference binding covers image construction and initial installation.
 It does not prove that a later image published at that reference preserves the
@@ -311,3 +330,32 @@ and modular boot driver must be there, and when the sibling-unlock unit is,
 NetworkManager's Wi-Fi plugin, `wpa_supplicant` and its D-Bus activation file
 too. That proves the pieces are present. Only the laptop can show that the
 radio powers up, picks that board entry and associates before the root opens.
+
+### Lenovo 83ED Wi-Fi wake policy
+
+The optional version-2 `wifi_wake_on_wlan` field currently admits only numeric
+`0` on the exact Lenovo 83ED/aarch64/Yoga Slim 7x definition. The production
+profile preparer installs a NetworkManager connection default matching
+`driver:ath12k_wifi7_pci` into the selected board image. Generic images and
+other boards receive no such policy. No Wi-Fi power-save, autoconnect,
+credentials, or unrelated connection settings are changed.
+
+This prevents fresh/default WCN7850 profiles from enabling WoWLAN. It addresses
+an observed retained-firmware deep-resume failure (MHI resume followed by
+`ESHUTDOWN`), not a proven kernel repair. Physical non-WoW deep resume must
+still be tested on the laptop before claiming reconnection is fixed.
+
+As specified by [NetworkManager connection defaults](https://networkmanager.pages.freedesktop.org/NetworkManager/NetworkManager/NetworkManager.conf.html),
+an existing explicit `802-11-wireless.wake-on-wlan=0x8` (magic packet) wins over
+the generated default. The source did not create that explicit setting; do not
+rewrite every saved profile or disable functional wake on unrelated hardware.
+For an owner-approved diagnostic correction on this affected device, first
+identify its exact active NetworkManager UUID and read only that profile's wake
+field plus `iw phy <exact-phy> wowlan show`. Use numeric `0` with
+`nmcli connection modify uuid <exact-uuid> 802-11-wireless.wake-on-wlan 0`;
+`none` is not accepted by the installed nmcli. Then `iw phy <exact-phy> wowlan
+disable` clears the already-applied kernel trigger. Verify both readbacks before
+a controlled resume test. These commands require normal device-owner authority;
+the generated default neither executes them nor silently migrates explicit
+settings. A NetworkManager restart alone cannot repair an already failed MHI
+transport.

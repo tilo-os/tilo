@@ -8,7 +8,8 @@ fn main() -> std::process::ExitCode {
     linux_main::run()
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 mod macos_tests {
     #![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
     use shell::compositor::macos::{Options, prepare};
@@ -59,7 +60,7 @@ mod macos_tests {
             })
     }
 
-    fn click_rendered_file_row(driver: &mut ui::headless::Driver, name: &str) {
+    fn click_rendered_file_row(driver: &mut ui::headless::FrameHarness, name: &str) {
         let inspection = driver.inspection();
         let node = find_semantic(&inspection.root, name)
             .unwrap_or_else(|| panic!("{name} semantic node is absent"));
@@ -80,7 +81,7 @@ mod macos_tests {
     ) -> (
         shell::shell::state::WorkspaceTreeHandle,
         ui::record::RecordStore,
-        ui::headless::Driver,
+        ui::headless::FrameHarness,
     ) {
         let files = root.join("Documents");
         std::fs::create_dir(&files).unwrap();
@@ -110,7 +111,7 @@ mod macos_tests {
         let tree = session.tree.clone();
         let records = session.records.clone();
         let driver =
-            ui::headless::Driver::new(ui::State::new(), Box::new(session.host), (1280, 800));
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(session.host), (1280, 800));
         (tree, records, driver)
     }
 
@@ -191,8 +192,11 @@ mod macos_tests {
         {
             let directory = tempfile::tempdir().unwrap();
             let session = prepare(&options(directory.path())).unwrap();
-            let mut driver =
-                ui::headless::Driver::new(ui::State::new(), Box::new(session.host), (1280, 800));
+            let mut driver = ui::headless::FrameHarness::new(
+                ui::State::new(),
+                Box::new(session.host),
+                (1280, 800),
+            );
             for (modifier, key, opens) in [
                 ("meta", "Space", false),
                 ("alt", "Space", true),
@@ -225,10 +229,10 @@ mod macos_tests {
                 let before = find_semantic(&driver.inspection().root, "Document-000.txt")
                     .and_then(|node| node.bounds)
                     .expect("first row bounds before scrolling");
-                driver.send(&WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(100.0 * scale, 400.0 * scale),
-                });
+                driver.send(&ui::synthetic_input::cursor_moved(
+                    100.0 * scale,
+                    400.0 * scale,
+                ));
                 driver.send(&WindowEvent::MouseWheel {
                     device_id: winit::event::DeviceId::dummy(),
                     delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
@@ -241,10 +245,10 @@ mod macos_tests {
                     .and_then(|node| node.bounds)
                     .expect("first row bounds after wheel outside Files");
                 assert_eq!(outside.y0, before.y0, "scale {scale} outside Files");
-                driver.send(&WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(600.0 * scale, 400.0 * scale),
-                });
+                driver.send(&ui::synthetic_input::cursor_moved(
+                    600.0 * scale,
+                    400.0 * scale,
+                ));
                 driver.send(&WindowEvent::MouseWheel {
                     device_id: winit::event::DeviceId::dummy(),
                     delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
@@ -326,8 +330,11 @@ mod macos_tests {
                 .expect("the local profile keeps the hosted document identity");
             assert_eq!(reference.provider_id, "org.nirios.Editor");
             assert_eq!(reference.path.file_name().unwrap(), "Document-000.txt");
-            let reopened_driver =
-                ui::headless::Driver::new(ui::State::new(), Box::new(reopened.host), (1280, 800));
+            let reopened_driver = ui::headless::FrameHarness::new(
+                ui::State::new(),
+                Box::new(reopened.host),
+                (1280, 800),
+            );
             let reopened_inspection = reopened_driver.inspection();
             let reopened_document =
                 find_semantic_description(&reopened_inspection.root, "org.nirios.Editor")
@@ -497,8 +504,11 @@ mod macos_tests {
                 shots: None,
             })
             .unwrap();
-            let reopened_driver =
-                ui::headless::Driver::new(ui::State::new(), Box::new(reopened.host), (1280, 800));
+            let reopened_driver = ui::headless::FrameHarness::new(
+                ui::State::new(),
+                Box::new(reopened.host),
+                (1280, 800),
+            );
             let inspection = reopened_driver.inspection();
             let unavailable = find_semantic(&inspection.root, "Document-000.txt unavailable")
                 .expect("the deleted document must reopen as a visible unavailable-file state");
@@ -537,8 +547,11 @@ mod macos_tests {
                 shots: None,
             })
             .unwrap();
-            let reopened_driver =
-                ui::headless::Driver::new(ui::State::new(), Box::new(reopened.host), (1280, 800));
+            let reopened_driver = ui::headless::FrameHarness::new(
+                ui::State::new(),
+                Box::new(reopened.host),
+                (1280, 800),
+            );
             let inspection = reopened_driver.inspection();
             let document = find_semantic_description(&inspection.root, "org.nirios.Editor")
                 .expect("the changed file must remain a real Editor document");

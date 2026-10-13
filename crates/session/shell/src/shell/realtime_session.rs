@@ -6,11 +6,9 @@
 //! that must be freshly authorized after an accept.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -85,10 +83,6 @@ pub struct VerifiedAppRegistration {
 impl VerifiedAppRegistration {
     /// Construct only after the caller verified the installed package and
     /// resolved the workspace through trusted shell state.
-    #[allow(
-        dead_code,
-        reason = "the constructor stays crate-private until launcher integration wires verified manifests into this broker"
-    )]
     pub(crate) fn new_verified(
         app_id: impl Into<String>,
         workspace_id: impl Into<String>,
@@ -326,7 +320,6 @@ pub trait RealtimeFabricAdapter: Send + Sync {
 pub type SharedRealtimeFabricAdapter = Arc<dyn RealtimeFabricAdapter>;
 
 struct BrokerFabricAdapterState {
-    broker: Arc<Mutex<RealtimeSessionBroker>>,
     egress: VecDeque<RealtimeFabricEgress>,
     imported_offers: VecDeque<ImportedRealtimeFabricOffer>,
     authorizations: BTreeMap<RealtimeFabricSessionId, CaptureAuthorizationId>,
@@ -334,11 +327,35 @@ struct BrokerFabricAdapterState {
     lifecycle_events: VecDeque<BrokerEvent>,
 }
 
+impl BrokerFabricAdapterState {
+    fn send(&mut self, target: &DeviceId, signal: RealtimeFabricSignal) {
+        push_bounded(
+            &mut self.egress,
+            RealtimeFabricEgress {
+                target: target.clone(),
+                signal,
+            },
+        );
+    }
+
+    /// Record broker lifecycle events and forget capture authorizations
+    /// whose sessions no longer await them.
+    fn absorb(&mut self, events: Vec<BrokerEvent>, broker: &RealtimeSessionBroker) {
+        let live_authorizations = broker.pending_fabric_authorizations();
+        for event in events {
+            push_bounded(&mut self.lifecycle_events, event);
+        }
+        self.authorizations
+            .retain(|session_id, _| live_authorizations.contains_key(session_id));
+    }
+}
+
 /// Default bounded adapter for importing certified fabric signals into a
 /// shared shell realtime broker. App-facing code supplies target-local
 /// capture consent by calling [`Self::accept_imported`] and never exposes the
 /// resulting authorization on the wire.
 pub struct BrokerRealtimeFabricAdapter {
+    broker: Arc<Mutex<RealtimeSessionBroker>>,
     state: Mutex<BrokerFabricAdapterState>,
     app_allowed: Arc<dyn Fn(&str) -> bool + Send + Sync>,
 }
@@ -358,8 +375,8 @@ impl BrokerRealtimeFabricAdapter {
         verifier: impl Fn(&str) -> bool + Send + Sync + 'static,
     ) -> Self {
         Self {
+            broker,
             state: Mutex::new(BrokerFabricAdapterState {
-                broker,
                 egress: VecDeque::new(),
                 imported_offers: VecDeque::new(),
                 authorizations: BTreeMap::new(),
@@ -368,6 +385,38 @@ impl BrokerRealtimeFabricAdapter {
             }),
             app_allowed: Arc::new(verifier),
         }
+    }
+
+    fn state(&self) -> Result<MutexGuard<'_, BrokerFabricAdapterState>, RealtimeSessionError> {
+        self.state
+            .lock()
+            .map_err(|_| RealtimeSessionError::InvalidTransition)
+    }
+
+    fn broker(&self) -> Result<MutexGuard<'_, RealtimeSessionBroker>, RealtimeSessionError> {
+        self.broker
+            .lock()
+            .map_err(|_| RealtimeSessionError::InvalidTransition)
+    }
+
+    /// The locked broker together with the registration of the imported
+    /// session `session_id` belongs to.
+    fn imported_session(
+        &self,
+        session_id: RealtimeFabricSessionId,
+    ) -> Result<
+        (
+            MutexGuard<'_, RealtimeSessionBroker>,
+            VerifiedAppRegistration,
+        ),
+        RealtimeSessionError,
+    > {
+        let broker = self.broker()?;
+        let view = broker
+            .session(session_id.into_broker_id())
+            .ok_or(RealtimeSessionError::UnknownSession)?;
+        let app = VerifiedAppRegistration::new_verified(view.app_id, view.workspace_id)?;
+        Ok((broker, app))
     }
 
     /// Queue an offer only for the exact target already proposed in the
@@ -383,39 +432,17 @@ impl BrokerRealtimeFabricAdapter {
         target: &DeviceId,
         expires_unix_ms: u64,
     ) -> Result<(), RealtimeSessionError> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?;
-        let broker = Arc::clone(&state.broker);
-        drop(state);
-        let (offer, expected) = {
-            let broker = broker
-                .lock()
-                .map_err(|_| RealtimeSessionError::InvalidTransition)?;
-            let view = broker
-                .session(session_id)
-                .ok_or(RealtimeSessionError::UnknownSession)?;
-            (
-                broker.fabric_offer(session_id, expires_unix_ms)?,
-                view.target,
-            )
-        };
-        if expected.as_ref() != Some(target) {
+        let broker = self.broker()?;
+        let view = broker
+            .session(session_id)
+            .ok_or(RealtimeSessionError::UnknownSession)?;
+        let offer = broker.fabric_offer(session_id, expires_unix_ms)?;
+        drop(broker);
+        if view.target.as_ref() != Some(target) {
             return Err(RealtimeSessionError::BindingMismatch);
         }
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?;
-        push_fabric_egress(
-            &mut state.egress,
-            RealtimeFabricEgress {
-                target: target.clone(),
-                signal: RealtimeFabricSignal::Offer(offer),
-            },
-        );
-        drop(state);
+        self.state()?
+            .send(target, RealtimeFabricSignal::Offer(offer));
         Ok(())
     }
 
@@ -433,39 +460,14 @@ impl BrokerRealtimeFabricAdapter {
         target: &DeviceId,
         now: Instant,
     ) -> Result<(), RealtimeSessionError> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?;
-        let broker = Arc::clone(&state.broker);
-        drop(state);
         let id = session_id.into_broker_id();
-        let view = broker
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?
-            .session(id)
-            .ok_or(RealtimeSessionError::UnknownSession)?;
-        let app = VerifiedAppRegistration::new_verified(view.app_id, view.workspace_id)?;
-        let authorization = {
-            let mut broker = broker
-                .lock()
-                .map_err(|_| RealtimeSessionError::InvalidTransition)?;
-            let authorization = broker.authorize_target_capture(&app, id, source, target, now)?;
-            broker.accept_target(&app, id, source, target, authorization, now)?;
-            authorization
-        };
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?;
+        let (mut broker, app) = self.imported_session(session_id)?;
+        let authorization = broker.authorize_target_capture(&app, id, source, target, now)?;
+        broker.accept_target(&app, id, source, target, authorization, now)?;
+        drop(broker);
+        let mut state = self.state()?;
         state.authorizations.insert(session_id, authorization);
-        push_fabric_egress(
-            &mut state.egress,
-            RealtimeFabricEgress {
-                target: source.clone(),
-                signal: RealtimeFabricSignal::Accept(session_id),
-            },
-        );
+        state.send(source, RealtimeFabricSignal::Accept(session_id));
         drop(state);
         Ok(())
     }
@@ -485,39 +487,23 @@ impl BrokerRealtimeFabricAdapter {
         target: &DeviceId,
         now: Instant,
     ) -> Result<(), RealtimeSessionError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?;
-        let authorization = state
+        let authorization = self
+            .state()?
             .authorizations
             .remove(&session_id)
             .ok_or(RealtimeSessionError::CaptureAuthorizationRequired)?;
-        let broker = Arc::clone(&state.broker);
-        drop(state);
-        let id = session_id.into_broker_id();
-        let view = broker
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?
-            .session(id)
-            .ok_or(RealtimeSessionError::UnknownSession)?;
-        let app = VerifiedAppRegistration::new_verified(view.app_id, view.workspace_id)?;
-        broker
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?
-            .media_ready(&app, id, source, target, authorization, now)?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?;
-        push_fabric_egress(
-            &mut state.egress,
-            RealtimeFabricEgress {
-                target: source.clone(),
-                signal: RealtimeFabricSignal::MediaReady(session_id),
-            },
-        );
-        drop(state);
+        let (mut broker, app) = self.imported_session(session_id)?;
+        broker.media_ready(
+            &app,
+            session_id.into_broker_id(),
+            source,
+            target,
+            authorization,
+            now,
+        )?;
+        drop(broker);
+        self.state()?
+            .send(source, RealtimeFabricSignal::MediaReady(session_id));
         Ok(())
     }
 
@@ -534,35 +520,12 @@ impl BrokerRealtimeFabricAdapter {
         target: &DeviceId,
         now: Instant,
     ) -> Result<(), RealtimeSessionError> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?;
-        let broker = Arc::clone(&state.broker);
-        drop(state);
-        let id = session_id.into_broker_id();
-        let view = broker
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?
-            .session(id)
-            .ok_or(RealtimeSessionError::UnknownSession)?;
-        let app = VerifiedAppRegistration::new_verified(view.app_id, view.workspace_id)?;
-        broker
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?
-            .target_failed(&app, id, source, target, now)?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| RealtimeSessionError::InvalidTransition)?;
+        let (mut broker, app) = self.imported_session(session_id)?;
+        broker.target_failed(&app, session_id.into_broker_id(), source, target, now)?;
+        drop(broker);
+        let mut state = self.state()?;
         state.authorizations.remove(&session_id);
-        push_fabric_egress(
-            &mut state.egress,
-            RealtimeFabricEgress {
-                target: source.clone(),
-                signal: RealtimeFabricSignal::Cancel(session_id),
-            },
-        );
+        state.send(source, RealtimeFabricSignal::Cancel(session_id));
         drop(state);
         Ok(())
     }
@@ -590,25 +553,24 @@ impl BrokerRealtimeFabricAdapter {
             |mut state| state.lifecycle_events.drain(..).collect(),
         )
     }
+
+    /// Run a broker transition that may end sessions and record its fallout.
+    fn sweep(&self, transition: impl FnOnce(&mut RealtimeSessionBroker) -> Vec<BrokerEvent>) {
+        let (Ok(mut state), Ok(mut broker)) = (self.state.lock(), self.broker.lock()) else {
+            return;
+        };
+        let events = transition(&mut broker);
+        state.absorb(events, &broker);
+    }
 }
 
-fn push_fabric_egress(queue: &mut VecDeque<RealtimeFabricEgress>, event: RealtimeFabricEgress) {
+/// Append to a queue capped at [`MAX_REALTIME_SESSIONS`], dropping the oldest
+/// entry when full.
+fn push_bounded<T>(queue: &mut VecDeque<T>, item: T) {
     if queue.len() == MAX_REALTIME_SESSIONS {
         queue.pop_front();
     }
-    queue.push_back(event);
-}
-
-fn push_broker_events(
-    queue: &mut VecDeque<BrokerEvent>,
-    events: impl IntoIterator<Item = BrokerEvent>,
-) {
-    for event in events {
-        if queue.len() == MAX_REALTIME_SESSIONS {
-            queue.pop_front();
-        }
-        queue.push_back(event);
-    }
+    queue.push_back(item);
 }
 
 impl RealtimeFabricAdapter for BrokerRealtimeFabricAdapter {
@@ -623,128 +585,83 @@ impl RealtimeFabricAdapter for BrokerRealtimeFabricAdapter {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
+        let Ok(mut broker) = self.broker.lock() else {
+            return false;
+        };
         match signal {
             RealtimeFabricSignal::Offer(offer) => {
                 if !(self.app_allowed)(&offer.app_id) {
                     return false;
                 }
-                let imported = state.broker.lock().is_ok_and(|mut broker| {
-                    broker
-                        .import_fabric_offer(
-                            &offer,
-                            source.clone(),
-                            target.clone(),
-                            now,
-                            now_unix_ms,
-                        )
-                        .unwrap_or(false)
-                });
+                let imported = broker
+                    .import_fabric_offer(&offer, source.clone(), target.clone(), now, now_unix_ms)
+                    .unwrap_or(false);
                 if imported {
-                    if state.imported_offers.len() == MAX_REALTIME_SESSIONS {
-                        state.imported_offers.pop_front();
-                    }
-                    state
-                        .imported_offers
-                        .push_back(ImportedRealtimeFabricOffer {
+                    push_bounded(
+                        &mut state.imported_offers,
+                        ImportedRealtimeFabricOffer {
                             offer,
                             source: source.clone(),
                             target: target.clone(),
-                        });
+                        },
+                    );
                 }
                 imported
             }
-            RealtimeFabricSignal::Accept(id) => state.broker.lock().is_ok_and(|mut broker| {
-                broker
-                    .remote_target_accepted(id, target, source, now)
-                    .is_ok()
-            }),
+            RealtimeFabricSignal::Accept(id) => broker
+                .remote_target_accepted(id, target, source, now)
+                .is_ok(),
             RealtimeFabricSignal::MediaReady(id) => {
-                let directive =
-                    state.broker.lock().ok().and_then(|mut broker| {
-                        broker.remote_media_ready(id, target, source, now).ok()
-                    });
-                let Some(directive) = directive else {
+                let Ok(directive) = broker.remote_media_ready(id, target, source, now) else {
                     return false;
                 };
-                push_fabric_egress(
-                    &mut state.egress,
-                    RealtimeFabricEgress {
-                        target: source.clone(),
-                        signal: RealtimeFabricSignal::StopSource(id),
-                    },
-                );
-                if state.cutovers.len() == MAX_REALTIME_SESSIONS {
-                    state.cutovers.pop_front();
-                }
-                state.cutovers.push_back(directive);
+                state.send(source, RealtimeFabricSignal::StopSource(id));
+                push_bounded(&mut state.cutovers, directive);
                 true
             }
-            RealtimeFabricSignal::StopSource(id) => state.broker.lock().is_ok_and(|mut broker| {
-                broker
-                    .confirm_source_stopped(id, source, target, now)
-                    .is_ok()
-            }),
+            RealtimeFabricSignal::StopSource(id) => broker
+                .confirm_source_stopped(id, source, target, now)
+                .is_ok(),
             RealtimeFabricSignal::Cancel(id) => {
-                let event = state.broker.lock().ok().and_then(|mut broker| {
-                    let broker_id = id.into_broker_id();
-                    let before = broker.session(broker_id)?;
-                    broker.cancel_fabric_handoff(id, source, target, now).ok()?;
-                    let kind = if broker.session(broker_id).is_some() {
-                        BrokerEventKind::RolledBackToSource {
-                            target: before.target?,
-                        }
-                    } else {
-                        BrokerEventKind::Ended {
-                            live_device: before.source,
-                        }
+                let broker_id = id.into_broker_id();
+                let Some(before) = broker.session(broker_id) else {
+                    return false;
+                };
+                if broker
+                    .cancel_fabric_handoff(id, source, target, now)
+                    .is_err()
+                {
+                    return false;
+                }
+                let kind = if broker.session(broker_id).is_some() {
+                    let Some(target) = before.target else {
+                        return false;
                     };
-                    Some(BrokerEvent {
+                    BrokerEventKind::RolledBackToSource { target }
+                } else {
+                    BrokerEventKind::Ended {
+                        live_device: before.source,
+                    }
+                };
+                state.authorizations.remove(&id);
+                push_bounded(
+                    &mut state.lifecycle_events,
+                    BrokerEvent {
                         session_id: broker_id,
                         kind,
-                    })
-                });
-                let cancelled = event.is_some();
-                if cancelled {
-                    state.authorizations.remove(&id);
-                    push_broker_events(&mut state.lifecycle_events, event);
-                }
-                cancelled
+                    },
+                );
+                true
             }
         }
     }
 
     fn peer_offline(&self, peer: &DeviceId, now: Instant) {
-        let Ok(mut state) = self.state.lock() else {
-            return;
-        };
-        let broker = Arc::clone(&state.broker);
-        let Ok(mut broker) = broker.lock() else {
-            return;
-        };
-        let events = broker.device_lost(peer, now);
-        let live_authorizations = broker.pending_fabric_authorizations();
-        drop(broker);
-        push_broker_events(&mut state.lifecycle_events, events);
-        state
-            .authorizations
-            .retain(|session_id, _| live_authorizations.contains_key(session_id));
+        self.sweep(|broker| broker.device_lost(peer, now));
     }
 
     fn tick(&self, now: Instant) {
-        let Ok(mut state) = self.state.lock() else {
-            return;
-        };
-        let broker = Arc::clone(&state.broker);
-        let Ok(mut broker) = broker.lock() else {
-            return;
-        };
-        let events = broker.tick(now);
-        let live_authorizations = broker.pending_fabric_authorizations();
-        drop(broker);
-        push_broker_events(&mut state.lifecycle_events, events);
-        state
-            .authorizations
-            .retain(|session_id, _| live_authorizations.contains_key(session_id));
+        self.sweep(|broker| broker.tick(now));
     }
 
     fn drain_egress(&self) -> Vec<RealtimeFabricEgress> {
@@ -981,7 +898,7 @@ impl RealtimeSessionBroker {
         cutover_timeout: Duration,
     ) -> Self {
         Self {
-            instance: BrokerInstanceId(random_nonzero()),
+            instance: BrokerInstanceId(crate::random::nonzero::<16>()),
             sessions: BTreeMap::new(),
             capture_authorizations: BTreeMap::new(),
             max_sessions: max_sessions.clamp(1, MAX_REALTIME_SESSIONS),
@@ -1697,7 +1614,7 @@ impl RealtimeSessionBroker {
         loop {
             let id = RealtimeSessionId {
                 broker: self.instance,
-                nonce: random_nonzero(),
+                nonce: crate::random::nonzero::<16>(),
             };
             if !self.sessions.contains_key(&id) {
                 return id;
@@ -1709,7 +1626,7 @@ impl RealtimeSessionBroker {
         loop {
             let id = CaptureAuthorizationId {
                 broker: self.instance,
-                nonce: random_nonzero(),
+                nonce: crate::random::nonzero::<16>(),
             };
             if !self.capture_authorizations.contains_key(&id) {
                 return id;
@@ -1727,14 +1644,6 @@ fn live_device(entry: &SessionEntry) -> &DeviceId {
         | SessionState::AwaitingSourceStop { .. } => &entry.source,
         SessionState::TargetLive { target } => target,
     }
-}
-
-fn random_nonzero() -> [u8; 16] {
-    let mut value = [0; 16];
-    while value == [0; 16] {
-        UnwrapErr(SysRng).fill_bytes(&mut value);
-    }
-    value
 }
 
 fn deadline(now: Instant, duration: Duration) -> Instant {
@@ -2589,13 +2498,17 @@ mod tests {
                 now,
                 10_000,
             ));
-            let broker = {
-                let state = target_adapter.state.lock().unwrap();
-                assert!(state.authorizations.is_empty());
-                Arc::clone(&state.broker)
-            };
             assert!(
-                broker
+                target_adapter
+                    .state
+                    .lock()
+                    .unwrap()
+                    .authorizations
+                    .is_empty()
+            );
+            assert!(
+                target_adapter
+                    .broker
                     .lock()
                     .unwrap()
                     .session(fabric_id.into_broker_id())
@@ -2661,13 +2574,17 @@ mod tests {
             assert_eq!(target_adapter.state.lock().unwrap().authorizations.len(), 1);
 
             target_adapter.tick(now + Duration::from_secs(3));
-            let broker = {
-                let state = target_adapter.state.lock().unwrap();
-                assert!(state.authorizations.is_empty());
-                Arc::clone(&state.broker)
-            };
             assert!(
-                broker
+                target_adapter
+                    .state
+                    .lock()
+                    .unwrap()
+                    .authorizations
+                    .is_empty()
+            );
+            assert!(
+                target_adapter
+                    .broker
                     .lock()
                     .unwrap()
                     .session(fabric_id.into_broker_id())

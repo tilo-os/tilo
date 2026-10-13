@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -68,10 +68,7 @@ pub(super) fn lay_out(osk: &mut OskWidget, theme: &Theme, w: f32) -> f32 {
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(w),
-                    height: Dimension::length(h),
-                },
+                size: Size::from_lengths(w, h),
                 ..Default::default()
             },
             &[child],
@@ -111,7 +108,7 @@ pub(super) fn render(osk: &mut OskWidget, theme: &Theme, w: f32, h: f32, name: &
     );
     let mut renderer = OffscreenRenderer::new(pw, ph);
     let path = dir.join(format!("{name}.png"));
-    renderer.render_png(&scene, theme.tokens.colors.surfaces.base, &path);
+    renderer.render_png(&scene, theme.tokens.colors.surfaces.content, &path);
     eprintln!("wrote {}", path.display());
 }
 
@@ -177,7 +174,7 @@ fn states() -> Vec<State> {
             name: "emoji",
             build: plain,
             after_layout: |osk| {
-                osk.activate_label("\u{1F642}");
+                osk.activate_label("Emoji");
             },
         },
         State {

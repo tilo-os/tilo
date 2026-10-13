@@ -26,8 +26,6 @@
 //! |---|---|
 //! | the timeline itself | `["ve_timeline"]` |
 //! | one clip | `["ve_clip", <clip uuid>]` |
-//! | one track | `["ve_track", <track uuid>]` |
-//! | one media-bin row | `["ve_media", <media uuid>]` |
 //! | one editable field | `["ve_field", <field name>, <subject uuid>]` |
 //!
 //! The uuid is written out with `Uuid::to_string` — its plain hyphenated
@@ -84,7 +82,7 @@ use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
-use crate::model::{ClipId, MediaId, TrackId};
+use crate::model::ClipId;
 
 // ==========================================================================
 // The vocabulary
@@ -94,10 +92,6 @@ use crate::model::{ClipId, MediaId, TrackId};
 pub const TIMELINE: &str = "ve_timeline";
 /// Path tag for one clip, followed by the clip's uuid.
 pub const CLIP: &str = "ve_clip";
-/// Path tag for one track, followed by the track's uuid.
-pub const TRACK: &str = "ve_track";
-/// Path tag for one media-bin row, followed by the media item's uuid.
-pub const MEDIA: &str = "ve_media";
 /// Path tag for one editable field, followed by the field's name and the
 /// uuid of whatever it edits.
 pub const FIELD: &str = "ve_field";
@@ -127,16 +121,6 @@ pub fn clip_key(id: ClipId) -> PresenceKey {
     widget_key(&[CLIP, &id.to_string()])
 }
 
-/// One track, by its document id.
-pub fn track_key(id: TrackId) -> PresenceKey {
-    widget_key(&[TRACK, &id.to_string()])
-}
-
-/// One media-bin row, by its document id.
-pub fn media_key(id: MediaId) -> PresenceKey {
-    widget_key(&[MEDIA, &id.to_string()])
-}
-
 /// One editable field — `field` names the field, `subject` the object it
 /// edits (the clip being renamed, say).
 pub fn field_key(field: &str, subject: Uuid) -> PresenceKey {
@@ -159,11 +143,6 @@ fn tagged_uuid(key: &PresenceKey, tag: &str) -> Option<Uuid> {
 /// The clip a key names, if it names one.
 pub fn clip_of(key: &PresenceKey) -> Option<ClipId> {
     tagged_uuid(key, CLIP)
-}
-
-/// The media item a key names, if it names one.
-pub fn media_of(key: &PresenceKey) -> Option<MediaId> {
-    tagged_uuid(key, MEDIA)
 }
 
 // ==========================================================================
@@ -248,13 +227,6 @@ impl LocalPresence {
             }
         }
         published.get(self.last.get()).cloned().flatten()
-    }
-
-    /// Forget what has been published, so the next poll re-sends every facet.
-    /// For a fresh join: a participant who arrives after us has none of it.
-    pub fn reset(&self) {
-        *self.published.borrow_mut() = Default::default();
-        self.last.set(0);
     }
 }
 
@@ -413,31 +385,78 @@ impl<'a> PeerPaintCtx<'a> {
     }
 }
 
-/// Draw every participant's playhead as a ghost line down the lanes with
-/// their name above it.
+/// Where one participant's playhead name sits: the playhead's x, and the top
+/// of the line the chip hangs above.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PeerTag {
+    /// Index into [`peer_playheads`].
+    pub peer: usize,
+    pub x: f64,
+    /// Which chip row the name hangs in: 0 is the ruler, every further row
+    /// one chip down into the lanes.
+    pub row: u32,
+    /// The line starts here; the name chip hangs just above it.
+    pub top: f64,
+    /// The horizontal span the name takes, kept clear of the ruler's readings
+    /// when the chip hangs in the ruler.
+    pub span: (f64, f64),
+}
+
+/// Place every participant's playhead name.
 ///
-/// `time_to_x` is the editor's own seconds-to-pixels mapping, passed in
-/// rather than recomputed, so a peer's playhead lands on exactly the pixel the
-/// local one would at the same instant — under the same zoom and scroll, with
-/// no second copy of the arithmetic to drift.
+/// A name hangs in the ruler band, above the lanes, where it covers no clip.
+/// The ruler only has one row, so a name that would land on the local
+/// playhead's time (`taken`) or on a name already placed steps down into the
+/// lanes, one chip at a time, until it finds room.
 ///
-/// Chips step down for each successive peer so two people parked on the same
-/// frame are both readable.
-pub fn draw_peer_playheads(
-    ctx: &mut PeerPaintCtx<'_>,
+/// `name_width` measures a name as its chip will show it.
+pub fn place_peer_tags(
+    presence: &PresenceCtx,
     lanes: Rect,
-    bottom: f64,
+    taken: &[(f64, f64)],
     time_to_x: impl Fn(f64) -> f64,
-) {
-    for (i, peer) in peer_playheads(ctx.presence).iter().enumerate() {
+    mut name_width: impl FnMut(&str) -> f64,
+) -> Vec<PeerTag> {
+    let mut placed: Vec<PeerTag> = Vec::new();
+    for (i, peer) in peer_playheads(presence).iter().enumerate() {
         let x = time_to_x(peer.at);
         if x < lanes.x0 - 0.5 || x > lanes.x1 + 0.5 {
             continue;
         }
-        // The chip hangs above the line, so the line starts far enough down
-        // the lane area to leave room for it inside the timeline.
-        let top = lanes.y0 + CHIP_STEP * (i % 3) as f64;
-        let bar = Rect::new(x - 1.0, top, x + 1.0, bottom);
+        let w = name_width(&presence.display_name(&peer.user));
+        let span = (x, x + w);
+        let clashes = |a: (f64, f64), b: (f64, f64)| a.0 < b.1 && b.0 < a.1;
+        // One more row than there are names placed always has room.
+        let rows = u32::try_from(placed.len()).unwrap_or(u32::MAX);
+        let row = (0..=rows)
+            .find(|row| {
+                let in_ruler_clash = *row == 0 && taken.iter().any(|t| clashes(*t, span));
+                !in_ruler_clash
+                    && !placed
+                        .iter()
+                        .any(|p| p.row == *row && clashes(p.span, span))
+            })
+            .unwrap_or(0);
+        placed.push(PeerTag {
+            peer: i,
+            x,
+            row,
+            top: lanes.y0 + CHIP_STEP * f64::from(row),
+            span,
+        });
+    }
+    placed
+}
+
+/// Draw every participant's playhead as a ghost line down the lanes with
+/// their name above it, where [`place_peer_tags`] put it.
+pub fn draw_peer_playheads(ctx: &mut PeerPaintCtx<'_>, tags: &[PeerTag], bottom: f64) {
+    let peers = peer_playheads(ctx.presence);
+    for tag in tags {
+        let Some(peer) = peers.get(tag.peer) else {
+            continue;
+        };
+        let bar = Rect::new(tag.x - 1.0, tag.top, tag.x + 1.0, bottom);
         ctx.presence.draw_peer_caret_labeled(
             ctx.paint.scene,
             ctx.paint.theme,
@@ -619,12 +638,9 @@ mod tests {
         // Case `keys_read_back_to_the_object_they_name`.
         {
             let clip = Uuid::new_v4();
-            let media = Uuid::new_v4();
             assert_eq!(clip_of(&clip_key(clip)), Some(clip));
-            assert_eq!(media_of(&media_key(media)), Some(media));
-            // A key for one kind of object never reads back as another.
-            assert_eq!(clip_of(&media_key(media)), None);
-            assert_eq!(media_of(&clip_key(clip)), None);
+            // A key for another kind of object never reads back as a clip.
+            assert_eq!(clip_of(&field_key(FIELD_TITLE_WORDS, clip)), None);
             // Nor does the timeline, which names no object at all.
             assert_eq!(clip_of(&timeline_key()), None);
             // Nor another app's key of the same shape.
@@ -752,23 +768,6 @@ mod tests {
                 saw_selection,
                 "the selection never got a turn while the playhead was moving",
             );
-        }
-        // Case `a_reset_republishes_every_facet`:
-        // A fresh joiner has none of our state, so a reset has to make every
-        // facet publishable again — otherwise we sit there believing we already
-        // told them.
-        {
-            let clip = Uuid::new_v4();
-            let local = LocalPresence::default();
-            let facets = || [point_frame(None, 3.0), range_frame(Some((clip, 2.0, 6.0)))];
-            local.next(facets());
-            local.next(facets());
-            assert_eq!(local.next(facets()), local.next(facets()), "settled");
-
-            local.reset();
-            let a = local.next(facets()).expect("a frame after the reset");
-            let b = local.next(facets()).expect("and the other facet");
-            assert_ne!(a, b, "both facets are offered again after a reset");
         }
     }
 

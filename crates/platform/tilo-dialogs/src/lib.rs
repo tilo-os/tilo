@@ -2,10 +2,7 @@
     test,
     allow(
         clippy::disallowed_methods,
-        clippy::unwrap_used,
-        clippy::expect_used,
         clippy::string_slice,
-        clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -51,7 +48,7 @@ mod windows;
 #[cfg(target_os = "linux")]
 mod xdg;
 
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 
 use portal::{
     ContentsChannel, LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome,
@@ -86,9 +83,11 @@ pub trait FilePicker: Send + Sync {
     /// An Open chooser that delivers the chosen files' contents. The default
     /// reads what [`pick`](Self::pick) or [`pick_multiple`](Self::pick_multiple)
     /// answers; a host without local paths (a browser page) implements it
-    /// directly.
+    /// directly. Implementations must enforce the aggregate
+    /// [`PickRequest::contents_byte_limit`] before reading unbounded contents.
     fn pick_contents(&self, request: PickRequest) -> ContentsChannel {
         use crate::portal::PickedPaths;
+        let limit = request.contents_byte_limit();
         let paths = if !request.is_open() {
             None
         } else if request.is_multiple() {
@@ -96,7 +95,7 @@ pub trait FilePicker: Send + Sync {
         } else {
             Some(PickedPaths::One(self.pick(request)))
         };
-        crate::portal::read_picked(paths)
+        crate::portal::read_picked(paths, limit)
     }
     /// A Save chooser that stores `bytes`. The default writes to the path
     /// [`pick`](Self::pick) answers.
@@ -275,10 +274,7 @@ pub(crate) fn current_opener() -> Arc<dyn UriOpener> {
 }
 
 /// A chooser round-trip that did not return URIs.
-#[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos", windows)),
-    allow(dead_code, reason = "only the native choosers answer URIs")
-)]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) enum PortalFailure {
     /// The user dismissed the picker. Surfaces from ashpd as a "cancelled"
     /// response error, not a bug.
@@ -286,10 +282,7 @@ pub(crate) enum PortalFailure {
     Failed(String),
 }
 
-#[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos", windows)),
-    allow(dead_code, reason = "only the native choosers answer URIs")
-)]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl PortalFailure {
     fn into_single(self) -> PortalOutcome {
         match self {
@@ -333,5 +326,115 @@ mod tests {
         let outcome = PickRequest::open("Open", "Open").send().recv().unwrap();
         assert!(matches!(outcome, PortalOutcome::Failed(_)));
         assert!(portal::open_uri("https://example.invalid").is_err());
+    }
+}
+
+#[cfg(test)]
+#[cfg(any(unix, windows))]
+mod bounded_contents_tests {
+    use super::*;
+    use crate::portal::ContentsOutcome;
+    use std::path::PathBuf;
+
+    struct Selected(Vec<PathBuf>);
+
+    impl FilePicker for Selected {
+        fn pick(&self, _: PickRequest) -> PortalChannel {
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(PortalOutcome::Opened(self.0.first().unwrap().clone()))
+                .unwrap();
+            rx
+        }
+        fn pick_multiple(&self, _: PickRequest) -> MultiChannel {
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(MultiOutcome::Selected(self.0.clone())).unwrap();
+            rx
+        }
+        fn open_file(&self, request: PickRequest) -> OpenFileChannel {
+            unavailable_picker().open_file(request)
+        }
+        fn launch(&self, request: LaunchRequest) -> LaunchChannel {
+            unavailable_picker().launch(request)
+        }
+    }
+
+    fn picked(picker: &Selected, request: PickRequest) -> ContentsOutcome {
+        picker
+            .pick_contents(request)
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+    }
+
+    #[test]
+    fn bounded_contents_preserve_exact_limit_and_default_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.json");
+        std::fs::write(&path, b"hello").unwrap();
+        let picker = Selected(vec![path.clone()]);
+        for request in [
+            PickRequest::open("Open", "Open"),
+            PickRequest::open("Open", "Open").max_contents_bytes(5),
+        ] {
+            let ContentsOutcome::Picked(files) = picked(&picker, request) else {
+                panic!("valid selected contents must be delivered");
+            };
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].bytes, b"hello");
+            assert_eq!(files[0].location.as_ref(), Some(&path));
+        }
+        assert!(
+            matches!(picked(&picker, PickRequest::open("Open", "Open").max_contents_bytes(4)),
+            ContentsOutcome::Failed(reason) if reason.contains("byte limit"))
+        );
+    }
+
+    #[test]
+    fn bounded_contents_budget_is_aggregate_and_allows_empty_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::write(&a, b"ab").unwrap();
+        std::fs::write(&b, b"cd").unwrap();
+        let picker = Selected(vec![a.clone(), b]);
+        assert!(
+            matches!(picked(&picker, PickRequest::open_multiple("Open", "Open").max_contents_bytes(3)),
+            ContentsOutcome::Failed(reason) if reason.contains("byte limit"))
+        );
+        let ContentsOutcome::Picked(files) = picked(
+            &picker,
+            PickRequest::open_multiple("Open", "Open").max_contents_bytes(4),
+        ) else {
+            panic!("exact aggregate budget must be accepted");
+        };
+        assert_eq!(files.iter().map(|f| f.bytes.len()).sum::<usize>(), 4);
+        std::fs::write(&a, b"").unwrap();
+        let picker = Selected(vec![a]);
+        let ContentsOutcome::Picked(files) = picked(
+            &picker,
+            PickRequest::open("Open", "Open").max_contents_bytes(0),
+        ) else {
+            panic!("empty file fits a zero byte budget");
+        };
+        assert!(files[0].bytes.is_empty());
+    }
+
+    #[test]
+    fn bounded_contents_reject_a_large_sparse_file_and_report_read_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("weights");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(1 << 34)
+            .unwrap();
+        let picker = Selected(vec![path.clone()]);
+        assert!(
+            matches!(picked(&picker, PickRequest::open("Open", "Open").max_contents_bytes(1024)),
+            ContentsOutcome::Failed(reason) if reason.contains("byte limit"))
+        );
+        std::fs::remove_file(path).unwrap();
+        assert!(
+            matches!(picked(&picker, PickRequest::open("Open", "Open").max_contents_bytes(1024)),
+            ContentsOutcome::Failed(reason) if !reason.is_empty())
+        );
     }
 }

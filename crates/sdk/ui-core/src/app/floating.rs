@@ -5,34 +5,69 @@ use crate::floating_surface::{
 };
 use crate::vello::kurbo::Vec2;
 
+#[derive(Default)]
+pub(super) struct AuxiliaryCaptureFrames {
+    painting: bool,
+    presented: bool,
+    latched: bool,
+    queued: std::collections::VecDeque<bool>,
+}
+
+impl AuxiliaryCaptureFrames {
+    fn protected(&self) -> bool {
+        self.latched || self.painting || self.presented || self.queued.iter().any(|secret| *secret)
+    }
+}
+
 /// App-runtime state for detachable and picture-in-picture surfaces.
 ///
 /// Keeping this lifecycle together prevents the main [`App`] state
 /// from becoming the schema for every optional host integration.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "the surface service client, presentations and capture handshake are read only by the native event-loop runner"
     )
 )]
 pub(super) struct FloatingRuntime {
     pub client: Option<FloatingSurfaceServiceClient>,
+    /// The authenticated shell's palette survives private settings reloads.
+    pub host_theme: Option<crate::Theme>,
+    network_status_active: bool,
     host_shell_allow: Option<std::rc::Weak<std::cell::RefCell<crate::widget::HostShellAllow>>>,
+    display_move: Option<(
+        u64,
+        std::rc::Weak<std::cell::RefCell<crate::widget::DeviceDisplayMoveReply>>,
+    )>,
+    next_display_move: u64,
     pub presentations: HashMap<String, FloatingSurfacePresentation>,
     pub active_ids: HashSet<String>,
     pub prepared_ids: HashSet<String>,
+    /// Exact app-owned Present requests accepted on the current connection,
+    /// whose retained editors await the host's PrepareSurface response.
+    pub pending_ime_ids: HashSet<String>,
     pub coordinate_offsets: HashMap<String, Vec2>,
     pub suspended_ids: HashSet<String>,
     pub host_messages: Vec<FloatingSurfaceHostMessage>,
     /// Whether the app wants its windows withheld from captures.
     pub capture_protected: bool,
-    /// Whether the last frame showed a secret field holding a value; the
-    /// windows are withheld while it does, whatever the app asked.
+    /// Whether the frame currently being prepared paints a secret.
     pub secret_on_screen: bool,
     /// What the shell was last told (it starts unprotected), so the
     /// request goes out once per change.
     pub capture_protection_sent: bool,
+    pub capture_generation: u64,
+    pub capture_acknowledged: Option<u64>,
+    pub capture_host_required: bool,
+    /// Monotonic native lifetime latch: worker completion cannot confirm
+    /// that the compositor replaced its last secret buffer.
+    pub presented_secret: bool,
+    pub submitted_secrets: std::collections::VecDeque<(u64, bool)>,
+    pub drawn_action_markers: Vec<crate::app::PaintedActionMarker>,
+    pub submitted_action_markers:
+        std::collections::VecDeque<(u64, Vec<crate::app::PaintedActionMarker>)>,
+    pub auxiliary_capture_frames: HashMap<String, AuxiliaryCaptureFrames>,
     /// The shell was told this app can stream its page.
     pub paint_capable_sent: bool,
     /// Outside a Tilo session, "close this tab" closes this window.
@@ -40,26 +75,127 @@ pub(super) struct FloatingRuntime {
 }
 
 impl FloatingRuntime {
+    #[cfg(any(feature = "native", test))]
+    pub(super) fn complete_action_marker_frame(
+        &mut self,
+        completed: u64,
+        presented: bool,
+    ) -> Option<Vec<crate::app::PaintedActionMarker>> {
+        let mut result = None;
+        while self
+            .submitted_action_markers
+            .front()
+            .is_some_and(|(frame, _)| *frame <= completed)
+        {
+            if let Some((frame, markers)) = self.submitted_action_markers.pop_front()
+                && frame == completed
+                && presented
+            {
+                result = Some(markers);
+            }
+        }
+        result
+    }
+
     pub(super) fn new(client: Option<FloatingSurfaceServiceClient>) -> Self {
         Self {
+            capture_host_required: client.is_some(),
             client,
+            host_theme: None,
+            network_status_active: false,
             host_shell_allow: None,
+            display_move: None,
+            next_display_move: 0,
             presentations: HashMap::new(),
             active_ids: HashSet::new(),
             prepared_ids: HashSet::new(),
+            pending_ime_ids: HashSet::new(),
             coordinate_offsets: HashMap::new(),
             suspended_ids: HashSet::new(),
             host_messages: Vec::new(),
             capture_protected: false,
             secret_on_screen: false,
             capture_protection_sent: false,
+            capture_generation: 0,
+            capture_acknowledged: None,
+            presented_secret: false,
+            submitted_secrets: std::collections::VecDeque::new(),
+            drawn_action_markers: Vec::new(),
+            submitted_action_markers: std::collections::VecDeque::new(),
+            auxiliary_capture_frames: HashMap::new(),
             paint_capable_sent: false,
             close_window_requested: false,
         }
     }
 }
 
+#[cfg(test)]
+mod marker_frame_tests {
+    use super::FloatingRuntime;
+
+    #[test]
+    fn only_an_exact_successfully_presented_frame_exports_its_inventory() {
+        let mut runtime = FloatingRuntime::new(None);
+        runtime.submitted_action_markers.push_back((1, Vec::new()));
+        runtime.submitted_action_markers.push_back((2, Vec::new()));
+        assert!(runtime.complete_action_marker_frame(1, false).is_none());
+        assert_eq!(runtime.submitted_action_markers.len(), 1);
+        assert_eq!(
+            runtime.complete_action_marker_frame(2, true),
+            Some(Vec::new()),
+            "an actually presented empty inventory withdraws prior markers"
+        );
+        assert!(runtime.complete_action_marker_frame(2, true).is_none());
+        assert!(runtime.submitted_action_markers.is_empty());
+    }
+}
+
+impl Drop for FloatingRuntime {
+    fn drop(&mut self) {
+        if self.network_status_active {
+            tilo_host::network_status::clear_host_status();
+        }
+    }
+}
+
 impl App {
+    /// Pump the real native host channel in compositor-free acceptance fixtures.
+    /// Returns whether this launch's inherited connection is still present.
+    /// This exposes no connection injection or permission bypass.
+    #[cfg(all(feature = "native", feature = "test-support"))]
+    pub fn pump_native_host_for_test(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
+        self.pump_floating_surface_service();
+        self.floating.client.is_some()
+    }
+
+    #[cfg(feature = "native")]
+    fn pending_floating_ime_source(&self) -> Option<&str> {
+        self.floating.client.as_ref()?;
+        let active_ids = self.root_widget.active_floating_surface_ids();
+        let mut sources = self.floating.pending_ime_ids.iter().filter(|id| {
+            active_ids.contains(id) && self.root_widget.floating_surface_ime(id).is_some()
+        });
+        let source = sources.next()?;
+        sources.next().is_none().then_some(source.as_str())
+    }
+
+    /// Publish queued Present requests before comparing the composing source's
+    /// IME projection. This deliberately does not read host lifecycle messages:
+    /// Prepare must be applied by the native runner before pending custody ends.
+    #[cfg(feature = "native")]
+    fn flush_floating_present_requests_before_ime(&mut self) {
+        let Some(mut client) = self.floating.client.take() else {
+            return;
+        };
+        if let Err(error) = self.send_floating_present_requests(&mut client) {
+            tracing::warn!(%error, "floating-surface request failed; keeping app UI local");
+            self.reattach_after_floating_service_loss();
+            return;
+        }
+        self.floating.client = Some(client);
+    }
+
     /// Withhold this app's windows from screenshots, recordings, screen
     /// sharing and remote viewers — for windows that show secrets, such as a
     /// password manager's. The local display is unaffected; captures show a
@@ -78,27 +214,100 @@ impl App {
     /// value, masked or shown. Such a frame is withheld from captures like a
     /// protected app's, so a typed password never reaches a screenshot or a
     /// screen share.
-    #[cfg_attr(
-        not(feature = "native"),
-        allow(dead_code, reason = "only the native runner draws frames")
-    )]
+    #[cfg(feature = "native")]
     pub(crate) fn set_secret_on_screen(&mut self, shown: bool) {
         self.floating.secret_on_screen = shown;
     }
 
     /// What the shell should withhold: everything the app asked for, and
     /// any window while it shows a secret.
-    #[cfg_attr(
-        not(feature = "native"),
-        allow(dead_code, reason = "only the native runner draws frames")
-    )]
     #[must_use]
     pub(crate) fn wants_capture_protection(&self) -> bool {
-        self.floating.capture_protected || self.floating.secret_on_screen
+        self.floating.capture_protected
+            || self.floating.secret_on_screen
+            || self.floating.presented_secret
+            || self
+                .floating
+                .submitted_secrets
+                .iter()
+                .any(|(_, secret)| *secret)
+            || self
+                .floating
+                .auxiliary_capture_frames
+                .values()
+                .any(AuxiliaryCaptureFrames::protected)
     }
 }
 
 impl App {
+    /// A queued request is insufficient: the compositor must have applied it
+    /// before the render worker can present any secret pixels.
+    #[cfg(feature = "native")]
+    fn capture_frame_ready(&mut self) -> bool {
+        if !self.floating.capture_host_required || !self.wants_capture_protection() {
+            return true;
+        }
+        self.pump_floating_surface_service();
+        self.floating.client.is_some()
+            && self.floating.capture_protection_sent
+            && self.floating.capture_acknowledged == Some(self.floating.capture_generation)
+    }
+
+    #[cfg(feature = "native")]
+    fn capture_frame_submitted(&mut self, sequence: u64) {
+        let secret = self.floating.secret_on_screen || self.floating.capture_protected;
+        // A worker present() is not a compositor buffer acknowledgement.
+        // Keep this app-wide latch until native windows/process teardown.
+        self.floating.presented_secret |= secret;
+        self.floating
+            .submitted_secrets
+            .push_back((sequence, secret));
+    }
+
+    #[cfg(feature = "native")]
+    fn capture_frame_presented(&mut self, sequence: u64) {
+        while self
+            .floating
+            .submitted_secrets
+            .front()
+            .is_some_and(|(frame, _)| *frame <= sequence)
+        {
+            self.floating.submitted_secrets.pop_front();
+        }
+    }
+
+    #[cfg(feature = "native")]
+    fn capture_auxiliary_drawn(&mut self, id: &str, secret: bool) {
+        self.floating
+            .auxiliary_capture_frames
+            .entry(id.to_owned())
+            .or_default()
+            .painting = secret;
+    }
+
+    #[cfg(feature = "native")]
+    fn capture_auxiliary_submitted(&mut self, id: &str) {
+        let frames = self
+            .floating
+            .auxiliary_capture_frames
+            .entry(id.to_owned())
+            .or_default();
+        let secret = frames.painting || self.floating.capture_protected;
+        frames.latched |= secret;
+        frames.queued.push_back(secret);
+    }
+
+    #[cfg(feature = "native")]
+    fn capture_auxiliary_completed(&mut self, id: &str, presented: bool) {
+        if let Some(frames) = self.floating.auxiliary_capture_frames.get_mut(id) {
+            if let Some(secret) = frames.queued.pop_front() {
+                if presented {
+                    frames.presented = secret;
+                }
+            }
+        }
+    }
+
     #[cfg(feature = "native")]
     fn pump_floating_surface_service(&mut self) -> bool {
         let active_ids = self
@@ -138,39 +347,51 @@ impl App {
                 return changed;
             }
         };
+        // Operations reply through this exact authenticated connection. Restore it
+        // before dispatch, rather than leaving their outcome sink temporarily empty.
+        self.floating.client = Some(client);
         changed |= self.apply_floating_host_messages(messages);
         self.floating.active_ids = self
             .root_widget
             .active_floating_surface_ids()
             .into_iter()
             .collect();
-        self.floating.client = Some(client);
+        self.floating
+            .pending_ime_ids
+            .retain(|id| self.floating.active_ids.contains(id));
         changed || geometry_changed
     }
 
     #[cfg(feature = "native")]
-    fn take_native_host_shell_allow(
-        &mut self,
-    ) -> Option<std::rc::Weak<std::cell::RefCell<crate::widget::HostShellAllow>>> {
-        let widget = crate::widget::capability::capability_mut::<dyn crate::AppWidget>(
-            &mut *self.root_widget,
-        )?;
-        match widget.take_host_intent()? {
-            crate::widget::AppHostIntent::AllowHostShell { reply } => Some(reply),
-            _ => None,
-        }
+    fn take_native_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
+        crate::widget::capability::capability_mut::<dyn crate::AppWidget>(&mut *self.root_widget)?
+            .take_host_intent()
     }
 
     #[cfg(feature = "native")]
     fn drain_unhosted_floating_requests(&mut self) -> bool {
-        let mut changed = false;
-        if let Some(reply) = self
-            .take_native_host_shell_allow()
-            .and_then(|reply| reply.upgrade())
-        {
-            reply.borrow_mut().answer = Some(false);
-            changed = true;
-        }
+        self.floating.pending_ime_ids.clear();
+        let mut changed = if let Some(intent) = self.take_native_host_intent() {
+            match intent {
+                crate::widget::AppHostIntent::AllowHostShell { reply } => {
+                    if let Some(reply) = reply.upgrade() {
+                        reply.borrow_mut().answer = Some(false);
+                    }
+                }
+                crate::widget::AppHostIntent::MoveDeviceDisplay { reply, .. } => {
+                    if let Some(reply) = reply.upgrade() {
+                        reply.borrow_mut().result =
+                            Some(Err(crate::i18n::I18nManager::lookup_plain(
+                                "device-display-session-unavailable",
+                            )));
+                    }
+                }
+                _ => {}
+            }
+            true
+        } else {
+            false
+        };
         // Outside a Tilo session there is no trusted shell chooser to open.
         // Drain the edge so reconnecting later cannot replay a stale gesture.
         while self.root_widget.take_capture_studio_request().is_some() {}
@@ -200,10 +421,36 @@ impl App {
         client: &mut FloatingSurfaceServiceClient,
         changed: &mut bool,
     ) -> Result<(), String> {
-        if let Some(reply) = self.take_native_host_shell_allow() {
-            self.floating.host_shell_allow = Some(reply);
+        if let Some(intent) = self.take_native_host_intent() {
+            match intent {
+                crate::widget::AppHostIntent::AllowHostShell { reply } => {
+                    self.floating.host_shell_allow = Some(reply);
+                    client.send(
+                        &crate::floating_surface::FloatingSurfaceClientMessage::AllowHostShell,
+                    )?;
+                }
+                crate::widget::AppHostIntent::MoveDeviceDisplay {
+                    request: placement,
+                    reply,
+                } => {
+                    if self.floating.display_move.is_some() {
+                        if let Some(reply) = reply.upgrade() {
+                            reply.borrow_mut().result =
+                                Some(Err(crate::i18n::I18nManager::lookup_plain(
+                                    "device-display-request-pending",
+                                )));
+                        }
+                    } else if reply.upgrade().is_some() {
+                        self.floating.next_display_move =
+                            self.floating.next_display_move.wrapping_add(1);
+                        let request = self.floating.next_display_move;
+                        self.floating.display_move = Some((request, reply));
+                        client.send(&crate::floating_surface::FloatingSurfaceClientMessage::MoveDeviceDisplay { request, placement })?;
+                    }
+                }
+                _ => {}
+            }
             *changed = true;
-            client.send(&crate::floating_surface::FloatingSurfaceClientMessage::AllowHostShell)?;
         }
         let protected = self.wants_capture_protection();
         if !self.floating.paint_capable_sent && crate::webview::paint::share_capable() {
@@ -225,9 +472,16 @@ impl App {
             }
         }
         if self.floating.capture_protection_sent != protected {
+            self.floating.capture_generation = self
+                .floating
+                .capture_generation
+                .checked_add(1)
+                .ok_or("capture protection generation exhausted")?;
+            self.floating.capture_acknowledged = None;
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
                     protected,
+                    generation: Some(self.floating.capture_generation),
                 },
             )?;
             self.floating.capture_protection_sent = protected;
@@ -254,14 +508,7 @@ impl App {
             )?;
             *changed = true;
         }
-        while let Some(request) = self.root_widget.take_floating_surface_request() {
-            self.floating.suspended_ids.remove(&request.id);
-            client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::Present {
-                    request: (&request).into(),
-                },
-            )?;
-        }
+        self.send_floating_present_requests(client)?;
         for (id, region) in self.root_widget.take_floating_surface_source_updates() {
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::UpdateRegion {
@@ -269,6 +516,31 @@ impl App {
                     region: crate::floating_surface::protocol_rect_array(region),
                 },
             )?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "native")]
+    fn send_floating_present_requests(
+        &mut self,
+        client: &mut FloatingSurfaceServiceClient,
+    ) -> Result<(), String> {
+        while let Some(request) = self.root_widget.take_floating_surface_request() {
+            self.floating.suspended_ids.remove(&request.id);
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::Present {
+                    request: (&request).into(),
+                },
+            )?;
+            if request.role.uses_app_owned_host()
+                && matches!(
+                    request.source,
+                    crate::floating_surface::FloatingSource::AppElement { .. }
+                )
+                && self.root_widget.floating_surface_ime(&request.id).is_some()
+            {
+                self.floating.pending_ime_ids.insert(request.id);
+            }
         }
         Ok(())
     }
@@ -336,6 +608,9 @@ impl App {
                         content_rect: crate::floating_surface::protocol_rect_array(
                             presentation.content_rect,
                         ),
+                        input_rect: presentation
+                            .input_rect
+                            .map(crate::floating_surface::protocol_rect_array),
                     },
                 )?;
             }
@@ -406,6 +681,38 @@ impl App {
         let changed = !messages.is_empty();
         for message in messages {
             match &message {
+                FloatingSurfaceHostMessage::DeviceShellOperation { request, operation } => {
+                    let result = crate::widget::capability::capability_mut::<dyn crate::AppWidget>(
+                        &mut *self.root_widget,
+                    )
+                    .ok_or_else(|| "Terminal is not available".to_string())
+                    .and_then(|widget| widget.device_shell_operation(operation));
+                    if let Some(client) = &mut self.floating.client {
+                        let _ = client.send(&crate::floating_surface::FloatingSurfaceClientMessage::DeviceShellOutcome { request: *request, result });
+                    }
+                }
+                FloatingSurfaceHostMessage::CaptureProtectionApplied {
+                    generation,
+                    protected,
+                } => {
+                    if *generation == self.floating.capture_generation
+                        && *protected == self.floating.capture_protection_sent
+                    {
+                        self.floating.capture_acknowledged = Some(*generation);
+                    }
+                }
+                FloatingSurfaceHostMessage::DeviceDisplayMoveResult { request, result } => {
+                    if self
+                        .floating
+                        .display_move
+                        .as_ref()
+                        .is_some_and(|(pending, _)| pending == request)
+                        && let Some((_, reply)) = self.floating.display_move.take()
+                        && let Some(reply) = reply.upgrade()
+                    {
+                        reply.borrow_mut().result = Some(result.clone());
+                    }
+                }
                 FloatingSurfaceHostMessage::HostShellAllowed { allowed } => {
                     if let Some(reply) = self
                         .floating
@@ -421,6 +728,7 @@ impl App {
                     coordinate_offset,
                     ..
                 } => {
+                    self.floating.pending_ime_ids.remove(id);
                     self.floating.coordinate_offsets.insert(
                         id.clone(),
                         Vec2::new(coordinate_offset[0], coordinate_offset[1]),
@@ -438,14 +746,41 @@ impl App {
                 }
                 FloatingSurfaceHostMessage::Reattach { id }
                 | FloatingSurfaceHostMessage::Closed { id } => {
+                    self.floating.pending_ime_ids.remove(id);
                     self.floating.prepared_ids.remove(id);
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.remove(id);
                 }
                 FloatingSurfaceHostMessage::Suspended { id } => {
+                    self.floating.pending_ime_ids.remove(id);
                     self.floating.prepared_ids.remove(id);
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.insert(id.clone());
+                }
+                FloatingSurfaceHostMessage::Appearance { network_status, .. } => {
+                    if let Some(status) = network_status {
+                        self.floating.network_status_active = true;
+                        tilo_host::network_status::set_host_status(
+                            status.available,
+                            status.metered,
+                        );
+                    } else {
+                        if self.floating.network_status_active {
+                            tilo_host::network_status::clear_host_status();
+                        }
+                        self.floating.network_status_active = false;
+                    }
+                    if let Some(theme) = message.configured_theme() {
+                        self.floating.host_theme = Some(theme.clone());
+                        if self.accessibility.base_theme.document != theme.document {
+                            self.set_theme(theme);
+                        }
+                    }
+                    if let Some(appearance) = message.window_appearance() {
+                        self.set_window_appearance(appearance);
+                    }
+                    // The window's own concern, not a floating surface's.
+                    continue;
                 }
                 FloatingSurfaceHostMessage::PaintKeyframe => {
                     crate::webview::paint::set_share_watched(true);
@@ -469,6 +804,17 @@ impl App {
     }
     #[cfg(feature = "native")]
     fn reattach_after_floating_service_loss(&mut self) {
+        if self.floating.network_status_active {
+            tilo_host::network_status::clear_host_status();
+            self.floating.network_status_active = false;
+        }
+        if let Some((_, reply)) = self.floating.display_move.take()
+            && let Some(reply) = reply.upgrade()
+        {
+            reply.borrow_mut().result = Some(Err(crate::i18n::I18nManager::lookup_plain(
+                "device-display-session-disconnected",
+            )));
+        }
         if let Some(reply) = self
             .floating
             .host_shell_allow
@@ -483,6 +829,7 @@ impl App {
             .floating
             .presentations
             .keys()
+            .chain(self.floating.pending_ime_ids.iter())
             .chain(self.floating.suspended_ids.iter())
             .cloned()
             .collect::<std::collections::HashSet<_>>()
@@ -491,6 +838,7 @@ impl App {
         self.floating.presentations.clear();
         self.floating.active_ids.clear();
         self.floating.prepared_ids.clear();
+        self.floating.pending_ime_ids.clear();
         self.floating.coordinate_offsets.clear();
         self.floating.suspended_ids.clear();
         for id in ids {
@@ -535,7 +883,7 @@ impl App {
                 position,
             } => Some(WindowEvent::CursorMoved {
                 device_id: *device_id,
-                position: PhysicalPosition::new(position.x + dx, position.y + dy),
+                position: winit::dpi::PhysicalPosition::new(position.x + dx, position.y + dy),
             }),
             WindowEvent::Touch(touch) => {
                 let mut translated = *touch;
@@ -623,9 +971,322 @@ fn open_standalone_instance(target: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(all(test, feature = "native"))]
+#[cfg(test)]
+#[cfg(feature = "native")]
 mod host_shell_allow_tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn network_status_follows_the_real_service_pump_and_discards_disconnected_host() {
+        use crate::floating_surface::HostNetworkStatus;
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Container::new()),
+        );
+        app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+        for metered in [None, Some(true), Some(false)] {
+            let mut message = FloatingSurfaceHostMessage::appearance(&Default::default());
+            if let FloatingSurfaceHostMessage::Appearance { network_status, .. } = &mut message {
+                *network_status = Some(HostNetworkStatus {
+                    available: Some(true),
+                    metered,
+                });
+            }
+            let mut frame = serde_json::to_vec(&message).unwrap();
+            frame.push(b'\n');
+            shell_side.write_all(&frame).unwrap();
+            app.pump_floating_surface_service();
+            assert_eq!(tilo_host::network_status::current().metered, metered);
+        }
+        drop(shell_side);
+        app.pump_floating_surface_service();
+        assert!(!app.floating.network_status_active);
+        assert_ne!(tilo_host::network_status::current().metered, Some(false));
+        // An older host has no richer status; the same appearance still parses.
+        let old: FloatingSurfaceHostMessage =
+            serde_json::from_str(r#"{"type":"appearance","workspace_hue":180}"#).unwrap();
+        assert!(matches!(
+            old,
+            FloatingSurfaceHostMessage::Appearance {
+                network_status: None,
+                ..
+            }
+        ));
+        // Loss is terminal for this App: pumping again cannot reacquire a
+        // consumed inherited descriptor or resurrect the stale snapshot.
+        app.pump_floating_surface_service();
+        assert!(app.floating.client.is_none());
+        assert_ne!(tilo_host::network_status::current().metered, Some(false));
+        drop(app);
+
+        // A fresh App gets a fresh launch connection. This controlled fixture
+        // covers closure; the launcher boundary fixture qualifies discovery.
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        let mut relaunched = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Container::new()),
+        );
+        relaunched.floating.client =
+            Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+        let mut message = FloatingSurfaceHostMessage::appearance(&Default::default());
+        if let FloatingSurfaceHostMessage::Appearance { network_status, .. } = &mut message {
+            *network_status = Some(HostNetworkStatus {
+                available: Some(true),
+                metered: Some(false),
+            });
+        }
+        let mut frame = serde_json::to_vec(&message).unwrap();
+        frame.push(b'\n');
+        shell_side.write_all(&frame).unwrap();
+        relaunched.pump_floating_surface_service();
+        assert_eq!(tilo_host::network_status::current().metered, Some(false));
+        drop(relaunched);
+        assert_ne!(tilo_host::network_status::current().metered, Some(false));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn device_shell_operation_is_acknowledged_by_the_real_service_pump() {
+        use crate::floating_surface::{DeviceShellOperation, FloatingSurfaceClientMessage};
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        shell_side.set_nonblocking(true).unwrap();
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Container::new()),
+        );
+        app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+        for request in [71, 72] {
+            let mut wire = serde_json::to_vec(&FloatingSurfaceHostMessage::DeviceShellOperation {
+                request,
+                operation: DeviceShellOperation::Inspect,
+            })
+            .unwrap();
+            wire.push(b'\n');
+            shell_side.write_all(&wire).unwrap();
+            assert!(app.pump_floating_surface_service());
+            let mut received = Vec::new();
+            let error = shell_side.read_to_end(&mut received).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+            let outcomes = received
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_slice::<FloatingSurfaceClientMessage>(line).unwrap())
+                .filter_map(|message| match message {
+                    FloatingSurfaceClientMessage::DeviceShellOutcome { request, result } => {
+                        Some((request, result))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                outcomes,
+                vec![(request, Err("Terminal is not available".into()))],
+                "even refusal must acknowledge the exact operation through the live authenticated connection"
+            );
+            assert!(
+                app.floating.client.is_some(),
+                "the same connection remains available for the next request"
+            );
+        }
+    }
+
+    struct DeviceShellProbe {
+        calls: std::rc::Rc<std::cell::Cell<usize>>,
+        container: crate::widget::Container,
+    }
+
+    impl Widget for DeviceShellProbe {
+        crate::provides!(dyn crate::AppWidget);
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            theme: &crate::Theme,
+            nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            self.container.build_layout(taffy, theme, nodes)
+        }
+        fn apply_layout(
+            &mut self,
+            taffy: &taffy::TaffyTree<()>,
+            node: taffy::NodeId,
+            origin: vello::kurbo::Point,
+        ) {
+            self.container.apply_layout(taffy, node, origin);
+        }
+        fn draw(
+            &mut self,
+            scene: &mut vello::Scene,
+            transform: vello::kurbo::Affine,
+            text: &mut crate::TextRenderer,
+            theme: &crate::Theme,
+            presence: &crate::PresenceCtx,
+        ) {
+            self.container.draw(scene, transform, text, theme, presence);
+        }
+        fn name(&self) -> &str {
+            "DeviceShellProbe"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            self.container.get_rect()
+        }
+    }
+
+    impl crate::AppWidget for DeviceShellProbe {
+        fn app_kind(&self) -> crate::AppKind {
+            crate::AppKind::Terminal
+        }
+        fn app_title(&self) -> &str {
+            "Device shell probe"
+        }
+        fn app_icon(&self) -> crate::IconDescriptor {
+            crate::IconDescriptor::Glyph("T")
+        }
+        fn permission_hint(&self) -> Option<crate::AppKind> {
+            Some(crate::AppKind::Terminal)
+        }
+        fn device_shell_operation(
+            &mut self,
+            operation: &crate::floating_surface::DeviceShellOperation,
+        ) -> Result<serde_json::Value, String> {
+            self.calls.set(self.calls.get() + 1);
+            match operation {
+                crate::floating_surface::DeviceShellOperation::Inspect => {
+                    Ok(serde_json::json!({"session": "exact-session"}))
+                }
+                _ => Err("Session no longer matches".into()),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn device_shell_success_and_refusal_are_sent_once_on_the_original_connection() {
+        use crate::floating_surface::{DeviceShellOperation, FloatingSurfaceClientMessage};
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        shell_side.set_nonblocking(true).unwrap();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(DeviceShellProbe {
+                calls: calls.clone(),
+                container: crate::widget::Container::new(),
+            }),
+        );
+        app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+        for (request, operation, expected) in [
+            (
+                91,
+                DeviceShellOperation::Inspect,
+                Ok(serde_json::json!({"session":"exact-session"})),
+            ),
+            (
+                92,
+                DeviceShellOperation::Read {
+                    session: "stale-session".into(),
+                },
+                Err("Session no longer matches".into()),
+            ),
+        ] {
+            let mut wire = serde_json::to_vec(&FloatingSurfaceHostMessage::DeviceShellOperation {
+                request,
+                operation,
+            })
+            .unwrap();
+            wire.push(b'\n');
+            shell_side.write_all(&wire).unwrap();
+            assert!(app.pump_floating_surface_service());
+            let mut received = Vec::new();
+            assert_eq!(
+                shell_side.read_to_end(&mut received).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            let outcomes = received
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_slice::<FloatingSurfaceClientMessage>(line).unwrap())
+                .filter_map(|message| match message {
+                    FloatingSurfaceClientMessage::DeviceShellOutcome { request, result } => {
+                        Some((request, result))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(outcomes, vec![(request, expected)]);
+            let executed = calls.get();
+            app.pump_floating_surface_service();
+            assert_eq!(
+                calls.get(),
+                executed,
+                "idle pumping must not replay a consumed operation"
+            );
+            let mut extra = [0; 1];
+            assert_eq!(
+                shell_side.read(&mut extra).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+        assert_eq!(calls.get(), 2);
+        drop(shell_side);
+        app.pump_floating_surface_service();
+        assert!(
+            app.floating.client.is_none(),
+            "a disconnected connection is never restored"
+        );
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn display_move_reply_matches_exact_request_and_disconnect_never_replays_it() {
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Container::new()),
+        );
+        let reply = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::widget::DeviceDisplayMoveReply::default(),
+        ));
+        app.floating.display_move = Some((7, std::rc::Rc::downgrade(&reply)));
+        let message = FloatingSurfaceHostMessage::DeviceDisplayMoveResult {
+            request: 8,
+            result: Ok(()),
+        };
+        let wire = serde_json::to_vec(&message).unwrap();
+        app.apply_floating_host_messages(vec![serde_json::from_slice(&wire).unwrap()]);
+        assert!(
+            reply.borrow().result.is_none(),
+            "another gesture cannot acknowledge this move"
+        );
+        app.apply_floating_host_messages(vec![
+            FloatingSurfaceHostMessage::DeviceDisplayMoveResult {
+                request: 7,
+                result: Ok(()),
+            },
+        ]);
+        assert_eq!(reply.borrow_mut().result.take(), Some(Ok(())));
+        assert!(app.floating.display_move.is_none());
+        app.floating.display_move = Some((9, std::rc::Rc::downgrade(&reply)));
+        app.reattach_after_floating_service_loss();
+        assert!(reply.borrow_mut().result.take().unwrap().is_err());
+        assert!(app.floating.display_move.is_none());
+        app.apply_floating_host_messages(vec![
+            FloatingSurfaceHostMessage::DeviceDisplayMoveResult {
+                request: 9,
+                result: Ok(()),
+            },
+        ]);
+        assert!(
+            reply.borrow().result.is_none(),
+            "late success cannot revive a disconnected gesture"
+        );
+    }
+
     #[test]
     fn desktop_reply_resolves_native_permission_and_service_loss_refuses_it() {
         let mut app = App::new_with_controlled_inputs(

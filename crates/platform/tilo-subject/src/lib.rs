@@ -111,32 +111,6 @@ pub fn find_subject(rgba: &[u8], width: u32, height: u32) -> Result<Subject, Sub
     })
 }
 
-/// A matte as the greyscale PNG [`tilo_model_gateway::SubjectMatte`] carries.
-///
-/// # Errors
-/// Returns the encoder's failure.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "a coverage clamped to 0..=1 scaled to a byte"
-)]
-pub fn matte_png(matte: &Matte) -> Result<Vec<u8>, image::ImageError> {
-    let bytes: Vec<u8> = matte
-        .values
-        .iter()
-        .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8)
-        .collect();
-    let width = u32::try_from(matte.width).unwrap_or(u32::MAX);
-    let height = u32::try_from(matte.height).unwrap_or(u32::MAX);
-    let image =
-        image::GrayImage::from_raw(width, height, bytes).ok_or(image::ImageError::Limits(
-            image::error::LimitError::from_kind(image::error::LimitErrorKind::DimensionError),
-        ))?;
-    let mut out = std::io::Cursor::new(Vec::new());
-    DynamicImage::ImageLuma8(image).write_to(&mut out, image::ImageFormat::Png)?;
-    Ok(out.into_inner())
-}
-
 fn encode_jpeg(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, image::ImageError> {
     let mut output = Cursor::new(Vec::new());
     let rgb = image.to_rgb8();

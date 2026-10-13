@@ -18,9 +18,8 @@
 //! record it names, and only a frame that opens with this device's keys is
 //! read: [`seal`] and [`open`].
 //!
-//! Selection anchors use the browser peer's encoding: the editor key and a
-//! character offset, `[ANCHOR_TAG_SCOPED, uvarint(start), postcard(key)]`
-//! and `[ANCHOR_TAG_SAME_SCOPE, uvarint(end)]`.
+//! Selection anchors use the live plane's encoding of an editor key and
+//! character offsets, [`selection_anchors`].
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -28,9 +27,8 @@ use std::time::{Duration, Instant};
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ChannelId, PeerPresence, PeerPresencePayload};
 use tilo_relay_protocol::live::{
-    ANCHOR_TAG_DIGEST, ANCHOR_TAG_SAME_SCOPE, ANCHOR_TAG_SCOPED, LiveAnchor, LiveFrame,
-    LiveParticipant, LiveRecord, MAX_OBJECT_ID_BYTES, ParticipantKind, PresenceFrame,
-    SealedLiveFrame,
+    AnchorScope, LiveAnchor, LiveFrame, LiveParticipant, LiveRecord, ParticipantKind,
+    PresenceFrame, SealedLiveFrame, read_selection_anchors, selection_anchors,
 };
 
 /// Seal canonical live `frame` of room `cluster_id` with the content keys of
@@ -77,83 +75,33 @@ pub fn open(
 /// (browsers mark a peer stale after 10 s without a frame).
 pub const KEEPALIVE: Duration = Duration::from_secs(3);
 
-fn push_uvarint(out: &mut Vec<u8>, mut value: u64) {
-    loop {
-        let byte = u8::try_from(value & 0x7f).unwrap_or(0);
-        value >>= 7;
-        if value == 0 {
-            out.push(byte);
-            return;
-        }
-        out.push(byte | 0x80);
-    }
-}
-
-fn read_uvarint(bytes: &[u8]) -> Option<(u64, &[u8])> {
-    let mut value = 0u64;
-    for (index, (byte, shift)) in bytes.iter().zip((0u32..64).step_by(7)).enumerate() {
-        value |= u64::from(byte & 0x7f).checked_shl(shift)?;
-        if byte & 0x80 == 0 {
-            return Some((value, bytes.get(index.checked_add(1)?..)?));
-        }
-    }
-    None
-}
-
 /// Selection anchors for the editor whose postcard key is `key`. A key too
 /// long for the anchor travels as its scope digest, which the receiving
 /// editor resolves against its own keys.
 fn anchors(key: &[u8], start: u64, end: u64) -> Option<(LiveAnchor, LiveAnchor)> {
-    let mut anchor = vec![ANCHOR_TAG_SCOPED];
-    push_uvarint(&mut anchor, start);
-    anchor.extend_from_slice(key);
-    if anchor.len() > MAX_OBJECT_ID_BYTES {
-        let key: ui::presence::PresenceKey = postcard::from_bytes(key).ok()?;
-        anchor = vec![ANCHOR_TAG_DIGEST];
-        push_uvarint(&mut anchor, start);
-        anchor.extend_from_slice(&key.scope_digest()?);
-    }
-    let mut head = vec![ANCHOR_TAG_SAME_SCOPE];
-    push_uvarint(&mut head, end);
-    (anchor.len() <= MAX_OBJECT_ID_BYTES)
-        .then_some((LiveAnchor { cursor: anchor }, LiveAnchor { cursor: head }))
+    selection_anchors(
+        key,
+        || {
+            postcard::from_bytes::<ui::presence::PresenceKey>(key)
+                .ok()?
+                .scope_digest()
+        },
+        start,
+        end,
+    )
 }
 
 /// The editor key and range of a pair made by [`anchors`]; a digest names
 /// the key's digest stand-in.
 fn read_anchors(anchor: &LiveAnchor, head: &LiveAnchor) -> Option<(Vec<u8>, u64, u64)> {
-    let (&tag, rest) = anchor.cursor.split_first()?;
-    let (start, key) = read_uvarint(rest)?;
-    let key = match tag {
-        ANCHOR_TAG_SCOPED => key.to_vec(),
-        ANCHOR_TAG_DIGEST => postcard::to_stdvec(&ui::presence::PresenceKey::from_scope_digest(
-            key.try_into().ok()?,
-        ))
-        .ok()?,
-        _ => return None,
+    let (scope, start, end) = read_selection_anchors(anchor, head)?;
+    let key = match scope {
+        AnchorScope::Key(key) => key.to_vec(),
+        AnchorScope::Digest(digest) => {
+            postcard::to_stdvec(&ui::presence::PresenceKey::from_scope_digest(digest)).ok()?
+        }
     };
-    let (&tag, rest) = head.cursor.split_first()?;
-    if tag != ANCHOR_TAG_SAME_SCOPE {
-        return None;
-    }
-    let (end, _) = read_uvarint(rest)?;
     Some((key, start, end))
-}
-
-/// A stable cursor colour for a device.
-pub fn color_of(device: &[u8; 32]) -> [u8; 3] {
-    const PALETTE: [[u8; 3]; 8] = [
-        [0xe0, 0x4f, 0x5f],
-        [0x2f, 0x80, 0xed],
-        [0x27, 0xae, 0x60],
-        [0xf2, 0x99, 0x4a],
-        [0x9b, 0x51, 0xe0],
-        [0x00, 0xa3, 0xa3],
-        [0xd6, 0x33, 0x84],
-        [0x82, 0x82, 0x2d],
-    ];
-    let index = usize::from(device.iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte))) % 8;
-    PALETTE.get(index).copied().unwrap_or([0x80, 0x80, 0x80])
 }
 
 struct Room {
@@ -247,6 +195,9 @@ pub struct Inbound {
     pub updates: Vec<PeerPresence>,
     /// The name the sender asks to be drawn with.
     pub label: Option<String>,
+    /// The colour the sender asks to be drawn in: the presence hue nearest
+    /// its participant colour.
+    pub colour: Option<ui::tokens::PresenceHue>,
 }
 
 /// Translate one live frame. Previews and malformed frames mean nothing
@@ -265,6 +216,10 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
             .participant
             .as_ref()
             .map(|participant| participant.label.clone()),
+        colour: presence.participant.as_ref().and_then(|participant| {
+            let [r, g, b] = participant.color;
+            ui::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
+        }),
         ..Inbound::default()
     };
     if let Some([x, y]) = presence.pointer {
@@ -296,12 +251,15 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
     Some(inbound)
 }
 
-/// How this device asks to be drawn.
-pub fn participant(label: String, device: &[u8; 32]) -> LiveParticipant {
+/// How this device asks to be drawn: under the person's name, in the
+/// colour they wear everywhere (their choice, or the one their stable
+/// identity derives).
+pub fn participant(label: String, colour: ui::tokens::PresenceHue) -> LiveParticipant {
+    let (r, g, b) = ui::presence::identity_rgb(colour);
     LiveParticipant {
         kind: ParticipantKind::Person,
         label,
-        color: color_of(device),
+        color: [r, g, b],
         activity: None,
     }
 }
@@ -327,7 +285,7 @@ mod tests {
             kind: "tilo.rich-text".into(),
         };
         let (anchor, head) = anchors(&postcard::to_stdvec(&key).unwrap(), 5, 5).unwrap();
-        assert!(anchor.cursor.len() <= MAX_OBJECT_ID_BYTES);
+        assert!(anchor.cursor.len() <= tilo_relay_protocol::live::MAX_OBJECT_ID_BYTES);
         let (read, start, end) = read_anchors(&anchor, &head).unwrap();
         assert_eq!(
             postcard::from_bytes::<ui::presence::PresenceKey>(&read).unwrap(),
@@ -361,7 +319,7 @@ mod tests {
             .update(
                 1,
                 focus,
-                participant("Ada".into(), &[1; 32]),
+                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
                 &PeerPresence {
                     key: caret_key(),
                     payload: PeerPresencePayload::Caret { pos: 3 },
@@ -407,7 +365,7 @@ mod tests {
             .update(
                 7,
                 focus.clone(),
-                participant("Ada".into(), &[3; 32]),
+                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
                 &PeerPresence {
                     key: caret_key(),
                     payload: PeerPresencePayload::Caret { pos: 42 },
@@ -425,6 +383,11 @@ mod tests {
         assert_eq!(read.app_id, "so.tilo.notes");
         assert_eq!(read.label.as_deref(), Some("Ada"));
         assert_eq!(
+            read.colour,
+            Some(ui::tokens::PresenceHue::Teal),
+            "the person's colour crosses the live plane"
+        );
+        assert_eq!(
             read.updates,
             vec![PeerPresence {
                 key: caret_key(),
@@ -440,7 +403,7 @@ mod tests {
                     app: "so.tilo.notes".into(),
                     record: "r".into(),
                 },
-                participant("Ada".into(), &[3; 32]),
+                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
                 &PeerPresence {
                     key: postcard::to_stdvec(&ui::presence::PresenceKey::pointer_default())
                         .unwrap(),

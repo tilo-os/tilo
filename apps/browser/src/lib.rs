@@ -28,11 +28,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -55,9 +51,11 @@ pub mod extensions;
 pub mod history;
 pub mod library;
 mod native_blocker;
+mod notice;
 mod page_menu;
 pub mod private_window;
 pub mod resource;
+mod rows;
 pub mod search_provider;
 pub mod settings;
 mod site_controls;

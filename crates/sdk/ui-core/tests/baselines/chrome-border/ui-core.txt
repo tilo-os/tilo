@@ -1,0 +1,13 @@
+# The chrome-border ratchet for ui-core: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+crates/sdk/ui-core/src/widget/candlestick_chart.rs declared_border 1
+crates/sdk/ui-core/src/widget/cartesian_plot.rs declared_border 1
+crates/sdk/ui-core/src/widget/category_chart.rs declared_border 1
+crates/sdk/ui-core/src/widget/distribution_chart.rs declared_border 1
+crates/sdk/ui-core/src/widget/divider.rs declared_border 1
+crates/sdk/ui-core/src/widget/heatmap.rs declared_border 1
+crates/sdk/ui-core/src/widget/radar_chart.rs declared_border 3
+# Forced-colour accessibility field edge; normal surfaces still derive their edge.
+crates/sdk/ui-core/src/widget/text_input.rs declared_border 1
+crates/sdk/ui-core/src/widget/video_player.rs declared_border 1

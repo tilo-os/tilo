@@ -16,8 +16,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use thiserror::Error;
 
 use crate::shell::device_fabric::{
@@ -341,14 +339,6 @@ fn wake_state() -> &'static Mutex<WakeState> {
     STATE.get_or_init(|| Mutex::new(WakeState::default()))
 }
 
-fn fresh_nonce() -> [u8; 16] {
-    let mut nonce = [0; 16];
-    while nonce == [0; 16] {
-        UnwrapErr(SysRng).fill_bytes(&mut nonce);
-    }
-    nonce
-}
-
 fn label_of(fabric: &DeviceFabric, device: &DeviceId) -> String {
     fabric.snapshots().get(device).map_or_else(
         || device.as_str().to_owned(),
@@ -550,9 +540,12 @@ fn wake_from_here(
         return WakeOutcome::SendFailed;
     }
     if let Ok(mut state) = wake_state().lock() {
-        state
-            .watch
-            .start(target.clone(), requester, fresh_nonce(), Instant::now());
+        state.watch.start(
+            target.clone(),
+            requester,
+            crate::random::nonzero::<16>(),
+            Instant::now(),
+        );
     }
     WakeOutcome::Sent { subnet }
 }

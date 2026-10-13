@@ -3,10 +3,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -25,3 +21,6 @@ mod pin_unpin_changes_state;
 mod registry_roundtrip;
 #[path = "socket_activation.rs"]
 mod socket_activation;
+
+#[path = "local_trust.rs"]
+mod local_trust;

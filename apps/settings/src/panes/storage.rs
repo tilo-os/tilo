@@ -336,7 +336,7 @@ impl StorageModel {
                 card_with_action(
                     &t("settings-storage-synced-card"),
                     Box::new(self.cx.bind_invocation(
-                        Button::new("storage.sync.free", &free).content_sized(),
+                        Button::new("storage.sync.free", &free),
                         StorageEffect::FreeSyncedFiles,
                     )),
                     rows(sync_rows),
@@ -399,7 +399,7 @@ impl StorageModel {
                     &[("size", ui::format::bytes_si(preview.total_bytes).into())],
                 );
                 let action = Box::new(self.cx.bind_invocation(
-                    Button::new("storage.clean", &remove).content_sized(),
+                    Button::new("storage.clean", &remove),
                     StorageEffect::CleanUpCaches,
                 ));
                 let mut preview_rows = vec![caption(&t("settings-storage-cleanup-caption"))];
@@ -432,22 +432,14 @@ impl StorageModel {
         card(
             &t("settings-storage-tools"),
             rows(vec![
-                crate::widgets::setting_row_described(
-                    &t("settings-storage-disks"),
-                    &t("settings-storage-disks-desc"),
-                    Box::new(self.cx.bind_invocation(
-                        Button::new("storage.disks", &open_disks).content_sized(),
-                        StorageEffect::OpenDisks,
-                    )),
-                ),
-                crate::widgets::setting_row_described(
-                    &t("settings-storage-backups"),
-                    &t("settings-storage-backups-desc"),
-                    Box::new(self.cx.bind_invocation(
-                        Button::new("storage.backups", &open_backups).content_sized(),
-                        StorageEffect::OpenBackups,
-                    )),
-                ),
+                self.cx
+                    .row(t("settings-storage-disks"))
+                    .described(t("settings-storage-disks-desc"))
+                    .button("storage.disks", &open_disks, StorageEffect::OpenDisks),
+                self.cx
+                    .row(t("settings-storage-backups"))
+                    .described(t("settings-storage-backups-desc"))
+                    .button("storage.backups", &open_backups, StorageEffect::OpenBackups),
                 caption(&t("settings-storage-tools-caption")),
             ]),
         )

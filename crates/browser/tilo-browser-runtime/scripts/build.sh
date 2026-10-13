@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build the browser runtime bundle into an empty directory:
 #   pkg/                wasm-bindgen output (--target web)
-#   *.mjs, index.html   page host and diagnostic page
+#   *.mjs, index.html   page host and the desktop entry page
+#   app/index.html      the full-tab app entry page (web-routing.md)
 #   fonts/, fonts.json  canonical product fonts, their manifest and licences
 #   data/, data.json    application data fetched on request (desktop bundle:
 #                       the Typst editor's fonts), with sizes and hashes
@@ -12,7 +13,9 @@
 # wasm-opt (binaryen) unless `--no-wasm-opt`; `dev` skips it unless `--wasm-opt`.
 # `--bundle desktop` builds crates/browser/tilo-web-desktop instead: the same
 # runtime with every web-capable app registered from its manifest, under the
-# runtime's module name so the page host loads it unchanged, plus apps.json.
+# runtime's module name so the page host loads it unchanged, plus apps.json;
+# its module is split (tools/web/wasm-split/split.sh) into a start module and
+# one module per app, fetched when the app first opens.
 # Needs the wasm32-unknown-unknown target and a wasm-bindgen CLI matching the
 # crate's pinned wasm-bindgen.
 set -euo pipefail
@@ -43,6 +46,13 @@ case "$bundle" in
   desktop) package=tilo-web-desktop ;;
   *) echo "unsupported bundle: $bundle" >&2; exit 2 ;;
 esac
+# The splitter reads the linked module's symbol table, which `wasm-release`
+# strips; `wasm-split` is that profile with the table kept.
+bindgen_flags=()
+if [[ $bundle == desktop ]]; then
+  [[ $profile == release ]] && cargo_profile=wasm-split artifact=wasm-split
+  bindgen_flags=(--keep-lld-exports --no-demangle)
+fi
 [[ "$out" == /* ]] || { echo 'OUTPUT_DIR must be absolute' >&2; exit 2; }
 # Stale modules beside new ones would make the bundle's provenance ambiguous.
 [[ ! -d "$out" || -z "$(ls -A "$out")" ]] || { echo 'OUTPUT_DIR must be empty' >&2; exit 2; }
@@ -70,9 +80,10 @@ cargo build --locked -p "$package" --lib --target wasm32-unknown-unknown --profi
 target_dir=$(cargo metadata --format-version 1 --no-deps --offline |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 mkdir -p "$out/pkg" "$out/fonts"
-"$bindgen" "$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm" --target web \
-  --out-dir "$out/pkg" --out-name tilo_browser_runtime
+linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
+"$bindgen" "$linked" --target web --out-dir "$out/pkg" --out-name tilo_browser_runtime "${bindgen_flags[@]}"
 if [[ $bundle == desktop ]]; then
+  bash "$repo/tools/web/wasm-split/split.sh" "$linked" "$out/pkg"
   cp "$repo/crates/browser/tilo-web-desktop/apps.json" "$out/apps.json"
   # The Typst editor's fonts, which only native builds embed; the editor asks
   # for them by name when it opens (crates/platform/tilo-typst-fonts).
@@ -90,11 +101,14 @@ PY
 fi
 # The features rustc enables for wasm32-unknown-unknown; wasm-opt refuses
 # a module that uses one it was not told about.
-wasm_opt_flags="-Os --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue"
+# The split modules keep the name section the splitter read; it is dropped
+# here with the rest of the debug information.
+wasm_opt_flags="-Os --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue --strip-debug --strip-producers"
 if [[ $optimize == 1 ]]; then
   command -v wasm-opt >/dev/null || { echo 'wasm-opt (binaryen) is required; pass --no-wasm-opt to skip' >&2; exit 2; }
+  # A few at a time: the start module alone takes gigabytes to optimize.
   # shellcheck disable=SC2086
-  wasm-opt $wasm_opt_flags "$out/pkg/tilo_browser_runtime_bg.wasm" -o "$out/pkg/tilo_browser_runtime_bg.wasm"
+  printf '%s\0' "$out"/pkg/*.wasm | xargs -0 -P 4 -I {} wasm-opt $wasm_opt_flags {} -o {}
 else
   wasm_opt_flags=
 fi
@@ -103,15 +117,21 @@ compute_opt=--no-wasm-opt
 bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$profile" "$compute_opt"
 find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' -exec cp {} "$out/" \;
 cp "$crate/web/index.html" "$out/index.html"
+mkdir -p "$out/app"
+cp "$crate/web/app/index.html" "$out/app/index.html"
 # The live plane's MoQ library is bundled from the published @moq/net pinned
 # in scripts/moq-browser/package-lock.json, never committed; this replaces
 # any local development copy just copied.
 (cd "$repo/scripts/moq-browser" && npm ci --no-audit --no-fund --silent && node build.mjs "$out/media-moq-library.mjs")
 
 python3 - "$repo" "$out" <<'PY'
-import json, pathlib, re, shutil, sys
+import importlib.util, json, pathlib, re, shutil, sys
 repo, out = map(pathlib.Path, sys.argv[1:])
-source = repo / 'crates/sdk/ui-core/assets/fonts'
+tool = repo / 'tools/font-catalog.py'
+spec = importlib.util.spec_from_file_location('font_catalog', tool)
+catalog_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(catalog_module)
+source = catalog_module.prepared_root(repo / 'crates/sdk/ui-core/assets/fonts', 'product')
 text = (source / 'manifest.toml').read_text()
 assets = []
 for block in text.split('[[font]]')[1:]:
@@ -128,6 +148,7 @@ for block in text.split('[[font]]')[1:]:
 assert any(asset['startup'] for asset in assets), 'no browser startup fonts in the manifest'
 shutil.copytree(source / 'LICENSES', out / 'fonts/LICENSES', dirs_exist_ok=True)
 shutil.copy2(source / 'manifest.toml', out / 'fonts/manifest.toml')
+shutil.copy2(source / 'PROVENANCE.md', out / 'fonts/PROVENANCE.md')
 catalog = re.search(r'^catalog_id = "(.*?)"$', text, re.M)[1]
 (out / 'fonts.json').write_text(json.dumps(dict(schema=1, catalog=catalog, assets=assets), separators=(',', ':')) + '\n')
 PY
@@ -152,7 +173,7 @@ python3 - "$out" "$revision" "$source_status" "$profile" "$(rustc --version)" "$
   "$cargo_profile" "$bundle" "$wasm_opt_version" "$wasm_opt_flags" <<'PY'
 import hashlib, json, pathlib, sys
 out = pathlib.Path(sys.argv[1])
-metadata = dict(revision=sys.argv[2], dirty=bool(sys.argv[3]), profile=sys.argv[4], rustc=sys.argv[5],
+metadata = dict(revision=sys.argv[2], dirty=bool(sys.argv[3]), profile=sys.argv[4], builtFromSource=True, rustc=sys.argv[5],
                 wasmBindgen=sys.argv[6], wasmOpt=sys.argv[7] == '1', target='wasm32-unknown-unknown',
                 cargoProfile=sys.argv[8], bundle=sys.argv[9])
 if metadata['wasmOpt']:

@@ -27,26 +27,87 @@
 //! that blocks remote sub-resource loads at the network layer, for engines that
 //! honour it (`SetContentFilter`); it mirrors the CSP so the two agree.
 
+use ui::TextRole;
+use ui::color::to_hex;
+use ui::theme::Theme;
+
+/// How the reader sets an HTML body: the reader's own ground, ink and body
+/// text, read from the theme so a message reads like the rest of the reader
+/// in a light and a dark theme alike.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocumentStyle {
+    /// The reader's ground, as `#RRGGBB`.
+    pub ground: String,
+    /// Primary ink: the text, and links (underlined, never a hue).
+    pub ink: String,
+    /// Secondary ink: quoted text.
+    pub quiet_ink: String,
+    /// Tertiary ink: the rule beside a quote.
+    pub rule: String,
+    /// The rule's width in px.
+    pub rule_px: f32,
+    /// Body text size and line height in px, at the theme's text scale.
+    pub font_px: f32,
+    pub line_px: f32,
+    /// The indent of quoted text in px.
+    pub indent_px: f32,
+}
+
+impl DocumentStyle {
+    #[must_use]
+    pub fn from_theme(theme: &Theme) -> Self {
+        let colors = &theme.tokens.colors;
+        let body = theme.text(TextRole::Body);
+        let scale = theme.text_scale;
+        Self {
+            ground: to_hex(colors.surfaces.content),
+            ink: to_hex(colors.text_primary),
+            quiet_ink: to_hex(colors.text_dim),
+            rule: to_hex(colors.text_tertiary),
+            rule_px: theme.tokens.metrics.chrome_rule_px,
+            font_px: body.size * scale,
+            line_px: body.line_height_px() * scale,
+            indent_px: theme.tokens.spacing.s3,
+        }
+    }
+
+    fn css(&self) -> String {
+        let Self {
+            ground,
+            ink,
+            quiet_ink,
+            rule,
+            rule_px,
+            font_px,
+            line_px,
+            indent_px,
+        } = self;
+        format!(
+            "html,body{{margin:0;padding:0;background:{ground};color:{ink};\
+font-size:{font_px}px;line-height:{line_px}px;font-family:system-ui,sans-serif;\
+word-break:break-word;overflow-wrap:anywhere}}\
+img{{max-width:100%;height:auto}}a{{color:{ink};text-decoration:underline}}\
+blockquote{{border-left:{rule_px}px solid {rule};margin:0;padding-left:{indent_px}px;color:{quiet_ink}}}"
+        )
+    }
+}
+
 /// Build the full sandboxed HTML document that wraps an email's `html` body.
 /// `block_remote` gates whether remote images/media may load at all.
-pub fn sandbox_document(html: &str, block_remote: bool) -> String {
+pub fn sandbox_document(html: &str, block_remote: bool, style: &DocumentStyle) -> String {
     let csp = csp_policy(block_remote);
+    let css = style.css();
     // The CSP meta is the FIRST head element so it applies before any of the
-    // mail's own resources are considered. A neutral base style keeps the body
-    // readable on the reader's dark surface without letting the mail override
-    // the whole viewport.
+    // mail's own resources are considered. The base style sets the body on
+    // the reader's ground in its ink; the mail's own styles still apply
+    // inside it.
     format!(
         "<!doctype html><html><head>\
 <meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\
 <meta name=\"referrer\" content=\"no-referrer\">\
 <meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-<style>html,body{{margin:0;padding:16px;background:#1b1d22;color:#e6e8ee;\
-font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;\
-word-break:break-word;overflow-wrap:anywhere}}\
-img{{max-width:100%;height:auto}}a{{color:#7aa2ff}}\
-blockquote{{border-left:3px solid #3a3f4b;margin:0;padding-left:12px;color:#a9afbd}}\
-</style></head><body>{html}</body></html>",
+<style>{css}</style></head><body>{html}</body></html>",
     )
 }
 
@@ -83,8 +144,8 @@ font-src data:; ",
 /// A `data:text/html;base64,…` URL for the sandboxed document wrapping `html`.
 /// Base64 avoids every percent-escaping pitfall (`#`, `%`, non-ASCII) and gives
 /// the document an opaque origin.
-pub fn data_url(html: &str, block_remote: bool) -> String {
-    let doc = sandbox_document(html, block_remote);
+pub fn data_url(html: &str, block_remote: bool, style: &DocumentStyle) -> String {
+    let doc = sandbox_document(html, block_remote, style);
     format!(
         "data:text/html;charset=utf-8;base64,{}",
         base64_encode(doc.as_bytes())
@@ -117,16 +178,34 @@ fn base64_encode(input: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn style() -> DocumentStyle {
+        DocumentStyle::from_theme(&Theme::dark())
+    }
+
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
+    fn the_document_takes_the_reader_ground_ink_and_body_text_of_each_theme() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let style = DocumentStyle::from_theme(&theme);
+            let doc = sandbox_document("<p>hi</p>", true, &style);
+            let colors = &theme.tokens.colors;
+            assert!(doc.contains(&format!("background:{}", to_hex(colors.surfaces.content))));
+            assert!(doc.contains(&format!("color:{}", to_hex(colors.text_primary))));
+            let body = theme.text(TextRole::Body);
+            assert!(doc.contains(&format!("font-size:{}px", body.size * theme.text_scale)));
+        }
+        assert_ne!(
+            DocumentStyle::from_theme(&Theme::dark()).ground,
+            DocumentStyle::from_theme(&Theme::light()).ground,
+            "a light reader sets its mail on a light ground"
+        );
+    }
+
+    #[test]
     fn html_content_policy_blocks_scripts_and_remote_until_opt_in() {
         // Phase `scripts_are_always_blocked`.
         {
             for block in [true, false] {
-                let doc = sandbox_document("<script>steal()</script><p>hi</p>", block);
+                let doc = sandbox_document("<script>steal()</script><p>hi</p>", block, &style());
                 assert!(
                     doc.contains("script-src 'none'"),
                     "scripts must never be allowed"
@@ -140,7 +219,11 @@ mod tests {
 
         // Phase `remote_content_blocked_by_default`.
         {
-            let doc = sandbox_document("<img src=\"https://tracker.example/x.gif\">", true);
+            let doc = sandbox_document(
+                "<img src=\"https://tracker.example/x.gif\">",
+                true,
+                &style(),
+            );
             assert!(
                 doc.contains("img-src data:;"),
                 "default policy blocks remote images"
@@ -154,7 +237,7 @@ mod tests {
 
         // Phase `opting_in_widens_images_only`.
         {
-            let doc = sandbox_document("<img src=\"https://cdn.example/x.png\">", false);
+            let doc = sandbox_document("<img src=\"https://cdn.example/x.png\">", false, &style());
             assert!(
                 doc.contains("img-src data: https: http:"),
                 "opt-in allows remote images"
@@ -189,14 +272,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn html_body_encodes_as_a_base64_data_url() {
         // Phase `data_url_is_a_base64_html_document`.
         {
-            let url = data_url("<p>Hello &amp; welcome</p>", true);
+            let url = data_url("<p>Hello &amp; welcome</p>", true, &style());
             assert!(url.starts_with("data:text/html;charset=utf-8;base64,"));
             let b64 = url.trim_start_matches("data:text/html;charset=utf-8;base64,");
             // Round-trips back to a document that embeds the mail body + the CSP.

@@ -15,7 +15,7 @@
 //! `_exit`, on memory prepared before the fork.
 
 use std::io::{self, Read};
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -189,16 +189,6 @@ impl Netns {
     /// A process in the namespaces.
     pub fn pid(&self) -> libc::pid_t {
         self.pid
-    }
-
-    pub fn user_fd(&self) -> BorrowedFd<'_> {
-        use std::os::fd::AsFd;
-        self.user.as_fd()
-    }
-
-    pub fn net_fd(&self) -> BorrowedFd<'_> {
-        use std::os::fd::AsFd;
-        self.net.as_fd()
     }
 
     /// Make `cmd` start inside both namespaces. The process keeps its uid;
@@ -475,52 +465,31 @@ unsafe fn inside_child(sock: RawFd, user: RawFd, net: RawFd) -> ! {
 
 /// Receive the four status words and up to three descriptors.
 fn recv_fds(sock: &OwnedFd) -> io::Result<([u32; 4], Vec<OwnedFd>)> {
-    #[repr(C, align(8))]
-    struct Control([u8; 64]);
-    let mut words = [0_u32; 4];
-    let mut iov = libc::iovec {
-        iov_base: words.as_mut_ptr().cast(),
-        iov_len: std::mem::size_of::<[u32; 4]>(),
-    };
-    let mut control = Control([0; 64]);
-    // SAFETY: an all-zero msghdr is valid; the pointers set below are locals
-    // that outlive the call.
-    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-    msg.msg_iov = &raw mut iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = control.0.as_mut_ptr().cast();
-    msg.msg_controllen = std::mem::size_of::<Control>() as _;
-    // SAFETY: `msg` describes valid local buffers.
-    let n = unsafe { libc::recvmsg(sock.as_raw_fd(), &raw mut msg, libc::MSG_CMSG_CLOEXEC) };
-    if n < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if usize::try_from(n).ok() != Some(std::mem::size_of::<[u32; 4]>()) {
+    let mut words = [0_u8; 16];
+    let mut space = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(3))];
+    let mut control = rustix::net::RecvAncillaryBuffer::new(&mut space);
+    let received = rustix::net::recvmsg(
+        sock,
+        &mut [io::IoSliceMut::new(&mut words)],
+        &mut control,
+        rustix::net::RecvFlags::CMSG_CLOEXEC,
+    )?;
+    if received.bytes != words.len() {
         return Err(io::Error::other(
             "the namespace child exited without an answer",
         ));
     }
     let mut fds = Vec::new();
-    // SAFETY: CMSG_* walk the control buffer the kernel filled in.
-    unsafe {
-        let mut header = libc::CMSG_FIRSTHDR(&raw const msg);
-        while !header.is_null() {
-            if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
-                let data = libc::CMSG_DATA(header).cast::<RawFd>();
-                let payload =
-                    ((*header).cmsg_len as usize).saturating_sub(libc::CMSG_LEN(0) as usize);
-                let count = payload
-                    .checked_div(std::mem::size_of::<RawFd>())
-                    .unwrap_or_default();
-                for i in 0..count {
-                    let fd = std::ptr::read_unaligned(data.add(i));
-                    fds.push(OwnedFd::from_raw_fd(fd));
-                }
-            }
-            header = libc::CMSG_NXTHDR(&raw const msg, header);
+    for message in control.drain() {
+        if let rustix::net::RecvAncillaryMessage::ScmRights(received) = message {
+            fds.extend(received);
         }
     }
-    Ok((words, fds))
+    let mut status = [0_u32; 4];
+    for (word, bytes) in status.iter_mut().zip(words.chunks_exact(4)) {
+        *word = u32::from_ne_bytes(bytes.try_into().unwrap_or_default());
+    }
+    Ok((status, fds))
 }
 
 #[cfg(test)]

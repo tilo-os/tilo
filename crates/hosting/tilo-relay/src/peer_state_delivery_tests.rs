@@ -118,13 +118,16 @@ async fn writer_boundary(
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
-        v2: false,
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
+        presence: None,
+        signed_actions: false,
         private_tx: &private,
         revocations: &revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
         positions: None,
         compactor: None,
+        member_limits: None,
         resumes: Box::leak(Box::default()),
         lag: Box::leak(Box::default()),
     };
@@ -163,9 +166,16 @@ async fn writer_boundary(
     );
     let mut wire = Vec::new();
     for delivery in deliveries.drain(..written_before_invalidation) {
-        write_state_delivery(delivery, &recipient, &session, &mut wire)
-            .await
-            .unwrap();
+        write_state_delivery(
+            delivery,
+            &recipient,
+            &session,
+            &mut SessionCoding::default(),
+            &crate::presence_mailbox::PresenceMailbox::default(),
+            &mut wire,
+        )
+        .await
+        .unwrap();
     }
     assert_eq!(wire.is_empty(), written_before_invalidation == 0);
     let mut delivery = deliveries.remove(0);
@@ -213,9 +223,16 @@ async fn writer_boundary(
         .unwrap();
     delivery.cleanup = Some(pending.clone());
     let before = wire.clone();
-    write_state_delivery(delivery, &recipient, &session, &mut wire)
-        .await
-        .unwrap();
+    write_state_delivery(
+        delivery,
+        &recipient,
+        &session,
+        &mut SessionCoding::default(),
+        &crate::presence_mailbox::PresenceMailbox::default(),
+        &mut wire,
+    )
+    .await
+    .unwrap();
     assert!(
         wire == before,
         "invalid or stale queued state must not reach the wire"
@@ -244,9 +261,16 @@ async fn writer_boundary(
             _budget: None,
             live: current,
         };
-        write_state_delivery(current_delivery, &recipient, &session, &mut wire)
-            .await
-            .unwrap();
+        write_state_delivery(
+            current_delivery,
+            &recipient,
+            &session,
+            &mut SessionCoding::default(),
+            &crate::presence_mailbox::PresenceMailbox::default(),
+            &mut wire,
+        )
+        .await
+        .unwrap();
         crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
             .await
             .unwrap();
@@ -393,13 +417,16 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
-        v2: true,
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        presence: None,
+        signed_actions: false,
         private_tx: &private,
         revocations: &revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
         positions: None,
         compactor: None,
+        member_limits: None,
         resumes: Box::leak(Box::default()),
         lag: Box::leak(Box::default()),
     };
@@ -523,7 +550,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         .map(|_| ReplayPendingTarget {
             device: [9; 32],
             live: Arc::new(AtomicBool::new(false)),
-            catchup: Arc::new(ReplayCatchup::new()),
+            catchup: Arc::new(ReplayCatchup::new(std::path::Path::new("store-work-v1"))),
         })
         .collect();
     let mut work =

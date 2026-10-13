@@ -1,5 +1,25 @@
 //! Test helpers for synthesizing shell-level input in unit tests.
 
+/// A canonical package manifest for an installed-app fixture: `package` is
+/// the body of `[package]`, `tail` the tables after the sandbox
+/// (`[entrypoint]`, `[providers]`, ...). Manifests are decoded through the
+/// canonical schema, so a fixture carries its publisher and sandbox too;
+/// `[sandbox.net]` is `off` unless `tail` sets it.
+#[cfg(test)]
+pub(crate) fn canonical_manifest(package: &str, tail: &str) -> String {
+    let net = if tail.contains("[sandbox.net]") {
+        ""
+    } else {
+        "[sandbox.net]\nmode = \"off\"\n"
+    };
+    format!(
+        "[package]\n{package}\n[publisher]\nidentity = \"ed25519:{}\"\n\
+         [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+         {net}{tail}",
+        "00".repeat(32)
+    )
+}
+
 #[cfg(test)]
 pub(crate) struct PopulatedShellFixture {
     pub(crate) frame: crate::shell::frame::FrameBuilder,
@@ -24,7 +44,7 @@ impl PopulatedShellFixture {
     ) -> Self {
         let parent = tempfile::tempdir().expect("private populated shell fixture parent");
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
+            ui::font_catalog::checkout_root(),
             "en-US",
         );
         let renderer = ui::text_render::TextRenderer::with_font_catalog(&catalog)
@@ -91,27 +111,16 @@ pub(crate) fn dispatch_populated_fixture_click(
     document: &mut automerge::AutoCommit,
     focus: &mut Option<ui::taffy::NodeId>,
 ) -> vello::Scene {
-    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+    use winit::event::Modifiers;
 
     let center = frame
         .widget_registry()
         .get(target)
         .expect("actual populated shell control")
         .center();
-    let cursor = WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-    };
-    let press = WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    };
-    let release = WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    };
+    let cursor = ui::synthetic_input::cursor_moved(center.x, center.y);
+    let press = ui::synthetic_input::mouse_press();
+    let release = ui::synthetic_input::mouse_release();
     let _ = frame.dispatch_event(
         &cursor,
         &Modifiers::default(),
@@ -140,32 +149,6 @@ pub(crate) fn dispatch_populated_fixture_click(
     frame.pump_apps(document, &automerge::ROOT);
     frame.relayout();
     frame.paint()
-}
-
-/// A pressed key as winit delivers it, carrying the text a character key
-/// types. `KeyEvent`'s platform field is private, so the event is
-/// zero-initialised and every public field overwritten.
-#[cfg(test)]
-pub(crate) fn typed_key_event(key: winit::keyboard::Key) -> winit::event::WindowEvent {
-    // SAFETY: every public field is overwritten below; the all-zero private
-    // platform field is only read by winit internals the shell never reaches.
-    let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    event.text = match &key {
-        winit::keyboard::Key::Character(text) => Some(text.clone()),
-        _ => None,
-    };
-    event.logical_key = key;
-    event.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = winit::keyboard::KeyLocation::Standard;
-    event.state = winit::event::ElementState::Pressed;
-    event.repeat = false;
-    winit::event::WindowEvent::KeyboardInput {
-        // SAFETY: a device id is an opaque token the shell never inspects.
-        device_id: unsafe { std::mem::zeroed() },
-        event,
-        is_synthetic: false,
-    }
 }
 
 /// Run `f` with a throwaway event context: an empty document, no focus

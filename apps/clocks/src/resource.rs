@@ -19,6 +19,13 @@ use crate::schedule::OnThisDevice;
 #[derive(Clone, Debug, Effect)]
 #[effect(operation = "clocks.effects", device_only)]
 pub enum ClocksEffect {
+    /// Open this alarm on this device.
+    OpenAlarm {
+        #[param("The alarm's id")]
+        alarm: String,
+    },
+    /// Dismiss the due alarm or timer notice on this device.
+    DismissNotice,
     /// Float a timer above other windows.
     FloatTimer {
         #[param("The timer's id")]
@@ -72,7 +79,13 @@ impl ResourceApp for ClocksShell {
     type Resource = Clocks;
     const ID: &'static str = "so.tilo.clocks";
     const TITLE: &'static str = "Clocks";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("clocks");
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Clocks>) -> Element {
         let controls = Controls {
@@ -84,6 +97,28 @@ impl ResourceApp for ClocksShell {
             cx.settings::<OnThisDevice>(),
             cx.mode().is_live(),
         ))
+    }
+
+    fn launch_record(input: &LaunchInput<'_>) -> Option<ui::record::RecordId> {
+        let uri = input.arguments().first()?;
+        let path = uri.strip_prefix("tilo-clocks:record/")?;
+        let record = path
+            .split_once("/alarm/")
+            .map_or(path, |(record, _)| record);
+        ui::record::RecordId::parse(record)
+    }
+
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Clocks>> {
+        input
+            .arguments()
+            .first()
+            .and_then(|uri| crate::native_timers::activation_alarm(uri))
+            .map(|alarm| {
+                vec![Invoke::effect(&ClocksEffect::OpenAlarm {
+                    alarm: alarm.to_owned(),
+                })]
+            })
+            .unwrap_or_default()
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -129,6 +164,8 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
     }
 
     fn attach(&mut self, cx: ui::framework::SurfaceCx<Clocks>) {
+        self.record = cx.record().cloned();
+        self.opener = cx.opener();
         if let Some(now) = cx.fixture::<ShotNow>() {
             self.state.update(|shown| shown.pinned_now = Some(now.0));
         }
@@ -136,11 +173,11 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         match scene(scenario) {
-            "world" => self.mode.set(crate::app::WORLD),
-            "alarms" => self.mode.set(crate::app::ALARMS),
-            "stopwatch" => self.mode.set(crate::app::STOPWATCH),
+            "world" => self.set_mode(crate::app::WORLD),
+            "alarms" => self.set_mode(crate::app::ALARMS),
+            "stopwatch" => self.set_mode(crate::app::STOPWATCH),
             "running" => {
-                self.mode.set(crate::app::TIMERS);
+                self.set_mode(crate::app::TIMERS);
                 let timers: Vec<String> = self.state.with(|shown| {
                     shown
                         .clocks
@@ -152,16 +189,25 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
                 self.update_device(|device| device.floating_timers.extend(timers));
             }
             "ringing" => {
-                self.mode.set(crate::app::TIMERS);
+                self.set_mode(crate::app::TIMERS);
                 self.notice
                     .set(Some(("Timer finished".to_owned(), "Tea".to_owned())));
             }
-            _ => self.mode.set(crate::app::TIMERS),
+            _ => self.set_mode(crate::app::TIMERS),
         }
     }
 
     fn effect(&mut self, effect: ClocksEffect, _cx: &mut EffectCx<Clocks, Self>) -> EffectAnswer {
         match effect {
+            ClocksEffect::OpenAlarm { alarm } => {
+                let id = Id::from_raw(alarm.as_str());
+                if !self.state.with(|shown| shown.clocks.alarms.contains(&id)) {
+                    return Err(format!("there is no alarm `{alarm}`"));
+                }
+                self.state.update(|shown| shown.selected_alarm = Some(id));
+                self.set_mode(crate::app::ALARMS);
+            }
+            ClocksEffect::DismissNotice => self.notice.set(None),
             ClocksEffect::FloatTimer { timer, floating } => {
                 if !self
                     .state
@@ -220,12 +266,15 @@ fn live_rows(shown: &Shown) -> Vec<LiveRow> {
         )
         .presentation(ResourcePresentation {
             detail: Some(format!(
-                "{} · {}",
-                alarm.local_time().format("%H:%M"),
+                "At {0}, repeating {1}.",
+                ui::clock::time_of_day(&alarm.local_time()),
                 repeat_summary(&alarm.weekdays())
             )),
             badge: Some(if alarm.enabled { "On" } else { "Off" }.into()),
             preview: None,
+        })
+        .effect(&ClocksEffect::OpenAlarm {
+            alarm: id.as_str().to_owned(),
         })
     }));
     rows.extend(clocks.world_clocks.iter().map(|(id, clock)| {
@@ -275,7 +324,7 @@ fn timer_row(
         &timer.label,
     )
     .presentation(ResourcePresentation {
-        detail: Some(format!("{status} · {remaining} remaining")),
+        detail: Some(format!("{status}, with {remaining} remaining.")),
         badge: floating.then(|| "Floating".into()),
         preview: None,
     })

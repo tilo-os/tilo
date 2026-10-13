@@ -13,11 +13,11 @@ ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
 # Generic publication triggers share the generation-series lock. A protected
-# Lenovo dispatch uses its own source-specific group because it never allocates
+# Board dispatches use their own profile/source-specific groups because it never allocates
 # a generic genN; full validation proofs share one queue across refs.
-grep -Fq "group: \${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || 'tilo-os-image-validate-2' }}" "$workflow" \
+grep -Fq 'group: ${{ github.event_name == '"'"'workflow_call'"'"' && format('"'"'tilo-os-dev-{0}'"'"', github.ref == '"'"'refs/heads/main'"'"' && (inputs.source_revision || github.sha) || github.ref) || (github.ref == '"'"'refs/heads/main'"'"' && github.event_name == '"'"'workflow_dispatch'"'"' && github.event.inputs.release == '"'"'true'"'"' && github.event.inputs.hardware_profile == '"'"'lenovo-83ed'"'"') && '"'"'tilo-os-image-lenovo-series'"'"' || (github.ref == '"'"'refs/heads/main'"'"' && github.event_name == '"'"'workflow_dispatch'"'"' && github.event.inputs.release == '"'"'true'"'"' && github.event.inputs.hardware_profile == '"'"'orangepi-3b-v2-1'"'"') && format('"'"'tilo-os-image-orangepi-{0}'"'"', github.sha) || (startsWith(github.ref, '"'"'refs/tags/v'"'"') || (github.ref == '"'"'refs/heads/main'"'"' && (github.event_name == '"'"'schedule'"'"' || (github.event_name == '"'"'workflow_dispatch'"'"' && github.event.inputs.release == '"'"'true'"'"')))) && '"'"'tilo-os-image-series-2'"'"' || '"'"'tilo-os-image-validate-2'"'"' }}' "$workflow" \
   && ! grep -Eq 'CONTINUOUS_RELEASE: "1"' "$workflow" \
-  && ok 'generic generation publication is serialized separately from Lenovo' \
+  && ok 'generic generation publication is serialized separately from boards' \
   || bad 'release jobs can race and reuse one generation'
 
 kernel_verify_line="$(grep -n './os/dev/verify-kernel-provenance.sh "$ref"' "$workflow" | tail -1 | cut -d: -f1)"
@@ -189,7 +189,7 @@ if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'gl|2d) ./os/dev/vm.sh boot "--$TILO_VM_DISPLAY" ;;' "$workflow" \
    && grep -Fq "*) echo '::error::no installed-desktop display was selected'; exit 1 ;;" "$workflow" \
    && grep -Fq 'matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}' "$workflow" \
-   && grep -Fq 'candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}' "$workflow" \
+   && grep -Fq 'candidate-${TILO_IMAGE_SOURCE}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'expected exactly two native child descriptors' "$workflow" \
    && grep -Fq 'descriptor points to $actual_registry_arch content' "$workflow" \
    && grep -Fq 'podman manifest push --all' "$workflow" \

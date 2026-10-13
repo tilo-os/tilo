@@ -1,4 +1,4 @@
-//! Disk Usage as a [`tilo_resource::Resource`]: scans and navigation are the
+//! Disk Usage as a resource: scans and navigation are the
 //! surface's [`DiskUsageEffect`]s. The folders analyzed lately are paths on
 //! this device, so they are a device-local setting ([`RecentFolders`]),
 //! published as live rows beside the resource.
@@ -11,7 +11,7 @@ use ui::framework::{
     SurfaceCx, ViewCx,
 };
 use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_resource::{self, Doc, ModelError, NoAction, Resource};
+use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
 use crate::app::DiskUsageApp;
@@ -68,21 +68,13 @@ pub enum DiskUsageEffect {
 }
 
 /// The disk-usage analyzer: the door its effects and live rows are
-/// published on. It keeps no document state.
-pub struct DiskUsage;
+/// published on. It keeps no document state: what it scans is this device's
+/// disk, and the folders it remembers are a device-local setting.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct DiskUsage {}
 
-impl Resource for DiskUsage {
-    const KIND: &'static str = "disk-usage";
-    const LABEL: &'static str = "Disk Usage Analyzer";
-    const ACTION_TYPE: &'static str = "disk_usage.action";
-
-    type State = ();
-    type Action = NoAction;
-
-    fn read(_doc: &Doc) -> Result<(), ModelError> {
-        Ok(())
-    }
-}
+#[resource(kind = "disk-usage", label = "Disk Usage Analyzer")]
+impl DiskUsage {}
 
 /// One remembered folder, offered to analyze again.
 pub(crate) fn recent_row(path: &std::path::Path) -> LiveRow {
@@ -169,13 +161,14 @@ impl ResourceApp for DiskUsageShell {
 }
 
 impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
-    fn present(&mut self, _state: &std::rc::Rc<()>) {}
+    fn present(&mut self, _state: &std::rc::Rc<DiskUsage>) {}
 
     /// A capture shows its scenario's folders; a live window this device's,
     /// remembering what it analyzes; a past version has none.
     fn attach(&mut self, cx: SurfaceCx<DiskUsage>) {
         self.immediate = cx.mode() == RunMode::Capture;
         self.dispatcher = Some(cx.dispatcher());
+        self.actions = (cx.mode() == RunMode::Live).then(|| cx.actions());
         match cx.mode() {
             RunMode::Capture => {
                 if let Some(recent) = cx.fixture::<RecentFolders>() {
@@ -185,6 +178,7 @@ impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
             RunMode::Live => self.recents = Some(cx.settings::<RecentFolders>()),
             RunMode::Past => {}
         }
+        self.refresh_home();
         if let Some(scan) = cx.fixture::<ScanResult>() {
             self.set_result((*scan).clone());
         }
@@ -277,13 +271,18 @@ mod tests {
             assert!(surface.contains(published), "{published}: {surface}");
         }
 
+        let versions = app.versions().len();
         let answer = app.effect(&analyze(&folder)).unwrap();
         let answer = answer.value.unwrap();
         assert_eq!(answer["path"], folder.to_string_lossy().as_ref());
         assert!(answer["bytes"].as_u64().unwrap() >= 4096, "{answer}");
         app.settle();
         assert_eq!(recent(&app), std::slice::from_ref(&folder));
-        assert!(app.versions().len() <= 1, "a remembered folder is no edit");
+        assert_eq!(
+            app.versions().len(),
+            versions,
+            "a remembered folder is no edit"
+        );
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains("photos"), "{frame}");
 
@@ -359,5 +358,70 @@ mod tests {
         let mut live = TestApp::<DiskUsageShell>::new().unwrap();
         let frame = live.harness().inspection_json().unwrap();
         assert!(!frame.contains("Projects"), "{frame}");
+    }
+
+    /// Folder controls use the same admitted Analyze effect as published
+    /// locations, including a physical click on a remembered folder.
+    #[test]
+    fn folder_controls_are_certified_and_analyze_through_the_resource() {
+        for scenario in ["home", "analysis"] {
+            let mut capture = TestApp::<DiskUsageShell>::capture(Some(scenario)).unwrap();
+            let bindings =
+                ui::widget::controls::control_action_bindings(capture.harness().root_widget());
+            assert!(
+                bindings.iter().all(|binding| {
+                    !binding.control_id.starts_with("disk-usage.place:")
+                        && !binding.control_id.starts_with("disk-usage.folder-row:")
+                }),
+                "{scenario}: a capture must not bind unavailable device effects: {bindings:?}",
+            );
+            assert!(
+                capture
+                    .harness()
+                    .controls()
+                    .into_iter()
+                    .any(|control| control.role == ui::accesskit::Role::ListItem),
+                "{scenario}: folder rows must remain visible"
+            );
+            let audit = capture.harness().native_app_audit();
+            assert!(audit.is_certified(), "{scenario}: {audit:?}");
+        }
+
+        let folder = scratch_folder("folder-control");
+        let mut app = TestApp::<DiskUsageShell>::new().unwrap();
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "live home: {audit:?}");
+        let bindings = ui::widget::controls::control_action_bindings(app.harness().root_widget());
+        let folders: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.control_id.starts_with("disk-usage.place:"))
+            .collect();
+        assert!(!folders.is_empty(), "live home: no folder controls");
+        for binding in folders {
+            let ui::widget::ControlBindingKind::Action(address) = &binding.kind else {
+                panic!("live home: folder is not action-bound: {binding:?}");
+            };
+            assert_eq!(address.action, "analyze");
+        }
+        app.settings::<RecentFolders>()
+            .update(|recent| recent.remember(folder.clone()))
+            .unwrap();
+        app.settle();
+        let id = format!("disk-usage.place:{}", folder.display());
+        let target = app.harness().targets()[&id];
+        app.harness().click_at(target.center().x, target.center().y);
+        let mut frame = String::new();
+        for _ in 0..600 {
+            app.settle();
+            frame = app.harness().inspection_json().unwrap();
+            if frame.contains("photos") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(frame.contains("photos"), "the click must analyze: {frame}");
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "analysis: {audit:?}");
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }

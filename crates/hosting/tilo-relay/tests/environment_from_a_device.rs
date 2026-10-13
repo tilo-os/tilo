@@ -4,7 +4,7 @@
 //! worker; the session's id re-attaches to it after the tab went away.
 
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -60,7 +60,7 @@ fn open(
     socket: &Path,
     relay: &str,
     attach: Option<&str>,
-) -> (ServeResponse, Option<i32>, UnixStream) {
+) -> (ServeResponse, Option<OwnedFd>, UnixStream) {
     let stream = UnixStream::connect(socket).unwrap();
     let mut request = serde_json::json!({
         "op": "open-session",
@@ -74,7 +74,7 @@ fn open(
     let mut line = serde_json::to_vec(&request).unwrap();
     line.push(b'\n');
     (&stream).write_all(&line).unwrap();
-    let (payload, fd) = recv_with_fd(stream.as_raw_fd()).unwrap();
+    let (payload, fd) = recv_with_fd(&stream).unwrap();
     let response = serde_json::from_slice(String::from_utf8_lossy(&payload).trim().as_bytes())
         .unwrap_or_else(|e| panic!("bad reply {payload:?}: {e}"));
     (response, fd, stream)
@@ -183,12 +183,24 @@ async fn a_terminal_reaches_an_environment_on_the_persons_relay_and_re_attaches(
 
     let journey = tokio::task::spawn_blocking(move || {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !socket.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // Binding creates the path before listen makes it connectable.
+        // Keep the original bound, but observe the service rather than its file.
+        let stream = loop {
+            match UnixStream::connect(&socket) {
+                Ok(stream) => break stream,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => panic!("supervisor did not become ready: {error}"),
+            }
+        };
 
         // The supervisor lists the relay for the picker.
-        let stream = UnixStream::connect(&socket).unwrap();
         (&stream).write_all(b"{\"op\":\"list-relays\"}\n").unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
@@ -212,7 +224,7 @@ async fn a_terminal_reaches_an_environment_on_the_persons_relay_and_re_attaches(
             panic!("expected a relay session, got {response:?}");
         };
         // SAFETY: the descriptor arrived over SCM_RIGHTS and is ours.
-        let mut master = unsafe { std::fs::File::from_raw_fd(fd.expect("a pty")) };
+        let mut master = std::fs::File::from(fd.expect("a pty"));
         let seen = read_until(&mut master, "$ ");
         assert!(seen.contains("$ "), "{seen:?}");
         master.write_all(b"ping").unwrap();
@@ -228,7 +240,7 @@ async fn a_terminal_reaches_an_environment_on_the_persons_relay_and_re_attaches(
             "{response:?}"
         );
         // SAFETY: as above.
-        let mut master = unsafe { std::fs::File::from_raw_fd(fd.expect("a pty")) };
+        let mut master = std::fs::File::from(fd.expect("a pty"));
         master.write_all(b"pong").unwrap();
         let seen = read_until(&mut master, "pong");
         assert!(seen.contains("pong"), "{seen:?}");

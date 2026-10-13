@@ -37,6 +37,8 @@ pub enum Language {
     C,
     Cpp,
     Go,
+    Verilog,
+    SystemVerilog,
     PlainText,
 }
 
@@ -58,6 +60,8 @@ impl Language {
             Language::C => "C",
             Language::Cpp => "C++",
             Language::Go => "Go",
+            Language::Verilog => "Verilog",
+            Language::SystemVerilog => "SystemVerilog",
             Language::PlainText => "Plain Text",
         }
     }
@@ -80,6 +84,8 @@ impl Language {
             Language::C => "c",
             Language::Cpp => "cpp",
             Language::Go => "go",
+            Language::Verilog => "v",
+            Language::SystemVerilog => "sv",
             Language::PlainText => "txt",
         }
     }
@@ -102,6 +108,8 @@ impl Language {
             "c" | "h" => Language::C,
             "cpp" | "cc" | "cxx" | "hpp" => Language::Cpp,
             "go" => Language::Go,
+            "v" | "vh" => Language::Verilog,
+            "sv" | "svh" => Language::SystemVerilog,
             _ => match name {
                 "Cargo.lock" => Language::Toml,
                 "Makefile" | "Dockerfile" | "Containerfile" => Language::Shell,
@@ -136,7 +144,9 @@ impl Language {
             | Language::TypeScript
             | Language::C
             | Language::Cpp
-            | Language::Go => Some("//"),
+            | Language::Go
+            | Language::Verilog
+            | Language::SystemVerilog => Some("//"),
             Language::Python | Language::Shell | Language::Toml | Language::Yaml => Some("#"),
             Language::Markdown
             | Language::Html
@@ -1093,6 +1103,19 @@ mod tests {
         assert_eq!(Language::from_path("README.md"), Language::Markdown);
         assert_eq!(Language::from_path("Cargo.lock"), Language::Toml);
         assert_eq!(Language::from_path("mystery.xyz"), Language::PlainText);
+    }
+
+    #[test]
+    fn hardware_source_and_header_paths_select_their_dialect() {
+        for name in ["mac.v", "rtl/defines.vh", "RTL/MAC.V", "include/DEFINES.VH"] {
+            assert_eq!(Language::from_path(name), Language::Verilog, "{name}");
+        }
+        for name in ["mac.sv", "rtl/types.svh", "RTL/MAC.SV", "include/TYPES.SVH"] {
+            assert_eq!(Language::from_path(name), Language::SystemVerilog, "{name}");
+        }
+        for language in [Language::Verilog, Language::SystemVerilog] {
+            assert_eq!(language.line_comment(), Some("//"));
+        }
     }
 
     #[test]

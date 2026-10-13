@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::reexports::client;
 use wayland_server::protocol::{
-    wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_keyboard, wl_seat,
-    wl_surface,
+    wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
+    wl_keyboard, wl_seat, wl_surface,
 };
 use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New, Resource,
@@ -38,6 +38,8 @@ struct Server {
     held: Held,
     received: Vec<(String, String)>,
     serial: u32,
+    hold_flush: bool,
+    publications: Vec<u32>,
 }
 
 #[derive(Clone)]
@@ -163,9 +165,15 @@ impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for Server {
         _: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
-        if let wl_data_device_manager::Request::GetDataDevice { id, seat } = request {
-            let index = *seat.data::<usize>().expect("seat identity");
-            state.seat(index).device = Some(init.init(id, ()));
+        match request {
+            wl_data_device_manager::Request::GetDataDevice { id, seat } => {
+                let index = *seat.data::<usize>().expect("seat identity");
+                state.seat(index).device = Some(init.init(id, ()));
+            }
+            wl_data_device_manager::Request::CreateDataSource { id } => {
+                init.init(id, ());
+            }
+            _ => {}
         }
     }
 }
@@ -243,16 +251,37 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Server {
 }
 impl Dispatch<wl_data_device::WlDataDevice, ()> for Server {
     fn request(
-        _: &mut Self,
+        state: &mut Self,
         _: &Client,
         _: &wl_data_device::WlDataDevice,
-        _: wl_data_device::Request,
+        request: wl_data_device::Request,
+        (): &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
+        if let wl_data_device::Request::SetSelection {
+            source: Some(_),
+            serial,
+        } = request
+        {
+            assert!(state.seats.iter().any(|seat| seat.surface.is_some()));
+            state.publications.push(serial);
+        }
+    }
+}
+impl Dispatch<wl_data_source::WlDataSource, ()> for Server {
+    fn request(
+        _: &mut Self,
+        _: &Client,
+        _: &wl_data_source::WlDataSource,
+        _: wl_data_source::Request,
         (): &(),
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
     }
 }
+
 impl Dispatch<wl_surface::WlSurface, ()> for Server {
     fn request(
         _: &mut Self,
@@ -350,7 +379,9 @@ impl Harness {
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
-                display.flush_clients().expect("flush fixture events");
+                if !state.hold_flush {
+                    display.flush_clients().expect("flush fixture events");
+                }
             }
         });
         let connection =
@@ -362,9 +393,10 @@ impl Harness {
         queue.roundtrip(&mut host).expect("real client surfaces");
         let clipboard = match read_deadline {
             ReadDeadline::Production => WaylandClipboard::new_for_wayland_test(connection.clone()),
-            ReadDeadline::AfterTest => {
-                WaylandClipboard::new_test_connection(connection.clone(), read_budget)
-            }
+            ReadDeadline::AfterTest => WaylandClipboard::new_for_wayland_test_with_read_budget(
+                connection.clone(),
+                read_budget,
+            ),
         };
         let harness = Self {
             clipboard: Some(clipboard),
@@ -630,4 +662,185 @@ fn production_deadline_closes_both_pipes_without_focus_or_selection_changes() {
     assert!(h.backend().rich_text().is_none());
     h.select(0, Some("after timeout"), false);
     h.assert_offer("after timeout");
+}
+
+#[test]
+fn copy_acknowledgement_waits_for_already_sent_keyboard_focus() {
+    let harness = Harness::new();
+    // The compositor has sent Enter, but its transport has not flushed it yet.
+    // Do not force any focus state into the production worker.
+    harness.query(|state| {
+        state.hold_flush = true;
+        state.enter(0, 0);
+    });
+    let (result_tx, result_rx) = mpsc::channel();
+    assert!(
+        harness
+            .backend()
+            .send_publication(ClipboardCommand::SetText(
+                b"caption".to_vec(),
+                result_tx,
+                super::publication_deadline()
+            ))
+    );
+    // Observe FIFO processing of the actual production copy command. This
+    // neither dispatches nor changes the worker's focus; a protocol fence
+    // would flush the very race under test before the copy is processed.
+    let (processed_tx, processed_rx) = mpsc::channel();
+    harness
+        .backend()
+        .publication
+        .sender
+        .send(ClipboardCommand::CommandProcessed(processed_tx))
+        .expect("worker command observation");
+    processed_rx
+        .recv_timeout(harness.remaining())
+        .expect("copy command processed");
+    let early_result = result_rx.try_recv();
+    harness.query(|state| state.hold_flush = false);
+    assert!(
+        matches!(early_result, Err(mpsc::TryRecvError::Empty)),
+        "copy must wait for the queued focus event instead of acknowledging failure: {early_result:?}"
+    );
+    assert!(
+        result_rx
+            .recv_timeout(harness.remaining())
+            .expect("copy acknowledgement")
+    );
+    harness.wait(
+        || harness.query(|state| state.publications == [state.serial]),
+        "focus-gated publication",
+    );
+}
+
+#[test]
+fn copy_does_not_publish_after_an_already_sent_keyboard_leave() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+    harness.query(|state| {
+        state.hold_flush = true;
+        state.leave(0);
+    });
+    let (reply, result) = mpsc::channel();
+    assert!(
+        harness
+            .backend()
+            .send_publication(ClipboardCommand::SetText(
+                b"unfocused".to_vec(),
+                reply,
+                super::publication_deadline(),
+            ))
+    );
+    let (processed, observed) = mpsc::channel();
+    harness
+        .backend()
+        .publication
+        .sender
+        .send(ClipboardCommand::CommandProcessed(processed))
+        .expect("worker command observation");
+    observed
+        .recv_timeout(harness.remaining())
+        .expect("copy processed");
+    let early = result.try_recv();
+    harness.query(|state| state.hold_flush = false);
+    assert!(
+        matches!(early, Err(mpsc::TryRecvError::Empty)),
+        "copy used stale focus: {early:?}"
+    );
+    assert!(
+        !result
+            .recv_timeout(harness.remaining())
+            .expect("copy refused")
+    );
+    harness.enter(0, 0);
+    harness.fence();
+    assert!(
+        harness.query(|state| state.publications.is_empty()),
+        "refused copy must not publish on later focus"
+    );
+}
+
+#[test]
+fn expired_copy_does_not_publish_on_current_or_later_focus() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+    let (reply, result) = mpsc::channel();
+    assert!(
+        harness
+            .backend()
+            .send_publication(ClipboardCommand::SetText(
+                b"expired".to_vec(),
+                reply,
+                tilo_clock::now(),
+            ))
+    );
+    assert!(
+        !result
+            .recv_timeout(harness.remaining())
+            .expect("expired copy refused")
+    );
+    harness.leave(0);
+    harness.enter(0, 0);
+    harness.fence();
+    assert!(
+        harness.query(|state| state.publications.is_empty()),
+        "expired copy must never publish"
+    );
+}
+
+#[test]
+fn explicit_plain_paste_survives_a_delayed_transfer_without_blocking_the_worker() {
+    let h = Harness::new();
+    h.select(0, Some("slow"), true);
+    h.enter(0, 0);
+    h.fence();
+    let result = h.backend().request_text(crate::ClipboardTarget::Clipboard);
+    h.wait(
+        || h.query(|state| state.held.len() >= 3),
+        "explicit plain receive",
+    );
+    assert!(matches!(
+        result.recv_timeout(Duration::from_millis(60)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    h.fence(); // A pending clipboard transfer must not stall protocol dispatch.
+    h.query(|state| {
+        let (_, fd) = state.held.pop().expect("explicit paste pipe");
+        std::fs::File::from(fd)
+            .write_all(b"delayed selection")
+            .unwrap();
+    });
+    assert_eq!(
+        result.recv_timeout(h.remaining()).unwrap(),
+        Some("delayed selection".into())
+    );
+}
+
+#[test]
+fn explicit_plain_paste_is_revoked_on_keyboard_leave() {
+    let h = Harness::new();
+    h.select(0, Some("private"), true);
+    h.enter(0, 0);
+    h.fence();
+    let result = h.backend().request_text(crate::ClipboardTarget::Clipboard);
+    h.wait(
+        || h.query(|state| state.held.len() >= 3),
+        "explicit plain receive",
+    );
+    h.leave(0);
+    h.fence();
+    assert_eq!(result.recv_timeout(h.remaining()).unwrap(), None);
+    let pipes = h.query(|state| std::mem::take(&mut state.held));
+    assert_eq!(pipes.len(), 3);
+    for (_, fd) in pipes {
+        assert_eq!(
+            std::fs::File::from(fd)
+                .write_all(b"late")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+    }
 }

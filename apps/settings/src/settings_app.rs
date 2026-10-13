@@ -2,7 +2,7 @@
 //!
 //! ## Layout
 //!
-//! The whole app is one [`AppShell`] (from the shared toolkit): a cohesive
+//! The whole app is one [`NavShell`] (from the shared toolkit): a cohesive
 //! sidebar panel — the search field pinned at its top, the nav list beneath —
 //! beside the selected category's content pane. The shell owns the responsive
 //! behaviour end to end, resolving into exactly one of two states by whether
@@ -35,37 +35,13 @@
 use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
+use ui::tokens::Metrics;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
-use ui::widget::{AppShell, Column, Container, NarrowScreen, Scrollable, TextInput, Widget};
+use ui::widget::{Column, Container, NavPane, NavShell, Scrollable, Widget};
+use ui::widget::{NavMode, SearchField};
 use ui::{AppKind, AppWidget, IconDescriptor};
-
-/// At or above this allocated width (logical px) the sidebar docks beside the
-/// content; below it the shell switches to the narrow list-vs-content screens.
-/// The toolkit's `compact_breakpoint` (HIG §9.6): a typical settings window is
-/// docked while a narrow / split-screen placement gets the phone layout. At a
-/// large-text preference the live breakpoint is this times the text scale
-/// (see `SettingsApp::build_shell`).
-pub const NAV_BREAKPOINT: f64 = ui::widget::DEFAULT_SHELL_BREAKPOINT;
-
-/// Horizontal gutter (logical px) of the page column inside the content
-/// area — the `s6` step.
-const PAGE_GUTTER: f32 = ui::tokens::Spacing::BASE.s6;
-
-/// Horizontal inset (logical px) of a pane from the content area's edge: the
-/// filling container's standard padding (`s3`, the theme's
-/// `padding_standard` default) plus [`PAGE_GUTTER`]. A pane's first-frame
-/// width hint is the content area less this on each side.
-const PAGE_INSET: f32 = ui::tokens::Spacing::BASE.s3 + PAGE_GUTTER;
-
-/// Readable measure (logical px) the External Accounts cards are centred
-/// within on large monitors; see [`SettingsApp::readable_content_measure`].
-const ACCOUNTS_READABLE_WIDTH: f32 = 1040.0;
-
-/// Readable measure (logical px) for a short label/chooser form — the same
-/// default the toolkit's `FormPage` bounds its content to, so a settings form
-/// and an automatic form agree on how far a trailing control may sit from its
-/// label. See [`SettingsApp::readable_content_measure`].
-const FORM_READABLE_WIDTH: f32 = 720.0;
+const MEASURE: f32 = ui::tokens::Metrics::BASE.panel_width_sheet;
 
 /// One scroller's offset, shared with every scroller rebuilt in its place.
 type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
@@ -83,7 +59,7 @@ pub struct SettingsApp {
     /// Which narrow screen the shell starts on: the selected category's
     /// content unless a test asks for the list. Applied when the shell is
     /// created.
-    narrow_screen: NarrowScreen,
+    narrow_screen: NavPane,
     /// Seed width hint so the very first offscreen frame resolves the correct
     /// wide/narrow layout. `None` lets the shell decide from its own rect.
     width_hint: Option<f32>,
@@ -99,8 +75,6 @@ pub struct SettingsApp {
     /// between frames, never under an event being dispatched. Selection
     /// stays out of collaboration, persistence and undo.
     sidebar_selection: ui::LocalState<Option<Category>>,
-    /// Local navigation position survives row selection and shell rebuilds.
-    sidebar_scroll: ScrollOffset,
     /// Each pane's scroll offset. The content scroller is rebuilt whenever the
     /// pane's structure changes (a control applied, a category opened), so the
     /// offset lives here, per category, rather than in the rebuilt widget.
@@ -117,7 +91,7 @@ pub struct SettingsApp {
     /// The reusable app-shell, created lazily on the first `build_layout` and
     /// persisted across rebuilds so its collapse/overlay state survives a
     /// category switch. Its nav + content are swapped on selection.
-    shell: Option<AppShell>,
+    shell: Option<NavShell>,
     /// Where the last wallpaper request stands, for the Appearance pane.
     wallpaper_status: ui::LocalState<Option<String>>,
     /// The assistive software this device has installed.
@@ -130,11 +104,14 @@ pub struct SettingsApp {
     time_date: panes::time_date::TimeDateArea,
     /// The installed input sources and the attached input devices.
     input: panes::mouse_keyboard::InputArea,
+    keyboard_map_input: ui::KeyboardMapInput,
+    keyboard_map_cache: crate::panes::mouse_keyboard::KeyboardPreviewCacheHandle,
     /// This device's battery, power profile and charge cap.
     power: panes::power::PowerArea,
     /// This device's system image, firmware and codec pack.
     updates: panes::updates::UpdatesArea,
     storage: panes::storage::StorageArea,
+    disk_unlock: panes::disk_unlock::DiskUnlockArea,
     printers: panes::printers::PrintersArea,
     users: panes::users::UsersArea,
     bluetooth: panes::bluetooth::BluetoothArea,
@@ -145,6 +122,8 @@ pub struct SettingsApp {
     accounts: panes::accounts::AccountsArea,
     displays: panes::display::DisplayArea,
     network: panes::network::NetworkArea,
+    /// When the areas above read what their live rows show.
+    area_reads: crate::effects::AreaReads,
     /// The text scale the shell was built for. A large-text preference widens
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
@@ -176,14 +155,20 @@ impl SettingsApp {
         let cx = crate::host::PaneCx::detached(ui::storage::AppStorage::for_app(
             <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID,
         ));
+        // A detached app reaches no device, so it probes for no installed
+        // software either: what a host reaches is read when it attaches.
+        let software = panes::accessibility::Software::for_host(&cx);
         Self {
             notifications: panes::notifications::NotificationsArea::new(&cx),
             default_apps: panes::personal_apps::DefaultAppsArea::new(&cx),
             time_date: panes::time_date::TimeDateArea::new(&cx),
             input: panes::mouse_keyboard::InputArea::new(&cx),
+            keyboard_map_input: ui::KeyboardMapInput::default(),
+            keyboard_map_cache: std::rc::Rc::default(),
             power: panes::power::PowerArea::new(&cx),
             updates: panes::updates::UpdatesArea::new(&cx),
             storage: panes::storage::StorageArea::new(&cx),
+            disk_unlock: panes::disk_unlock::DiskUnlockArea::new(&cx),
             printers: panes::printers::PrintersArea::new(&cx),
             users: panes::users::UsersArea::new(&cx),
             bluetooth: panes::bluetooth::BluetoothArea::new(&cx),
@@ -191,17 +176,18 @@ impl SettingsApp {
             agent_models: panes::agent_models::AgentModelsArea::new(&cx),
             device_mesh: panes::device_mesh::DeviceMeshArea::new(&cx),
             audio: panes::audio::AudioArea::new(&cx),
-            accounts: panes::accounts::AccountsArea::new(&cx),
+            accounts: panes::accounts::AccountsArea::new(&cx)
+                .with_account_root(account_root.clone()),
             displays: panes::display::DisplayArea::new(&cx),
             network: panes::network::NetworkArea::new(&cx),
+            area_reads: crate::effects::AreaReads::of(&cx),
             selected: Category::DEFAULT,
             structure_dirty: false,
             cx,
-            narrow_screen: NarrowScreen::Content,
+            narrow_screen: NavPane::Content,
             width_hint: None,
             search_query: String::new(),
             sidebar_selection: ui::LocalState::new(None),
-            sidebar_scroll: ScrollOffset::default(),
             pane_scroll: std::cell::RefCell::default(),
             search_state: ui::LocalState::new(String::new()),
             account_root,
@@ -209,7 +195,7 @@ impl SettingsApp {
             shell: None,
             shell_text_scale: 1.0,
             wallpaper_status: ui::LocalState::new(None),
-            software: panes::accessibility::Software::installed(),
+            software,
         }
     }
 
@@ -239,7 +225,7 @@ impl SettingsApp {
     /// effect when the layout is wide.
     #[must_use]
     pub fn with_category_list(mut self) -> Self {
-        self.narrow_screen = NarrowScreen::List;
+        self.narrow_screen = NavPane::Sidebar;
         self
     }
 
@@ -252,6 +238,16 @@ impl SettingsApp {
         self.sidebar_selection.set(Some(category));
     }
 
+    /// Open the pane a search hit or an agent's `open` names by its row.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+        let selection = self.sidebar_selection.clone();
+        move |anchor| {
+            if let Some(category) = crate::effects::pane_of_row(anchor) {
+                selection.set(Some(category));
+            }
+        }
+    }
+
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
     /// nav + content, and (on a narrow layout) navigates from the list screen
     /// to the selected category's content screen.
@@ -260,64 +256,35 @@ impl SettingsApp {
     /// narrow list screen that row is the checked one, and choosing it must
     /// show its content rather than do nothing.
     pub fn select(&mut self, category: Category) {
+        if category != Category::MouseKeyboard {
+            self.keyboard_map_input.clear();
+        }
         if self.selected != category {
             self.selected = category;
             self.structure_dirty = true;
             self.refresh_shell_children();
         }
         if let Some(shell) = &mut self.shell {
-            shell.notify_selection();
+            shell.show(ui::widget::NavPane::Content);
         }
     }
 
     /// Whether the current frame resolves to the narrow (phone) layout.
     pub fn is_narrow(&self) -> bool {
         match &self.shell {
-            Some(s) => s.is_narrow(),
-            None => self
+            Some(shell) if shell.geometry().content_column.width() > 0.0 => {
+                !shell.geometry().stack.is_empty()
+            }
+            _ => self
                 .width_hint
-                .is_some_and(|w| f64::from(w) < self.scaled_breakpoint()),
+                .is_some_and(|w| w < Metrics::BASE.compact_breakpoint * self.shell_text_scale),
         }
-    }
-
-    /// The width a pane can expect on the coming frame: the shell's content
-    /// area once laid out, else the window hint less the docked sidebar —
-    /// either way less the page inset on both sides, so the value is the
-    /// pane's own width, not the content area's. A pane that composes
-    /// differently at phone width (the Region formats card) reads this for
-    /// its first frame and its own rect thereafter.
-    fn content_width_hint(&self) -> Option<f32> {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a logical-pixel width comfortably representable by f32"
-        )]
-        let content_area = self
-            .shell
-            .as_ref()
-            .map(ui::AppShell::content_area_rect)
-            .filter(|rect| rect.width() > 0.0)
-            .map(|rect| rect.width() as f32)
-            .or_else(|| {
-                self.width_hint.map(|w| {
-                    if self.is_narrow() {
-                        w
-                    } else {
-                        #[allow(
-                            clippy::cast_possible_truncation,
-                            reason = "the docked sidebar width is a small logical-pixel value"
-                        )]
-                        let sidebar = self.scaled_sidebar_width() as f32;
-                        (w - sidebar).max(0.0)
-                    }
-                })
-            });
-        content_area.map(|w| (w - 2.0 * PAGE_INSET).max(0.0))
     }
 
     /// Whether the sidebar / list is currently shown (always when wide, or the
     /// list screen when narrow). Used by `--shots` assertions.
     pub fn sidebar_open(&self) -> bool {
-        self.shell.as_ref().is_some_and(ui::AppShell::sidebar_open)
+        self.shell.as_ref().is_some_and(NavShell::is_sidebar_open)
     }
 
     /// The current search query (empty when not searching).
@@ -331,29 +298,16 @@ impl SettingsApp {
     pub fn back_button_rect(&self) -> vello::kurbo::Rect {
         self.shell
             .as_ref()
-            .map_or(vello::kurbo::Rect::ZERO, ui::AppShell::back_rect)
+            .map_or(vello::kurbo::Rect::ZERO, |shell| shell.geometry().back)
     }
 
     /// Filter the sidebar by `query`, as typing it into the search field
     /// does.
     pub fn search(&mut self, query: &str) {
         self.search_state.set(query.to_string());
-    }
-
-    /// Build the local search field placed at the top of the shell's sidebar.
-    /// The field shares typed local state with the app, so filtering survives a
-    /// structural rebuild without creating a document draft. Because the shell
-    /// hosts it as a direct child in the App's tree, a click focuses it and
-    /// `autofocus_on_structure_change` restores focus + caret after the
-    /// filtered sidebar rebuilds.
-    fn build_search_field(&self) -> Box<dyn Widget> {
-        Box::new(
-            TextInput::from_state(&self.search_state)
-                .with_kind(ui::widget::TextInputKind::Search)
-                .with_id("settings.search")
-                .with_placeholder(&crate::i18n::t("settings-search-placeholder"))
-                .with_font_size(13.0),
-        )
+        if let Some(field) = self.shell.as_mut().and_then(NavShell::filter_mut) {
+            field.set_query(query);
+        }
     }
 
     /// Build the content pane: an unboxed category heading followed by the
@@ -367,33 +321,22 @@ impl SettingsApp {
     /// the Settings list).
     fn build_content(&self) -> Box<dyn Widget> {
         let body = self.build_pane_body();
-        // The page gutter (`s6`) inside the filling container's standard
-        // inset is what `PAGE_INSET` names; heading and body sit a card step
-        // apart, one `s4` below the page's top.
+        let gutter = ui::tokens::Spacing::BASE.s6;
         let inner = Column::new()
             .with_no_padding()
-            .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
-            .with_vertical_padding(crate::widgets::CARD_GAP)
+            .with_horizontal_padding(gutter, gutter)
+            .with_vertical_padding(gutter)
             .with_intrinsic_height()
-            .with_gap(ui::tokens::Spacing::BASE.s4)
-            .push(crate::widgets::page_heading(
-                &self.selected.label(),
-                &self.selected.subtitle(),
-            ))
             .push(body);
-        // Account forms and cards are more legible as a column on large
-        // desktop displays. Operational panes deliberately keep their full
-        // detail width for device tables, channel controls, and bindings.
-        let content: Box<dyn Widget> = if let Some(width) = self.readable_content_measure() {
-            Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_centered_max_width(width)
-                    .with_child(Box::new(inner)),
-            )
-        } else {
-            Box::new(inner)
-        };
+        // Forms are more legible as a column on large displays: a trailing
+        // control stays near its label.
+        let measure = (MEASURE + 2.0 * gutter) * self.shell_text_scale;
+        let content: Box<dyn Widget> = Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_centered_max_width(measure)
+                .with_child(Box::new(inner)),
+        );
         let offset = std::rc::Rc::clone(
             self.pane_scroll
                 .borrow_mut()
@@ -406,25 +349,27 @@ impl SettingsApp {
         Box::new(Container::new().filling().with_child(Box::new(scroll)))
     }
 
-    /// The readable measure (logical px) a pane's content is centred within on
-    /// large monitors, or `None` for panes that keep the full detail width.
-    /// Every cap is a maximum, so narrow screens stay fluid.
-    ///
-    /// - Account cards keep the wide review measure their row hierarchy was
-    ///   accepted at.
-    /// - Region & Formats is a short label/chooser form: at the full detail
-    ///   width its trailing dropdowns drifted ~600 px from their labels, so it
-    ///   takes the same readable form measure the toolkit's `FormPage` uses.
-    ///   (UI-review A3, settings-region-wide-balance.)
-    ///
-    /// Other panes keep their full width until each has an equivalent
-    /// content-measure review.
-    fn readable_content_measure(&self) -> Option<f32> {
-        match self.selected {
-            Category::ExternalAccounts => Some(ACCOUNTS_READABLE_WIDTH),
-            Category::RegionFormats => Some(FORM_READABLE_WIDTH),
-            _ => None,
-        }
+    pub(crate) fn set_browser_identity_enabled(
+        &self,
+        account: String,
+        enabled: bool,
+    ) -> Result<(), String> {
+        self.account_root
+            .set_browser_identity_enabled(account, enabled)
+    }
+
+    pub(crate) fn remove_browser_identity(&self, account: String) -> Result<(), String> {
+        self.account_root.remove_browser_identity(account)
+    }
+
+    /// Record this process's already-bound public identity for browser choices.
+    /// The caller supplies only an HTTPS origin; the identity is never guessed.
+    pub(crate) fn publish_browser_identity(&self, origin: String) -> Result<(), String> {
+        let identity =
+            ui::local_identity::bound().ok_or("Sign in before publishing this identity")?;
+        let root = hex::encode(identity.group_public_key);
+        self.account_root
+            .publish_browser_identity(root, origin, identity.display_name)
     }
 
     /// Hand the panes their host: panes built from now on bind their
@@ -441,11 +386,13 @@ impl SettingsApp {
             self.account_root = self.account_root.clone().with_person(record);
             // What the device's file held before it followed the record is
             // taken in once; then the services outside any app read the file
-            // as the record's projection.
-            if let Err(error) = self
-                .account_root
-                .take_in_device_accounts()
-                .and_then(|()| self.account_root.project())
+            // as the record's projection. A window that does not reach this
+            // device (a test's) leaves the device's file alone.
+            if cx.reaches_devices()
+                && let Err(error) = self
+                    .account_root
+                    .take_in_device_accounts()
+                    .and_then(|()| self.account_root.project())
             {
                 tracing::warn!(%error, "the device's account file could not follow the person's accounts");
             }
@@ -457,6 +404,7 @@ impl SettingsApp {
         self.power = panes::power::PowerArea::new(&cx);
         self.updates = panes::updates::UpdatesArea::new(&cx);
         self.storage = panes::storage::StorageArea::new(&cx);
+        self.disk_unlock = panes::disk_unlock::DiskUnlockArea::new(&cx);
         self.printers = panes::printers::PrintersArea::new(&cx);
         self.users = panes::users::UsersArea::new(&cx);
         self.bluetooth = panes::bluetooth::BluetoothArea::new(&cx);
@@ -464,13 +412,35 @@ impl SettingsApp {
         self.agent_models = panes::agent_models::AgentModelsArea::new(&cx);
         self.device_mesh = panes::device_mesh::DeviceMeshArea::new(&cx);
         self.audio = panes::audio::AudioArea::new(&cx);
-        self.accounts = panes::accounts::AccountsArea::new(&cx);
+        self.accounts =
+            panes::accounts::AccountsArea::new(&cx).with_account_root(self.account_root.clone());
         self.displays = panes::display::DisplayArea::new(&cx);
         self.network = panes::network::NetworkArea::new(&cx);
+        self.area_reads = crate::effects::AreaReads::of(&cx);
         self.software = panes::accessibility::Software::for_host(&cx);
         self.cx = cx;
         self.structure_dirty = true;
         self.refresh_shell_children();
+    }
+
+    /// Whether the published live rows include `area`'s: those of an area
+    /// that has read and of the pane shown, which reads it anyway — every
+    /// area's when reading is not put off ([`crate::effects::AreaReads`]).
+    pub(crate) fn publishes_area(&self, area: &crate::effects::LiveArea) -> bool {
+        !self.area_reads.deferred() || area.pane == self.selected || (area.is_open)(self)
+    }
+
+    /// Read on after the first frame, so the published rows fill in an area
+    /// at a time: the device reads that block run on the background
+    /// executor ([`crate::effects::AreaReads::step`]). Once every area has
+    /// read, the input sources are read the same way, last, so the Mouse &
+    /// Keyboard pane opens on them.
+    fn read_on(&self) {
+        match self.area_reads.step(self) {
+            crate::effects::Step::Read => self.area_reads.wake(),
+            crate::effects::Step::Waiting => {}
+            crate::effects::Step::Done => self.input.prefetch_catalog(),
+        }
     }
 
     /// Where the last wallpaper request stands.
@@ -511,6 +481,10 @@ impl SettingsApp {
     /// This device's system image, firmware and codec pack.
     pub(crate) fn updates(&self) -> &panes::updates::UpdatesArea {
         &self.updates
+    }
+
+    pub(crate) fn disk_unlock(&self) -> &panes::disk_unlock::DiskUnlockArea {
+        &self.disk_unlock
     }
 
     pub(crate) fn storage(&self) -> &panes::storage::StorageArea {
@@ -569,6 +543,7 @@ impl SettingsApp {
             Staged::Pane(category) => self.select(category),
             Staged::List(category) => {
                 self.select(category);
+                self.narrow_screen = NavPane::Sidebar;
                 if let Some(shell) = &mut self.shell {
                     shell.back();
                 }
@@ -601,10 +576,11 @@ impl SettingsApp {
             Category::Displays => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.displays.model(),
             ))),
-            Category::MouseKeyboard => Box::new(panes::mouse_keyboard::MouseKeyboardPane::new(
-                self.cx.clone(),
-                &self.input,
-            )),
+            Category::MouseKeyboard => Box::new(
+                panes::mouse_keyboard::MouseKeyboardPane::new(self.cx.clone(), &self.input)
+                    .with_map_input(self.keyboard_map_input.clone())
+                    .with_map_cache(self.keyboard_map_cache.clone()),
+            ),
             Category::KeyboardShortcuts => Box::new(panes::keyboard_shortcuts::ShortcutPane::new(
                 self.cx.clone(),
             )),
@@ -644,14 +620,13 @@ impl SettingsApp {
             Category::AgentModels => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.agent_models.model(),
             ))),
-            Category::RegionFormats => {
-                let pane = panes::region::RegionPane::new(self.cx.clone());
-                Box::new(match self.content_width_hint() {
-                    Some(width) => pane.with_width_hint(width),
-                    None => pane,
-                })
-            }
-            Category::Permissions => panes::permissions::build(&self.cx),
+            Category::RegionFormats => Box::new(panes::region::RegionPane::new(self.cx.clone())),
+            Category::Permissions => panes::permissions::build_with_disk_unlock(
+                &self.cx,
+                Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
+                    self.disk_unlock.model(),
+                ))),
+            ),
             Category::Updates => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.updates.model(),
             ))),
@@ -659,57 +634,28 @@ impl SettingsApp {
         }
     }
 
-    /// The factor the shell's own metrics grow by under a large-text
-    /// preference: the text scale, never below 1×. Large text needs the room
-    /// a narrow window does — the sidebar's labels grow with the type, so
-    /// its docked width and the breakpoint at which it docks grow with them
-    /// rather than clipping 28 px labels into a 264 px column. At 1× both are
-    /// exactly the shared shell's defaults. App-side until `AppShell`
-    /// resolves the scaled `Metrics` from the theme itself (HIG §9.6 names
-    /// that as the shells' next step); a scale change rebuilds the shell, so
-    /// its narrow-screen memory resets on that one event.
-    fn shell_scale(&self) -> f64 {
-        f64::from(self.shell_text_scale.max(1.0))
-    }
-
-    /// The width at or above which the sidebar docks, at the current scale.
-    fn scaled_breakpoint(&self) -> f64 {
-        NAV_BREAKPOINT * self.shell_scale()
-    }
-
-    /// The docked sidebar's width at the current scale.
-    fn scaled_sidebar_width(&self) -> f64 {
-        sidebar::SIDEBAR_WIDTH * self.shell_scale()
-    }
-
-    /// Create the persistent [`AppShell`] with the current nav + content +
-    /// search and the seeded shot state, for `shell_text_scale` (see
-    /// [`Self::shell_scale`]).
-    fn build_shell(&self) -> AppShell {
-        let nav = sidebar::build_with_scroll(
+    /// Create the persistent [`NavShell`] with the current nav + content +
+    /// search and the seeded shot state. Shared layout resolves scaled metrics.
+    fn build_shell(&self) -> NavShell {
+        let nav = sidebar::build(
             &self.cx,
             self.selected,
             &self.search_query,
             &self.sidebar_selection,
-            std::rc::Rc::clone(&self.sidebar_scroll),
         );
-        let content = self.build_content();
-        // A narrow (phone) layout keeps the selected category's CONTENT on
-        // screen — the category list is one back-tap away, never the default a
-        // collapse lands on. A `--shots` capture can pin a specific narrow
-        // screen; otherwise the shell collapses to the content.
-        let narrow_screen = self.narrow_screen;
-        let mut shell = AppShell::new(nav, content)
-            .with_search(self.build_search_field())
-            // AppShell resolves text-authored extents against the live theme.
-            // Pass the 1x values here; pre-scaling them would apply the text
-            // scale twice when the shell refreshes its metrics.
-            .with_breakpoint(NAV_BREAKPOINT)
-            .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
-            .with_narrow_screen(narrow_screen);
-        if let Some(w) = self.width_hint {
-            shell = shell.with_width_hint(f64::from(w));
-        }
+        let mut filter = SearchField::filter()
+            .with_id("settings.search")
+            .with_placeholder(&crate::i18n::t("settings-search-placeholder"));
+        filter.set_query(&self.search_query);
+        let mut shell = NavShell::new()
+            .with_id("settings.shell")
+            .mode(NavMode::Push)
+            .sidebar(nav)
+            .sidebar_header("", Vec::new())
+            .with_filter(filter)
+            .content(self.build_content())
+            .content_header(self.selected.label(), Vec::new());
+        shell.show(self.narrow_screen);
         shell
     }
 
@@ -717,18 +663,51 @@ impl SettingsApp {
     /// query. No-op before the shell exists (the first `build_layout` will
     /// build them fresh).
     fn refresh_shell_children(&mut self) {
-        let nav = sidebar::build_with_scroll(
-            &self.cx,
-            self.selected,
-            &self.search_query,
-            &self.sidebar_selection,
-            std::rc::Rc::clone(&self.sidebar_scroll),
-        );
         let content = self.build_content();
         if let Some(shell) = &mut self.shell {
-            shell.set_nav(nav);
+            // Keep the retained navigation's viewport and focus when only
+            // the selected pane changes.
+            if let Some(nav) = shell.sidebar_mut::<ui::widget::NavList>() {
+                nav.set_filter(&self.search_query);
+                if nav.selected_id().as_deref() != Some(self.selected.slug()) {
+                    nav.set_selected(Some(self.selected.slug()));
+                }
+            } else {
+                shell.set_sidebar(Some(sidebar::build(
+                    &self.cx,
+                    self.selected,
+                    &self.search_query,
+                    &self.sidebar_selection,
+                )));
+            }
             shell.set_content(content);
+            shell.set_content_title(self.selected.label());
         }
+    }
+}
+
+impl SettingsApp {
+    pub(crate) fn keyboard_inspection(&self) -> Result<serde_json::Value, String> {
+        fn mounted_map(widget: &dyn Widget) -> Option<&ui::KeyboardMap> {
+            if let Some(map) = widget
+                .as_any()
+                .and_then(|value| value.downcast_ref::<ui::KeyboardMap>())
+            {
+                return Some(map);
+            }
+            widget.children().into_iter().find_map(mounted_map)
+        }
+        if self.selected == Category::MouseKeyboard
+            && let Some(map) = mounted_map(self)
+        {
+            return map.inspection_snapshot();
+        }
+        Ok(serde_json::json!({
+            "available": false, "page_visible": false, "foreground": false,
+            "mode": null, "source": null, "model": null, "inspected_key": null,
+            "selected_symbols": [], "native_layout_available": false,
+            "native_group": null, "native_modifiers": null, "pressed_physical_keys": [],
+        }))
     }
 }
 
@@ -746,7 +725,11 @@ impl Widget for SettingsApp {
             widget: &dyn Widget,
             search: &mut Option<serde_json::Value>,
             categories: &mut Vec<&'static str>,
+            nav_id: &mut Option<&'static str>,
         ) {
+            if widget.test_id() == Some(sidebar::NAV_ID) {
+                *nav_id = Some(sidebar::NAV_ID);
+            }
             if widget.test_id() == Some("settings.search") {
                 let review = widget.text_review();
                 *search = Some(serde_json::json!({
@@ -756,19 +739,23 @@ impl Widget for SettingsApp {
                     "text": review.map(|(_, text)| text),
                 }));
             }
-            if widget.name() == "SidebarRow"
-                && let Some(category) = Category::ALL
-                    .iter()
-                    .find(|category| widget.test_id() == Some(category.label().as_str()))
+            if let Some(list) = widget
+                .as_any()
+                .and_then(|value| value.downcast_ref::<ui::widget::NavList>())
             {
-                categories.push(category.slug());
+                for id in list.visible_item_ids() {
+                    if let Some(category) = Category::from_slug(&id) {
+                        categories.push(category.slug());
+                    }
+                }
             }
-            widget.for_each_child(&mut |child| inspect(child, search, categories));
+            widget.for_each_child(&mut |child| inspect(child, search, categories, nav_id));
         }
         let (state, path) = ui::doc::document_ref(state, path);
         let mut search = None;
         let mut categories = Vec::new();
-        inspect(self, &mut search, &mut categories);
+        let mut nav_id = None;
+        inspect(self, &mut search, &mut categories, &mut nav_id);
         // get_heads closes pending transactions. Only a disposable clone may
         // perform that operation: the original document stays untouched.
         let mut witness = state.clone();
@@ -795,6 +782,7 @@ impl Widget for SettingsApp {
         Some(serde_json::json!({
             "app": "so.tilo.settings",
             "search_id": "settings.search",
+            "nav_id": nav_id,
             "ready": valid(self.rect) && search_ready,
             "local_search_text": self.search_state.with(Clone::clone),
             "synchronized_search_query": self.search_query,
@@ -820,12 +808,19 @@ impl Widget for SettingsApp {
         // is open.
         self.updates.poll();
         self.storage.poll();
+        self.disk_unlock.poll();
         self.printers.poll();
         self.speakers.poll();
         self.device_mesh.poll();
         self.accounts.poll();
         self.displays.poll();
         self.network.poll();
+        self.bluetooth.poll();
+        // After the first frame, the areas read one at a time until every
+        // area's rows are published.
+        if self.area_reads.take_due() {
+            self.read_on();
+        }
         // A sidebar row opens its pane through the pane row's open effect;
         // only a bare app outside a host selects here. Search is local
         // presentation state: no CRDT text, collaboration traffic or undo.
@@ -833,22 +828,28 @@ impl Widget for SettingsApp {
             self.sidebar_selection.set(None);
             self.select(category);
         }
+        if let Some(field) = self.shell.as_ref().and_then(NavShell::filter)
+            && self.search_state.with(|query| query == &self.search_query)
+            && field.value() != self.search_query
+        {
+            self.search_state.set(field.value().to_owned());
+        }
         let query = self.search_state.with(Clone::clone);
         if query != self.search_query {
             self.search_query = query;
+            if let Some(field) = self.shell.as_mut().and_then(NavShell::filter_mut) {
+                field.set_query(&self.search_query);
+            }
             self.structure_dirty = true;
             // Filtering changes only navigation. Reconstructing the active
             // pane here would discard its transient state and reseed its
             // document bindings on every search character.
-            let nav = sidebar::build_with_scroll(
-                &self.cx,
-                self.selected,
-                &self.search_query,
-                &self.sidebar_selection,
-                std::rc::Rc::clone(&self.sidebar_scroll),
-            );
-            if let Some(shell) = &mut self.shell {
-                shell.set_nav(nav);
+            if let Some(nav) = self
+                .shell
+                .as_mut()
+                .and_then(NavShell::sidebar_mut::<ui::widget::NavList>)
+            {
+                nav.set_filter(&self.search_query);
             }
         }
 
@@ -881,21 +882,14 @@ impl Widget for SettingsApp {
 
         let style = taffy::Style {
             display: taffy::Display::Flex,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         // `new_with_children` only fails for a child `NodeId` from a
         // different tree, which never happens here — see
         // `ui::widget::TaffyTreeExt`. Fall back to the child directly rather
         // than panic, on the off chance that ever changes.
-        let node = taffy
-            .new_with_children(style, &[shell_node])
-            .unwrap_or(shell_node);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[shell_node], node_map, self)
     }
 
     fn apply_layout(
@@ -906,13 +900,7 @@ impl Widget for SettingsApp {
     ) {
         // `taffy.layout(...)` only errors for a `NodeId` from a different
         // tree, which never happens here — see `ui::widget::TaffyTreeExt`.
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let origin = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let (Ok(children), Some(shell)) = (taffy.children(node), &mut self.shell)
             && let Some(&shell_node) = children.first()
@@ -932,26 +920,33 @@ impl Widget for SettingsApp {
         if let Some(shell) = &mut self.shell {
             shell.draw(scene, transform, text_renderer, theme, presence);
         }
+        self.area_reads.presented();
+        self.area_reads.wake();
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        if let Some(shell) = &mut self.shell {
-            shell.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
+    fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {
+        fn observe_map(widget: &mut dyn Widget, input: ui::widget::PhysicalInput) -> bool {
+            if let Some(map) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<ui::KeyboardMap>())
+            {
+                map.observe_physical_input(input);
+                return true;
+            }
+            let mut visible = false;
+            for child in widget.children_mut() {
+                visible |= observe_map(child, input.clone());
+            }
+            visible
+        }
+        let visible = self.selected == Category::MouseKeyboard
+            && self
+                .shell
+                .as_mut()
+                .is_some_and(|shell| observe_map(shell, input.clone()));
+        if !visible {
+            self.keyboard_map_input.observe_configuration(&input);
+            self.keyboard_map_input.clear();
         }
     }
 
@@ -960,10 +955,34 @@ impl Widget for SettingsApp {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
+        // Observe only the mounted foreground page, before its search/picker
+        // can consume editing events. This never changes handling or focus.
+        fn observe_map(widget: &mut dyn Widget, event: &winit::event::WindowEvent) {
+            if let Some(map) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<ui::KeyboardMap>())
+            {
+                map.observe_foreground_event(event);
+                return;
+            }
+            for child in widget.children_mut() {
+                observe_map(child, event);
+            }
+        }
+        if self.selected == Category::MouseKeyboard
+            && let Some(shell) = &mut self.shell
+        {
+            observe_map(shell, event);
+        }
         if let (Ok(children), Some(shell)) = (ctx.taffy.children(ctx.node_id), &mut self.shell)
             && let Some(&shell_node) = children.first()
         {
             shell.handle_event(event, &mut ctx.reborrow(ctx.path, shell_node));
+        }
+        if let Some(field) = self.shell.as_ref().and_then(NavShell::filter)
+            && self.search_state.with(|query| query != field.value())
+        {
+            self.search_state.set(field.value().to_owned());
         }
     }
 
@@ -979,6 +998,14 @@ impl Widget for SettingsApp {
             .as_mut()
             .map(|s| vec![s as &mut (dyn Widget + '_)])
             .unwrap_or_default()
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        // This root only delegates painting. Keep the shell's visual bounds
+        // instead of expanding every control hover to the whole app window.
+        if let Some(shell) = &self.shell {
+            shell.collect_damage(regions);
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -1051,6 +1078,118 @@ mod tests {
     use super::*;
     use ui::headless::Framed;
 
+    struct DamageWitness {
+        app: SettingsApp,
+        frames: std::rc::Rc<std::cell::RefCell<Vec<Vec<vello::kurbo::Rect>>>>,
+    }
+
+    impl ui::widget::Decorator for DamageWitness {
+        type Inner = SettingsApp;
+
+        fn inner(&self) -> &SettingsApp {
+            &self.app
+        }
+
+        fn inner_mut(&mut self) -> &mut SettingsApp {
+            &mut self.app
+        }
+
+        fn mark_drawn(&mut self) {
+            let mut regions = Vec::new();
+            self.app.collect_damage(&mut regions);
+            self.frames.borrow_mut().push(regions);
+            self.app.mark_drawn();
+        }
+    }
+
+    #[test]
+    fn settings_sidebar_hover_damage_covers_changed_pixels_without_the_whole_window() {
+        for theme in [
+            ui::Theme::dark(),
+            ui::Theme::light(),
+            ui::Theme::high_contrast(),
+        ] {
+            sidebar_hover_damage_for_theme(theme);
+        }
+    }
+
+    fn sidebar_hover_damage_for_theme(theme: ui::Theme) {
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let frames = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut harness = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            DamageWitness {
+                app: config.app(),
+                frames: std::rc::Rc::clone(&frames),
+            },
+            (1200, 700),
+            theme.with_reduce_motion(true),
+        );
+        let bounds = harness
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(_, node)| {
+                (node.role() == ui::accesskit::Role::Button && node.label() == Some("Hide sidebar"))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .expect("the real shared sidebar toggle is exposed");
+        let pointer = |x, y| ui::synthetic_input::cursor_moved(x, y);
+        harness.send(&pointer(1190.0, 690.0));
+        let mut renderer =
+            ui::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(1200, 700)
+                .expect("the pixel oracle requires the production GPU fine rasterizer");
+        let background = harness.theme().tokens.colors.surfaces.content;
+        let before = harness.render_rgba_with(&mut renderer, background);
+        assert!(
+            before == harness.render_rgba_with(&mut renderer, background),
+            "an unchanged frame must rasterize identically"
+        );
+        frames.borrow_mut().clear();
+        harness.send(&pointer(
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        ));
+        let after = harness.render_rgba_with(&mut renderer, background);
+        assert_eq!(before.len(), 1200 * 700 * 4);
+        assert_eq!(after.len(), before.len());
+        let regions = frames
+            .borrow()
+            .last()
+            .cloned()
+            .expect("hover paints a frame");
+        assert!(!regions.is_empty(), "hover publishes real visual damage");
+        let area: f64 = regions.iter().map(vello::kurbo::Rect::area).sum();
+        assert!(
+            area < 1200.0 * 700.0 / 2.0,
+            "a sidebar control must qualify for local repaint: {regions:?}"
+        );
+        let mut changed = 0_usize;
+        for (index, (old, new)) in before
+            .chunks_exact(4)
+            .zip(after.chunks_exact(4))
+            .enumerate()
+        {
+            if old == new {
+                continue;
+            }
+            changed = changed.saturating_add(1);
+            let x = u32::try_from(index % 1200).expect("pixel column");
+            let y = u32::try_from(index / 1200).expect("pixel row");
+            let point = vello::kurbo::Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+            assert!(
+                regions
+                    .iter()
+                    .any(|region| region.inflate(16.0, 16.0).contains(point)),
+                "hover changed pixel {point:?} {old:?}->{new:?} outside submitted damage {regions:?}"
+            );
+        }
+        assert!(
+            changed > 0,
+            "the production pointer route visibly changes the toggle"
+        );
+    }
+
     fn layout_at(app: SettingsApp, w: f32, h: f32) -> Framed<SettingsApp> {
         layout_at_with_theme(app, w, h, &ui::Theme::dark())
     }
@@ -1071,43 +1210,51 @@ mod tests {
 
     #[test]
     fn selecting_a_scrolled_sidebar_row_keeps_the_navigation_in_place() {
-        fn row_rect(widget: &dyn Widget, name: &str) -> Option<vello::kurbo::Rect> {
-            if widget.test_id() == Some(name) {
-                return Some(widget.get_rect());
-            }
-            widget
-                .children()
+        fn row_rect(app: &Framed<SettingsApp>, category: Category) -> Option<vello::kurbo::Rect> {
+            Framed::harness(app)
+                .a11y_nodes()
                 .into_iter()
-                .find_map(|child| row_rect(child, name))
+                .find_map(|(_, node)| {
+                    if node.role() != ui::accesskit::Role::TreeItem
+                        || node.label() != Some(category.label().as_str())
+                    {
+                        return None;
+                    }
+                    node.bounds().map(|bounds| {
+                        vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1)
+                    })
+                })
         }
         let config = crate::prefs::test_env::ScratchConfig::new();
         let mut app = layout_at(config.app(), 1200.0, 520.0);
-        let original = row_rect(&*app, "About").expect("actual navigation row");
+        let home = app.selected();
+        let home_row = row_rect(&app, home).expect("the selected row starts visible");
         let harness = Framed::harness_mut(&mut app);
-        harness.send(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(100.0, 300.0),
-        });
-        harness.scroll(0.0, -40.0);
-        let scrolled = row_rect(&*app, "About").expect("scrolled navigation row");
+        harness.send(&ui::synthetic_input::cursor_moved(100.0, 300.0));
+        harness.scroll(0.0, -3.0);
+        // A wheel step glides on after it lands; measure where it rests.
         assert!(
-            scrolled.y0 < original.y0,
+            harness.settle_for_capture(ui::time::Duration::from_secs(5)),
+            "the wheel's glide comes to rest"
+        );
+        assert!(
+            row_rect(&app, home).is_none_or(|row| row.y0 < home_row.y0),
             "the real wheel route scrolled the sidebar"
         );
-        assert!(
-            scrolled.y0 >= 0.0 && scrolled.y1 <= 520.0,
-            "About is visible before activation: {scrolled:?}"
-        );
-        Framed::harness_mut(&mut app)
-            .click_named("About")
-            .expect("activate the real sidebar row");
-        assert_eq!(
-            app.selected(),
-            Category::About,
-            "pending sidebar request: {:?}",
-            app.sidebar_selection.with(|request| *request)
-        );
-        let selected = row_rect(&*app, "About").expect("selected navigation row");
+        // Shared lists publish the actual visible rows, so choose a measured
+        // destination near the viewport's bottom rather than an offscreen id.
+        let (category, scrolled) = Category::ALL
+            .iter()
+            .filter_map(|&category| {
+                let rect = row_rect(&app, category)?;
+                (category != home && rect.y0 >= 0.0 && rect.y1 <= 520.0).then_some((category, rect))
+            })
+            .max_by(|a, b| a.1.y0.total_cmp(&b.1.y0))
+            .expect("a real visible navigation row");
+        let center = scrolled.center();
+        Framed::harness_mut(&mut app).click_at(center.x, center.y);
+        assert_eq!(app.selected(), category, "the actual row selected its pane");
+        let selected = row_rect(&app, category).expect("selected navigation row");
         assert_eq!(
             selected, scrolled,
             "selection must retain the navigation's scroll offset"
@@ -1286,8 +1433,8 @@ mod tests {
             let heading = heading.expect("the content page names the selected destination");
             let back = app.back_button_rect();
             assert!(
-                heading.y0 >= back.y1,
-                "the destination heading begins below the back band, so the back arrow remains obvious"
+                heading.intersect(back).area() == 0.0,
+                "the destination heading and back control must not overlap"
             );
         }
 
@@ -1323,18 +1470,19 @@ mod tests {
         // Case `wide_large_text_reserves_a_readable_sidebar_before_layout`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let app = config.app().with_width_hint(1440.0);
+            let app = config.app().with_width_hint(1800.0);
             let app =
-                layout_at_with_theme(app, 1440.0, 900.0, &ui::Theme::dark().with_text_scale(2.0));
+                layout_at_with_theme(app, 1800.0, 900.0, &ui::Theme::dark().with_text_scale(2.0));
             assert!(
                 !app.is_narrow(),
-                "1440px still admits a readable split at 200% text"
+                "1800px admits a readable split above the scaled compact breakpoint"
             );
             let sidebar = app
                 .shell
                 .as_ref()
                 .expect("layout builds the shell")
-                .sidebar_panel_rect();
+                .geometry()
+                .sidebar_column;
             assert!(
                 (sidebar.width() - sidebar::width_for_text_scale(2.0)).abs() < 0.5,
                 "sidebar tracks the same scale as its custom-painted rows: {sidebar:?}"
@@ -1439,13 +1587,20 @@ mod tests {
             let app = layout_at(app, 1200.0, 760.0);
             let shell = app.shell.as_ref().expect("shell built");
             let names: Vec<&str> = shell.children().iter().map(|c| c.name()).collect();
-            assert_eq!(
-                names,
-                vec!["TextInput", "Container", "Container"],
-                "shell chrome is search + nav + content — no title/app-name header widget"
+            assert!(names.contains(&"NavList"), "the category list is admitted");
+            assert!(
+                names.contains(&"SearchField"),
+                "the search field is admitted"
             );
+            for child in shell.children() {
+                assert_ne!(
+                    child.accessibility().and_then(|node| node.name).as_deref(),
+                    Some("Settings"),
+                    "window chrome owns the app name; the shell may name its destination"
+                );
+            }
             // And the resolved layout is the wide split.
-            assert_eq!(shell.layout(), ui::widget::ShellLayout::Wide);
+            assert!(shell.geometry().side_by_side);
         }
 
         // Case `root_landmark_is_retained_across_responsive_shell_rebuilds`.

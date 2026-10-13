@@ -1,25 +1,26 @@
 //! Standalone later-folder import UI.
 
+use crate::page;
+use crate::page::Frame;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
+use ui::widget::TaffyTreeExt;
+
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
+use ui::TextKind;
 use ui::a11y::Politeness;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::icons::Icon;
 use ui::theme::Theme;
-use ui::tokens::typography::TextRole;
-use ui::widget::{Button, Card, Column, Container, Row, Scrollable, Text, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
-use winit::event::WindowEvent;
+use ui::widget::{
+    Button, ButtonRole, Column, ControlSize, ListRow, ProgressBar, Property, PropertyList, Row,
+    Section, SectionHeader, Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
+};
 
 use super::desktop_continuation::{self, ChoiceMode, Continuation};
 use super::folders;
@@ -35,9 +36,8 @@ use super::migration_worker::{
 };
 use super::view::system_folder_reason;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
-use super::{page, stack};
-use crate::resource::{Imager, ImagerState};
-use crate::rhythm::px::{GROUP, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
+use crate::resource::Imager;
+
 use ui::framework::{
     EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LiveRow, ResourceSurface,
     SurfaceCx, ViewCx,
@@ -50,6 +50,55 @@ static NEXT_OPERATION: AtomicU64 = AtomicU64::new(0);
 /// copies and journal fsyncs can take many seconds on a loaded disk, so this
 /// only catches a worker that never finishes.
 const SHOT_WAIT_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The links in the posed Documents folder whose copy needs attention: the
+/// shortcuts a person keeps to the folders they use, in sorted order.
+#[allow(
+    dead_code,
+    reason = "the posed links are symbolic links, which only a unix shot creates"
+)]
+const SHOT_LINKS: [&str; 40] = [
+    "Bank statements",
+    "Book club",
+    "Budget 2026",
+    "Car insurance",
+    "Cooking",
+    "Dentist",
+    "Garden plans",
+    "Gym schedule",
+    "Holiday 2025",
+    "Home office",
+    "House viewing",
+    "Invoices",
+    "Job applications",
+    "Kids school",
+    "Language course",
+    "Lease",
+    "Meal plans",
+    "Medical",
+    "Moving checklist",
+    "Music lessons",
+    "Newsletter",
+    "Notes",
+    "Passport scans",
+    "Pension",
+    "Photo backup",
+    "Piano scores",
+    "Podcast ideas",
+    "Receipts",
+    "Recipes",
+    "Renovation",
+    "Running log",
+    "Taxes",
+    "Tickets",
+    "Travel",
+    "Utilities",
+    "Volunteering",
+    "Warranty cards",
+    "Wedding",
+    "Work contracts",
+    "Writing",
+];
 
 type CommandSink = Rc<RefCell<Vec<ImportCommand>>>;
 type SaveReply = mpsc::Receiver<Result<Vec<OperationRecord>, String>>;
@@ -108,6 +157,8 @@ struct PendingPrepareInvocation {
 pub struct ImportApp {
     continuation: Option<Continuation>,
     identity_ready: bool,
+    navigation: super::journey_navigation::Navigation,
+    actions: Option<ui::framework::Actions<Imager>>,
     review_request: Option<(usize, mpsc::Receiver<Result<Continuation, String>>)>,
     gate_request: Option<(ImportCommand, mpsc::Receiver<Result<(), String>>)>,
     batch: Vec<usize>,
@@ -129,9 +180,7 @@ pub struct ImportApp {
     commands: CommandSink,
     status: String,
     status_is_error: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
-    structure_dirty: bool,
+    composed: ui::widget::Composed,
     expanded_details: HashSet<usize>,
     shot_temp: Option<tempfile::TempDir>,
     /// The caller of the running job, answered when it settles.
@@ -177,6 +226,8 @@ impl ImportApp {
         Self {
             continuation: None,
             identity_ready: false,
+            navigation: super::journey_navigation::Navigation::default(),
+            actions: None,
             gate_request: None,
             review_request: None,
             batch: Vec::new(),
@@ -198,9 +249,7 @@ impl ImportApp {
             commands: Rc::new(RefCell::new(Vec::new())),
             status: format!("Folder imports are unavailable: {error}"),
             status_is_error: true,
-            composed: None,
-            rect: Rect::ZERO,
-            structure_dirty: true,
+            composed: ui::widget::Composed::default(),
             expanded_details: HashSet::new(),
             shot_temp: None,
             reply: None,
@@ -224,6 +273,9 @@ impl ImportApp {
             .path()
             .canonicalize()
             .map_err(|error| error.to_string())?;
+        SHOT_PATH_ALIAS.with(|alias| {
+            *alias.borrow_mut() = Some((base.clone(), PathBuf::from("/home/ada")));
+        });
         let source = base.join("Documents");
         let destination_parent = base.join("Tilo files");
         std::fs::create_dir(&source).map_err(|error| error.to_string())?;
@@ -282,12 +334,9 @@ impl ImportApp {
                 std::fs::write(source.join("Welcome.txt"), b"verified bytes")
                     .map_err(|e| e.to_string())?;
                 #[cfg(unix)]
-                for index in 0..40 {
-                    std::os::unix::fs::symlink(
-                        source.join("Welcome.txt"),
-                        source.join(format!("Shortcut {index:02}")),
-                    )
-                    .map_err(|e| e.to_string())?;
+                for name in SHOT_LINKS {
+                    std::os::unix::fs::symlink(source.join("Welcome.txt"), source.join(name))
+                        .map_err(|e| e.to_string())?;
                 }
                 app.prepare_and_start_shot(&source, &destination_parent)?;
                 let deadline = ui::time::now() + SHOT_WAIT_BOUND;
@@ -309,7 +358,7 @@ impl ImportApp {
                 app.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)?;
             }
         }
-        app.structure_dirty = true;
+        app.composed.invalidate();
         Ok(app)
     }
 
@@ -455,9 +504,9 @@ impl ImportApp {
         conflict.approve();
         conflict.mark_running()?;
         Self::run_shot_worker(&mut conflict, retry)?;
-        self.operations = vec![conflict];
-        self.status = "Destination changes were preserved for review.".into();
+        self.status = state_summary(conflict.state()).into();
         self.status_is_error = true;
+        self.operations = vec![conflict];
         Ok(())
     }
 
@@ -527,6 +576,8 @@ impl ImportApp {
         Ok(Self {
             continuation,
             identity_ready: false,
+            navigation: super::journey_navigation::Navigation::default(),
+            actions: None,
             gate_request: None,
             review_request: None,
             batch: Vec::new(),
@@ -548,9 +599,7 @@ impl ImportApp {
             commands: Rc::new(RefCell::new(Vec::new())),
             status,
             status_is_error: false,
-            composed: None,
-            rect: Rect::ZERO,
-            structure_dirty: true,
+            composed: ui::widget::Composed::default(),
             expanded_details: HashSet::new(),
             shot_temp: None,
             reply: None,
@@ -771,6 +820,9 @@ impl ImportApp {
             }
         });
         ImportProjection {
+            journey_available: self.identity_ready
+                && self.continuation.is_some()
+                && self.navigation.available(),
             phase: self.import_phase(),
             status_is_error: self.status_is_error,
             selection: SelectionProjection {
@@ -852,7 +904,7 @@ impl ImportApp {
     fn refuse_semantic<T>(&mut self, message: String) -> Result<T, String> {
         self.status.clone_from(&message);
         self.status_is_error = true;
-        self.structure_dirty = true;
+        self.composed.invalidate();
         Err(message)
     }
 
@@ -875,6 +927,25 @@ impl ImportApp {
         operation: ImportEffect,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let command = match operation {
+            ImportEffect::OpenAccounts | ImportEffect::OpenStore => {
+                if !self.identity_ready || self.continuation.is_none() {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-journey-identity-required"));
+                }
+                let uri = if matches!(operation, ImportEffect::OpenAccounts) {
+                    super::journey_navigation::ACCOUNTS
+                } else {
+                    super::journey_navigation::STORE
+                };
+                self.navigation.request(uri)?;
+                self.status = super::strings::t("imager-journey-navigation-pending");
+                self.status_is_error = false;
+                self.composed.invalidate();
+                return Ok(tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({"requested": true})),
+                    resources: Vec::new(),
+                });
+            }
             ImportEffect::ReadStatus => {
                 return Ok(tilo_actions::ActionOutput {
                     value: Some(self.local_status_value()),
@@ -1209,10 +1280,8 @@ impl ImportApp {
         let id = format!(
             "{}-{}-{}",
             std::process::id(),
-            ui::time::wall()
-                .duration_since(ui::time::UNIX_EPOCH)
-                .map_err(|_| "system time is before the Unix epoch".to_string())?
-                .as_nanos(),
+            ui::time::try_unix_now_ns()
+                .ok_or_else(|| "system time is before the Unix epoch".to_string())?,
             NEXT_OPERATION.fetch_add(1, Ordering::Relaxed)
         );
         let journal = store.root().join(format!("{id}.journal"));
@@ -1226,7 +1295,7 @@ impl ImportApp {
         self.destination_parent = None;
         self.status = "Review the source, destination, and one-time copy.".into();
         self.status_is_error = false;
-        self.structure_dirty = true;
+        self.composed.invalidate();
         Ok(())
     }
 
@@ -1348,7 +1417,7 @@ impl ImportApp {
             pending.cancelled = true;
             pending.finished = true;
             self.status = "Folder review stopped before it was saved.".into();
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return true;
         }
         let previous_save_count = self.pending_saves.len();
@@ -1381,7 +1450,7 @@ impl ImportApp {
                 self.status_is_error = true;
             }
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
         true
     }
 
@@ -1483,7 +1552,7 @@ impl ImportApp {
                 self.worker = Some((index, worker));
                 self.status = "Copying and checking files…".into();
                 self.status_is_error = false;
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 Ok(())
             }
             Err(error) => {
@@ -1548,7 +1617,7 @@ impl ImportApp {
                 self.worker = Some((index, worker));
                 self.status = "Continuing after checking saved progress…".into();
                 self.status_is_error = false;
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 Ok(())
             }
             Err(error) => {
@@ -1571,12 +1640,12 @@ impl ImportApp {
             self.batch.clear();
             self.status = "Stopping at the next safe copy boundary…".into();
             self.status_is_error = false;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             true
         } else {
             self.status = "File checks are finished; waiting for the final result.".into();
             self.status_is_error = false;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             false
         }
     }
@@ -1741,7 +1810,7 @@ impl ImportApp {
                                 }
                                 self.status = e;
                                 self.status_is_error = true;
-                                self.structure_dirty = true;
+                                self.composed.invalidate();
                                 return true;
                             }
                         }
@@ -1775,7 +1844,17 @@ impl ImportApp {
     }
 
     fn poll_background(&mut self) -> bool {
-        let mut changed = self.poll_continued_review();
+        let reviewed = self.poll_continued_review();
+        let mut changed = if let Some(outcome) = self.navigation.poll() {
+            self.status_is_error = outcome.is_err();
+            self.status = outcome
+                .err()
+                .unwrap_or_else(|| super::strings::t("imager-journey-navigation-opened"));
+            self.composed.invalidate();
+            true
+        } else {
+            reviewed
+        };
         self.poll_identity_gate(&mut changed);
         let mut terminal = false;
         // At most one latest progress update and one terminal event per frame.
@@ -1792,9 +1871,14 @@ impl ImportApp {
                     if let Some(operation) = self.operations.get_mut(*index) {
                         operation.apply_progress(&progress);
                         self.status = format!(
-                            "Verified {} across {} file(s).",
+                            "Verified {} in {} {}.",
                             ui::format::bytes_si(progress.verified_bytes),
-                            progress.verified_files
+                            progress.verified_files,
+                            if progress.verified_files == 1 {
+                                "file"
+                            } else {
+                                "files"
+                            }
                         );
                     }
                 }
@@ -1850,7 +1934,7 @@ impl ImportApp {
 
         changed |= self.poll_folder_picker();
         if changed {
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         changed
     }
@@ -1871,7 +1955,7 @@ impl ImportApp {
                 self.status = e;
                 self.status_is_error = true;
             }
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return;
         }
         self.apply_authorized_command(command);
@@ -2009,7 +2093,7 @@ impl ImportApp {
             self.status = error;
             self.status_is_error = true;
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     fn drain_commands(&mut self) -> bool {
@@ -2024,82 +2108,137 @@ impl ImportApp {
     fn button(&self, id: &str, label: &str, command: ImportCommand) -> Button {
         let sink = Rc::clone(&self.commands);
         Button::new(id, label)
-            .fit_content(40.0)
+            .control_size(ui::widget::ControlSize::Regular)
             .on_effect(move || sink.borrow_mut().push(command))
     }
 
-    fn selection_card(&self) -> Card {
-        let source = self.source.as_ref().map_or_else(
-            || "No source selected".to_string(),
-            |path| path.display().to_string(),
-        );
+    /// Copy one more folder: where from, where to, and the review that
+    /// prepares the copy.
+    fn journey_choices(&self) -> Section {
+        let t = super::strings::t;
+        let button = |id: &str, key: &str, effect: ImportEffect| {
+            let control = Button::new(id, &t(key)).control_size(ui::widget::ControlSize::Regular);
+            match &self.actions {
+                Some(actions) => actions.bind_effect_invocation(control, &effect),
+                None => control.with_enabled(false),
+            }
+        };
+        Section::new(vec![
+            Box::new(Text::new(&t("imager-journey-body"))),
+            Box::new(
+                Row::new()
+                    .push(Box::new(button(
+                        "import.journey.accounts",
+                        "imager-journey-accounts",
+                        ImportEffect::OpenAccounts,
+                    )))
+                    .push(Box::new(button(
+                        "import.journey.store",
+                        "imager-journey-store",
+                        ImportEffect::OpenStore,
+                    ))),
+            ),
+        ])
+        .with_header(SectionHeader::heading(t("imager-journey-heading")))
+    }
+
+    fn selection_card(&self) -> Section {
+        let source = self
+            .source
+            .as_ref()
+            .map_or_else(|| "Not chosen yet".to_string(), |path| shown_path(path));
         let destination = self.destination_parent.as_ref().map_or_else(
-            || "No destination selected".to_string(),
+            || "Not chosen yet".to_string(),
             |parent| {
                 self.source
                     .as_ref()
                     .and_then(|source| source.file_name())
-                    .map_or_else(
-                        || parent.display().to_string(),
-                        |name| parent.join(name).display().to_string(),
-                    )
+                    .map_or_else(|| shown_path(parent), |name| shown_path(&parent.join(name)))
             },
         );
-        let mut body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(Text::new(&format!("Source: {source}"))))
-            .push(Box::new(Text::new(&format!(
-                "Copy to: {destination}"
-            ))))
-            .push(Box::new(Text::new(
-                "One-time copy. Originals stay where they are. Later changes are not synced, and this does not share or upload files.",
-            ).dimmed()))
-            .push(Box::new(Row::new().no_wrap()
-                .push(Box::new(self.button("import.pick-source", "Choose source…", ImportCommand::PickSource)))
-                .push(Box::new(self.button("import.pick-destination", "Choose destination…", ImportCommand::PickDestination)))));
-        if self.source.is_some() || self.destination_parent.is_some() {
-            body = body.push(Box::new(self.button(
-                "import.clear-selection",
-                "Clear selection",
-                ImportCommand::ClearSelection,
+        let mut actions = Row::new()
+            .push(Box::new(self.button(
+                "import.pick-source",
+                "Choose folder…",
+                ImportCommand::PickSource,
+            )))
+            .push(Box::new(self.button(
+                "import.pick-destination",
+                "Choose destination…",
+                ImportCommand::PickDestination,
             )));
+        if self.source.is_some() || self.destination_parent.is_some() {
+            actions = actions.push(Box::new(
+                self.button(
+                    "import.clear-selection",
+                    "Clear",
+                    ImportCommand::ClearSelection,
+                )
+                .role(ButtonRole::Plain),
+            ));
         }
-        body = body.push(Box::new(
+        actions = actions.push(Box::new(Spacer::new())).push(Box::new(
             self.button("import.review", "Review copy", ImportCommand::PrepareReview)
-                .primary()
+                .role(if self.continuation.is_some() {
+                    ButtonRole::Secondary
+                } else {
+                    ButtonRole::Primary
+                })
                 .with_enabled(self.can_prepare_review()),
         ));
-        Card::titled(
-            if self.operations.is_empty() {
-                "Copy a folder"
-            } else {
-                "Copy another folder"
-            },
-            Box::new(body),
-        )
+        let body = page::related()
+            .push(Box::new(PropertyList::new(vec![
+                Property::new("Folder", source).with_kind(TextKind::Identifier),
+                Property::new("Copy to", destination).with_kind(TextKind::Identifier),
+            ])))
+            .push(Box::new(
+                Text::new(
+                    "Tilo copies the folder once and checks every file. Your originals stay where they are.",
+                )
+                .dimmed(),
+            ))
+            .push(Box::new(actions));
+        Section::new(vec![Box::new(body)]).with_header(SectionHeader::heading("Copy a folder"))
     }
 
-    fn page_details(&self, index: usize, operation: &OperationRecord, details: &mut String) {
+    /// The loaded page of a copy's issues, one row each, then what else
+    /// the copy reports.
+    fn page_details(&self, index: usize, operation: &OperationRecord) -> Option<Column> {
+        let mut issues: Vec<Box<dyn Widget>> = Vec::new();
+        let mut notes = Vec::new();
         if let Some(page) = self.detail_pages.get(&index) {
-            *details = page
-                .issues
-                .iter()
-                .map(|(p, reason)| format!("Needs attention: {} — {reason}", p.display()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            for limitation in operation.metadata_limitations() {
-                let _ = write!(details, "\nFile properties: {limitation}");
+            for (path, reason) in &page.issues {
+                issues.push(Box::new(issue_row(path, reason)));
             }
+            notes.extend(operation.metadata_limitations().iter().cloned());
             if let Some(failure) = operation.failure() {
-                let _ = write!(details, "\nCould not continue: {failure}");
+                notes.push(format!("The copy could not continue: {failure}"));
             }
+        } else {
+            let (details, limitations) = operation_details(operation);
+            issues.extend(
+                details
+                    .into_iter()
+                    .map(|(path, reason)| Box::new(issue_row(&path, &reason)) as Box<dyn Widget>),
+            );
+            notes.extend(limitations);
         }
+        if issues.is_empty() && notes.is_empty() {
+            return None;
+        }
+        let mut column = page::related().with_id(format!("import.operation.{index}.details"));
+        if !issues.is_empty() {
+            column = column.push(Box::new(Section::new(issues)));
+        }
+        for note in notes {
+            column = column.push(Box::new(Text::new(&note).dimmed()));
+        }
+        Some(column)
     }
 
     fn issue_page_button(&self, index: usize) -> Button {
         let (label, command, enabled) = if self.detail_request.is_some() {
-            ("Loading issues…", ImportCommand::NextIssues(index), false)
+            ("Loading…", ImportCommand::NextIssues(index), false)
         } else if self
             .detail_pages
             .get(&index)
@@ -2122,49 +2261,115 @@ impl ImportApp {
             label,
             command,
         )
+        .role(ButtonRole::Plain)
         .with_enabled(enabled)
     }
 
-    fn operation_card(&self, index: usize, operation: &OperationRecord) -> Card {
-        let (summary, mut details) = operation_text(operation);
-        self.page_details(index, operation, &mut details);
-        let mut body = stack().push(Box::new(
-            Text::new(&summary).with_id(format!("import.operation.{index}.summary")),
-        ));
-        // The card's commands form one action row rather than a stack of
-        // one-button lines, and the row follows the expanded details: the
-        // toggle, the issue paging and the copy action act on that list, so
-        // they come after it in reading and Tab order.
+    /// One copy: its folder and state, the facts about it, the issues it
+    /// found when they are open, and what can be done with it.
+    fn operation_card(&self, index: usize, operation: &OperationRecord) -> Column {
+        let state = operation.state();
+        let folder = operation
+            .source()
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| operation_state_label(state).to_string());
+        let mut row = ListRow::new(format!("import.operation.{index}.summary"), folder)
+            .icon(Icon::Folder)
+            .secondary(state_summary(state))
+            .meta(ui::format::bytes_si(operation.verified_bytes()));
+        row = match state {
+            OperationState::Running => row.active(),
+            OperationState::Failed => row.error(),
+            OperationState::Incomplete | OperationState::Interrupted => row.warning(),
+            _ if operation.issue_count() > 0 => row.warning(),
+            _ => row,
+        };
+        let mut block = page::related().push(Box::new(row));
+        if state == OperationState::Running {
+            block = block.push(Box::new(ProgressBar::indeterminate()));
+        }
+        let mut facts = vec![
+            Property::new(
+                "From",
+                operation
+                    .source()
+                    .map_or_else(|error| error, |path| shown_path(&path)),
+            )
+            .with_kind(TextKind::Identifier),
+            Property::new(
+                "To",
+                operation
+                    .destination()
+                    .map_or_else(|error| error, |path| shown_path(&path)),
+            )
+            .with_kind(TextKind::Identifier),
+            Property::new(
+                "Checked",
+                format!(
+                    "{} in {} {}",
+                    ui::format::bytes_si(operation.verified_bytes()),
+                    operation.verified_file_count(),
+                    if operation.verified_file_count() == 1 {
+                        "file"
+                    } else {
+                        "files"
+                    }
+                ),
+            ),
+        ];
+        if state == OperationState::Running
+            && let Ok(Some(path)) = operation.current_relative_path()
+            && !path.as_os_str().is_empty()
+        {
+            facts.push(
+                Property::new("Now copying", path.display().to_string())
+                    .with_kind(TextKind::Identifier),
+            );
+        }
+        if operation.issue_count() > 0 {
+            facts.push(Property::new(
+                "Needs attention",
+                items_phrase(operation.issue_count() as u64),
+            ));
+        }
+        block = block.push(Box::new(PropertyList::new(facts)));
+
+        // The commands follow the expanded issues they act on, in reading
+        // and Tab order.
         let mut actions = Row::new();
         let mut has_actions = false;
-        let mut details_text = None;
-        if !details.is_empty() {
-            actions = actions.push(Box::new(self.button(
-                &format!("import.operation.{index}.toggle-details"),
-                if self.expanded_details.contains(&index) {
-                    "Hide details"
-                } else {
-                    "Details"
-                },
-                ImportCommand::ToggleDetails(index),
-            )));
+        let has_details = operation.issue_count() > 0
+            || !operation.metadata_limitations().is_empty()
+            || operation.failure().is_some();
+        if has_details {
+            let expanded = self.expanded_details.contains(&index);
+            if expanded && let Some(details) = self.page_details(index, operation) {
+                block = block.push(Box::new(details));
+            }
+            actions = actions.push(Box::new(
+                self.button(
+                    &format!("import.operation.{index}.toggle-details"),
+                    if expanded { "Hide details" } else { "Details" },
+                    ImportCommand::ToggleDetails(index),
+                )
+                .role(ButtonRole::Plain),
+            ));
             has_actions = true;
-            if self.expanded_details.contains(&index) {
-                details_text =
-                    Some(Text::new(&details).with_id(format!("import.operation.{index}.details")));
-                if operation.issue_count() > 8 {
-                    actions = actions.push(Box::new(self.issue_page_button(index)));
-                }
+            if expanded && operation.issue_count() > 8 {
+                actions = actions.push(Box::new(self.issue_page_button(index)));
             }
         }
-        let state_action = match operation.state() {
+        let state_action = match state {
             OperationState::AwaitingReview => Some(
                 self.button(
                     &format!("import.operation.{index}.start"),
                     "Start copy",
                     ImportCommand::Start(index),
                 )
-                .primary()
                 .with_enabled(self.can_start_copy(index)),
             ),
             OperationState::Running
@@ -2193,22 +2398,13 @@ impl ImportApp {
             OperationState::Ready | OperationState::Running | OperationState::Complete => None,
         };
         if let Some(action) = state_action {
-            actions = actions.push(Box::new(action));
+            actions = actions.push(Box::new(Spacer::new())).push(Box::new(action));
             has_actions = true;
         }
-        if let Some(text) = details_text {
-            body = body.push(Box::new(text));
-        }
         if has_actions {
-            body = body.push(Box::new(actions));
+            block = block.push(Box::new(actions));
         }
-        Card::titled(
-            format!(
-                "Folder import · {}",
-                operation_state_label(operation.state())
-            ),
-            Box::new(body),
-        )
+        block
     }
 
     fn can_start_continued_batch(&self) -> bool {
@@ -2230,39 +2426,24 @@ impl ImportApp {
             })
     }
 
-    fn continued_review_controls(&self, row: Column, index: usize) -> Column {
-        let enabled = self.identity_ready
-            && self.worker.is_none()
-            && self.review_request.is_none()
-            && self.gate_request.is_none();
-        // Both destination commands belong to one action row (wrapping when
-        // the card is narrow) instead of two single-button lines.
-        row.push(Box::new(
-            Row::new()
-                .push(Box::new(
-                    self.button(
-                        &format!("import.continued.{index}.review"),
-                        "Review destination",
-                        ImportCommand::ResolveContinued(index),
-                    )
-                    .with_enabled(enabled),
-                ))
-                .push(Box::new(
-                    self.button(
-                        &format!("import.continued.{index}.destination"),
-                        "Choose another destination…",
-                        ImportCommand::PickContinuedDestination(index),
-                    )
-                    .with_enabled(enabled),
-                )),
-        ))
+    /// Whether saved folder choices can change right now.
+    fn continuation_idle(&self) -> bool {
+        self.worker.is_none() && self.review_request.is_none() && self.gate_request.is_none()
     }
 
-    fn continuation_card(&self, c: &Continuation) -> Card {
-        let mut body = Column::new().with_no_padding().with_intrinsic_height()
-            .push(Box::new(Text::new("Saved Desktop folder choices. Complete identity setup in Tilo, then review each actual destination. Originals stay unchanged; local Copy does not enable sync or sharing.").with_id("import.continuation.explanation")));
+    /// The folders saved during Desktop setup, each with how it comes over
+    /// and, for a copy, where it goes.
+    fn continuation_card(&self, c: &Continuation) -> Section {
+        let mut items: Vec<Box<dyn Widget>> = vec![Box::new(
+            Text::new(if self.identity_ready {
+                "Review where each folder goes, then copy. Your originals stay unchanged."
+            } else {
+                "Finish setting up your Tilo identity, then review where each folder goes. Your originals stay unchanged."
+            })
+            .with_id("import.continuation.explanation"),
+        )];
         if !self.identity_ready {
-            body = body.push(Box::new(
+            items.push(Box::new(
                 self.button(
                     "import.continued.check-identity",
                     "Continue after identity setup",
@@ -2271,24 +2452,23 @@ impl ImportApp {
                 .with_enabled(self.gate_request.is_none()),
             ));
         }
-        // Each saved folder is a block of this card separated by space, not
-        // a second edged card inside the first (HIG §7).
-        let mut folders = stack().with_gap(GROUP);
+        let idle = self.continuation_idle();
         for (index, f) in c.folders.iter().enumerate() {
-            let source = f.source().map_or_else(|e| e, |p| p.display().to_string());
-            let destination = f.destination().map_or_else(
-                |e| e,
-                |p| {
-                    p.map_or_else(
-                        || "Destination pending review".into(),
-                        |p| p.display().to_string(),
-                    )
-                },
-            );
-            let mode = match f.mode {
-                ChoiceMode::Copy => "One-time Copy",
-                ChoiceMode::Later => "Decide later — retained in Add folders",
-                ChoiceMode::Connected => "Connected — unavailable; no sync or copy started",
+            let source = f.source().map_or_else(|e| e, |p| shown_path(&p));
+            let secondary = match f.mode {
+                ChoiceMode::Copy => f.destination().map_or_else(
+                    |e| e,
+                    |p| {
+                        p.map_or_else(
+                            || "Destination not reviewed yet".into(),
+                            |p| format!("Copies to {}", shown_path(&p)),
+                        )
+                    },
+                ),
+                ChoiceMode::Later => "Decide later. It stays in Add folders.".into(),
+                ChoiceMode::Connected => {
+                    "Connected folders are not available. Nothing was synced or copied.".into()
+                }
             };
             let can_review = self
                 .operations
@@ -2303,200 +2483,186 @@ impl ImportApp {
                             | OperationState::Cancelled
                     )
                 });
-            let mut row = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(
-                    Text::new(&format!("Source: {source}\nCopy to: {destination}\n{mode}"))
-                        .with_id(format!("import.continued.{index}.paths")),
-                ))
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(Box::new(
-                            self.button(
-                                &format!("import.continued.{index}.copy"),
-                                "One-time Copy",
-                                ImportCommand::ContinuedMode(index, ChoiceMode::Copy),
-                            )
-                            .with_enabled(
-                                self.worker.is_none()
-                                    && self.review_request.is_none()
-                                    && self.gate_request.is_none(),
-                            ),
-                        ))
-                        .push(Box::new(
-                            self.button(
-                                &format!("import.continued.{index}.later"),
-                                "Later",
-                                ImportCommand::ContinuedMode(index, ChoiceMode::Later),
-                            )
-                            .with_enabled(
-                                self.worker.is_none()
-                                    && self.review_request.is_none()
-                                    && self.gate_request.is_none(),
-                            ),
-                        )),
-                ));
+            let sink = Rc::clone(&self.commands);
+            let modes = [ChoiceMode::Copy, ChoiceMode::Later];
+            // How the folder comes over and where it goes sit under it, on
+            // the page's edge, so a long path is never cut short.
+            let mut controls =
+                Row::new()
+                    .with_align_items(taffy::AlignItems::Center)
+                    .push(Box::new(
+                        ToggleGroup::new(
+                            vec![Segment::new("Copy"), Segment::new("Later")],
+                            usize::from(f.mode != ChoiceMode::Copy),
+                        )
+                        .with_id(format!("import.continued.{index}.mode"))
+                        .control_size(ControlSize::Small)
+                        .on_change(move |chosen| {
+                            if idle && let Some(mode) = modes.get(chosen) {
+                                sink.borrow_mut()
+                                    .push(ImportCommand::ContinuedMode(index, *mode));
+                            }
+                        }),
+                    ));
             if can_review && f.mode == ChoiceMode::Copy {
-                row = self.continued_review_controls(row, index);
+                let enabled = self.identity_ready && idle;
+                controls = controls
+                    .push(Box::new(
+                        self.button(
+                            &format!("import.continued.{index}.review"),
+                            "Review destination",
+                            ImportCommand::ResolveContinued(index),
+                        )
+                        .role(ButtonRole::Plain)
+                        .control_size(ControlSize::Small)
+                        .with_enabled(enabled),
+                    ))
+                    .push(Box::new(
+                        self.button(
+                            &format!("import.continued.{index}.destination"),
+                            "Choose another…",
+                            ImportCommand::PickContinuedDestination(index),
+                        )
+                        .role(ButtonRole::Plain)
+                        .control_size(ControlSize::Small)
+                        .with_enabled(enabled),
+                    ));
             }
-            folders = folders.push(Box::new(row));
+            items.push(Box::new(
+                page::related()
+                    .push(Box::new(
+                        ListRow::new(format!("import.continued.{index}.paths"), source)
+                            .icon(Icon::Folder)
+                            .secondary(secondary),
+                    ))
+                    .push(Box::new(controls)),
+            ));
         }
-        if !c.folders.is_empty() {
-            body = body.push(Box::new(folders));
-        }
-        // The card's two closing commands share one action row.
-        body = body.push(Box::new(
-            Row::new()
-                .push(Box::new(
-                    self.button(
-                        "import.continued.start",
-                        "Copy reviewed folders",
-                        ImportCommand::StartBatch,
-                    )
-                    .primary()
-                    .with_enabled(self.can_start_continued_batch()),
-                ))
-                .push(Box::new(
-                    self.button(
-                        "import.continued.later",
-                        "Decide later for all",
-                        ImportCommand::LaterAll,
-                    )
-                    .with_enabled(
-                        self.worker.is_none()
-                            && self.review_request.is_none()
-                            && self.gate_request.is_none(),
-                    ),
-                )),
-        ));
-        Card::titled("Continue your Desktop setup", Box::new(body))
+        Section::new(items).with_header(SectionHeader::heading("From your Desktop setup"))
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let header = stack()
-            .with_gap(RELATED)
-            .push(Box::new(
-                Text::new("Add folders to Tilo")
-                    .with_role(TextRole::Title)
-                    .with_heading_level(1),
-            ))
-            .push(Box::new(Text::new(
-                "Choose a folder and where to copy it. Tilo checks each copied file and keeps your originals. Folder sync is not available yet.",
-            ).dimmed()));
-        // Each group of the page — the unavailable notice, the saved Desktop
-        // choices, the imports under their heading, the copy form — sits a
-        // `GROUP` after the previous one; cards inside a group keep the
-        // sibling step.
-        let mut body = page(header);
+        let mut body = page::body("Add folders to Tilo");
         if let Err(error) = durable_copy_available() {
-            body = body.push(Box::new(Card::titled(
-                "Folder copying unavailable",
-                Box::new(Text::new(&error).with_live(Politeness::Assertive)),
-            )));
+            body = body.push(Box::new(
+                Section::new(vec![Box::new(
+                    Text::new(&error).with_live(Politeness::Assertive),
+                )])
+                .with_header(SectionHeader::heading("Folders can't be copied right now")),
+            ));
         }
         if let Some(c) = &self.continuation {
             body = body.push(Box::new(self.continuation_card(c)));
         }
-        if self.operations.iter().enumerate().any(|(index, op)| {
-            op.state() != OperationState::AwaitingReview || self.continued_index(index).is_none()
-        }) {
-            let mut imports = stack().push(Box::new(
-                Text::new("Imports")
-                    .with_role(TextRole::Heading)
-                    .with_heading_level(2),
+        let copies: Vec<Box<dyn Widget>> = self
+            .operations
+            .iter()
+            .enumerate()
+            .filter(|(index, op)| {
+                op.state() != OperationState::AwaitingReview
+                    || self.continued_index(*index).is_none()
+            })
+            .map(|(index, operation)| {
+                Box::new(self.operation_card(index, operation)) as Box<dyn Widget>
+            })
+            .collect();
+        if !copies.is_empty() {
+            body = body.push(Box::new(
+                Section::new(copies).with_header(SectionHeader::heading("Copies")),
             ));
-            for (index, operation) in self.operations.iter().enumerate() {
-                if operation.state() == OperationState::AwaitingReview
-                    && self.continued_index(index).is_some()
-                {
-                    continue;
-                }
-                imports = imports.push(Box::new(self.operation_card(index, operation)));
-            }
-            body = body.push(Box::new(imports));
+        }
+        if self.continuation.is_some() {
+            body = body.push(Box::new(self.journey_choices()));
         }
         body = body.push(Box::new(self.selection_card()));
-        let content = Scrollable::new_vertical()
-            .fill_parent_height()
-            .always_visible()
-            .with_content_gutter(SCROLLBAR_GUTTER)
-            .with_child(Box::new(body));
-        let status = Card::new(Box::new(Text::new(&self.status).with_live(
-            if self.status_is_error {
-                Politeness::Assertive
-            } else {
-                Politeness::Polite
-            },
-        )));
-        Box::new(
-            Container::new().filling().with_child(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
-                    .with_vertical_padding(PAGE_GUTTER)
-                    .with_gap(SIBLING)
-                    .push(Box::new(content))
-                    .push(Box::new(status)),
-            )),
-        )
+        // A copy's own outcome already stands on its row; the notice is for
+        // problems the page shows nowhere else.
+        let on_a_row = self.operations.iter().any(|operation| {
+            state_summary(operation.state()) == self.status
+                || operation.failure() == Some(self.status.as_str())
+        });
+        let notice = if on_a_row {
+            None
+        } else {
+            page::notice(&self.status, self.status_is_error)
+        };
+        let mut frame = Frame::new(body).notice(notice);
+        if self.continuation.is_some() {
+            frame = frame.actions(
+                Row::new()
+                    .push(Box::new(
+                        self.button(
+                            "import.continued.later",
+                            "Decide later for all",
+                            ImportCommand::LaterAll,
+                        )
+                        .with_enabled(self.continuation_idle()),
+                    ))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        self.button(
+                            "import.continued.start",
+                            "Copy folders",
+                            ImportCommand::StartBatch,
+                        )
+                        .role(ButtonRole::Primary)
+                        .with_enabled(self.can_start_continued_batch()),
+                    )),
+            );
+        }
+        frame.build()
     }
 }
 
-fn operation_text(operation: &OperationRecord) -> (String, String) {
-    let source = operation.source().map_or_else(
-        |error| format!("unavailable ({error})"),
-        |path| path.display().to_string(),
-    );
-    let destination = operation.destination().map_or_else(
-        |error| format!("unavailable ({error})"),
-        |path| path.display().to_string(),
-    );
-    let mut summary = format!(
-        "{source} → {destination}\n{}\nCopied and checked: {} across {} file(s)",
-        state_summary(operation.state()),
-        ui::format::bytes_si(operation.verified_bytes()),
-        operation.verified_file_count()
-    );
-    if operation.state() == OperationState::Running
-        && let Ok(Some(path)) = operation.current_relative_path()
-        && !path.as_os_str().is_empty()
-    {
-        let _ = write!(summary, "\nCurrent: {}", path.display());
-    }
-    let issues = operation.issues().unwrap_or_default();
-    if operation.issue_count() == 1 {
-        summary.push_str("\n1 issue needs attention.");
-    } else if operation.issue_count() > 0 {
-        let _ = write!(
-            summary,
-            "\n{} issues need attention.",
-            operation.issue_count()
-        );
-    }
-    if !operation.metadata_limitations().is_empty() {
-        summary.push_str("\nSome file properties may not carry over. See Details.");
-    }
+/// One issue a copy found: the item and why it needs attention.
+fn issue_row(path: &Path, reason: &str) -> ListRow {
+    let shown = if path.as_os_str().is_empty() {
+        "The folder itself".to_string()
+    } else {
+        path.display().to_string()
+    };
+    ListRow::new(format!("import.issue.{}", path.display()), shown)
+        .icon(Icon::TriangleAlert)
+        .secondary(reason.to_string())
+}
 
-    let mut details = String::new();
+/// "1 item", "3 items".
+fn items_phrase(count: u64) -> String {
+    if count == 1 {
+        "1 item".to_string()
+    } else {
+        format!("{count} items")
+    }
+}
+
+thread_local! {
+    /// A screenshot fixture runs real copies in a disposable directory; its
+    /// pages show that directory as the home folder it stands for.
+    static SHOT_PATH_ALIAS: std::cell::RefCell<Option<(PathBuf, PathBuf)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A path as the page shows it.
+fn shown_path(path: &Path) -> String {
+    SHOT_PATH_ALIAS.with(|alias| {
+        alias
+            .borrow()
+            .as_ref()
+            .and_then(|(from, to)| path.strip_prefix(from).ok().map(|rest| to.join(rest)))
+            .unwrap_or_else(|| path.to_path_buf())
+            .display()
+            .to_string()
+    })
+}
+
+/// A copy's issues and what else it reports, before a page of them loads.
+fn operation_details(operation: &OperationRecord) -> (Vec<(PathBuf, String)>, Vec<String>) {
+    let issues = operation.issues().unwrap_or_default();
+    let mut notes = operation.metadata_limitations().to_vec();
     if let Some(failure) = operation.failure() {
-        let _ = write!(details, "Could not continue: {failure}");
+        notes.push(format!("The copy could not continue: {failure}"));
     }
-    for (path, reason) in issues {
-        let shown = if path.as_os_str().is_empty() {
-            "folder".to_string()
-        } else {
-            path.display().to_string()
-        };
-        let prefix = if details.is_empty() { "" } else { "\n" };
-        let _ = write!(details, "{prefix}Needs attention: {shown} — {reason}");
-    }
-    for limitation in operation.metadata_limitations() {
-        let prefix = if details.is_empty() { "" } else { "\n" };
-        let _ = write!(details, "{prefix}File properties: {limitation}");
-    }
-    (summary, details)
+    (issues, notes)
 }
 
 fn operation_state_label(state: OperationState) -> &'static str {
@@ -2535,9 +2701,9 @@ const fn choice_mode_key(mode: ChoiceMode) -> &'static str {
 
 fn state_summary(state: OperationState) -> &'static str {
     match state {
-        OperationState::AwaitingReview => "Review required before any copy starts.",
+        OperationState::AwaitingReview => "Waiting for your review before anything is copied.",
         OperationState::Ready => "Reviewed and ready to start.",
-        OperationState::Running => "Copying and checking files.",
+        OperationState::Running => "Copying and checking files",
         OperationState::Interrupted => {
             "The copy was interrupted. Check the folders, then continue when ready."
         }
@@ -2553,15 +2719,13 @@ impl Widget for ImportApp {
         self.poll_background();
         self.drain_commands();
         self.answer_job();
-        if let Some(composed) = &mut self.composed {
-            composed.sync(state, path);
-        }
+        self.composed.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.poll_background() || self.drain_commands();
         self.answer_job();
-        if let Some(composed) = &mut self.composed {
+        if let Some(composed) = self.composed.element_mut() {
             changed |= composed.update(state, path);
         }
         changed
@@ -2573,94 +2737,23 @@ impl Widget for ImportApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let composition = self.build_composition();
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size::from_percent(1.0, 1.0),
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child) = children.first()
-        {
-            composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-        if let Some(composed) = &mut self.composed {
-            composed.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&child) = children.first()
-        {
-            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|child| child.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "ImportApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -2673,14 +2766,6 @@ impl Widget for ImportApp {
             || self.pending_prepare_invocation.is_some()
             || !self.pending_saves.is_empty()
             || self.detail_request.is_some()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|child| child.take_structure_dirty())
     }
 }
 
@@ -2722,7 +2807,7 @@ impl ImportApp {
                         .get_or_insert(pending.destination_parent);
                     self.status = format!("Folder review could not be saved: {message}");
                     self.status_is_error = true;
-                    self.structure_dirty = true;
+                    self.composed.invalidate();
                     JobOutcome::Failed {
                         error: tilo_actions::ActionFailure {
                             code: "imager.review_save_failed".into(),
@@ -2798,7 +2883,7 @@ impl ImportApp {
             if let Some(Err(message)) = &save_result {
                 self.status = format!("Folder review could not be saved: {message}");
                 self.status_is_error = true;
-                self.structure_dirty = true;
+                self.composed.invalidate();
             }
             let update = if pending.cancelled {
                 JobOutcome::Cancelled {
@@ -3060,19 +3145,22 @@ pub const SCENARIOS: &[&str] = &[
 ];
 
 impl ResourceSurface<Imager, ImportEffect> for ImportApp {
-    fn present(&mut self, _state: &Rc<ImagerState>) {}
+    fn present(&mut self, _state: &Rc<Imager>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
         if cx.mode().is_live() && self.opens_when_live {
             self.open_live();
         }
+        self.actions = Some(cx.actions());
     }
 
     /// Pose the scenario's imports from real worker runs over disposable
     /// fixture folders; nothing of this computer's own imports is read.
     fn stage(&mut self, scenario: Option<&str>) {
         if let Some(scenario) = scenario.filter(|name| SCENARIOS.contains(name)) {
+            let actions = self.actions.take();
             *self = Self::for_shot(scenario);
+            self.actions = actions;
         }
     }
 
@@ -3128,6 +3216,8 @@ mod tests {
 
     use super::import_actions::IMPORT_ROW_ID;
     use super::*;
+
+    include!("journey_import_tests.rs");
 
     fn fixture() -> (tempfile::TempDir, ImportApp, PathBuf, PathBuf) {
         let temp = super::disposable_fixture_dir().unwrap();
@@ -3570,7 +3660,7 @@ mod tests {
                 pages.detail_pages[&0]
                     .issues
                     .iter()
-                    .any(|(p, _)| p == Path::new("Shortcut 39"))
+                    .any(|(p, _)| p == Path::new(SHOT_LINKS[39]))
             );
 
             let complete = ImportApp::for_shot("import-complete");
@@ -4305,11 +4395,11 @@ mod tests {
             let observed = wait_for_public_issue_count(&mut app, 8);
             let issues = observed["operations"][0]["issues"].as_array().unwrap();
             assert_eq!(issues.len(), 8);
-            assert_eq!(issues[0]["path"], "Shortcut 32");
+            assert_eq!(issues[0]["path"], SHOT_LINKS[32]);
             assert!(issues.iter().all(|issue| {
                 issue["message"]
                     .as_str()
-                    .is_some_and(|message| message.contains("symbolic link"))
+                    .is_some_and(|message| message.contains("link"))
             }));
             assert_eq!(observed["operations"][0]["issue_count"], 40);
             assert_eq!(observed["operations"][0]["details_loading"], false);
@@ -4748,20 +4838,25 @@ mod tests {
         assert!(!destination_parent.join("source").exists());
         app.poll_background();
         assert!(app.cancel_active());
+        let ownership_released = super::super::migration_store::test_support::ownership_release(
+            app.store.as_deref().unwrap(),
+        );
         drop(app);
         assert!(MigrationStore::open_at(&root).is_err());
+        assert_eq!(
+            ownership_released.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty),
+            "the held checkpoint still owns the store"
+        );
         release
             .send(())
             .expect("the start checkpoint was still held when the UI calls returned");
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            if let Ok(store) = MigrationStore::open_at(&root) {
-                assert_eq!(store.load().unwrap()[0].state(), OperationState::Cancelled);
-                break;
-            }
-            assert!(ui::time::now() < deadline);
-            std::thread::yield_now();
-        }
+        tilo_test_env::recv(
+            "the cancelled copy store's ownership release",
+            &ownership_released,
+        );
+        let store = MigrationStore::open_at(&root).unwrap();
+        assert_eq!(store.load().unwrap()[0].state(), OperationState::Cancelled);
         assert!(!destination_parent.join("source").exists());
     }
 

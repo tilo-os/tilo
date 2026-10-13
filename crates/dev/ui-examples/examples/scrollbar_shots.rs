@@ -74,7 +74,7 @@ fn long_list(both: bool) -> Box<dyn Widget> {
 
 fn cursor_at(p: Point) -> winit::event::WindowEvent {
     winit::event::WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(p.x, p.y),
     }
 }
@@ -152,7 +152,7 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool) {
     scroll.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());
 }
 

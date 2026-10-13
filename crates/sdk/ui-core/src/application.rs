@@ -84,6 +84,7 @@ pub struct HostContext {
     views: Rc<InstanceViewStore>,
     record: RecordCheckout,
     reservation: Option<RecordReservation>,
+    initialization: Option<crate::collaboration::native_initial::RecordInitialization>,
     permissions: Rc<RefCell<PermissionContext>>,
     author: UserId,
     action_context: tilo_actions::ActionContext,
@@ -93,6 +94,7 @@ pub struct HostContext {
     construction: Rc<()>,
     lifetime_id: uuid::Uuid,
     queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
+    search_requests: Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
     control_domain: crate::ControlDomain,
     closing: Rc<Cell<bool>>,
     services: crate::host::HostServices,
@@ -554,6 +556,12 @@ impl HostContext {
                 (checkout.clone(), None)
             }
         };
+        let initialization = crate::collaboration::native_initial::take_initialization(
+            &package,
+            views.workspace_id(),
+            &record,
+        )
+        .map_err(|error| LaunchError::Record(RecordOpenError::Initialization(error)))?;
         Ok(Self {
             app_id: package,
             instance_id,
@@ -562,6 +570,7 @@ impl HostContext {
             views,
             record,
             reservation,
+            initialization,
             permissions,
             author,
             action_context,
@@ -570,6 +579,7 @@ impl HostContext {
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
+            search_requests: Rc::default(),
             control_domain: crate::control_custody::ControlDomain::new(),
             closing: Rc::new(Cell::new(false)),
             services: crate::host::current(),
@@ -605,6 +615,27 @@ impl HostContext {
         // The window's code finds it wherever it runs: an action applying,
         // an action's arguments being built.
         tilo_resource::content::register(&self.wake_scope.handle(), store.clone());
+        // The app's surface is content too: whoever decides its changes
+        // reads it by the hash its ops name.
+        if let Some(bytes) = crate::app_surface::bytes_of(&self.app_id)
+            && let Err(error) = store.put(bytes)
+        {
+            tracing::warn!(%error, "the app's surface could not be kept");
+        }
+        // The large parts of the actions this window records, and of those
+        // it replays, live here too.
+        let keep = store.clone();
+        let read = store.clone();
+        tilo_actions::keep_content_in(
+            move |content: tilo_actions::ContentParts| {
+                for (_, bytes) in content {
+                    if let Err(error) = keep.put(&bytes) {
+                        tracing::warn!(%error, "an action's content could not be kept");
+                    }
+                }
+            },
+            move |hash| read.read(hash),
+        );
         self.content = Some(store);
     }
     /// The content store the host lent, if any.
@@ -687,13 +718,6 @@ impl HostContext {
             ));
         self.control_domain.clone()
     }
-    /// Establish presentation scope before constructing a nested component.
-    pub fn inherit_control_custody(
-        &self,
-        parent: &crate::ControlDomain,
-    ) -> Result<(), crate::control_custody::CustodyError> {
-        self.control_domain().attach_to(parent)
-    }
     pub fn record(&self) -> &RecordCheckout {
         &self.record
     }
@@ -775,6 +799,20 @@ impl HostContext {
     pub fn person_records(&self) -> Option<&crate::record::person::PersonRecords> {
         self.person.as_ref()
     }
+    /// Bring the record up to the storage version its app reads, before it
+    /// is read: `migrate` makes at most one deterministic housekeeping change
+    /// (two devices migrating the same document make the same one) and
+    /// answers whether it changed anything.
+    /// # Errors
+    /// The record is not open here, or the migration failed.
+    pub fn migrate_record(
+        &self,
+        migrate: impl FnOnce(&mut AutoCommit) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        self.records
+            .with(&self.record.id, migrate)
+            .ok_or_else(|| "the record is not open".to_owned())?
+    }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
     /// A reserved or missing record cannot be read.
@@ -819,10 +857,28 @@ impl HostContext {
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), RecordOpenError> {
+        if let Some(initialization) = self.initialization.as_ref() {
+            self.records.initialize_admitted_record(
+                &self.record,
+                initialization,
+                initialize,
+                seed,
+            )?;
+            self.initialization = None;
+            return Ok(());
+        }
         let reservation = self.reservation.as_mut().ok_or(RecordOpenError::Busy)?;
         reservation.initialize_seeded(initialize, seed)?;
         self.reservation = None;
         Ok(())
+    }
+    /// The host-derived original creation scope, absent on every ordinary restore.
+    pub fn creation_workspace(
+        &self,
+    ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
+        self.initialization
+            .as_ref()
+            .and_then(|initialization| initialization.workspace())
     }
     pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
         crate::bound_dispatch::CallbackBinding {
@@ -831,6 +887,7 @@ impl HostContext {
             registry_owner: Rc::downgrade(&self.construction),
             lifetime_id: self.lifetime_id,
             queued_controls: self.queued_controls.clone(),
+            search_requests: self.search_requests.clone(),
             control_domain: self.control_domain.downgrade(),
             instance_id: self.instance_id,
             app_id: self.app_id.clone(),
@@ -892,18 +949,22 @@ impl ApplicationDefinition {
     /// The launch target of an instance with no saved record: a new record
     /// of its own, or the room's record (created on first use) for an app
     /// that [keeps one](Self::keeps_room_record).
-    pub fn unsaved_target(&self, records: &RecordStore) -> LaunchTarget {
+    ///
+    /// # Errors
+    /// Preserves an existing record's ownership, identity or storage failure.
+    /// Only a missing primary record permits a new reservation.
+    pub fn unsaved_target(&self, records: &RecordStore) -> Result<LaunchTarget, RecordOpenError> {
         if !self.keeps_room_record() {
-            return LaunchTarget::New;
+            return Ok(LaunchTarget::New);
         }
         let checkout = RecordCheckout::package_primary(self.record_kind.clone());
-        if records.try_open_record(&checkout).is_ok() {
-            LaunchTarget::Record {
+        match records.try_open_record(&checkout) {
+            Ok(_) => Ok(LaunchTarget::Record {
                 checkout,
                 reveal: None,
-            }
-        } else {
-            LaunchTarget::PrimaryNew
+            }),
+            Err(RecordOpenError::MissingRecord) => Ok(LaunchTarget::PrimaryNew),
+            Err(error) => Err(error),
         }
     }
 
@@ -1077,6 +1138,7 @@ impl Default for ComponentBehaviour {
 
 /// Real app content and its lifetime; hosts cannot extract an unbound root.
 pub struct AppComponent {
+    host_owner_wakes: Option<crate::owner_wake::OwnerWakeRegistration>,
     pub(crate) behaviour: ComponentBehaviour,
     pub(crate) history: Option<crate::history_mode::HistoryRegistration>,
     context: HostContext,
@@ -1217,21 +1279,6 @@ impl AppComponent {
         self.history = Some(HistoryRegistration::new(definition, sources)?);
         Ok(())
     }
-    /// Install an explicit multi-owner bundle after the factory has established
-    /// its owners. The destination runner validates the complete settled tree.
-    /// # Errors
-    /// Refuses invalid registrations or a bundle belonging to another application.
-    pub fn register_history(
-        &mut self,
-        registration: crate::history_mode::HistoryRegistration,
-    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        registration.validate()?;
-        if registration.definition.app_id != self.context.app_id {
-            return Err(crate::history_mode::HistoryRegistrationError::ForeignSource);
-        }
-        self.history = Some(registration);
-        Ok(())
-    }
 
     /// Preserve every recovery owner while a runner still has custody of this component.
     pub(crate) fn setup_error(&mut self, source: LaunchError) -> LaunchError {
@@ -1280,10 +1327,16 @@ impl AppComponent {
 
     /// Sample and deliver only after the caller has released its document loan.
     /// The same checked callback lifetime owns both the sample and the hook.
-    pub(crate) fn project_record_save_status(&mut self) {
+    /// Returns whether the delivered status changed.
+    pub(crate) fn project_record_save_status(&mut self) -> bool {
         let captured = self.callback_binding();
         let sampled = self
             .with_live_component(&captured, |binding, root, _registry| {
+                if root.take_save_retry()
+                    && let Err(error) = binding.records.try_flush_record(&binding.checkout.id)
+                {
+                    tracing::warn!(%error, "retrying a failed record save");
+                }
                 let status = binding.records.save_status(&binding.checkout.id).ok()?;
                 root.record_save_status(status.clone());
                 Some(status)
@@ -1291,7 +1344,7 @@ impl AppComponent {
             .ok()
             .flatten();
         let Some(status) = sampled else {
-            return;
+            return false;
         };
         let changed = self
             .record_save
@@ -1299,11 +1352,14 @@ impl AppComponent {
             .is_some_and(|(previous, _)| *previous != status);
         self.record_save = Some((status, crate::time::now()));
         if changed {
-            // The root synced before it was handed the new state; a frame of
-            // its own, with a sync of its own, shows it.
+            // The caller syncs the root again with the new state; a frame
+            // shows it. An `App` asks for that frame through
+            // `take_save_status_presentation`; a host that does not ask
+            // presents it as a structure change.
             self.save_status_changed = true;
             self.context.wake_handle().wake();
         }
+        changed
     }
 
     /// When the window must sync again without input: shortly after the
@@ -1323,6 +1379,23 @@ impl AppComponent {
     /// so the window presents the new state instead of keeping the old one.
     pub(crate) fn take_save_status_changed(&mut self) -> bool {
         std::mem::take(&mut self.save_status_changed)
+    }
+
+    /// The durability last delivered, as sampled.
+    #[cfg(test)]
+    pub(crate) fn sampled_record_save(&self) -> Option<&crate::record::RecordSaveStatus> {
+        self.record_save.as_ref().map(|(status, _)| status)
+    }
+
+    /// Move the last durability sample back past its resample interval, so a
+    /// test reaches the moment its deadline comes due without waiting for it.
+    #[cfg(test)]
+    pub(crate) fn age_record_save_sample(&mut self) {
+        if let Some((_, sampled)) = &mut self.record_save {
+            *sampled = sampled
+                .checked_sub(SAVING_RESAMPLE * 2)
+                .expect("the monotonic clock started before the sample's resample interval");
+        }
     }
 
     pub fn new(
@@ -1365,6 +1438,7 @@ impl AppComponent {
             registry_owner,
             record_save: None,
             save_status_changed: false,
+            host_owner_wakes: None,
         }
     }
 
@@ -1433,6 +1507,35 @@ impl AppComponent {
             .bind(sink)
             .map_err(|e| LaunchError::Operation(e.to_string()))
     }
+    /// Mount with exact-owner queue intake while retaining the original host sink.
+    /// Registration owns no application callback and its sink retains only weak metadata.
+    /// # Errors
+    /// Refuses unprepared, already registered, stale or closed components.
+    pub fn mount_with_owner_queue(
+        &mut self,
+        queue: &crate::owner_wake::OwnerWakeQueue,
+        sink: impl Fn(WakeEvent) + Send + Sync + 'static,
+    ) -> Result<(), LaunchError> {
+        if !self.prepared || self.host_owner_wakes.is_some() {
+            return Err(LaunchError::BindingMismatch);
+        }
+        let binding = self.callback_binding();
+        self.with_live_component(&binding, |_, _, _| ())
+            .map_err(|error| LaunchError::Operation(format!("{error:?}")))?;
+        let (registration, intake) = queue
+            .register(binding)
+            .map_err(|error| LaunchError::Operation(format!("{error:?}")))?;
+        self.host_owner_wakes = Some(registration);
+        let result = self.mount(move |event| {
+            intake.enqueue(event.clone());
+            sink(event);
+        });
+        if result.is_err() {
+            drop(self.host_owner_wakes.take());
+        }
+        result
+    }
+
     /// # Errors
     /// Rejects closed components and invalid widget geometry.
     pub fn capture_local_view(&self) -> Result<View, ThawError> {
@@ -1585,6 +1688,7 @@ impl AppComponent {
     /// Finalization after a successful host checkpoint. No second fallible
     /// write is introduced after the host has committed to destroying the tree.
     pub(crate) fn finish_admitted_close(&mut self) {
+        drop(self.host_owner_wakes.take());
         self.context.retire_semantic_mount();
         if self.close_report.is_some() {
             return;
@@ -1631,6 +1735,7 @@ impl AppComponent {
         CloseComponentOnExit(self).0.close_owned()
     }
     fn close_owned(&mut self) -> ComponentCloseReport {
+        drop(self.host_owner_wakes.take());
         self.context.retire_semantic_mount();
         let mut report = ComponentCloseReport {
             recovery: None,
@@ -1710,6 +1815,7 @@ impl AppComponent {
         self.close_report.as_ref()
     }
     fn teardown(&mut self) -> Result<(), String> {
+        drop(self.host_owner_wakes.take());
         self.context.retire_semantic_mount();
         self.context.control_domain.close();
         self.context.closing.set(true);
@@ -1804,17 +1910,25 @@ impl crate::search::SearchProvider for ComponentProvider {
     }
     fn search_page(
         &self,
-        query: &str,
+        query: &crate::search::SearchQuery,
         cursor: Option<&crate::search::SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> crate::search::SearchPage {
         self.invoke(|provider| provider.search_page(query, cursor, work_budget, result_limit))
-            .unwrap_or_else(|| crate::search::SearchPage {
-                results: vec![],
-                next: None,
-                inspected: 0,
-            })
+            .unwrap_or_else(crate::search::SearchPage::empty)
+    }
+    fn poll_page(&self, token: &crate::search::PendingToken) -> crate::search::PagePoll {
+        self.invoke(|provider| provider.poll_page(token))
+            .unwrap_or_else(|| crate::search::PagePoll::Ready(crate::search::SearchPage::empty()))
+    }
+    fn facets(&self) -> Vec<crate::search::Facet> {
+        self.invoke(|provider| provider.facets())
+            .unwrap_or_default()
+    }
+    fn search_scopes(&self) -> Vec<crate::search::ScopeDecl> {
+        self.invoke(|provider| provider.search_scopes())
+            .unwrap_or_default()
     }
     fn resolve_action_resource(
         &self,
@@ -2070,9 +2184,6 @@ mod bound_lifetime_tests {
         }
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Glyph("P")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
     #[allow(clippy::needless_pass_by_value, reason = "component factory contract")]

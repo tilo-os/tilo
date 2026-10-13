@@ -164,7 +164,9 @@ impl Sampler {
         m.disk_read_hist.push(m.disk_read);
         m.disk_write_hist.push(m.disk_write);
 
-        // Rebuild the process table.
+        // Rebuild the process table. sysinfo reads a process's CPU per core;
+        // the table shows its share of the whole machine.
+        let core_count = self.sys.cpus().len().max(1) as f32;
         let mut procs = Vec::with_capacity(self.sys.processes().len());
         for (pid, p) in self.sys.processes() {
             let name = p.name().to_string_lossy().to_string();
@@ -196,7 +198,7 @@ impl Sampler {
                 ppid: p.parent().map(sysinfo::Pid::as_u32),
                 name,
                 user,
-                cpu: p.cpu_usage(),
+                cpu: p.cpu_usage() / core_count,
                 mem_bytes: mem,
                 virt_bytes: p.virtual_memory(),
                 threads,
@@ -234,13 +236,6 @@ impl Sampler {
             .filter(|p| p.start_time() == started_at)
             .and_then(|p| p.kill_with(kind.signal()))
             .unwrap_or(false)
-    }
-
-    /// Send SIGKILL only if `pid` still has the expected generation. Returns
-    /// whether the signal was dispatched. Thin alias over
-    /// [`Self::signal_if_current`] for the hard-stop path.
-    pub fn kill_if_current(&mut self, pid: u32, started_at: u64) -> bool {
-        self.signal_if_current(pid, started_at, StopKind::Kill)
     }
 }
 
@@ -305,10 +300,6 @@ mod tests {
             assert!(
                 !s.signal_if_current(u32::MAX, 0, StopKind::Kill),
                 "no such process to SIGKILL"
-            );
-            assert!(
-                !s.kill_if_current(u32::MAX, 0),
-                "no such process to hard-kill"
             );
         }
     }

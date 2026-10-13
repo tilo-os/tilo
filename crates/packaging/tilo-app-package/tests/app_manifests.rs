@@ -4,12 +4,8 @@
 //! packable, installable, and launchable at all.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -32,6 +28,8 @@ fn repo_root() -> PathBuf {
 }
 
 /// Every apps/ directory that's a Cargo crate, i.e. every app the workspace builds a binary for.
+/// An `apps/<name>-model` crate is a library of an app's data shared with
+/// other crates, not an app of its own.
 fn app_dirs() -> Vec<PathBuf> {
     let apps = repo_root().join("apps");
     let mut out: Vec<PathBuf> = std::fs::read_dir(&apps)
@@ -39,6 +37,10 @@ fn app_dirs() -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.join("Cargo.toml").is_file())
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with("-model"))
+        })
         .collect();
     out.sort();
     assert!(
@@ -159,6 +161,10 @@ fn shipped_apps_declare_presentation_metadata() {
             ),
             ("so.tilo.music", ContinuitySemanticSchema::MediaPositionV1),
             ("so.tilo.chat", ContinuitySemanticSchema::RealtimeSessionV1),
+            (
+                "so.tilo.code-editor",
+                ContinuitySemanticSchema::TextPositionV1,
+            ),
         ]);
 
         for dir in app_dirs() {

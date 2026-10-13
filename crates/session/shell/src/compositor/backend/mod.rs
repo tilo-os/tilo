@@ -401,6 +401,11 @@ pub enum BackendEvent {
     /// previously reported (keyboard unplug, VT pause, or keymap replacement).
     /// The compositor must retire its seat state before accepting new input.
     InputStateReset,
+    /// A discovered typing keyboard's effective source assignment, before its key event.
+    KeyboardConfiguration {
+        scope: String,
+        settings: Box<drm::input_config::KeyboardSettings>,
+    },
     /// A gesture the shell did **not** claim, for forwarding to the
     /// focused client over `zwp_pointer_gestures_v1`.
     Gesture(GestureEvent),
@@ -425,11 +430,14 @@ pub enum BackendEvent {
     InputDeviceRemoved {
         id: String,
     },
-    /// The class of physical input changed: the person typed, moved a
+    /// The class of physical input changed: the person typed, activated a
     /// pointer, touched the screen or used a controller after using
     /// something else. Reported by the source of the event, so emulated
     /// pointer input from a tap still counts as touch.
     InputUsed(ui::InputModality),
+    /// Pointer hover changes precision and shortcut hints, but preserves a
+    /// touch-started on-screen keyboard until deliberate pointer input.
+    PointerMotionUsed,
     /// A convertible's tablet-mode switch changed: `true` when the keyboard
     /// is folded away and the touchscreen is the primary input.
     TabletMode(bool),
@@ -643,6 +651,24 @@ pub trait Backend {
         false
     }
 
+    /// CPU presenters can reuse strip pixels when layout uses whole-pixel pans.
+    fn pixel_aligned_strip_pan(&self) -> bool {
+        false
+    }
+
+    /// The presenter composites strip pans from retained layers
+    /// (`FramePaint::cache`) instead of rasterising every pixel of the strip.
+    fn composites_strip_layers(&self) -> bool {
+        false
+    }
+
+    /// The presenter keeps its target between frames and copies what a
+    /// scroll in an in-process app moved within it
+    /// (`FramePaint::scroll_copies`) before it repaints the damage.
+    fn copies_scrolls(&self) -> bool {
+        false
+    }
+
     /// Submit a frame with optional retained-damage authority. Backends that cannot retain a
     /// previous native target keep the established dense scene path.
     fn submit_frame_with_damage(&mut self, frame: &FramePaint, output: OutputId) {
@@ -764,6 +790,19 @@ pub trait Backend {
         false
     }
 
+    /// What `output`'s primary plane would scan out of a fullscreen client,
+    /// as last learned while presenting one there; `None` when the output
+    /// cannot scan a client out (no planes, rotated, calibrated, HDR) or the
+    /// backend has no planes at all. Fullscreen clients are told through
+    /// their dma-buf feedback ([`crate::compositor::scanout_feedback`]).
+    #[cfg(target_os = "linux")]
+    fn scanout_plane(
+        &self,
+        _output: OutputId,
+    ) -> Option<std::sync::Arc<crate::compositor::scanout_feedback::ScanoutPlane>> {
+        None
+    }
+
     /// The HDR signal an output is being driven with, or `None` for SDR.
     /// Clients learn it through `wp_color_management_output_v1`.
     fn output_hdr(&self, _output: OutputId) -> Option<OutputHdr> {
@@ -790,12 +829,23 @@ pub trait Backend {
     /// arrives, so nothing else would trigger it.
     fn reset_display(&mut self) {}
 
-    /// Re-read the persisted input preferences and apply them.
+    /// Re-read the persisted input, keyboard, accessibility and tablet
+    /// preferences and apply them.
     ///
     /// Default no-op — only the DRM backend owns input devices. Called
-    /// when the Settings app writes a change, so pointer speed and
+    /// when one of those settings sections changes, so pointer speed and
     /// tap-to-click take effect without restarting the session.
     fn reload_input_settings(&mut self) {}
+
+    /// `display`, `display_transaction` or `display_profiles` changed:
+    /// advance the display transaction and re-apply the arrangement, scale
+    /// and modes from the connector state the last hotplug probe found.
+    ///
+    /// Must not force-probe connectors: this runs on the input path, and a
+    /// forced KMS probe of every connector (slow on DP-MST docks) stalls
+    /// pointer and keyboard dispatch. Only a hotplug re-probes. Default
+    /// no-op for backends that own no displays.
+    fn reload_display_settings(&mut self) {}
 
     /// Show `image` as the pointer. Default no-op: a hosted backend's
     /// pointer belongs to the host and a headless one has none.

@@ -2,11 +2,11 @@
 //! file shown (effects of the compiler and the filesystem), and zoom and
 //! arrange the preview (views). None of them changes the workspace document;
 //! an open or a save that does records what it changed through the
-//! workspace's actions ([`crate::resource::TypstAction`]). Live Problems
+//! workspace's verbs ([`crate::resource::Workspace`]). Live Problems
 //! rows and preview pages are published beneath the workspace by the
 //! surface.
 
-use tilo_actions::Resource;
+use ui::tilo_actions::Resource;
 use ui::tilo_resource::{self, Effect};
 
 /// Bound how many live diagnostic / preview-page rows the palette materialises.
@@ -29,7 +29,7 @@ pub enum TypstEffect {
     },
     /// Open Typst file.
     #[effect(job, cancellable, destructive)]
-    Open {
+    OpenFile {
         #[param("Path of the file; omit to choose one")]
         path: Option<String>,
     },
@@ -77,18 +77,6 @@ pub struct TypstResourceCtx<'a> {
     pub page_count: usize,
 }
 
-/// `resource`, a live entity of the surface, as the row it publishes.
-pub fn live_row(resource: Resource) -> ui::framework::LiveRow {
-    let mut row = ui::framework::LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
-    for action in resource.actions {
-        row = row.operation(action);
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
-}
-
 fn truncate_label(text: &str, max_chars: usize) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= max_chars {
@@ -104,12 +92,12 @@ fn diagnostic_resource(index: usize, diag: &crate::compile::Diagnostic) -> Resou
         DiagKind::Error => "Error",
         DiagKind::Warning => "Warning",
     };
-    let loc = match (diag.line, diag.col) {
-        (Some(line), Some(col)) => format!("{line}:{col}"),
-        (Some(line), None) => format!("{line}"),
-        _ => "—".to_owned(),
+    let message = truncate_label(&diag.message, 48);
+    let label = match (diag.line, diag.col) {
+        (Some(line), Some(col)) => format!("{severity} at {line}:{col}: {message}"),
+        (Some(line), None) => format!("{severity} on line {line}: {message}"),
+        _ => format!("{severity}: {message}"),
     };
-    let label = format!("{severity} · {loc} · {}", truncate_label(&diag.message, 48));
     Resource::new(
         format!("typst.diagnostic:{index}"),
         "typst.diagnostic",
@@ -136,7 +124,7 @@ pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<Resource> {
         let mut problems = Resource::new(
             "typst.problems",
             "typst.problems",
-            format!("Problems · {}", ctx.diagnostics.len()),
+            format!("Problems ({})", ctx.diagnostics.len()),
         );
         for (index, diag) in ctx
             .diagnostics
@@ -152,7 +140,7 @@ pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<Resource> {
         let mut pages = Resource::new(
             "typst.preview-pages",
             "typst.preview-pages",
-            format!("Preview pages · {}", ctx.page_count),
+            format!("Preview pages ({})", ctx.page_count),
         );
         for page in 0..ctx.page_count.min(LIVE_EXTRA_RESOURCE_LIMIT) {
             pages = pages.with_child(preview_page_resource(page));
@@ -169,17 +157,17 @@ mod tests {
     #[test]
     fn file_effects_take_a_path_and_keep_job_confirmation_contracts() {
         let specs = TypstEffect::specs();
-        for id in ["open", "save", "export-pdf"] {
+        for id in ["open-file", "save", "export-pdf"] {
             let spec = specs.iter().find(|spec| spec.id == id).unwrap();
             assert_eq!(spec.params()[0].name, "path");
             assert!(matches!(
                 spec.contract.execution,
-                tilo_actions::ExecutionMode::Background { cancellable: true }
+                ui::tilo_actions::ExecutionMode::Background { cancellable: true }
             ));
-            assert_eq!(spec.contract.result, tilo_actions::ResultSpec::Job);
+            assert_eq!(spec.contract.result, ui::tilo_actions::ResultSpec::Job);
             assert!(!matches!(
                 spec.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::None
+                ui::tilo_actions::ConfirmationPolicy::None
             ));
         }
         let save = TypstEffect::decode(
@@ -199,7 +187,7 @@ mod tests {
             let spec = specs.iter().find(|spec| spec.id == id).unwrap();
             assert_eq!(
                 spec.contract.risk,
-                tilo_actions::RiskLevel::None,
+                ui::tilo_actions::RiskLevel::None,
                 "{id} is a view"
             );
         }

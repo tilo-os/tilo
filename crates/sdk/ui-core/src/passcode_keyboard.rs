@@ -163,7 +163,7 @@ impl PasscodeKeyboard {
         let colors = &theme.tokens.colors;
         let ground = crate::chrome::panel_ground(theme);
         let hairline = crate::tokens::colors::Colors::hairline_on(ground, 40);
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         for (key, key_rect) in self.layout(rect, key_height, gap) {
             let lit = matches!(key, PasscodeKey::Shift) && self.shift
                 || matches!(key, PasscodeKey::Symbols) && self.symbols;

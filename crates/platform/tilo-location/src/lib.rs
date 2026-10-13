@@ -2,9 +2,6 @@
     test,
     allow(
         clippy::disallowed_methods,
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -33,7 +30,7 @@ mod macos;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
 
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 
 /// The result of a location request, delivered back to the UI thread over a
 /// channel.
@@ -88,7 +85,7 @@ pub fn system() -> Arc<dyn LocationProvider> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     return Arc::new(web::Geolocation);
     #[allow(unreachable_code, reason = "a target without a backend yet")]
-    Arc::new(Refusing(caps::unsupported(Feature::Locate).reason))
+    Arc::new(Refusing(Unsupported::of(Feature::Locate).reason))
 }
 
 /// A provider that never locates, for hosts that offer none.

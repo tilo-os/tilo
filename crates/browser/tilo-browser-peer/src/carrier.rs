@@ -116,6 +116,19 @@ pub async fn certify_request(
     call(client, "/certify", None, encode(request)?).await
 }
 
+/// Send a member's root-signed approver command (their pending device
+/// requests, or a decision on one).
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or refuses a non-member.
+pub async fn certify_approve(
+    client: &dyn HttpClient,
+    approval: &tilo_relay_protocol::certify::MemberApproval,
+) -> Result<tilo_relay_protocol::certify::ApproverReply, LinkError> {
+    call(client, "/certify/approve", None, encode(approval)?).await
+}
+
 /// Long-poll the answer to a queued request. `Pending` means poll again.
 ///
 /// # Errors
@@ -280,7 +293,7 @@ impl HttpsLink {
         auth::verify_pinned_host_ack(
             &challenge.ack,
             revocations,
-            crate::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &client_nonce,
         )
         .map_err(|error: AuthError| LinkError::Refused(error.to_string()))?;

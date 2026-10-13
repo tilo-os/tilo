@@ -11,7 +11,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-use collab_types::FileRecordId;
+use fs_protocol::FileRecordId;
 use serde::{Deserialize, Serialize};
 
 use super::Namespace;

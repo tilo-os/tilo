@@ -130,7 +130,7 @@ pub struct VaultStore {
 impl VaultStore {
     /// The session's vault under `$XDG_CONFIG_HOME/tilo/network-secrets`.
     pub fn for_session(roaming: RoamingWifiSlot) -> Option<Self> {
-        let dir = xdg_paths::xdg::config_home()?
+        let dir = tilo_paths::xdg::config_home()?
             .join("tilo")
             .join("network-secrets");
         Some(Self::at(dir, Custody::for_session(), roaming))

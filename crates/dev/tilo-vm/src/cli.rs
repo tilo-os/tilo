@@ -16,6 +16,9 @@ pub struct Cli {
     /// Print one JSON object instead of text (errors too: {"error","hint","see"}).
     #[arg(long, global = true)]
     pub json: bool,
+    /// Registered development target; overrides `TILO_VM`, `.tilo-vm` and the default.
+    #[arg(long, global = true)]
+    pub target: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -117,12 +120,22 @@ pub enum Command {
     /// Manage slots: your user, session and layer stack inside a VM.
     #[command(subcommand)]
     Slot(SlotCommand),
+    /// Import an exact same-run layer artifact without invoking Cargo or a builder.
+    #[command(
+        after_help = "Examples:\n  tilo-vm swap-artifact shell --slot review-a --receipt layers/manifest.json --source <commit> --builder-image <immutable-image> --run-id <workflow-api-id> --run-attempt 1 --receipt-sha256 <upstream-manifest-sha256>\n\nSupply expected identities from the authenticated producer job. The daemon retains normal signed cohort validation; artifact failures never fall back to a build."
+    )]
+    SwapArtifact(ArtifactSwap),
+    /// Import a prebuilt local component without building, waking or swapping a slot.
+    #[command(
+        after_help = "Examples:\n  tilo-vm import-layer launcher --archive launcher.tar --archive-sha256 <producer-sha256> --provenance launcher.json --manifest os/components.toml\n\nThe archive hash pins the producer bytes. Local provenance stays non-promotable.\nThe daemon validates and verifies the native layer; apply its returned hash with\n  tilo-vm swap launcher --slot <slot> --from layer:<hash>\nafterwards."
+    )]
+    ImportLayer(LocalLayerImport),
     /// Put a build of a component (or an app) into a slot and restart what it needs.
     #[command(
         after_help = "Examples:\n  tilo-vm swap shell                      # your slot, built in the VM from this worktree\n  tilo-vm swap shell --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap shell --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --slot vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
     )]
     Swap {
-        /// A component from os/components.toml (python3 os/scripts/install-components.py --list), or `app:<dir>` for an app under apps/.
+        /// A component from os/components.toml, `userspace` for its matched session cohort (remote worktree build, one refresh), or `app:<dir>` for an app under apps/.
         component: String,
         /// The slot to swap into (default: the one named after your branch;
         /// `vm` for VM-wide components).
@@ -154,6 +167,9 @@ pub enum Command {
         /// VM's, read over SSH).
         #[arg(long, requires = "direct")]
         cmdline: Option<String>,
+        /// Shell only: record phase CPU timing at each stand-in slot startup.
+        #[arg(long)]
+        frame_cpu_trace: bool,
     },
     /// Keyboard, pointer, touch, pen and gamepad input on a headful slot's own seat (real kernel input path).
     #[command(
@@ -246,6 +262,28 @@ pub enum Command {
         /// Extra cargo features, comma separated.
         #[arg(long, value_delimiter = ',')]
         features: Vec<String>,
+        /// Attested source inventory used to verify the builder inputs.
+        #[arg(long)]
+        source_inventory: Option<PathBuf>,
+        /// Content hashes the target has verified; at most eight.
+        #[arg(long)]
+        cached_layer: Vec<String>,
+        /// Stream bounded raw chunks with a verified footer instead of base64.
+        #[arg(long)]
+        binary: bool,
+    },
+    /// Package one app on the architecture-configured remote builder.
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm app-pack --app so.tilo.notes --source-inventory target/source-inventory.json   # on the architecture-configured builder"
+    )]
+    AppPack {
+        /// App id to package from the attested source inventory.
+        #[arg(long)]
+        app: String,
+        /// Attested source inventory used to verify the builder inputs.
+        #[arg(long)]
+        source_inventory: PathBuf,
     },
     /// Delete generations and layers nothing needs any more, and evict old in-VM build dirs.
     #[command(
@@ -265,6 +303,52 @@ pub enum Command {
         #[arg(long)]
         keep_targets: Option<u32>,
     },
+}
+
+/// The expected identities come from the authenticated upstream job, not the downloaded receipt.
+#[derive(Debug, Args)]
+pub struct ArtifactSwap {
+    /// Session component to activate; apps+runtime requires the complete same-run cohort.
+    pub component: String,
+    /// The slot to update (default: your slot).
+    #[arg(long)]
+    pub slot: Option<String>,
+    /// Downloaded v1 artifact manifest; payload paths are relative to its directory.
+    #[arg(long)]
+    pub receipt: PathBuf,
+    /// Exact producing source commit, independently pinned by the upstream job.
+    #[arg(long)]
+    pub source: String,
+    /// Immutable producing builder image reference, independently pinned upstream.
+    #[arg(long)]
+    pub builder_image: String,
+    /// Producing Forgejo workflow API run ID, not its web run number.
+    #[arg(long)]
+    pub run_id: u64,
+    /// Producing workflow attempt, independently pinned upstream.
+    #[arg(long)]
+    pub run_attempt: u32,
+    /// SHA256 of the exact raw manifest bytes, supplied by the authenticated upstream job.
+    #[arg(long)]
+    pub receipt_sha256: String,
+}
+
+#[derive(Debug, Args)]
+pub struct LocalLayerImport {
+    /// Component declared in the supplied manifest.
+    pub component: String,
+    /// Uncompressed tar produced by the component installer.
+    #[arg(long)]
+    pub archive: PathBuf,
+    /// SHA-256 from the qualified producer, checked before contacting the VM.
+    #[arg(long)]
+    pub archive_sha256: String,
+    /// Genuine local build provenance in the normal tilo-vm protocol format.
+    #[arg(long)]
+    pub provenance: PathBuf,
+    /// The component manifest that laid out this archive.
+    #[arg(long)]
+    pub manifest: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -378,6 +462,7 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
         None | Some(
             Command::Status { .. }
                 | Command::LayerPack { .. }
+                | Command::AppPack { .. }
                 | Command::Doctor
                 | Command::Guide { .. }
                 | Command::Logs { .. }
@@ -654,6 +739,14 @@ pub enum GamepadCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum VmCommand {
+    /// Carry the canonical semantic action operations over the owner's authenticated device route.
+    Actions {
+        /// The registered device (default: the one this worktree uses).
+        #[arg(long = "device")]
+        name: Option<String>,
+        #[command(subcommand)]
+        command: DeviceActionCommand,
+    },
     /// List registered VMs and which one this worktree uses.
     #[command(after_help = "Examples:\n  tilo-vm vm list")]
     List,
@@ -707,8 +800,13 @@ pub enum VmCommand {
         name: Option<String>,
     },
     /// Inspect or persist magic-packet wake for a saved network profile; never suspends or reconnects.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm network-wake --profile <UUID>\n  tilo-vm vm network-wake --profile <UUID> --enabled true\n\nEnabling requires active driver support. Saved and applied settings are\nreported separately; physical wake remains unverified."
+    )]
     NetworkWake {
+        /// The registered VM or device (default: the one this worktree uses).
         name: Option<String>,
+        /// The saved `NetworkManager` connection UUID on that device.
         #[arg(long)]
         profile: String,
         /// Enable magic-packet wake (requires active driver support), or disable it.
@@ -831,6 +929,32 @@ pub enum VmCommand {
     },
 }
 
+/// Transport-only spelling of the existing console semantic operations.
+#[derive(Debug, Subcommand)]
+pub enum DeviceActionCommand {
+    /// List the device's declared actions and typed arguments.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions list\n  tilo-vm vm actions list enroll"
+    )]
+    List {
+        /// Filter declared actions by this query (default: list all actions).
+        query: Option<String>,
+    },
+    /// Invoke a declared action; private arguments come only from stdin.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions invoke device-unlock enroll --args-stdin < private-args.json\n\nRead the action's declared JSON arguments with vm actions list. Private\narguments are read from stdin and never placed in the command line."
+    )]
+    Invoke {
+        /// The provider returned by vm actions list.
+        provider: String,
+        /// The declared action ID returned by vm actions list.
+        id: String,
+        /// Read the action's JSON arguments from stdin, including private fields.
+        #[arg(long, required = true)]
+        args_stdin: bool,
+    },
+}
+
 #[derive(Debug, Args)]
 pub struct AddArgs {
     /// The name to register the device under.
@@ -895,11 +1019,11 @@ pub struct CreateArgs {
     /// libvirt only: virtio-gpu outputs, e.g. 2 for a two-monitor layout.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=16))]
     pub heads: Option<u8>,
-    /// libvirt only: virgl 3D acceleration on the host GPU, so the desktop
+    /// libvirt or QEMU: virgl 3D acceleration on the host GPU, so the desktop
     /// renders on a GPU instead of in software.
     #[arg(long)]
     pub gl: bool,
-    /// libvirt only: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
+    /// libvirt or QEMU: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
     #[arg(long, value_parser = parse_resolution)]
     pub resolution: Option<String>,
     /// Guest CPUs (default: the adapter's).
@@ -908,7 +1032,8 @@ pub struct CreateArgs {
     /// `[user@]host[:port]` when the adapter cannot discover it.
     #[arg(long)]
     pub ssh: Option<String>,
-    /// Host port forwarded to the guest's SSH (libvirt, qemu).
+    /// Host port forwarded to the guest's SSH (libvirt, qemu, whpx).
+    /// Defaults to the first unregistered, available port from 2222.
     #[arg(long)]
     pub ssh_port: Option<u16>,
     /// UTM VM to clone.
@@ -1113,6 +1238,37 @@ pub enum SeatCommand {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shell_swap_accepts_explicit_frame_cpu_recording() {
+        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell", "--frame-cpu-trace"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                frame_cpu_trace: true,
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                frame_cpu_trace: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn target_flag_works_before_and_after_swap() {
+        use clap::Parser as _;
+        for args in [
+            vec!["tilo-vm", "--target", "review", "swap", "shell"],
+            vec!["tilo-vm", "swap", "shell", "--target", "review"],
+        ] {
+            let cli = super::Cli::try_parse_from(args).unwrap();
+            assert_eq!(cli.target.as_deref(), Some("review"));
+        }
+    }
     use clap::CommandFactory;
 
     use super::*;
@@ -1405,7 +1561,7 @@ mod tests {
             .unwrap();
             assert!(cli.json);
             assert!(
-                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None }) if component == "fs" && slot == "vm" && from == "layer:ab")
+                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None, frame_cpu_trace: false }) if component == "fs" && slot == "vm" && from == "layer:ab")
             );
             assert!(Cli::try_parse_from(["tilo-vm", "swap", "vm", "fs"]).is_err());
             let cli =

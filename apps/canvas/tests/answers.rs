@@ -2,10 +2,7 @@
 //! marks it made, the area it selected, and a warning when what it drew
 //! cannot be seen; and a mask that goes with its layer's marks as they move.
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
     clippy::float_cmp,
-    clippy::indexing_slicing,
     clippy::panic,
     reason = "test assertions over exact, hand-written fixtures"
 )]
@@ -19,6 +16,17 @@ use serde_json::{Value, json};
 use ui::prelude::TestApp;
 
 fn call(app: &mut TestApp<App>, action: &str, args: Value) -> Value {
+    let effect = args.as_object().and_then(|args| {
+        <canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(action, args).ok()
+    });
+    if let Some(effect) = effect {
+        return app
+            .effect(&effect)
+            .unwrap_or_else(|error| panic!("{action}: {error}"))
+            .value
+            .unwrap_or(Value::Null);
+    }
+
     app.call(action, args)
         .unwrap_or_else(|error| panic!("{action}: {error}"))
         .unwrap_or(Value::Null)
@@ -26,6 +34,68 @@ fn call(app: &mut TestApp<App>, action: &str, args: Value) -> Value {
 
 fn rect(id: &str, [x, y, width, height]: [f64; 4], fill: &str) -> Value {
     json!({"id": id, "shape": {"kind": "rect", "x": x, "y": y, "width": width, "height": height}, "fill": fill})
+}
+
+#[test]
+fn scoped_palette_counts_all_matching_marks_even_when_none_are_listed() {
+    let mut app = TestApp::<App>::new().unwrap();
+    call(
+        &mut app,
+        "add-layer",
+        json!({"id":"hut", "name":"Ferry hut"}),
+    );
+    call(
+        &mut app,
+        "draw",
+        json!({"layer":"hut", "marks":[
+            rect("wall", [0.0, 0.0, 10.0, 10.0], "#ABCDEF"),
+            {"id":"window", "shape":{"kind":"rect","x":20,"y":0,"width":10,"height":10},
+             "fill":"#abcdef", "stroke":"#ABCDEF", "stroke_width":1},
+            rect("lamp", [40.0, 0.0, 10.0, 10.0], "#ffcc0080")
+        ]}),
+    );
+    call(&mut app, "add-layer", json!({"id":"sea", "name":"Water"}));
+    call(
+        &mut app,
+        "draw",
+        json!({"layer":"sea", "marks":[rect("water", [0.0, 20.0, 60.0, 10.0], "#123456")]}),
+    );
+    let palette = |app: &mut TestApp<App>| {
+        call(
+            app,
+            "inspect",
+            json!({"layer":"hut", "limit":0,"palette":true}),
+        )
+    };
+    let before = palette(&mut app);
+    assert_eq!(before["listed"], 0);
+    assert_eq!(
+        before["palette"],
+        json!([
+            {"colour":"#abcdef","marks":2}, {"colour":"#ffcc0080","marks":1}
+        ])
+    );
+    let region = call(
+        &mut app,
+        "inspect",
+        json!({"layer":"hut", "region":[0,0,10,10],"limit":0,"palette":true}),
+    );
+    assert_eq!(region["palette"], json!([{"colour":"#abcdef","marks":1}]));
+    call(
+        &mut app,
+        "edit-marks",
+        json!({"ids":["wall"],"fill":"#112233"}),
+    );
+    assert_eq!(palette(&mut app)["palette_colours"], 3);
+    call(&mut app, "undo", json!({}));
+    assert_eq!(palette(&mut app)["palette"], before["palette"]);
+    call(&mut app, "redo", json!({}));
+    assert_eq!(palette(&mut app)["palette_colours"], 3);
+    assert!(
+        call(&mut app, "inspect", json!({"limit":0}))
+            .get("palette")
+            .is_none()
+    );
 }
 
 fn bounds(app: &TestApp<App>, id: &str) -> [f64; 4] {

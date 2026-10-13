@@ -13,10 +13,11 @@
 )]
 
 use std::collections::BTreeMap;
+use ui::num::f32_of_f64;
 
 use tilo_wet_media::StrokePoint as WetPoint;
 use tilo_wet_media::brush::Sample;
-use ui::vello::kurbo::{BezPath, Point, Rect};
+use ui::vello::kurbo::{BezPath, Point, Rect, Shape as _};
 
 use crate::model::{Mark, Shape, Style};
 
@@ -40,6 +41,10 @@ pub enum Preset {
     Calligraphy,
     /// Takes paint off its layer.
     Eraser,
+    /// Whole square artwork cells, with no pressure or softened edges.
+    Pixel,
+    /// Clears whole square artwork cells.
+    PixelEraser,
 }
 
 /// The dynamics a stroke may set in its `params`, each `0..=1`.
@@ -63,7 +68,7 @@ pub struct Dynamics {
 
 impl Preset {
     /// Every preset, in the picker's order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Round,
         Self::Pen,
         Self::Pencil,
@@ -72,6 +77,8 @@ impl Preset {
         Self::Charcoal,
         Self::Calligraphy,
         Self::Eraser,
+        Self::Pixel,
+        Self::PixelEraser,
     ];
 
     pub fn name(self) -> &'static str {
@@ -84,6 +91,8 @@ impl Preset {
             Self::Charcoal => "charcoal",
             Self::Calligraphy => "calligraphy",
             Self::Eraser => "eraser",
+            Self::Pixel => "pixel",
+            Self::PixelEraser => "pixel-eraser",
         }
     }
 
@@ -119,7 +128,7 @@ impl Preset {
             Self::Airbrush => (0.08, 0.0, 0.06, 0.0, 0.0),
             Self::Charcoal => (0.6, 0.45, 0.1, 0.0, 0.2),
             Self::Calligraphy => (1.0, 1.0, 0.1, 0.2, 0.2),
-            Self::Eraser => (1.0, 1.0, 0.1, 0.0, 0.0),
+            Self::Eraser | Self::Pixel | Self::PixelEraser => (1.0, 1.0, 0.1, 0.0, 0.0),
         };
         Dynamics {
             flow,
@@ -128,6 +137,14 @@ impl Preset {
             smoothing,
             taper,
         }
+    }
+
+    pub fn pixel(self) -> bool {
+        matches!(self, Self::Pixel | Self::PixelEraser)
+    }
+
+    pub fn erases(self) -> bool {
+        matches!(self, Self::Eraser | Self::PixelEraser)
     }
 
     /// Whether the preset stamps dabs into pixels rather than filling an
@@ -192,6 +209,9 @@ pub fn problem(brush: Option<&str>, params: &BTreeMap<String, f64>, plain: bool)
         ));
     }
     if !plain {
+        if brush.and_then(Preset::parse).is_some_and(Preset::pixel) {
+            return Some("pixel brushes need a plain layer".into());
+        }
         return None;
     }
     for (name, value) in params {
@@ -375,19 +395,20 @@ fn smoothed_run(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
         .iter()
         .map(|point| {
             let (x, y, pressure) = point_of(point);
-            WetPoint::new(narrow(x), narrow(y), narrow(pressure))
+            WetPoint::new(f32_of_f64(x), f32_of_f64(y), f32_of_f64(pressure))
         })
         .collect();
-    let mut points: Vec<(f64, f64, f64)> = tilo_wet_media::brush::smooth(&curve, narrow(spacing))
-        .iter()
-        .map(|sample| {
-            (
-                f64::from(sample.x),
-                f64::from(sample.y),
-                f64::from(sample.pressure),
-            )
-        })
-        .collect();
+    let mut points: Vec<(f64, f64, f64)> =
+        tilo_wet_media::brush::smooth(&curve, f32_of_f64(spacing))
+            .iter()
+            .map(|sample| {
+                (
+                    f64::from(sample.x),
+                    f64::from(sample.y),
+                    f64::from(sample.pressure),
+                )
+            })
+            .collect();
     if let (Some(last), Some(end)) = (points.last_mut(), curve.last()) {
         // The curve ends where the stroke does, not a step short of it.
         *last = (f64::from(end.x), f64::from(end.y), f64::from(end.pressure));
@@ -484,14 +505,6 @@ pub fn kept(points: &[Vec<f64>], tolerance: f64) -> Vec<usize> {
     keep
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "stroke coordinates are bounded artwork units"
-)]
-fn narrow(value: f64) -> f32 {
-    value as f32
-}
-
 /// The stroke as evenly spaced samples `spacing` units apart, after its
 /// smoothing, its corners sharp: each run between them is laid on its own
 /// and ends exactly on its corner. `size` is the brush's.
@@ -502,10 +515,10 @@ pub fn samples(points: &[Vec<f64>], spacing: f64, smoothing: f64, size: f64) -> 
             .iter()
             .map(|point| {
                 let (x, y, pressure) = point_of(point);
-                WetPoint::new(narrow(x), narrow(y), narrow(pressure))
+                WetPoint::new(f32_of_f64(x), f32_of_f64(y), f32_of_f64(pressure))
             })
             .collect();
-        let mut laid = tilo_wet_media::brush::smooth(&run, narrow(spacing));
+        let mut laid = tilo_wet_media::brush::smooth(&run, f32_of_f64(spacing));
         if let (Some(last), Some(end)) = (laid.last().copied(), run.last())
             && (end.x - last.x).hypot(end.y - last.y) > 1e-3
         {
@@ -570,7 +583,7 @@ fn width_of(preset: Preset, p: f64) -> f64 {
         Preset::Round | Preset::Pen => 0.3 + 0.7 * p,
         Preset::Pencil => 0.75 + 0.25 * p,
         Preset::Marker => 0.88 + 0.12 * p,
-        Preset::Airbrush => 1.0,
+        Preset::Airbrush | Preset::Pixel | Preset::PixelEraser => 1.0,
         Preset::Charcoal => 0.6 + 0.4 * p,
         Preset::Calligraphy => 0.5 + 0.5 * p,
         Preset::Eraser => 0.45 + 0.55 * p,
@@ -809,6 +822,9 @@ fn wound_positive(path: BezPath) -> BezPath {
 pub fn silhouette(pieces: &[Piece], style: &Style) -> BezPath {
     let preset = Preset::of(style);
     let dynamics = Dynamics::of(preset, &style.params);
+    if preset.pixel() {
+        return pixel_outline(pieces);
+    }
     let mut path = BezPath::new();
     for (points, size) in pieces {
         let laid = lay(points, *size, preset, &dynamics);
@@ -818,6 +834,52 @@ pub fn silhouette(pieces: &[Piece], style: &Style) -> BezPath {
             wound_positive(outline(&laid.samples, &laid.half))
         };
         path.extend(piece.elements().iter().copied());
+    }
+    path
+}
+
+/// Whole artwork cells along a stroke. Each square is part of one fill,
+/// so revisiting a cell cannot accumulate opacity. The action path bounds
+/// the travel of pixel strokes before this geometry is produced.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "pixel travel is checked before rendering and brush widths are bounded"
+)]
+fn pixel_outline(pieces: &[Piece]) -> BezPath {
+    let mut path = BezPath::new();
+    for (points, size) in pieces {
+        let width = size.round().max(1.0);
+        let offset = (width / 2.0).floor();
+        let mut cells = std::collections::BTreeSet::new();
+        let mut previous = None;
+        for point in points {
+            let (x, y, _) = point_of(point);
+            let cell = (x.floor() as i32, y.floor() as i32);
+            let (from_x, from_y) = previous.unwrap_or(cell);
+            let dx = f64::from(cell.0) - f64::from(from_x);
+            let dy = f64::from(cell.1) - f64::from(from_y);
+            let steps = dx.abs().max(dy.abs()).min(16384.0) as u32;
+            for step in 0..=steps {
+                let t = f64::from(step) / f64::from(steps.max(1));
+                cells.insert((
+                    (f64::from(from_x) + dx * t).round() as i32,
+                    (f64::from(from_y) + dy * t).round() as i32,
+                ));
+            }
+            previous = Some(cell);
+        }
+        for (x, y) in cells {
+            let x = f64::from(x) - offset;
+            let y = f64::from(y) - offset;
+            path.extend(
+                Rect::new(x, y, x + width, y + width)
+                    .to_path(0.1)
+                    .elements()
+                    .iter()
+                    .copied(),
+            );
+        }
     }
     path
 }
@@ -1098,10 +1160,10 @@ pub fn pieces(mark: &Mark) -> Vec<Piece> {
             .iter()
             .map(|point| {
                 let (x, y, pressure) = point_of(point);
-                WetPoint::new(narrow(x), narrow(y), narrow(pressure))
+                WetPoint::new(f32_of_f64(x), f32_of_f64(y), f32_of_f64(pressure))
             })
             .collect(),
-        size: narrow(size),
+        size: f32_of_f64(size),
         paint: tilo_wet_media::Paint {
             colour: tilo_wet_media::Rgb::WHITE,
             alpha: 1.0,

@@ -1,10 +1,9 @@
 //! One private peer representation; storage qualification cannot be copied.
 use super::{
-    AcceptedCheckpoint, Actor, ArtifactKind, AutoCommit, BTreeMap, CachedDocument, CapDecision,
-    CapOverride, ChannelState, DeviceCert, DurableV4, DurableV5, DurableV6, Ed25519PublicKey,
-    ExactAdmissions, GovernedIdentity, NeighbourMsg, Principal, RedemptionReceipt, ResourceRef,
-    RevocationList, Role, Route, Scope, StatePeer, Subject, SystemTime, VecDeque, Verb,
-    VerifiedCertificate, decide_capability, err, now_ns, now_secs, room,
+    AcceptedCheckpoint, AutoCommit, BTreeMap, CachedDocument, ChannelState, DeviceCert, DurableV4,
+    DurableV5, DurableV6, Ed25519PublicKey, ExactAdmissions, GovernedIdentity, NeighbourMsg,
+    RedemptionReceipt, RevocationList, Role, Route, StatePeer, SystemTime, VecDeque,
+    VerifiedCertificate, err, now_ns, room,
 };
 use crate::resources::native::NativeDocument;
 pub(super) mod access;
@@ -38,6 +37,10 @@ pub(super) trait Storage: sealed::Sealed {
         key: &[u8; 32],
     ) -> Option<&'a VerifiedCertificate>;
     fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool;
+    fn exact_admission<'a>(
+        exact: &'a Self::ExactEvidence,
+        key: &crate::admission::AdmissionKey,
+    ) -> Option<&'a [u8; 32]>;
 }
 pub(super) struct LegacyNative;
 pub(super) struct BoundedNative;
@@ -45,7 +48,7 @@ impl sealed::Sealed for LegacyNative {}
 impl sealed::Sealed for BoundedNative {}
 impl Storage for LegacyNative {
     type Room = CachedDocument;
-    type Document = AutoCommit;
+    type Document = CachedDocument;
     type Checkpoint = AcceptedCheckpoint;
     type Retention = ();
     type CertificateRoster = BTreeMap<[u8; 32], VerifiedCertificate>;
@@ -59,6 +62,12 @@ impl Storage for LegacyNative {
     }
     fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool {
         revocations.is_revoked(key)
+    }
+    fn exact_admission<'a>(
+        exact: &'a Self::ExactEvidence,
+        key: &crate::admission::AdmissionKey,
+    ) -> Option<&'a [u8; 32]> {
+        exact.get(key)
     }
 }
 impl Storage for BoundedNative {
@@ -78,18 +87,17 @@ impl Storage for BoundedNative {
     fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool {
         revocations.is_revoked(key)
     }
+    fn exact_admission<'a>(
+        exact: &'a Self::ExactEvidence,
+        key: &crate::admission::AdmissionKey,
+    ) -> Option<&'a [u8; 32]> {
+        exact.as_ref()?.get(key)
+    }
 }
 
 // Historical restore keeps checkpoint bytes lazy. No eager load rejects
 // previously accepted opaque checkpoint bytes.
 pub(super) struct NativeCheckpoint {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "kept for a later decode; only tests read it today"
-        )
-    )]
     pub(super) original: Vec<u8>,
 }
 
@@ -101,7 +109,7 @@ pub(super) struct PeerDocument<S: Storage> {
     pub(super) covered_snapshot: Option<S::Checkpoint>,
     /// Sealed writes this replica admitted but holds no key to open, in
     /// admission order: the durable record of an encrypted document here.
-    /// Bounded reads refuse encrypted documents and leave it empty.
+    /// Both restore paths validate every retained envelope before replay.
     pub(super) sealed: Vec<collab_types::SignedOp>,
 }
 impl Clone for PeerDocument<LegacyNative> {

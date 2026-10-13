@@ -2,10 +2,15 @@ use std::time::Duration;
 
 use publisher::{App, KeyEffect, Publisher};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Replica, TestApp};
-use ui::tilo_actions::{
-    Availability, ConfirmationPolicy, DoorError, PermissionRequirement, RiskLevel,
-};
+use ui::prelude::{Invoke, Replica, TestApp};
+use ui::tilo_resource::Path;
+
+/// Replace the text of one field of the profile, as its input does.
+#[expect(clippy::expect_used, reason = "a path of the profile always encodes")]
+fn edit(field: &Path<Publisher, String>, text: &str) -> Invoke<Publisher> {
+    Invoke::edit(&field.replace(text)).expect("an edit")
+}
+use ui::tilo_actions::{ActionKind, Availability, ConfirmationPolicy, DoorError, RiskLevel};
 
 /// A machine of its own: a home with no key the developer's environment
 /// names, and secrets kept in this test's memory.
@@ -39,18 +44,42 @@ fn home() -> Machine {
 #[test]
 fn the_registry_must_be_https_or_this_machine() {
     let mut profile = Replica::<Publisher>::new();
-    assert!(
+    for address in [
+        "https://apps.example.com",
+        "http://127.0.0.1:8080",
+        "http://127.1.2.3:8080",
+        "http://localhost:8080",
+        "http://[::1]:8080",
+    ] {
+        assert!(registry_client::RegistryClient::validate_url(address).is_ok());
         profile
-            .apply(Publisher::SET_REGISTRY.with("http://apps.example.com".into()))
-            .is_err()
-    );
-    profile
-        .apply(Publisher::SET_REGISTRY.with("http://127.0.0.1:8080".into()))
-        .expect("a local registry");
-    assert_eq!(
-        profile.state().expect("profile").registry,
-        "http://127.0.0.1:8080"
-    );
+            .apply(edit(&Publisher::paths().registry, address))
+            .expect("HTTPS or an actual loopback host");
+        assert_eq!(profile.state().expect("profile").registry, address);
+    }
+    let saved = profile.state().expect("profile").registry;
+    for address in [
+        "http://apps.example.com",
+        "http://localhost.example.com",
+        "http://127.0.0.1.example.com",
+        "http://localhost@apps.example.com",
+        "https://",
+        "not a URL",
+        "file:///tmp/registry",
+    ] {
+        assert!(registry_client::RegistryClient::validate_url(address).is_err());
+        assert!(
+            profile
+                .apply(edit(&Publisher::paths().registry, address))
+                .is_err(),
+            "reject an invalid address at the action door: {address}"
+        );
+        assert_eq!(
+            profile.state().expect("profile").registry,
+            saved,
+            "rejected edits preserve the valid registry"
+        );
+    }
 }
 
 #[test]
@@ -107,7 +136,7 @@ fn the_key_operations_are_published_on_the_profile_as_the_key_stands() {
     let resources = app.harness().resources();
     let profile = resources
         .iter()
-        .find(|resource| resource.kind == "so.tilo.publisher.profile")
+        .find(|resource| resource.kind == "publisher.profile")
         .expect("the profile is published");
     assert_eq!(
         resources
@@ -129,7 +158,7 @@ fn the_key_operations_are_published_on_the_profile_as_the_key_stands() {
     };
     for id in ["create-key", "copy-secret"] {
         let contract = &action(id).contract;
-        assert_eq!(contract.permission, PermissionRequirement::Admin, "{id}");
+        assert_eq!(contract.kind, ActionKind::Outside, "{id}");
         assert_eq!(contract.risk, RiskLevel::Privileged, "{id}");
         assert_eq!(contract.confirmation, ConfirmationPolicy::Confirm, "{id}");
     }
@@ -164,24 +193,36 @@ fn the_key_operations_are_published_on_the_profile_as_the_key_stands() {
 
 #[test]
 fn applying_reports_what_the_registry_answered() {
+    fn notice_detail(node: &ui::headless::InspectionNode) -> Option<&str> {
+        if node.test_id.as_deref() == Some("notice") {
+            return node
+                .semantics
+                .as_ref()
+                .and_then(|node| node.description.as_deref());
+        }
+        node.children.iter().find_map(notice_detail)
+    }
+
     let _home = home();
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.effect_confirmed(&KeyEffect::CreateKey)
         .expect("create the key");
-    app.invoke(Publisher::SET_REGISTRY.with("http://127.0.0.1:9".into()))
+    app.invoke(edit(&Publisher::paths().registry, "http://127.0.0.1:9"))
         .expect("an unreachable registry");
     let nothing = app.effect(&KeyEffect::ApplyForNamespaces);
     assert!(
         matches!(&nothing, Err(DoorError::Failed(message)) if message.contains("name a domain or a forge account")),
         "the job answers its caller: {nothing:?}"
     );
-    app.harness()
-        .expect(
-            &SemanticExpectation::named("notice").name_contains("name a domain or a forge account"),
-        )
-        .expect("an application with nothing to claim says so");
+    let inspection = app.harness().inspection();
+    let detail =
+        notice_detail(&inspection.root).expect("the actual status banner publishes its detail");
+    assert!(
+        detail.contains("name a domain or a forge account"),
+        "the application explains why it failed: {detail}"
+    );
 
-    app.invoke(Publisher::SET_DOMAIN.with("example.com".into()))
+    app.invoke(edit(&Publisher::paths().domain, "example.com"))
         .expect("domain");
     assert!(
         app.effect(&KeyEffect::ApplyForNamespaces).is_err(),
@@ -189,10 +230,8 @@ fn applying_reports_what_the_registry_answered() {
     );
     app.harness()
         .wait_until(Duration::from_secs(10), |driver| {
-            driver.a11y_nodes().iter().any(|(_, node)| {
-                node.label()
-                    .is_some_and(|label| label.contains("127.0.0.1:9"))
-            })
+            notice_detail(&driver.inspection().root)
+                .is_some_and(|detail| detail.contains("127.0.0.1:9"))
         })
         .then_some(())
         .expect("an unreachable registry is named in the notice");
@@ -202,9 +241,9 @@ fn applying_reports_what_the_registry_answered() {
 fn the_claims_are_durable() {
     let _home = home();
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(Publisher::SET_DOMAIN.with("example.com".into()))
+    app.invoke(edit(&Publisher::paths().domain, "example.com"))
         .expect("domain");
-    app.invoke(Publisher::SET_FORGE_ACCOUNT.with("codeberg:ada".into()))
+    app.invoke(edit(&Publisher::paths().forge_account, "codeberg:ada"))
         .expect("forge");
     let app = app.reopen().expect("the app reopens");
     assert_eq!(app.state().domain, "example.com");
@@ -218,6 +257,59 @@ fn a_capture_shows_a_key_without_reading_the_machine_s() {
     app.harness()
         .expect(&SemanticExpectation::named("proof-line").name_contains("tilo-publisher="))
         .expect("the scenario's key is shown");
-    assert_eq!(app.state().domain, "example.com");
+    assert_eq!(app.state().domain, "lovelace.dev");
     assert!(home.key().is_none(), "a capture writes no key");
+}
+
+#[test]
+fn narrow_key_actions_reserve_their_wrapped_rows_before_namespaces() {
+    let mut app =
+        TestApp::<App>::capture_at(Some("key"), (390, 844)).expect("the narrow capture opens");
+    let targets = app.harness().targets();
+    let heading = targets
+        .get("namespaces-heading")
+        .expect("namespace heading bounds");
+    for id in ["copy-proof", "copy-secret", "check-status"] {
+        let button = targets
+            .get(id)
+            .unwrap_or_else(|| panic!("{id} is laid out"));
+        assert!(
+            button.x0 >= 0.0 && button.x1 <= 390.0,
+            "{id} fits: {button:?}"
+        );
+        assert!(
+            button.y1 <= heading.y0,
+            "{id} precedes namespace heading: {button:?}, {heading:?}"
+        );
+    }
+    app.harness()
+        .expect(&SemanticExpectation::named("proof-line").name_contains("tilo-publisher="))
+        .expect("scrolling retains the exact published proof value");
+}
+
+#[test]
+fn history_names_the_field_that_changed() {
+    let _home = home();
+    let mut app = TestApp::<App>::new().expect("the app opens");
+    app.invoke(edit(&Publisher::paths().domain, "example.com"))
+        .expect("domain");
+    app.invoke(edit(&Publisher::paths().contact, "ada@example.com"))
+        .expect("contact");
+    assert!(
+        app.invoke(edit(&Publisher::paths().registry, "not a URL"))
+            .is_err(),
+        "the invariant refuses an address the client would not use"
+    );
+    let catalogue = tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+    let sentences: Vec<String> = app
+        .history()
+        .into_iter()
+        .filter(|entry| entry.what.is_some())
+        .map(|entry| reader.sentence(&entry))
+        .collect();
+    assert_eq!(
+        sentences,
+        ["Changed the domain to claim", "Changed the contact address"]
+    );
 }

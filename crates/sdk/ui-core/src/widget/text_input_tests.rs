@@ -1,8 +1,26 @@
 use super::*;
+use crate::testing::{Dispatch, dispatch};
 use crate::text_edit::SUGGESTION_SETTLE;
 use crate::text_selection::{next_word_boundary, prev_word_boundary};
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
+
+/// The 1× size a role-less field sets its text at.
+fn body_size() -> f32 {
+    crate::tokens::typography::stock().size(TextRole::Body)
+}
+
+#[test]
+fn hovering_and_leaving_a_field_do_not_consume_a_siblings_pointer_movement() {
+    let mut input = TextInput::local();
+    input.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
+    let mut doc = AutoCommit::new();
+    for (x, hovered) in [(100.0, true), (250.0, false)] {
+        let moved = crate::synthetic_input::cursor_moved(x, 20.0);
+        assert!(!drive(&mut input, &mut doc, &moved, Modifiers::default()));
+        assert_eq!(input.is_hovered, hovered);
+    }
+}
 
 #[test]
 fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
@@ -89,23 +107,22 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
     }
 
     // Case `text_baseline_centred_with_caret`.
-    // Pins the text top against `line_height`, *not* `FONT_SIZE` itself —
+    // Pins the text top against `line_height`, *not* `body_size()` itself —
     // the naive computation shifts glyphs ~2-3 px below the caret in a
     // 40 px input.
     {
         let rect_h = 40.0_f32;
-        let line_height = FONT_SIZE * LINE_HEIGHT_RATIO;
+        let line_height = body_size() * LINE_HEIGHT_RATIO;
         let text_y_correct = (rect_h - line_height) / 2.0;
-        let text_y_naive = (rect_h - FONT_SIZE) / 2.0;
+        let text_y_naive = (rect_h - body_size()) / 2.0;
         assert!(text_y_naive > text_y_correct);
-        assert!((text_y_naive - text_y_correct - (line_height - FONT_SIZE) / 2.0).abs() < 0.01);
+        assert!((text_y_naive - text_y_correct - (line_height - body_size()) / 2.0).abs() < 0.01);
     }
 
-    // Case `single_line_band_is_40_at_one_x_and_grows_with_the_scaled_line`.
-    // The single-line band is the shipped 40 px at 1× (a 20 px line has
-    // 10 px of slack a side) and grows to line + `ML_PAD_Y` a side once
-    // the scaled line no longer fits: at 2× text the 40 px line sat edge
-    // to edge in a 40 px band.
+    // Case `single_line_band_is_the_control_height_and_grows_with_the_scaled_line`.
+    // The single-line band is a Regular control (32) at 1×, the height of a
+    // button beside it, and grows to line + `spacing.s1` a side once the
+    // scaled line no longer fits.
     {
         fn band_height(theme: &Theme) -> Dimension {
             let mut ti = TextInput::new(vec![PathSegment::Field("name".into())]);
@@ -115,18 +132,24 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
             let node = ti.build_layout(&mut taffy, theme, &mut node_map);
             taffy.style(node).unwrap().size.height
         }
-        assert_eq!(band_height(&Theme::dark()), Dimension::length(40.0));
-        let scaled_line = f64::from(FONT_SIZE * LINE_HEIGHT_RATIO) * 2.0;
+        let theme = Theme::dark();
         assert_eq!(
-            scaled_line, 40.0,
-            "2× base line fills the shipped band exactly"
+            band_height(&theme),
+            Dimension::length(32.0),
+            "a field is as tall as a Regular button"
+        );
+        let scaled_line = f64::from(body_size() * LINE_HEIGHT_RATIO) * 2.0;
+        let pads = 2.0 * f64::from(theme.tokens.spacing.s1);
+        assert!(
+            scaled_line + pads > 32.0,
+            "fixture: the 2× body line and its pads outgrow the control band"
         );
         #[allow(clippy::cast_possible_truncation, reason = "small test constant")]
-        let expected = (scaled_line + ML_PAD_Y * 2.0) as f32;
+        let expected = (scaled_line + pads).ceil() as f32;
         assert_eq!(
             band_height(&Theme::dark().with_text_scale(2.0)),
             Dimension::length(expected),
-            "2× band = scaled line + 2×ML_PAD_Y"
+            "2× band = scaled line + 2×spacing.s1"
         );
     }
 }
@@ -217,7 +240,7 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
             drive(
                 &mut ti,
                 &mut doc,
-                &named_key_event(NamedKey::ArrowRight),
+                &named_key(NamedKey::ArrowRight),
                 mods(false, false),
             );
         }
@@ -239,7 +262,7 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(false, false),
         );
         assert_eq!(
@@ -250,7 +273,7 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(false, false),
         );
         assert_eq!(ti.cursor_pos(), 0, "visual Right returns to the RTL start");
@@ -259,7 +282,7 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(false, false),
         );
         assert!(ti.cursor_pos() < text.len());
@@ -641,7 +664,7 @@ fn shaped_layout_is_cached_until_display_inputs_or_fonts_change() {
     // requested named family rather than silently reverting to sans.
     {
         let mut tr = crate::font_catalog::fixture_renderer();
-        let fam = crate::text_render::UI_SERIF_FAMILY.to_owned();
+        let fam = crate::tokens::ReadingFace::Literata.family().to_owned();
         assert!(tr.system_families().contains(&fam));
 
         let mut ti = TextInput::local()
@@ -692,12 +715,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
 
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &char_key_event("b"),
-            mods(false, false),
-        ));
+        assert!(drive(&mut ti, &mut doc, &char_key("b"), mods(false, false),));
         assert_eq!(&*changes.borrow(), &["ab"]);
 
         // A non-edit event must not repeat the prior notification even though
@@ -705,7 +723,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(false, false),
         );
         assert_eq!(&*changes.borrow(), &["ab"]);
@@ -735,7 +753,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(false, false),
         );
         assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
@@ -758,6 +776,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(Widget::perform_action(
             &mut first,
             &crate::a11y::Action::SetValue("Lin".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut document),
             &automerge::ROOT,
         ));
@@ -786,6 +805,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("after".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut document),
             &automerge::ROOT,
         ));
@@ -851,7 +871,7 @@ fn unfocused_input_shows_start_and_placeholder() {
         );
     }
 
-    // Case `placeholder_visible_only_when_empty_and_unfocused`.
+    // Case `placeholder_visible_while_empty_focused_or_not`.
     {
         let mut ti = TextInput::local().with_placeholder("Search…");
         assert_eq!(ti.placeholder(), "Search…");
@@ -861,7 +881,16 @@ fn unfocused_input_shows_start_and_placeholder() {
         );
 
         ti.set_focus(true);
-        assert!(!ti.shows_placeholder(), "focused input hides placeholder");
+        assert!(
+            ti.shows_placeholder(),
+            "focusing an empty input keeps the placeholder"
+        );
+
+        ti.set_text("h");
+        assert!(
+            !ti.shows_placeholder(),
+            "the first character replaces the placeholder"
+        );
 
         ti.set_focus(false);
         ti.set_text("hello");
@@ -900,21 +929,21 @@ fn unfocused_input_shows_start_and_placeholder() {
             "placeholder must paint a glyph run when shown",
         );
 
-        let mut hidden = TextInput::local().with_placeholder("Type here");
-        hidden.set_focus(true);
-        hidden.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        let mut scene2 = Scene::new();
+        let mut focused = TextInput::local().with_placeholder("Type here");
+        focused.set_focus(true);
+        focused.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+        let mut scene_focused = Scene::new();
         Widget::draw(
-            &mut hidden,
-            &mut scene2,
+            &mut focused,
+            &mut scene_focused,
             Affine::IDENTITY,
             &mut tr,
             &theme,
             &presence,
         );
         assert!(
-            scene2.encoding().resources.glyph_runs.is_empty(),
-            "focused input must not paint the placeholder",
+            !scene_focused.encoding().resources.glyph_runs.is_empty(),
+            "a focused empty input still paints the placeholder",
         );
     }
 
@@ -984,25 +1013,8 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         ti.set_focus(true); // even if somehow focused, the input is inert
         ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
 
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        let event = char_key_event("x");
-        ti.handle_event(
-            &event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let event = char_key("x");
+        let handled = dispatch(&mut ti, &event);
         assert!(!handled, "disabled input must not consume the keypress");
         assert_eq!(ti.value(), "", "disabled input must not insert text");
         assert!(ti.take_dirty().is_none(), "no edit should be recorded");
@@ -1011,72 +1023,22 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         let mut on = TextInput::local();
         on.set_focus(true);
         on.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        let mut handled = false;
-        on.handle_event(
-            &char_key_event("x"),
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = dispatch(&mut on, &char_key("x"));
         assert!(handled);
         assert_eq!(on.value(), "x");
     }
 
     // Case `disabled_input_ignores_pointer_input`.
     {
-        use winit::dpi::PhysicalPosition;
-        use winit::event::MouseButton;
-
         let mut ti = TextInput::local().disabled(true);
         ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
 
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(20.0, 20.0),
-        };
-        ti.handle_event(
-            &moved,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        ti.handle_event(
-            &press,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let moved = crate::synthetic_input::cursor_moved(20.0, 20.0);
+        let moved = Dispatch::new().send(&mut ti, &moved);
+        let press = crate::synthetic_input::mouse_press();
+        let press = Dispatch::new().send(&mut ti, &press);
+        let handled = moved.handled | press.handled;
+        let focus_target = press.focus_target.or(moved.focus_target);
 
         assert!(!handled, "disabled input must not consume the click");
         assert!(
@@ -1113,68 +1075,15 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
     }
 }
 
-/// `KeyEvent` has a `pub(crate)` platform field so it can't be
-/// struct-literalled from a test; zero it then overwrite fields.
-fn char_key_event(s: &str) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(winit::keyboard::SmolStr::new(s));
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use crate::synthetic_input::char_key;
 
 /// Sends `CursorMoved` first so `last_mouse_pos`/`is_hovered` are set, matching real input order.
 #[cfg(test)]
 fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool {
-    use winit::dpi::PhysicalPosition;
-    let mut handled = false;
-    let mut focus_target = None;
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let node = taffy.leaf_node(Style::default());
-    let moved = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(x, y),
-    };
-    ti.handle_event(
-        &moved,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: crate::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    let press = WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Right,
-    };
-    ti.handle_event(
-        &press,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: crate::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    let mut sender = Dispatch::new().doc(doc);
+    let moved = crate::synthetic_input::cursor_moved(x, y);
+    let press = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+    sender.send(ti, &moved).handled | sender.send(ti, &press).handled
 }
 
 #[test]
@@ -1254,53 +1163,15 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
 
     // Case `left_click_outside_open_menu_dismisses_it`.
     {
-        use winit::dpi::PhysicalPosition;
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
         ti.set_focus(true);
-        let mut doc = AutoCommit::new();
         ti.open_context_menu([10.0, 18.0]);
         assert!(ti.context_menu.is_open());
 
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(280.0, 38.0),
-        };
-        ti.handle_event(
-            &moved,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        ti.handle_event(
-            &press,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let moved = crate::synthetic_input::cursor_moved(280.0, 38.0);
+        let press = crate::synthetic_input::mouse_press();
+        let handled = dispatch(&mut ti, &moved) | dispatch(&mut ti, &press);
         assert!(handled, "click consumed while menu open");
         assert!(
             !ti.context_menu.is_open(),
@@ -1388,6 +1259,7 @@ fn spellcheck_eligibility_follows_field_kind_vocabulary_and_language() {
             TextInputKind::Code,
             TextInputKind::Number,
             TextInputKind::Password,
+            TextInputKind::Secret,
         ] {
             let mut structured = TextInput::local()
                 .with_kind(kind)
@@ -1424,6 +1296,7 @@ fn spellcheck_eligibility_follows_field_kind_vocabulary_and_language() {
             .with_spell_language("en_US")
             .with_initial_value("qwordz");
         ti.set_focus(true);
+        ti.refresh_personal_spelling();
         ti.spell_dictionary = Some(spellcheck::Dictionary::from_words(["qwordz"]));
         ti.refresh_spelling();
         assert!(ti.spell_spans.is_empty());
@@ -1695,6 +1568,8 @@ fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
             .with_spell_language("en_US")
             .with_initial_value("teh");
         known.core.set_caret(known.text.len());
+        known.spell_active = true;
+        known.refresh_personal_spelling();
         known.spell_dictionary = Some(spellcheck::Dictionary::from_words(["teh"]));
         known.insert_word_boundary(" ");
         assert_eq!(known.value(), "teh ");
@@ -1808,8 +1683,8 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
-        drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false)); // select all
-        drive(&mut ti, &mut doc, &char_key_event("Z"), mods(false, false)); // type over it
+        drive(&mut ti, &mut doc, &char_key("a"), mods(true, false)); // select all
+        drive(&mut ti, &mut doc, &char_key("Z"), mods(false, false)); // type over it
         assert_eq!(ti.value(), "Z", "typing over a full selection replaces it");
     }
 
@@ -1823,7 +1698,7 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         // insert it verbatim rather than reconstructing ASCII from a physical
         // key, which would lose Shift and German/AltGr punctuation.
         for text in ["A", "Ä", "@", "?"] {
-            drive(&mut ti, &mut doc, &char_key_event(text), mods(false, false));
+            drive(&mut ti, &mut doc, &char_key(text), mods(false, false));
         }
         assert_eq!(ti.value(), "AÄ@?");
     }
@@ -1833,8 +1708,8 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         let mut doc = AutoCommit::new();
         let mut backspace = TextInput::local().with_initial_value("abcd");
         backspace.set_focus(true);
-        let first = named_key_event(NamedKey::Backspace);
-        let mut repeat = named_key_event(NamedKey::Backspace);
+        let first = named_key(NamedKey::Backspace);
+        let mut repeat = named_key(NamedKey::Backspace);
         if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
             event.repeat = true;
         }
@@ -1849,8 +1724,8 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         let mut delete = TextInput::local().with_initial_value("abcd");
         delete.set_focus(true);
         delete.set_cursor_pos(0);
-        let first = named_key_event(NamedKey::Delete);
-        let mut repeat = named_key_event(NamedKey::Delete);
+        let first = named_key(NamedKey::Delete);
+        let mut repeat = named_key(NamedKey::Delete);
         if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
             event.repeat = true;
         }
@@ -1918,6 +1793,21 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         );
     }
 
+    // Case `password_and_key_kinds_never_leak_to_a11y_even_unmasked`.
+    for kind in [TextInputKind::Password, TextInputKind::Secret] {
+        let mut ti = TextInput::new(Vec::new()).with_kind(kind);
+        ti.text = "JBSWY3DPEHPK3PXP".to_string();
+        let node = Widget::accessibility(&ti).unwrap();
+        assert_eq!(node.value, None, "{kind:?}: a key is not exported");
+        assert!(node.state.protected, "{kind:?}: a key field is protected");
+        assert_eq!(node.text_selection, None, "{kind:?}: no selection offsets");
+        assert_eq!(
+            Widget::ime_purpose(&ti),
+            Some(winit::window::ImePurpose::Password),
+            "{kind:?}: no input-method suggestions learn the key"
+        );
+    }
+
     // Case `secret_reveal_toggle_shows_glyphs_but_never_leaks_to_a11y`.
     {
         let mut ti = TextInput::new(Vec::new()).with_secret(true);
@@ -1957,7 +1847,7 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(false, false),
         );
         assert_eq!(ti.cursor_pos(), 1, "Right moved one real char boundary");
@@ -1983,15 +1873,15 @@ fn a_secret_never_reaches_the_clipboard() {
             ti.set_focus(true);
             let mut doc = AutoCommit::new();
 
-            drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false));
+            drive(&mut ti, &mut doc, &char_key("a"), mods(true, false));
             assert_eq!(ti.selected_str(), Some("s3cr3t"), "Select All still works");
-            drive(&mut ti, &mut doc, &char_key_event("c"), mods(true, false));
+            drive(&mut ti, &mut doc, &char_key("c"), mods(true, false));
             assert_eq!(
                 clipboard().as_deref(),
                 Some("before"),
                 "revealed: {revealed}"
             );
-            drive(&mut ti, &mut doc, &char_key_event("x"), mods(true, false));
+            drive(&mut ti, &mut doc, &char_key("x"), mods(true, false));
             assert_eq!(
                 clipboard().as_deref(),
                 Some("before"),
@@ -2031,14 +1921,14 @@ fn a_secret_never_reaches_the_clipboard() {
             }
             ti.set_focus(true);
             let mut doc = AutoCommit::new();
-            drive(&mut ti, &mut doc, &char_key_event("v"), mods(true, false));
+            drive(&mut ti, &mut doc, &char_key("v"), mods(true, false));
             assert_eq!(ti.value(), "hunter2");
         }
     }
 }
 
 #[test]
-fn secret_field_carries_a_focusable_show_hide_control() {
+fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
     use crate::a11y::{Action, Role};
 
     // Case `secret_is_hidden_by_default_with_a_named_show_control`.
@@ -2060,7 +1950,10 @@ fn secret_field_carries_a_focusable_show_hide_control() {
         let children = Widget::children(&ti);
         assert_eq!(children.len(), 1, "the control is a real child widget");
         let child = children.first().unwrap();
-        assert!(child.is_focusable(), "keyboard reaches the control");
+        assert!(
+            !child.is_focusable(),
+            "an inline accessory is not a Tab stop"
+        );
         let node = child.accessibility().unwrap();
         assert_eq!(node.role, Role::Button);
         assert_eq!(node.name.as_deref(), Some("Show password"));
@@ -2087,6 +1980,7 @@ fn secret_field_carries_a_focusable_show_hide_control() {
             .unwrap()
             .perform_action(
                 &Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             );
@@ -2113,6 +2007,7 @@ fn secret_field_carries_a_focusable_show_hide_control() {
             .unwrap()
             .perform_action(
                 &Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             );
@@ -2133,28 +2028,15 @@ fn secret_field_carries_a_focusable_show_hide_control() {
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(target.x, target.y),
+            &cursor_moved(target.x, target.y),
             mods(false, false),
         );
 
-        let mut handled = false;
-        let mut focus_target = None;
-        let (taffy, node) = test_node();
-        for event in [left_press(), left_release()] {
-            ti.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods(false, false),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-        }
+        let mut sender = Dispatch::new().doc(&mut doc);
+        let press = sender.send(&mut ti, &mouse_press());
+        let release = sender.send(&mut ti, &mouse_release());
+        let handled = press.handled | release.handled;
+        let focus_target = release.focus_target.or(press.focus_target);
         assert!(handled);
         assert!(ti.is_revealed(), "a click reveals");
         assert_eq!(focus_target, None, "the click does not move focus");
@@ -2177,7 +2059,7 @@ fn secret_field_carries_a_focusable_show_hide_control() {
         assert!(!ti.is_revealed(), "a tap hides it again");
     }
 
-    // Case `tab_order_visits_the_text_then_the_control`.
+    // Case `tab_moves_from_field_to_field_past_the_control`.
     {
         let mut ti = TextInput::local().with_secret(true);
         let mut taffy = TaffyTree::new();
@@ -2185,9 +2067,7 @@ fn secret_field_carries_a_focusable_show_hide_control() {
         let root = ti.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
         let (order, trapped) = crate::focus_navigation::order(root, &ti, &taffy);
         assert!(!trapped);
-        assert_eq!(order.len(), 2, "field, then its show/hide control");
-        assert_eq!(order.first(), Some(&root));
-        assert_eq!(order.get(1), taffy.children(root).unwrap().first());
+        assert_eq!(order, [root], "the field alone, not its show/hide control");
     }
 
     // Case `only_single_line_secrets_carry_the_control`.
@@ -2263,6 +2143,7 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
                 anchor: 1,
                 focus: 2,
             },
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -2275,6 +2156,7 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
         assert!(Widget::perform_action(
             &mut ti,
             &Action::SetValue("new value".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -2319,6 +2201,7 @@ fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
             anchor: 0,
             focus: 0,
         },
+        &[],
         &mut crate::widget::Edits::lend(&mut document),
         &automerge::ROOT,
     ));
@@ -2327,6 +2210,7 @@ fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
     assert!(Widget::perform_action(
         &mut input,
         &Action::SetValue("Project Atlas".into()),
+        &[],
         &mut crate::widget::Edits::lend(&mut document),
         &automerge::ROOT,
     ));
@@ -2357,48 +2241,13 @@ fn command_mods() -> Modifiers {
     Modifiers::from(ModifiersState::SUPER)
 }
 
-fn named_key_event(k: NamedKey) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(k);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use crate::synthetic_input::named_key;
 
-fn mouse_move(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
-fn left_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
-fn left_release() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
+use crate::synthetic_input::cursor_moved;
+use crate::synthetic_input::mouse_press;
+use crate::synthetic_input::mouse_release;
 fn middle_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Middle,
-    }
+    crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Middle)
 }
 
 fn test_node() -> (TaffyTree<()>, NodeId) {
@@ -2409,7 +2258,7 @@ fn test_node() -> (TaffyTree<()>, NodeId) {
 
 fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
     WindowEvent::Touch(winit::event::Touch {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         phase,
         location: winit::dpi::PhysicalPosition::new(point.x, point.y),
         force: None,
@@ -2417,25 +2266,8 @@ fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
     })
 }
 
-/// Uses a throwaway taffy node — the input embeds no children.
 fn drive(ti: &mut TextInput, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
-    let mut handled = false;
-    let mut focus_target = None;
-    let (taffy, node) = test_node();
-    ti.handle_event(
-        ev,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &m,
-            state: crate::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    Dispatch::new().modifiers(m).doc(doc).send(ti, ev).handled
 }
 
 #[test]
@@ -2529,7 +2361,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         assert!(drive(
             &mut input,
             &mut doc,
-            &char_key_event("!"),
+            &char_key("!"),
             mods(false, false)
         ));
         assert_eq!(input.value(), "before!", "optimistic text remains visible");
@@ -2542,8 +2374,10 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         let object = doc
             .put_object(&automerge::ROOT, "legacy", ObjType::Text)
             .unwrap();
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let captured = std::rc::Rc::clone(&changes);
         let mut input = TextInput::local()
-            .on_change(|_| panic!("legacy callback must be suppressed"))
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()))
             .on_action(crate::widget::test_string_action_binding());
         input.bind_text(object.clone());
         crate::widget::controls::refresh_control_action_availability(
@@ -2562,6 +2396,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("Project Atlas".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
@@ -2572,9 +2407,46 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
                 .arguments["value"],
             "Project Atlas"
         );
+        assert_eq!(
+            *changes.borrow(),
+            ["Project Atlas"],
+            "the local callback runs beside the bound action"
+        );
         doc.splice_text(&object, 0, 0, "Remote title").unwrap();
         Widget::sync(&mut input, &doc, &automerge::ROOT);
         assert_eq!(input.value(), "Remote title");
+        assert_eq!(changes.borrow().len(), 1, "remote text is not a user edit");
+    }
+
+    // Case `change_callback_and_action_both_fire_in_either_order`.
+    {
+        let mut doc = AutoCommit::new();
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut input = TextInput::local()
+            .on_action(crate::widget::test_string_action_binding())
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+        crate::widget::controls::refresh_control_action_availability(
+            &mut input,
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(Widget::perform_action(
+            &mut input,
+            &crate::a11y::Action::SetValue("Atlas".into()),
+            &[],
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert_eq!(
+            crate::widget::controls::take_control_invocation(&mut input)
+                .unwrap()
+                .arguments["value"],
+            "Atlas"
+        );
+        assert_eq!(*changes.borrow(), ["Atlas"]);
     }
 }
 
@@ -2597,7 +2469,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
     {
         let mut normal = TextInput::local()
             .multiline(true)
-            .with_font_size(12.0)
+            .with_text_role(TextRole::Caption)
             .with_initial_value("A durable comment body that wraps onto another row.");
         normal.apply_layout_external(Rect::new(0.0, 0.0, 260.0, 160.0));
         draw_with_theme(&mut normal, &Theme::dark());
@@ -2607,7 +2479,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
 
         let mut large = TextInput::local()
             .multiline(true)
-            .with_font_size(12.0)
+            .with_text_role(TextRole::Caption)
             .with_initial_value("A durable comment body that wraps onto another row.");
         large.apply_layout_external(Rect::new(0.0, 0.0, 260.0, 160.0));
         let large_theme = Theme::dark().with_text_scale(2.0);
@@ -2631,7 +2503,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         let text = "A long wrapping line whose measured height must match the caret rows produced by the shaped draw path at large text.";
         let mut input = TextInput::local()
             .multiline(true)
-            .with_font_size(14.0)
+            .with_text_role(TextRole::Body)
             .with_initial_value(text);
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(2.0);
@@ -2774,7 +2646,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         );
         input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(measured_large.height)));
         draw_with_theme(&mut input, &large);
-        let drawn_large = input.content_height() as f32;
+        let drawn_large = input.content_height().ceil() as f32;
         assert!((measured_large.height - drawn_large).abs() < 0.1);
 
         let normal = Theme::dark();
@@ -2800,7 +2672,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
             f64::from(measured_normal.height),
         ));
         draw_with_theme(&mut input, &normal);
-        assert!((measured_normal.height - input.content_height() as f32).abs() < 0.1);
+        assert!((measured_normal.height - input.content_height().ceil() as f32).abs() < 0.1);
         assert!(
             measured_large.height > measured_normal.height * 1.8,
             "same instance remeasures from large text back to normal"
@@ -2941,7 +2813,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         assert!(drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(false, true)
         ));
         assert_eq!(
@@ -2952,14 +2824,14 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(false, true),
         );
         assert_eq!(ti.selection_range(), Some((3, 5)));
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(false, true),
         );
         assert_eq!(
@@ -2979,7 +2851,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(true, false),
         );
         assert_eq!(
@@ -2991,14 +2863,14 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(true, false),
         );
         assert_eq!(ti.cursor_pos(), 12, "ctrl+Right again → start of 'foo'");
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(true, false),
         );
         assert_eq!(ti.cursor_pos(), 6, "ctrl+Left walks back a word");
@@ -3014,7 +2886,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(true, false),
         );
         assert_eq!(
@@ -3028,7 +2900,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(true, false),
         );
         assert_eq!(
@@ -3049,7 +2921,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(true, true),
         );
         assert_eq!(
@@ -3060,7 +2932,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(true, true),
         );
         assert_eq!(
@@ -3083,7 +2955,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::End),
+            &named_key(NamedKey::End),
             mods(false, false),
         );
         assert_eq!(ti.cursor_pos(), 11, "End → end of field");
@@ -3091,7 +2963,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Home),
+            &named_key(NamedKey::Home),
             mods(false, false),
         );
         assert_eq!(ti.cursor_pos(), 0, "Home → start of field");
@@ -3099,7 +2971,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::End),
+            &named_key(NamedKey::End),
             mods(false, true),
         );
         assert_eq!(
@@ -3111,7 +2983,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Home),
+            &named_key(NamedKey::Home),
             mods(false, true),
         );
         assert_eq!(
@@ -3130,7 +3002,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Home),
+            &named_key(NamedKey::Home),
             mods(true, false),
         );
         assert_eq!(ti.cursor_pos(), 0, "Ctrl+Home reaches document start");
@@ -3138,7 +3010,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::End),
+            &named_key(NamedKey::End),
             mods(true, true),
         );
         assert_eq!(
@@ -3151,7 +3023,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Home),
+            &named_key(NamedKey::Home),
             mods(true, true),
         );
         assert_eq!(
@@ -3167,14 +3039,14 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
 
-        drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false));
+        drive(&mut ti, &mut doc, &char_key("a"), mods(true, false));
         assert_eq!(
             ti.selection_range(),
             Some((0, 11)),
             "ctrl+A selects everything"
         );
 
-        drive(&mut ti, &mut doc, &char_key_event("x"), mods(true, false));
+        drive(&mut ti, &mut doc, &char_key("x"), mods(true, false));
         assert_eq!(ti.value(), "", "ctrl+X cuts the selection");
         assert_eq!(ti.selection_range(), None, "selection collapsed after cut");
     }
@@ -3185,7 +3057,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
 
-        drive(&mut ti, &mut doc, &char_key_event("a"), command_mods());
+        drive(&mut ti, &mut doc, &char_key("a"), command_mods());
         assert_eq!(ti.selection_range(), Some((0, ti.value().len())));
     }
 }
@@ -3200,11 +3072,16 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
         let mut doc = AutoCommit::new();
 
         let bx = x_for_byte(&ti, 8); // inside "world" (bytes 6..11)
-        drive(&mut ti, &mut doc, &mouse_move(bx, 20.0), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(bx, 20.0),
+            mods(false, false),
+        );
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_release(), mods(false, false));
         // Within the multi-click interval → double click.
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
 
         assert_eq!(
             ti.selection_range(),
@@ -3226,15 +3103,15 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(x_start, 20.0),
+            &cursor_moved(x_start, 20.0),
             mods(false, false),
         );
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
         assert!(ti.is_dragging(), "press starts a drag");
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(x_end, 20.0),
+            &cursor_moved(x_end, 20.0),
             mods(false, false),
         );
         assert_eq!(
@@ -3242,7 +3119,7 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
             Some((2, 9)),
             "drag selected the swept range"
         );
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_release(), mods(false, false));
         assert!(!ti.is_dragging(), "release ends the drag");
     }
 
@@ -3254,10 +3131,15 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
         let mut doc = AutoCommit::new();
 
         let bx = x_for_byte(&ti, 8);
-        drive(&mut ti, &mut doc, &mouse_move(bx, 20.0), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(bx, 20.0),
+            mods(false, false),
+        );
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
         assert_eq!(
             ti.selection_range(),
             Some((0, 11)),
@@ -3279,17 +3161,17 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(start, 20.0),
+            &cursor_moved(start, 20.0),
             mods(false, false),
         );
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(end, 20.0),
+            &cursor_moved(end, 20.0),
             mods(false, false),
         );
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_release(), mods(false, false));
 
         assert_eq!(ti.shareable_selection(), Some("hello"));
     }
@@ -3301,13 +3183,18 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         draw_to_populate(&mut ti);
         let mut doc = AutoCommit::new();
         let at = x_for_byte(&ti, 8);
-        drive(&mut ti, &mut doc, &mouse_move(at, 20.0), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(at, 20.0),
+            mods(false, false),
+        );
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_release(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
         assert_eq!(ti.shareable_selection(), Some("world"));
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_release(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
         assert_eq!(ti.shareable_selection(), Some("hello world"));
     }
 
@@ -3321,7 +3208,12 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         ti.set_selection(0, ti.value().len());
         let mut doc = AutoCommit::new();
         let at = x_for_byte(&ti, 4);
-        drive(&mut ti, &mut doc, &mouse_move(at, 20.0), mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(at, 20.0),
+            mods(false, false),
+        );
         let mut focus_target = None;
         let mut handled = false;
         ti.handle_middle_click_with_primary(
@@ -3349,23 +3241,23 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         drive(
             &mut secret,
             &mut doc,
-            &mouse_move(start, 20.0),
+            &cursor_moved(start, 20.0),
             mods(false, false),
         );
-        drive(&mut secret, &mut doc, &left_press(), mods(false, false));
+        drive(&mut secret, &mut doc, &mouse_press(), mods(false, false));
         drive(
             &mut secret,
             &mut doc,
-            &mouse_move(end, 20.0),
+            &cursor_moved(end, 20.0),
             mods(false, false),
         );
-        drive(&mut secret, &mut doc, &left_release(), mods(false, false));
+        drive(&mut secret, &mut doc, &mouse_release(), mods(false, false));
         assert_eq!(secret.shareable_selection(), None);
 
         drive(
             &mut secret,
             &mut doc,
-            &mouse_move(start, 20.0),
+            &cursor_moved(start, 20.0),
             mods(false, false),
         );
         let mut focus_target = None;
@@ -3389,6 +3281,46 @@ fn ml_input(text: &str, w: f64, h: f64) -> TextInput {
     ti
 }
 
+#[test]
+fn multiline_ime_intent_and_paragraph_commit_preserve_the_submit_boundary() {
+    let mut input = ml_input("before old after", 400.0, 200.0).with_enter_submits(true);
+    input.set_selection(7, 10);
+    let intent = crate::ime::ImeWindowState::from_widget(&input).unwrap();
+    assert!(intent.multiline);
+    assert_eq!(intent.purpose, winit::window::ImePurpose::Normal);
+    let mut doc = AutoCommit::new();
+    assert!(drive(
+        &mut input,
+        &mut doc,
+        &WindowEvent::Ime(winit::event::Ime::Commit("First café.\n\nSecond 👋".into())),
+        Modifiers::default(),
+    ));
+    assert_eq!(input.value(), "before First café.\n\nSecond 👋 after");
+    assert!(!input.take_submit());
+    input.set_selection(7, 7 + "First café.\n\nSecond 👋".len());
+    assert!(drive(
+        &mut input,
+        &mut doc,
+        &WindowEvent::Ime(winit::event::Ime::Commit("\n\n".into())),
+        Modifiers::default(),
+    ));
+    assert_eq!(input.value(), "before \n\n after");
+    assert!(!input.take_submit());
+    input.set_multiline(false);
+    assert!(
+        !crate::ime::ImeWindowState::from_widget(&input)
+            .unwrap()
+            .multiline
+    );
+    input.set_focus(false);
+    assert!(crate::ime::ImeWindowState::from_widget(&input).is_none());
+    let mut secret = TextInput::local().multiline(true).with_secret(true);
+    secret.set_focus(true);
+    let secret = crate::ime::ImeWindowState::from_widget(&secret).unwrap();
+    assert_eq!(secret.purpose, winit::window::ImePurpose::Password);
+    assert!(!secret.multiline);
+}
+
 fn shaped_row(ti: &TextInput, byte: usize) -> usize {
     ti.single_layout
         .as_ref()
@@ -3406,7 +3338,7 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         assert!(drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Enter),
+            &named_key(NamedKey::Enter),
             mods(false, false)
         ));
         assert_eq!(ti.value(), "a\nb", "Enter inserted a newline at the caret");
@@ -3427,7 +3359,7 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         assert!(drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Enter),
+            &named_key(NamedKey::Enter),
             mods(false, false)
         ));
         assert_eq!(
@@ -3447,7 +3379,7 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         drive(
             &mut ml,
             &mut doc,
-            &named_key_event(NamedKey::Enter),
+            &named_key(NamedKey::Enter),
             mods(false, true),
         ); // Shift+Enter
         assert_eq!(
@@ -3467,7 +3399,7 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Backspace),
+            &named_key(NamedKey::Backspace),
             mods(false, false),
         );
         assert_eq!(
@@ -3486,7 +3418,7 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, true),
         ); // Shift+Down
         let (s, e) = ti
@@ -3516,7 +3448,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowUp),
+            &named_key(NamedKey::ArrowUp),
             mods(false, false),
         );
         assert_eq!(shaped_row(&ti, ti.cursor_pos()), 0, "Up moved to row 0");
@@ -3524,7 +3456,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, false),
         );
         assert_eq!(
@@ -3535,7 +3467,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, false),
         );
         assert_eq!(shaped_row(&ti, ti.cursor_pos()), 2, "Down reached row 2");
@@ -3550,7 +3482,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, false),
         );
         assert_eq!(
@@ -3562,7 +3494,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, false),
         );
         let row = shaped_row(&ti, ti.cursor_pos());
@@ -3582,7 +3514,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Home),
+            &named_key(NamedKey::Home),
             mods(false, false),
         );
         assert_eq!(
@@ -3593,7 +3525,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::End),
+            &named_key(NamedKey::End),
             mods(false, false),
         );
         assert_eq!(
@@ -3632,7 +3564,7 @@ fn multiline_wraps_at_unicode_line_breaks() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, false),
         );
         assert_eq!(shaped_row(&ti, ti.cursor_pos()), 1, "Down entered row 1");
@@ -3708,7 +3640,7 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
     assert!(drive(
         &mut input,
         &mut doc,
-        &char_key_event("!"),
+        &char_key("!"),
         mods(false, false)
     ));
     assert_eq!(input.value(), "draft!");
@@ -3724,6 +3656,7 @@ fn clearing_without_a_binding_is_a_noop_for_local_users() {
     assert!(Widget::perform_action(
         &mut local_input,
         &crate::a11y::Action::SetValue("updated".into()),
+        &[],
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
@@ -3788,7 +3721,7 @@ fn attributed_single_line_is_shaped_during_measure_before_draw() {
             .flat_map(|r| r.glyphs.iter().map(|g| g.font_weight.0))
             .collect();
         assert_eq!(weights, [400, 700, 400]);
-        assert_eq!(layout.buffer.metrics().font_size, 16.0 * scale);
+        assert_eq!(layout.buffer.metrics().font_size, body_size() * scale);
     }
 }
 
@@ -3821,22 +3754,8 @@ fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
         line.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
         line.set_focus(true);
         line.set_cursor_pos(2);
-        let mut doc = AutoCommit::new();
-        let (taffy, node) = test_node();
-        let mut send = |line: &mut crate::widget::RichTextLine, event: WindowEvent| {
-            line.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut false,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+        let send = |line: &mut crate::widget::RichTextLine, event: WindowEvent| {
+            dispatch(line, &event);
         };
         send(
             &mut line,
@@ -3903,7 +3822,7 @@ fn attributed_single_line_chip_and_link_rules_follow_shaped_ranges() {
                 .buffer
                 .layout_runs()
                 .flat_map(|r| r.glyphs.iter())
-                .all(|g| g.font_size == 16.0 * scale)
+                .all(|g| g.font_size == body_size() * scale)
         );
         for (background, pad) in [(true, 2.0), (false, 0.0)] {
             let mut decorations = Scene::new();
@@ -4049,5 +3968,663 @@ fn insertion_collapses_an_empty_drag_selection() {
         ti.insert_str("x");
         assert_eq!(ti.value(), expected);
         assert_eq!(ti.selection_range_public(), None);
+    }
+}
+
+#[test]
+fn field_kinds_set_their_text_kind_while_typing() {
+    for (kind, text) in [
+        (TextInputKind::Prose, TextKind::Prose),
+        (TextInputKind::Search, TextKind::Prose),
+        (TextInputKind::Username, TextKind::Identifier),
+        (TextInputKind::Email, TextKind::Identifier),
+        (TextInputKind::Url, TextKind::Url),
+        (TextInputKind::Number, TextKind::Numeric),
+        (TextInputKind::Code, TextKind::Code),
+        (TextInputKind::Password, TextKind::Secret),
+        (TextInputKind::Secret, TextKind::Secret),
+    ] {
+        assert_eq!(kind.text_kind(), text, "{kind:?}");
+        let input = TextInput::local().with_kind(kind);
+        assert_eq!(input.multiline_style(1.0).kind, text, "{kind:?}");
+    }
+}
+
+#[test]
+fn fields_share_rows_with_buttons_and_state_what_they_are() {
+    fn layout_height(ti: &mut TextInput, theme: &Theme, width: f32) -> f32 {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let node = ti.build_layout(&mut taffy, theme, &mut node_map);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        let size = Widget::measure(
+            ti,
+            taffy::Size {
+                width: Some(width),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(width),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut tr,
+        );
+        match taffy.style(node).unwrap().size.height.into_option() {
+            Some(fixed) => fixed,
+            None => size.height,
+        }
+    }
+
+    // Case `a_small_field_is_as_tall_as_a_small_button`.
+    {
+        let theme = Theme::dark();
+        let mut small = TextInput::local().control_size(ControlSize::Small);
+        assert_eq!(layout_height(&mut small, &theme, 200.0), 28.0);
+        assert!(
+            (FieldFace::height(ControlSize::Regular, &theme) - 32.0).abs() < 1e-9,
+            "the painted face agrees with the retained field"
+        );
+    }
+
+    // Case `min_lines_holds_a_wrapping_field_open_with_the_field_inset`.
+    {
+        let theme = Theme::dark();
+        let mut notes = TextInput::local().with_min_lines(4);
+        let height = layout_height(&mut notes, &theme, 300.0);
+        let line = body_size() * LINE_HEIGHT_RATIO;
+        assert!(
+            height >= 4.0 * line,
+            "four lines tall while empty: {height} vs line {line}"
+        );
+        let mut one = TextInput::local().multiline(true);
+        assert!(
+            layout_height(&mut one, &theme, 300.0) >= 32.0,
+            "a wrapping field is never shorter than a single-line one"
+        );
+        let single = TextInput::local();
+        assert!(
+            (notes.text_inset_x(&theme) - single.text_inset_x(&theme)).abs() < 1e-9,
+            "wrapping and single-line fields start their text at one inset"
+        );
+    }
+
+    // Case `a_plain_field_leaves_the_gutter_to_its_parent`.
+    {
+        let theme = Theme::dark();
+        let plain = TextInput::local().multiline(true).with_plain_chrome();
+        assert_eq!(plain.text_inset_x(&theme), 0.0);
+        let mut document = TextInput::local().multiline(true).with_plain_chrome();
+        document.keep_document_inset();
+        assert_eq!(document.text_inset_x(&theme), ML_PAD_X);
+    }
+
+    // Case `the_role_sets_the_family_and_the_placeholder_follows_it`.
+    {
+        let reading = TextInput::local().with_text_role(TextRole::Reading);
+        assert_eq!(reading.placeholder_style(16.0).family, FontChoice::Serif);
+        let code = TextInput::local().with_text_role(TextRole::Code);
+        assert_eq!(code.placeholder_style(13.0).family, FontChoice::Monospace);
+        let body = TextInput::local();
+        assert_eq!(body.placeholder_style(14.0).family, FontChoice::SansSerif);
+    }
+
+    // Case `set_text_parks_the_caret_at_the_end`.
+    {
+        let mut ti = TextInput::local().with_initial_value("abc");
+        ti.set_cursor_pos(1);
+        ti.set_text("hello");
+        assert_eq!(ti.cursor_pos(), 5);
+    }
+
+    // Case `content_sized_text_does_not_grow_with_the_text_scale`.
+    {
+        let big = Theme::dark().with_text_scale(2.0);
+        let mut document = TextInput::local().with_content_size(12.0);
+        let mut chrome = TextInput::local();
+        assert!(
+            layout_height(&mut document, &big, 200.0) < layout_height(&mut chrome, &big, 200.0),
+            "a document-space field keeps its size under a large text scale"
+        );
+        assert!((document.scale_for(2.0) - 1.0).abs() < f32::EPSILON);
+    }
+}
+
+#[test]
+fn submit_accessory_and_span_highlighting() {
+    // Case `on_submit_reports_the_text_on_enter`.
+    {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        let mut ti = TextInput::local()
+            .with_initial_value("https://tilo.so")
+            .on_submit(move |text| sink.borrow_mut().push(text.to_string()));
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &named_key(NamedKey::Enter),
+            mods(false, false)
+        ));
+        assert_eq!(seen.borrow().as_slice(), ["https://tilo.so"]);
+        assert!(ti.take_submit(), "the polled signal still fires");
+    }
+
+    // Case `the_clear_accessory_empties_the_field_as_an_edit`.
+    {
+        let mut ti = TextInput::local()
+            .with_initial_value("query")
+            .with_clear_button();
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
+        draw_to_populate(&mut ti);
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert_eq!(node.children.len(), 1);
+        assert_eq!(node.children[0].name.as_deref(), Some("Clear"));
+        let rect = Widget::synthetic_accessibility_rect(&ti, &[0]).expect("accessory rect");
+        assert!(rect.x1 <= 240.0 && rect.x0 > 120.0, "{rect:?}");
+        let mut doc = AutoCommit::new();
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(rect.center().x, rect.center().y),
+            mods(false, false),
+        );
+        assert!(drive(&mut ti, &mut doc, &mouse_press(), mods(false, false)));
+        assert_eq!(ti.value(), "");
+        assert_eq!(
+            ti.take_dirty().as_deref(),
+            Some(""),
+            "clearing is a user edit"
+        );
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert!(
+            node.children.is_empty(),
+            "an empty field hides its clear button"
+        );
+    }
+
+    // Case `a_toggle_accessory_is_a_pressed_toggle_for_people_and_agents`.
+    {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<bool>::new()));
+        let sink = seen.clone();
+        let mut ti = TextInput::local().with_trailing_accessory(
+            crate::icons::Icon::X,
+            "Clear for every photo",
+            AccessoryAction::Toggle {
+                pressed: false,
+                on_toggle: Box::new(move |on| sink.borrow_mut().push(on)),
+            },
+        );
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
+        draw_to_populate(&mut ti);
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert_eq!(node.children.len(), 1, "shown while the field is empty");
+        let toggle = &node.children[0];
+        assert_eq!(toggle.role, crate::a11y::Role::ToggleButton);
+        assert_eq!(toggle.state.checked, Some(false));
+        let target = toggle.action_target.clone().expect("agents can reach it");
+
+        let rect = Widget::synthetic_accessibility_rect(&ti, &[0]).expect("accessory rect");
+        let mut doc = AutoCommit::new();
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(rect.center().x, rect.center().y),
+            mods(false, false),
+        );
+        assert!(drive(&mut ti, &mut doc, &mouse_press(), mods(false, false)));
+        assert_eq!(ti.accessory_pressed(), Some(true));
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert_eq!(node.children[0].state.checked, Some(true));
+
+        let root = automerge::ROOT;
+        assert!(Widget::perform_semantic_action(
+            &mut ti,
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &root,
+        ));
+        assert_eq!(seen.borrow().as_slice(), [true, false]);
+        assert_eq!(ti.accessory_pressed(), Some(false));
+
+        ti.set_accessory_pressed(true);
+        assert_eq!(ti.accessory_pressed(), Some(true), "the host syncs it");
+        assert!(ti.take_dirty().is_none(), "toggling is not a text edit");
+    }
+
+    // Case `a_span_highlighter_colours_the_single_line`.
+    {
+        let mut ti = TextInput::local()
+            .with_initial_value("=A1+B2")
+            .with_span_highlighter(|text, theme| {
+                text.match_indices("A1")
+                    .map(|(at, m)| (at..at + m.len(), theme.tokens.colors.semantic.danger))
+                    .collect()
+            });
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
+        draw_to_populate(&mut ti);
+        let spans = &ti.single_attributes.as_ref().expect("highlighted").spans;
+        assert_eq!(
+            spans.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(),
+            ["=", "A1", "+B2"]
+        );
+        assert!(spans[1].color.is_some() && spans[0].color.is_none());
+    }
+
+    // Case `the_painted_field_matches_the_retained_one`.
+    {
+        let theme = Theme::dark();
+        let mut face = Scene::new();
+        FieldFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), "")
+            .focused(true)
+            .paint_chrome(&mut face, Affine::IDENTITY, &theme);
+        let mut tr = TextRenderer::new();
+        FieldFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), "")
+            .placeholder("Search")
+            .paint(&mut face, Affine::IDENTITY, &mut tr, &theme);
+        let text_rect = FieldFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), "").text_rect(&theme);
+        assert!(
+            (text_rect.x0 - TextInput::local().text_inset_x(&theme)).abs() < 1e-9,
+            "a painted field insets its text like a retained one"
+        );
+    }
+}
+
+#[cfg(feature = "broker-transport")]
+#[test]
+fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::local_identity::install_source(None);
+        }
+    }
+    let _guard = tilo_test_env::lock();
+    let _restore = Restore;
+    crate::local_identity::install_source(Some(Arc::new(crate::local_identity::FixedIdentity(
+        crate::local_identity::LocalIdentity {
+            group_public_key: [1; 32],
+            display_name: String::new(),
+            avatar_color: [0; 3],
+        },
+    ))));
+    let directory = tempfile::tempdir().unwrap();
+    let service = Arc::new(
+        settings_store::personal_dictionary::Service::new(directory.path().to_owned()).unwrap(),
+    );
+    let source = Arc::new(settings_store::personal_dictionary::host::Host::new(
+        Arc::new(settings_store::HostDocument::new(
+            serde_json::Map::new(),
+            |_| Ok(()),
+        )),
+        service,
+        Arc::new(|| Some([1; 32])),
+    ));
+    let mut host =
+        crate::personal_dictionary::TestHost::new(source, "so.tilo.notes", [1; 32]).unwrap();
+    let field = |text: &str| {
+        TextInput::local()
+            .with_autocorrect(true)
+            .with_spell_language("en_US")
+            .with_initial_value(text)
+    };
+    let mut input = field("teh");
+    input.core.set_caret(input.text.len());
+    assert!(input.autocorrection_candidate().is_some());
+    crate::personal_dictionary::edit(
+        0,
+        crate::personal_dictionary::Edit::Add(
+            crate::personal_dictionary::Word::new("teh", None).unwrap(),
+        ),
+    )
+    .unwrap();
+    host.flush().unwrap();
+    input.insert_word_boundary(" ");
+    assert_eq!(input.value(), "teh ");
+    assert!(
+        crate::personal_dictionary::edit(1, crate::personal_dictionary::Edit::Reset).is_err(),
+        "ordinary apps may add explicit words but cannot reset the dictionary"
+    );
+    let mut ordinary = field("adress");
+    ordinary.core.set_caret(ordinary.text.len());
+    ordinary.insert_word_boundary(" ");
+    assert_eq!(
+        ordinary.value(),
+        "address ",
+        "personal words never force ordinary replacements"
+    );
+    crate::personal_dictionary::edit(
+        1,
+        crate::personal_dictionary::Edit::Add(
+            crate::personal_dictionary::Word::new("Élodie", Some("fr")).unwrap(),
+        ),
+    )
+    .unwrap();
+    host.flush().unwrap();
+    let mut french = field("E\u{301}lodie").with_spell_language("fr_FR");
+    french.set_focus(true);
+    french.refresh_personal_spelling();
+    assert!(french.personal_word("E\u{301}lodie"));
+    let mut english = field("Élodie");
+    english.set_focus(true);
+    english.refresh_personal_spelling();
+    assert!(!english.personal_word("Élodie"));
+    crate::local_identity::install_source(Some(Arc::new(crate::local_identity::NoLocalIdentity)));
+    french.refresh_personal_spelling();
+    assert!(!french.personal_word("Élodie"));
+    assert!(french.spell_dictionary.as_ref().unwrap().is_empty());
+}
+
+#[test]
+fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
+    use crate::clipboard::{ClipboardBackend, ClipboardTarget};
+    use std::sync::{Arc, Mutex, mpsc};
+    #[derive(Default)]
+    struct Delayed(Mutex<Option<mpsc::Sender<Option<String>>>>);
+    impl ClipboardBackend for Delayed {
+        fn set_text(&self, _: ClipboardTarget, _: &str) -> bool {
+            false
+        }
+        fn text(&self, _: ClipboardTarget) -> Option<String> {
+            None
+        }
+        fn request_text(&self, _: ClipboardTarget) -> mpsc::Receiver<Option<String>> {
+            let (send, receive) = mpsc::channel();
+            *self.0.lock().unwrap() = Some(send);
+            receive
+        }
+        fn name(&self) -> &'static str {
+            "delayed-paste"
+        }
+    }
+    let clipboard = Arc::new(Delayed::default());
+    let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = crate::host::enter(&services);
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = changes.clone();
+    let mut input = TextInput::local()
+        .with_initial_value("a")
+        .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+    input.set_focus(true);
+    let mut document = AutoCommit::new();
+    drive(&mut input, &mut document, &char_key("v"), mods(true, false));
+    assert_eq!(input.value(), "a");
+    clipboard
+        .0
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap()
+        .send(Some("b\nc".into()))
+        .unwrap();
+    Widget::sync(&mut input, &document, &automerge::ROOT);
+    assert_eq!(input.value(), "abc");
+    assert_eq!(&*changes.borrow(), &["abc"]);
+    Widget::sync(&mut input, &document, &automerge::ROOT);
+    assert_eq!(&*changes.borrow(), &["abc"]);
+
+    for change in 0..3 {
+        drive(&mut input, &mut document, &char_key("v"), mods(true, false));
+        let reply = clipboard.0.lock().unwrap().take().unwrap();
+        match change {
+            0 => {
+                input.set_focus(false);
+                input.set_focus(true);
+            }
+            1 => {
+                input.set_cursor_pos(0);
+                input.set_cursor_pos(3);
+            }
+            _ => {
+                input.set_text("changed");
+                input.set_text("abc");
+            }
+        }
+        let _ = reply.send(Some("stale".into()));
+        Widget::sync(&mut input, &document, &automerge::ROOT);
+        assert_eq!(
+            input.value(),
+            "abc",
+            "changed target must cancel delayed paste"
+        );
+    }
+}
+
+/// One host frame of a multiline field: Taffy's sizing queries at the
+/// widths a Scrollable's grid asks for (zero, min/max-content, final), then
+/// placement and paint against a window-sized viewport.
+fn typing_frame(input: &mut TextInput, tr: &mut TextRenderer, theme: &Theme) {
+    let mut height = 0.0f32;
+    for (known, available) in [
+        (Some(0.0), taffy::AvailableSpace::Definite(0.0)),
+        (None, taffy::AvailableSpace::MinContent),
+        (None, taffy::AvailableSpace::MaxContent),
+        (Some(600.0), taffy::AvailableSpace::Definite(600.0)),
+    ] {
+        height = Widget::measure(
+            input,
+            taffy::Size {
+                width: known,
+                height: None,
+            },
+            taffy::Size {
+                width: available,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            tr,
+        )
+        .height;
+    }
+    input.apply_layout_external(Rect::new(0.0, 0.0, 600.0, f64::from(height)));
+    let presence = crate::presence::PresenceCtx::empty();
+    presence.push_viewport(Rect::new(0.0, 0.0, 600.0, 400.0));
+    let mut scene = Scene::new();
+    Widget::draw(input, &mut scene, Affine::IDENTITY, tr, theme, &presence);
+}
+
+fn typing_field(text: &str, tr: &mut TextRenderer, theme: &Theme) -> TextInput {
+    let mut input = TextInput::local()
+        .multiline(true)
+        .with_spell_language("en_US")
+        .with_initial_value(text);
+    input.set_focus(true);
+    let mut taffy = TaffyTree::new();
+    let mut nodes = std::collections::HashMap::new();
+    Widget::build_layout(&mut input, &mut taffy, theme, &mut nodes);
+    typing_frame(&mut input, tr, theme);
+    input
+}
+
+#[test]
+fn multiline_keystroke_prepares_only_the_edited_paragraph_at_every_width() {
+    let mut tr = crate::font_catalog::fixture_renderer();
+    let theme = Theme::dark();
+    tr.set_text_scale(theme.text_scale);
+    let text = (0..200)
+        .map(|index| format!("Paragraph {index} of a long note, with enough words to wrap."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut input = typing_field(&text, &mut tr, &theme);
+    let at = text.find("Paragraph 100 ").unwrap() + "Paragraph 100".len();
+    input.set_cursor_pos(at);
+    typing_frame(&mut input, &mut tr, &theme);
+    crate::richtext::take_prepared_paragraphs();
+    let mut doc = AutoCommit::new();
+    for (step, key) in ["x", "y", " ", "z"].into_iter().enumerate() {
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &char_key(key),
+            Modifiers::default()
+        ));
+        typing_frame(&mut input, &mut tr, &theme);
+        assert_eq!(
+            crate::richtext::take_prepared_paragraphs(),
+            1,
+            "keystroke {step}: one paragraph prepared and shaped for every width"
+        );
+    }
+    // The paragraph measured and painted is the one a fresh field builds.
+    let fresh = typing_field(input.value(), &mut tr, &theme);
+    let (typed, fresh) = (
+        input.single_layout.as_ref().unwrap(),
+        fresh.single_layout.as_ref().unwrap(),
+    );
+    assert_eq!(typed.height(), fresh.height());
+    assert_eq!(typed.logical_line_origins(), fresh.logical_line_origins());
+    for byte in (0..=input.value().len()).filter(|byte| input.value().is_char_boundary(*byte)) {
+        assert_eq!(
+            typed.caret_geometry(byte),
+            fresh.caret_geometry(byte),
+            "byte {byte}"
+        );
+    }
+    for (a, b) in typed.buffer.lines.iter().zip(&fresh.buffer.lines) {
+        assert_eq!(
+            format!("{:?}", a.layout_opt()),
+            format!("{:?}", b.layout_opt())
+        );
+    }
+}
+
+#[test]
+fn spelling_marks_follow_edits_like_a_full_check() {
+    let text = "teh first paragraph\n\nsecond wrold here\nthird is fine\n\nlast lnie";
+    let mut input = TextInput::local()
+        .with_spell_language("en_US")
+        .with_initial_value(text);
+    input.set_focus(true);
+    input.refresh_spelling();
+    let edits: [(&str, usize); 6] = [
+        ("x", 4),
+        (" mispeled", 19),
+        ("\nnew paragrph\n", 21),
+        ("", 0),
+        ("Teh", 0),
+        ("ok", 10),
+    ];
+    for (insert, at) in edits {
+        let mut edited = input.value().to_owned();
+        let at = at.min(edited.len());
+        if insert.is_empty() {
+            // Join the first two lines.
+            if let Some(newline) = edited.find('\n') {
+                edited.remove(newline);
+            }
+        } else {
+            edited.insert_str(at, insert);
+        }
+        input.text.clone_from(&edited);
+        input.refresh_spelling();
+        let mut fresh = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value(&edited);
+        fresh.set_focus(true);
+        fresh.refresh_spelling();
+        assert_eq!(input.spell_spans, fresh.spell_spans, "{edited:?}");
+        assert!(!input.spell_spans.is_empty(), "{edited:?}");
+    }
+}
+
+#[test]
+fn single_line_batch_metrics_preserve_graphemes_preedit_and_theme_geometry() {
+    for text in ["", "ordinary ffi text", "abc אבג xyz", "é 👩‍💻 end"] {
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut input = TextInput::local().with_initial_value(text);
+            input.apply_layout_external(Rect::new(20.0, 30.0, 420.0, 70.0));
+            for preedit_at in [None, Some(0), Some(text.len() / 2), Some(text.len())] {
+                input.core.clear_preedit();
+                if let Some(at) = preedit_at {
+                    input.set_cursor_pos(at);
+                    input.core.set_preedit("編", Some((0, "編".len())));
+                }
+                draw_with_theme(&mut input, &theme);
+                let layout = input
+                    .single_layout
+                    .as_ref()
+                    .expect("production draw shapes the field");
+                let mut reference = vec![0.0; text.len().saturating_add(1)];
+                for byte in grapheme_indices(text)
+                    .map(|(byte, _)| byte)
+                    .chain([text.len()])
+                {
+                    reference[byte] =
+                        f64::from(layout.caret_geometry(input.text_to_layout_byte(byte)).0);
+                }
+                assert_eq!(
+                    input.char_x_positions, reference,
+                    "{text:?}, scale={scale}, preedit_at={preedit_at:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
+    let mut renderer = crate::offscreen::OffscreenRenderer::new(160, 64);
+    for theme in [
+        Theme::high_contrast(),
+        Theme::preset(crate::theme::Preset::HighContrastLight),
+    ] {
+        assert!(theme.colors_are_forced());
+        let mut scene = Scene::new();
+        paint_field_chrome(
+            &mut scene,
+            Affine::IDENTITY,
+            &theme,
+            &RoundedRect::from_rect(Rect::new(12.0, 12.0, 148.0, 52.0), 8.0),
+            FieldState::default(),
+        );
+        let pixels = renderer.render(&scene, theme.tokens.colors.surfaces.content);
+        let pixel = |x: usize, y: usize| {
+            let offset = (y * 160 + x) * 4;
+            vello::peniko::Color::from_rgba8(
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            )
+        };
+        let ground = pixel(80, 24);
+        for edge in [pixel(80, 12), pixel(12, 32)] {
+            assert!(
+                crate::a11y::contrast_ratio(edge, ground)
+                    >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                "actual idle field edge must remain visible when forced surfaces coincide"
+            );
+        }
+        let enabled_contrast = crate::a11y::contrast_ratio(pixel(80, 12), ground);
+        let mut disabled_scene = Scene::new();
+        paint_field_chrome(
+            &mut disabled_scene,
+            Affine::IDENTITY,
+            &theme,
+            &RoundedRect::from_rect(Rect::new(12.0, 12.0, 148.0, 52.0), 8.0),
+            FieldState {
+                disabled: true,
+                ..FieldState::default()
+            },
+        );
+        let disabled_pixels =
+            renderer.render(&disabled_scene, theme.tokens.colors.surfaces.content);
+        for (x, y) in [(80, 12), (12, 32)] {
+            let offset = (y * 160 + x) * 4;
+            let edge = vello::peniko::Color::from_rgba8(
+                disabled_pixels[offset],
+                disabled_pixels[offset + 1],
+                disabled_pixels[offset + 2],
+                disabled_pixels[offset + 3],
+            );
+            let contrast = crate::a11y::contrast_ratio(edge, ground);
+            assert!(
+                contrast > 1.5 && contrast < enabled_contrast,
+                "the actual disabled group must dim the forced outline while keeping it visible"
+            );
+        }
     }
 }

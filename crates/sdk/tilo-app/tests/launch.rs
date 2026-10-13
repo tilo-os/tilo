@@ -1,11 +1,57 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! Launching a framework app on something: a path on its command line opens
 //! that path's own record and takes the app's launch actions there through
 //! the door every control uses; a file a host hands over reaches the app
 //! only if it opens that type.
 
 use tilo_app::prelude::*;
+
+struct PrivateSketch;
+
+impl ResourceApp for PrivateSketch {
+    type Resource = Sketch;
+    const ID: &'static str = "so.tilo.test-private-sketch";
+    const TITLE: &'static str = "Private sketch";
+    const PRIVATE_WINDOWS: bool = true;
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<Sketch>) -> Element {
+        Box::new(
+            Text::new(&format!(
+                "Private {}, arguments {}",
+                cx.is_private(),
+                cx.launch_arguments().join(" ")
+            ))
+            .with_id("private-launch"),
+        )
+    }
+}
+
+#[test]
+fn private_headless_launch_uses_a_disposable_profile_and_consumes_its_flag() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
+    shared
+        .invoke(Sketch::TRACE.with("Personal sketch"))
+        .unwrap();
+    let mut private = shared.relaunch(&["--private", "private.png"]).unwrap();
+    assert_eq!(private.state(), Sketch::default());
+    private
+        .harness()
+        .expect(
+            &tilo_app::headless::SemanticExpectation::named("private-launch")
+                .name_contains("Private true, arguments private.png"),
+        )
+        .unwrap();
+    private
+        .invoke(Sketch::TRACE.with("Disposable sketch"))
+        .unwrap();
+    let shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
+    assert_eq!(shared.state().source, "Personal sketch");
+    drop(private);
+    drop(shared);
+    let shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
+    assert_eq!(shared.state().source, "Personal sketch");
+}
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Sketch {
@@ -113,8 +159,11 @@ fn launch_actions_are_the_participants_own_undoable_edits() {
     let traced = versions
         .last()
         .and_then(|version| version.context.as_ref())
-        .map(|context| context.action_label.as_str());
-    assert_eq!(traced, Some("Trace over an image"), "{versions:?}");
+        .and_then(|context| match &context.what {
+            Some(tilo_actions::Did::Verb(verb)) => Some(verb.action.action.as_str()),
+            _ => None,
+        });
+    assert_eq!(traced, Some("trace"), "{versions:?}");
     assert!(app.undo());
     assert_eq!(app.state().source, "");
 }
@@ -123,8 +172,7 @@ fn launch_actions_are_the_participants_own_undoable_edits() {
 fn launching_on_a_record_again_keeps_its_edits_and_does_not_refill_it() {
     let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
     app.harness().relayout();
-    app.invoke(Sketch::NOTE.with("the lighthouse".into()))
-        .unwrap();
+    app.invoke(Sketch::NOTE.with("the lighthouse")).unwrap();
     let first = app.record().clone();
     let versions = app.versions().len();
 
@@ -415,7 +463,7 @@ fn the_view_reads_the_media_a_launch_names_and_the_playback_it_continues() {
 #[effect(operation = "test.gallery.effects")]
 pub enum GalleryEffect {
     /// Show a picture.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Show { picture: String },
 }
 
@@ -473,7 +521,7 @@ fn a_launch_invokes_an_effect_which_changes_no_document_and_a_viewer_reaches() {
     let dispatcher = GALLERY
         .with(|gallery| gallery.borrow_mut().take())
         .expect("the viewer's view was built");
-    dispatcher.invoke(Invoke::effect(&GalleryEffect::Show {
+    dispatcher.submit(Invoke::effect(&GalleryEffect::Show {
         picture: "meadow.png".into(),
     }));
     viewer.settle();
@@ -488,8 +536,7 @@ fn a_launch_invokes_an_effect_which_changes_no_document_and_a_viewer_reaches() {
 fn a_window_opens_another_record_in_its_own_place() {
     let mut app = TestApp::<SketchApp>::new().unwrap();
     assert_eq!(app.record(), &RecordId::room_default());
-    app.invoke(Sketch::NOTE.with("on the default".into()))
-        .unwrap();
+    app.invoke(Sketch::NOTE.with("on the default")).unwrap();
 
     app.open_here(&["/pictures/harbour.png"]).unwrap();
     let harbour = RecordId::derived("sketch", &RecordId::for_file("/pictures/harbour.png"));
@@ -520,8 +567,7 @@ fn a_window_opens_another_record_in_its_own_place() {
     assert_eq!(app.record(), &harbour);
 
     // Edits go to the record shown now, through the same door.
-    app.invoke(Sketch::NOTE.with("on the harbour".into()))
-        .unwrap();
+    app.invoke(Sketch::NOTE.with("on the harbour")).unwrap();
     assert_eq!(app.state().notes.len(), 1);
 
     // Each record kept its own edits, durably.
@@ -593,8 +639,7 @@ fn a_launch_reads_the_record_it_opens() {
         app.state().notes.is_empty(),
         "a created record is not reopened"
     );
-    app.invoke(Sketch::NOTE.with("the lighthouse".into()))
-        .unwrap();
+    app.invoke(Sketch::NOTE.with("the lighthouse")).unwrap();
     let app = app.relaunch(&["/pictures/harbour.png"]).unwrap();
     let mut texts: Vec<String> = app
         .state()

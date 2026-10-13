@@ -10,8 +10,8 @@
 //! ## The payload is the CRDT document
 //!
 //! A project file is a header followed by a serialized Automerge document
-//! carrying exactly the maps [`crate::doc`] defines — `project`, `media`,
-//! `tracks`, `clips`. That choice is not incidental:
+//! holding the [`Project`] model exactly as the editor stores it. That
+//! choice is not incidental:
 //!
 //!   * **It round-trips losslessly.** The document shape *is* the editor's
 //!     storage shape, so saving is not a lossy projection into some other
@@ -21,7 +21,7 @@
 //!     the ordinary action pipeline — so opening a project is one undo
 //!     boundary and replicates to a peer like any other edit.
 //!   * **It absorbs model growth for free.** The project's reader,
-//!     [`VideoDoc::load_project`](crate::doc::VideoDoc::load_project), reads
+//!     [`Project`]'s own read, reads
 //!     every field with an explicit default for "this document predates the
 //!     field". The model grew
 //!     repeatedly in a single day — `solo`, `transition_duration`, `text`,
@@ -75,7 +75,6 @@ use std::path::Path;
 use ui::tilo_resource::Replica;
 
 use crate::model::Project;
-use crate::resource::VideoProject;
 
 /// First nine bytes of every project file.
 pub const MAGIC: &[u8; 9] = b"TiloVEPRJ";
@@ -157,11 +156,11 @@ impl std::error::Error for ProjectFileError {}
 /// [`ProjectFileError::Corrupt`] when the project does not apply to a fresh
 /// document.
 pub fn encode(project: &Project) -> Result<Vec<u8>, ProjectFileError> {
-    let mut replica = Replica::<VideoProject>::new();
+    let mut replica = Replica::<Project>::new();
     replica
-        .apply_action(
-            &crate::actions::load_project_action(project),
-            "Save project",
+        .apply(
+            ui::tilo_resource::Invoke::edit(&crate::resource::load_project(project))
+                .map_err(|e| ProjectFileError::Corrupt(e.to_string()))?,
         )
         .map_err(|e| ProjectFileError::Corrupt(e.to_string()))?;
     let payload = replica.save();
@@ -190,17 +189,6 @@ fn header_fields(bytes: &[u8]) -> Result<(u16, u16, u32), ProjectFileError> {
     ))
 }
 
-/// The `version` / `min_reader` a file declares, without loading it.
-///
-/// # Errors
-///
-/// [`ProjectFileError::NotAProject`] when `bytes` do not open with a whole
-/// project-file header.
-pub fn header_versions(bytes: &[u8]) -> Result<(u16, u16), ProjectFileError> {
-    let (version, min_reader, _) = header_fields(bytes)?;
-    Ok((version, min_reader))
-}
-
 /// Read project-file `bytes` back into the model.
 ///
 /// # Errors
@@ -222,7 +210,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
     let Some(payload) = bytes.get(HEADER_LEN..HEADER_LEN + declared) else {
         return Err(ProjectFileError::Truncated { declared, present });
     };
-    Replica::<VideoProject>::load(payload)
+    Replica::<Project>::load(payload)
         .and_then(|replica| replica.state())
         .map_err(|e| ProjectFileError::Corrupt(e.to_string()))
 }
@@ -432,7 +420,6 @@ mod tests {
             fps: 24.0,
             palette: 2,
             path: "media/Drone.mov".into(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();
@@ -535,10 +522,7 @@ mod tests {
             bytes[9..11].copy_from_slice(&(FORMAT_VERSION + 7).to_le_bytes());
             let back = decode(&bytes).expect("a compatible newer file still opens");
             assert_eq!(back.clips.len(), 1);
-            assert_eq!(
-                header_versions(&bytes).unwrap(),
-                (FORMAT_VERSION + 7, MIN_READER_VERSION)
-            );
+            assert_eq!(header_fields(&bytes).unwrap().0, FORMAT_VERSION + 7);
         }
     }
 
@@ -572,7 +556,7 @@ mod tests {
             assert_eq!(decode(b"").unwrap_err(), ProjectFileError::NotAProject);
             // A file shorter than the header is not a readable project either.
             assert_eq!(
-                header_versions(&[0u8; 4]).unwrap_err(),
+                header_fields(&[0u8; 4]).unwrap_err(),
                 ProjectFileError::NotAProject
             );
         }
@@ -581,13 +565,13 @@ mod tests {
             let bytes = encode(&Project::new("t")).expect("the project encodes");
             for n in 0..HEADER_LEN {
                 assert_eq!(
-                    header_versions(&bytes[..n]),
-                    Err(ProjectFileError::NotAProject),
+                    header_fields(&bytes[..n]).unwrap_err(),
+                    ProjectFileError::NotAProject,
                     "{n} bytes"
                 );
             }
             assert_eq!(
-                header_versions(&bytes[..HEADER_LEN]),
+                header_fields(&bytes[..HEADER_LEN]).map(|(v, m, _)| (v, m)),
                 Ok((FORMAT_VERSION, MIN_READER_VERSION))
             );
         }

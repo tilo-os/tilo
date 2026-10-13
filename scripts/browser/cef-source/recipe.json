@@ -1,0 +1,267 @@
+{
+  "schema": 1,
+  "status": "NOT_QUALIFIED_DO_NOT_CONSUME",
+  "source": {
+    "chromium": "79460ebecaa5625e57a5fb679a735659e73dc687",
+    "cef": "708dc140cbc3286826a8abef89dc23a44ff9ea72",
+    "depot_tools": "ba8bd9c36425cd550ac6a6c9220808fec73352b7",
+    "patch_sha256": "40a39125d44e97d1e0373573fbe77a28ec1254d58f6bb7e2c14eb200614726fc",
+    "upstream_file_sha256": {
+      "editor.cc": "52db1977d36bfa10987329a7f907353c81aa4215d460a14fa6a3afcfddc9d684",
+      "event_handler.cc": "fa93eea4dbfecb77a884831fbc01875abd2517d94719790f57cf79ab4438285e",
+      "event_handler.h": "3ed7ec27cb4c62dc40e59b6c49e3c2eb3b46d97b87646e6da303ac52e42e2523",
+      "input_method_controller.cc": "40248c06952301c2eab0611300fe1d61131bc1f1302834c36bc8c8b70fc7bddf",
+      "input_method_controller.h": "88a121a7a280bdcea83bd60038a02ed2a9245cbfda0d305fd5a812cf82be36ae",
+      "input_method_controller_test.cc": "a62bc094d3e4b381d979de394cf6f956abfd1a02944580025085d3b2c3f440a6",
+      "typing_command.cc": "b4bcd0681e869c6cd3b5cad4d7972d1f053a342b5102d0cc434d67d3f7b18dd9",
+      "typing_command.h": "b0a5224386ee0a260be0f6a43a3474e5281371a47d94841f4f62cf4ca618a6da"
+    },
+    "candidate_file_sha256": {
+      "input_method_controller.cc": "57cd08b975e251b4be5d517314f5570fe0b16e24d2c0c7e53aaac54f9c89bd91",
+      "input_method_controller.h": "43b753e204fca7aa66af53b8b50941d316c0fa6ab4ab86d171b3db305675a656",
+      "input_method_controller_test.cc": "b0193fc7586e77ed8758fc2be0205bdc17ba7c1587597f0cca11df32de01438f",
+      "event_handler.cc": "1c1b4d6a99a090eefa6be797ecaebdf56e692bf89c82426aa70190a8d7b39c0c",
+      "event_handler.h": "1e94afa56ecd59c38093fcf5f86966a145dfb1c69d60f5daed64ac2e8a94e711",
+      "editor.cc": "dd7601b3501e630c6e308bcad51fd8bb67c4aad1aae43576e7e4402a01363b6c",
+      "typing_command.cc": "c97e6a6c1ab4200e8005e212c453dbfe17afe3eed9ad3505aa714ab5a67e63d7",
+      "typing_command.h": "553a71f4b5c0716759bf194fae8900226c5d35136193d21e453a14e7a7e7f028"
+    },
+    "repo_paths": {
+      "input_method_controller.cc": "third_party/blink/renderer/core/editing/ime/input_method_controller.cc",
+      "input_method_controller.h": "third_party/blink/renderer/core/editing/ime/input_method_controller.h",
+      "input_method_controller_test.cc": "third_party/blink/renderer/core/editing/ime/input_method_controller_test.cc",
+      "event_handler.cc": "third_party/blink/renderer/core/input/event_handler.cc",
+      "event_handler.h": "third_party/blink/renderer/core/input/event_handler.h",
+      "editor.cc": "third_party/blink/renderer/core/editing/editor.cc",
+      "typing_command.cc": "third_party/blink/renderer/core/editing/commands/typing_command.cc",
+      "typing_command.h": "third_party/blink/renderer/core/editing/commands/typing_command.h"
+    }
+  },
+  "qualification": {
+    "status": "PRIVATE_SOURCE165_REPRO_NATIVE62_SHORTCUT1_MOUNTED48_READER_PASS_DELIVERY_PENDING",
+    "added_controller_regressions": 30,
+    "existing_controller_tests_unchanged": 135,
+    "upstream_baseline": {
+      "phase": "baseline",
+      "exit_code": 1,
+      "executed_tests": 165,
+      "added_regression_tests": 30,
+      "failed_tests": [
+        "InputMethodControllerTest.CompositionMutationLegacyConfirmFocus",
+        "InputMethodControllerTest.CompositionMutationLegacyConfirmPrevented",
+        "InputMethodControllerTest.CompositionMutationLegacyConfirmSelection",
+        "InputMethodControllerTest.CompositionMutationLegacyConfirmValue"
+      ],
+      "existing_test_failures": [],
+      "previous_suite_failures": [],
+      "added_assertion_failures": [
+        "InputMethodControllerTest.CompositionMutationLegacyConfirmFocus",
+        "InputMethodControllerTest.CompositionMutationLegacyConfirmPrevented",
+        "InputMethodControllerTest.CompositionMutationLegacyConfirmSelection",
+        "InputMethodControllerTest.CompositionMutationLegacyConfirmValue"
+      ],
+      "baseline_source": "previous merged source patch185bd544fb0dd8fa; native14/16passed with two unchanged commit failures",
+      "ordinary_controls": [
+        "InputMethodControllerTest.CompositionMutationOrdinaryCancel",
+        "InputMethodControllerTest.CompositionMutationStyleStillAllowsCommit"
+      ],
+      "qualification_checks": "PASS",
+      "binary_sha256": "2391aff8c80cf24007aee26e2c4fb78ffab67de66faa4e777f254a8083107797",
+      "test_source_sha256": "b0193fc7586e77ed8758fc2be0205bdc17ba7c1587597f0cca11df32de01438f",
+      "summary_sha256": "7e32f2051a0060f8c02fa9f4ec3456b92010d37cd6625e645c9146ef470f2411",
+      "qualification_only_compatibility_patch_sha256": "63e73b3c7a5c57cf7a934068fa22e3622cb5609f5621f134585e7696569e2c3c",
+      "qualification_only_chromium_trace_restore_patch_sha256": "1c497db1198237a4375480ebd5bf695334e98d60b98689238fc2001920019e2e",
+      "filter": "InputMethodControllerTest.*",
+      "private_network_namespace": true,
+      "uid": 65534,
+      "PID_namespace": "exclusive supervisor container",
+      "proc_mount": "read-only binding of that same private namespace",
+      "retry_limit": 0,
+      "batch_limit": 1
+    },
+    "upstream_fixed": {
+      "phase": "fixed",
+      "exit_code": 0,
+      "executed_tests": 165,
+      "added_regression_tests": 30,
+      "failed_tests": [],
+      "existing_test_failures": [],
+      "previous_suite_failures": [],
+      "added_assertion_failures": [],
+      "baseline_source": "previous merged source patch185bd544fb0dd8fa; native14/16passed with two unchanged commit failures",
+      "ordinary_controls": [
+        "InputMethodControllerTest.CompositionMutationOrdinaryCancel",
+        "InputMethodControllerTest.CompositionMutationStyleStillAllowsCommit"
+      ],
+      "qualification_checks": "PASS",
+      "binary_sha256": "b5ab8fe00c14a8c342b42f415381c73d7fbc100f5e9ab88d35e42a940e5728e3",
+      "test_source_sha256": "b0193fc7586e77ed8758fc2be0205bdc17ba7c1587597f0cca11df32de01438f",
+      "summary_sha256": "5c6e63dacc221b60cba46f85383e9bf30ab785ca64b24f67ea8d8816adc63e8d",
+      "qualification_only_compatibility_patch_sha256": "63e73b3c7a5c57cf7a934068fa22e3622cb5609f5621f134585e7696569e2c3c",
+      "qualification_only_chromium_trace_restore_patch_sha256": "1c497db1198237a4375480ebd5bf695334e98d60b98689238fc2001920019e2e",
+      "filter": "InputMethodControllerTest.*",
+      "private_network_namespace": true,
+      "uid": 65534,
+      "PID_namespace": "exclusive supervisor container",
+      "proc_mount": "read-only binding of that same private namespace",
+      "retry_limit": 0,
+      "batch_limit": 1
+    },
+    "native_fixed": {
+      "qualification_checks": "PASS",
+      "receipt_path": "scripts/browser/cef-source/native-revision-two-receipt.json",
+      "receipt_sha256": "766038465e0440dc5a3d920e87671e6fc59d4bb4d383db3970ab6ef658c18484",
+      "executed_unittest_tests": 62,
+      "executed_smoke_scenarios": 1,
+      "renderer_matrix": 16,
+      "owner_native_composition": 4,
+      "owner_guarded_text_input_undo": 42,
+      "candidate_libcef_sha256": "c8c3c51ebcb086b5b22cfdcdc07115826332ed3c6e038b316ec593951cf4e3da",
+      "zero_retries": true,
+      "original_outer_harness_exit": 1,
+      "evidence_parser_corrected_without_rerun": true
+    },
+    "unchanged_owner_guard_and_undo_tests": "PASS all42 unchanged guards/Undo, four native composition tests and one unchanged platform SelectAll smoke scenario; 95 owner source hashes unchanged",
+    "repeat_build": {
+      "qualification_checks": "PASS_BYTE_IDENTICAL_INDEPENDENT_OUTPUT_GENERATIONS",
+      "receipt_path": "scripts/browser/cef-source/sdk-repeat-revision-two-receipt.json",
+      "receipt_sha256": "7e2f83ef5861c4e0eb3d5fb7c6f24c5139b518d0b88be8f1aa9e94f84eda2a5c",
+      "archive_sha256": "cece35681a153ef16446214a8be35a766a2f9f64a5b9149c63c900857a70c57f",
+      "archive_sha1": "f43ecdec645a57bf4562ee8be281ffc993abc1d1",
+      "archive_size": 167327081,
+      "sdk_inventory_entries": 960,
+      "public_packaging_CLI_actually_executed_for_B": true,
+      "original_packaging_source_review_head": "2f1ec83e7809ef6aa3b04e276823c069dde387e6",
+      "original_packaging_recipe_sha256": "d90038c1aa27981b7d2eb63092218c997b39c4817a38d6964a2eca062fe6c7b8"
+    },
+    "signed_browser": "PENDING normal trusted main release and actual signed regression",
+    "previous_revision": {
+      "patch_sha256": "185bd544fb0dd8fa2616be1be250833521950da8e8658709d828f31292be609c",
+      "source_merge": "55167312da8cd5280d54dad29000e71193231e46",
+      "upstream_baseline": {
+        "qualification_checks": "PASS",
+        "executed_tests": 161,
+        "existing_test_failures": [],
+        "added_assertion_failures": 21,
+        "ordinary_controls": "PASS",
+        "test_source_sha256": "e99346a488d726dabee402d30e14e6b5af848abb76a52a4c5ba97991989f4e22",
+        "summary_sha256": "499c04477b79b49e53b99f75abf50cb8cdd3e49bc9f811ddfdeb93f1adaffd66",
+        "binary_sha256": "f9f1cf49d13d60ed085a127badc33cf3909acc7e79bbe4b54b54ac546b9b42b6"
+      },
+      "upstream_fixed": {
+        "qualification_checks": "PASS",
+        "executed_tests": 161,
+        "added_regression_tests": 26,
+        "failed_tests": [],
+        "test_source_sha256": "e99346a488d726dabee402d30e14e6b5af848abb76a52a4c5ba97991989f4e22",
+        "summary_sha256": "2db9e728fd11b353576030a4f6b43db6b5615f3a389b8e259d58d7f410720dbd",
+        "binary_sha256": "90d2ae3f4b5df212e8aaf94de999bb1ba86e2e9a0d3c53772b801000541263e7"
+      },
+      "actual_CEF": {
+        "tests": 16,
+        "passed": 14,
+        "failed": [
+          "test_renderer_textinput_commit_focus_preserved",
+          "test_renderer_textinput_commit_value_preserved"
+        ],
+        "fixture_sha256": "732af0aba12f30e3d23d8fa42d5ad2d18ca0e9a5ba35b9385999291d300b5ada",
+        "log_sha256": "e4403c7fb8ba4a78c005acc93d01608fb827652e3aae122f5d3bde302bc3c17a",
+        "qualified": false,
+        "log_sha256_scope": "Original raw builder log retained in owned evidence; review copy normalizes only four traceback path prefixes",
+        "review_log_path": "scripts/browser/cef-source/native-revision-one-failures.log",
+        "review_log_sha256": "9e11e50cf8c610700c6410a8bf0c234553d9f95aec59bb8a999f2a458813989a"
+      }
+    },
+    "qualification_only_adapters": "Unchanged exact test-support compatibility and Chromium tracing restorations; reverse before production",
+    "resources": {
+      "compile_CPU_cap": 8,
+      "compile_memory_cap_bytes": 107374182400,
+      "host_memory_reserve_bytes": 68719476736,
+      "fresh_compile_RAM_admission_bytes": 176093659136,
+      "checkpoint_seconds": 1200,
+      "prior_measured_compile_peak_bytes": 14782926848,
+      "principal_link": "Separate measured128GiB memory cap and64GiB reserve admission; production final link excluded from compile windows"
+    },
+    "compiler_correction": {
+      "previous_draft_patch_sha256": "1d489afdb9400b940cf0c9d93311a42e443f3cf846adcf7c1683126f3e95a6b5",
+      "failure": "Pinned header path editing/editing_state.h absent; corrected to editing/commands/editing_state.h",
+      "failure_receipt_sha256": "62b9f7b8b5bb8aabef387133a40753931e0dfb9c8f8c1ae1699018a41e2e8757",
+      "test_source_unchanged": true,
+      "compiler_checks_unchanged": true
+    },
+    "private_candidate_A": {
+      "status": "UNQUALIFIED_DO_NOT_PUBLISH_OR_CONSUME",
+      "source_patch_sha256": "40a39125d44e97d1e0373573fbe77a28ec1254d58f6bb7e2c14eb200614726fc",
+      "producer_profile_sha256": "a1abc2cfe4a8ae1f4b631d8ab7304a625ef52ab7834f46e2280a12d301bbb6fb",
+      "archive": "cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_linux64_tilo-40a39125d44e97d1_minimal.tar.bz2",
+      "archive_size": 167327081,
+      "archive_sha256": "cece35681a153ef16446214a8be35a766a2f9f64a5b9149c63c900857a70c57f",
+      "archive_sha1": "f43ecdec645a57bf4562ee8be281ffc993abc1d1",
+      "license_sha256": "058c3827ffb827ff3edda471ae7e1bb1d1aa5931985f0126043ccd33409e792f",
+      "license_parity": "PASS_PINNED_CEF_SOURCE_BYTES",
+      "public_header_parity": "PASS",
+      "required_runtime_files": "PASS",
+      "ELF_architecture": "x86_64"
+    },
+    "mounted_fixed": {
+      "qualification_checks": "PASS",
+      "receipt_path": "scripts/browser/cef-source/mounted-revision-two-receipt.json",
+      "receipt_sha256": "604c20fba1862c2f35ab5b6a4481e4fcf0e25e3694fb1910aa6e3d40ef47e594",
+      "original_ui_binary_source_revision": "1196d1340bfef9c6b72305e4b1677f108add04bc",
+      "original_ui_binary_sha256": "9632cd2d215929820930f3e4a154fc770004fd8194291e6c719828ba94356f28",
+      "executed_direct_scenarios": 24,
+      "executed_decorated_scenarios": 24,
+      "binary_rebuilt": false,
+      "binary_relabelled": false,
+      "zero_retries": true
+    },
+    "actual_normal_reader": {
+      "qualification_checks": "PASS",
+      "receipt_path": "scripts/browser/cef-source/actual-reader-revision-two-receipt.json",
+      "receipt_sha256": "7aa45ce29937e2cfe09a28da0b0c147ff1469cc50e917bda30ab1313e5118fed",
+      "supported_path": "--fetch-only --platform linux64 --sdk-archive PRIVATE_VERIFIED_ARCHIVE",
+      "network_fetch": false,
+      "compiler_or_Cargo_called": false,
+      "production_lock_changed": false
+    }
+  },
+  "artifact": null,
+  "production_defaults": "Keep official noncomponent release, pinned PGO/LTO, sysroot, public API headers, resources, locales and licenses.",
+  "remote_execution": "Existing remote Cargo/SSH builder only; task locks and normal admission, bounded monitored private namespaces; no laptop compilation or shared-cache cleanup. Real CEF fixture uses documented bwrap unshare-all/proc under a token-bound existing systemd user service capped at8GiB/twoCPUs.",
+  "delivery": "Normal required CI and existing signing/provenance verification. No consumer pin changes until qualification; no binary in Git.",
+  "producer_build_patches": [
+    {
+      "repo_path": "third_party/blink/renderer/bindings/BUILD.gn",
+      "upstream_post_cef_sha256": "d11ccebffce25371c6895225d4818bbc06b353145452a60fa836bd7b1ee56335",
+      "candidate_sha256": "de119d5b50ac21ecc566b702d7f4fae89d07fd63a08b4b4e60a144049600a798",
+      "patch_sha256": "91f892a2c828a3182db7bdced801a1ae2fcf1249057fc2e57fedbc58eb0de98f",
+      "option": "Pinned generate_bindings.py --single_process; preserve all targets, outputs, production optimization and runtime source."
+    },
+    {
+      "repo_path": "build/config/compiler/BUILD.gn",
+      "upstream_post_cef_sha256": "ff7ee114ac19a30ce52ca6911be24d3a7d9d4820fc55d7b02639c114742d66c9",
+      "candidate_sha256": "fac775e5fa60c4e0e93f73887b0cb786665fcaa4ac483020de6d8616aba65fe1",
+      "patch_sha256": "ad3c2e1cf80dc8ccdd031a9cd2c4780c49d312554f25b20a76e2699c0b209167",
+      "option": "Supported pinned LLD ThinLTO8 backend/front-end threads; retain ThinLTO, PGO and all optimization."
+    }
+  ],
+  "packaging": {
+    "script": "scripts/browser/cef-source/package_candidate.py",
+    "script_sha256": "4b514e252a855ba9d5961bb7a7af8896e63194f0dc45a72625331245411f128e",
+    "source_date_epoch": 1788381918,
+    "date_metadata": "Pinned CEF date_util date/year frozen to Chromium commit epoch",
+    "canonical_archive": "sorted entries, uid/gid0, empty owner names, epoch timestamps, no inode-dependent hardlinks",
+    "input_qualification": "refuse wrong source/patch/profile, missing closure/header/license/architecture or existing output",
+    "output_qualification": "UNQUALIFIED_DO_NOT_PUBLISH_OR_CONSUME"
+  },
+  "delivery_gate": {
+    "namespace_verification": "BLOCKED: supported public registry metadata GETs returned403 Cloudflare1010, retryablefalse, owner_action_requiredtrue; no retry/bypass",
+    "registry_source_change": "PR3609, e0f4747102ececd497b022ed536a0a7fef84d292",
+    "required_read_only_proof": "Actual existing outer app publisher key and live list-publishers namespaces/can_add_new; inner runtime key or source merge is not proof of migration",
+    "persistent_namespace_authority_changed": false,
+    "user_owns_merge": true,
+    "SDK_published": false,
+    "production_consumer_pins_changed": false,
+    "signed_Browser_regression": "PENDING authorized normal main signing/release after dependency integration"
+  }
+}

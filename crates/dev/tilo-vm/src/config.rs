@@ -99,15 +99,16 @@ pub struct VmEntry {
     /// libvirt: virtio-gpu outputs (default one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heads: Option<u8>,
-    /// libvirt: virgl 3D acceleration, rendered on the host GPU through an
+    /// libvirt or QEMU: virgl 3D acceleration, rendered on the host GPU through an
     /// `egl-headless` display beside the SPICE console.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gl: bool,
-    /// libvirt: the first output's preferred mode, `WIDTHxHEIGHT`; the others
+    /// libvirt or QEMU: the first output's preferred mode, `WIDTHxHEIGHT`; the others
     /// offer the standard modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
-    /// Host port forwarded to the guest's SSH port (libvirt, qemu).
+    /// Host port forwarded to the guest's SSH port (libvirt, qemu, whpx).
+    /// Creation records the selected port; older entries default to 2222.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_port: Option<u16>,
     /// libvirt connection URI.
@@ -193,7 +194,7 @@ pub fn registry_path() -> PathBuf {
     if let Some(path) = std::env::var_os("TILO_VM_CONFIG") {
         return PathBuf::from(path);
     }
-    xdg_paths::config_dir()
+    tilo_paths::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("tilo-vm")
         .join("vms.toml")

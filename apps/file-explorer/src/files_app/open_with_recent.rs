@@ -1,4 +1,4 @@
-//! "Open With" and the Recent place, on the Files widget.
+//! "Open with" and the Recent place, on the Files widget.
 //!
 //! Both are thin: which applications open a type is the host's
 //! [`OpenWithRoute`](crate::open_with::OpenWithRoute) answer, and the Recent
@@ -24,7 +24,7 @@ pub(super) const OPEN_WITH_ACTION: &str = "open-with";
 /// Per-application rows the app chooser lists for its target file.
 const OPEN_ONCE_PREFIX: &str = "open-with-app:";
 const ALWAYS_PREFIX: &str = "always-open-with:";
-/// How many applications the submenu lists before "Other Application…".
+/// How many applications the submenu lists before "Other application…".
 pub(super) const SUBMENU_APPS: usize = 6;
 
 /// The cache key for a file's candidates: its MIME guess and extension, the
@@ -50,7 +50,7 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Whether "Open With" applies: one regular file, and a host to ask.
+    /// Whether "Open with" applies: one regular file, and a host to ask.
     pub(super) fn open_with_available(&self) -> bool {
         self.open_with_route().is_some() && self.open_with_subject().is_some()
     }
@@ -77,7 +77,7 @@ impl FileExplorerWidget {
         self.open_with_cache.borrow_mut().clear();
     }
 
-    /// The single selected regular file an "Open With" choice applies to.
+    /// The single selected regular file an "Open with" choice applies to.
     pub(super) fn open_with_subject(&self) -> Option<PathBuf> {
         if crate::archive::location(&self.current_path).is_some() || self.is_trash_view() {
             return None;
@@ -133,8 +133,8 @@ impl FileExplorerWidget {
         true
     }
 
-    /// The "Open With" flyout: the default and other claiming apps, then
-    /// "Other Application…" for the full, searchable list.
+    /// The "Open with" flyout: the default and other claiming apps, then
+    /// "Other application…" for the full, searchable list.
     pub(super) fn open_open_with_submenu(&mut self, at: Point) {
         let Some(path) = self.open_with_subject() else {
             self.submenu.close();
@@ -173,7 +173,7 @@ impl FileExplorerWidget {
         layout_menu_widget(&mut self.submenu);
     }
 
-    /// "Other Application…": the shared searchable palette, listing every
+    /// "Other application…": the shared searchable palette, listing every
     /// application that claims the type twice — to open once, and to make it
     /// the default. Its rows are this file's published open-with actions, so
     /// choosing one goes through the same action door automation uses.
@@ -253,21 +253,23 @@ impl FileExplorerWidget {
         if !self.app_chooser_open() {
             return;
         }
-        ui::chrome::fill_scrim(
-            scene,
-            transform,
-            self.rect,
-            ui::widget::modal_frame::MODAL_SCRIM_ALPHA,
-            theme,
-        );
         let (width, height) = self.app_chooser.desired_size();
         let gutter = f64::from(theme.tokens.spacing.s4);
         let width = width.min((self.rect.width() - 2.0 * gutter).max(0.0));
         let height = height.min((self.rect.height() - 2.0 * gutter).max(0.0));
         let x = self.rect.center().x - width / 2.0;
-        let y = self.rect.y0 + (self.rect.height() * 0.12).max(gutter);
-        self.app_chooser
-            .set_rect(vello::kurbo::Rect::new(x, y, x + width, y + height));
+        let y = (self.rect.y0 + (self.rect.height() * 0.12).max(gutter))
+            .min(self.rect.y1 - height - gutter)
+            .max(self.rect.y0 + gutter);
+        let card = vello::kurbo::Rect::new(x, y, x + width, y + height);
+        ui::overlay::scrim::behind_panel(
+            scene,
+            transform,
+            self.rect,
+            vello::kurbo::RoundedRect::from_rect(card, ui::widget::floating_surface::radius(theme)),
+            theme,
+        );
+        self.app_chooser.set_rect(card);
         self.app_chooser
             .draw(scene, transform, text_renderer, theme, presence);
     }
@@ -307,10 +309,6 @@ impl FileExplorerWidget {
     /// Open-with actions for a file resource: the typed door (any claiming
     /// app, optionally made the default) and, while the app chooser is open
     /// on this file, one row action per app for the chooser to list.
-    #[allow(
-        clippy::expect_used,
-        reason = "the payload is two owned strings and a bool; JSON encoding cannot fail"
-    )]
     pub(super) fn append_open_with_actions(
         &self,
         entry: &Entry,
@@ -416,7 +414,7 @@ impl FileExplorerWidget {
         if crate::archive::location(path).is_some() {
             return;
         }
-        let at = crate::recent::now_ms();
+        let at = ui::time::unix_now_ms();
         self.edit_recent(|recent| recent.note(path, last_use, at));
     }
 
@@ -476,6 +474,7 @@ impl FileExplorerWidget {
                     share: None,
                     history: None,
                     rich_metadata: None,
+                    observed: host_fs::ObservedObject::from_metadata(&meta),
                 })
             })
             .collect()
@@ -493,6 +492,7 @@ impl FileExplorerWidget {
             .position(|entry| entry.path == path)
         {
             self.selection.select_only(index);
+            self.retain_shown_selection();
         }
         true
     }

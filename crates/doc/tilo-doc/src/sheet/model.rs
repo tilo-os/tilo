@@ -5,6 +5,7 @@
 //! sheets, each a sparse map of A1-keyed cells.
 
 use crate::document::DocError;
+use crate::model::required_map;
 use crate::sheet::schema::{
     CELL_FORMULA, CELL_STYLE, CELL_TYPE, CELL_VALUE, KEY_SHEET_META, KEY_SHEET_PRESERVED,
     KEY_SHEET_PROPS, KEY_SHEET_SCHEMA, KEY_SHEET_SCHEMA_VERSION, KEY_SHEETS, SHEET_CELLS,
@@ -14,6 +15,8 @@ use crate::sheet::snapshot::{CellType, CellView, SheetView, WorkbookSnapshot};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
+use tilo_automerge::ReadTyped as _;
+use tilo_automerge::read::{map_at, str_at, str_entries};
 
 /// The data written into a cell: its value + type, an optional preserved formula
 /// (source without the leading `=`), and an optional opaque style ref.
@@ -99,37 +102,19 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> SheetContainers {
 pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<SheetContainers, DocError> {
     Ok(SheetContainers {
         root: root.clone(),
-        sheets: map_at(doc, root, KEY_SHEETS)?,
-        meta: map_at(doc, root, KEY_SHEET_META)?,
-        preserved: map_at(doc, root, KEY_SHEET_PRESERVED)?,
+        sheets: required_map(doc, root, KEY_SHEETS)?,
+        meta: required_map(doc, root, KEY_SHEET_META)?,
+        preserved: required_map(doc, root, KEY_SHEET_PRESERVED)?,
     })
 }
 
-fn map_at(doc: &AutoCommit, root: &ObjId, key: &str) -> Result<ObjId, DocError> {
-    match doc.get(root, key)? {
-        Some((Value::Object(ObjType::Map), id)) => Ok(id),
-        _ => Err(DocError::Invalid(format!(
-            "workbook root.{key} is not a map"
-        ))),
-    }
-}
-
 fn sheet_obj(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<ObjId> {
-    match doc.get(&c.sheets, id) {
-        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
+    map_at(doc, &c.sheets, id)
 }
 
 fn sheet_order(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<Vec<u8>> {
     let obj = sheet_obj(doc, c, id)?;
-    match doc.get(&obj, SHEET_ORDER) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
+    doc.bytes_at(&obj, SHEET_ORDER)
 }
 
 /// Sheet ids in tab order (by fractional order key, then id as a tiebreak so two
@@ -146,25 +131,12 @@ pub fn sheet_ids_in_order(doc: &AutoCommit, c: &SheetContainers) -> Vec<String> 
 /// A sheet's tab name (empty if unset / unknown id).
 pub fn sheet_name(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<String> {
     let obj = sheet_obj(doc, c, id)?;
-    match doc.get(&obj, SHEET_NAME) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &obj, SHEET_NAME)
 }
 
 fn cells_obj(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<ObjId> {
     let obj = sheet_obj(doc, c, id)?;
-    match doc.get(&obj, SHEET_CELLS) {
-        Ok(Some((Value::Object(ObjType::Map), cid))) => Some(cid),
-        _ => None,
-    }
-}
-
-fn cell_str(doc: &AutoCommit, cell: &ObjId, key: &str) -> Option<String> {
-    match doc.get(cell, key) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    map_at(doc, &obj, SHEET_CELLS)
 }
 
 /// Materializes a single cell (by A1 ref) into a [`CellView`], or `None` if the ref is unknown or malformed.
@@ -183,11 +155,11 @@ pub fn cell(
 
 fn materialize_cell(doc: &AutoCommit, cell_obj: &ObjId, reference: &str) -> Option<CellView> {
     let (col, row) = crate::sheet::a1::parse_ref(reference)?;
-    let value = cell_str(doc, cell_obj, CELL_VALUE).unwrap_or_default();
+    let value = str_at(doc, cell_obj, CELL_VALUE).unwrap_or_default();
     let cell_type =
-        cell_str(doc, cell_obj, CELL_TYPE).map_or(CellType::Text, |s| CellType::from_str(&s));
-    let formula = cell_str(doc, cell_obj, CELL_FORMULA).filter(|s| !s.is_empty());
-    let style = cell_str(doc, cell_obj, CELL_STYLE).filter(|s| !s.is_empty());
+        str_at(doc, cell_obj, CELL_TYPE).map_or(CellType::Text, |s| CellType::from_str(&s));
+    let formula = str_at(doc, cell_obj, CELL_FORMULA).filter(|s| !s.is_empty());
+    let style = str_at(doc, cell_obj, CELL_STYLE).filter(|s| !s.is_empty());
     Some(CellView {
         reference: reference.to_string(),
         col,
@@ -222,33 +194,17 @@ pub fn materialize_sheet(doc: &AutoCommit, c: &SheetContainers, id: &str) -> She
 }
 
 fn props_obj(doc: &AutoCommit, c: &SheetContainers) -> Option<ObjId> {
-    match doc.get(&c.meta, KEY_SHEET_PROPS) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-        _ => None,
-    }
+    map_at(doc, &c.meta, KEY_SHEET_PROPS)
 }
 
 /// All document properties (`name → value`) as a sorted map.
 pub fn doc_props(doc: &AutoCommit, c: &SheetContainers) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    if let Some(props) = props_obj(doc, c) {
-        for k in doc.keys(&props) {
-            if let Ok(Some((v, _))) = doc.get(&props, &k)
-                && let Some(s) = v.as_str()
-            {
-                out.insert(k, s.to_string());
-            }
-        }
-    }
-    out
+    props_obj(doc, c).map_or_else(BTreeMap::new, |props| str_entries(doc, &props))
 }
 
 pub fn doc_prop(doc: &AutoCommit, c: &SheetContainers, name: &str) -> Option<String> {
     let props = props_obj(doc, c)?;
-    match doc.get(&props, name) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
+    str_at(doc, &props, name)
 }
 
 /// All preserved (verbatim, unmodeled) package parts as `(part_name, bytes)`.
@@ -265,13 +221,7 @@ pub fn preserved_parts(doc: &AutoCommit, c: &SheetContainers) -> Vec<(String, Ve
 }
 
 pub fn preserved_part(doc: &AutoCommit, c: &SheetContainers, name: &str) -> Option<Vec<u8>> {
-    match doc.get(&c.preserved, name) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
+    doc.bytes_at(&c.preserved, name)
 }
 
 pub fn materialize(doc: &AutoCommit, c: &SheetContainers) -> WorkbookSnapshot {
@@ -374,22 +324,6 @@ impl Workbook {
             .unwrap();
         self.doc.commit();
         id
-    }
-
-    /// Rename a sheet (no-op if the id is unknown).
-    ///
-    /// # Panics
-    /// Panics if `self.c.sheets` no longer resolves in `self.doc` — see the note on
-    /// [`Self::set_cell`].
-    #[allow(
-        clippy::unwrap_used,
-        reason = "self.c.sheets was resolved by open()/init() at construction and this API never invalidates it"
-    )]
-    pub fn rename_sheet(&mut self, id: &str, name: &str) {
-        if let Some(obj) = sheet_obj(&self.doc, &self.c, id) {
-            self.doc.put(&obj, SHEET_NAME, name).unwrap();
-            self.doc.commit();
-        }
     }
 
     fn cells_container(&mut self, sheet_id: &str) -> Option<ObjId> {
@@ -630,10 +564,7 @@ fn seeded_sheet_id_gen(
     reason = "obj is always a live object at every call site (see the panics note above)"
 )]
 fn put_str_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str) {
-    let current = match doc.get(obj, key) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    };
+    let current = str_at(doc, obj, key);
     if current.as_deref() != Some(value) {
         doc.put(obj, key, value).unwrap();
     }
@@ -649,10 +580,7 @@ fn put_str_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str)
     reason = "obj is always a live object at every call site (see the panics note above)"
 )]
 fn set_opt_str(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: Option<&str>) {
-    let current = match doc.get(obj, key) {
-        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
-        _ => None,
-    };
+    let current = str_at(doc, obj, key);
     if current.as_deref() == value {
         return; // already matches: no CRDT op needed
     }

@@ -13,6 +13,17 @@ impl crate::collaboration::PeerTransport for HostedModelTransport {
     fn poll(&mut self) -> Vec<CollabEvent> {
         vec![]
     }
+    // Legacy owner-route delivery is explicit; no native capture is synthesized.
+    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+        Ok(())
+    }
+    fn send_to_route(
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        request: CollabRequest,
+    ) -> Result<(), String> {
+        self.send(request)
+    }
     fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
         Ok(())
     }
@@ -102,7 +113,7 @@ fn hosted_directory_fixture() -> App {
     );
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.init_layout();
     app.pump_collab_presence();
     app.publish_action_surface();
@@ -148,8 +159,7 @@ fn hosted_directory_sync_contract_and_hierarchy_changes_invalidate_revision() {
         if change == "hierarchy" {
             assert_eq!(current.rows.len(), 2);
         } else {
-            let contract: tilo_actions::ActionContract =
-                serde_json::from_str(&current.rows[0].visibility_contract_json).unwrap();
+            let contract = &current.rows[0].visibility.as_ref().unwrap().contract;
             assert_eq!(
                 contract.confirmation,
                 tilo_actions::ConfirmationPolicy::Confirm
@@ -168,7 +178,7 @@ fn hosted_directory_provider_generation_change_remains_stale() {
     );
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.init_layout();
     app.pump_collab_presence();
     app.publish_action_surface();
@@ -292,7 +302,7 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
         AppConstructionInputs::controlled()
     })
     .unwrap();
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: binding.broker_route().unwrap(),
         epoch: uuid::Uuid::new_v4(),
@@ -427,7 +437,7 @@ fn hosted_directory_lazy_target_domain_versions_even_with_unchanged_search_gener
     );
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.init_layout();
     app.pump_collab_presence();
     app.publish_action_surface();
@@ -570,7 +580,6 @@ fn hosted_directory_equivalent_notification_before_sync_preserves_offered_revisi
 
 #[test]
 fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_restore() {
-    use crate::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -581,16 +590,11 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
         let failed = Arc::new(AtomicBool::new(false));
         let sample_time = time.clone();
         let sample_failed = failed.clone();
-        app.permission_ctx = PermissionContext::from_capabilities(
-            Actor::person(None, "fixture-user"),
-            vec![
-                CapOverride::grant(
-                    Subject::person("fixture-user"),
-                    Scope::Workspace,
-                    Verb::Admin,
-                )
-                .with_expiry(110),
-            ],
+        app.permission_ctx = crate::permissions::PermissionContext::granted(
+            "fixture-user",
+            &crate::permissions::TreePath::root(),
+            crate::permissions::policy::KindSet::ALL,
+            Some(110),
         )
         .at_unix_time(100)
         .with_policy_time_sampler(Arc::new(move || {
@@ -627,7 +631,7 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
         assert_ne!(app.action_directory_revision(), page.revision);
         assert!(!matches!(
             app.resolve_action_directory(&page.revision, "declared:0", "inspect"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
     }
 }
@@ -654,4 +658,68 @@ fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
         before
     );
     assert_ne!(app.action_directory_revision(), page.revision);
+}
+
+#[test]
+fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() {
+    let mut app = hosted_directory_fixture();
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![
+            crate::collaboration::Collaborator {
+                id: "person:local".into(),
+                name: "Local person".into(),
+                colour: None,
+                is_agent: false,
+                is_self: true,
+            },
+            crate::collaboration::Collaborator {
+                id: "opaque-member".into(),
+                name: "Build helper".into(),
+                colour: None,
+                is_agent: true,
+                is_self: false,
+            },
+            crate::collaboration::Collaborator {
+                id: "agent:spoof".into(),
+                name: "A person".into(),
+                colour: None,
+                is_agent: false,
+                is_self: false,
+            },
+        ],
+        permissions: vec![],
+    });
+    let opaque = crate::permissions::UserId("opaque-member".into());
+    let spoof = crate::permissions::UserId("agent:spoof".into());
+    assert_eq!(
+        app.presence_ctx.participant_kind(&opaque),
+        crate::presence::ParticipantKind::Agent
+    );
+    assert_eq!(
+        app.presence_ctx.participant_kind(&spoof),
+        crate::presence::ParticipantKind::Person
+    );
+
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![crate::collaboration::Collaborator {
+            id: "person:local".into(),
+            name: "Local person".into(),
+            colour: None,
+            is_agent: false,
+            is_self: true,
+        }],
+        permissions: vec![],
+    });
+    assert!(!app.presence_ctx.names.contains_key(&opaque));
+    assert!(!app.presence_ctx.names.contains_key(&spoof));
+    assert_eq!(
+        app.presence_ctx.participant_kind(&opaque),
+        crate::presence::ParticipantKind::Person
+    );
+
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![],
+        permissions: vec![],
+    });
+    assert!(app.presence_ctx.self_id().is_none());
 }

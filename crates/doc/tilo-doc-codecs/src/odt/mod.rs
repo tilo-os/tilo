@@ -12,12 +12,12 @@ pub mod headers;
 pub mod language;
 pub mod meta;
 pub mod notes;
+mod plain_paragraphs;
 pub mod styles;
 
-use crate::format::{CodecError, Confidence, FormatProvider};
+use crate::format::{CodecError, FormatProvider};
 use tilo_content::{ContentInputs, ContentSource};
 use tilo_doc::model::{DocMut, DocRef};
-use tilo_doc::schema::SCHEMA_ID;
 
 /// Preservation-layer keys of the imported `content.xml` root start tag, the declarations
 /// before its automatic styles, and the automatic styles' content.
@@ -28,19 +28,6 @@ pub(crate) const CONTENT_AUTOMATIC_STYLES_KEY: &str = "odt/content-automatic-sty
 pub struct OdtCodec;
 
 impl FormatProvider for OdtCodec {
-    fn schema_id(&self) -> &str {
-        SCHEMA_ID
-    }
-
-    fn detect(&self, head: &[u8]) -> Confidence {
-        // ODF is a zip ("PK..") whose first stored entry is the mimetype.
-        if head.starts_with(b"PK") {
-            Confidence::Low
-        } else {
-            Confidence::None
-        }
-    }
-
     fn import(
         &self,
         bytes: &[u8],

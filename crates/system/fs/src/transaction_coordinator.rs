@@ -81,7 +81,7 @@ where
 {
     if matches!(
         entry.transaction.manifest.operation,
-        collab_types::FileMutationOperation::RestoreContent { .. }
+        fs_protocol::FileMutationOperation::RestoreContent { .. }
     ) {
         if journal
             .get(entry.transaction_id())
@@ -273,28 +273,28 @@ where
         fail_if_armed(id, CoordinatorFaultPoint::AfterHistoryAppend)?;
         if let Some((source_record, conflict_id, strategy, role)) =
             match &entry.transaction.manifest.operation {
-                collab_types::FileMutationOperation::KeepBothContentConflict {
+                fs_protocol::FileMutationOperation::KeepBothContentConflict {
                     source_record,
                     conflict_id,
                     ..
                 } => Some((
                     *source_record,
                     *conflict_id,
-                    collab_types::ConflictStrategy::KeepBoth,
-                    collab_types::FileMutationParticipantRole::KeepBothSource,
+                    fs_protocol::ConflictStrategy::KeepBoth,
+                    fs_protocol::FileMutationParticipantRole::KeepBothSource,
                 )),
-                collab_types::FileMutationOperation::MergeContentConflict {
+                fs_protocol::FileMutationOperation::MergeContentConflict {
                     source_record,
                     conflict_id,
                     ..
                 } => Some((
                     *source_record,
                     *conflict_id,
-                    collab_types::ConflictStrategy::Merge,
-                    collab_types::FileMutationParticipantRole::MergeSource,
+                    fs_protocol::ConflictStrategy::Merge,
+                    fs_protocol::FileMutationParticipantRole::MergeSource,
                 )),
-                collab_types::FileMutationOperation::ReplacementRename { .. }
-                | collab_types::FileMutationOperation::RestoreContent { .. } => None,
+                fs_protocol::FileMutationOperation::ReplacementRename { .. }
+                | fs_protocol::FileMutationOperation::RestoreContent { .. } => None,
             }
         {
             let source = entry
@@ -307,7 +307,7 @@ where
             history.resolve(
                 source_record,
                 conflict_id,
-                collab_types::ConflictResolution {
+                fs_protocol::ConflictResolution {
                     strategy,
                     result: source.proposed_version.id,
                     actor: entry.transaction.manifest.actor,
@@ -336,7 +336,7 @@ where
                 Some(delta) => delta,
                 None if matches!(
                     entry.transaction.manifest.operation,
-                    collab_types::FileMutationOperation::MergeContentConflict { .. }
+                    fs_protocol::FileMutationOperation::MergeContentConflict { .. }
                 ) =>
                 {
                     Vec::new()
@@ -354,12 +354,12 @@ where
         let mut candidate = namespace.clone();
         if matches!(
             entry.transaction.manifest.operation,
-            collab_types::FileMutationOperation::KeepBothContentConflict { .. }
+            fs_protocol::FileMutationOperation::KeepBothContentConflict { .. }
         ) {
             candidate.apply_staged_keep_both_delta(&entry.transaction, &staged)?;
         } else if matches!(
             entry.transaction.manifest.operation,
-            collab_types::FileMutationOperation::MergeContentConflict { .. }
+            fs_protocol::FileMutationOperation::MergeContentConflict { .. }
         ) {
             candidate.apply_staged_merge_delta(&entry.transaction, &staged)?;
         } else if let Some(actual) = candidate.apply_mutation_transaction(&entry.transaction)?
@@ -423,41 +423,28 @@ pub enum RecordTransactionCoordinatorError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
 
-    use collab_types::{
-        CONTENT_REVISION_VERSION, ContentHash, Ed25519PublicKey, FILE_BINDING_VERSION,
+    use collab_types::Ed25519PublicKey;
+    use ed25519_dalek::SigningKey;
+    use fs_protocol::{
+        CONTENT_REVISION_VERSION, ContentHash, FILE_BINDING_VERSION,
         FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileMutationOperation,
         FileMutationParticipant, FileMutationParticipantRole, FileMutationTransaction,
-        FileMutationTransactionManifest, FileNodeKind, FileProvenance, FileRecordId, FileVersionId,
+        FileMutationTransactionManifest, FileNodeKind, FileProvenance, FileVersionId,
         FileVersionV1,
     };
-    use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use uuid::Uuid;
 
     use super::*;
     use crate::namespace::ROOT_INO;
-    use crate::record_replication::{RecordAction, RecordEnvelopeV1, RecordOperationV1};
+    use crate::record_replication::{RecordEnvelopeV1, RecordOperationV1};
     use crate::record_repository::RecordRepositoryKey;
     use crate::record_transaction::{
         RECORD_TRANSACTION_JOURNAL_VERSION, RecordTransactionParticipantBatch,
     };
 
-    struct Authorizer {
-        actor: FileActor,
-        records: BTreeSet<FileRecordId>,
-    }
-
-    impl RecordAuthorizer for Authorizer {
-        fn actor_is_certified(&self, actor: &FileActor) -> bool {
-            actor == &self.actor
-        }
-
-        fn allows(&self, actor: &FileActor, record_id: FileRecordId, _: RecordAction) -> bool {
-            actor == &self.actor && self.records.contains(&record_id)
-        }
-    }
+    use crate::record_replication::test_authorizers::AllowActorOn;
 
     #[test]
     #[allow(
@@ -511,7 +498,7 @@ mod tests {
             ] {
                 assert!(namespace.set_content_revision(
                     ino,
-                    &collab_types::ContentRevisionV1 {
+                    &fs_protocol::ContentRevisionV1 {
                         schema_version: CONTENT_REVISION_VERSION,
                         record_id: version.record_id,
                         version_id: version.id,
@@ -553,7 +540,7 @@ mod tests {
                     actor,
                     observed_at_ms: 2,
                 },
-                proposed_content_revision: Some(collab_types::ContentRevisionV1 {
+                proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
                     schema_version: CONTENT_REVISION_VERSION,
                     record_id,
                     version_id: version.id,
@@ -601,7 +588,7 @@ mod tests {
         )
         .unwrap();
         let repository = RecordRepository::open(temp.path().join("records")).unwrap();
-        let authorizer = Authorizer {
+        let authorizer = AllowActorOn {
             actor,
             records: [source_record, victim_record].into_iter().collect(),
         };
@@ -649,16 +636,14 @@ mod tests {
                             record_id,
                             actor,
                             3,
-                            RecordOperationV1::SetContentRevision(
-                                collab_types::ContentRevisionV1 {
-                                    schema_version: CONTENT_REVISION_VERSION,
-                                    record_id,
-                                    version_id: baseline.id,
-                                    content_hash: None,
-                                    byte_len: 0,
-                                    metadata_hash: baseline.metadata_hash,
-                                },
-                            ),
+                            RecordOperationV1::SetContentRevision(fs_protocol::ContentRevisionV1 {
+                                schema_version: CONTENT_REVISION_VERSION,
+                                record_id,
+                                version_id: baseline.id,
+                                content_hash: None,
+                                byte_len: 0,
+                                metadata_hash: baseline.metadata_hash,
+                            }),
                             &key,
                         )
                         .unwrap(),

@@ -275,6 +275,18 @@ pub enum ShortcutStepDecision {
 }
 
 type ShortcutStepReply = Box<dyn FnOnce(ShortcutStepDecision) + Send>;
+type FieldValidator = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
+/// A compositor-owned review with one empty text field. Uses the shared
+/// question sheet and its accessibility actions; no application owns the
+/// entered answer or can prefill it. Useful for independent peer verification.
+pub struct FieldReviewRequest {
+    pub handle: String,
+    pub app_id: String,
+    pub title: String,
+    pub detail: String,
+    pub confirm_label: String,
+}
 
 /// The person's answer to carrying a window into another workspace
 /// ([`crate::shell::window_transfer`]).
@@ -335,6 +347,7 @@ enum PendingDialog {
     ShortcutStep {
         request: ShortcutStepRequest,
         reply: ShortcutStepReply,
+        validate: Option<FieldValidator>,
     },
     AppChoice {
         request: ApplicationChoiceRequest,
@@ -393,6 +406,27 @@ pub struct PortalDialogQueue {
 }
 
 impl PortalDialogQueue {
+    pub fn enqueue_field_review(
+        &self,
+        request: FieldReviewRequest,
+        validate: impl Fn(&str) -> Result<(), String> + Send + Sync + 'static,
+        reply: impl FnOnce(ShortcutStepDecision) + Send + 'static,
+    ) -> Result<(), String> {
+        self.enqueue_step(
+            ShortcutStepRequest {
+                handle: request.handle,
+                shortcut: friendly_app_name(&request.app_id),
+                title: request.title,
+                detail: request.detail,
+                confirm_label: request.confirm_label,
+                choices: Vec::new(),
+                field: Some(ShortcutStepField { masked: false }),
+            },
+            Some(Arc::new(validate)),
+            reply,
+        )
+    }
+
     pub fn global() -> Self {
         #[cfg(test)]
         crate::shell::test_support::ambient_start("global portal dialog queue");
@@ -430,24 +464,60 @@ impl PortalDialogQueue {
         PortalResult::Success(())
     }
 
-    pub fn enqueue_review(
+    /// Queue the sheet `dialog` builds around a fresh reply channel, unless
+    /// a sheet with the same handle is already live.
+    fn enqueue_reply<T>(
         &self,
-        request: ReviewRequest,
-    ) -> Result<oneshot::Receiver<ReviewDecision>, String> {
+        handle: String,
+        dialog: impl FnOnce(oneshot::Sender<T>) -> PendingDialog,
+    ) -> Result<oneshot::Receiver<T>, String> {
         let (reply, receiver) = oneshot::channel();
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
+        if inner.pending.contains_key(&handle) {
             return Err("duplicate live portal request".into());
         }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::Review { request, reply },
-        );
+        inner.order.push_back(handle.clone());
+        inner.pending.insert(handle, dialog(reply));
         Ok(receiver)
+    }
+
+    /// Take the live sheet under `handle` and let `answer` reply to it. A
+    /// sheet of another kind comes back as `Err` and is put back untouched.
+    fn finish_pending(
+        &self,
+        handle: &str,
+        answer: impl FnOnce(PendingDialog) -> Result<(), PendingDialog>,
+    ) -> bool {
+        let pending = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.pending.remove(handle));
+        let Some(pending) = pending else {
+            return false;
+        };
+        match answer(pending) {
+            Ok(()) => true,
+            Err(other) => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.pending.insert(handle.into(), other);
+                }
+                false
+            }
+        }
+    }
+
+    pub fn enqueue_review(
+        &self,
+        request: ReviewRequest,
+    ) -> Result<oneshot::Receiver<ReviewDecision>, String> {
+        self.enqueue_reply(request.handle.clone(), |reply| PendingDialog::Review {
+            request,
+            reply,
+        })
     }
 
     pub fn enqueue_launcher_review(
@@ -457,20 +527,9 @@ impl PortalDialogQueue {
         if request.name.trim().is_empty() || request.icon_choices.is_empty() {
             return Err("invalid launcher review request".into());
         }
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.review.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.review.handle.clone());
-        inner.pending.insert(
-            request.review.handle.clone(),
-            PendingDialog::LauncherReview { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.review.handle.clone(), |reply| {
+            PendingDialog::LauncherReview { request, reply }
+        })
     }
 
     /// Queue an administrator-authentication sheet. A request with the
@@ -482,41 +541,19 @@ impl PortalDialogQueue {
         if request.identities.is_empty() {
             return Err("no identity can authorise this request".into());
         }
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::Authentication { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| {
+            PendingDialog::Authentication { request, reply }
+        })
     }
 
     fn finish_authentication(&self, handle: &str, decision: AuthenticationDecision) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::Authentication { reply, .. }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::Authentication { reply, .. } => {
                 let _ = reply.send(decision);
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     /// Queue a network-secrets sheet. A masked field's starting value is
@@ -533,41 +570,19 @@ impl PortalDialogQueue {
                 field.initial.clear();
             }
         }
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::NetworkSecrets { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| {
+            PendingDialog::NetworkSecrets { request, reply }
+        })
     }
 
     fn finish_network_secrets(&self, handle: &str, decision: NetworkSecretsDecision) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::NetworkSecrets { reply, .. }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::NetworkSecrets { reply, .. } => {
                 let _ = reply.send(decision);
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     /// A live network-secrets sheet's fields as queued.
@@ -592,25 +607,14 @@ impl PortalDialogQueue {
         if request.devices.is_empty() {
             return Err("USB selection needs at least one device".into());
         }
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.review.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.review.handle.clone());
         let selected = vec![true; request.devices.len()];
-        inner.pending.insert(
-            request.review.handle.clone(),
+        self.enqueue_reply(request.review.handle.clone(), |reply| {
             PendingDialog::UsbDevices {
                 request,
                 selected,
                 reply,
-            },
-        );
-        Ok(receiver)
+            }
+        })
     }
 
     /// Queue the trusted shell editor used by the GlobalShortcuts portal.
@@ -620,20 +624,9 @@ impl PortalDialogQueue {
         &self,
         request: ShortcutBindingRequest,
     ) -> Result<oneshot::Receiver<ShortcutBindingDecision>, String> {
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::ShortcutBindings { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| {
+            PendingDialog::ShortcutBindings { request, reply }
+        })
     }
 
     /// Queue the sheet asking whether one application may use another's
@@ -643,20 +636,10 @@ impl PortalDialogQueue {
         &self,
         request: AppActionConsentRequest,
     ) -> Result<oneshot::Receiver<AppActionConsent>, String> {
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::ActionGrant { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| PendingDialog::ActionGrant {
+            request,
+            reply,
+        })
     }
 
     /// Queue the sheet asking whether, and how, a window crosses into
@@ -669,20 +652,9 @@ impl PortalDialogQueue {
         if request.choices.is_empty() {
             return Err("a transfer sheet needs an answer to offer".into());
         }
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::WindowTransfer { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| {
+            PendingDialog::WindowTransfer { request, reply }
+        })
     }
 
     /// Queue the sheet asking a workspace's owner to accept or decline a
@@ -692,30 +664,14 @@ impl PortalDialogQueue {
         &self,
         request: DocumentImportRequest,
     ) -> Result<oneshot::Receiver<DocumentImportDecision>, String> {
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::DocumentImport { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| {
+            PendingDialog::DocumentImport { request, reply }
+        })
     }
 
     fn finish_window_transfer(&self, handle: &str, choice: Option<usize>) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::WindowTransfer { request, reply }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::WindowTransfer { request, reply } => {
                 let decision = choice.map_or(WindowTransferDecision::Cancelled, |index| {
                     request
                         .choices
@@ -723,45 +679,28 @@ impl PortalDialogQueue {
                         .map_or(WindowTransferDecision::Cancelled, |choice| choice.decision)
                 });
                 let _ = reply.send(decision);
-                true
+                Ok(())
             }
-            Some(PendingDialog::DocumentImport { reply, .. }) => {
+            PendingDialog::DocumentImport { reply, .. } => {
                 let _ = reply.send(match choice {
                     Some(0) => DocumentImportDecision::Accept,
                     Some(1) => DocumentImportDecision::Decline,
                     _ => DocumentImportDecision::Dismissed,
                 });
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     fn finish_action_grant(&self, handle: &str, answer: AppActionConsent) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::ActionGrant { reply, .. }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::ActionGrant { reply, .. } => {
                 let _ = reply.send(answer);
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     /// Queue a sheet for a running shortcut's step; `reply` receives the
@@ -774,6 +713,15 @@ impl PortalDialogQueue {
     pub fn enqueue_shortcut_step(
         &self,
         request: ShortcutStepRequest,
+        reply: impl FnOnce(ShortcutStepDecision) + Send + 'static,
+    ) -> Result<(), String> {
+        self.enqueue_step(request, None, reply)
+    }
+
+    fn enqueue_step(
+        &self,
+        request: ShortcutStepRequest,
+        validate: Option<FieldValidator>,
         reply: impl FnOnce(ShortcutStepDecision) + Send + 'static,
     ) -> Result<(), String> {
         let mut inner = self
@@ -789,30 +737,35 @@ impl PortalDialogQueue {
             PendingDialog::ShortcutStep {
                 request,
                 reply: Box::new(reply),
+                validate,
             },
         );
         Ok(())
     }
 
-    fn finish_shortcut_step(&self, handle: &str, decision: ShortcutStepDecision) -> bool {
-        let pending = self
+    fn validate_field(&self, handle: &str, value: &str) -> Result<(), String> {
+        let inner = self
             .inner
             .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::ShortcutStep { reply, .. }) => {
-                reply(decision);
-                true
-            }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
+            .map_err(|_| "portal controller unavailable")?;
+        match inner.pending.get(handle) {
+            Some(PendingDialog::ShortcutStep {
+                validate: Some(validate),
+                ..
+            }) => validate(value),
+            Some(PendingDialog::ShortcutStep { .. }) => Ok(()),
+            _ => Err("portal request is no longer live".into()),
         }
+    }
+
+    fn finish_shortcut_step(&self, handle: &str, decision: ShortcutStepDecision) -> bool {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::ShortcutStep { reply, .. } => {
+                reply(decision);
+                Ok(())
+            }
+            other => Err(other),
+        })
     }
 
     fn next_handle(&self) -> Option<String> {
@@ -828,7 +781,9 @@ impl PortalDialogQueue {
     fn view(&self, handle: &str) -> Option<DialogView> {
         let inner = self.inner.lock().ok()?;
         match inner.pending.get(handle)? {
-            PendingDialog::ShortcutStep { request, .. } => Some(DialogView::ShortcutStep {
+            PendingDialog::ShortcutStep {
+                request, validate, ..
+            } => Some(DialogView::ShortcutStep {
                 handle: request.handle.clone(),
                 shortcut: request.shortcut.clone(),
                 title: request.title.clone(),
@@ -836,6 +791,7 @@ impl PortalDialogQueue {
                 confirm_label: request.confirm_label.clone(),
                 choices: request.choices.clone(),
                 field: request.field.clone(),
+                field_review: validate.is_some(),
             }),
             PendingDialog::AppChoice { request, .. } => Some(DialogView::AppChoice {
                 handle: request.handle.clone(),
@@ -904,16 +860,27 @@ impl PortalDialogQueue {
             }),
             PendingDialog::ActionGrant { request, .. } => Some(DialogView::ActionGrant {
                 handle: request.handle.clone(),
-                title: t_args(
-                    "portal-grant-title",
-                    &[
-                        ("app", friendly_app_name(&request.app_id).into()),
-                        ("target", friendly_app_name(&request.target_app).into()),
-                    ],
-                ),
-                action: request.action_label.clone(),
+                title: if request.confirming {
+                    t_args(
+                        "portal-confirm-title",
+                        &[("who", friendly_app_name(&request.app_id).into())],
+                    )
+                } else {
+                    t_args(
+                        "portal-grant-title",
+                        &[
+                            ("app", friendly_app_name(&request.app_id).into()),
+                            ("target", friendly_app_name(&request.target_app).into()),
+                        ],
+                    )
+                },
+                // A grant covers this action on this resource only, so the
+                // sheet names both.
+                action: format!("{} · {}", request.resource_label, request.action_label),
                 detail: action_grant_detail(request),
-                choices: AppActionConsent::ALLOWING
+                // Confirming one invocation grants nothing: it is allowed
+                // this once or not at all.
+                choices: action_grant_answers(request)
                     .iter()
                     .map(|answer| crate::shell::app_action_consent::consent_label(*answer))
                     .collect(),
@@ -965,13 +932,8 @@ impl PortalDialogQueue {
     }
 
     fn finish_choice(&self, handle: &str, choice: Option<String>) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::AppChoice { reply, .. }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::AppChoice { reply, .. } => {
                 let result = choice.map_or(PortalResult::Cancelled, |choice| {
                     PortalResult::Success(ApplicationChoice {
                         choice,
@@ -979,16 +941,10 @@ impl PortalDialogQueue {
                     })
                 });
                 let _ = reply.send(result);
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     /// Withdraw any portal sheet by its implementation-side Request path.
@@ -1057,45 +1013,23 @@ impl PortalDialogQueue {
     }
 
     fn finish_review(&self, handle: &str, decision: ReviewDecision) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::Review { reply, .. }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::Review { reply, .. } => {
                 let _ = reply.send(decision);
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     fn finish_shortcut_bindings(&self, handle: &str) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::ShortcutBindings { request, reply }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::ShortcutBindings { request, reply } => {
                 let _ = reply.send(ShortcutBindingDecision { rows: request.rows });
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     fn finish_launcher_review(
@@ -1105,13 +1039,8 @@ impl PortalDialogQueue {
         name: String,
         icon_choice: usize,
     ) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::LauncherReview { request, reply }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::LauncherReview { request, reply } => {
                 let _ = reply.send(LauncherReviewDecision {
                     decision,
                     name: if request.editable_name {
@@ -1125,30 +1054,19 @@ impl PortalDialogQueue {
                         0
                     },
                 });
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     fn finish_usb_devices(&self, handle: &str, decision: ReviewDecision) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::UsbDevices {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::UsbDevices {
                 request,
                 selected,
                 reply,
-            }) => {
+            } => {
                 let approved = if decision == ReviewDecision::Confirmed {
                     request
                         .devices
@@ -1160,16 +1078,10 @@ impl PortalDialogQueue {
                     Vec::new()
                 };
                 let _ = reply.send(UsbDeviceDecision { decision, approved });
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     fn toggle_usb_device(&self, handle: &str, index: usize) -> bool {
@@ -1286,6 +1198,7 @@ pub enum DialogView {
         confirm_label: String,
         choices: Vec<String>,
         field: Option<ShortcutStepField>,
+        field_review: bool,
     },
     AppChoice {
         handle: String,
@@ -1747,13 +1660,22 @@ impl PortalDialogController {
             return false;
         };
         let done = match &view {
-            DialogView::ShortcutStep { choices, .. } => self.queue.finish_shortcut_step(
-                view.handle(),
-                ShortcutStepDecision::Confirmed {
-                    choice: (!choices.is_empty()).then_some(self.selected),
-                    text: take_text(&mut self.step_field),
-                },
-            ),
+            DialogView::ShortcutStep { choices, .. } => {
+                if let Err(reason) = self
+                    .queue
+                    .validate_field(view.handle(), self.step_field.value())
+                {
+                    self.entry_error = Some(reason);
+                    return false;
+                }
+                self.queue.finish_shortcut_step(
+                    view.handle(),
+                    ShortcutStepDecision::Confirmed {
+                        choice: (!choices.is_empty()).then_some(self.selected),
+                        text: take_text(&mut self.step_field),
+                    },
+                )
+            }
             DialogView::AppChoice { choices, .. } => choices
                 .get(self.selected)
                 .cloned()
@@ -1878,6 +1800,20 @@ impl PortalDialogController {
     }
     pub fn layout(&self, bounds: Rect) -> Option<DialogLayout> {
         let view = self.view()?;
+        // Verified field reviews contain exact file/endpoint/certificate text,
+        // rather than a one-line caption. Never overlap it with the entry.
+        let field_review = matches!(
+            view,
+            DialogView::ShortcutStep {
+                field_review: true,
+                ..
+            }
+        );
+        let extra_detail = if field_review {
+            small_count_as_f64(view.detail().lines().count().saturating_sub(1)) * 24.0
+        } else {
+            0.0
+        };
         let width = bounds.width().min(560.0);
         let row_count = view.selectable_count().min(6);
         let launcher_editor = view.launcher_editor();
@@ -1894,9 +1830,14 @@ impl PortalDialogController {
             _ => (0, 0),
         };
         let height = 190.0
+            + extra_detail
             + small_count_as_f64(
                 row_count + launcher_rows + secret_rows + network_fields + remember_row,
             ) * 48.0;
+        if field_review && (height > bounds.height() || width < 560.0) {
+            // A clipped security review cannot approve anything invisibly.
+            return None;
+        }
         let sheet = Rect::new(
             bounds.center().x - width / 2.0,
             bounds.center().y - height / 2.0,
@@ -1908,21 +1849,21 @@ impl PortalDialogController {
         let row_h = f64::from(ui::tokens::Metrics::BASE.panel_row_height);
         let choices = (0..row_count)
             .map(|i| {
-                let y = sheet.y0 + 118.0 + small_count_as_f64(i) * 48.0;
+                let y = sheet.y0 + (118.0 + extra_detail) + small_count_as_f64(i) * 48.0;
                 Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
             })
             .collect();
         let launcher_name = launcher_editor
             .filter(|editor| editor.editable_name)
             .map(|_| {
-                let y = sheet.y0 + 118.0 + small_count_as_f64(row_count) * 48.0;
+                let y = sheet.y0 + (118.0 + extra_detail) + small_count_as_f64(row_count) * 48.0;
                 Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
             });
         let launcher_icons = launcher_editor
             .filter(|editor| editor.editable_icon)
             .map(|editor| {
                 let y = sheet.y0
-                    + 118.0
+                    + (118.0 + extra_detail)
                     + small_count_as_f64(row_count + usize::from(editor.editable_name)) * 48.0;
                 let count = editor.icon_choices.len().min(3);
                 let gap = 8.0;
@@ -1953,11 +1894,12 @@ impl PortalDialogController {
             sheet.y1 - 20.0,
         );
         let secret = (secret_rows > 0).then(|| {
-            let y = sheet.y0 + 118.0 + small_count_as_f64(row_count) * 48.0;
+            let y = sheet.y0 + (118.0 + extra_detail) + small_count_as_f64(row_count) * 48.0;
             Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
         });
         let field_row = |index: usize| {
-            let y = sheet.y0 + 118.0 + small_count_as_f64(row_count + index) * 48.0;
+            let y =
+                sheet.y0 + (118.0 + extra_detail) + small_count_as_f64(row_count + index) * 48.0;
             Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
         };
         let secret_fields = (0..network_fields).map(field_row).collect();
@@ -2143,6 +2085,7 @@ impl PortalDialogController {
             }
             return true;
         }
+        self.entry_error = None;
         let Some(field) = self.text_field_mut() else {
             return false;
         };
@@ -2325,6 +2268,12 @@ impl PortalDialogController {
                 };
                 state["error"] = self.entry_error.clone().into();
             }
+            DialogView::ShortcutStep {
+                field_review: true, ..
+            } => {
+                state["error"] = self.entry_error.clone().into();
+                state["value"] = self.step_field.value().into();
+            }
             _ => {}
         }
         state
@@ -2463,9 +2412,21 @@ fn chooser_detail(request: &ApplicationChoiceRequest) -> String {
         ],
     )
 }
+/// The allowing answers the grant sheet offers for `request`, in order.
+fn action_grant_answers(request: &AppActionConsentRequest) -> &'static [AppActionConsent] {
+    if request.confirming {
+        &AppActionConsent::ALLOWING[..1]
+    } else {
+        &AppActionConsent::ALLOWING
+    }
+}
+
 /// The action's consequences, as the grant sheet states them.
 fn action_grant_detail(request: &AppActionConsentRequest) -> String {
     let risk = crate::shell::app_action_consent::risk_label(request.risk);
+    if request.confirming {
+        return t_args("portal-confirm-detail", &[("risk", risk.into())]);
+    }
     let key = if request.needs_confirmation {
         "portal-grant-detail-confirms"
     } else {
@@ -2765,7 +2726,7 @@ mod tests {
     }
 
     fn type_key(controller: &mut PortalDialogController, key: winit::keyboard::Key) -> bool {
-        let event = crate::shell::test_support::typed_key_event(key);
+        let event = ui::synthetic_input::key_input(&key, winit::event::ElementState::Pressed);
         crate::shell::test_support::with_scratch_event_ctx(|ctx| {
             controller.edit_secret(&event, ctx)
         })
@@ -3019,7 +2980,7 @@ mod tests {
             let mut controller = PortalDialogController::new(queue);
             controller.pump();
             assert!(controller.key(
-                &PhysicalKey::Code(KeyCode::KeyK),
+                &PhysicalKey::Code(KeyCode::Space),
                 Modifiers::from(ModifiersState::SUPER),
             ));
             let view = controller.view().unwrap();

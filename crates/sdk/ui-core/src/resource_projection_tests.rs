@@ -55,9 +55,8 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         let (mut app, counts, visible) = counted_control_app(false);
         app.refresh_control_action_availability();
         app.actions.permission_generation.set(u64::MAX);
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
         assert!(!app.root_widget.children()[0].is_enabled());
         app.set_permission_ctx(PermissionContext::permissive());
@@ -153,25 +152,10 @@ impl Widget for SemanticCountingPublisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn name(&self) -> &'static str {
         "counting-publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);
@@ -188,18 +172,29 @@ impl Widget for SemanticCountingPublisher {
     }
 }
 
+/// One counted inventory read: `Publisher`'s resources while `visible`,
+/// listed twice when `duplicate`.
+fn counted_resources(
+    counts: &[Cell<usize>; 2],
+    visible: &Cell<bool>,
+    duplicate: bool,
+    doc: &AutoCommit,
+) -> Vec<Resource> {
+    counts[0].set(counts[0].get() + 1);
+    let mut resources = if visible.get() {
+        crate::resources::PublishesResources::resources(&Publisher, doc)
+    } else {
+        Vec::new()
+    };
+    if duplicate {
+        resources.extend(resources.clone());
+    }
+    resources
+}
+
 impl crate::resources::PublishesResources for SemanticCountingPublisher {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        self.counts[0].set(self.counts[0].get() + 1);
-        let mut resources = if self.visible.get() {
-            Publisher.resources(_doc)
-        } else {
-            Vec::new()
-        };
-        if self.duplicate {
-            resources.extend(resources.clone());
-        }
-        resources
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 
@@ -246,10 +241,11 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 0 => root,
                 1 => Box::new(crate::widget::Column::new().push(root)),
                 2 => Box::new(crate::widget::Scrollable::new_vertical().with_child(root)),
-                _ => Box::new(crate::widget::NavShell::sidebar_over_content(
-                    Box::new(crate::widget::Text::new("sidebar")),
-                    root,
-                )),
+                _ => Box::new(
+                    crate::widget::NavShell::new()
+                        .sidebar(Box::new(crate::widget::Text::new("sidebar")))
+                        .content(root),
+                ),
             };
             assert!(crate::widget::controls::has_action_control_bindings(
                 root.as_ref()
@@ -258,9 +254,8 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
             app.refresh_control_action_availability();
             assert!(enabled.get(), "wrapper {wrapper}");
-            app.set_permission_ctx(PermissionContext::from_capabilities(
-                collab_types::caps::Actor::person(None, "restricted"),
-                Vec::new(),
+            app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+                "restricted",
             ));
             assert!(
                 !enabled.get(),
@@ -310,10 +305,11 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 0 => Box::new(root),
                 1 => Box::new(crate::widget::Column::new().push(Box::new(root))),
                 2 => Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(root))),
-                _ => Box::new(crate::widget::NavShell::sidebar_over_content(
-                    Box::new(crate::widget::Text::new("sidebar")),
-                    Box::new(root),
-                )),
+                _ => Box::new(
+                    crate::widget::NavShell::new()
+                        .sidebar(Box::new(crate::widget::Text::new("sidebar")))
+                        .content(Box::new(root)),
+                ),
             };
             let mut app = App::new_with_controlled_inputs(State::new(), root);
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
@@ -324,7 +320,10 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 0,
                 "presence refresh must not inventory controls"
             );
-            assert_eq!(app.control_action_coverage().len(), 1);
+            // A shell with a sidebar adds its own action control: the
+            // sidebar toggle.
+            let expected = if wrapper == 3 { 2 } else { 1 };
+            assert_eq!(app.control_action_coverage().len(), expected);
             assert!(
                 counts[1].get() > 0,
                 "explicit coverage still inventories controls"
@@ -345,25 +344,10 @@ impl Widget for InventoryOnlyPublisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn name(&self) -> &'static str {
         "counting-publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);
@@ -375,17 +359,8 @@ impl Widget for InventoryOnlyPublisher {
 }
 
 impl crate::resources::PublishesResources for InventoryOnlyPublisher {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        self.counts[0].set(self.counts[0].get() + 1);
-        let mut resources = if self.visible.get() {
-            Publisher.resources(_doc)
-        } else {
-            Vec::new()
-        };
-        if self.duplicate {
-            resources.extend(resources.clone());
-        }
-        resources
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 
@@ -424,25 +399,10 @@ impl Widget for FastInventoryPublisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn name(&self) -> &'static str {
         "counting-publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);
@@ -454,17 +414,8 @@ impl Widget for FastInventoryPublisher {
 }
 
 impl crate::resources::PublishesResources for FastInventoryPublisher {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        self.counts[0].set(self.counts[0].get() + 1);
-        let mut resources = if self.visible.get() {
-            Publisher.resources(_doc)
-        } else {
-            Vec::new()
-        };
-        if self.duplicate {
-            resources.extend(resources.clone());
-        }
-        resources
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 

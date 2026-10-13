@@ -3,7 +3,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
     clippy::too_many_lines,
     reason = "test assertions and fixture setup fail loudly"
@@ -18,35 +17,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use test_http::{Reply, Responder};
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle, VoiceEvent};
-use tilo_moq::client::{
-    CapturedOpus, Client, ClientAuthority, Connection, ConnectionScope, Status,
-};
-use tilo_moq::relay::Direction;
+use tilo_moq::client::{CapturedOpus, Status};
 use tilo_relay_protocol::{Envelope, voice::VoiceGrant};
 
-struct Granted;
-impl ClientAuthority for Granted {
-    fn current(&self, _: &ConnectionScope, _: Direction, _: &str) -> bool {
-        true
-    }
-}
-fn carrier(grant: &VoiceGrant, generation: u64) -> Client {
-    Client::start(
-        Connection {
-            scope: ConnectionScope {
-                endpoint: grant.endpoint.clone(),
-                fingerprints: grant.fingerprints.clone(),
-                owner_epoch: grant.participation,
-                carrier_generation: generation,
-                publication: grant.publication.clone(),
-                subscriptions: grant.subscriptions.clone(),
-            },
-            authorization: grant.token.clone(),
-        },
-        Arc::new(Granted),
-    )
-    .unwrap()
-}
+use call::carrier;
+
 fn grant_json(grant: &VoiceGrant) -> Value {
     json!({
         "call": hex::encode(grant.call), "epoch": grant.epoch,
@@ -60,6 +35,44 @@ fn grant_json(grant: &VoiceGrant) -> Value {
         })).collect::<Vec<_>>(),
     })
 }
+/// The page's voice transport imports the live plane's `MoQ` library, which
+/// is generated from the `@moq/net` pinned in
+/// `scripts/moq-browser/package-lock.json` and never committed. Build it the
+/// way the browser runtime build does (`npm ci`, then `build.mjs`, which writes
+/// it next to the web modules) unless a build newer than the lock is there.
+fn ensure_moq_library(repository: &std::path::Path) {
+    let builder = repository.join("scripts/moq-browser");
+    let output = repository.join("crates/browser/tilo-browser-runtime/web/media-moq-library.mjs");
+    let modified =
+        |path: &std::path::Path| std::fs::metadata(path).and_then(|metadata| metadata.modified());
+    if let (Ok(built), Ok(pinned)) = (
+        modified(&output),
+        modified(&builder.join("package-lock.json")),
+    ) && built >= pinned
+    {
+        return;
+    }
+    let steps: [(&str, &[&str]); 2] = [
+        ("npm", &["ci", "--no-audit", "--no-fund", "--silent"]),
+        ("node", &["build.mjs"]),
+    ];
+    for (program, args) in steps {
+        let status = std::process::Command::new(program)
+            .args(args)
+            .current_dir(&builder)
+            .status()
+            .unwrap_or_else(|error| {
+                panic!("running {program} to build media-moq-library.mjs: {error}")
+            });
+        assert!(
+            status.success(),
+            "{program} {} in {} failed: {status}",
+            args.join(" "),
+            builder.display()
+        );
+    }
+}
+
 struct Page {
     room: String,
     peer: PeerHandle,
@@ -145,9 +158,11 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
     let server_carol = carol.clone();
     let call_id = hex::encode(room.call.call);
     let room_id = room.room.clone();
+    let channel_id = room.channel.clone();
     let workspace = room.workspace_id;
     let call = room.call.call;
     let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../");
+    ensure_moq_library(&repository);
     let server = Responder::handle(move |request| {
         let path = request.target.split('?').next().unwrap();
         let text = |body: String| Some(Reply::status(200).body(body));
@@ -156,6 +171,11 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
         }
         if path == "/api/room" {
             return text(room_id.clone());
+        }
+        // The chat's voice channel the governed call is on: its id is the
+        // chat's own, minted when the workspace was made.
+        if path == "/api/channel" {
+            return text(channel_id.clone());
         }
         if path == "/api/alice" {
             return text(alice_id.clone());
@@ -205,7 +225,10 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
                         "text/javascript"
                     },
                 )
-                .body(std::fs::read(file).unwrap()),
+                .body(
+                    std::fs::read(&file)
+                        .unwrap_or_else(|error| panic!("serving {}: {error}", file.display())),
+                ),
         )
     });
     let url = server.url();

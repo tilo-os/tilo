@@ -12,7 +12,7 @@ homepage.workspace = true
 name = "cli"
 path = "src/lib.rs"
 
-# Thin wrappers over the runtime umbrella crate so CLI apps can
+# Thin wrappers over the runtime crates so CLI apps can
 # focus on their own logic rather than plumbing. Works both when
 # the launcher's environment is present (TILO_WORKSPACE_*,
 # TILO_SVC_FS_FD, ...) and when the app is running standalone —
@@ -21,11 +21,11 @@ path = "src/lib.rs"
 
 [dependencies]
 # The CLI helpers only need the shared availability error/session probe on
-# every host. Avoid linking the full runtime umbrella: that would drag the
+# every host. Avoid linking the other runtime crates: that would drag the
 # Unix service clients and identity store into native host applications which
 # merely reuse `standalone_state_dir`.
 runtime-portal   = { version = "0.1.0", path = "../runtime-portal", default-features = false }
-tilo-xdg-paths        = { version = "0.1.0", path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 
 anyhow.workspace = true
 

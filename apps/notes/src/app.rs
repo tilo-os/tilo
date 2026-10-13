@@ -12,13 +12,13 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
-use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -27,41 +27,34 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::collaboration::PresencePayload;
-use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::SidebarDrawer;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::link_popover::PageEntry;
+use ui::widget::{Button, NavShell, SidebarPlacement, TaffyTreeExt};
 
-use crate::actions::{self, NotesAction};
-use crate::doc::NotesDoc;
+use crate::actions;
+use crate::columns::{Columns, HeaderRequests};
 use crate::effect::NotesEffect;
 use crate::main_panel::{BacklinkChip, MainPanel, TagChip};
 use crate::model::{PageId, TagId, Workspace};
-use crate::num;
 use crate::shortcuts_overlay::ShortcutsOverlay;
 use crate::sidebar::{OutEvent, PageSidebar, SidebarTransfer};
 use crate::status_bar::{SaveStatus, StatusBarState, StatusModel, count_words};
 
 mod effects;
 
-/// Sidebar width when the window is wide enough to show it inline.
-/// 240 px reads as "comfortable but not greedy" next to the editor.
-const SIDEBAR_WIDTH: f64 = 240.0;
-/// Width of the page tree when it slides in as an overlay drawer on a
-/// narrow window. Slightly wider than the inline sidebar so titles and
-/// the disclosure triangles have room on a small screen.
-const DRAWER_WIDTH: f64 = 264.0;
-/// Below this logical window width the sidebar stops taking a fixed
-/// column and becomes a closed overlay drawer, reached from the
-/// top-bar menu button. Chosen so 800 px keeps the sidebar inline but
-/// 560 px collapses it.
-const NARROW_BREAKPOINT: f64 = 720.0;
-/// Height of the top bar shown only in narrow mode. Hosts the drawer
-/// toggle and the current page title.
-const TOPBAR_HEIGHT: f64 = 44.0;
+thread_local! {
+    /// Whether the notebook's shell presents the window's History control.
+    /// Always so in the app.
+    static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// The test id of the sidebar header's "New note" button.
+pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
+/// The test id of the note header's "Note actions" button.
+pub(crate) const NOTE_MENU_BUTTON_ID: &str = "note-menu";
 
 /// Draws notebook images from the notebook's asset snapshot.
 fn canonical_image_store(
@@ -76,6 +69,18 @@ fn canonical_image_store(
 }
 
 type ImportedAssets = Vec<(String, Vec<u8>)>;
+
+/// One block of a note as the window's index keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SearchBlock {
+    pub(crate) id: String,
+    pub(crate) text: String,
+}
+
+/// The notebook `doc` holds.
+fn read_notebook(doc: &AutoCommit) -> Result<crate::Notebook, String> {
+    <crate::Notebook as ui::tilo_resource::Resource>::read(doc).map_err(|error| error.to_string())
+}
 /// Document heads, pending operations, selected page and tag filter.
 type CanonicalProjectionKey = (Vec<ChangeHash>, usize, Option<PageId>, Option<TagId>);
 
@@ -163,7 +168,7 @@ fn inline_images(markdown: &str, assets: &HashMap<String, Vec<u8>>) -> String {
             let bytes = assets
                 .get(source)
                 .filter(|_| source.starts_with("asset:"))?;
-            let media_type = image_media_type(bytes)?;
+            let media_type = crate::notebook::image_mime(bytes)?;
             let data = base64::engine::general_purpose::STANDARD.encode(bytes);
             Some(format!(
                 "{indent}![{alt}](data:{media_type};base64,{data}){newline}"
@@ -221,7 +226,7 @@ fn read_image_asset(source: &std::path::Path) -> Result<Vec<u8>, String> {
 /// must still work.
 fn fit_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     const MAX: usize = crate::notebook::MAX_ASSET_BYTES;
-    image_media_type(&bytes).ok_or("Use a PNG, JPEG, or WebP image")?;
+    crate::notebook::image_mime(&bytes).ok_or("Use a PNG, JPEG, or WebP image")?;
     if bytes.len() <= MAX {
         return Ok(bytes);
     }
@@ -265,23 +270,10 @@ pub(crate) fn check_image(bytes: &[u8]) -> Result<(), String> {
     if bytes.len() > crate::notebook::MAX_ASSET_BYTES {
         return Err("Image is larger than 1 MiB".into());
     }
-    if image_media_type(bytes).is_none() {
+    if crate::notebook::image_mime(bytes).is_none() {
         return Err("Choose a PNG, JPEG, or WebP image".into());
     }
     Ok(())
-}
-
-/// The media type of image `bytes`, when they are one a notebook keeps.
-pub(crate) fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
-        Some("image/png")
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some("image/jpeg")
-    } else if bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        Some("image/webp")
-    } else {
-        None
-    }
 }
 
 #[allow(
@@ -297,18 +289,17 @@ pub struct NotesApp {
     note_menu_table: Option<(String, usize, usize)>,
     note_menu_table_source: Option<String>,
     main: MainPanel,
-    /// The note's save + page/word status, surfaced as a transient
-    /// floating bubble (see `status_bubble`) instead of a permanent strip.
+    /// The note's save + page/word status, surfaced on the save status
+    /// surface (see `save_status`) instead of a permanent strip.
     status: StatusModel,
-    /// Transient floating status bubble: poked on a status change (a save
-    /// flip, a page switch, a word-count tick), and shown while the pointer
-    /// hovers the bottom-right corner. Replaces the old bottom status bar so
-    /// the editor spans to the window bottom.
-    status_bubble: ui::StatusBubble,
+    /// The framework's save status surface: "Saving…" and "Saved" (with
+    /// the note's length) in a transient bubble in the bottom-trailing
+    /// corner, shown again on a page switch and while the pointer rests
+    /// there; a failed save as an error toast with "Try again".
+    save_surface: ui::SaveStatusSurface,
+    /// "Try again" was chosen on a failed save; the host drains it.
+    save_retry: bool,
     transfer_toasts: ui::widget::toast::ToastStack,
-    last_toast_tick: ui::time::Instant,
-    /// `--shots` forces the bubble fully visible so a still frame captures it.
-    shots_status: bool,
     /// Shot-only override for the real save progress/failure presentation.
     /// Notes opens its workspace synchronously, so this does not alter live
     /// loading behavior or introduce a second production state source.
@@ -316,20 +307,33 @@ pub struct NotesApp {
     shortcuts: ShortcutsOverlay,
     /// Root container rect, populated by `apply_layout`.
     rect: Rect,
+    /// The window shell: the header row, the sidebar toggle, the regions and
+    /// the drawer. The page tree and the note panel are laid out in the slots
+    /// it places (see [`crate::columns`]).
+    shell: NavShell,
+    /// Where the shell put the two columns, written by its slots.
+    columns: Columns,
+    /// What the shell's header buttons asked for.
+    header: Rc<HeaderRequests>,
     /// Cached taffy node IDs. Filled in `build_layout`, used by
-    /// `apply_layout` and `handle_event`.
+    /// `apply_layout` and `handle_event`. The columns' nodes exist only while
+    /// the shell shows them (a closed drawer shows no page tree).
+    shell_node: Option<NodeId>,
     sidebar_node: Option<NodeId>,
+    /// The page tree had the keyboard when the shortcut sheet opened, and gets
+    /// it back when the sheet closes.
+    shortcuts_return_to_tree: bool,
     main_node: Option<NodeId>,
+    theme: Theme,
     /// Rect covering [sidebar + main] — the upper "content row" of
     /// the column layout, sibling of the status bar. We don't expose
     /// this through taffy node ids; it's a flex sub-container whose
     /// rect we never need outside of layout. Tracked locally for
     /// completeness.
-    content_node: Option<NodeId>,
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
     canonical_assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
-    canonical_asset_manifest: Vec<(String, String)>,
+    canonical_asset_manifest: std::collections::BTreeMap<String, ui::tilo_resource::Bytes>,
     /// Some referenced image's bytes are still on their way from a
     /// collaborator's device; retried at most once a second.
     canonical_assets_waiting: Option<ui::time::Instant>,
@@ -342,37 +346,38 @@ pub struct NotesApp {
     /// The page the `MainPanel` editor is currently bound to in the doc.
     /// `sync` rebinds whenever this drifts from the selected page.
     bound_page: Option<PageId>,
-    /// Desired layout mode derived from the last observed window width.
-    /// Updated in `apply_layout`; consumed at the next `build_layout`.
-    want_narrow: bool,
-    /// The mode used to build the current taffy tree. `draw`
-    /// and `handle_event` read this so they always match the live tree,
-    /// even for the one frame before a breakpoint crossing rebuilds.
-    built_narrow: bool,
-    /// The responsive sidebar/drawer controller owns the docked-vs-overlay
-    /// decision (at [`NARROW_BREAKPOINT`]), open/closed state, and dimming scrim.
-    drawer: SidebarDrawer,
-    /// Set when the window crossed the narrow breakpoint so the tree
-    /// needs a structural rebuild. Drained by `take_structure_dirty`.
-    pending_relayout: bool,
-    /// Forces a redraw when our own chrome (top bar / drawer) changes
-    /// without any child widget flagging itself dirty.
+    /// The tree has been laid out once, so the shell's columns are known.
+    laid_out: bool,
+    /// Forces a redraw when our own chrome changes without any child widget
+    /// flagging itself dirty.
     self_dirty: bool,
+    paint_damage: ui::widget::paint_damage::PaintDamage,
+    /// Where this draw painted the save status (its bubble or failure card).
+    status_painted: Option<Rect>,
+    /// Where the last drawn frame painted it.
+    status_drawn: Option<Rect>,
+    /// A scroll of the note this draw left to a copy the host makes of what
+    /// stays on screen (`ui::scroll_copy`), offered when the host collects
+    /// damage.
+    main_scroll_copy: Option<crate::main_panel::ScrollCopy>,
+    /// Where the save status floats over the note, this frame and the last,
+    /// with its shadow: a copy of the note's scroll repaints it over what
+    /// moved under it.
+    status_over_main: Vec<Rect>,
     /// Inputs of the last canonical projection: document heads, pending
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
     canonical_synced: Option<CanonicalProjectionKey>,
     /// Observer-only receipt that a canonical projection reached this surface.
     projection_adopted: bool,
+    /// The framework presents every state of the notebook to this window
+    /// (it is hosted), so it never reads the document itself.
+    presented: bool,
     /// Top-bar taffy node — present only while `built_narrow`.
-    topbar_node: Option<NodeId>,
     /// Rect of the narrow-mode top bar, from `apply_layout`.
-    topbar_rect: Rect,
     /// Hit rect of the drawer toggle (hamburger) button.
-    menu_btn_rect: Rect,
     /// Rect of the content area (between top bar and status bar). Used
     /// to place the drawer scrim in narrow mode.
-    content_rect: Rect,
     /// Where the notebook's edits go: the framework's dispatcher, once the
     /// surface is attached. A notebook shown before (or without) it is read
     /// only.
@@ -396,25 +401,23 @@ pub struct NotesApp {
     /// the selected page binds to its collaborative block list, because binding
     /// rebuilds the editor and otherwise resets focus to block zero.
     pending_block_reveal: Option<(PageId, String)>,
+    /// Validated against current text again after the editor binds.
+    pending_block_range: Option<(PageId, String, String, usize, usize)>,
     /// Search/resource snapshot keyed by each block's durable Automerge Text
     /// object id, refreshed from the collaborative document on every sync.
-    search_blocks: HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
-    /// Local index of canonical incoming `[[Page]]` marks. It is rebuilt only
-    /// when the document heads advance, alongside the full-text catalogue;
-    /// drawing a selected note therefore never scans a large notebook.
+    search_blocks: HashMap<PageId, Vec<SearchBlock>>,
+    /// Notes whose bodies changed since the index above was built.
+    unindexed: std::collections::HashSet<PageId>,
+    /// Local index of incoming `[[Page]]` marks, rebuilt for the notes whose
+    /// bodies changed, alongside the full-text catalogue; drawing a selected
+    /// note therefore never scans a large notebook.
     backlink_index: HashMap<PageId, Vec<(PageId, u32)>>,
-    /// Durable document heads the block snapshot and backlinks were taken
-    /// at. In the normal no-edit frame this avoids snapshotting every
-    /// page/block just to rediscover nothing changed.
-    search_heads: Option<Vec<ChangeHash>>,
     /// Last theme text scale, captured during layout. Responsive chrome uses
     /// it for width/height reservations so 200% text switches to the drawer
     /// before page labels or the title stack can collide.
-    text_scale: f64,
     /// Effective reduced-motion setting provided by the host. Notes owns one
     /// small app-local animation (the transient save-status bubble), so it
     /// retains the value instead of relying on the default child forwarding.
-    motion_reduced: bool,
     prepared_local_focus: Option<crate::local_view::PreparedFocus>,
     // The first measured width resolves the saved drawer and Sidebar intent once.
     pending_responsive_view: Option<(bool, bool)>,
@@ -422,9 +425,89 @@ pub struct NotesApp {
     save_status: Option<ui::LocalState<ui::record::RecordSaveStatus>>,
     /// A note to open once the notebook holds it.
     open_when_present: Option<PageId>,
+    /// The notes the notebook holds, and the notes a search hit or an agent's
+    /// `open` asked to show, shared with the framework's opener.
+    opened: Rc<std::cell::RefCell<Opened>>,
+}
+
+/// What the framework's opener and the window share: the notes there are,
+/// and the ones asked to be shown.
+#[derive(Default)]
+struct Opened {
+    known: std::collections::HashSet<PageId>,
+    requests: Vec<PageId>,
 }
 
 impl NotesApp {
+    /// Content-free observation of the actual editor and canonical body.
+    /// Both explicit semantic inspection and native input evidence use this.
+    fn editor_observation(&self, doc: &AutoCommit) -> serde_json::Value {
+        let page = self.main.page_id();
+        // Explicit read-only inspection and opt-in input diagnostics observe
+        // both canonical text and the editor cache used to draw that frame,
+        // without placing a person's note content in the diagnostic log.
+        let _ = doc;
+        let body = page
+            .and_then(|id| self.workspace.bodies.get(&id))
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .map(|block| block.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            });
+        let editor = self.main.editor();
+        let rendered = editor
+            .blocks()
+            .iter()
+            .map(|block| block.line.value())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let caret = editor.focused_index().and_then(|index| {
+            editor.blocks().get(index).map(|block| {
+                serde_json::json!({
+                    "block_id": block.id,
+                    "block_index": index,
+                    "byte_offset": block.line.cursor_pos(),
+                })
+            })
+        });
+        let canonical_sync_key = self.canonical_synced.as_ref().map(|key| {
+            let mut heads = blake3::Hasher::new();
+            for head in &key.0 {
+                heads.update(&head.0);
+            }
+            serde_json::json!({
+                "heads_hash": heads.finalize().to_hex().to_string(),
+                "heads_count": key.0.len(),
+                "pending_operations": key.1,
+                "selected_page": key.2,
+                "active_tag": key.3,
+            })
+        });
+        let rect = editor.get_rect();
+        serde_json::json!({
+            "app": "so.tilo.notes",
+            "editor_id": "block_editor",
+            "selected_page": self.workspace.selected(),
+            "bound_page": page,
+            "main_page": page,
+            "editor_binding_page": self.bound_page,
+            "pending_page_events": self.pending_events.len() + self.opened.borrow().requests.len(),
+            "adopted": self.projection_adopted,
+            "canonical_sync_key": canonical_sync_key,
+            "hash_algorithm": "blake3",
+            "body_hash": body.as_ref().map(|body| blake3::hash(body.as_bytes()).to_hex().to_string()),
+            "body_chars": body.as_ref().map(|body| body.chars().count()),
+            "body_bytes": body.as_ref().map(String::len),
+            "rendered_body_hash": blake3::hash(rendered.as_bytes()).to_hex().to_string(),
+            "rendered_body_chars": rendered.chars().count(),
+            "editor_focused": editor.is_focused(),
+            "caret": caret,
+            "editor_rect": [rect.x0, rect.y0, rect.x1, rect.y1],
+        })
+    }
+
     /// Construct the real notebook presentation from an existing canonical document.
     /// This does not initialize schema, read Markdown, or own persistence workers.
     ///
@@ -439,14 +522,17 @@ impl NotesApp {
         sidebar.sync_from_workspace(&workspace);
         let mut main = MainPanel::new();
         main.set_local_author(Some(author.0.clone()));
-        let snapshot = crate::notebook::asset_snapshot(doc)?;
-        let waiting = !crate::notebook::assets_complete(doc, &snapshot)?;
+        let content = crate::notebook::content();
+        let snapshot =
+            crate::notebook::image_snapshot(&workspace.notebook, |digest| content.read(digest));
+        let waiting = snapshot.len() < workspace.notebook.images.len();
+        let manifest = workspace.notebook.images.clone();
         let mut app = Self::build_widget(workspace, sidebar, main);
         if let Ok(mut assets) = app.canonical_assets.write() {
             *assets = snapshot;
         }
         app.canonical_assets_waiting = waiting.then(ui::time::now);
-        app.canonical_asset_manifest = crate::notebook::asset_manifest(doc)?;
+        app.canonical_asset_manifest = manifest;
         app.main = app.main.project_canonical(doc, &app.workspace)?;
         app.bound_page = app.workspace.selected();
         app.projection_adopted = true;
@@ -455,21 +541,52 @@ impl NotesApp {
     }
 
     fn project_workspace(doc: &AutoCommit, selected: Option<PageId>) -> Result<Workspace, String> {
-        let mut workspace = crate::notebook::project(doc, selected)?;
-        if workspace.selected().is_none() {
-            let first = workspace
-                .pages()
-                .iter()
-                .filter(|page| page.parent.is_none())
-                .min_by(|a, b| crate::model::sibling_order(a, b))
-                .map(|page| page.id);
-            workspace.set_selected(first);
-        }
+        let mut workspace = Workspace::of(Rc::new(read_notebook(doc)?), &Workspace::default());
+        let selected = selected
+            .filter(|page| workspace.get(*page).is_some())
+            .or_else(|| workspace.children_of(None).first().map(|page| page.id));
+        workspace.set_selected(selected);
         Ok(workspace)
+    }
+
+    fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
+        let new_note = {
+            let header = Rc::clone(header);
+            Button::icon_only(
+                NEW_NOTE_BUTTON_ID,
+                ui::icons::Icon::Plus,
+                &ui::i18n!("notes-affordance-new-note"),
+            )
+            .on_view(move || header.new_note.set(true))
+        };
+        let note_menu = {
+            let header = Rc::clone(header);
+            Button::icon_only(
+                NOTE_MENU_BUTTON_ID,
+                ui::icons::Icon::MoreHorizontal,
+                &ui::i18n!("notes-affordance-note-actions"),
+            )
+            .on_view(move || header.note_menu.set(true))
+        };
+        let actions: Vec<ui::widget::Element> = vec![
+            Box::new(note_menu),
+            Box::new(ui::search::search_button(
+                ui::search::SearchRequest::this_app(),
+            )),
+        ];
+        NavShell::new()
+            .with_id("notes-shell")
+            .sidebar(Box::new(columns.sidebar.slot()))
+            .content(Box::new(columns.content.slot()))
+            .sidebar_header(ui::i18n!("notes-title"), vec![Box::new(new_note)])
+            .content_header("", actions)
     }
 
     fn build_widget(workspace: Workspace, sidebar: PageSidebar, main: MainPanel) -> Self {
         let initial_route = workspace.selected();
+        let columns = Columns::default();
+        let header = Rc::new(HeaderRequests::default());
+        let shell = Self::build_shell(&columns, &header);
 
         let mut app = Self {
             workspace,
@@ -481,53 +598,54 @@ impl NotesApp {
             sidebar,
             main,
             status: StatusModel::new(),
-            status_bubble: ui::StatusBubble::new(),
+            save_surface: ui::SaveStatusSurface::new(),
+            save_retry: false,
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
-            last_toast_tick: ui::time::now(),
-            shots_status: false,
             shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
+            shell,
+            columns,
+            header,
+            shell_node: None,
             sidebar_node: None,
+            shortcuts_return_to_tree: false,
             main_node: None,
-            content_node: None,
+            theme: Theme::dark(),
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
             canonical_assets: Arc::new(std::sync::RwLock::new(HashMap::new())),
-            canonical_asset_manifest: Vec::new(),
+            canonical_asset_manifest: std::collections::BTreeMap::new(),
             canonical_assets_waiting: None,
             pending_events: Vec::new(),
             last_mouse: Point::ZERO,
             bound_page: None,
-            want_narrow: false,
-            built_narrow: false,
-            drawer: SidebarDrawer::new()
-                .left()
-                .docked_width(SIDEBAR_WIDTH)
-                .overlay_width(DRAWER_WIDTH)
-                .breakpoint(NARROW_BREAKPOINT),
-            pending_relayout: false,
+            laid_out: false,
             self_dirty: false,
+            paint_damage: ui::widget::paint_damage::PaintDamage::default(),
+            status_painted: None,
+            status_drawn: None,
+            main_scroll_copy: None,
+            status_over_main: Vec::new(),
             canonical_synced: None,
             projection_adopted: false,
-            topbar_node: None,
-            topbar_rect: Rect::ZERO,
-            menu_btn_rect: Rect::ZERO,
-            content_rect: Rect::ZERO,
+            presented: false,
             dispatcher: None,
             active_tag_filter: None,
             route_history: ui::NavStack::new(initial_route),
             history_target: None,
             pending_block_reveal: None,
+            pending_block_range: None,
             search_blocks: HashMap::new(),
+            unindexed: std::collections::HashSet::new(),
             backlink_index: HashMap::new(),
-            search_heads: None,
-            text_scale: 1.0,
-            motion_reduced: false,
             prepared_local_focus: None,
             pending_responsive_view: None,
             save_status: None,
             open_when_present: None,
+            opened: Rc::default(),
         };
+        app.opened.borrow_mut().known = app.workspace.pages().iter().map(|page| page.id).collect();
+        app.unindexed = app.workspace.pages().iter().map(|page| page.id).collect();
         // Images are drawn from the notebook's assets, whoever hosts it.
         app.main
             .set_image_store(Some(canonical_image_store(&app.canonical_assets)));
@@ -542,6 +660,10 @@ impl NotesApp {
     /// Cheap — called from `handle_event`'s tail and after every
     /// `apply_event`. The status bar diffs internally so a no-op
     /// refresh doesn't dirty its render.
+    pub(crate) fn take_save_retry_request(&mut self) -> bool {
+        std::mem::take(&mut self.save_retry)
+    }
+
     fn refresh_status(&mut self) {
         let path = match self.workspace.selected() {
             Some(id) => self.breadcrumb_for(id),
@@ -589,18 +711,42 @@ impl NotesApp {
             page_count: self.workspace.pages().len(),
             word_count,
         });
-        // Counts stay live when revealed, but each new word must not restart
-        // a decorative animation while the user is concentrating on writing.
+        // A failure stays on the surface until the note saves or it is
+        // dismissed; "Saving…" and "Saved" pass. Counts stay live while the
+        // bubble shows, but a new word must not reopen it.
+        let now = ui::time::now();
+        self.save_surface.set_detail(self.status_detail());
+        self.save_surface.set(self.save_state(), now);
         if announce {
-            self.status_bubble.poke(ui::time::now());
+            self.save_surface.poke(now);
         }
     }
 
-    /// `--shots`: force the status bubble fully visible so a single headless
-    /// frame captures the floating chip.
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.status_bubble.poke(ui::time::now());
+    /// The save state the surface reports.
+    fn save_state(&self) -> ui::SaveState {
+        match self.status.state().save_status {
+            SaveStatus::Saved => ui::SaveState::Saved,
+            SaveStatus::Saving => ui::SaveState::Saving,
+            SaveStatus::SessionOnly => ui::SaveState::Idle,
+            // What it means for the person, not the storage error behind it.
+            SaveStatus::Failed => ui::SaveState::Failed(ui::i18n!("notes-save-failed-detail")),
+        }
+    }
+
+    /// What the saved bubble adds: the note's length, where the window
+    /// has room for it. A phone keeps the bubble to the save state.
+    fn status_detail(&self) -> Option<String> {
+        if self.shell.geometry().sidebar != SidebarPlacement::Docked {
+            return None;
+        }
+        self.status.word_text()
+    }
+
+    /// `--shots`: stage the status bubble as a change just happened, so a
+    /// still frame captures the floating chip.
+    pub fn stage_status_bubble(&mut self) {
+        self.refresh_status();
+        self.save_surface.poke(ui::time::now());
     }
 
     /// `--shots`: capture an actual save-state presentation deterministically,
@@ -610,71 +756,114 @@ impl NotesApp {
         let mut state = self.status.state().clone();
         state.save_status = status;
         let _ = self.status.set_state(state);
-        self.arm_status_bubble_for_shots();
+        self.stage_status_bubble();
     }
 
     /// Draw the transient floating status bubble at the bottom-right of the
     /// window — the reclaimed home of the old bottom status strip. It shows
     /// on a status change or while the pointer hovers the bottom-right band,
     /// then fades. All colours come from the theme (via `draw_pill`).
+    /// Returns where it painted, `self.rect` when it painted without saying.
     fn draw_status_bubble(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-    ) {
+    ) -> Option<Rect> {
         let now = ui::time::now();
-        // On a phone the full page/word summary becomes a wide obstruction.
-        // Keep the transient edge affordance to the actionable save state;
-        // wider layouts retain the richer summary.
-        let label = if self.status.needs_attention() {
-            self.status.save_detail()
-        } else if self.built_narrow {
-            self.status.save_text().to_string()
-        } else {
-            self.status.bubble_text()
-        };
-        let text_size = 12.0f32;
-        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
-        let margin = 14.0;
-        let rect = Rect::new(
-            self.rect.x1 - margin - w,
-            self.rect.y1 - margin - h,
-            self.rect.x1 - margin,
-            self.rect.y1 - margin,
-        );
-        // Reveal zone: the bottom-right corner band (plus the pill), so nudging
-        // the pointer there re-surfaces the status on demand.
-        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
-        let over =
-            self.shots_status || self.status.needs_attention() || zone.contains(self.last_mouse);
-        self.status_bubble.set_hover(over, now);
-        // The bubble is useful status, but its fade is decorative.  Keep its
-        // visibility transition discrete under reduced motion so people never
-        // have to track changing opacity; the normal preference preserves the
-        // short, unobtrusive fade.
-        let alpha = if self.motion_reduced {
-            if self.status_bubble.is_visible(now) {
-                1.0
-            } else {
-                0.0
-            }
-        } else {
-            self.status_bubble.alpha(now)
-        };
-        if alpha <= 0.0 {
-            return;
+        let before = scene.encoding().draw_tags.len();
+        let painted = self
+            .save_surface
+            .paint(scene, transform, tr, theme, self.rect, now);
+        painted.or_else(|| (scene.encoding().draw_tags.len() != before).then_some(self.rect))
+    }
+
+    /// What `draw` painted, as the parts its damage is proven by: the note
+    /// panel, the shell, the page tree, the save status and the toasts
+    /// (`scenes`, in that order), each with where it can change. `None`
+    /// while something reaches past those parts' own damage: an editor
+    /// popup, the page tree's menu or a dragged row.
+    fn paint_frame(
+        &self,
+        transform: Affine,
+        theme: &Theme,
+        scenes: [&Scene; 5],
+    ) -> Option<ui::widget::paint_damage::PaintFrame> {
+        use ui::widget::paint_damage::{PaintFrame, PaintPart};
+        let sidebar = self.sidebar.tree();
+        if self.main.has_editor_popup() || self.sidebar.menu_is_open() || sidebar.is_dragging() {
+            return None;
         }
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            alpha,
+        let [main, shell, page_tree, status, toasts] = scenes;
+        // A scroll of the note the host may copy damages only what the copy
+        // leaves; the copy is offered when the host collects damage.
+        let mut main_damage = Vec::new();
+        match &self.main_scroll_copy {
+            Some(copy) => main_damage.clone_from(&copy.damage),
+            None => self.main.collect_damage(&mut main_damage),
+        }
+        // A settled shell reports its controls (a hovered button), not
+        // itself.
+        let mut shell_damage = Vec::new();
+        self.shell.collect_damage(&mut shell_damage);
+        let mut sidebar_damage = Vec::new();
+        if self.sidebar_node.is_some() {
+            sidebar.collect_damage(&mut sidebar_damage);
+        }
+        // The bubble where it was and where it is, with its shadow, within
+        // the app: past its edge a window or a tile clips the shadow (the
+        // bubble sits in the corner a tile shares with the app), and damage
+        // there would repaint whatever lies beyond, another display included.
+        let status_damage = [self.status_drawn, self.status_painted]
+            .into_iter()
+            .flatten()
+            .map(|rect| {
+                ui::widget::floating_surface::painted_bounds(rect, theme).intersect(self.rect)
+            })
+            .filter(|rect| !rect.is_zero_area())
+            .collect();
+        let part = |key: &str, rect: Rect, scene: &Scene, damage: Vec<Rect>| {
+            PaintPart::new(key.into(), rect, scene.clone(), damage)
+        };
+        Some(PaintFrame::new(
+            vec![self.rect, self.main.get_rect(), sidebar.get_rect()],
             transform,
-            &rect.inflate(12.0, 14.0),
-        );
-        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
-        scene.pop_layer();
+            theme,
+            Scene::new(),
+            vec![
+                part("note-main", self.main.get_rect(), main, main_damage),
+                part("notes-shell", self.rect, shell, shell_damage),
+                part("notes-sidebar", self.rect, page_tree, sidebar_damage),
+                part("notes-status", self.rect, status, status_damage),
+                // Toasts report no damage of their own: a change repaints
+                // the app.
+                part("notes-toasts", self.rect, toasts, Vec::new()),
+            ],
+        ))
+    }
+
+    /// A press on the failed save's toast: "Try again" asks the host to
+    /// submit the note again, the close button dismisses it. Returns whether
+    /// the press was the toast's.
+    fn handle_save_status_press(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+        let WindowEvent::MouseInput {
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        if !self.save_surface.contains(self.last_mouse) {
+            return false;
+        }
+        if self.save_surface.click(self.last_mouse) == Some(ui::SaveAction::Retry) {
+            self.save_retry = true;
+        }
+        self.self_dirty = true;
+        *handled = true;
+        true
     }
 
     /// Resolve a page's breadcrumb path by walking parent pointers.
@@ -764,16 +953,38 @@ impl NotesApp {
         chips
     }
 
-    fn refresh_transclusion_previews(&mut self, doc: &AutoCommit) {
+    fn refresh_transclusion_previews(&mut self) {
+        #[cfg(test)]
+        let _profile = ui::tilo_resource::profiling::Phase::start("transclusion_previews");
+        self.main
+            .set_transclusion_previews(self.transclusion_previews());
+    }
+
+    fn transclusion_previews(&self) -> HashMap<PageId, ui::widget::TransclusionPreview> {
         const EXCERPT_LIMIT: usize = 180;
-        let previews = self
+        let targets = self
             .workspace
-            .pages()
-            .iter()
+            .selected()
+            .into_iter()
+            .filter_map(|page| self.workspace.bodies.get(&page))
+            .flatten()
+            .flat_map(|block| block.marks.clone())
+            .filter_map(|span| match span.mark {
+                actions::InlineMark::Transclusion { page } => page.parse::<PageId>().ok(),
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        targets
+            .into_iter()
+            .filter_map(|id| self.workspace.get(id))
             .map(|page| {
-                let raw = NotesDoc::page_block_snapshots(doc, page.id)
+                let raw = self
+                    .workspace
+                    .bodies
+                    .get(&page.id)
                     .into_iter()
-                    .map(|(_, text)| text)
+                    .flatten()
+                    .map(|block| block.text.clone())
                     .find(|text| !text.trim().is_empty())
                     .unwrap_or_else(|| "Empty note".to_string());
                 let mut excerpt = raw.chars().take(EXCERPT_LIMIT).collect::<String>();
@@ -788,8 +999,7 @@ impl NotesApp {
                     },
                 )
             })
-            .collect();
-        self.main.set_transclusion_previews(previews);
+            .collect()
     }
 
     /// Keep each image pasted into the open note with the notebook and put it
@@ -812,7 +1022,7 @@ impl NotesApp {
                         format!("![Pasted image]({source})"),
                     )
                     .map_err(|error| error.to_string())?;
-                self.dispatch(edits, &actions::add_image_asset_action(page, bytes, edit))
+                self.submit_now(edits, actions::show_image(page, bytes, edit))
             });
             match result {
                 Ok(()) => {
@@ -833,7 +1043,7 @@ impl NotesApp {
             return;
         };
         let inserted = fit_image_asset(bytes)
-            .and_then(|bytes| self.dispatch(edits, &self.image_insertion(page, alt, bytes)));
+            .and_then(|bytes| self.submit_now(edits, self.image_insertion(page, alt, bytes)));
         match inserted {
             Ok(()) => {
                 self.bound_page = None;
@@ -912,118 +1122,15 @@ impl NotesApp {
         self.main.editor().link_at_point(self.last_mouse)
     }
 
-    /// Paint the narrow-mode top bar: a drawer-toggle (hamburger)
-    /// button on the left and the current page title beside it.
-    fn draw_topbar(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tokens = &theme.tokens;
-        // Bar background + bottom hairline so it reads as chrome.
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &self.topbar_rect,
-        );
-        let hairline = Rect::new(
-            self.topbar_rect.x0,
-            self.topbar_rect.y1 - 1.0,
-            self.topbar_rect.x1,
-            self.topbar_rect.y1,
-        );
-        // Bar role: one chrome hairline under the app bar (HIG §9.5).
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            ui::chrome::chrome_hairline(theme),
-            None,
-            &hairline,
-        );
-
-        // Hamburger glyph: three evenly-spaced rounded bars centred in
-        // the button hit rect. Highlight the button while the drawer is
-        // open so the toggle state reads.
-        if self.drawer.is_open() {
-            // The open toggle is a chosen control: a selection lift (HIG §9.3)
-            // off the bar's raised ground, with its derived hairline — not an
-            // accent wash, and not `raised` painted on `raised`.
-            let radius = f64::from(tokens.radii.md);
-            let lifted = crate::sidebar::selection_fill_on_raised(theme);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                lifted,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(self.menu_btn_rect, radius),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::surface::edge_on(lifted),
-                None,
-                &ui::surface::edge_outline(self.menu_btn_rect, radius),
-            );
-        }
-        let cx = self.menu_btn_rect.center().x;
-        let cy = self.menu_btn_rect.center().y;
-        let bar_w = 18.0 * self.text_scale;
-        let bar_h = 2.0 * self.text_scale;
-        for dy in [-6.0f64, 0.0, 6.0] {
-            let bar = vello::kurbo::RoundedRect::new(
-                cx - bar_w / 2.0,
-                cy + dy * self.text_scale - bar_h / 2.0,
-                cx + bar_w / 2.0,
-                cy + dy * self.text_scale + bar_h / 2.0,
-                1.0,
-            );
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                tokens.colors.text_primary,
-                None,
-                &bar,
-            );
-        }
-
-        // Current page title, vertically centred, to the right of the
-        // button.
-        let title = self
-            .workspace
-            .selected()
-            .and_then(|id| self.workspace.get(id))
-            .map_or_else(|| "Notes".to_string(), |m| m.title.clone());
-        // Base size plus the renderer's global scale; using the already
-        // scaled token here would make the compact mobile bar grow twice.
-        let size = 14.0;
-        let text_x = self.menu_btn_rect.x1 + 4.0;
-        let text_y = self.topbar_rect.y0 + (self.topbar_rect.height() - f64::from(size)) / 2.0;
-        let avail = num::f32_of_f64((self.topbar_rect.x1 - text_x - 12.0).max(0.0));
-        text_renderer.draw_text(
-            scene,
-            &title,
-            size,
-            tokens.colors.text_primary,
-            transform * Affine::translate((text_x, text_y)),
-            Some(avail),
-        );
-    }
-
-    /// Open or close the narrow-mode overlay drawer. Snaps (no slide) so the
-    /// behaviour matches the pre-adoption instant toggle; the drawer's own
-    /// scrim and breakpoint memory come from the shared [`SidebarDrawer`].
+    /// Open or close the shared NavShell sidebar drawer.
     fn set_drawer_open(&mut self, open: bool) {
-        if self.drawer.is_open() != open {
+        if self.shell.is_sidebar_open() != open {
             if open {
-                self.drawer.open();
+                self.shell.open_sidebar();
             } else {
-                self.drawer.close();
+                self.shell.close_sidebar();
             }
-            self.drawer.snap(open);
+            self.shell.snap();
             self.self_dirty = true;
         }
     }
@@ -1061,7 +1168,7 @@ impl NotesApp {
     /// we deliberately do NOT create it here, so binding can never fork
     /// the `pages` Map ahead of the handshake.
     fn bind_selected_page(&mut self, state: &AutoCommit, sel: PageId) {
-        if NotesDoc::page_body(state, sel).is_none() {
+        if self.workspace.body_state(sel).is_none() {
             return; // page not in the shared doc yet — wait for sync
         }
         let title = self
@@ -1099,21 +1206,36 @@ impl NotesApp {
 
     // --- action dispatch -------------------------------------------------
 
-    /// Apply one [`NotesAction`] through the framework's dispatcher, the one
+    /// Apply one notebook action through the framework's dispatcher, the one
     /// door every affordance, the palette and agents share: checked against
     /// the participant's permissions, applied by the replayable executor,
     /// attributed, one undo step and named in history.
     fn dispatch(
         &self,
         edits: &mut ui::widget::Edits<'_>,
-        action: &NotesAction,
+        action: &actions::Action,
     ) -> Result<(), String> {
         let dispatcher = self
             .dispatcher
             .as_ref()
             .ok_or("this notebook is open to view only")?;
         dispatcher
-            .apply_now_with(edits, action, actions::history_context(action))
+            .apply_now(edits, action)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Submit `invoke` (a group of actions) to `edits` now, as one change.
+    fn submit_now(
+        &self,
+        edits: &mut ui::widget::Edits<'_>,
+        invoke: ui::tilo_resource::Invoke<crate::notebook::Notebook>,
+    ) -> Result<(), String> {
+        let dispatcher = self
+            .dispatcher
+            .as_ref()
+            .ok_or("this notebook is open to view only")?;
+        dispatcher
+            .submit_now(edits, invoke)
             .map_err(|error| error.to_string())
     }
 
@@ -1139,7 +1261,8 @@ impl NotesApp {
 
     /// [`Self::dispatch`] for an affordance that has nothing to show for a
     /// refusal but the unchanged notebook.
-    fn apply_action(&self, edits: &mut ui::widget::Edits<'_>, action: &NotesAction) {
+    #[cfg(test)]
+    fn apply_action(&self, edits: &mut ui::widget::Edits<'_>, action: &actions::Action) {
         if let Err(error) = self.dispatch(edits, action) {
             tracing::warn!(%error, "notes: action refused");
         }
@@ -1233,14 +1356,11 @@ impl NotesApp {
     /// Which note is open is this person's, not the document's: it stays
     /// open, and its editor stays bound, while the note exists. Rebinding on
     /// every edit would put the caret back at the start after each keystroke.
-    pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<Workspace>) {
+    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<crate::Notebook>) {
         self.projection_adopted = true;
-        let selected = self
-            .workspace
-            .selected()
-            .filter(|page| state.get(*page).is_some());
-        self.workspace = (**state).clone();
-        self.workspace.set_selected(selected);
+        self.presented = true;
+        self.adopt(Workspace::of(Rc::clone(state), &self.workspace));
+        let selected = self.workspace.selected();
         if self.bound_page != selected {
             self.bound_page = None;
         }
@@ -1262,83 +1382,134 @@ impl NotesApp {
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Notebook>,
+        actions: ui::framework::Actions<crate::resource::Notebook>,
     ) {
-        self.main.attach_notebook(dispatcher.clone());
+        self.main.attach_notebook(dispatcher.clone(), actions);
         self.dispatcher = Some(dispatcher);
     }
 
-    fn refresh_search_blocks(&mut self, doc: &AutoCommit) {
-        let heads = doc.base_heads();
-        if automerge::transaction::Transactable::pending_ops(doc) == 0
-            && self.search_heads.as_ref() == Some(&heads)
-        {
+    /// What opens a note the framework names by its item: a search hit, an
+    /// agent's `open`. A note the notebook does not hold is refused.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static
+    {
+        let opened = Rc::clone(&self.opened);
+        move |id| {
+            let page = crate::notebook::page_of(id)
+                .filter(|page| opened.borrow().known.contains(page))
+                .ok_or_else(|| ui::tilo_resource::Refusal::new("there is no such note"))?;
+            opened.borrow_mut().requests.push(page);
+            Ok(())
+        }
+    }
+
+    /// Show `workspace` from now on; its changed notes are indexed again on
+    /// the next sync, every note when the set of notes changed.
+    fn adopt(&mut self, workspace: Workspace) {
+        let same_notes = workspace.pages().len() == self.workspace.pages().len()
+            && workspace
+                .pages()
+                .iter()
+                .all(|page| self.workspace.get(page.id).is_some());
+        if same_notes {
+            self.unindexed.extend(workspace.changed.iter().copied());
+        } else {
+            // A note that came or went changes which links lead somewhere:
+            // every note is indexed again; what is gone leaves the index now.
+            let known: std::collections::HashSet<PageId> =
+                workspace.pages().iter().map(|page| page.id).collect();
+            self.search_blocks.retain(|page, _| known.contains(page));
+            self.backlink_index.retain(|target, sources| {
+                sources.retain(|(source, _)| known.contains(source));
+                known.contains(target) && !sources.is_empty()
+            });
+            self.unindexed.extend(known);
+        }
+        self.opened.borrow_mut().known = workspace.pages().iter().map(|page| page.id).collect();
+        self.workspace = workspace;
+    }
+
+    fn refresh_search_blocks(&mut self) {
+        #[cfg(test)]
+        let _profile = ui::tilo_resource::profiling::Phase::start("search_blocks");
+        if self.unindexed.is_empty() {
             return;
         }
-        self.search_blocks = self
-            .workspace
-            .pages()
-            .iter()
-            .map(|page| {
-                let blocks = NotesDoc::page_block_snapshots(doc, page.id)
-                    .into_iter()
-                    .map(|(id, text)| crate::actions::NoteBlockResource { id, text })
-                    .collect();
-                (page.id, blocks)
-            })
-            .collect();
         let known_pages = self
             .workspace
             .pages()
             .iter()
             .map(|page| page.id)
             .collect::<std::collections::HashSet<_>>();
-        let mut backlinks = HashMap::<PageId, HashMap<PageId, u32>>::new();
-        for source in self.workspace.pages().iter().map(|page| page.id) {
-            for (_, marks) in NotesDoc::page_block_marks(doc, source) {
-                for mark in marks {
-                    let actions::InlineMark::Link { page } = mark.mark else {
-                        continue;
-                    };
-                    let Ok(target) = page.parse::<PageId>() else {
-                        continue;
-                    };
-                    if target != source && known_pages.contains(&target) {
-                        let count = backlinks
-                            .entry(target)
-                            .or_default()
-                            .entry(source)
-                            .or_default();
-                        *count = count.saturating_add(1);
+        let bodies = self.workspace.bodies.clone();
+        let mut pages = std::mem::take(&mut self.unindexed)
+            .into_iter()
+            .collect::<Vec<_>>();
+        pages.sort_unstable();
+        for source in pages {
+            if !known_pages.contains(&source) {
+                continue;
+            }
+            self.index_search_page(
+                source,
+                bodies.get(&source).map(Vec::as_slice).unwrap_or_default(),
+                &known_pages,
+            );
+        }
+    }
+
+    fn index_search_page(
+        &mut self,
+        source: PageId,
+        stored: &[crate::actions::StoredBlock],
+        known_pages: &std::collections::HashSet<PageId>,
+    ) {
+        // Replace this source's outgoing contributions, preserving all other
+        // sources and dropping targets whose last contribution disappeared.
+        if self.search_blocks.contains_key(&source) {
+            self.backlink_index.retain(|_, sources| {
+                sources.retain(|(page, _)| *page != source);
+                !sources.is_empty()
+            });
+        }
+        let mut blocks = Vec::with_capacity(stored.len());
+        for block in stored {
+            blocks.push(SearchBlock {
+                id: block.id.clone(),
+                text: block.text.clone(),
+            });
+            for mark in &block.marks {
+                let actions::InlineMark::Link { page } = &mark.mark else {
+                    continue;
+                };
+                let Ok(target) = page.parse::<PageId>() else {
+                    continue;
+                };
+                if target == source || !known_pages.contains(&target) {
+                    continue;
+                }
+                let sources = self.backlink_index.entry(target).or_default();
+                match sources.binary_search_by_key(&source, |(page, _)| *page) {
+                    Ok(index) => {
+                        if let Some((_, count)) = sources.get_mut(index) {
+                            *count = count.saturating_add(1);
+                        }
                     }
+                    Err(index) => sources.insert(index, (source, 1)),
                 }
             }
         }
-        self.backlink_index = backlinks
-            .into_iter()
-            .map(|(target, sources)| {
-                let mut sources = sources.into_iter().collect::<Vec<_>>();
-                sources.sort_by_key(|(source, _)| *source);
-                (target, sources)
-            })
-            .collect();
-        self.search_heads = Some(heads);
-    }
-
-    /// Snapshot every page's metadata by id, for the pre/post diff that turns an
-    /// applied [`OutEvent`] into the matching [`NotesAction`](crate::actions).
-    fn meta_map(&self) -> HashMap<PageId, crate::model::PageMeta> {
-        self.workspace
-            .pages()
-            .iter()
-            .map(|p| (p.id, p.clone()))
-            .collect()
+        self.search_blocks.insert(source, blocks);
     }
 
     /// Canonical synchronization is a projection, never an attempt to replay
     /// local rows that are absent from the document.
     fn reconcile_canonical(&mut self, doc: &AutoCommit) -> Result<(), String> {
-        self.workspace =
-            crate::notebook::project_without_asset_rehash(doc, self.workspace.selected())?;
+        #[cfg(test)]
+        let _profile = ui::tilo_resource::profiling::Phase::start("reconcile_canonical");
+        let workspace = Workspace::of(Rc::new(read_notebook(doc)?), &self.workspace);
+        self.adopt(workspace);
         if self
             .active_tag_filter
             .is_some_and(|tag| self.workspace.get_tag(tag).is_none())
@@ -1363,138 +1534,87 @@ impl NotesApp {
         event: OutEvent,
     ) -> Result<(), String> {
         self.reconcile_canonical(edits.doc())?;
-        let before = self.meta_map();
-        let tree_move = matches!(event, OutEvent::Reparent { .. });
+        let gone = |app: &Self, id: PageId| app.workspace.get(id).is_none();
         match event {
             OutEvent::Select(id) => {
-                if self.workspace.get(id).is_none() {
+                if gone(self, id) {
                     return Err("page no longer exists".into());
                 }
                 self.workspace.set_selected(Some(id));
             }
             OutEvent::CreateChild { parent } => {
-                if parent.is_some_and(|id| self.workspace.get(id).is_none()) {
+                if parent.is_some_and(|id| gone(self, id)) {
                     return Err("parent page no longer exists".into());
                 }
-                let id = self.workspace.create_page(parent);
+                let id = PageId::new_v4();
+                self.dispatch(
+                    edits,
+                    &actions::create_page_action(id, parent, crate::notebook::UNTITLED),
+                )?;
+                self.reconcile_canonical(edits.doc())?;
                 self.workspace.set_selected(Some(id));
             }
             OutEvent::Rename { id, new_title } => {
-                if self.workspace.get(id).is_none() {
+                if gone(self, id) {
                     return Err("page no longer exists".into());
                 }
-                self.workspace.rename(id, &new_title);
+                self.dispatch(edits, &actions::rename_page_action(id, &new_title))?;
             }
             OutEvent::Delete(id) => {
-                if self.workspace.get(id).is_none() {
+                if gone(self, id) {
                     return Err("page no longer exists".into());
                 }
-                let action = actions::delete_page_action(id);
-                self.dispatch(edits, &action)?;
-                self.reconcile_canonical(edits.doc())?;
-                self.record_current_route();
-                return Ok(());
+                self.dispatch(edits, &actions::delete_page_action(id))?;
             }
             OutEvent::Reparent {
                 id,
                 new_parent,
                 before,
             } => {
-                if self.workspace.get(id).is_none()
-                    || new_parent.is_some_and(|id| self.workspace.get(id).is_none())
-                {
+                if gone(self, id) || new_parent.is_some_and(|id| gone(self, id)) {
                     return Err("page no longer exists".into());
                 }
-                self.workspace.move_to(id, new_parent, before);
+                self.dispatch(edits, &actions::move_page_action(id, new_parent, before))?;
             }
             OutEvent::Duplicate(source) => {
-                let action = actions::duplicate_subtree_action(edits.doc(), source)?;
-                let NotesAction::DuplicateSubtree { pages, .. } = &action else {
-                    return Err("invalid duplicate action".into());
-                };
-                let destination = pages
+                let parent = self
+                    .workspace
+                    .get(source)
+                    .ok_or("page no longer exists")?
+                    .parent;
+                let before = self
+                    .workspace
+                    .pages()
                     .iter()
-                    .find(|page| page.source == source.to_string())
-                    .ok_or("duplicate root is missing")?
-                    .destination
-                    .parse::<PageId>()
-                    .map_err(|e| e.to_string())?;
-                self.dispatch(edits, &action)?;
-                self.workspace.set_selected(Some(destination));
+                    .map(|page| page.id)
+                    .collect::<std::collections::HashSet<_>>();
+                self.dispatch(edits, &actions::duplicate_action(source))?;
                 self.reconcile_canonical(edits.doc())?;
-                self.record_current_route();
-                return Ok(());
+                // The copy is the one new note beside the original.
+                let copy = self
+                    .workspace
+                    .pages()
+                    .iter()
+                    .find(|page| page.parent == parent && !before.contains(&page.id))
+                    .map(|page| page.id);
+                if let Some(copy) = copy {
+                    self.workspace.set_selected(Some(copy));
+                }
             }
         }
-        let after = self.meta_map();
-        if tree_move && before != after {
-            let mut before = before
-                .values()
-                .map(actions::PageData::from_meta)
-                .collect::<Vec<_>>();
-            let mut after = after
-                .values()
-                .map(actions::PageData::from_meta)
-                .collect::<Vec<_>>();
-            before.sort_by(|a, b| a.id.cmp(&b.id));
-            after.sort_by(|a, b| a.id.cmp(&b.id));
-            let action = NotesAction::UpdatePageTree { before, after };
-            self.dispatch(edits, &action)?;
-        } else {
-            self.dispatch_tree_diff(edits, &before, &after);
-        }
-        // Rejected optimistic metadata is always discarded, including New.
         self.reconcile_canonical(edits.doc())?;
         self.record_current_route();
         self.refresh_status();
         Ok(())
     }
 
-    /// Apply one sidebar [`OutEvent`] to the workspace, then dispatch the
-    /// matching [`NotesAction`](crate::actions) so the change lands in the shared
-    /// document on the same replayable path the Ctrl+K palette uses.
+    /// Apply one sidebar [`OutEvent`]: the notebook's action for it lands in
+    /// the shared document on the same replayable path the palette uses.
     fn apply_and_dispatch(&mut self, edits: &mut ui::widget::Edits<'_>, ev: OutEvent) {
         if let Err(error) = self.apply_canonical_event(edits, ev) {
             tracing::warn!(%error, "notes: rejected page action; reconciling");
             let _ = self.reconcile_canonical(edits.doc());
             self.self_dirty = true;
-        }
-    }
-
-    /// Turn a page-tree change into the matching
-    /// action(s). Deletes are dispatched before upserts.
-    fn dispatch_tree_diff(
-        &self,
-        edits: &mut ui::widget::Edits<'_>,
-        before: &HashMap<PageId, crate::model::PageMeta>,
-        after: &HashMap<PageId, crate::model::PageMeta>,
-    ) {
-        // Deletions: a page present before and gone after. Dispatch one
-        // DeletePage per *deletion root* (a removed page whose parent wasn't
-        // also removed) — `apply` deletes the whole subtree, so descendants need
-        // no separate action.
-        let mut previous = before.iter().collect::<Vec<_>>();
-        previous.sort_by_key(|(id, _)| **id);
-        for (id, meta) in previous {
-            if after.contains_key(id) {
-                continue;
-            }
-            let parent_also_removed = meta
-                .parent
-                .is_some_and(|p| before.contains_key(&p) && !after.contains_key(&p));
-            if !parent_also_removed {
-                self.apply_action(edits, &actions::delete_page_action(*id));
-            }
-        }
-        // Creates + edits: a page new in `after`, or one whose metadata changed
-        // (title / parent / order). Each is a whole-page upsert.
-        let mut next = after.iter().collect::<Vec<_>>();
-        next.sort_by_key(|(id, _)| **id);
-        for (id, meta) in next {
-            match before.get(id) {
-                Some(old) if old == meta => {}
-                _ => self.apply_action(edits, &actions::upsert_page_action(meta)),
-            }
         }
     }
 
@@ -1581,50 +1701,6 @@ impl NotesApp {
         self.pending_events.push(OutEvent::Select(id));
     }
 
-    // Complete lazy resolution semantics are versioned alongside the actual
-    // document/owner witness retained by the SDK. No labels or callback hashes.
-    fn notes_invocation_domain(
-        &self,
-        doc: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        let mut parts = vec![
-            chrono::Local::now()
-                .format("%Y-%m-%d")
-                .to_string()
-                .into_bytes(),
-            crate::continuation::optional_page(self.workspace.selected()),
-            crate::continuation::optional_page(self.active_tag_filter),
-        ];
-        // A different route with the same Back/Forward availability is a
-        // different relative navigation domain. Deleted targets are checked
-        // against the current document by the unchanged navigation handler.
-        for routes in [
-            self.route_history.past(),
-            std::slice::from_ref(self.route_history.current()),
-            self.route_history.future(),
-        ] {
-            parts.push((routes.len() as u64).to_be_bytes().to_vec());
-            parts.extend(
-                routes
-                    .iter()
-                    .copied()
-                    .map(crate::continuation::optional_page),
-            );
-        }
-        let heads = doc.base_heads();
-        parts.push((heads.len() as u64).to_be_bytes().to_vec());
-        parts.extend(heads.iter().map(|head| head.0.to_vec()));
-        parts.push(
-            (automerge::transaction::Transactable::pending_ops(doc) as u64)
-                .to_be_bytes()
-                .to_vec(),
-        );
-        crate::continuation::provider(
-            "notes-canonical-page-block-tag-backlink-local-dispatch/v1",
-            parts,
-        )
-    }
-
     /// Complete a first-note request from the empty-state button. This runs
     /// from both the normal event path and `sync`, because an accessibility
     /// activation reaches the child widget directly and then asks the host for
@@ -1645,20 +1721,19 @@ impl NotesApp {
     /// Keep the image snapshot in step with the notebook's asset references,
     /// and pick up referenced bytes that arrive from a collaborator's device
     /// after the reference did.
-    fn refresh_canonical_assets(&mut self, state: &AutoCommit) {
-        let Ok(manifest) = crate::notebook::asset_manifest(state) else {
-            return;
-        };
+    fn refresh_canonical_assets(&mut self) {
+        let manifest = &self.workspace.notebook.images;
         let retry = self
             .canonical_assets_waiting
             .is_some_and(|since| since.elapsed() >= std::time::Duration::from_secs(1));
-        if manifest == self.canonical_asset_manifest && !retry {
+        if *manifest == self.canonical_asset_manifest && !retry {
             return;
         }
-        let Ok(snapshot) = crate::notebook::asset_snapshot(state) else {
-            return;
-        };
-        let waiting = !crate::notebook::assets_complete(state, &snapshot).unwrap_or(true);
+        let content = crate::notebook::content();
+        let snapshot = crate::notebook::image_snapshot(&self.workspace.notebook, |digest| {
+            content.read(digest)
+        });
+        let waiting = snapshot.len() < manifest.len();
         let arrived = self
             .canonical_assets
             .read()
@@ -1666,7 +1741,7 @@ impl NotesApp {
         if let Ok(mut assets) = self.canonical_assets.write() {
             *assets = snapshot;
         }
-        self.canonical_asset_manifest = manifest;
+        self.canonical_asset_manifest = manifest.clone();
         self.canonical_assets_waiting = waiting.then(ui::time::now);
         if arrived && retry {
             // The image store remembers a failed load; a fresh store draws the
@@ -1741,7 +1816,7 @@ impl NotesApp {
     fn drain_sidebar_events(&mut self, edits: &mut ui::widget::Edits<'_>) {
         if let Some(transfer) = self.sidebar.take_transfer() {
             self.request(&match transfer {
-                SidebarTransfer::ImportMarkdown => NotesEffect::ImportMarkdown,
+                SidebarTransfer::ImportMarkdown => NotesEffect::ImportMarkdownFile,
                 SidebarTransfer::CopyLink(page) => NotesEffect::CopyLink { page },
                 SidebarTransfer::ExportMarkdown(page) => NotesEffect::ExportMarkdown { page },
                 SidebarTransfer::InsertImage(page) => NotesEffect::InsertImage { page },
@@ -1820,22 +1895,25 @@ impl NotesApp {
         self.apply_and_dispatch(edits, ev);
     }
 
-    /// Test hook: whether the current tree is the narrow (drawer) layout.
+    /// Test hook: whether the page tree is a drawer over the note rather
+    /// than a docked column.
     #[doc(hidden)]
     pub fn built_narrow_for_test(&self) -> bool {
-        self.built_narrow
+        self.shell.geometry().sidebar == SidebarPlacement::Drawer
     }
 
-    /// Test hook: whether the narrow-mode overlay drawer is open.
+    /// Test hook: whether the page tree shows (a docked column, or an open
+    /// drawer).
     #[doc(hidden)]
     pub fn drawer_open_for_test(&self) -> bool {
-        self.drawer.is_open()
+        self.shell.is_sidebar_open()
     }
 
-    /// Test hook: centre of the drawer-toggle button (narrow mode).
+    /// Test hook: centre of the shell's sidebar toggle.
     #[doc(hidden)]
     pub fn menu_btn_center_for_test(&self) -> Point {
-        self.menu_btn_rect.center()
+        self.header_button_rect("nav-shell-sidebar")
+            .map_or(Point::ZERO, |rect| rect.center())
     }
 
     /// Test hook: centre of sidebar row `idx`, for click targeting.
@@ -1875,18 +1953,24 @@ impl NotesApp {
         self.sidebar.rename_is_plain_for_test()
     }
 
-    /// Test hook: centre of the sidebar's "+" new-page button, for
+    /// Test hook: centre of the sidebar header's "New note" button, for
     /// click targeting through the real event path.
     #[doc(hidden)]
     pub fn sidebar_new_page_btn_center_for_test(&self) -> Point {
-        self.sidebar.new_page_btn_center_for_test()
+        self.header_button_rect(NEW_NOTE_BUTTON_ID)
+            .map_or(Point::ZERO, |rect| rect.center())
     }
 
-    /// Test hook: the sidebar's laid-out rect (docked column or overlay
+    /// Test hook: the sidebar column's rect (docked column or overlay
     /// drawer), so a test can prove the drawer is clamped to the window.
     #[doc(hidden)]
     pub fn sidebar_rect_for_test(&self) -> Rect {
-        self.sidebar.rect_for_test()
+        self.shell.geometry().sidebar_column
+    }
+
+    /// The laid-out rect of the shell's control with test id `id`.
+    fn header_button_rect(&self, id: &str) -> Option<Rect> {
+        ui::widget::find_test_id(&self.shell, id).map(Widget::get_rect)
     }
 
     /// Test hook: whether a live page-tree drag is in flight.
@@ -1907,6 +1991,28 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn note_menu_open_for_test(&self) -> bool {
         self.note_menu.is_open()
+    }
+
+    /// Test hook: the open note menu's laid-out rect, and the rect of the
+    /// button that opens it.
+    #[doc(hidden)]
+    pub fn note_menu_rects_for_test(&self) -> Option<(Rect, Rect)> {
+        let button = self.header_button_rect(NOTE_MENU_BUTTON_ID)?;
+        let first = self.note_menu.item_rect(0)?;
+        let last = self
+            .note_menu
+            .items()
+            .len()
+            .checked_sub(1)
+            .and_then(|index| self.note_menu.item_rect(index))?;
+        Some((first.union(last), button))
+    }
+
+    /// Test hook: centre of the note header's "Note actions" button.
+    #[doc(hidden)]
+    pub fn note_menu_button_center_for_test(&self) -> Point {
+        self.header_button_rect(NOTE_MENU_BUTTON_ID)
+            .map_or(Point::ZERO, |rect| rect.center())
     }
 
     /// Test hook: whether the sidebar's right-click context menu is open.
@@ -2003,7 +2109,7 @@ impl ui::application_view::ApplicationViewState for NotesApp {
             active_tag: self.active_tag_filter,
             drawer_open: self
                 .pending_responsive_view
-                .map_or_else(|| self.drawer.is_open(), |(open, _)| open),
+                .map_or_else(|| self.shell.is_sidebar_open(), |(open, _)| open),
             expanded_pages: self.sidebar.expanded_pages(),
             editor_scroll: self.main.local_scroll(),
             focus,
@@ -2029,9 +2135,12 @@ impl ui::application_view::ApplicationViewState for NotesApp {
         let stored = workspace
             .selected()
             .map(|page| {
-                NotesDoc::page_block_snapshots(doc, page)
+                workspace
+                    .bodies
+                    .get(&page)
                     .into_iter()
-                    .map(|(id, _)| id)
+                    .flatten()
+                    .map(|block| block.id.clone())
                     .collect::<std::collections::HashSet<_>>()
             })
             .unwrap_or_default();
@@ -2051,7 +2160,7 @@ impl ui::application_view::ApplicationViewState for NotesApp {
         self.bound_page = self.workspace.selected();
         self.pending_events.clear();
         self.pending_block_reveal = None;
-        self.drawer.snap(local.drawer_open);
+        self.pending_block_range = None;
         self.pending_responsive_view = Some((local.drawer_open, false));
         self.prepared_local_focus = Some(focus);
         self.refresh_link_pages();
@@ -2079,14 +2188,69 @@ impl ui::application_view::ApplicationViewState for NotesApp {
         self.main.finish_local_focus(plan.focus);
         if plan.focus == NotesFocus::Sidebar {
             if self.rect.width() > 0.0 {
-                self.sidebar
-                    .set_focus(!self.want_narrow || self.drawer.is_open());
+                self.sidebar.set_focus(self.shell.is_sidebar_open());
             } else if let Some((_, sidebar)) = self.pending_responsive_view.as_mut() {
                 *sidebar = true;
                 self.sidebar.set_focus(true);
             }
         }
         Ok(())
+    }
+}
+
+/// The action target prefix of the save status surface's buttons.
+const SAVE_STATUS_TARGET: &str = "notes.save-status";
+
+impl NotesApp {
+    fn finish_block_reveal(&mut self) {
+        if self
+            .pending_block_range
+            .as_ref()
+            .is_some_and(|(page, block, text, _, _)| {
+                self.search_blocks
+                    .get(page)
+                    .and_then(|blocks| blocks.iter().find(|current| current.id == *block))
+                    .is_none_or(|current| current.text != *text)
+            })
+        {
+            self.pending_block_range = None;
+            self.pending_block_reveal = None;
+        }
+        if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
+            && self.bound_page == Some(*page)
+            && let Some(index) = self
+                .search_blocks
+                .get(page)
+                .and_then(|blocks| blocks.iter().position(|block| block.id == *block_id))
+            && self.main.reveal_block(index)
+        {
+            self.pending_block_reveal = None;
+            if let Some((page, block, text, start, end)) = self.pending_block_range.take()
+                && let Some(current) = self
+                    .search_blocks
+                    .get(&page)
+                    .and_then(|blocks| blocks.get(index))
+                && current.id == block
+                && current.text == text
+                && self
+                    .main
+                    .editor()
+                    .blocks()
+                    .get(index)
+                    .is_some_and(|bound| bound.line.value() == text)
+            {
+                self.main.editor_mut().select_document_range(
+                    ui::widget::DocumentPosition {
+                        block: index,
+                        byte: start,
+                    },
+                    ui::widget::DocumentPosition {
+                        block: index,
+                        byte: end,
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -2120,78 +2284,34 @@ impl Widget for NotesApp {
         self.main.settle(edits, path);
     }
 
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // A scheduled sync only presents when update reports a change. Mark
+        // the expired chip dirty so reduced motion still removes it; paint
+        // consumes its deadline, leaving an idle window asleep afterward.
+        let feedback_expired = self
+            .save_surface
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= ui::time::now());
+        self.self_dirty |= feedback_expired;
+        // The retained shell owns queued header views, responsive bindings
+        // and navigation. It participates in the same lifecycle as the
+        // separately projected notebook content in its column slots.
+        self.shell.update(state, path) || feedback_expired
+    }
+
     fn native_input_snapshot(
         &self,
         state: &AppModel,
         path: &ModelPath,
     ) -> Option<serde_json::Value> {
         let (doc, _) = ui::doc::document_ref(state, path);
-        let page = self.main.page_id();
-        // The native observer runs only for opt-in diagnostic input. Observe
-        // both canonical text and the editor cache used to draw that frame,
-        // without placing a person's note content in the diagnostic log.
-        let body = page
-            .filter(|id| NotesDoc::page_body(doc, *id).is_some())
-            .map(|id| {
-                NotesDoc::page_block_snapshots(doc, id)
-                    .into_iter()
-                    .map(|(_, text)| text)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            });
-        let editor = self.main.editor();
-        let rendered = editor
-            .blocks()
-            .iter()
-            .map(|block| block.line.value())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let caret = editor.focused_index().and_then(|index| {
-            editor.blocks().get(index).map(|block| {
-                serde_json::json!({
-                    "block_id": block.id,
-                    "block_index": index,
-                    "byte_offset": block.line.cursor_pos(),
-                })
-            })
-        });
-        let canonical_sync_key = self.canonical_synced.as_ref().map(|key| {
-            let mut heads = blake3::Hasher::new();
-            for head in &key.0 {
-                heads.update(&head.0);
-            }
-            serde_json::json!({
-                "heads_hash": heads.finalize().to_hex().to_string(),
-                "heads_count": key.0.len(),
-                "pending_operations": key.1,
-                "selected_page": key.2,
-                "active_tag": key.3,
-            })
-        });
-        let rect = editor.get_rect();
-        Some(serde_json::json!({
-            "app": "so.tilo.notes",
-            "editor_id": "block_editor",
-            "selected_page": self.workspace.selected(),
-            "bound_page": page,
-            "main_page": page,
-            "editor_binding_page": self.bound_page,
-            "pending_page_events": self.pending_events.len(),
-            "adopted": self.projection_adopted,
-            "canonical_sync_key": canonical_sync_key,
-            "hash_algorithm": "blake3",
-            "body_hash": body.as_ref().map(|body| blake3::hash(body.as_bytes()).to_hex().to_string()),
-            "body_chars": body.as_ref().map(|body| body.chars().count()),
-            "body_bytes": body.as_ref().map(String::len),
-            "rendered_body_hash": blake3::hash(rendered.as_bytes()).to_hex().to_string(),
-            "rendered_body_chars": rendered.chars().count(),
-            "editor_focused": editor.is_focused(),
-            "caret": caret,
-            "editor_rect": [rect.x0, rect.y0, rect.x1, rect.y1],
-        }))
+        Some(self.editor_observation(doc))
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let _profile = ui::tilo_resource::profiling::Phase::start("surface_sync");
+        self.shell.sync(state, path);
+        self.drain_header_requests();
         let (state, path) = ui::doc::document_ref(state, path);
         if let Some(saved) = self.save_status.as_ref().map(ui::LocalState::get)
             && saved != self.record_save_status
@@ -2199,7 +2319,11 @@ impl Widget for NotesApp {
             self.record_save_status = saved;
             self.refresh_status();
         }
-        self.refresh_canonical_assets(state);
+        self.refresh_canonical_assets();
+        let requested = std::mem::take(&mut self.opened.borrow_mut().requests);
+        for page in requested {
+            self.navigate_to(page);
+        }
         // Moving to another note writes nothing, so it is taken up here, in
         // the frame that asked; edits wait for the settle pass.
         let mut pending = std::mem::take(&mut self.pending_events);
@@ -2234,7 +2358,15 @@ impl Widget for NotesApp {
                 && synced.3 == key.3
         });
         if !unchanged {
-            if let Err(error) = self.reconcile_canonical(state) {
+            // A hosted notebook is handed every change it shows; one shown
+            // over a bare document reads it.
+            #[cfg(test)]
+            let _profile = self.presented.then(|| {
+                ui::tilo_resource::profiling::Phase::start("canonical_projection_adopted")
+            });
+            if !self.presented
+                && let Err(error) = self.reconcile_canonical(state)
+            {
                 tracing::warn!(%error, "notes: canonical projection refused");
                 return;
             }
@@ -2246,33 +2378,31 @@ impl Widget for NotesApp {
         self.drain_tag_open();
         self.drain_backlink_open();
         self.main.set_tags(self.selected_tag_chips());
-        self.refresh_transclusion_previews(state);
+        self.refresh_transclusion_previews();
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
         self.drain_transclusion_opens();
-        self.refresh_search_blocks(state);
+        self.refresh_search_blocks();
         self.main.set_backlinks(self.selected_backlink_chips());
-        if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
-            && self.bound_page == Some(*page)
-            && let Some(index) = self
-                .search_blocks
-                .get(page)
-                .and_then(|blocks| blocks.iter().position(|block| block.id == *block_id))
-            && self.main.reveal_block(index)
-        {
-            self.pending_block_reveal = None;
-        }
+        self.finish_block_reveal();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         // Forward the main panel's editor structure-dirty flag so the App
         // rebuilds the taffy tree when the block count changes (local
         // split/merge OR a remote peer adding a block via sync). Without
-        // this the new block gets no taffy node and isn't laid out. Also
-        // rebuild when the window crossed the narrow breakpoint, since the
-        // sidebar-vs-drawer split changes the tree shape.
-        let relayout = std::mem::take(&mut self.pending_relayout);
-        self.main.take_structure_dirty() || relayout
+        // this the new block gets no taffy node and isn't laid out. The
+        // shell's flag too: a drawer opening or the window crossing the
+        // breakpoint changes which columns exist.
+        self.take_structure_change().rebuilds()
+    }
+
+    /// The main panel says whether its change is described (a header that
+    /// rebuilt its widgets); the shell's columns changing is a rebuild.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        let main = self.main.take_structure_change();
+        let shell = self.shell.take_structure_change();
+        main.join(shell)
     }
 
     fn build_layout(
@@ -2281,203 +2411,71 @@ impl Widget for NotesApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.text_scale = f64::from(theme.text_scale);
-        self.drawer
-            .set_breakpoint(NARROW_BREAKPOINT * self.text_scale);
-        // The scaled drawer must still leave a scrim band of the page visible
-        // (and its own trailing controls on screen): at 2× in a phone-width
-        // window the unclamped 528px drawer ran past the window's right edge.
-        let docked_w = SIDEBAR_WIDTH * self.text_scale;
-        let reveal = f64::from(theme.tokens.spacing.s12);
-        let drawer_w = if self.rect.width() > 0.0 {
-            (DRAWER_WIDTH * self.text_scale).min((self.rect.width() - reveal).max(reveal))
-        } else {
-            DRAWER_WIDTH * self.text_scale
+        self.theme = theme.clone();
+        self.columns.sidebar.reset();
+        self.columns.content.reset();
+        let shell_node = self.shell.build_layout(taffy, theme, node_map);
+        self.shell_node = Some(shell_node);
+
+        // The page tree and the note panel hang under the slots the shell
+        // placed for their columns, so its own placement sizes them in the
+        // same pass. A column the shell does not show (a closed drawer) has
+        // no slot, and its widget is not part of the tree.
+        self.main_node = self.columns.content.node().map(|slot| {
+            let node = self.main.build_layout(taffy, theme, node_map);
+            Self::fill_slot(taffy, slot, node);
+            node
+        });
+        self.sidebar_node = self.columns.sidebar.node().map(|slot| {
+            let node = self.sidebar.build_layout(taffy, theme, node_map);
+            Self::fill_slot(taffy, slot, node);
+            node
+        });
+
+        let style = Style {
+            size: Size::from_percent(1.0, 1.0),
+            ..Default::default()
         };
-        self.drawer.set_docked_width(docked_w);
-        self.drawer.set_overlay_width(drawer_w);
-        // Commit the mode the tree is built with so draw/event routing
-        // stays in lock-step with the live taffy structure.
-        self.built_narrow = self.want_narrow;
-        let narrow = self.built_narrow;
-
-        let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
-        let _ = taffy.set_style(
-            sidebar_node,
-            Self::sidebar_style(narrow, drawer_w, docked_w, self.text_scale),
-        );
-        self.sidebar_node = Some(sidebar_node);
-
-        // Keep the final content row above the transient save status in every
-        // layout, including when accessibility text sizing enlarges the pill.
-        self.main.set_bottom_inset(
-            14.0 + ui::status_bubble::pill_height(12.0, theme.text_scale)
-                + f64::from(theme.tokens.spacing.s2),
-        );
-        let main_node = self.main.build_layout(taffy, theme, node_map);
-        // Augment the panel's own style (preserve its flex-column
-        // layout) with the parent-driven sizing. `taffy.style(...)`
-        // returns the existing Style, which we clone then overwrite
-        // only the fields we care about — preserves the panel's
-        // internal `flex_direction: Column`, padding, etc.
-        if let Ok(existing) = taffy.style(main_node).cloned() {
-            let _ = taffy.set_style(
-                main_node,
-                Style {
-                    size: Size {
-                        width: Dimension::auto(),
-                        height: Dimension::percent(1.0),
-                    },
-                    flex_grow: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    ..existing
-                },
-            );
-        }
-        self.main_node = Some(main_node);
-
-        // Content row. Wide: [sidebar | main] side-by-side. Narrow: the
-        // editor takes the full width and the drawer floats over it as
-        // an absolutely-positioned child (out of flow).
-        let content_children: Vec<NodeId> = if narrow {
-            vec![main_node, sidebar_node]
-        } else {
-            vec![sidebar_node, main_node]
-        };
-        // `new_with_children`/`new_leaf` only error for a corrupted tree;
-        // `Widget::build_layout` returns a bare `NodeId` across every
-        // implementor, so surfacing a theoretical error here would mean
-        // threading a `Result` through the whole toolkit for a branch that
-        // can't be taken (see `ui::widget::TaffyTreeExt`).
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_with_children on freshly-built children cannot fail"
-        )]
-        let content_node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Row,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::auto(),
-                    },
-                    flex_grow: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    gap: taffy::Size {
-                        width: length(0.0_f32),
-                        height: length(0.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &content_children,
-            )
-            .unwrap();
-        self.content_node = Some(content_node);
-
-        self.assemble_root(taffy, node_map, narrow, content_node)
+        taffy.widget_node(style, &[shell_node], node_map, self)
     }
 
-    // `taffy.layout(...)` only errors for a `NodeId` from a different tree,
-    // which never happens here — every id it's called with is one this
-    // widget (or a child it just laid out) received from its own
-    // `build_layout`. `Widget::apply_layout` returns `()` across every
-    // implementor, so surfacing a theoretical error here would mean
-    // threading a `Result` through the whole toolkit for a branch that
-    // can't be taken (see `ui::widget::TaffyTreeExt`).
-    #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        let new_origin = Point::new(self.rect.x0, self.rect.y0);
-
-        // Decide the responsive mode from the real width. `> 0.0` guards the
-        // very first frame, where the window size isn't known yet. The shared
-        // drawer owns the breakpoint; at/above it the sidebar docks, below it it
-        // overlays. Entering narrow starting closed is handled by the drawer's
-        // own breakpoint reconciliation (in `resolve`, below).
-        let width = self.rect.width();
-        let want = width > 0.0
-            && matches!(
-                self.drawer.layout_for(width),
-                ui::widget::SplitLayout::Overlay
-            );
-        if want != self.want_narrow {
-            self.want_narrow = want;
-            self.self_dirty = true;
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        // The shell lays its columns, header row and toggle out first; the
+        // page tree and the note panel are children of the columns' slots,
+        // whose own origin is the column's.
+        if let Some(shell_node) = self.shell_node {
+            self.shell
+                .apply_layout(taffy, shell_node, Point::new(self.rect.x0, self.rect.y0));
         }
-        // If the desired mode drifted from what's actually built, ask the
-        // host to rebuild the tree on the next frame.
-        if self.want_narrow != self.built_narrow {
-            self.pending_relayout = true;
-            self.self_dirty = true;
-        }
-
-        // The content row sits inside the root column; sidebar + main
-        // are children of it. Each child widget's `apply_layout` adds
-        // its own `layout.location` to the origin we pass, so we need
-        // to hand it the *parent's* absolute origin.
-        if let Some(content_node) = self.content_node {
-            let content_layout = taffy.layout(content_node).unwrap();
-            let content_origin = Point::new(
-                new_origin.x + f64::from(content_layout.location.x),
-                new_origin.y + f64::from(content_layout.location.y),
-            );
-            self.content_rect = Rect::new(
-                content_origin.x,
-                content_origin.y,
-                content_origin.x + f64::from(content_layout.size.width),
-                content_origin.y + f64::from(content_layout.size.height),
-            );
-            // Feed the fresh content rect to the shared drawer so its scrim
-            // geometry and breakpoint memory track this frame (this is where a
-            // stale open/closed preference is reconciled on a breakpoint cross).
-            self.drawer.resolve(self.content_rect);
-            if width > 0.0
-                && let Some((open, sidebar)) = self.pending_responsive_view.take()
-            {
-                self.drawer.snap(open);
-                if sidebar {
-                    self.sidebar.set_focus(!self.want_narrow || open);
-                }
+        self.laid_out = true;
+        // The first measured width resolves the saved sidebar intent once.
+        if self.rect.width() > 0.0
+            && let Some((open, sidebar)) = self.pending_responsive_view.take()
+        {
+            // Only a drawer remembers being open or closed; a docked page
+            // tree stays where the window put it.
+            if self.shell.geometry().sidebar == SidebarPlacement::Drawer {
+                self.set_drawer_open(open);
             }
-            if let Some(n) = self.sidebar_node {
-                self.sidebar.apply_layout(taffy, n, content_origin);
-            }
-            if let Some(n) = self.main_node {
-                self.main.apply_layout(taffy, n, content_origin);
+            if sidebar {
+                self.sidebar.set_focus(self.shell.is_sidebar_open());
             }
         }
-
-        // Top bar (narrow only) and its drawer-toggle button rect.
-        if let Some(n) = self.topbar_node {
-            let l = taffy.layout(n).unwrap();
-            self.topbar_rect = Rect::new(
-                new_origin.x + f64::from(l.location.x),
-                new_origin.y + f64::from(l.location.y),
-                new_origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-                new_origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        if let Some(n) = self.main_node {
+            self.main.set_bottom_inset(
+                ui::status_bubble::pill_height(&self.theme)
+                    + f64::from(self.theme.tokens.spacing.s4)
+                    + f64::from(self.theme.tokens.spacing.rhythm.group),
             );
-            self.menu_btn_rect = Rect::new(
-                self.topbar_rect.x0,
-                self.topbar_rect.y0,
-                self.topbar_rect.x0 + TOPBAR_HEIGHT * self.text_scale,
-                self.topbar_rect.y1,
-            );
-        } else {
-            self.topbar_rect = Rect::ZERO;
-            self.menu_btn_rect = Rect::ZERO;
+            self.main
+                .apply_layout(taffy, n, self.columns.content.rect().origin());
         }
-
+        if let Some(n) = self.sidebar_node {
+            self.sidebar
+                .apply_layout(taffy, n, self.columns.sidebar.rect().origin());
+        }
         self.note_menu.set_viewport(Some(self.rect));
-        // Keep the shortcuts overlay's viewport synced — host-driven
-        // since the overlay never participates in the taffy pass.
-        self.shortcuts.set_viewport(self.rect);
     }
 
     fn draw(
@@ -2488,80 +2486,118 @@ impl Widget for NotesApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Background of the whole window.
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-        // Editor always paints first; on a narrow window the drawer (if
-        // open) composites over it below.
+        let incoming = std::mem::take(scene);
+        // No ground of our own: the window paints `surfaces.content`, and the
+        // shell paints the sidebar's region.
+        let drawer_open = self.shell.geometry().sidebar == SidebarPlacement::Drawer
+            && self.shell.is_sidebar_open();
         let covered =
             self.shortcuts.is_visible() || self.note_menu.is_open() || self.sidebar.menu_is_open();
-        let main_covered = covered || (self.built_narrow && self.drawer.is_open());
+        let main_covered = covered || drawer_open;
         self.main.suppress_caret_paint(main_covered);
         self.main.suppress_tooltips(main_covered);
         self.sidebar.suppress_tooltips(covered);
+        // The note first; the shell over it (its drawer and scrim cover the
+        // note), then the page tree on the sidebar the shell painted.
         self.main
             .draw(scene, transform, text_renderer, theme, presence);
-        if self.built_narrow {
-            self.draw_topbar(scene, transform, text_renderer, theme);
-            if self.drawer.is_open() {
-                // The shared drawer paints the (subtle) dimming scrim plus a
-                // soft edge shadow behind the page tree, which draws on top.
-                self.drawer.draw_scrim(scene, transform);
-                self.sidebar
-                    .draw(scene, transform, text_renderer, theme, presence);
-            }
-        } else {
+        let main_scene = std::mem::take(scene);
+        self.shell
+            .draw(scene, transform, text_renderer, theme, presence);
+        let shell_scene = std::mem::take(scene);
+        if self.sidebar_node.is_some() {
+            let geometry = self.shell.geometry();
+            let sidebar_theme = if geometry.sidebar == SidebarPlacement::Drawer {
+                theme.on_ground(ui::chrome::panel_ground(theme))
+            } else {
+                theme.in_region(ui::surface::Region::Sidebar)
+            };
+            // Unclipped: the page tree's context menu is a floating surface
+            // that reaches past its column.
             self.sidebar
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw(scene, transform, text_renderer, &sidebar_theme, presence);
         }
-        // Transient floating status bubble (bottom-right), in place of the
-        // old permanent bottom status strip.
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
-        let now = ui::time::now();
-        self.transfer_toasts
-            .tick(now.saturating_duration_since(self.last_toast_tick));
-        self.last_toast_tick = now;
+        let sidebar_scene = std::mem::take(scene);
+        // Transient floating status bubble (bottom-right).
+        self.status_painted = self.draw_status_bubble(scene, transform, text_renderer, theme);
+        let status_scene = std::mem::take(scene);
+        // Toasts stand above the status bubble's corner.
+        let gutter = f64::from(theme.tokens.spacing.s4);
+        let lift = ui::status_bubble::pill_height(theme) + gutter;
         let toast_area = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y1 - 48.0 * self.text_scale,
+            (self.rect.y1 - lift).max(self.rect.y0),
         );
-        self.transfer_toasts
-            .place_bottom_right(toast_area, 16.0 * self.text_scale);
+        self.transfer_toasts.place_bottom_right(toast_area, gutter);
         self.transfer_toasts
             .draw(scene, transform, text_renderer, theme, presence);
-        self.note_menu
-            .draw(scene, transform, text_renderer, theme, presence);
-        // Shortcuts overlay sits above every app-owned layer when visible.
-        self.shortcuts
-            .draw_overlay(scene, transform, text_renderer, theme);
+        let toasts_scene = std::mem::take(scene);
+        self.main_scroll_copy = self.main.scroll_copy();
+        self.status_over_main = [self.status_drawn, self.status_painted]
+            .into_iter()
+            .flatten()
+            .map(|rect| {
+                ui::widget::floating_surface::painted_bounds(rect, theme)
+                    .intersect(self.main.get_rect())
+            })
+            .filter(|rect| !rect.is_zero_area())
+            .collect();
+        let frame = self.paint_frame(
+            transform,
+            theme,
+            [
+                &main_scene,
+                &shell_scene,
+                &sidebar_scene,
+                &status_scene,
+                &toasts_scene,
+            ],
+        );
+        self.paint_damage.record(self.rect, frame);
+        *scene = incoming;
+        for part in [
+            &main_scene,
+            &shell_scene,
+            &sidebar_scene,
+            &status_scene,
+            &toasts_scene,
+        ] {
+            scene.append(part, None);
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
         // Keep frames coming only while the floating status bubble is lingering
         // / fading, so it hides itself without needing a stray pointer event.
         // Idle otherwise (no idle redraw spin).
-        (!self.motion_reduced && self.status_bubble.needs_frame(ui::time::now()))
-            || !self.transfer_toasts.is_empty()
+        (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
+            || self.shell.needs_animation_frame()
     }
 
-    fn set_motion_reduced(&mut self, reduced: bool) {
-        if self.motion_reduced != reduced {
-            self.motion_reduced = reduced;
-            self.self_dirty = true;
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let mut earliest = self.save_surface.next_wake_deadline();
+        for child in self.children() {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
+            }
         }
-        // Retained children may own their own animation state (editor,
-        // drawer primitives, and modal controls), so continue the framework
-        // propagation after settling the Notes-owned status presentation.
-        for child in self.children_mut() {
-            child.set_motion_reduced(reduced);
-        }
+        earliest
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|child| child.has_pending_visual_work())
+    }
+
+    fn has_transient_feedback(&self) -> bool {
+        self.save_surface.next_wake_deadline().is_some()
+            || self
+                .children()
+                .iter()
+                .any(|child| child.has_transient_feedback())
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -2571,10 +2607,10 @@ impl Widget for NotesApp {
             self.handle_note_context_menu(event, ctx);
             return;
         }
-        if self.handle_shortcuts_overlay(event, ctx.scale_factor, ctx.handled) {
+        if self.handle_shortcuts_overlay(event, ctx) {
             return;
         }
-        if self.handle_help_key(event, ctx.handled) {
+        if self.handle_help_key(event, ctx) {
             return;
         }
         if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
@@ -2586,11 +2622,14 @@ impl Widget for NotesApp {
         if self.handle_route_history_shortcut(event, *ctx.modifiers, ctx.handled) {
             return;
         }
+        if self.handle_save_status_press(event, ctx.handled) {
+            return;
+        }
         self.transfer_toasts.handle_event(event, ctx);
         if *ctx.handled {
             return;
         }
-        if self.handle_narrow_drawer(event, ctx) {
+        if self.handle_shell(event, ctx) {
             return;
         }
         if self.handle_note_context_menu(event, ctx) {
@@ -2605,8 +2644,39 @@ impl Widget for NotesApp {
         self.route_to_children(event, ctx);
     }
 
+    fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+        matches!(event, WindowEvent::MouseWheel { .. })
+            && self.main.view_only_scroll(event)
+            && !self.note_menu.is_open()
+            && !self.shortcuts.is_visible()
+            && !self.sidebar.menu_is_open()
+            && !self.sidebar.is_renaming()
+            && self.pending_events.is_empty()
+            && !(self.shell.geometry().sidebar == SidebarPlacement::Drawer
+                && self.shell.is_sidebar_open())
+    }
+
     fn name(&self) -> &'static str {
         "NotesApp"
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ui::widget::ModelPath,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        match self.save_surface.perform(SAVE_STATUS_TARGET, target) {
+            Some(ui::SaveAction::Retry) => self.save_retry = true,
+            Some(ui::SaveAction::Dismiss) => {}
+            None => return false,
+        }
+        self.self_dirty = true;
+        true
     }
 
     fn get_rect(&self) -> Rect {
@@ -2614,22 +2684,8 @@ impl Widget for NotesApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-        let mut children = Vec::new();
-        if self.built_narrow && self.menu_btn_rect.area() > 0.0 {
-            children.push(
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("Notes drawer")
-                    .with_action_target("notes.drawer")
-                    .with_bounds(self.menu_btn_rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.drawer.is_open()),
-                    ),
-            );
-        }
-        children.push(
+        use ui::a11y::{AccessNode, Role};
+        let mut children = vec![
             AccessNode::new(Role::StaticText)
                 .with_name(self.status.save_text())
                 .with_description(if self.status.needs_attention() {
@@ -2639,7 +2695,8 @@ impl Widget for NotesApp {
                 })
                 .with_live(ui::a11y::Politeness::Polite)
                 .with_hashed_key("notes.save-status"),
-        );
+        ];
+        children.extend(self.save_surface.accessibility(SAVE_STATUS_TARGET));
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Notes")
@@ -2648,29 +2705,12 @@ impl Widget for NotesApp {
         )
     }
 
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        if target == "notes.drawer"
-            && self.built_narrow
-            && matches!(
-                action,
-                ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
-            )
-        {
-            self.set_drawer_open(!self.drawer.is_open());
-            return true;
-        }
-        false
-    }
-
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = Vec::with_capacity(4);
-        if !self.built_narrow || self.drawer.is_open() {
+        let mut children: Vec<&dyn Widget> = Vec::with_capacity(6);
+        if SHELL_PRESENTS_HISTORY.get() {
+            children.push(&self.shell);
+        }
+        if self.sidebar_shown() {
             children.push(self.sidebar.tree());
         }
         if self.note_menu.is_open() {
@@ -2683,8 +2723,11 @@ impl Widget for NotesApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        let show_sidebar = !self.built_narrow || self.drawer.is_open();
-        let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(4);
+        let show_sidebar = self.sidebar_shown();
+        let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(6);
+        if SHELL_PRESENTS_HISTORY.get() {
+            children.push(&mut self.shell);
+        }
         if show_sidebar {
             children.push(self.sidebar.tree_mut());
         }
@@ -2711,29 +2754,47 @@ impl Widget for NotesApp {
 
     fn needs_redraw(&self) -> bool {
         self.self_dirty
+            || self.shell.needs_redraw()
             || self.sidebar.needs_redraw()
             || self.main.needs_redraw()
             || self.shortcuts.needs_redraw()
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // The note's scroll, copied by a host that keeps its last frame; a
+        // host that does not copy repaints the body.
+        if let Some(copy) = &self.main_scroll_copy {
+            if copy.offer(&self.main) {
+                // The save status floats over the note: it is repainted
+                // over what moved under it, and where the copy took it.
+                regions.extend(self.status_over_main.iter().copied());
+            } else {
+                regions.push(copy.body());
+            }
+        }
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.rect, regions);
+        }
+    }
+
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
+
     fn mark_drawn(&mut self) {
+        if self.paint_damage.is_recorded() {
+            self.status_drawn = self.status_painted;
+        }
+        self.paint_damage.mark_drawn();
+        self.main_scroll_copy = None;
         self.self_dirty = false;
+        self.shell.mark_drawn();
         self.sidebar.mark_drawn();
         self.main.mark_drawn();
         self.shortcuts.mark_drawn();
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // The root rect is the whole window — always paint, never cull.
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 }
 
@@ -2759,119 +2820,32 @@ impl ui::resources::PublishesResources for NotesApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         Vec::new()
     }
-    fn action_directory_invocation_domain(
-        &self,
-        doc: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        self.notes_invocation_domain(doc)
-    }
 }
 
 impl NotesApp {
-    /// Style for the sidebar node depending on the narrow/wide layout mode.
-    /// Narrow: an absolutely-positioned overlay drawer pinned to the left
-    /// edge of the content row, full height, taken out of flow so the
-    /// editor keeps the whole width underneath it. Wide: a fixed-width
-    /// column so the split is deterministic (no flexbox squeezing).
-    fn sidebar_style(narrow: bool, drawer_w: f64, docked_w: f64, text_scale: f64) -> Style {
-        if narrow {
-            Style {
-                position: taffy::Position::Absolute,
-                inset: taffy::Rect {
-                    left: length(0.0_f32),
-                    right: taffy::LengthPercentageAuto::auto(),
-                    top: length(0.0_f32),
-                    bottom: length(0.0_f32),
-                },
-                size: Size {
-                    // Fill a phone when the preferred large-text drawer is
-                    // wider than the viewport; the max keeps it a drawer on
-                    // roomier narrow windows. A fixed scaled width pushed the
-                    // New-note affordance offscreen at 390 px / 200%.
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                max_size: Size {
-                    width: Dimension::length(num::f32_of_f64(drawer_w)),
-                    height: Dimension::auto(),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            }
-        } else {
-            Style {
-                size: Size {
-                    width: Dimension::length(num::f32_of_f64(docked_w)),
-                    height: Dimension::percent(1.0),
-                },
-                min_size: Size {
-                    width: Dimension::length(num::f32_of_f64(160.0 * text_scale)),
-                    height: Dimension::auto(),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            }
-        }
+    /// Whether the page tree is part of the window: the shell shows its
+    /// column (a docked sidebar, an open drawer), or nothing has been laid
+    /// out yet.
+    fn sidebar_shown(&self) -> bool {
+        self.sidebar_node.is_some() || !self.laid_out
     }
 
-    /// Assemble the outer flex column: an optional top bar (narrow only)
-    /// above the content row. No status-bar row — the note's status floats
-    /// as a transient bubble (see `draw_status_bubble`), so the content
-    /// column spans to the window bottom and reclaims the strip's height.
-    fn assemble_root(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        narrow: bool,
-        content_node: NodeId,
-    ) -> NodeId {
-        let mut column_children: Vec<NodeId> = Vec::with_capacity(3);
-        if narrow {
-            #[allow(
-                clippy::unwrap_used,
-                reason = "new_leaf on a fresh style cannot fail — see ui::widget::TaffyTreeExt"
-            )]
-            let topbar_node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(num::f32_of_f64(TOPBAR_HEIGHT * self.text_scale)),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                })
-                .unwrap();
-            self.topbar_node = Some(topbar_node);
-            column_children.push(topbar_node);
-        } else {
-            self.topbar_node = None;
-        }
-        column_children.push(content_node);
-
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_with_children on freshly-built children cannot fail — see ui::widget::TaffyTreeExt"
-        )]
-        let root = taffy
-            .new_with_children(
+    /// Hang a column's widget under the slot the shell placed for it: the
+    /// column fills the slot, whatever size the shell gave it.
+    fn fill_slot(taffy: &mut TaffyTree<()>, slot: NodeId, node: NodeId) {
+        if let Ok(existing) = taffy.style(node).cloned() {
+            let _ = taffy.set_style(
+                node,
                 Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    gap: taffy::Size {
-                        width: length(0.0_f32),
-                        height: length(0.0_f32),
-                    },
-                    ..Default::default()
+                    size: Size::from_percent(1.0, 1.0),
+                    flex_grow: 0.0,
+                    flex_shrink: 0.0,
+                    flex_basis: Dimension::auto(),
+                    ..existing
                 },
-                &column_children,
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+            );
+        }
+        let _ = taffy.add_child(slot, node);
     }
 
     /// The shortcuts overlay is fully blocking when visible: it either
@@ -2880,18 +2854,18 @@ impl NotesApp {
     fn handle_shortcuts_overlay(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        handled: &mut bool,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if !self.shortcuts.is_visible() {
             return false;
         }
-        if self.shortcuts.handle_key(event, scale_factor) {
-            *handled = true;
-            self.refresh_status();
-            return true;
+        self.shortcuts.handle_event(event, ctx);
+        if !self.shortcuts.is_visible() && std::mem::take(&mut self.shortcuts_return_to_tree) {
+            self.sidebar.set_focus(true);
         }
-        *handled = true;
+        self.self_dirty = true;
+        self.refresh_status();
+        *ctx.handled = true;
         true
     }
 
@@ -2902,7 +2876,7 @@ impl NotesApp {
     /// key falls through to the block editor and types a literal `?`; when
     /// the page tree / nothing is focused, `?` opens help. This is the
     /// standard "help key only outside inputs" behaviour.
-    fn handle_help_key(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+    fn handle_help_key(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         if self.main.editor().is_focused() {
             return false;
         }
@@ -2921,8 +2895,19 @@ impl NotesApp {
         if c.as_str() != "?" {
             return false;
         }
+        // The sheet takes the pointer and the keyboard from the page tree
+        // behind it, so no row stays hovered or ringed under the scrim.
+        if let Some(node) = self.sidebar_node {
+            let left = WindowEvent::CursorLeft {
+                device_id: winit::event::DeviceId::dummy(),
+            };
+            self.sidebar
+                .handle_event(&left, &mut ctx.reborrow(ctx.path, node));
+        }
+        self.shortcuts_return_to_tree = self.sidebar.is_focused();
+        self.sidebar.set_focus(false);
         self.shortcuts.set_visible(true);
-        *handled = true;
+        *ctx.handled = true;
         self.refresh_status();
         true
     }
@@ -2997,92 +2982,74 @@ impl NotesApp {
         true
     }
 
-    /// Narrow-mode overlay drawer. The top-bar button toggles it; while
-    /// open it captures pointer/keys so the page tree behaves like a
-    /// modal flyout over the editor.
-    fn handle_narrow_drawer(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        if !self.built_narrow {
+    /// What the shell's header buttons asked for: a new root note, or the
+    /// note's actions anchored to their button. A button can be pressed by
+    /// pointer, keyboard or assistive technology, so this runs from `sync`
+    /// as well as after input.
+    fn drain_header_requests(&mut self) {
+        if self.header.new_note.take() {
+            self.pending_events
+                .push(OutEvent::CreateChild { parent: None });
+            self.self_dirty = true;
+        }
+        if self.header.note_menu.take() {
+            self.open_note_menu_from_button();
+        }
+    }
+
+    /// The window shell: its header buttons, its sidebar toggle and shortcut,
+    /// and the drawer where the page tree is too wide to dock. A drawer is
+    /// modal while it is open: input belongs to the page tree, and choosing a
+    /// note closes it.
+    fn handle_shell(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+        // A page-tree context menu may extend past the drawer. Give it the
+        // dismissing click or Escape before the shell reads either as input
+        // to the drawer.
+        if self.sidebar_node.is_some() && self.sidebar.menu_is_open() {
+            self.route_to_sidebar(event, ctx);
+            *ctx.handled = true;
+            return true;
+        }
+        if let Some(node) = self.shell_node {
+            self.shell
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        }
+        self.drain_header_requests();
+        if *ctx.handled {
+            self.self_dirty = true;
+            return true;
+        }
+        let drawer_open = self.shell.geometry().sidebar == SidebarPlacement::Drawer
+            && self.shell.is_sidebar_open();
+        if !(drawer_open && self.sidebar_node.is_some()) {
             return false;
         }
-        // A sidebar context menu may extend beyond the drawer. Give it the
-        // dismissal click/Escape before interpreting either as drawer input.
-        if self.sidebar.menu_is_open() {
-            let selected = self.workspace.selected();
-            if let Some(n) = self.sidebar_node {
-                self.sidebar
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-                self.claim_sidebar_focus(*ctx.focus_target);
-            }
-            self.drain_sidebar_events(&mut ctx.edits());
-            if self.workspace.selected() != selected && !self.sidebar.menu_is_open() {
-                self.set_drawer_open(false);
-            }
-            *ctx.handled = true;
-            return true;
-        }
-        // Toggle button — hit-test the hamburger in the top bar.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-            && self.menu_btn_rect.contains(self.last_mouse)
-        {
-            self.set_drawer_open(!self.drawer.is_open());
-            *ctx.handled = true;
-            return true;
-        }
-        if !self.drawer.is_open() {
-            return false;
-        }
-        // Escape closes the drawer.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Named(NamedKey::Escape),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            self.set_drawer_open(false);
-            *ctx.handled = true;
-            return true;
-        }
-        // A press on the scrim (outside the drawer) closes it.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-            && !self.sidebar.get_rect().contains(self.last_mouse)
-        {
-            self.set_drawer_open(false);
-            *ctx.handled = true;
-            return true;
-        }
-        // Route to the page tree; auto-close once a page is picked.
-        let sel_before = self.workspace.selected();
-        if let Some(n) = self.sidebar_node {
-            self.sidebar
-                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-            self.claim_sidebar_focus(*ctx.focus_target);
-        }
-        self.drain_sidebar_events(&mut ctx.edits());
-        if self.workspace.selected() != sel_before && !self.sidebar.menu_is_open() {
-            self.set_drawer_open(false);
-        }
+        self.route_to_sidebar(event, ctx);
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse = ctx.logical(position);
         }
         self.refresh_status();
+        *ctx.handled = true;
         true
+    }
+
+    /// Route `event` to the page tree and apply what it asked for. Choosing a
+    /// note in a drawer closes the drawer.
+    fn route_to_sidebar(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let Some(node) = self.sidebar_node else {
+            return;
+        };
+        let selected = self.workspace.selected();
+        self.sidebar
+            .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        self.claim_sidebar_focus(*ctx.focus_target);
+        self.drain_sidebar_events(&mut ctx.state);
+        if self.shell.geometry().sidebar == SidebarPlacement::Drawer
+            && self.workspace.selected() != selected
+            && !self.sidebar.menu_is_open()
+        {
+            self.set_drawer_open(false);
+        }
     }
 
     /// Click on a link mark navigates.
@@ -3114,10 +3081,6 @@ impl NotesApp {
     }
 
     /// Route note commands before pointer or keyboard events reach the editor.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "routes the complete context-menu event lifecycle through one stateful boundary"
-    )]
     fn handle_note_context_menu(
         &mut self,
         event: &WindowEvent,
@@ -3158,14 +3121,15 @@ impl NotesApp {
         let Some(page) = self.workspace.selected() else {
             return false;
         };
+        // A pointer opens it where it clicked; the keyboard opens it on the
+        // note's actions button, as the menu of that trigger.
         let anchor = if pointer_open {
-            self.last_mouse
+            Rect::from_origin_size(self.last_mouse, (0.0, 0.0))
         } else {
-            let rect = self.main.get_rect();
-            Point::new(
-                rect.x0 + 32.0 * self.text_scale,
-                rect.y0 + 64.0 * self.text_scale,
-            )
+            self.header_button_rect(NOTE_MENU_BUTTON_ID)
+                .unwrap_or_else(|| {
+                    Rect::from_origin_size(self.main.get_rect().origin(), (0.0, 0.0))
+                })
         };
         self.note_menu_editor = if pointer_open {
             self.main.editor().get_rect().contains(self.last_mouse)
@@ -3216,11 +3180,9 @@ impl NotesApp {
         for item in crate::sidebar::note_context_menu().items() {
             self.note_menu.push(item.clone());
         }
-        self.note_menu
-            .set_text_scale(num::f32_of_f64(self.text_scale));
+        self.note_menu.set_text_scale(self.theme.text_scale);
         self.note_menu.set_viewport(Some(self.rect));
-        self.note_menu
-            .open_at([num::f32_of_f64(anchor.x), num::f32_of_f64(anchor.y)]);
+        self.note_menu.open_anchored(anchor, self.rect);
         self.note_menu_target = Some(page);
         self.self_dirty = true;
         *ctx.handled = true;
@@ -3318,9 +3280,11 @@ impl NotesApp {
             || self.main.editor().link_popover().is_visible();
         let sidebar_menu_open = self.sidebar.menu_is_open();
 
-        // Route to the inline sidebar only when it's actually on screen
-        // (wide mode). In narrow mode the drawer block above owns it.
-        if !self.built_narrow && (!editor_menu_open || !is_keyboard) {
+        // Route to the page tree only when it's on screen. A drawer is
+        // modal and gets its input from `handle_shell`.
+        if self.shell.geometry().sidebar != SidebarPlacement::Drawer
+            && (!editor_menu_open || !is_keyboard)
+        {
             if let Some(n) = self.sidebar_node {
                 self.sidebar
                     .handle_event(event, &mut ctx.reborrow(ctx.path, n));
@@ -3351,11 +3315,18 @@ impl NotesApp {
         // Update the last-mouse cache so the next MouseInput knows
         // where to hit-test for link clicks.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let logical = vello::kurbo::Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            );
+            let logical = ctx.logical(position);
             self.last_mouse = logical;
+            // Resting on the bubble's corner pins it open; over a failed
+            // save's toast its actions lift.
+            let (area, theme) = (self.rect, &self.theme);
+            ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+                self.save_surface
+                    .hover_bubble(area, logical, text, theme, ui::time::now())
+            });
+            if self.save_surface.pointer_moved(logical) {
+                self.self_dirty = true;
+            }
         }
         // Status bar refresh runs at the tail of every event so word
         // count + save indicator stay current. Cheap — the StatusBar
@@ -3364,19 +3335,291 @@ impl NotesApp {
     }
 }
 
+impl NotesApp {
+    fn open_note_menu_from_button(&mut self) {
+        let Some(page) = self.workspace.selected() else {
+            return;
+        };
+        let Some(anchor) = self.header_button_rect(NOTE_MENU_BUTTON_ID) else {
+            return;
+        };
+        self.note_menu_editor = false;
+        self.note_menu_table = None;
+        self.note_menu_table_source = None;
+        self.note_menu = ContextMenu::new();
+        for item in crate::sidebar::note_context_menu().items() {
+            self.note_menu.push(item.clone());
+        }
+        self.note_menu.set_text_scale(self.theme.text_scale);
+        self.note_menu.set_viewport(Some(self.rect));
+        self.note_menu.open_anchored(anchor, self.rect);
+        self.note_menu_target = Some(page);
+        self.self_dirty = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    mod search_refresh;
     use super::*;
     use tempfile::TempDir;
 
+    /// The notebook `doc` holds, as the window shows it.
+    fn shown(doc: &AutoCommit) -> Workspace {
+        crate::read::project(doc).unwrap()
+    }
+
+    /// The notes of `notebook`, in notebook order.
+    fn page_ids(notebook: &crate::Notebook) -> Vec<PageId> {
+        notebook
+            .pages
+            .ids()
+            .filter_map(crate::notebook::page_of)
+            .collect()
+    }
+
+    #[test]
+    fn capture_draw_preserves_import_notification_at_expiry_boundary() {
+        ui::clock::freeze_for_capture();
+        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+        // A zero remaining lifetime deterministically exercises the expiry
+        // boundary without making CI speed or a real-time sleep the oracle.
+        app.transfer_toasts =
+            ui::widget::toast::ToastStack::new().with_default_ttl(ui::time::Duration::ZERO);
+        app.transfer_toasts.push(
+            "Imported Project brief",
+            ui::widget::toast::ToastKind::Success,
+        );
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::empty(),
+        );
+        let node = app
+            .transfer_toasts
+            .accessibility()
+            .expect("the captured import notification remains announced");
+        assert_eq!(node.name.as_deref(), Some("Notifications"));
+        assert_eq!(node.value.as_deref(), Some("Imported Project brief"));
+    }
+
+    #[test]
+    fn transclusion_previews_follow_selected_marks_remote_edits_and_deleted_targets() {
+        use tilo_automerge::ApplyIncoming as _;
+        let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
+        assert!(
+            app.transclusion_previews().is_empty(),
+            "ordinary notes must not project every other note as a preview"
+        );
+        let target = PageId::new_v4();
+        let mut peer = state.doc.fork();
+        let blocks = MainPanel::seed_blocks("Original preview", |_| None);
+        let source_block = crate::read::page_block_snapshots(&peer, source)[0].clone();
+        for action in [
+            actions::create_page_action(target, None, "Target"),
+            actions::write_body_action(target, &blocks),
+            actions::set_mark_action(
+                source,
+                &source_block.0,
+                0..source_block.1.len(),
+                &ui::widget::Mark::Transclusion(target),
+            ),
+        ] {
+            tilo_actions::apply_local(&mut peer, &action, actions::encode(&action)).unwrap();
+        }
+        peer.get_heads();
+        state.doc.merge_incoming(&mut peer).unwrap();
+        app.frame(&mut state.doc, &state.root);
+        let previews = app.transclusion_previews();
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[&target].title, "Target");
+        assert_eq!(previews[&target].excerpt, "Original preview");
+
+        let mut peer = state.doc.fork();
+        let block = crate::read::page_block_snapshots(&peer, target)[0].clone();
+        let action = actions::edit_body_action(
+            target,
+            tilo_document::RichTextAction::SpliceText {
+                region: tilo_document::action::RegionKind::Body,
+                block: block.0,
+                at: 0,
+                del: block.1.chars().count(),
+                ins: "é".repeat(181),
+            },
+        );
+        tilo_actions::apply_local(&mut peer, &action, actions::encode(&action)).unwrap();
+        peer.get_heads();
+        state.doc.merge_incoming(&mut peer).unwrap();
+        app.frame(&mut state.doc, &state.root);
+        assert_eq!(
+            app.transclusion_previews()[&target].excerpt,
+            format!("{}…", "é".repeat(180))
+        );
+
+        app.workspace.set_selected(Some(target));
+        app.frame(&mut state.doc, &state.root);
+        assert!(app.transclusion_previews().is_empty());
+        app.workspace.set_selected(Some(source));
+        app.frame(&mut state.doc, &state.root);
+        assert_eq!(app.transclusion_previews().len(), 1);
+        let action = actions::delete_page_action(target);
+        tilo_actions::apply_local(&mut state.doc, &action, actions::encode(&action)).unwrap();
+        state.doc.get_heads();
+        app.frame(&mut state.doc, &state.root);
+        assert!(app.transclusion_previews().is_empty());
+    }
+
+    #[test]
+    fn capture_draw_preserves_the_import_notification_lifetime() {
+        ui::clock::freeze_for_capture();
+        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+        app.transfer_toasts.push(
+            "Imported Project brief",
+            ui::widget::toast::ToastKind::Success,
+        );
+        let lifetime = app.transfer_toasts.iter().next().unwrap().ttl_remaining;
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::default(),
+        );
+        assert_eq!(
+            app.transfer_toasts.iter().next().unwrap().ttl_remaining,
+            lifetime,
+            "the real Notes draw must preserve a capture's transient notification"
+        );
+        assert_eq!(
+            app.transfer_toasts
+                .accessibility()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("Imported Project brief")
+        );
+    }
+
+    #[test]
+    fn published_block_range_selects_unicode_in_the_real_editor_without_editing() {
+        use tilo_document::RichTextAction;
+        let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
+        app.call("new-note", serde_json::json!({"title": "Range fixture"}))
+            .unwrap();
+        let page = page_ids(&app.state())[0];
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&actions::edit_body_action(
+                page,
+                RichTextAction::AppendParagraph {
+                    text: "café notes".into(),
+                },
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        app.settle();
+        let block = app.read_document(|doc| {
+            crate::read::page_block_snapshots(doc, page)
+                .into_iter()
+                .find(|(_, text)| text == "café notes")
+                .unwrap()
+                .0
+        });
+        let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+        for (start, end, unit) in [(3, 4, "Chars"), (3, 5, "Bytes")] {
+            app.call_on(
+                &crate::actions::page_resource_id(page),
+                "reveal-block-range",
+                serde_json::json!({ "block": block, "start": start, "end": end, "unit": unit }),
+            )
+            .unwrap();
+            app.settle();
+            assert_eq!(
+                app.surface_mut::<NotesApp>()
+                    .main
+                    .editor()
+                    .selected_text()
+                    .as_deref(),
+                Some("é")
+            );
+            assert_eq!(
+                app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+                before
+            );
+        }
+        for (start, end, unit) in [
+            (4, 3, "Chars"),
+            (4, 5, "Bytes"),
+            (0, 100, "Chars"),
+            (0, 1, "Pixels"),
+        ] {
+            assert!(
+                app.call_on(
+                    &crate::actions::page_resource_id(page),
+                    "reveal-block-range",
+                    serde_json::json!({ "block": block, "start": start, "end": end, "unit": unit })
+                )
+                .is_err()
+            );
+            assert_eq!(
+                app.surface_mut::<NotesApp>()
+                    .main
+                    .editor()
+                    .selected_text()
+                    .as_deref(),
+                Some("é")
+            );
+        }
+        assert_eq!(
+            app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+            before
+        );
+    }
+
+    #[test]
+    fn a_block_edit_before_binding_discards_the_pending_range() {
+        let (mut app, mut state, _tmp, page) = app_seeded_into_doc();
+        let block = app.search_blocks[&page][0].id.clone();
+        let shown = shown(&state.doc);
+        app.open_block_range(&shown, page, block.clone(), (0, 1, "Chars"))
+            .unwrap();
+        let action = actions::edit_body_action(
+            page,
+            tilo_document::RichTextAction::SpliceText {
+                region: tilo_document::action::RegionKind::Body,
+                block,
+                at: 0,
+                del: 0,
+                ins: "changed before bind ".into(),
+            },
+        );
+        app.apply_action(&mut Edits::lend(&mut state.doc), &action);
+        app.frame(&mut state.doc, &state.root);
+        assert!(app.pending_block_range.is_none());
+        assert!(
+            app.main.editor().selected_text().is_none(),
+            "never select offsets against different text"
+        );
+    }
+
     /// The dispatcher the framework attaches to the notebook surface, for a
     /// test that drives `NotesApp` over a document of its own.
-    fn framework_dispatcher() -> ui::framework::Dispatcher<crate::resource::Notebook> {
+    fn framework_dispatcher() -> (
+        ui::framework::Dispatcher<crate::resource::Notebook>,
+        ui::framework::Actions<crate::resource::Notebook>,
+    ) {
         let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
-        app.surface_mut::<NotesApp>()
-            .dispatcher
-            .clone()
-            .expect("the framework attaches its dispatcher")
+        let notes = app.surface_mut::<NotesApp>();
+        (
+            notes
+                .dispatcher
+                .clone()
+                .expect("the framework attaches its dispatcher"),
+            notes.main.actions().expect("and its actions"),
+        )
     }
 
     /// The notebook surface over `doc`, editing through the framework's
@@ -3387,7 +3630,8 @@ mod tests {
             &ui::permissions::UserId("notes-app-test-author".into()),
         )
         .unwrap();
-        app.attach_framework(framework_dispatcher());
+        let (dispatcher, actions) = framework_dispatcher();
+        app.attach_framework(dispatcher, actions);
         app
     }
 
@@ -3399,16 +3643,15 @@ mod tests {
         if id == "notes.notebook" {
             return ui::tilo_resource::publish::<crate::resource::Notebook>(id, "Notes", &state);
         }
-        crate::actions::notebook_child(&state, id).unwrap()
+        crate::resource::Notebook::child(&state, id).unwrap()
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn images_beside_a_markdown_file_become_notebook_assets() {
         eprintln!("phase images_beside_a_launched_file_join_the_notebook");
         {
             let source = TempDir::new().unwrap();
-            let bytes = include_bytes!("../../settings/shots/settings.png");
+            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png"));
             std::fs::write(source.path().join("photo.png"), bytes).unwrap();
             std::fs::write(source.path().join("outside.png"), bytes).unwrap();
             let markdown = "![Portable](photo.png)\n![Kept](https://example.test/a.png)\n";
@@ -3426,7 +3669,11 @@ mod tests {
         {
             let tmp = TempDir::new().unwrap();
             let image = tmp.path().join("image.png");
-            std::fs::write(&image, include_bytes!("../../settings/shots/settings.png")).unwrap();
+            std::fs::write(
+                &image,
+                include_bytes!(concat!(env!("OUT_DIR"), "/settings.png")),
+            )
+            .unwrap();
             let markdown = "![Repeated](image.png)\n".repeat(10);
 
             let (imported, assets) =
@@ -3443,17 +3690,11 @@ mod tests {
         ui::i18n::I18nManager::init("en-US");
         let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
         let page = PageId::new_v4();
-        let bytes = include_bytes!("../../settings/shots/settings.png").to_vec();
+        let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png")).to_vec();
         let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
         for action in [
-            actions::new_page_action(page, None, "a".into(), "Shots"),
-            actions::add_image_asset_action(
-                page,
-                bytes,
-                tilo_document::RichTextAction::AppendParagraph {
-                    text: format!("![Settings]({source})"),
-                },
-            ),
+            actions::create_page_action(page, None, "Shots"),
+            actions::place_image_action(page, bytes, Some("Settings")),
         ] {
             app.invoke(ui::tilo_resource::Invoke::apply(&action).unwrap())
                 .unwrap();
@@ -3473,7 +3714,7 @@ mod tests {
         eprintln!("phase accessibility_activation_creates_the_first_shared_note_on_sync");
         {
             let mut doc = AutoCommit::new();
-            crate::notebook::initialize_empty(&mut doc).unwrap();
+            crate::read::initialize(&mut doc);
             let mut app = hosted(&doc);
             assert!(
                 app.workspace.pages().is_empty(),
@@ -3481,6 +3722,7 @@ mod tests {
             );
             assert!(app.main.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -3491,7 +3733,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn page_events_create_delete_rename_and_dispatch_canonical_actions() {
         eprintln!("phase apply_event_create_child_appends_and_selects");
@@ -3514,10 +3755,10 @@ mod tests {
                 OutEvent::CreateChild { parent: Some(root) },
             );
             let child = app.workspace.selected().unwrap();
-            assert!(NotesDoc::page_body(&state.doc, child).is_some());
+            assert!(crate::read::page_body(&state.doc, child).is_some());
             app.dispatch_event_for_test(&mut Edits::lend(&mut state.doc), OutEvent::Delete(child));
             app.frame(&mut state.doc, &state.root);
-            assert!(NotesDoc::page_body(&state.doc, child).is_none());
+            assert!(crate::read::page_body(&state.doc, child).is_none());
             // Selection falls back to a remaining root page.
             assert_eq!(app.workspace.selected(), Some(root));
         }
@@ -3539,22 +3780,14 @@ mod tests {
         {
             let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
 
-            // Palette side: the welcome page resource's delete spec (built before we
-            // delete the page, while it still exists in the tree).
-            let notebook = published(&state.doc, "notes.notebook");
-            let page = notebook
-                .children
-                .iter()
-                .find(|r| r.label == "Welcome")
-                .expect("a Welcome page resource");
+            // Palette side: the welcome note's item offers delete with the
+            // note bound.
+            let page = published(&state.doc, &actions::page_resource_id(welcome));
+            assert_eq!(page.label, "Welcome");
             let delete_spec = page.actions.iter().find(|a| a.id == "delete").unwrap();
-            let from_palette = match &delete_spec.input {
-                tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-                tilo_actions::ActionInput::Prompted { .. }
-                | tilo_actions::ActionInput::Deferred { .. } => {
-                    panic!("delete is an immediate action")
-                }
-            };
+            let from_palette = delete_spec
+                .build_json(&serde_json::Map::new())
+                .expect("the note is bound");
 
             // Affordance side: the sidebar's Delete event through the app path,
             // as the change it recorded names it.
@@ -3563,24 +3796,39 @@ mod tests {
                 &mut Edits::lend(&mut state.doc),
                 OutEvent::Delete(welcome),
             );
+            assert!(
+                state.doc.get_changes(&before).is_empty(),
+                "deleting a note asks the person first"
+            );
+            // The person confirms what the host asked.
+            app.land(&mut state.doc);
             let change = state.doc.get_changes(&before).into_iter().last().unwrap();
             let context =
                 tilo_actions::ActionContext::from_change_message(change.message().unwrap())
                     .unwrap();
             let from_button = crate::actions::encode(&actions::delete_page_action(welcome));
-            assert_eq!(context.action_label, "Delete note");
+            assert!(
+                matches!(&context.what, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == "delete"),
+                "{context:?}"
+            );
 
             assert_eq!(from_palette.type_id, from_button.type_id);
+            let operation = |encoded: &tilo_actions::EncodedAction| {
+                serde_json::from_slice::<actions::Action>(&encoded.payload)
+                    .unwrap()
+                    .operation
+            };
             assert_eq!(
-                from_palette.payload, from_button.payload,
-                "the sidebar affordance and the palette build the same EncodedAction"
+                serde_json::to_value(operation(&from_palette)).unwrap(),
+                serde_json::to_value(operation(&from_button)).unwrap(),
+                "the sidebar affordance and the palette build the same action"
             );
         }
 
         eprintln!("phase creating_a_page_dispatches_an_upsert_into_the_doc");
         {
             let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
-            let before = NotesDoc::list_pages(&state.doc).len();
+            let before = crate::read::list_pages(&state.doc).len();
 
             app.dispatch_event_for_test(
                 &mut Edits::lend(&mut state.doc),
@@ -3588,7 +3836,7 @@ mod tests {
             );
 
             assert_eq!(
-                NotesDoc::list_pages(&state.doc).len(),
+                crate::read::list_pages(&state.doc).len(),
                 before + 1,
                 "the create wrote a new page into the shared document"
             );
@@ -3597,10 +3845,90 @@ mod tests {
                 .selected()
                 .expect("new page becomes the active page");
             assert!(
-                !NotesDoc::page_blocks(&state.doc, new_page).is_empty(),
+                !crate::read::page_blocks(&state.doc, new_page).is_empty(),
                 "the new page body also crossed the typed action executor"
             );
         }
+    }
+
+    /// A retry must recover the actual record writer, not leave a latch for
+    /// the test to consume after the production owner already took it.
+    fn assert_real_save_retry(expected_target: &str) {
+        use ui::tilo_resource::Resource as _;
+
+        let profile = TempDir::new().unwrap();
+        let mut host =
+            ui::prelude::TestApp::<crate::NotesShell>::open_data_dir(profile.path()).unwrap();
+        host.flush().unwrap();
+        let directory = profile
+            .path()
+            .join("so.tilo.notes")
+            .join("rooms")
+            .join("personal")
+            .join("records")
+            .join(host.record().storage_key());
+        assert!(directory.is_dir(), "observe the real record directory");
+        let backup = profile.path().join("held-record");
+        std::fs::rename(&directory, &backup).unwrap();
+        // A regular file in place of this test's directory makes writes fail
+        // for root as well as ordinary users; no permission assumptions.
+        std::fs::write(&directory, b"deliberate test storage fault").unwrap();
+        let page = uuid::Uuid::new_v4();
+        host.invoke(
+            ui::tilo_resource::Invoke::apply(&crate::actions::create_page_action(
+                page,
+                None,
+                "Retry receipt",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(host.flush().is_err(), "the actual writer must fail");
+        host.settle();
+        let hosted_retry = host
+            .surface::<NotesApp, _>(|notes| {
+                assert!(matches!(
+                    notes.record_save_status,
+                    ui::record::RecordSaveStatus::Failed(_)
+                ));
+                let failure = notes
+                    .accessibility()
+                    .unwrap()
+                    .children
+                    .into_iter()
+                    .find(|node| node.children.len() == 2)
+                    .expect("the actual writer failure offers retry");
+                failure.children[0]
+                    .action_target
+                    .clone()
+                    .expect("live retry target")
+            })
+            .unwrap();
+        assert_eq!(hosted_retry, expected_target);
+        std::fs::remove_file(&directory).unwrap();
+        std::fs::rename(&backup, &directory).unwrap();
+        host.harness()
+            .perform_named(&hosted_retry, &ui::a11y::Action::Activate)
+            .unwrap();
+        host.settle();
+        host.surface::<NotesApp, _>(|notes| {
+            assert_eq!(
+                notes.record_save_status,
+                ui::record::RecordSaveStatus::Saved,
+                "the real owner must acknowledge the repaired writer"
+            );
+            assert!(!notes.save_retry, "the owner consumed the request");
+            assert!(notes.save_surface.failure().is_none());
+        })
+        .unwrap();
+        assert!(!host.take_save_retry().unwrap(), "no second retry remains");
+        let bytes = std::fs::read(directory.join("state.automerge")).unwrap();
+        let persisted = automerge::AutoCommit::load(&bytes).unwrap();
+        let notebook = crate::resource::Notebook::read(&persisted).unwrap();
+        assert!(
+            notebook.pages.contains(&crate::notebook::page_id(page)),
+            "the retry must make the failed edit durable on disk"
+        );
     }
 
     #[test]
@@ -3612,18 +3940,16 @@ mod tests {
             let (mut app, _state, _tmp, _) = app_seeded_into_doc();
             app.shots_save_status = Some(SaveStatus::Saved);
             app.refresh_status();
-            app.status_bubble = ui::StatusBubble::new();
             app.main
                 .editor_mut()
                 .set_blocks(vec![ui::widget::Block::paragraph("One two three")]);
             app.refresh_status();
             assert_eq!(app.status.state().word_count, Some(3));
-            assert!(!app.status_bubble.is_visible(ui::time::now()));
+            assert_eq!(app.save_surface.failure(), None);
 
             app.shots_save_status = Some(SaveStatus::Failed);
             app.refresh_status();
             app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            app.last_mouse = Point::ZERO;
             app.draw_status_bubble(
                 &mut Scene::new(),
                 Affine::IDENTITY,
@@ -3631,38 +3957,97 @@ mod tests {
                 &Theme::default(),
             );
             assert!(
-                app.status_bubble
-                    .is_visible(ui::time::now() + std::time::Duration::from_secs(60)),
-                "an unresolved save failure must not fade out"
+                app.save_surface.failure().is_some(),
+                "an unresolved save failure stays on the surface"
             );
             assert!(
-                !app.status_bubble.needs_frame(ui::time::now()),
+                !app.save_surface.needs_frame(ui::time::now()),
                 "persistent status must not cause an idle redraw loop"
+            );
+            let node = app
+                .accessibility()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.children.len() == 2)
+                .expect("the failure is announced with its actions");
+            let retry = node.children[0]
+                .action_target
+                .clone()
+                .expect("Try again is a target");
+            assert_real_save_retry(&retry);
+
+            app.shots_save_status = Some(SaveStatus::Saved);
+            app.refresh_status();
+            assert_eq!(
+                app.save_surface.failure(),
+                None,
+                "the failure goes away once the note saves"
             );
         }
 
         eprintln!("phase reduced_motion_stops_notes_owned_status_bubble_frames");
         {
-            let (mut app, _state, _tmp, _) = app_seeded_into_doc();
-            app.status_bubble.poke(ui::clock::Instant::now());
+            let (mut app, state, _tmp, _) = app_seeded_into_doc();
+            app.theme.reduce_motion = false;
+            app.shots_save_status = Some(SaveStatus::Saved);
+            app.refresh_status();
+            app.save_surface.poke(ui::time::now());
             assert!(app.needs_animation_frame(), "normal fade requests frames");
 
-            Widget::set_motion_reduced(&mut app, true);
-            assert!(app.motion_reduced);
+            app.theme.reduce_motion = true;
             assert!(
                 !app.needs_animation_frame(),
                 "reduced motion must not keep the compositor awake for a decorative fade"
             );
+            assert!(
+                app.next_wake_deadline().is_some(),
+                "the reduced-motion chip must still schedule its removal"
+            );
+            assert!(
+                app.has_transient_feedback(),
+                "scene comparisons must observe the transient chip"
+            );
+            assert!(
+                !app.has_pending_visual_work(),
+                "captures can include save feedback without waiting out its lifetime"
+            );
+            assert_expired_save_feedback_presents(&mut app, &state);
         }
 
-        eprintln!("phase unchanged_document_heads_skip_full_search_snapshot_work");
+        eprintln!("phase an_unchanged_notebook_skips_search_index_work");
         {
-            let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+            let (mut app, _state, _tmp, _welcome) = app_seeded_into_doc();
             app.search_blocks.clear();
-            app.search_heads = Some(state.doc.get_heads());
-            app.refresh_search_blocks(&state.doc);
+            assert!(app.unindexed.is_empty());
+            app.refresh_search_blocks();
             assert!(app.search_blocks.is_empty());
         }
+    }
+
+    fn assert_expired_save_feedback_presents(app: &mut NotesApp, state: &ui::State) {
+        app.save_surface.poke(
+            ui::time::now()
+                .checked_sub(ui::time::Duration::from_secs(3))
+                .expect("the test clock can age the transient chip"),
+        );
+        app.mark_drawn();
+        assert!(!app.self_dirty);
+        assert!(
+            app.update(&state.doc, &state.root),
+            "deadline sync must request the chip-removal frame"
+        );
+        assert!(app.self_dirty, "the native host must present the change");
+        app.draw_status_bubble(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+        );
+        assert!(
+            app.save_surface.next_wake_deadline().is_none(),
+            "painting the removal consumes the one-shot wake"
+        );
     }
 
     /// A notebook holding one "Welcome" note of several paragraphs, and the
@@ -3670,14 +4055,14 @@ mod tests {
     fn app_seeded_into_doc() -> (NotesApp, ui::State, TempDir, PageId) {
         let tmp = TempDir::new().unwrap();
         let mut state = ui::State::new();
-        crate::notebook::initialize_empty(&mut state.doc).unwrap();
+        crate::read::initialize(&mut state.doc);
         let welcome = PageId::new_v4();
         let blocks = MainPanel::seed_blocks(
             "Welcome to notes.\n\nA second paragraph to read.\n\nA third one, last.",
             |_| None,
         );
         for action in [
-            actions::new_page_action(welcome, None, "a".into(), "Welcome"),
+            actions::create_page_action(welcome, None, "Welcome"),
             actions::write_body_action(welcome, &blocks),
         ] {
             tilo_actions::apply_local(&mut state.doc, &action, actions::encode(&action)).unwrap();
@@ -3689,56 +4074,102 @@ mod tests {
         (app, state, tmp, welcome)
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn assert_search_snapshot_matches_canonical(app: &NotesApp, doc: &AutoCommit) {
+        assert_eq!(app.search_blocks.len(), app.workspace.pages().len());
+        for page in app.workspace.pages() {
+            let actual = app.search_blocks[&page.id]
+                .iter()
+                .map(|block| (block.id.clone(), block.text.clone()))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, crate::read::page_block_snapshots(doc, page.id));
+        }
+    }
+
+    #[test]
+    fn canonical_open_refuses_missing_pages_and_blocks_before_projection_adoption() {
+        let (mut app, mut state, _tmp, page) = app_seeded_into_doc();
+        let current = shown(&state.doc);
+        let pending = app.pending_events.len();
+        assert_eq!(
+            app.open_block(&current, page, Some("missing-block".into())),
+            Err("the block no longer exists".into())
+        );
+        assert_eq!(app.pending_events.len(), pending);
+        let delete = actions::delete_page_action(page);
+        tilo_actions::apply_local(&mut state.doc, &delete, actions::encode(&delete)).unwrap();
+        let current = shown(&state.doc);
+        assert!(current.get(page).is_none());
+        assert!(
+            app.workspace.get(page).is_some(),
+            "the prior presentation still contains the page"
+        );
+        assert_eq!(
+            app.open_block(&current, page, None),
+            Err("the note no longer exists".into())
+        );
+        assert_eq!(
+            app.pending_events.len(),
+            pending,
+            "refused Open cannot queue a selection"
+        );
+    }
+
+    #[test]
+    fn search_snapshot_tracks_remote_rich_edits_and_removed_link_targets() {
+        use tilo_automerge::ApplyIncoming as _;
+        let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
+        let target = PageId::new_v4();
+        let absent = PageId::new_v4();
+        let mut peer = state.doc.fork();
+        let create = actions::create_page_action(target, None, "Destination");
+        tilo_actions::apply_local_by(&mut peer, &create, actions::encode(&create), Some(b"peer"))
+            .unwrap();
+        let source_blocks = crate::read::page_block_snapshots(&peer, source);
+        for (block, range, link) in [
+            (&source_blocks[0].0, 0..4, target),
+            (&source_blocks[0].0, 5..7, target),
+            (&source_blocks[0].0, 8..10, source),
+            (&source_blocks[1].0, 0..4, absent),
+        ] {
+            let action =
+                actions::set_mark_action(source, block, range, &ui::widget::Mark::Link(link));
+            tilo_actions::apply_local_by(
+                &mut peer,
+                &action,
+                actions::encode(&action),
+                Some(b"peer"),
+            )
+            .unwrap();
+        }
+        state.doc.merge_incoming(&mut peer).unwrap();
+        let rich_before = crate::read::page_stored_blocks(&state.doc, source);
+        app.frame(&mut state.doc, &state.root);
+        assert_search_snapshot_matches_canonical(&app, &state.doc);
+        assert_eq!(app.backlink_index.get(&target), Some(&vec![(source, 2)]));
+        assert!(!app.backlink_index.contains_key(&source));
+        assert!(!app.backlink_index.contains_key(&absent));
+        assert_eq!(
+            crate::read::page_stored_blocks(&state.doc, source),
+            rich_before
+        );
+
+        let mut peer = state.doc.fork();
+        let delete = actions::delete_page_action(target);
+        tilo_actions::apply_local_by(&mut peer, &delete, actions::encode(&delete), Some(b"peer"))
+            .unwrap();
+        state.doc.merge_incoming(&mut peer).unwrap();
+        app.frame(&mut state.doc, &state.root);
+        assert_search_snapshot_matches_canonical(&app, &state.doc);
+        assert!(!app.search_blocks.contains_key(&target));
+        assert!(!app.backlink_index.contains_key(&target));
+        assert_eq!(
+            crate::read::page_stored_blocks(&state.doc, source),
+            rich_before
+        );
+    }
+
     #[test]
     fn navigation_and_backlinks_follow_stable_page_identity() {
-        eprintln!("phase canonical_links_produce_sorted_backlinks_for_the_target_note");
-        {
-            let (mut app, mut state, _tmp, target) = app_seeded_into_doc();
-            app.dispatch_event_for_test(
-                &mut Edits::lend(&mut state.doc),
-                OutEvent::CreateChild { parent: None },
-            );
-            let source = app.selected_for_test().expect("new source page selected");
-            app.dispatch_event_for_test(
-                &mut Edits::lend(&mut state.doc),
-                OutEvent::Rename {
-                    id: source,
-                    new_title: "Project index".into(),
-                },
-            );
-            let block = NotesDoc::page_block_snapshots(&state.doc, source)[0]
-                .0
-                .clone();
-            app.apply_action(
-                &mut Edits::lend(&mut state.doc),
-                &actions::edit_body_action(
-                    source,
-                    tilo_document::RichTextAction::SpliceText {
-                        region: tilo_document::action::RegionKind::Body,
-                        block: block.clone(),
-                        at: 0,
-                        del: 0,
-                        ins: "Welcome".into(),
-                    },
-                ),
-            );
-            app.apply_action(
-                &mut Edits::lend(&mut state.doc),
-                &actions::set_mark_action(source, &block, 0..7, &ui::widget::Mark::Link(target)),
-            );
-            let backlinks = actions::canonical_backlinks(
-                &actions::read_bodies(&state.doc, app.workspace.pages()),
-                app.workspace.pages(),
-                target,
-            );
-            assert_eq!(backlinks.len(), 1);
-            assert_eq!(backlinks[0].source, source);
-            assert_eq!(backlinks[0].source_title, "Project index");
-            assert_eq!(backlinks[0].target, target);
-            assert_eq!(backlinks[0].excerpt, "Welcome");
-        }
-
         eprintln!("phase native_link_marks_build_a_cached_backlink_and_open_its_canonical_source");
         {
             let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
@@ -3783,12 +4214,11 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn exported_notes_carry_their_images_and_import_them_again() {
         eprintln!("phase an_exported_note_carries_its_images_and_imports_them_again");
         {
-            let bytes = include_bytes!("../../settings/shots/settings.png").to_vec();
+            let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png")).to_vec();
             let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
             let assets = HashMap::from([(source.clone(), bytes.clone())]);
             let markdown = format!("Intro\n\n![Diagram]({source})\n![Elsewhere](asset:missing)\n");
@@ -3826,9 +4256,7 @@ mod tests {
                 "welcome has several blocks"
             );
             let block_id = app.search_blocks[&welcome][1].id.clone();
-            let shown =
-                <crate::resource::Notebook as ui::tilo_resource::Resource>::read(&state.doc)
-                    .unwrap();
+            let shown = shown(&state.doc);
             assert!(
                 app.open_block(&shown, welcome, Some("no-such-block".into()))
                     .is_err(),
@@ -3945,7 +4373,7 @@ mod tests {
                 "the mark-only edit is an attributed, undoable Notes action"
             );
             assert_eq!(
-                NotesDoc::page_block_marks(&state.doc, welcome)
+                crate::read::page_block_marks(&state.doc, welcome)
                     .into_iter()
                     .find(|(id, _)| id == &block)
                     .map(|(_, marks)| marks),
@@ -3963,7 +4391,6 @@ mod tests {
 
             let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
             let original = app.search_blocks[&welcome][1].clone();
-            let old_address = crate::actions::open_block_address(welcome, &original.id);
             let block = original.id.clone();
 
             // A collaborator inserts an identical-text block before the target.
@@ -3978,7 +4405,7 @@ mod tests {
             )
             .apply(&mut state.doc)
             .unwrap();
-            let inserted = NotesDoc::page_block_snapshots(&state.doc, welcome)
+            let inserted = crate::read::page_block_snapshots(&state.doc, welcome)
                 .into_iter()
                 .skip_while(|(id, _)| *id != last)
                 .nth(1)
@@ -3995,11 +4422,7 @@ mod tests {
             .unwrap();
             app.frame(&mut state.doc, &state.root);
 
-            let resolved = published(&state.doc, &old_address.resource);
-            assert_eq!(resolved.id.0, old_address.resource);
-            let shown =
-                <crate::resource::Notebook as ui::tilo_resource::Resource>::read(&state.doc)
-                    .unwrap();
+            let shown = shown(&state.doc);
             app.open_block(&shown, welcome, Some(block))
                 .expect("durable block identity still resolves");
             app.frame(&mut state.doc, &state.root);
@@ -4011,7 +4434,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "app/continuation_tests.rs"]
-mod continuation_tests;

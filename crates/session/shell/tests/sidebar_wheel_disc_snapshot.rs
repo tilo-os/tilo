@@ -8,10 +8,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -20,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_test_env::require_capability;
 
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -32,7 +28,7 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 
 use crate::support::offscreen::OffscreenRenderer;
-use crate::support::snapshot::SnapshotAssertion;
+use crate::support::snapshot::{SnapshotAssertion, pinned_golden_path};
 
 fn goldens_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -143,10 +139,7 @@ fn render_disc_at(
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(CANVAS_W_F32),
-                    height: Dimension::length(CANVAS_H_F32),
-                },
+                size: Size::from_lengths(CANVAS_W_F32, CANVAS_H_F32),
                 // Mirrors `left: 0` on the live shell's absolute-positioned sidebar slot:
                 // the logical centre sits off-canvas, only the visible arc paints.
                 justify_content: Some(taffy::JustifyContent::Start),
@@ -204,7 +197,11 @@ fn sidebar_wheel_disc_snapshots_render_spokes_and_a_bounded_summoned_band() {
         // Guarded on `path.exists()` to match the soft-skip-on-missing-GPU
         // convention.
         if path.exists() {
-            SnapshotAssertion::new(path, goldens_dir().join("three-spokes.png")).assert();
+            SnapshotAssertion::new(
+                path,
+                pinned_golden_path(goldens_dir().join("three-spokes.png")),
+            )
+            .assert();
         }
     }
 

@@ -36,6 +36,17 @@ impl Section {
         Section::Maintenance,
     ];
 
+    /// Stable identifier of the section in the navigation list.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Section::Connectivity => "connectivity",
+            Section::Devices => "devices",
+            Section::System => "system",
+            Section::Hubs => "accounts-permissions",
+            Section::Maintenance => "maintenance",
+        }
+    }
+
     /// The section header label.
     pub fn label(self) -> String {
         t(match self {
@@ -313,6 +324,7 @@ const PERMISSIONS_KEYWORDS: &[&str] = &[
     "security",
     "privacy",
     "encryption",
+    "disk unlock",
     "secure boot",
     "firewall",
     "camera",
@@ -493,9 +505,12 @@ impl Category {
         match self {
             Category::Network => Icon::Wifi,
             Category::Bluetooth => Icon::Bluetooth,
-            Category::DeviceMesh | Category::ExternalAccounts => Icon::CloudDownload,
-            Category::AgentModels | Category::Appearance => Icon::Sparkles,
-            Category::Sound | Category::Speakers => Icon::Volume2,
+            Category::DeviceMesh => Icon::Cloud,
+            Category::ExternalAccounts => Icon::Mail,
+            Category::AgentModels => Icon::Sparkles,
+            Category::Appearance => Icon::Palette,
+            Category::Sound => Icon::Volume2,
+            Category::Speakers => Icon::Speaker,
             Category::Displays => Icon::Monitor,
             Category::MouseKeyboard => Icon::Mouse,
             Category::KeyboardShortcuts => Icon::Keyboard,
@@ -641,7 +656,7 @@ mod tests {
         // The device privacy destination does not claim workspace authority.
         assert_eq!(
             Category::Permissions.label(),
-            "Device Privacy & Security",
+            "Device privacy & security",
             "the navigation destination names its system-wide scope"
         );
         assert!(

@@ -10,12 +10,8 @@
 //! (`group_row_<state>.png`) for by-eye inspection.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -293,8 +289,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
     // frame visibly differ from the idle strip.
     {
         fn group_row_reorder_drop_indicator_is_visible_mid_drag() {
-            use winit::dpi::PhysicalPosition;
-            use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+            use winit::event::{Modifiers, WindowEvent};
 
             // Wide enough that all three 600px groups + gaps fit on-screen.
             let (w, h) = (1900u32, 220u32);
@@ -342,27 +337,13 @@ fn group_row_maximize_and_reorder_paint_visibly() {
             dispatch(
                 &mut row,
                 &taffy,
-                WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: PhysicalPosition::new(grab.x, grab.y),
-                },
+                tilo_ui::synthetic_input::cursor_moved(grab.x, grab.y),
             );
+            dispatch(&mut row, &taffy, tilo_ui::synthetic_input::mouse_press());
             dispatch(
                 &mut row,
                 &taffy,
-                WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
-            dispatch(
-                &mut row,
-                &taffy,
-                WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: PhysicalPosition::new(past_x, grab.y),
-                },
+                tilo_ui::synthetic_input::cursor_moved(past_x, grab.y),
             );
             assert!(
                 row.group_drag_active(),

@@ -61,6 +61,7 @@ printf '%s\n' "\$@" >'$work/podman-argv'
 cp '$work/out/.source-policy.json' '$work/source-policy.json'
 exit 41
 EOF
+printf '#!/bin/sh\nexit 0\n' >"$work/bin/btrfs"
 chmod +x "$work/bin/"*
 python3 - "$work/bootc-helper" <<'PY'
 import platform
@@ -117,4 +118,31 @@ grep -Fxq -- 'BOOTC_INSTALL_RESEAL_UKI=1' "$work/podman-argv"
 ! grep -Fxq -- "$mirror_repository:local" "$work/podman-argv"
 [ ! -e "$work/out/.source-policy.json" ]
 
-printf 'ok: sealed mirror install uses an exact digest and invocation-scoped default-reject policy\n'
+# The same authoritative source must keep normal TLS and the image's signed
+# policy. It is not an unsigned construction mirror.
+cat >"$work/bin/skopeo" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" >'$work/skopeo-argv'
+printf '%s %s\n' 'registry.tilo.so/tilo/tilo-development' '$digest'
+EOF
+cat >"$work/bin/podman" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" >'$work/podman-argv'
+cp '$work/out/.registries.conf' '$work/direct-registries.conf'
+exit 41
+EOF
+set +e
+PATH="$work/bin:$PATH" TILO_DISTROBOX= TILO_DISK_HOST_UDEV_DIR="$work/udev" \
+  "$repo/os/dev/disk-image.sh" "$authoritative" "$work/out" \
+  --composefs --sealed-source-imgref "$authoritative" \
+  --bootc-helper "$work/bootc-helper" --raw \
+  >"$work/direct-stdout" 2>"$work/direct-stderr"
+status=$?
+set -e
+[ "$status" -ne 0 ]
+grep -Fxq -- '--enforce-container-sigpolicy' "$work/podman-argv"
+! grep -Fxq -- '--tls-verify=false' "$work/podman-argv"
+! grep -Fxq -- '--tls-verify=false' "$work/skopeo-argv"
+! grep -Fq -- '/etc/containers/policy.json:ro' "$work/podman-argv"
+grep -Fxq 'insecure = false' "$work/direct-registries.conf"
+printf 'ok: sealed mirror scope retained; authoritative source keeps TLS and signature enforcement\n' 

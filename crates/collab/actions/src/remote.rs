@@ -30,14 +30,23 @@ use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
+/// The shared view action that asks the platform to reveal a running window.
+pub const APPLICATION_ACTIVATE_ACTION: &str = "activate-window";
+/// Encoded operation of [`APPLICATION_ACTIVATE_ACTION`].
+pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
+
 mod catalogue;
+pub mod feedback;
 mod pending;
+mod wait;
 
 pub use catalogue::{
-    CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
-    CatalogueRow, MAX_CATALOGUE_PAGE, RowVisibility,
+    CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
+    CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
+    ViewResourceQuery,
 };
-pub use pending::{Completer, Pending, PendingPoll, pending};
+pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
+pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
 use crate::context::ActionContext;
 use crate::door::ActionAddress;
@@ -70,6 +79,24 @@ pub enum CallerPrincipal {
     /// An application, by its package id, acting under its own identity
     /// rather than borrowing the authority of the person using it.
     App(String),
+    /// An installed bot, by installation id. It acts for the person who
+    /// installed it and is never that person.
+    Bot(String),
+}
+
+impl CallerPrincipal {
+    /// The grant subject this principal is decided as. The one mapping every
+    /// door uses, instead of each matching on the principal by hand.
+    #[must_use]
+    pub fn subject(&self) -> tilo_action_policy::Subject {
+        use tilo_action_policy::Subject;
+        match self {
+            Self::Person(id) => Subject::Person(id.clone()),
+            Self::Agent(id) => Subject::Agent(id.clone()),
+            Self::App(id) => Subject::App(id.clone()),
+            Self::Bot(id) => Subject::Bot(id.clone()),
+        }
+    }
 }
 
 /// Host-owned execution lifetime. Clones share closure, never authority.
@@ -117,6 +144,10 @@ pub struct Caller {
     // Transport-issued execution scope, never accepted from request context.
     // It narrows invocation ownership without changing the policy principal.
     execution: Option<ExecutionLease>,
+    // The person a non-person principal acts for, as the host admitted it.
+    acting_for: Option<String>,
+    // The Shortcut whose run this person's invocation is a step of.
+    shortcut: Option<String>,
 }
 
 impl Caller {
@@ -125,12 +156,14 @@ impl Caller {
     #[must_use]
     pub fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
         Self {
-            principal: CallerPrincipal::Person(hex(&user_public_key)),
+            principal: CallerPrincipal::Person(hex::encode(user_public_key)),
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -145,6 +178,8 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -158,6 +193,8 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -173,6 +210,8 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -193,6 +232,29 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
+            shortcut: None,
+        }
+    }
+
+    /// A bot device whose certificate chains to `user_public_key` (its
+    /// installer) and whose root-signed delegation names it installation
+    /// `installation`. It acts for its installer and is never that person.
+    #[must_use]
+    pub fn bot(
+        installation: impl Into<String>,
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+    ) -> Self {
+        Self {
+            principal: CallerPrincipal::Bot(installation.into()),
+            user_public_key: Some(user_public_key),
+            device_public_key: Some(device_public_key),
+            room: None,
+            foreign: false,
+            execution: None,
+            acting_for: Some(hex::encode(user_public_key)),
+            shortcut: None,
         }
     }
 
@@ -240,6 +302,94 @@ impl Caller {
         self
     }
 
+    /// The caller acts for `person`, by that person's policy principal id:
+    /// an agent, a Shortcut or an app the person started. Set only by the
+    /// host that admitted the delegation, never from a payload. It names who
+    /// the actor works for in presence and history; it widens nothing.
+    #[must_use]
+    pub fn acting_for(mut self, person: impl Into<String>) -> Self {
+        self.acting_for = Some(person.into());
+        self
+    }
+
+    /// This person's own device hands the connection to agent `agent_id`,
+    /// acting for them: an MCP client, a local assistant. The agent is the
+    /// principal (its edits, presence and history are the agent's, for the
+    /// person) and it may do only what both the person and the delegation a
+    /// device gives its agents allow. A caller that is not a person is
+    /// returned as it is. Set only by the host that admitted the person.
+    #[must_use]
+    pub fn delegated_to(mut self, agent_id: impl Into<String>) -> Self {
+        let CallerPrincipal::Person(person) = &self.principal else {
+            return self;
+        };
+        self.acting_for = Some(person.clone());
+        self.principal = CallerPrincipal::Agent(agent_id.into());
+        self
+    }
+
+    /// The person this caller acts for, when it is not that person.
+    #[must_use]
+    pub fn acting_for_person(&self) -> Option<&str> {
+        self.acting_for.as_deref()
+    }
+
+    /// The caller's invocations are the steps of Shortcut `id`'s run: still
+    /// the person's authority (bounded by the Shortcut's own grants, which
+    /// the runner applies), but the Shortcut is who acts, for the person.
+    /// Set only by the host's Shortcut runner.
+    #[must_use]
+    pub fn running_shortcut(mut self, id: impl Into<String>) -> Self {
+        self.shortcut = Some(id.into());
+        self
+    }
+
+    /// The Shortcut whose run this invocation is a step of.
+    #[must_use]
+    pub fn shortcut(&self) -> Option<&str> {
+        self.shortcut.as_deref()
+    }
+
+    /// Who acts, as presence and history name them: the kind of actor, its
+    /// id, and the person it acts for when that is someone else.
+    #[must_use]
+    pub fn actor(&self) -> crate::InteractionActor {
+        match (&self.principal, &self.shortcut) {
+            (CallerPrincipal::Person(person), Some(shortcut)) => crate::InteractionActor::new(
+                format!("shortcut:{shortcut}"),
+                crate::ActorKind::Shortcut,
+            )
+            .acting_for(person.clone()),
+            (CallerPrincipal::Person(person), None) => {
+                crate::InteractionActor::new(person.clone(), crate::ActorKind::Person)
+            }
+            (CallerPrincipal::Agent(agent), _) => {
+                let actor =
+                    crate::InteractionActor::new(format!("agent:{agent}"), crate::ActorKind::Agent);
+                match &self.acting_for {
+                    Some(person) => actor.acting_for(person.clone()),
+                    None => actor,
+                }
+            }
+            (CallerPrincipal::App(app), _) => {
+                let actor =
+                    crate::InteractionActor::new(format!("app:{app}"), crate::ActorKind::App);
+                match &self.acting_for {
+                    Some(person) => actor.acting_for(person.clone()),
+                    None => actor,
+                }
+            }
+            (CallerPrincipal::Bot(bot), _) => {
+                let actor =
+                    crate::InteractionActor::new(format!("bot:{bot}"), crate::ActorKind::Bot);
+                match &self.acting_for {
+                    Some(person) => actor.acting_for(person.clone()),
+                    None => actor,
+                }
+            }
+        }
+    }
+
     /// Confine the caller to one room: the connection was admitted to that
     /// room only, so nothing outside it is offered or reachable.
     #[must_use]
@@ -278,10 +428,6 @@ impl Caller {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    hex::encode(bytes)
-}
-
 /// Which published action an invocation names on the host.
 ///
 /// `provider` is an opaque token the host issued in a [`CataloguePage`]
@@ -293,6 +439,39 @@ pub struct RemoteActionTarget {
     pub provider: String,
     pub address: ActionAddress,
 }
+
+/// The provider a room's own governance actions (membership, roles, grants,
+/// bans) are answered under. It is the host's, not an app's, so it is the
+/// one provider a caller names without reading it from a catalogue page.
+pub const ROOM_GOVERNANCE_PROVIDER: &str = "tilo.workspace";
+/// The resource kind of a room's governance resource.
+pub const ROOM_GOVERNANCE_KIND: &str = "workspace.permissions";
+
+impl RemoteActionTarget {
+    /// The governance action `verb` (one of
+    /// `tilo_action_policy::roles::governance`) on the room `room`.
+    #[must_use]
+    pub fn room_governance(room: &str, verb: &str) -> Self {
+        Self {
+            provider: ROOM_GOVERNANCE_PROVIDER.to_owned(),
+            address: ActionAddress::new(room_governance_resource(room), verb),
+        }
+    }
+}
+
+/// The id of the room `room`'s governance resource.
+#[must_use]
+pub fn room_governance_resource(room: &str) -> String {
+    format!("{ROOM_GOVERNANCE_KIND}:{room}")
+}
+
+/// Why a host refuses a directory action that asks for confirmation when
+/// the request names no revision: the confirmation covers the action as the
+/// person was shown it, which only that revision identifies. A caller that
+/// confirms on its own policy rather than a person's reads the current
+/// revision and retries.
+pub const CONFIRMED_ACTION_NEEDS_REVISION: &str =
+    "a confirmed action needs the revision it was shown at";
 
 /// What an invocation carries for the action's declared input.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -342,6 +521,13 @@ pub struct InvokeRequest {
     /// The catalogue revision the caller chose the target from, for a
     /// provider whose actions are resolved live at that revision. A host
     /// refuses a target that no longer exists at it rather than guessing.
+    ///
+    /// Omitted, a directory target resolves against the directory as it is
+    /// now, and the admission is bound to the revision the provider
+    /// resolved it at: an executing host still refuses the action once the
+    /// directory moved on before it ran. An action whose contract asks for
+    /// confirmation needs the revision it was shown at; without one the
+    /// host refuses with [`CONFIRMED_ACTION_NEEDS_REVISION`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
     /// The live invocation this request continues: an edit an effect
@@ -349,6 +535,48 @@ pub struct InvokeRequest {
     /// invocation's original caller, with their grants, never as the app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<InvocationId>,
+    /// Hold the receipt until the invocation settles or this many
+    /// milliseconds pass (at most [`MAX_REMOTE_WAIT`]), so a quick action
+    /// answers in one round trip. How the answer travels, not what runs:
+    /// [`serve`] takes it off the request before the host sees it, and
+    /// [`InvocationLedger`] ignores it. A host that predates it answers at
+    /// admission, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
+    /// The name and avatar a bot asks to show for this action. Only a door
+    /// that can check the caller is a bot allowed it admits one
+    /// (the room-action door a bot host drives); every other door refuses the request
+    /// ([`crate::appearance::refuse_here`]) rather than dropping the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<crate::Appearance>,
+}
+
+impl InvokeRequest {
+    /// Whether `other` asks for the same invocation: every field but the
+    /// transport-only [`wait_ms`](Self::wait_ms), so a retry that waits
+    /// differently is still a retry.
+    #[must_use]
+    pub fn same_invocation(&self, other: &Self) -> bool {
+        let Self {
+            invocation,
+            target,
+            argument,
+            context,
+            confirmation,
+            revision,
+            on_behalf_of,
+            wait_ms: _,
+            appearance,
+        } = self;
+        *invocation == other.invocation
+            && *target == other.target
+            && *argument == other.argument
+            && *context == other.context
+            && *confirmation == other.confirmation
+            && *revision == other.revision
+            && *on_behalf_of == other.on_behalf_of
+            && *appearance == other.appearance
+    }
 }
 
 /// Explicit confirmation carried with an invocation.
@@ -358,6 +586,11 @@ pub enum Confirmation {
     Confirmed,
     /// The caller typed the phrase the contract asks for.
     Phrase(String),
+    /// The person the caller acts for confirmed this very invocation on
+    /// their own device: the host hands the caller this token, which names
+    /// that answer. Only a person acting themselves confirms by their own
+    /// word; anyone acting for them carries the person's answer.
+    Witnessed(String),
 }
 
 /// Provider token naming the calling application's own connection, for an
@@ -729,6 +962,22 @@ pub trait ActionHost {
     /// id this caller does not own.
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState>;
 
+    /// Resolves the next time invocation `id` (owned by `caller`) may have
+    /// changed state, so a waiter observes it again then instead of on a
+    /// timer. `None` when this host cannot tell; the caller then observes on
+    /// its own schedule.
+    ///
+    /// Wakeups may be spurious: the waiter must [`observe`](Self::observe)
+    /// again and tolerate finding nothing new. A host that answers `Some`
+    /// must resolve it within a bounded interval even when nothing changes
+    /// (the broker's is a second), so a change it failed to signal costs
+    /// latency, never a stalled waiter: a waiting answer ([`settle_with`])
+    /// checks its deadline only when woken.
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        let _ = (caller, id);
+        None
+    }
+
     /// Ask a running invocation to stop.
     ///
     /// # Errors
@@ -736,6 +985,64 @@ pub trait ActionHost {
     /// Returns [`ActionHostError::UnknownInvocation`] for an id this caller
     /// does not own, or [`ActionHostError::NotCancellable`].
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError>;
+
+    /// Ask the person `caller` acts for to confirm `request` on their own
+    /// device, as the host shows it to them. The answer is a
+    /// [`Confirmation::Witnessed`] that `caller` invokes `request` again
+    /// with; a caller never confirms by its own word. A host with nobody to
+    /// ask answers [`ActionHostError::ConfirmationRequired`].
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<Confirmation, ActionHostError>> {
+        let _ = (caller, request);
+        Pending::ready(Err(ActionHostError::ConfirmationRequired))
+    }
+}
+
+/// A shared host is the host: what lets one be handed to [`serve`], which
+/// keeps a handle for answers that wait.
+impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
+    fn retire_execution(&self, caller: &Caller) {
+        (**self).retire_execution(caller);
+    }
+
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        (**self).query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        (**self).invoke(caller, request)
+    }
+
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        (**self).observe(caller, id)
+    }
+
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        (**self).next_change(caller, id)
+    }
+
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+        (**self).cancel(caller, id)
+    }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<Confirmation, ActionHostError>> {
+        (**self).confirm(caller, request)
+    }
 }
 
 /// Everything that crosses the wire for remote action use.
@@ -745,6 +1052,16 @@ pub trait ActionHost {
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RemoteActionMessage {
+    /// Inspect existing feedback admission or read an existing canonical ack.
+    /// This never invokes a document mutation or grants room access.
+    FeedbackRequest {
+        correlation: u64,
+        query: feedback::FeedbackQuery,
+    },
+    FeedbackResponse {
+        correlation: u64,
+        result: Result<feedback::FeedbackAnswer, ActionHostError>,
+    },
     /// Ask for one page of the actions offered to the caller.
     CatalogueRequest {
         correlation: u64,
@@ -761,7 +1078,18 @@ pub enum RemoteActionMessage {
     /// Answer to [`Self::Invoke`]; a refusal is [`ReceiptStatus::Rejected`].
     Receipt(InvocationReceipt),
     /// Ask for an invocation's latest state.
-    Observe { invocation: InvocationId },
+    Observe {
+        invocation: InvocationId,
+        /// Hold the answer until the invocation moves past `seen` (or, with
+        /// no `seen`, settles) or this many milliseconds pass, at most
+        /// [`MAX_REMOTE_WAIT`]; then answer with the state as it is. A host
+        /// that predates it answers at once, as before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u32>,
+        /// How far the caller has already seen the invocation get.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen: Option<UpdateMark>,
+    },
     /// Answer to [`Self::Observe`]; `None` for an id the caller does not own.
     /// A host may also push this unprompted as an invocation progresses.
     Update {
@@ -830,7 +1158,7 @@ impl RecordPiece {
         Self {
             total,
             offset,
-            bytes: hex(bytes),
+            bytes: hex::encode(bytes),
         }
     }
 
@@ -852,6 +1180,32 @@ impl RecordPiece {
 }
 
 impl RemoteActionMessage {
+    /// Ask for `invocation`'s state as it is now.
+    #[must_use]
+    pub const fn observe(invocation: InvocationId) -> Self {
+        Self::Observe {
+            invocation,
+            wait_ms: None,
+            seen: None,
+        }
+    }
+
+    /// Whether this request asks its host to hold the answer until the
+    /// invocation moves, so whatever carries it must not wait behind it.
+    #[must_use]
+    pub const fn waits(&self) -> bool {
+        matches!(
+            self,
+            Self::Observe {
+                wait_ms: Some(_),
+                ..
+            } | Self::Invoke(InvokeRequest {
+                wait_ms: Some(_),
+                ..
+            })
+        )
+    }
+
     /// Whether a host answers this message (as opposed to a caller
     /// receiving it).
     #[must_use]
@@ -863,6 +1217,7 @@ impl RemoteActionMessage {
                 | Self::Observe { .. }
                 | Self::Cancel { .. }
                 | Self::RecordRequest { .. }
+                | Self::FeedbackRequest { .. }
         )
     }
 }
@@ -947,7 +1302,12 @@ impl RemoteActionFrame {
 /// at a host is dropped, never answered). A refused invocation becomes a
 /// [`ReceiptStatus::Rejected`] receipt so the caller always learns the fate
 /// of the id it chose; an answer the host abandons becomes a refusal too.
-pub fn serve<H: ActionHost + ?Sized>(
+///
+/// A request that asks to wait (`wait_ms` on [`RemoteActionMessage::Observe`]
+/// or [`InvokeRequest`]) is answered once the invocation moves, through
+/// [`ActionHost::next_change`] and without holding a thread; see
+/// [`settle_with`]. A host that cannot signal changes answers at once.
+pub fn serve<H: ActionHost + Clone + Send + 'static>(
     host: &H,
     caller: &Caller,
     message: RemoteActionMessage,
@@ -959,22 +1319,43 @@ pub fn serve<H: ActionHost + ?Sized>(
         },
     )?;
     let answer = match message {
+        RemoteActionMessage::FeedbackRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::FeedbackResponse {
+                correlation,
+                result: Err(ActionHostError::Unavailable {
+                    reason: "canonical feedback service unavailable".into(),
+                }),
+            })
+        }
         RemoteActionMessage::CatalogueRequest { correlation, query } => host
             .query(caller, query)
             .map(move |result| RemoteActionMessage::CatalogueResponse {
                 correlation,
                 result,
             }),
-        RemoteActionMessage::Invoke(request) => {
+        RemoteActionMessage::Invoke(mut request) => {
+            // How the answer travels is not part of what runs.
+            let until = request.wait_ms.take().map(wait::deadline);
             let invocation = request.invocation;
-            host.invoke(caller, request).map(move |result| {
-                RemoteActionMessage::Receipt(result.unwrap_or_else(|error| InvocationReceipt {
+            let receipt = host.invoke(caller, request).map(move |result| {
+                result.unwrap_or_else(|error| InvocationReceipt {
                     invocation,
                     status: ReceiptStatus::Rejected { error },
-                }))
-            })
+                })
+            });
+            match until {
+                Some(until) => wait::settle_receipt(host, caller, receipt, until),
+                None => receipt,
+            }
+            .map(RemoteActionMessage::Receipt)
         }
-        RemoteActionMessage::Observe { invocation } => {
+        RemoteActionMessage::Observe {
+            invocation,
+            wait_ms: Some(wait_ms),
+            seen,
+        } => settle_with(host, caller, invocation, seen, wait::deadline(wait_ms))
+            .map(move |state| RemoteActionMessage::Update { invocation, state }),
+        RemoteActionMessage::Observe { invocation, .. } => {
             Pending::ready(RemoteActionMessage::Update {
                 invocation,
                 state: host.observe(caller, &invocation),
@@ -1000,7 +1381,8 @@ pub fn serve<H: ActionHost + ?Sized>(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RecordResponse { .. } => return None,
+        | RemoteActionMessage::RecordResponse { .. }
+        | RemoteActionMessage::FeedbackResponse { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
     let (completer, answered) = pending();
@@ -1017,6 +1399,12 @@ pub fn refuse(
     error: ActionHostError,
 ) -> Option<RemoteActionMessage> {
     Some(match message {
+        RemoteActionMessage::FeedbackRequest { correlation, .. } => {
+            RemoteActionMessage::FeedbackResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::CatalogueRequest { correlation, .. } => {
             RemoteActionMessage::CatalogueResponse {
                 correlation: *correlation,
@@ -1027,7 +1415,7 @@ pub fn refuse(
             invocation: request.invocation,
             status: ReceiptStatus::Rejected { error },
         }),
-        RemoteActionMessage::Observe { invocation } => RemoteActionMessage::Update {
+        RemoteActionMessage::Observe { invocation, .. } => RemoteActionMessage::Update {
             invocation: *invocation,
             state: None,
         },
@@ -1045,7 +1433,8 @@ pub fn refuse(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RecordResponse { .. } => return None,
+        | RemoteActionMessage::RecordResponse { .. }
+        | RemoteActionMessage::FeedbackResponse { .. } => return None,
     })
 }
 
@@ -1154,7 +1543,7 @@ impl<T> InvocationLedger<T> {
     ) -> Result<Reservation, ActionHostError> {
         let id = request.invocation;
         if let Some(entry) = self.entries.get(&id) {
-            if entry.caller != *caller || entry.request != *request {
+            if entry.caller != *caller || !entry.request.same_invocation(request) {
                 return Err(ActionHostError::InvocationConflict);
             }
             return if entry.handle.is_some() {
@@ -1175,7 +1564,11 @@ impl<T> InvocationLedger<T> {
             id,
             LedgerEntry {
                 caller: caller.clone(),
-                request: request.clone(),
+                request: InvokeRequest {
+                    wait_ms: None,
+                    appearance: None,
+                    ..request.clone()
+                },
                 handle: None,
             },
         );
@@ -1222,10 +1615,50 @@ impl<T> InvocationLedger<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
     use crate::{ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind};
+
+    #[test]
+    fn a_bot_is_its_own_principal_acting_for_its_installer() {
+        let installer = [7u8; 32];
+        let caller = Caller::bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6", installer, [9u8; 32]);
+        assert_eq!(
+            caller.principal().subject(),
+            tilo_action_policy::Subject::Bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into())
+        );
+        let actor = caller.actor();
+        assert_eq!(actor.id, "bot:6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6");
+        assert_eq!(actor.kind, crate::ActorKind::Bot);
+        assert_eq!(
+            actor.for_person.as_deref(),
+            Some(hex::encode(installer).as_str())
+        );
+        assert!(crate::ActorKind::Bot.acts_for_someone());
+    }
+
+    #[test]
+    fn every_principal_maps_to_its_subject() {
+        use tilo_action_policy::Subject;
+        assert_eq!(
+            CallerPrincipal::Person("p".into()).subject(),
+            Subject::Person("p".into())
+        );
+        assert_eq!(
+            CallerPrincipal::Agent("a".into()).subject(),
+            Subject::Agent("a".into())
+        );
+        assert_eq!(
+            CallerPrincipal::App("x.y".into()).subject(),
+            Subject::App("x.y".into())
+        );
+        assert_eq!(
+            CallerPrincipal::Bot("b".into()).subject(),
+            Subject::Bot("b".into())
+        );
+    }
 
     #[test]
     fn execution_lifetime_is_shared_without_changing_caller_identity() {
@@ -1278,6 +1711,7 @@ mod tests {
 
     fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
         ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(resource, action),
             resource_kind: "notes.note".into(),
             resource_label: "Groceries".into(),
@@ -1295,21 +1729,25 @@ mod tests {
     /// A host with one action whose runs are counted, so a test can prove
     /// how many times the action actually started.
     struct CountingHost {
-        runs: Cell<u32>,
-        ledger: RefCell<InvocationLedger<RefCell<InvocationUpdate>>>,
+        runs: AtomicU32,
+        ledger: Mutex<InvocationLedger<Mutex<InvocationUpdate>>>,
     }
 
     impl CountingHost {
         fn new() -> Self {
             Self {
-                runs: Cell::new(0),
-                ledger: RefCell::new(InvocationLedger::default()),
+                runs: AtomicU32::new(0),
+                ledger: Mutex::new(InvocationLedger::default()),
             }
         }
 
+        fn runs(&self) -> u32 {
+            self.runs.load(Ordering::SeqCst)
+        }
+
         fn finish(&self, caller: &Caller, id: &InvocationId) {
-            if let Some(update) = self.ledger.borrow().get(caller, id) {
-                *update.borrow_mut() = InvocationUpdate::Succeeded {
+            if let Some(update) = self.ledger.lock().unwrap().get(caller, id) {
+                *update.lock().unwrap() = InvocationUpdate::Succeeded {
                     invocation: *id,
                     output: ActionOutput::default(),
                 };
@@ -1339,38 +1777,48 @@ mod tests {
                 if request.target.address != ActionAddress::new("note:1", "archive") {
                     return Err(ActionHostError::UnknownAction);
                 }
-                let mut ledger = self.ledger.borrow_mut();
-                let (update, _) = ledger.admit(caller, &request, || {
-                    self.runs.set(self.runs.get().saturating_add(1));
-                    Ok(RefCell::new(InvocationUpdate::Accepted {
-                        invocation: request.invocation,
-                    }))
-                })?;
-                Ok(InvocationState::new(request.invocation, update.borrow().clone()).receipt())
+                let update = {
+                    let mut ledger = self.ledger.lock().unwrap();
+                    let (update, _) = ledger.admit(caller, &request, || {
+                        self.runs.fetch_add(1, Ordering::SeqCst);
+                        Ok(Mutex::new(InvocationUpdate::Accepted {
+                            invocation: request.invocation,
+                        }))
+                    })?;
+                    let update = update.lock().unwrap().clone();
+                    drop(ledger);
+                    update
+                };
+                Ok(InvocationState::new(request.invocation, update).receipt())
             })())
         }
 
         fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
             self.ledger
-                .borrow()
+                .lock()
+                .unwrap()
                 .get(caller, id)
-                .map(|update| InvocationState::new(*id, update.borrow().clone()))
+                .map(|update| InvocationState::new(*id, update.lock().unwrap().clone()))
         }
 
         fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-            let ledger = self.ledger.borrow();
-            let update = ledger
+            let ledger = self.ledger.lock().unwrap();
+            let mut update = ledger
                 .get(caller, id)
-                .ok_or(ActionHostError::UnknownInvocation)?;
-            if update.borrow().is_terminal() {
+                .ok_or(ActionHostError::UnknownInvocation)?
+                .lock()
+                .unwrap();
+            if update.is_terminal() {
                 return Err(ActionHostError::NotCancellable {
                     reason: "finished".into(),
                 });
             }
-            *update.borrow_mut() = InvocationUpdate::Cancelled {
+            *update = InvocationUpdate::Cancelled {
                 invocation: *id,
                 message: None,
             };
+            drop(update);
+            drop(ledger);
             Ok(())
         }
     }
@@ -1400,6 +1848,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_retry_with_another_appearance_is_another_invocation() {
+        let request = archive(InvocationId(uuid::Uuid::from_u128(9)));
+        let appearing = InvokeRequest {
+            appearance: Some(crate::Appearance::new("alice", None, None).unwrap()),
+            ..request.clone()
+        };
+        assert!(!request.same_invocation(&appearing));
+        assert!(appearing.same_invocation(&InvokeRequest {
+            wait_ms: Some(10),
+            ..appearing.clone()
+        }));
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(!json.contains("appearance"), "{json}");
+    }
+
     fn archive(invocation: InvocationId) -> InvokeRequest {
         InvokeRequest {
             on_behalf_of: None,
@@ -1412,6 +1876,8 @@ mod tests {
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
+            appearance: None,
         }
     }
 
@@ -1460,7 +1926,6 @@ mod tests {
                 on_behalf_of: None,
                 argument: InvokeArgument::Json(arguments),
                 context: Some(ActionContext::for_resource(
-                    "Archive",
                     "note:1",
                     "notes.note",
                     "Groceries",
@@ -1475,6 +1940,11 @@ mod tests {
             RemoteActionMessage::Invoke(InvokeRequest {
                 on_behalf_of: None,
                 confirmation: Some(Confirmation::Phrase("delete it".into())),
+                ..archive(invocation)
+            }),
+            RemoteActionMessage::Invoke(InvokeRequest {
+                wait_ms: Some(2_000),
+                appearance: None,
                 ..archive(invocation)
             }),
         ]
@@ -1515,7 +1985,12 @@ mod tests {
                     message: Some("stopped".into()),
                 },
             }),
-            RemoteActionMessage::Observe { invocation },
+            RemoteActionMessage::observe(invocation),
+            RemoteActionMessage::Observe {
+                invocation,
+                wait_ms: Some(10_000),
+                seen: Some(UpdateMark::Progress { sequence: 2 }),
+            },
             RemoteActionMessage::Update {
                 invocation,
                 state: Some(InvocationState::new(
@@ -1673,6 +2148,21 @@ mod tests {
             host.cancel(&second, &id),
             Err(ActionHostError::UnknownInvocation)
         );
+        let retained = first.clone();
+        let hash = |caller: &Caller| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(caller, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        };
+        let before = hash(&first);
+        host.retire_execution(&first);
+        assert!(!retained.execution_is_live());
+        assert!(second.execution_is_live());
+        assert_eq!(first, retained);
+        assert_eq!(hash(&first), before);
+        let reconnected = retained.in_new_execution();
+        assert!(reconnected.execution_is_live());
+        assert_ne!(reconnected.execution_id(), first.execution_id());
         host.finish(&first, &id);
         assert!(matches!(
             now(host.invoke(&first, archive(id))).unwrap().status,
@@ -1680,7 +2170,7 @@ mod tests {
         ));
         assert!(host.observe(&first, &id).is_some());
         assert!(host.observe(&second, &id).is_none());
-        assert_eq!(host.runs.get(), 1);
+        assert_eq!(host.runs(), 1);
     }
 
     fn a_retried_invocation_reports_the_original_and_runs_once() {
@@ -1690,12 +2180,12 @@ mod tests {
         assert_eq!(first.status, ReceiptStatus::Accepted);
         let retry = now(host.invoke(&alice(), archive(id))).unwrap();
         assert_eq!(retry, first);
-        assert_eq!(host.runs.get(), 1, "a retry never starts a second run");
+        assert_eq!(host.runs(), 1, "a retry never starts a second run");
 
         host.finish(&alice(), &id);
         let after = now(host.invoke(&alice(), archive(id))).unwrap();
         assert!(matches!(after.status, ReceiptStatus::Completed { .. }));
-        assert_eq!(host.runs.get(), 1, "a retry after completion reports it");
+        assert_eq!(host.runs(), 1, "a retry after completion reports it");
     }
 
     fn an_invocation_id_cannot_be_reused_or_borrowed() {
@@ -1719,7 +2209,7 @@ mod tests {
             host.cancel(&mallory(), &id),
             Err(ActionHostError::UnknownInvocation)
         );
-        assert_eq!(host.runs.get(), 1);
+        assert_eq!(host.runs(), 1);
     }
 
     fn a_refused_invocation_is_not_remembered() {
@@ -1756,7 +2246,7 @@ mod tests {
     }
 
     fn serve_answers_requests_and_ignores_responses() {
-        let host = CountingHost::new();
+        let host = std::sync::Arc::new(CountingHost::new());
         let id = InvocationId::new();
         let Some(RemoteActionMessage::Receipt(receipt)) =
             serve(&host, &alice(), RemoteActionMessage::Invoke(archive(id))).map(now)
@@ -1795,12 +2285,7 @@ mod tests {
         );
         let Some(RemoteActionMessage::Update {
             state: Some(state), ..
-        }) = serve(
-            &host,
-            &alice(),
-            RemoteActionMessage::Observe { invocation: id },
-        )
-        .map(now)
+        }) = serve(&host, &alice(), RemoteActionMessage::observe(id)).map(now)
         else {
             panic!("an observe is answered with the invocation state");
         };
@@ -1854,10 +2339,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            refuse(
-                &RemoteActionMessage::Observe { invocation: id },
-                error.clone()
-            ),
+            refuse(&RemoteActionMessage::observe(id), error.clone()),
             Some(RemoteActionMessage::Update {
                 invocation: id,
                 state: None

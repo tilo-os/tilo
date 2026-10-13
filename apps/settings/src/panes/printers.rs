@@ -289,7 +289,8 @@ impl PrintersArea {
             } else {
                 Arc::new(SamplePrintService)
             };
-            let mut model = PrintersModel::new(self.cx.clone(), service);
+            let mut model =
+                PrintersModel::new(self.cx.clone(), service, !self.cx.reaches_devices());
             model.request_refresh();
             Rc::new(std::cell::RefCell::new(model))
         })
@@ -301,6 +302,13 @@ impl PrintersArea {
         if let Some(model) = self.model.get() {
             model.borrow_mut().poll_background();
         }
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
     }
 
     /// One row per queue, nearby printer and job, offering what can be done
@@ -394,6 +402,7 @@ fn cancellable(job: &PrintJob) -> bool {
 pub struct PrintersModel {
     cx: PaneCx,
     service: Arc<dyn PrintService>,
+    sample: bool,
     printers: Vec<PrinterQueue>,
     jobs: Vec<PrintJob>,
     discovered: Vec<DiscoveredPrinter>,
@@ -416,10 +425,11 @@ struct PrinterSnapshot {
 }
 
 impl PrintersModel {
-    fn new(cx: PaneCx, service: Arc<dyn PrintService>) -> Self {
+    fn new(cx: PaneCx, service: Arc<dyn PrintService>, sample: bool) -> Self {
         Self {
             cx,
             service,
+            sample,
             printers: Vec::new(),
             jobs: Vec::new(),
             discovered: Vec::new(),
@@ -435,6 +445,16 @@ impl PrintersModel {
 
     pub(crate) fn request_refresh(&mut self) {
         if self.refresh_rx.is_some() {
+            return;
+        }
+        // Capture and test snapshots are already in memory. Publishing their
+        // rows must not depend on whether an OS worker has been scheduled.
+        if self.sample {
+            self.adopt_snapshot(PrinterSnapshot {
+                printers: self.service.queues(),
+                jobs: self.service.jobs(),
+                scanners: self.service.scanners(),
+            });
             return;
         }
         let service = self.service.clone();
@@ -483,17 +503,21 @@ impl PrintersModel {
         }
     }
 
+    fn adopt_snapshot(&mut self, result: PrinterSnapshot) {
+        self.last_refresh = ui::time::now();
+        self.read_errors = PrinterReadErrors {
+            printers: adopt(result.printers, &mut self.printers),
+            jobs: adopt(result.jobs, &mut self.jobs),
+            scanners: adopt(result.scanners, &mut self.scanners),
+        };
+        self.changed = true;
+    }
+
     fn poll_background(&mut self) {
         if let Some(result) = self.refresh_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.refresh_rx = None;
 
-            self.last_refresh = ui::time::now();
-            self.read_errors = PrinterReadErrors {
-                printers: adopt(result.printers, &mut self.printers),
-                jobs: adopt(result.jobs, &mut self.jobs),
-                scanners: adopt(result.scanners, &mut self.scanners),
-            };
-            self.changed = true;
+            self.adopt_snapshot(result);
         }
         if let Some(result) = self.discover_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.discover_rx = None;
@@ -524,7 +548,7 @@ impl PrintersModel {
             t("settings-printers-refresh")
         };
         let refresh = Box::new(self.cx.bind_invocation(
-            Button::new("settings.printers.refresh", &refresh_label).content_sized(),
+            Button::new("settings.printers.refresh", &refresh_label),
             PrinterEffect::RefreshPrinters,
         ));
         let printers = if let Some(error) = &self.read_errors.printers {
@@ -549,7 +573,7 @@ impl PrintersModel {
             t("settings-printers-find")
         };
         let find = Box::new(self.cx.bind_invocation(
-            Button::new("settings.printers.discover", &find_label).content_sized(),
+            Button::new("settings.printers.discover", &find_label),
             PrinterEffect::FindPrinters,
         ));
         let discovery = if self.discovered.is_empty() {
@@ -584,7 +608,13 @@ impl PrintersModel {
         };
         cards.push(card(&t("settings-printers-activity"), jobs));
 
-        let scanners = if let Some(error) = &self.read_errors.scanners {
+        let scanners = self.scanner_rows();
+        cards.push(card(&t("settings-printers-scanners"), scanners));
+        crate::widgets::cards(cards)
+    }
+
+    fn scanner_rows(&self) -> El {
+        if let Some(error) = &self.read_errors.scanners {
             rows(vec![error_caption(&t_args(
                 "settings-printers-scanners-read-error",
                 &[("error", error.as_str().into())],
@@ -600,15 +630,19 @@ impl PrintersModel {
                             Column::new()
                                 .with_no_padding()
                                 .with_intrinsic_height()
-                                .push(Box::new(Text::new(&s.description).with_size(13.0)))
-                                .push(Box::new(Text::new(&s.device).with_size(11.0).dimmed())),
+                                .push(Box::new(
+                                    Text::new(&s.description).with_role(ui::TextRole::Body),
+                                ))
+                                .push(Box::new(
+                                    Text::new(&s.device)
+                                        .with_role(ui::TextRole::Caption)
+                                        .dimmed(),
+                                )),
                         ) as El
                     })
                     .collect(),
             )
-        };
-        cards.push(card(&t("settings-printers-scanners"), scanners));
-        crate::widgets::cards(cards)
+        }
     }
 
     #[expect(
@@ -619,23 +653,22 @@ impl PrintersModel {
         let name = printer.name.clone();
         let state = state_label(printer.state);
         let mut top = Row::new()
-            .push(Box::new(Text::new(&printer.name).with_size(13.0)))
+            .push(Box::new(
+                Text::new(&printer.name).with_role(ui::TextRole::Body),
+            ))
             .push(Box::new(Spacer::new()))
             .push(semantic_status_pill(&state, state_tone(printer.state)));
         if !printer.default {
             let make_default = t("settings-printers-make-default");
-            top = top.push(Box::new(
-                self.cx.bind_invocation(
-                    Button::new(
-                        &format!("settings.printers.default.{}", slug(&name)),
-                        &make_default,
-                    )
-                    .content_sized(),
-                    PrinterEffect::SetDefaultPrinter {
-                        printer: name.clone(),
-                    },
+            top = top.push(Box::new(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.printers.default.{}", slug(&name)),
+                    &make_default,
                 ),
-            ));
+                PrinterEffect::SetDefaultPrinter {
+                    printer: name.clone(),
+                },
+            )));
         }
         let paused = printer.state == QueueState::Paused;
         let pause_label = t(if paused {
@@ -643,30 +676,24 @@ impl PrintersModel {
         } else {
             "settings-printers-pause"
         });
-        top = top.push(Box::new(
-            self.cx.bind_invocation(
-                Button::new(
-                    &format!("settings.printers.enabled.{}", slug(&name)),
-                    &pause_label,
-                )
-                .content_sized(),
-                PrinterEffect::SetPrinterPaused {
-                    printer: name.clone(),
-                    paused: !paused,
-                },
+        top = top.push(Box::new(self.cx.bind_invocation(
+            Button::new(
+                &format!("settings.printers.enabled.{}", slug(&name)),
+                &pause_label,
             ),
-        ));
+            PrinterEffect::SetPrinterPaused {
+                printer: name.clone(),
+                paused: !paused,
+            },
+        )));
         let remove_label = t("settings-printers-remove");
-        top = top.push(Box::new(
-            self.cx.bind_invocation(
-                Button::new(
-                    &format!("settings.printers.remove.{}", slug(&name)),
-                    &remove_label,
-                )
-                .content_sized(),
-                PrinterEffect::RemovePrinter { printer: name },
+        top = top.push(Box::new(self.cx.bind_invocation(
+            Button::new(
+                &format!("settings.printers.remove.{}", slug(&name)),
+                &remove_label,
             ),
-        ));
+            PrinterEffect::RemovePrinter { printer: name },
+        )));
         let role = t(if printer.default {
             "settings-printers-role-default"
         } else {
@@ -704,7 +731,7 @@ impl PrintersModel {
                         ),
                     })
                     .collect::<Vec<_>>()
-                    .join(" · ");
+                    .join("\n");
                 t_args("settings-printers-supplies-list", &[("list", list.into())])
             }
             None if printer.telemetry.available => t("settings-printers-supplies-unreported"),
@@ -715,8 +742,14 @@ impl PrintersModel {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(top))
-                .push(Box::new(Text::new(&detail).with_size(11.0).dimmed()))
-                .push(Box::new(Text::new(&supplies).with_size(11.0).dimmed())),
+                .push(Box::new(
+                    Text::new(&detail).with_role(ui::TextRole::Caption).dimmed(),
+                ))
+                .push(Box::new(
+                    Text::new(&supplies)
+                        .with_role(ui::TextRole::Caption)
+                        .dimmed(),
+                )),
         )
     }
 
@@ -733,14 +766,18 @@ impl PrintersModel {
                 .with_intrinsic_height()
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Text::new(&p.name).with_size(13.0)))
+                        .push(Box::new(Text::new(&p.name).with_role(ui::TextRole::Body)))
                         .push(Box::new(Spacer::new()))
                         .push(Box::new(self.cx.bind_invocation(
-                            Button::new(&key, &add).content_sized(),
+                            Button::new(&key, &add),
                             PrinterEffect::AddPrinter { uri: p.uri.clone() },
                         ))),
                 ))
-                .push(Box::new(Text::new(&location).with_size(11.0).dimmed())),
+                .push(Box::new(
+                    Text::new(&location)
+                        .with_role(ui::TextRole::Caption)
+                        .dimmed(),
+                )),
         )
     }
 
@@ -772,12 +809,13 @@ impl PrintersModel {
         let reason = job
             .state_reasons
             .first()
-            .map_or(String::new(), |reason| format!(" · {reason}"));
+            .map_or(String::new(), |reason| format!("\n{reason}"));
         let retry_label = t("settings-printers-retry");
         let cancel_label = t("settings-printers-cancel");
         let mut action_row = Row::new()
             .push(Box::new(
-                Text::new(&format!("{} → {}", job.id, job.destination)).with_size(13.0),
+                Text::new(&format!("{} → {}", job.id, job.destination))
+                    .with_role(ui::TextRole::Body),
             ))
             .push(Box::new(Spacer::new()));
         if matches!(
@@ -785,7 +823,7 @@ impl PrintersModel {
             Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
         ) {
             action_row = action_row.push(Box::new(self.cx.bind_invocation(
-                Button::new(&retry, &retry_label).content_sized(),
+                Button::new(&retry, &retry_label),
                 PrinterEffect::RetryPrintJob {
                     job: job.id.clone(),
                 },
@@ -798,7 +836,7 @@ impl PrintersModel {
             )
         ) {
             action_row = action_row.push(Box::new(self.cx.bind_invocation(
-                Button::new(&cancel, &cancel_label).content_sized(),
+                Button::new(&cancel, &cancel_label),
                 PrinterEffect::CancelPrintJob {
                     job: job.id.clone(),
                 },
@@ -810,13 +848,13 @@ impl PrintersModel {
                 .with_intrinsic_height()
                 .push(Box::new(action_row))
                 .push(Box::new(
-                    Text::new(&format!("{} · {} · {}", job.owner, size, job.submitted))
-                        .with_size(11.0)
+                    Text::new(&format!("{}\n{}\n{}", job.owner, size, job.submitted))
+                        .with_role(ui::TextRole::Caption)
                         .dimmed(),
                 ))
                 .push(Box::new(
-                    Text::new(&format!("{state} · {progress}{reason}"))
-                        .with_size(11.0)
+                    Text::new(&format!("{state}\n{progress}{reason}"))
+                        .with_role(ui::TextRole::Caption)
                         .dimmed(),
                 )),
         )
@@ -949,6 +987,24 @@ fn job_state_label(state: JobState) -> String {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn sample_area_rows_do_not_wait_for_workers() {
+        let profile = tempfile::tempdir().unwrap();
+        let area = PrintersArea::new(&PaneCx::in_file(profile.path().join("settings.json")));
+        assert_eq!(
+            area.rows().len(),
+            2,
+            "printer and job rows publish on the first read"
+        );
+        let model = area.model().borrow();
+        assert!(
+            model.refresh_rx.is_none(),
+            "sample rows are ready when the area reads"
+        );
+        assert_eq!(model.printers.len(), 1);
+        assert_eq!(model.jobs.len(), 1);
+    }
 
     struct RecordingService {
         calls: Mutex<Vec<String>>,

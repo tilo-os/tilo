@@ -2,6 +2,89 @@ use super::*;
 use crate::history_mode::*;
 use crate::widget::{AppModel, ModelPath};
 use automerge::{ROOT, transaction::Transactable};
+
+#[test]
+fn native_focus_order_enumerates_history_once() {
+    let state = State::new();
+    let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(2_000, &state);
+    let mut app = App::new_with_controlled_inputs(state, Box::new(root));
+    layout(&mut app);
+    visits.set(0);
+    app.update_focusable_order();
+    assert!(
+        app.focusable_order.len() >= 2_000,
+        "all live rows remain focusable"
+    );
+    assert_eq!(visits.get(), 1, "one History enumeration per recomputation");
+}
+
+#[test]
+fn native_focus_order_walks_history_ownership_once() {
+    use crate::history_mode::host::OWNERSHIP_WALKS;
+    let walks = || OWNERSHIP_WALKS.with(std::cell::Cell::get);
+    let ids: Vec<String> = (0..2_000).map(|row| format!("row-{row}")).collect();
+    let root = ids.iter().fold(crate::widget::Column::new(), |column, id| {
+        column.push(Box::new(crate::widget::Button::new(id, "Row")))
+    });
+    let mut app = app_with_root(State::new(), Box::new(root));
+    layout(&mut app);
+    // History closed: the live rows, then History's own controls last.
+    OWNERSHIP_WALKS.with(|count| count.set(0));
+    app.update_focusable_order();
+    assert!(
+        app.focusable_order.len() > 2_000,
+        "every live row and History's toggle take focus"
+    );
+    assert_eq!(walks(), 1, "one ownership walk per recomputation");
+    // History open: it captures input, so only its own controls take focus.
+    let history = named(&mut app, "History");
+    app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
+    layout(&mut app);
+    assert!(app.history.as_ref().unwrap().captures_input());
+    OWNERSHIP_WALKS.with(|count| count.set(0));
+    app.update_focusable_order();
+    assert_eq!(walks(), 1, "one ownership walk per recomputation");
+    let history = app.history.as_ref().unwrap();
+    assert!(!app.focusable_order.is_empty());
+    assert!(
+        app.focusable_order
+            .iter()
+            .all(|&node| history.owns_node(node, &app.layout.taffy)),
+        "only History's controls take focus while it captures input"
+    );
+}
+
+#[test]
+fn native_focus_order_keeps_live_rows_before_history_controls() {
+    let root = crate::widget::Column::new()
+        .push(Box::new(crate::widget::Button::new("first-row", "First")))
+        .push(Box::new(crate::widget::Button::new("second-row", "Second")));
+    let mut app = app_with_root(State::new(), Box::new(root));
+    layout(&mut app);
+    app.update_focusable_order();
+    let history = app.history.as_ref().unwrap();
+    let first_owned = app
+        .focusable_order
+        .iter()
+        .position(|&node| history.owns_node(node, &app.layout.taffy))
+        .expect("History contributes a focusable control");
+    let live_ids: Vec<_> = app.focusable_order[..first_owned]
+        .iter()
+        .map(|&node| {
+            app.inspect_node(node, |widget| widget.test_id().map(str::to_owned))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        live_ids,
+        vec![Some("first-row".into()), Some("second-row".into())]
+    );
+    assert!(
+        app.focusable_order[first_owned..]
+            .iter()
+            .all(|&node| history.owns_node(node, &app.layout.taffy))
+    );
+}
 static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "dev.tilo.native-history-fixture",
     scopes: &[HistoryScopeDefinition {
@@ -24,6 +107,10 @@ fn app() -> App {
 }
 /// An app on `state` whose History is the framework's registered History.
 fn app_on(state: State) -> App {
+    app_with_root(state, Box::new(crate::widget::Column::new()))
+}
+/// An app on `state` showing `root` under the framework's registered History.
+fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) -> App {
     let registration = HistoryRegistration::new(
         &HISTORY,
         vec![HistorySourceRegistration::HostDocument {
@@ -37,11 +124,8 @@ fn app_on(state: State) -> App {
         }],
     )
     .unwrap();
-    App::from_managed_root_with_controlled_inputs(
-        state,
-        ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
-    )
-    .unwrap()
+    App::from_managed_root_with_controlled_inputs(state, ManagedRoot::new(root, registration))
+        .unwrap()
 }
 /// Lay out and paint one 900×650 frame, as the native runner does.
 pub(crate) fn layout(app: &mut App) {
@@ -95,6 +179,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         app.dispatch_node(editor, |widget, doc, path| {
             widget.perform_action(
                 &crate::a11y::Action::SetValue("unfinished".into()),
+                &[],
                 &mut crate::widget::Edits::lend(doc),
                 path,
             )
@@ -106,6 +191,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
                     anchor: 2,
                     focus: 7,
                 },
+                &[],
                 &mut crate::widget::Edits::lend(doc),
                 path,
             )
@@ -297,6 +383,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         app.dispatch_node(editor, |widget, doc, path| {
             widget.perform_action(
                 &crate::a11y::Action::SetValue("draft".into()),
+                &[],
                 &mut crate::widget::Edits::lend(doc),
                 path,
             )
@@ -367,7 +454,7 @@ fn native_key(app: &mut App, key: &str) {
             "Tab" => winit::keyboard::NamedKey::Tab,
             _ => panic!("unsupported fixture key"),
         });
-        let event = crate::synthetic_input::key_event(&logical, state);
+        let event = crate::synthetic_input::key_input(&logical, state);
         let framework = app.history_controls_event(&event, 1.0);
         assert!(
             framework,
@@ -396,7 +483,7 @@ fn routed_document(
             &route.cluster_id.to_string(),
             route.record.as_deref().unwrap_or(""),
         ),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         crate::time::SystemTime::UNIX_EPOCH,
         0,
     )
@@ -1845,7 +1932,11 @@ fn tiled_history_routes_to_its_own_record_and_remounts_live_views() {
             .app
             .dispatch_a11y_action(target, &crate::a11y::Action::Activate);
         layout(&mut fixture.app);
-        native_key(&mut fixture.app, "Enter");
+        let confirm = named(&mut fixture.app, "Restore version");
+        fixture
+            .app
+            .dispatch_a11y_action(confirm, &crate::a11y::Action::Activate);
+        layout(&mut fixture.app);
         assert_eq!(fixture.value(0, "body").as_deref(), Some("old version"));
         assert_eq!(fixture.app.state.doc.base_heads(), outer);
         assert_eq!(
@@ -2558,10 +2649,7 @@ fn round1_top_level_native_history_preserves_legacy_custody_and_stale_at_refusal
             .unwrap(),
         before + 1
     );
-    app.set_permission_ctx(PermissionContext::from_capabilities(
-        Actor::person(None, LOCAL_USER),
-        vec![],
-    ));
+    app.set_permission_ctx(crate::permissions::PermissionContext::stranger(LOCAL_USER));
     app.dispatch_a11y_action(target, &crate::a11y::Action::SetValue("denied".into()));
     assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit");
     app.set_permission_ctx(allowed);
@@ -3497,6 +3585,161 @@ fn native_owned_remote_merge_is_not_republished_as_an_echo() {
         "unsent local changes survive the merge into the next publication"
     );
 }
+/// A committed read hands the owner history the native owner already holds:
+/// merging it must not make the replica publish it back, which cost the
+/// owner one more commit and record write per remote edit.
+#[cfg(feature = "broker-transport")]
+#[test]
+fn native_owned_committed_read_is_not_republished_as_an_echo() {
+    let mut fixture = RoutedOwners::new();
+    let id = fixture.bindings[0].checkout.id.clone();
+    let route = fixture.bindings[0].broker_route().unwrap();
+    let sent = |fixture: &RoutedOwners| {
+        fixture
+            .app
+            .document_routes
+            .sent
+            .iter()
+            .filter(|(sent, _)| *sent == route)
+            .map(|(_, request)| request.clone())
+            .collect::<Vec<_>>()
+    };
+    let heads = |fixture: &RoutedOwners| {
+        fixture
+            .records
+            .read_checked(&id, |doc| doc.base_heads())
+            .unwrap()
+    };
+    let commit_local = |fixture: &RoutedOwners, value: &str| {
+        fixture
+            .records
+            .with_history(&id, |doc, history| {
+                doc.put(ROOT, "local", value).unwrap();
+                history.commit_action_authored(
+                    doc,
+                    None,
+                    None,
+                    Some(fixture.bindings[0].author.clone()),
+                );
+            })
+            .unwrap();
+    };
+    // A remote change as a committed read: only the changes since this
+    // replica's heads.
+    let committed = |fixture: &RoutedOwners, name: &str| {
+        let mut doc = fixture.records.read_checked(&id, Clone::clone).unwrap();
+        let base = doc.base_heads();
+        doc.set_actor(automerge::ActorId::from(b"committed-peer".as_slice()));
+        doc.put(ROOT, name, "remote").unwrap();
+        doc.commit();
+        crate::collaboration::CommittedDocument::for_test(doc.save_after(&base), Some(base))
+    };
+
+    commit_local(&fixture, "initial");
+    let deadline = tilo_test_env::hang_deadline();
+    while sent(&fixture).is_empty() {
+        fixture.app.publish_owned_documents();
+        assert!(
+            crate::time::now() < deadline,
+            "route never became publishable"
+        );
+        std::thread::sleep(crate::time::Duration::from_millis(5));
+    }
+    fixture.app.document_routes.sent.clear();
+    // The same record is also the app's primary document, published on its
+    // own frontier.
+    fixture.app.actions.bound_broker_route_for_test =
+        Some(crate::collaboration::PrimaryRouteWitness {
+            route: route.clone(),
+            epoch: uuid::Uuid::new_v4(),
+        });
+    let primary =
+        |fixture: &mut RoutedOwners| fixture.app.pending_primary_document_delta().unwrap();
+    let (_, published) = primary(&mut fixture);
+    fixture.app.advance_primary_document(published);
+    assert!(primary(&mut fixture).0.is_empty());
+    // Binding the primary document has the route republish its record
+    // whole once; after that nothing is pending on either.
+    fixture.app.publish_owned_documents();
+    fixture.app.document_routes.sent.clear();
+    fixture.app.publish_owned_documents();
+    assert!(sent(&fixture).is_empty(), "fully published before any read");
+
+    for edit in 0..3 {
+        let name = format!("committed-{edit}");
+        let read = committed(&fixture, &name);
+        fixture
+            .app
+            .queue_committed_document(route.clone(), read.clone());
+        assert!(read.was_applied(), "the owner merged the committed read");
+        assert_eq!(fixture.value(0, &name).as_deref(), Some("remote"));
+        fixture.app.publish_owned_documents();
+        assert!(
+            sent(&fixture).is_empty(),
+            "a committed remote change must not be republished, got {:?}",
+            sent(&fixture)
+        );
+        assert!(
+            primary(&mut fixture).0.is_empty(),
+            "nor as the primary document"
+        );
+    }
+
+    // A later local edit publishes exactly its own change.
+    let before = heads(&fixture);
+    commit_local(&fixture, "after committed reads");
+    fixture.app.publish_owned_documents();
+    let expected = fixture
+        .records
+        .read_checked(&id, |doc| doc.clone().save_after(&before))
+        .unwrap();
+    match &sent(&fixture)[..] {
+        [
+            CollabRequest::Document {
+                mutation: collab_types::DocumentMutation::Incremental(bytes),
+                ..
+            },
+        ] => assert_eq!(bytes, &expected),
+        other => panic!("expected exactly the local incremental, got {other:?}"),
+    }
+    fixture.app.document_routes.sent.clear();
+    let (delta, published) = primary(&mut fixture);
+    assert_eq!(delta, expected, "the primary document publishes it too");
+    fixture.app.advance_primary_document(published);
+
+    // Unsent local history interleaved with a committed read is still
+    // published, together with what the read merged.
+    let before = heads(&fixture);
+    commit_local(&fixture, "unsent before committed read");
+    let read = committed(&fixture, "interleaved-committed");
+    fixture
+        .app
+        .queue_committed_document(route.clone(), read.clone());
+    assert!(read.was_applied());
+    fixture.app.publish_owned_documents();
+    let expected = fixture
+        .records
+        .read_checked(&id, |doc| doc.clone().save_after(&before))
+        .unwrap();
+    match &sent(&fixture)[..] {
+        [
+            CollabRequest::Document {
+                mutation: collab_types::DocumentMutation::Incremental(bytes),
+                ..
+            },
+        ] => assert_eq!(
+            bytes, &expected,
+            "unsent local changes survive the committed merge into the next publication"
+        ),
+        other => panic!("expected one incremental with the unsent local change, got {other:?}"),
+    }
+    assert_eq!(
+        primary(&mut fixture).0,
+        expected,
+        "and the primary document keeps them too"
+    );
+}
+
 #[test]
 fn native_history_entry_pointer_captures_before_discard() {
     let probe =
@@ -3967,7 +4210,7 @@ fn palette_activate(app: &mut App, action: &str, value: &str) {
 }
 
 fn palette_enter(app: &mut App) {
-    let event = crate::synthetic_input::key_event(
+    let event = crate::synthetic_input::key_input(
         &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
         winit::event::ElementState::Pressed,
     );
@@ -4424,9 +4667,6 @@ impl crate::widget::AppWidget for ComponentControlOwner {
     fn app_icon(&self) -> crate::widget::IconDescriptor {
         crate::widget::IconDescriptor::Glyph("C")
     }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
-    }
 }
 
 impl crate::widget::Widget for ComponentControlOwner {
@@ -4761,6 +5001,7 @@ fn component_control_root(
             queued_controls: std::rc::Rc::new(std::cell::RefCell::new(
                 std::collections::VecDeque::new(),
             )),
+            search_requests: std::rc::Rc::default(),
             instance_id: 930 + index as u64,
             app_id: HISTORY.app_id.into(),
             records: records.clone(),
@@ -4966,6 +5207,7 @@ fn emit_pending_control_command(
     app.dispatch_node(node, |widget, doc, path| {
         widget.perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(doc),
             path,
         )
@@ -5013,6 +5255,7 @@ fn delayed_framework_continue_confirm_and_cancel_callbacks_cannot_cross_reentry_
                 app.dispatch_node(phrase, |widget, doc, path| {
                     widget.perform_action(
                         &crate::a11y::Action::SetValue("RUN COMPONENT".into()),
+                        &[],
                         &mut crate::widget::Edits::lend(doc),
                         path,
                     )
@@ -5104,6 +5347,7 @@ fn retained_framework_callback_objects_cannot_acquire_current_tokens_after_reent
             app.dispatch_node(phrase, |widget, doc, path| {
                 widget.perform_action(
                     &crate::a11y::Action::SetValue("RUN CALLBACK".into()),
+                    &[],
                     &mut crate::widget::Edits::lend(doc),
                     path,
                 )
@@ -5350,6 +5594,7 @@ fn activate_component_palette(
 ) {
     app.open_action_palette();
     let target = crate::bound_dispatch::BoundActionTarget {
+        input: crate::bound_dispatch::Input::Discrete,
         binding: handle.binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: handle.binding.instance_id,
@@ -5388,7 +5633,7 @@ fn fresh_component_palette_does_not_require_history_identity_even_after_cancel()
     );
     activate_component_palette(&mut app, &handles[0], "ordinary", input);
     palette_history_round_trip(&mut app);
-    let escape = crate::synthetic_input::key_event(
+    let escape = crate::synthetic_input::key_input(
         &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
         winit::event::ElementState::Pressed,
     );
@@ -5653,7 +5898,7 @@ fn driver_partial_capture_failed_through_return_discards_initially_empty_owner_q
     let mut state = State::new();
     state.doc.put(ROOT, "body", "live").unwrap();
     state.commit_action(None, None);
-    let mut driver = crate::headless::Driver::from_managed_root(
+    let mut driver = crate::headless::FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(root, registration),
         (900, 650),
@@ -5748,7 +5993,7 @@ fn mounted_component_bridge_first_emits_after_return_and_discards_suspended_outp
             .iter()
             .any(|snapshot| snapshot.binding.same_component(&binding)
                 && tilo_actions::door::resolve(
-                    &snapshot.resources,
+                    snapshot.resources(),
                     &tilo_actions::ActionAddress::new("actual-bridge", COMPONENT_CONTROL_ACTION)
                 )
                 .is_some()),
@@ -6065,7 +6310,7 @@ fn control_custody_core_seals_and_discards_through_unreachable_private_routes() 
         assert_eq!(starts.get(), 1);
         assert_eq!(payloads.borrow()[0]["alias"], "entry");
     }
-    // Headless Driver: the same routes with an empty and a multi-entry queue.
+    // Headless FrameHarness: the same routes with an empty and a multi-entry queue.
     for entries in [0, 3] {
         let DeniedBridge {
             root,
@@ -6078,7 +6323,7 @@ fn control_custody_core_seals_and_discards_through_unreachable_private_routes() 
             payloads,
             host: _host,
         } = denied_bridge_with_exit_emission();
-        let mut driver = crate::headless::Driver::from_managed_root_with_controlled_inputs(
+        let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
             State::new(),
             ManagedRoot::new(root, registration),
             (900, 650),
@@ -6112,7 +6357,7 @@ fn control_custody_core_seals_and_discards_through_unreachable_private_routes() 
             )
             .unwrap();
         assert!(denied.get());
-        assert_eq!(exit_calls.get(), 1, "Driver exit layout callback");
+        assert_eq!(exit_calls.get(), 1, "FrameHarness exit layout callback");
         let saved = driver.pending_history_controls();
         assert_eq!(saved.len(), entries as usize);
         denied.set(false);
@@ -6510,32 +6755,20 @@ fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_jso
     if kind == "CommandPalette" {
         app.mutate_node(node, |widget| widget.set_focus(true))
             .unwrap();
-        let event = crate::synthetic_input::key_event(
+        let event = crate::synthetic_input::key_input(
             &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
             ElementState::Pressed,
         );
         for _ in 0..2 {
-            let mut handled = false;
-            let mut focus = None;
-            app.dispatch_node(node, |widget, doc, path| {
-                let mut tree = taffy::TaffyTree::new();
-                let leaf =
-                    crate::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
-                widget.handle_event(
-                    &event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: crate::widget::Edits::lend(doc),
-                        path,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: leaf,
-                        taffy: &tree,
-                    },
-                );
-            })
-            .unwrap();
+            let handled = app
+                .dispatch_node(node, |widget, doc, path| {
+                    crate::testing::Dispatch::new()
+                        .doc(doc)
+                        .path(path)
+                        .send(widget, &event)
+                        .handled
+                })
+                .unwrap();
             assert!(handled);
         }
         return serde_json::json!({"value":"Prompted value"});
@@ -6578,7 +6811,7 @@ fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_jso
                     path,
                 )
             } else {
-                widget.perform_action(&action, &mut crate::widget::Edits::lend(doc), path)
+                widget.perform_action(&action, &[], &mut crate::widget::Edits::lend(doc), path)
             }
         })
         .unwrap(),
@@ -6772,9 +7005,6 @@ impl crate::widget::AppWidget for CustodyControlsRoot {
     fn app_icon(&self) -> crate::widget::IconDescriptor {
         crate::widget::IconDescriptor::Glyph("C")
     }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
-    }
 }
 
 fn custody_owned_button(
@@ -6833,6 +7063,7 @@ fn control_custody_core_outer_component_legacy_owners_and_sibling() {
     assert!(
         app.dispatch_node(a, |widget, doc, path| widget.perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(doc),
             path
         ))
@@ -6961,6 +7192,7 @@ fn control_custody_core_actual_nested_surfaces_finish_in_both_orders() {
         assert!(
             app.dispatch_node(a, |widget, doc, path| widget.perform_action(
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(doc),
                 path
             ))
@@ -7061,6 +7293,7 @@ fn control_custody_core_actual_retained_tile_rebind_closes_old_outboxes() {
     assert!(
         app.dispatch_node(node, |widget, doc, path| widget.perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(doc),
             path
         ))
@@ -7256,7 +7489,7 @@ fn control_custody_core_driver_embedded_return_covers_final_draw_callback() {
             .control_domain
             .producer(crate::ControlProducerDiscipline::ReplaceOne),
     );
-    let mut driver = crate::headless::Driver::new_with_controlled_inputs(
+    let mut driver = crate::headless::FrameHarness::new_with_controlled_inputs(
         State::new(),
         Box::new(tile),
         (900, 650),
@@ -7371,6 +7604,7 @@ fn custody_native_return_covers_final_draw_callbacks(embedded: bool) {
     assert!(
         app.dispatch_node(a, |widget, doc, path| widget.perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(doc),
             path
         ))
@@ -7568,6 +7802,7 @@ fn control_custody_core_nested_unbound_tile_follows_authorized_record_renewal() 
     assert!(
         app.dispatch_node(node, |widget, doc, path| widget.perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(doc),
             path,
         ))
@@ -7713,6 +7948,7 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
         let activate = |tile: &mut crate::widget::TileHost| {
             assert!(tile.children_mut()[0].children_mut()[0].perform_action(
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 &ROOT
             ));
@@ -7881,9 +8117,18 @@ fn host_owned_chrome_opens_framework_history_without_its_toolbar_button() {
     in_window.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
     layout(&mut in_window);
     assert!(
-        has_open_button(&in_window),
-        "hosts without chrome keep the button"
+        !has_open_button(&in_window),
+        "an app without a header must not gain a duplicate top bar"
     );
+    let door = in_window
+        .host_commands(false)
+        .into_iter()
+        .find(|command| command.group == CommandGroup::History)
+        .expect("History stays available through the platform action");
+    assert!(door.enabled);
+    assert!(in_window.invoke_host_command(&door.invocation().unwrap()));
+    layout(&mut in_window);
+    assert!(in_window.history.as_ref().unwrap().is_open());
 
     let mut app = app();
     app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
@@ -7914,6 +8159,52 @@ fn host_owned_chrome_opens_framework_history_without_its_toolbar_button() {
     layout(&mut app);
     assert!(!app.history.as_ref().unwrap().is_open());
     assert!(!has_open_button(&app));
+}
+
+/// The History control in a `NavShell` app's header row opens and closes
+/// the app's registered History, as that History's own button does.
+#[test]
+fn header_history_control_opens_framework_history() {
+    let history_buttons = |app: &mut App| -> Vec<Option<accesskit::Toggled>> {
+        app.build_a11y_tree_update(1.0)
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.label() == Some("History") && node.role() == accesskit::Role::Button
+            })
+            .map(|(_, node)| node.toggled())
+            .collect()
+    };
+    let mut state = State::new();
+    for body in ["old", "live"] {
+        state.doc.put(ROOT, "body", body).unwrap();
+        state.commit_action(None, None);
+    }
+    let shell = crate::widget::NavShell::new()
+        .content_header("Notes", vec![])
+        .content(Box::new(crate::widget::Text::new("Body")));
+    let mut app = app_with_root(state, Box::new(shell));
+    layout(&mut app);
+    assert_eq!(history_buttons(&mut app), [Some(accesskit::Toggled::False)]);
+
+    let header = node_for_test_id(&app, "nav-shell-history");
+    let bounds = app
+        .inspect_node(header, |widget| widget.get_rect())
+        .unwrap();
+    assert!(app.dispatch_semantic_click(bounds.center().x, bounds.center().y));
+    layout(&mut app);
+    assert!(app.history.as_ref().unwrap().is_open());
+    assert_eq!(
+        history_buttons(&mut app),
+        [Some(accesskit::Toggled::True)],
+        "the one History control reads as on while History shows"
+    );
+
+    let close = named(&mut app, "History");
+    app.dispatch_a11y_action(close, &crate::a11y::Action::Activate);
+    layout(&mut app);
+    assert!(!app.history.as_ref().unwrap().is_open());
+    assert_eq!(history_buttons(&mut app), [Some(accesskit::Toggled::False)]);
 }
 
 #[test]
@@ -8006,3 +8297,6 @@ fn host_chrome_lists_framework_history_changes_and_opens_at_the_chosen_one() {
         "open History still lists its changes"
     );
 }
+
+#[cfg(unix)]
+include!("initial_history_action_tests.rs");

@@ -1,6 +1,97 @@
 import json
+import importlib.util
+import tempfile
+import signal
+import subprocess
 import unittest
+from unittest import mock
+from pathlib import Path
 from input_latency import summarize_input_latency
+
+
+class CompositorTraceCompletenessTests(unittest.TestCase):
+    def runner(self):
+        path = Path(__file__).with_name("frame-loop-bench.py")
+        spec = importlib.util.spec_from_file_location("frame_loop_bench", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def parse(self, contents):
+        module = self.runner()
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "frames.csv"
+            trace.write_text(contents)
+            return module.read_trace(trace)
+
+    def test_valid_optional_latency_is_preserved(self):
+        required = {
+            "period_us": 16, "input_us": 0, "pump_us": 0, "layout_us": 0,
+            "scene_us": 0, "submit_us": 0, "clients_us": 0, "sleep_us": 0,
+            "painted": 1, "present_async": 0,
+        }
+        header = ["start_us", *required, "input_latency_us"]
+        first = {"start_us": 1, **required, "input_latency_us": None}
+        second = {"start_us": 2, **required, "input_latency_us": 14}
+        contents = "\n".join([
+            ",".join(header),
+            ",".join("" if first[key] is None else str(first[key]) for key in header),
+            ",".join(str(second[key]) for key in header),
+            "",
+        ])
+        parsed_header, rows = self.parse(contents)
+        self.assertEqual(parsed_header, header)
+        self.assertEqual(rows, [first, second])
+
+    def test_truncated_or_extra_rows_cannot_disappear_from_tail_statistics(self):
+        for contents in [
+            "start_us,period_us\n1,16\n2\n3,16\n",
+            "start_us,period_us\n1,16\n2,80,1\n3,16\n",
+            "start_us,period_us\n1,16\n2,not-a-time\n",
+        ]:
+            with self.subTest(contents=contents), self.assertRaises(ValueError):
+                self.parse(contents)
+
+    def test_missing_samples_or_ambiguous_headers_fail(self):
+        for contents in ["", "start_us\n", "start_us,start_us\n1,2\n", ",period_us\n1,2\n"]:
+            with self.subTest(contents=contents), self.assertRaises(ValueError):
+                self.parse(contents)
+
+    def test_requested_load_cannot_be_replaced_by_an_idle_run(self):
+        runner = self.runner()
+        with tempfile.TemporaryDirectory() as directory:
+            shell = Path(directory) / "shell"
+            self.assertIsNone(runner.required_load_client(shell, "none"))
+            for load in ["fullscreen", "windowed"]:
+                with self.subTest(load=load), self.assertRaises(FileNotFoundError):
+                    runner.required_load_client(shell, load)
+            client = shell.with_name("tilo-loadclient")
+            client.mkdir()
+            with self.assertRaises(FileNotFoundError):
+                runner.required_load_client(shell, "fullscreen")
+            client.rmdir()
+            client.write_text("fixture")
+            self.assertEqual(runner.required_load_client(shell, "fullscreen"), client)
+
+    def test_early_failure_terminates_and_reaps_only_its_session_group(self):
+        runner = self.runner()
+        proc = mock.Mock(pid=42)
+        proc.poll.return_value = None
+        proc.wait.side_effect = [subprocess.TimeoutExpired("fixture", 5), 0]
+        with mock.patch.object(runner.os, "killpg") as kill:
+            runner.stop_process_group(proc)
+        self.assertEqual(kill.call_args_list, [
+            mock.call(42, signal.SIGTERM), mock.call(42, signal.SIGKILL),
+        ])
+        self.assertEqual(proc.wait.call_args_list, [mock.call(timeout=5), mock.call(timeout=5)])
+
+    def test_completed_session_is_not_signalled(self):
+        runner = self.runner()
+        proc = mock.Mock()
+        proc.poll.return_value = 0
+        with mock.patch.object(runner.os, "killpg") as kill:
+            runner.stop_process_group(proc)
+        kill.assert_not_called()
 
 
 class InputLatencyTests(unittest.TestCase):

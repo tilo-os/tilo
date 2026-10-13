@@ -3,35 +3,22 @@
 //!
 //! `update` is how a widget that mirrors out-of-document state (the
 //! shell's top bar reading the chrome revision, a scrollable ticking
-//! momentum) notices a change between frames. A container that keeps the
-//! trait's default no-op silently freezes every descendant at its
-//! build-time state, which is how the shell's workspace chevrons went
-//! stale inside a `Stack` → `Column` chain. These tests pin the
-//! forwarding for each container so that cannot regress quietly.
-
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
+//! momentum) notices a change between frames. A container that does not
+//! forward it silently freezes every descendant at its build-time state,
+//! which is how the shell's workspace chevrons went stale inside a `Stack`
+//! → `Column` chain. These tests pin the forwarding for each container, and
+//! for the trait's default, so that cannot regress quietly.
 
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui::widget::TaffyTreeExt;
 use tilo_ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ROOT};
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Column, Container, Row, Stack, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
 
 /// Counts `update` calls and reports a change on every one, so a
 /// container that forwards must also surface the child's `true`.
@@ -51,29 +38,33 @@ impl Widget for Probe {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
 
     fn name(&self) -> &'static str {
         "Probe"
     }
+}
 
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
+/// A widget that only exposes its child, relying on the trait's defaults.
+struct Exposing(Box<dyn Widget>);
+
+impl Widget for Exposing {
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![self.0.as_mut()]
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(Style::default(), node_map, self)
+    }
+
+    fn name(&self) -> &'static str {
+        "Exposing"
     }
 }
 
@@ -126,6 +117,14 @@ fn containers_forward_update_to_children() {
     )));
     let doc = AutoCommit::new();
     assert!(root.update(&doc, &ROOT));
+    assert_eq!(updates.get(), 1);
+
+    // Case `a_widget_that_only_exposes_children_forwards_by_default`.
+    // A widget need not implement `update` to pass it on: exposing its
+    // children is enough.
+    let (child, updates) = probe();
+    let mut exposing: Box<dyn Widget> = Box::new(Exposing(child));
+    assert!(exposing.update(&doc, &ROOT));
     assert_eq!(updates.get(), 1);
 
     let mut quiet: Box<dyn Widget> = Box::new(Column::new());

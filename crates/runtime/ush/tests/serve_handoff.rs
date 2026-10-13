@@ -11,15 +11,13 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     clippy::missing_panics_doc,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -79,6 +77,8 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
             command: Vec::new(),
             requested_by: ush::host::RequestedBy::Person,
             relay_session: None,
+            runs: None,
+            editor_protocol: None,
         })
         .expect_err("the host target was served");
         assert!(err.starts_with("not available"), "{err}");
@@ -160,7 +160,7 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
         let mut line = serde_json::to_vec(request).unwrap();
         line.push(b'\n');
         (&stream).write_all(&line).expect("write request");
-        let (payload, fd) = recv_with_fd(stream.as_raw_fd()).expect("recvmsg");
+        let (payload, fd) = recv_with_fd(&stream).expect("recvmsg");
         let text = String::from_utf8_lossy(&payload).into_owned();
         let response: ServeResponse =
             serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("bad reply {text:?}: {e}"));
@@ -174,6 +174,8 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
         command: Vec::new(),
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
+        runs: None,
+        editor_protocol: None,
     };
 
     let (response, fd) = ask(&open);
@@ -416,7 +418,7 @@ fn fixture_environment(store: &Store, granted: &Path) {
 }
 
 /// Ask for the default environment and receive its pty master.
-fn open_default_session(socket: &Path) -> (UnixStream, i32) {
+fn open_default_session(socket: &Path) -> (UnixStream, OwnedFd) {
     let stream = UnixStream::connect(socket).expect("connect");
     let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
         target: Target::default_environment(),
@@ -426,13 +428,15 @@ fn open_default_session(socket: &Path) -> (UnixStream, i32) {
         command: Vec::new(),
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
+        runs: None,
+        editor_protocol: None,
     })
     .unwrap();
     request.push(b'\n');
     (&stream).write_all(&request).expect("write request");
     (&stream).flush().expect("flush");
 
-    let (payload, fd) = recv_with_fd(stream.as_raw_fd()).expect("recvmsg");
+    let (payload, fd) = recv_with_fd(&stream).expect("recvmsg");
     let text = String::from_utf8_lossy(&payload);
     let response: ServeResponse =
         serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("bad reply {text:?}: {e}"));
@@ -486,7 +490,8 @@ fn run_handoff() {
     assert!(socket.exists(), "the supervisor never bound its socket");
 
     // The connection is the session's lifetime: it stays open until the end.
-    let (_stream, fd) = open_default_session(&socket);
+    let (_stream, master) = open_default_session(&socket);
+    let fd = master.as_raw_fd();
 
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     // SAFETY: `fd` is the pty master just received.
@@ -553,9 +558,6 @@ fn run_handoff() {
             .is_file(),
         "the environment's home lives in the store"
     );
-
-    // SAFETY: this test owns the descriptor.
-    unsafe { libc::close(fd) };
 }
 
 /// A guest whose sandbox cannot be built says why in words under `bwrap`'s
@@ -672,7 +674,8 @@ fn pkg_install_builds_a_tool_that_is_on_path_after_restart() {
     while !socket.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    let (_stream, fd) = open_default_session(&socket);
+    let (_stream, master) = open_default_session(&socket);
+    let fd = master.as_raw_fd();
     let type_line = |line: &str| {
         // SAFETY: `fd` is a live pty master.
         let n = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
@@ -705,8 +708,6 @@ fn pkg_install_builds_a_tool_that_is_on_path_after_restart() {
         after.contains("tree v"),
         "after `restart` the tool's command is on the PATH:\n{restarted}\n{after}"
     );
-    // SAFETY: this test owns the descriptor.
-    unsafe { libc::close(fd) };
 }
 
 /// The record names the built tool, and its image holds the command.
@@ -770,7 +771,6 @@ fn start_reexec_supervisor(
 
 #[test]
 fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
-    use std::os::fd::{FromRawFd, OwnedFd};
     assert!(
         guest_unavailable().is_none(),
         "this regression must observe a real confined guest"
@@ -816,8 +816,6 @@ fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
         "current_exe cannot be reexecuted in this fixture"
     );
     let (stream, fd) = open_default_session(&socket);
-    // SAFETY: the service handed this test ownership of one PTY master.
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let prompt = read_until(fd.as_raw_fd(), "Fixture", tilo_test_env::hang_bound());
     assert!(
         prompt.contains("Fixture"),

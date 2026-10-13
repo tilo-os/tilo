@@ -3,7 +3,7 @@
 //! A mention is **not** a string that happens to start with `@`. It is a
 //! resolved pointer to one participant of the room, minted when the message is
 //! authored and stored in the shared CRDT next to the body (see
-//! [`crate::doc`]). That is what lets anything else — the person mentioned, an
+//! [`crate::record`]). That is what lets anything else — the person mentioned, an
 //! agent watching the room, a notification badge, a search index — ask a
 //! message *who it mentions* without re-parsing prose and re-guessing which
 //! "@ada" meant which Ada.
@@ -151,7 +151,7 @@ pub fn picker_query(
 ) -> Option<MentionQuery> {
     let q = query_at_caret(text, caret)?;
     // Already picked: the run is exactly one participant's name plus the space
-    // `apply_completion` appends to close it.
+    // a completed pick appends to close it.
     if let Some(name) = q.query.strip_suffix(' ') {
         let done = participants
             .iter()
@@ -192,29 +192,6 @@ pub fn candidates<'a>(participants: &'a [Participant], query: &str) -> Vec<&'a P
     }
     ranked.sort_by_key(|(rank, i, _)| (*rank, *i));
     ranked.into_iter().map(|(_, _, p)| p).collect()
-}
-
-/// Replace the `@`-run described by `q` with a completed `@Name ` and report the
-/// new caret (just past the inserted space).
-///
-/// The trailing space is what closes the run: without it the next character
-/// typed would re-open the picker on a name that is already chosen.
-pub fn apply_completion(
-    text: &str,
-    q: &MentionQuery,
-    caret: usize,
-    who: &Participant,
-) -> (String, usize) {
-    let caret = caret.min(text.len());
-    let end = caret.max(q.start);
-    let mut out = String::with_capacity(text.len() + who.name.len());
-    out.push_str(text.get(..q.start).unwrap_or(""));
-    out.push('@');
-    out.push_str(&who.name);
-    out.push(' ');
-    let new_caret = out.len();
-    out.push_str(text.get(end..).unwrap_or(""));
-    (out, new_caret)
 }
 
 /// Resolve every `@`-run in `text` against the room's `participants`.
@@ -418,38 +395,6 @@ mod tests {
         {
             assert!(picker_query("hi @zz", 6, &room()).is_none());
             assert!(picker_query("hi @ad", 6, &room()).is_some());
-        }
-    }
-
-    #[test]
-    fn completion_inserts_the_name_keeps_the_tail_and_closes_the_run() {
-        // Phase: completion_closes_the_run_so_the_picker_does_not_reopen.
-        {
-            let q = query_at_caret("hi @ad", 6).unwrap();
-            let who = Participant {
-                id: "u_lovelace".into(),
-                name: "Ada Lovelace".into(),
-                is_agent: false,
-            };
-            let (text, caret) = apply_completion("hi @ad", &q, 6, &who);
-            assert_eq!(text, "hi @Ada Lovelace ");
-            assert_eq!(caret, text.len());
-            assert!(
-                picker_query(&text, caret, &room()).is_none(),
-                "a finished pick must not leave the list up"
-            );
-        }
-        // Phase: completing_mid_sentence_keeps_the_tail.
-        {
-            let q = query_at_caret("hi @ad, look", 6).unwrap();
-            let who = Participant {
-                id: "u_ada".into(),
-                name: "Ada".into(),
-                is_agent: false,
-            };
-            let (text, caret) = apply_completion("hi @ad, look", &q, 6, &who);
-            assert_eq!(text, "hi @Ada , look");
-            assert_eq!(&text[..caret], "hi @Ada ");
         }
     }
 }

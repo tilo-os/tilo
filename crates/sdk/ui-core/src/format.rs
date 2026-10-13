@@ -1,5 +1,6 @@
 //! Shared value formatters for system apps — byte sizes, transfer rates, media
-//! timecodes, "time ago" labels, compact counts, and month/weekday names.
+//! timecodes, "time ago" labels, grouped and compact counts, and
+//! month/weekday names.
 //!
 //! [`bytes`] uses IEC binary units while [`bytes_si`] uses SI decimal units, so
 //! callers choose an unambiguous convention. The platform's rule, shared with
@@ -121,12 +122,6 @@ pub fn timecode(total_secs: u64) -> String {
     }
 }
 
-/// Alias for [`timecode`] — some call sites read better as "duration".
-#[must_use]
-pub fn duration(total_secs: u64) -> String {
-    timecode(total_secs)
-}
-
 const MINUTE: i64 = 60;
 const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
@@ -210,6 +205,27 @@ pub fn relative_compact(secs_ago: i64) -> String {
     }
 }
 
+/// Name a calendar day next to today in the host's language — `Yesterday`,
+/// `Today`, `Tomorrow` — or `None` further out, where the caller shows its
+/// own date. `days_from_today` is negative for the past.
+///
+/// ```
+/// use tilo_ui::format::near_day;
+/// assert_eq!(near_day(0).as_deref(), Some("Today"));
+/// assert_eq!(near_day(-1).as_deref(), Some("Yesterday"));
+/// assert_eq!(near_day(2), None);
+/// ```
+#[must_use]
+pub fn near_day(days_from_today: i64) -> Option<String> {
+    let key = match days_from_today {
+        -1 => "day-yesterday",
+        0 => "day-today",
+        1 => "day-tomorrow",
+        _ => return None,
+    };
+    Some(crate::i18n::widget_format(key, &[]))
+}
+
 /// Abbreviate a large count to at most one fractional digit: `1.2K`, `3.4M`,
 /// `1.1B`. Exact tenths omit the redundant `.0` (`12K`, not `12.0K`) and a
 /// value that rounds into the next unit is promoted (`999_999` becomes `1M`,
@@ -244,6 +260,50 @@ pub fn compact_count(n: u64) -> String {
     let rounded = format!("{value:.1}");
     let compact = rounded.strip_suffix(".0").unwrap_or(&rounded);
     format!("{compact}{suffix}")
+}
+
+/// A whole count with the current locale's digit grouping: `12,345` in
+/// English, `12.345` in German, `12\u{202f}345` in French. Use it for every
+/// count a person reads in full (rows, files, results); [`compact_count`] for
+/// the abbreviated form.
+///
+/// ```
+/// use tilo_ui::format::count_in;
+/// assert_eq!(count_in(0, "en-US"), "0");
+/// assert_eq!(count_in(999, "en-US"), "999");
+/// assert_eq!(count_in(12_345, "en-US"), "12,345");
+/// assert_eq!(count_in(1_234_567, "de-DE"), "1.234.567");
+/// assert_eq!(count_in(1_234, "fr"), "1\u{202f}234");
+/// ```
+#[must_use]
+pub fn count(n: u64) -> String {
+    count_in(n, &crate::i18n::I18nManager::current_locale())
+}
+
+/// [`count`] for the locale `locale` (a BCP 47 tag such as `de-DE`).
+#[must_use]
+pub fn count_in(n: u64, locale: &str) -> String {
+    let language = locale
+        .split(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let separator = match language.as_str() {
+        "de" | "es" | "it" | "nl" | "pt" | "da" | "id" | "tr" | "el" => ".",
+        "fr" | "sv" | "nb" | "nn" | "no" | "fi" | "cs" | "sk" | "pl" | "ru" | "uk" | "hu" => {
+            "\u{202f}"
+        }
+        _ => ",",
+    };
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3 * separator.len());
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push_str(separator);
+        }
+        out.push(digit);
+    }
+    out
 }
 
 const MONTHS_ABBREV: [&str; 12] = [
@@ -392,7 +452,6 @@ mod tests {
         ] {
             assert_eq!(timecode(secs), want, "timecode({secs})");
         }
-        assert_eq!(duration(3661), timecode(3661));
 
         for (secs, want) in [
             (0, "just now"),

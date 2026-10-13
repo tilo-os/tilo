@@ -30,7 +30,6 @@ use smithay::reexports::wayland_protocols::wp::tablet::zv2::server::{
 use smithay::reexports::wayland_server::backend::{ClientId, ObjectId};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DataInit, Dispatch, DisplayHandle, Resource};
-use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 
 use crate::compositor::backend::{BackendEvent, PadAction, PadDescription, PadEvent, PadGroup};
 use crate::compositor::state::State;
@@ -818,13 +817,10 @@ pub fn dial_events(
             clippy::cast_precision_loss,
             reason = "a handful of steps per event is exact in f32"
         )]
-        PadDialAction::Scroll => vec![BackendEvent::Input(WindowEvent::MouseWheel {
-            // SAFETY: winit's device id is an opaque token with no
-            // invariants; the input adapters use the same inert zero value.
-            device_id: unsafe { std::mem::zeroed() },
-            delta: MouseScrollDelta::LineDelta(0.0, steps as f32),
-            phase: TouchPhase::Moved,
-        })],
+        PadDialAction::Scroll => vec![BackendEvent::Input(ui::synthetic_input::mouse_wheel(
+            0.0,
+            steps as f32,
+        ))],
         other => (0..steps.unsigned_abs())
             .filter_map(|_| dial_step(other, steps > 0))
             .flat_map(|step| keys(&step))
@@ -839,6 +835,7 @@ pub fn dial_events(
 )]
 mod tests {
     use super::*;
+    use winit::event::{MouseScrollDelta, WindowEvent};
 
     #[test]
     fn a_ring_steps_every_fifteen_degrees_across_the_top() {
