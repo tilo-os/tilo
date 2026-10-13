@@ -185,13 +185,22 @@ pub enum Action {
     CorrectAutomaticWorkSession,
     /// Switch the seeded causal history into workspace replay.
     ShowRoomActivityReplay,
+    PlayRoomActivityReplay,
     /// Validated, explicitly synthetic prose; never a live-model claim.
     QualifyActivityNarrative {
         generated: bool,
     },
     QualifyActivityCitation,
+    QualifyActivitySummaryScroll {
+        expanded: bool,
+    },
+    QualifyActivityDetailEnd,
+    QualifyActivityMissingPin,
+    QualifyActivityRename,
+    FocusOriginalActivityEntry,
     QualifyActivityCompare,
     QualifyActivitySlider,
+    QualifyActivityFilters,
     /// Narrow the open activity surface to Ada's real authored changes so a
     /// collaboration proof cannot accidentally show only the local author.
     FilterRoomActivityToAda,
@@ -514,6 +523,19 @@ pub fn run_with<S: SnapshotSink>(
 }
 
 fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut S) {
+    let sources = matches!(
+        action,
+        Action::QualifyActivityNarrative { .. }
+            | Action::QualifyActivitySummaryScroll { .. }
+            | Action::QualifyActivityCitation
+            | Action::QualifyActivityDetailEnd
+            | Action::QualifyActivityCompare
+            | Action::QualifyActivitySlider
+            | Action::QualifyActivityFilters
+            | Action::QualifyActivityRename
+            | Action::QualifyActivityMissingPin
+    )
+    .then(|| driver.activity_source_heads_for_shots());
     apply_pointer_and_capture(driver, action, sink);
     apply_open_window(driver, action);
     apply_add_hosted_tab(driver, action);
@@ -523,6 +545,13 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_seed_status_and_file_picker(driver, action);
     apply_seed_wifi_and_select_group(driver, action);
     apply_window_and_workspace_actions(driver, action);
+    if let Some(sources) = sources {
+        assert_eq!(
+            driver.activity_source_heads_for_shots(),
+            sources,
+            "history qualification must not mutate shared source heads"
+        );
+    }
 }
 
 /// Pointer, keyboard and plain-capture actions — split out of [`apply`]
@@ -694,6 +723,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             "scenario: automatic work-session seam correction must succeed"
         ),
         Action::ShowRoomActivityReplay => driver.show_room_activity_replay_for_shots(),
+        Action::PlayRoomActivityReplay => driver.play_room_activity_replay_for_shots(),
         Action::QualifyActivityNarrative { generated } => {
             assert!(
                 driver
@@ -702,13 +732,33 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
                 "scenario: narrative requires current recorded evidence with resource provenance"
             );
         }
+        Action::QualifyActivitySummaryScroll { expanded } => assert!(
+            driver
+                .qualify_activity_summary_scroll_for_shots(*expanded)
+                .is_some()
+        ),
+        Action::QualifyActivityDetailEnd => driver.qualify_activity_detail_end_for_shots(),
+        Action::QualifyActivityMissingPin => {
+            assert!(driver.qualify_activity_missing_pin_for_shots().is_some());
+        }
+        Action::QualifyActivityRename => {
+            assert!(driver.qualify_activity_rename_for_shots().is_some());
+        }
         Action::QualifyActivityCitation => assert!(
             driver.qualify_activity_citation_for_shots().is_some(),
             "scenario: citation must resolve to the current recorded work session"
         ),
+        Action::FocusOriginalActivityEntry => assert!(
+            driver.focus_original_activity_entry_for_shots().is_some(),
+            "scenario: the original admitted row must resolve through canonical focus"
+        ),
         Action::QualifyActivityCompare => assert!(
             driver.qualify_activity_compare_for_shots().is_some(),
             "scenario: Explorer must expose the selected resource comparison"
+        ),
+        Action::QualifyActivityFilters => assert!(
+            driver.qualify_activity_filters_for_shots().is_some(),
+            "scenario: resource and contributor filters must retain real evidence"
         ),
         Action::QualifyActivitySlider => assert!(
             driver.qualify_activity_slider_for_shots().is_some(),
@@ -3224,14 +3274,28 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::QualifyActivityNarrative { generated: false },
                 Action::Snapshot("01-summary-pending"),
                 Action::QualifyActivityNarrative { generated: true },
+                Action::QualifyActivitySummaryScroll { expanded: false },
                 Action::Snapshot("02-validated-fixture-summary"),
+                Action::QualifyActivitySummaryScroll { expanded: true },
+                Action::Snapshot("02b-expanded-summary-provenance"),
                 Action::QualifyActivityCitation,
                 Action::Snapshot("03-citation-provenance"),
+                Action::QualifyActivityDetailEnd,
+                Action::Snapshot("03b-provenance-scrolled-end"),
                 Action::QualifyActivityCompare,
                 Action::Snapshot("04-exact-comparison"),
+                Action::QualifyActivityDetailEnd,
+                Action::Snapshot("04b-comparison-scrolled-end"),
+                Action::QualifyActivityRename,
+                Action::Snapshot("04c-group-renamed"),
                 Action::ShowRoomActivityReplay,
                 Action::QualifyActivitySlider,
                 Action::Snapshot("05-accessible-slider-seek"),
+                Action::QualifyActivityFilters,
+                Action::Snapshot("06-resource-and-contributor-filter"),
+                Action::ShowRoomActivityReplay,
+                Action::QualifyActivityMissingPin,
+                Action::Snapshot("07-missing-retained-replay-pin"),
             ],
         },
         Scenario {
@@ -3273,21 +3337,11 @@ fn build_scenarios() -> Vec<Scenario> {
             description: "Select a real history action, show provenance, and materialize its exact comparison.",
             actions: vec![
                 Action::SeedRoomActivity { explore: true },
-                Action::SelectRoomActivityEntry(0),
                 Action::Relayout,
                 Action::Wait(20),
-                Action::Key(Key::Named(NamedKey::Home)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::FocusOriginalActivityEntry,
                 Action::Snapshot("01-selected-detail"),
-                Action::Key(Key::Named(NamedKey::End)),
-                Action::Key(Key::Named(NamedKey::ArrowLeft)),
-                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::QualifyActivityCompare,
                 Action::Wait(2),
                 Action::Snapshot("02-exact-comparison"),
             ],
@@ -3301,8 +3355,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Relayout,
                 Action::Wait(20),
                 Action::Snapshot("01-replay-checkpoint"),
-                Action::Key(Key::Named(NamedKey::End)),
-                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::PlayRoomActivityReplay,
                 Action::Wait(3),
                 Action::Snapshot("02-replay-playing"),
             ],
@@ -4006,6 +4059,18 @@ mod tests {
     }
 
     #[test]
+    fn original_history_row_compares_at_both_sizes() {
+        let scenario = lookup("room_activity_explore_detail_compare").expect("comparison scenario");
+        for viewport in [(1600, 900), (800, 600)] {
+            let mut driver = ShellDriver::new(viewport);
+            let mut sink = HistoryPaintSink { names: Vec::new() };
+            run(&mut driver, &scenario, &mut sink);
+            assert!(driver.host().room_activity().has_comparison());
+            assert_eq!(sink.names, ["01-selected-detail", "02-exact-comparison"]);
+        }
+    }
+
+    #[test]
     fn history_qualification_preserves_evidence_and_heads_at_both_sizes() {
         let scenario = lookup("history_visual_qualification").expect("qualification scenario");
         for viewport in [(1600, 900), (800, 600)] {
@@ -4020,14 +4085,21 @@ mod tests {
                 vec![
                     "01-summary-pending",
                     "02-validated-fixture-summary",
+                    "02b-expanded-summary-provenance",
                     "03-citation-provenance",
+                    "03b-provenance-scrolled-end",
                     "04-exact-comparison",
+                    "04b-comparison-scrolled-end",
+                    "04c-group-renamed",
                     "05-accessible-slider-seek",
+                    "06-resource-and-contributor-filter",
+                    "07-missing-retained-replay-pin",
                 ]
             );
             let position = driver.host().room_activity().replay_position();
-            assert_eq!(position.position, Some(0));
-            assert_eq!(position.selected, position.first);
+            assert_eq!(position.position, None);
+            assert!(position.selection_missing);
+            assert!(position.selected.is_some());
             assert!(!position.playing);
         }
     }

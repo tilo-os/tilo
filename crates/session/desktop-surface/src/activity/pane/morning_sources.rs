@@ -282,9 +282,6 @@ impl RoomActivityPane {
         };
         let width = text_width(self.sheet.width() - 2.0 * inset - f64::from(spacing.s2));
         let (_, height) = tr.measure_style(&caption, Some(width), &theme.text(TextRole::Caption));
-        if y + f64::from(height) + padding > self.sheet.y1 {
-            return y;
-        }
         tr.draw_style(
             scene,
             &caption,
@@ -334,10 +331,6 @@ impl RoomActivityPane {
             self.morning_display_label(key, evidence.as_ref()),
             self.morning_payload_text(key)
         );
-        let label = paint
-            .text
-            .clamp_to_lines(&label, &theme.text(TextRole::Caption), width, 6)
-            .join("\n");
         let title = evidence.as_ref().map_or_else(
             || t("activity-morning-unavailable"),
             |(target, _)| target.label.clone(),
@@ -363,16 +356,12 @@ impl RoomActivityPane {
         .filter(|_| refreshable)
         .chain((count > 1).then_some(super::MorningCommand::NextSource))
         .collect::<Vec<_>>();
-        let command_h = commands.iter().fold(0.0, |height, _| height + h + gap);
         let remove_label = t("activity-morning-remove");
         let (_, remove_height) =
             paint
                 .text
                 .measure_style(&remove_label, Some(width), &theme.text(TextRole::Caption));
         let remove_h = (f64::from(remove_height) + padding).max(h);
-        if y + h + caption_h + remove_h + command_h + padding > self.sheet.y1 - inset {
-            return y;
-        }
         let rect = Rect::new(x0, y, x1, y + h);
         draw_task_button(
             paint.scene,

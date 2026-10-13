@@ -2165,6 +2165,27 @@ impl ShellDriver {
             ] {
                 tree.doc
                     .set_actor(automerge::ActorId::from(actor.as_bytes()));
+                // The synthetic provider publishes its action labels through
+                // the same catalogue learned by native apps. Comparisons must
+                // not infer human names from an opaque action address.
+                let action_id = tilo_actions::entry::kebab(action);
+                let spec = tilo_actions::ActionSpec::operation(
+                    &action_id,
+                    action,
+                    tilo_actions::OperationKind::Effect,
+                    "shots.document-action",
+                    &(),
+                );
+                assert!(spec.is_ok(), "the fixture must publish a valid action");
+                let mut resource = tilo_actions::Resource::new(
+                    format!("shots:{group_id}"),
+                    "document",
+                    group_label,
+                );
+                if let Ok(spec) = spec {
+                    resource = resource.with_action(spec);
+                }
+                ui::history_source::sentence::learn_labels(&[resource]);
                 let context = tilo_actions::ActionContext::for_resource(
                     format!("shots:{group_id}"),
                     "document",
@@ -2172,11 +2193,7 @@ impl ShellDriver {
                 )
                 .with_app("org.tilo.Writer", "Writer")
                 .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-                    tilo_actions::ActionKey::new(
-                        "org.tilo.Writer",
-                        "document",
-                        tilo_actions::entry::kebab(action),
-                    ),
+                    tilo_actions::ActionKey::new("org.tilo.Writer", "document", action_id),
                     [],
                 )))
                 .with_group(group_id, group_label, "work-session");
@@ -2232,6 +2249,18 @@ impl ShellDriver {
         corrected
     }
 
+    pub fn activity_source_heads_for_shots(&self) -> Vec<(String, Vec<automerge::ChangeHash>)> {
+        let mut heads: Vec<_> = self
+            .chrome()
+            .tree_mut()
+            .room_docs
+            .iter_mut()
+            .map(|(id, doc)| (id.to_string(), doc.get_heads()))
+            .collect();
+        heads.sort_by(|left, right| left.0.cmp(&right.0));
+        heads
+    }
+
     /// Shots-only wording, validated against the real projected evidence.
     /// This exercises presentation, not a live model or its availability.
     pub fn qualify_activity_narrative_for_shots(&mut self, generated: bool) -> Option<()> {
@@ -2271,6 +2300,83 @@ impl ShellDriver {
         drop(state);
         let _ = self.fb.paint();
         Some(())
+    }
+
+    /// Resolve painted controls using their accessibility routing keys, never
+    /// selecting a substitute evidence row when a control is unavailable.
+    pub fn focus_activity_control_for_shots(&mut self, label: &str) -> Option<()> {
+        let snapshot = self.fb.host().room_activity().accessibility_snapshot();
+        let node = snapshot
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some(label))?;
+        let index = node
+            .key
+            .and_then(|key| usize::try_from(key).ok())
+            .or_else(|| node.pos_in_set.and_then(|position| position.checked_sub(1)))?;
+        assert!(
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .focus_accessibility_path(&[0, index])
+        );
+        let _ = self.fb.paint();
+        Some(())
+    }
+
+    pub fn qualify_activity_summary_scroll_for_shots(&mut self, expanded: bool) -> Option<()> {
+        let narrative = self.fb.host().room_activity().narrative()?;
+        let heads = self.chrome().tree_mut().doc.get_heads();
+        let citation_key = self
+            .fb
+            .host()
+            .room_activity()
+            .accessibility_snapshot()
+            .children
+            .iter()
+            .find_map(|node| node.key)?;
+        self.focus_activity_control_for_shots(&tilo_desktop::i18n::t("activity-summary-details"))?;
+        if expanded {
+            self.press_key(&Key::Named(NamedKey::Enter));
+            // Page down through the real scroll region to reveal provenance.
+            self.press_key(&Key::Named(NamedKey::PageDown));
+        } else {
+            assert!(
+                self.fb
+                    .host_mut()
+                    .room_activity_mut()
+                    .focus_accessibility_path(&[0, usize::try_from(citation_key).ok()?])
+            );
+        }
+        let _ = self.fb.paint();
+        let snapshot = self.fb.host().room_activity().accessibility_snapshot();
+        let citation = snapshot
+            .children
+            .iter()
+            .find(|node| node.key == Some(citation_key))?;
+        let bounds = citation.bounds?.to_rect();
+        assert!(
+            self.fb
+                .host()
+                .room_activity()
+                .rect()
+                .contains(bounds.center()),
+            "the original citation must actually be visible after keyboard scrolling"
+        );
+        assert_eq!(self.fb.host().room_activity().narrative()?, narrative);
+        assert_eq!(self.chrome().tree_mut().doc.get_heads(), heads);
+        Some(())
+    }
+
+    pub fn qualify_activity_detail_end_for_shots(&mut self) {
+        let ids = self.fb.host().room_activity().selected_ids();
+        let heads = self.chrome().tree_mut().doc.get_heads();
+        for _ in 0..12 {
+            self.press_key(&Key::Named(NamedKey::PageDown));
+            let _ = self.fb.paint();
+        }
+        assert_eq!(self.fb.host().room_activity().selected_ids(), ids);
+        assert_eq!(self.chrome().tree_mut().doc.get_heads(), heads);
     }
 
     #[expect(
@@ -2313,7 +2419,17 @@ impl ShellDriver {
                 .take(end.saturating_sub(start).saturating_add(1))
                 .map(|entry| entry.id)
                 .collect();
-            assert!(pane.reveal_narrative_source(id));
+            let citation = pane
+                .accessibility_snapshot()
+                .children
+                .into_iter()
+                .find(|node| node.key.is_some())?;
+            let key = usize::try_from(citation.key?).ok()?;
+            assert!(pane.focus_accessibility_path(&[0, key]));
+            // Activate outside the pane borrow through the shell event route.
+            drop(state);
+            self.press_key(&Key::Named(NamedKey::Enter));
+            let pane = self.fb.host().room_activity();
             assert_eq!(pane.selected_ids(), expected_span);
             let selected = pane.entries().iter().find(|entry| entry.id == id)?;
             assert!(
@@ -2325,16 +2441,14 @@ impl ShellDriver {
                 "the citation must retain its resource provenance"
             );
         }
-        assert_eq!(state.tree_mut().doc.get_heads(), heads);
-        drop(state);
+        assert_eq!(self.chrome().tree_mut().doc.get_heads(), heads);
+        let _ = self.fb.paint();
+        self.focus_activity_control_for_shots(&tilo_desktop::i18n::t("activity-pane-details"))?;
+        self.press_key(&Key::Named(NamedKey::Enter));
         let _ = self.fb.paint();
         Some(())
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the borrowed history pane must stay live through its final production assertions"
-    )]
     pub fn qualify_activity_compare_for_shots(&mut self) -> Option<()> {
         let snapshot = self.fb.host().room_activity().accessibility_snapshot();
         let details = tilo_desktop::i18n::t("activity-pane-details");
@@ -2351,26 +2465,25 @@ impl ShellDriver {
                 .focus_accessibility_path(&[0, index])
         );
         self.press_key(&Key::Named(NamedKey::Enter));
-        let handle = self.chrome_handle();
-        let state = handle.borrow();
-        let mut tree = state.tree_mut();
-        let heads = tree.doc.get_heads();
-        {
-            let pane = self.fb.host_mut().room_activity_mut();
-            let ids = pane.selected_ids();
-            assert!(!ids.is_empty(), "comparison must have an exact selection");
-            let outcome = pane.apply_selection_history_action(
-                tilo_desktop::activity::HISTORY_COMPARE,
-                &mut *tree,
-                None,
+        let ids = self.fb.host().room_activity().selected_ids();
+        assert!(!ids.is_empty(), "comparison must have an exact selection");
+        let heads = self.chrome().tree_mut().doc.get_heads();
+        self.with_chrome(|state| {
+            assert!(
+                state
+                    .request_history_selection_action(tilo_desktop::activity::HISTORY_COMPARE)
+                    .is_ok(),
+                "the canonical comparison action must be admitted"
             );
-            assert!(outcome.compared && pane.has_comparison());
-            assert_eq!(pane.selected_ids(), ids);
-        }
-        assert_eq!(tree.doc.get_heads(), heads, "comparison is read-only");
-        drop(tree);
-        drop(state);
+        });
         let _ = self.fb.paint();
+        assert!(self.fb.host().room_activity().has_comparison());
+        assert_eq!(self.fb.host().room_activity().selected_ids(), ids);
+        assert_eq!(
+            self.chrome().tree_mut().doc.get_heads(),
+            heads,
+            "comparison is read-only"
+        );
         Some(())
     }
 
@@ -2434,6 +2547,238 @@ impl ShellDriver {
         drop(state);
         let _ = self.fb.paint();
         Some(())
+    }
+
+    pub fn qualify_activity_missing_pin_for_shots(&mut self) -> Option<()> {
+        let pinned = self.fb.host().room_activity().replay_position().selected?;
+        let heads = self.chrome().tree_mut().doc.get_heads();
+        let active = self.chrome().tree().desktop.active;
+        let other = self
+            .chrome()
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id != active)?
+            .id;
+        self.with_chrome(|state| {
+            state.tree_mut().desktop.active = other;
+            state.open_room_activity(None);
+        });
+        self.relayout();
+        self.fb.host_mut().force_room_activity_settled();
+        let _ = self.fb.paint();
+        let missing = self.fb.host().room_activity().replay_position();
+        assert!(
+            missing.selection_missing,
+            "changing workspace must not replace a retained checkpoint"
+        );
+        assert_eq!(missing.selected, Some(pinned));
+        assert_eq!(missing.position, None);
+        assert!(!missing.playing);
+        assert!(
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .apply_replay_request(
+                    tilo_desktop::activity::view_actions::ReplayRequest::TogglePlayback
+                )
+                .is_err()
+        );
+        assert_eq!(self.fb.host().room_activity().replay_position(), missing);
+        assert_eq!(self.chrome().tree_mut().doc.get_heads(), heads);
+        Some(())
+    }
+
+    pub fn qualify_activity_rename_for_shots(&mut self) -> Option<()> {
+        use shell::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use shell::shell::search::providers::actions::ActionsProvider;
+        let range = self
+            .fb
+            .host()
+            .room_activity()
+            .timeline()
+            .named_ranges()
+            .first()?
+            .clone();
+        let encode = |id: ui::HistoryEntryId| hex::encode(id.0);
+        let handle = self.chrome_handle();
+        let (room, heads) = {
+            let state = handle.borrow();
+            let room = state.tree().active_workspace()?.room.to_string();
+            let heads = state.tree_mut().doc.get_heads();
+            (room, heads)
+        };
+        let source_heads: Vec<_> = handle
+            .borrow()
+            .tree_mut()
+            .room_docs
+            .iter_mut()
+            .map(|(id, doc)| (*id, doc.get_heads()))
+            .collect();
+        let args = serde_json::json!({"room": room, "origin": "desktop_tree",
+            "frontier": heads.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "operation": {"kind": "name", "record": range.id, "start": encode(range.start),
+                "end": encode(range.end?), "label": "Financial report reviewed"}});
+        let mut registry = shell::shell::search::SearchRegistry::new();
+        registry.register(std::rc::Rc::new(ActionsProvider::new()));
+        let mut document = AutoCommit::new();
+        let resource = ResourceRef::new("actions", "history.groups.edit");
+        let catalogue = ActionCatalog::build_exact(
+            &registry,
+            &resource,
+            shell::shell::chrome_state::SearchScope::All,
+            None,
+            &handle.borrow(),
+            &document,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        let action = catalogue.select(&resource)?;
+        let shell::shell::search::InvocationDisposition::Pending(ticket) = action
+            .invoke_json_disposition(
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &handle,
+                args.as_object()?,
+            )
+            .ok()?
+        else {
+            return None;
+        };
+        self.relayout();
+        let _ = self.fb.paint();
+        assert!(ticket().ok()?.is_some());
+        let ranges = self.fb.host().room_activity().timeline().named_ranges();
+        assert!(
+            ranges
+                .iter()
+                .any(|renamed| renamed.id == range.id
+                    && renamed.label == "Financial report reviewed")
+        );
+        for (id, heads) in source_heads {
+            assert_eq!(
+                self.chrome().tree_mut().room_docs.get_mut(&id)?.get_heads(),
+                heads,
+                "group rename cannot write shared source history"
+            );
+        }
+        self.focus_activity_control_for_shots(&tilo_desktop::i18n::t("activity-pane-timeline"))?;
+        self.press_key(&Key::Named(NamedKey::Enter));
+        let _ = self.fb.paint();
+        Some(())
+    }
+
+    /// Narrow by stable resource identity through the public focus hand-off,
+    /// then by contributor; neither operation may write shared history.
+    pub fn qualify_activity_filters_for_shots(&mut self) -> Option<()> {
+        let heads = self.chrome().tree_mut().doc.get_heads();
+        self.with_chrome(|state| {
+            let workspace = tilo_desktop_model::WorkspaceId(state.tree().desktop.active.raw());
+            assert!(
+                state
+                    .request_workspace_view(
+                        tilo_desktop::activity::WorkspaceViewRequest::OpenActivity {
+                            workspace,
+                            view: shell::shell::room_activity::ActivityView::Explore,
+                        },
+                    )
+                    .is_ok(),
+                "the active workspace must admit its history view"
+            );
+            state.open_room_activity(Some(shell::shell::chrome_state::ActivityFocus {
+                resource_id: Some("shots:finance".into()),
+                ..Default::default()
+            }));
+        });
+        self.relayout();
+        let _ = self.fb.paint();
+        assert_eq!(
+            self.fb
+                .host()
+                .room_activity()
+                .visible_entry(0)?
+                .context
+                .as_ref()?
+                .resource
+                .as_ref()?
+                .id,
+            "shots:finance"
+        );
+        assert!(self.filter_room_activity_to_ada_for_shots());
+        let index = {
+            let pane = self.fb.host().room_activity();
+            let first = pane.visible_entry(0)?;
+            assert!(first.author.name.eq_ignore_ascii_case("ada"));
+            assert_eq!(
+                first.context.as_ref()?.resource.as_ref()?.id,
+                "shots:finance"
+            );
+            let timeline = tilo_desktop::i18n::t("activity-pane-timeline");
+            pane.accessibility_snapshot()
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some(&timeline))
+                .and_then(|node| node.pos_in_set)
+                .and_then(|position| position.checked_sub(1))?
+        };
+        assert!(
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .focus_accessibility_path(&[0, index])
+        );
+        self.press_key(&Key::Named(NamedKey::Enter));
+        let _ = self.fb.paint();
+        assert_eq!(
+            self.chrome().tree_mut().doc.get_heads(),
+            heads,
+            "filters are read-only"
+        );
+        Some(())
+    }
+
+    /// Resolve the original admitted row through the same focus hand-off as
+    /// search, then compare it without substituting a more convenient row.
+    pub fn focus_original_activity_entry_for_shots(&mut self) -> Option<()> {
+        let id = self.fb.host().room_activity().visible_entry(0)?.id;
+        self.with_chrome(|state| {
+            let workspace = tilo_desktop_model::WorkspaceId(state.tree().desktop.active.raw());
+            assert!(
+                state
+                    .request_workspace_view(
+                        tilo_desktop::activity::WorkspaceViewRequest::OpenActivity {
+                            workspace,
+                            view: shell::shell::room_activity::ActivityView::Explore,
+                        },
+                    )
+                    .is_ok(),
+                "the active workspace must admit its history view"
+            );
+            state.open_room_activity(Some(shell::shell::chrome_state::ActivityFocus {
+                entry_id: Some(id.0),
+                ..Default::default()
+            }));
+        });
+        self.relayout();
+        let _ = self.fb.paint();
+        assert!(self.fb.host().room_activity().selected_ids().contains(&id));
+        Some(())
+    }
+
+    pub fn play_room_activity_replay_for_shots(&mut self) {
+        assert!(
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .apply_replay_request(
+                    tilo_desktop::activity::view_actions::ReplayRequest::TogglePlayback
+                )
+                .is_ok(),
+            "the retained checkpoint must admit playback"
+        );
+        assert!(self.fb.host().room_activity().replay_is_playing());
+        let _ = self.fb.paint();
     }
 
     pub fn show_room_activity_replay_for_shots(&mut self) {

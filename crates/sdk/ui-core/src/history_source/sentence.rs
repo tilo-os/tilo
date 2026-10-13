@@ -24,6 +24,12 @@ pub fn with_reader<T>(read: impl FnOnce(&Reader<'_>) -> T) -> T {
     read(&reader)
 }
 
+/// Whether this thread has a nonempty published label for the action,
+/// using the same resource-kind lookup as the sentence reader.
+pub fn has_action_label(key: &tilo_actions::ActionKey) -> bool {
+    tilo_history::Labels::action(&ThreadLabels, key).is_some()
+}
+
 /// The sentence for one entry.
 pub fn sentence(entry: &ActionContext) -> String {
     with_reader(|reader| reader.sentence(entry))
@@ -110,6 +116,62 @@ pub fn learn_field_titles(shape: &tilo_resource::Shape) {
         }
     }
     FIELD_TITLES.with(|titles| walk(shape, &mut titles.borrow_mut(), 0));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_actions::{ActionKey, ActionSpec, Did, OperationKind, Resource};
+
+    #[test]
+    fn learned_action_label_is_known_and_used_by_the_sentence_reader() {
+        I18nManager::init("en-US");
+        let resource = Resource::new("task:launch", "task", "Prepare launch brief").with_action(
+            ActionSpec::operation(
+                "archive",
+                "Archive task",
+                OperationKind::Effect,
+                "task.archive",
+                &(),
+            )
+            .unwrap(),
+        );
+        let key = ActionKey::new("org.tilo.Tasks", "task", "archive");
+        learn_labels(std::slice::from_ref(&resource));
+        assert!(has_action_label(&key));
+        assert!(!I18nManager::has_message("tasks-archive"));
+        let mut context =
+            ActionContext::for_resource(&resource.id.0, &resource.kind, &resource.label);
+        context.what = Some(Did::verb(key, []));
+        let rendered = sentence(&context);
+        assert!(rendered.contains("Archive task"), "{rendered}");
+        assert!(rendered.contains("Prepare launch brief"), "{rendered}");
+        assert!(!rendered.contains("task:launch"), "{rendered}");
+
+        // Unknown verbs must still be rejected by consumers that require a
+        // published label rather than the reader's humanized fallback.
+        let unknown = ActionKey::new("org.tilo.Tasks", "task", "unpublished-action");
+        assert!(!has_action_label(&unknown));
+        assert!(!I18nManager::has_message("tasks-unpublished-action"));
+
+        // Keep the availability check aligned with the reader's nonempty rule.
+        let blank = Resource::new("task:blank", "task", "Untitled").with_action(
+            ActionSpec::operation(
+                "unlabelled-action",
+                "   ",
+                OperationKind::Effect,
+                "task.unlabelled",
+                &(),
+            )
+            .unwrap(),
+        );
+        learn_labels(&[blank]);
+        assert!(!has_action_label(&ActionKey::new(
+            "org.tilo.Tasks",
+            "task",
+            "unlabelled-action",
+        )));
+    }
 }
 
 /// The published labels learned on this thread.

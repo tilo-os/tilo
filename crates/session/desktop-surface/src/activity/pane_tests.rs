@@ -3607,7 +3607,7 @@ mod tests {
     }
 
     #[test]
-    fn short_catch_up_has_a_more_outcomes_affordance() {
+    fn short_catch_up_scrolls_every_outcome_into_keyboard_reach() {
         let (mut tree, _, _) = peers_busy_room();
         let mut pane = pane_over(&mut tree);
         pane.set_view(ActivityView::CatchUp);
@@ -3622,15 +3622,24 @@ mod tests {
         }
         pane.layout(Rect::new(0.0, 0.0, 1000.0, 390.0));
         paint(&mut pane);
-        assert!(
-            pane.brief_more_rect.is_some(),
-            "outcomes are paged, not silently clipped"
+        assert!(pane.catchup_scroll.overflows_vertically());
+        assert_eq!(pane.brief_rects.len(), pane.digest.briefs.len());
+        for index in 0..pane.digest.briefs.len() {
+            assert!(pane.focus_order().contains(&ActivityFocus::Brief(index)));
+        }
+        pane.handle_event(
+            &key_press(Key::Named(NamedKey::End)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
         );
-        assert!(pane.focus_order().contains(&ActivityFocus::MoreBriefs));
-        let before = pane.brief_rects.clone();
-        pane.advance_briefs();
         paint(&mut pane);
-        assert_ne!(before, pane.brief_rects);
+        let last = pane.digest.briefs.len() - 1;
+        assert_eq!(pane.keyboard_focus, Some(ActivityFocus::Brief(last)));
+        let rect = pane.rect_for_focus(&ActivityFocus::Brief(last)).unwrap();
+        assert_eq!(pane.catchup_scroll.content_rect().intersect(rect), rect);
+        assert!(pane.catchup_scroll.offset().y > 0.0);
     }
 
     struct EditorialHost {

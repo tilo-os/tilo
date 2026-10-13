@@ -210,6 +210,7 @@ enum ActivityFocus {
     MorningCommand(String, MorningCommand),
     Brief(usize),
     SummarySource(String),
+    SummaryDetails,
     WorkSessionBoundary(WorkSessionBoundary),
     MoreBriefs,
     Acknowledge,
@@ -888,6 +889,12 @@ pub struct RoomActivityPane {
     summary_absence_generation: u64,
     narrative_locale: String,
     summary_source_rects: Vec<(String, Rect)>,
+    catchup_scroll: ui::widget::ScrollRegion,
+    detail_scroll: ui::widget::ScrollRegion,
+    catchup_theme: Theme,
+    catchup_focus_pending: bool,
+    summary_details_open: bool,
+    summary_details_rect: Option<Rect>,
     narrative_feedback: &'static str,
     /// Task receipts live beside the records they describe. They are indexed
     /// here so selecting any affected change can explain the whole task.
@@ -1133,6 +1140,12 @@ impl RoomActivityPane {
             summary_absence_generation: 0,
             narrative_locale: ui::i18n::I18nManager::current_locale(),
             summary_source_rects: Vec::new(),
+            catchup_scroll: ui::widget::ScrollRegion::vertical(),
+            detail_scroll: ui::widget::ScrollRegion::vertical(),
+            catchup_theme: Theme::dark(),
+            catchup_focus_pending: false,
+            summary_details_open: false,
+            summary_details_rect: None,
             narrative_feedback: "activity-summary-unavailable",
             agent_runs: Vec::new(),
             cold_agent_runs: HashMap::new(),
@@ -2090,6 +2103,8 @@ impl RoomActivityPane {
             return false;
         };
         self.keyboard_focus = Some(ActivityFocus::Brief(index));
+        self.catchup_focus_pending = true;
+        self.scroll_catchup_focus_into_view();
         true
     }
 
@@ -3749,6 +3764,23 @@ impl RoomActivityPane {
         else {
             return;
         };
+        let detail_focus = matches!(self.keyboard_focus, Some(ActivityFocus::Detail(_)));
+        let clipped = detail_focus
+            || (self.view == ActivityView::CatchUp
+                && !matches!(self.keyboard_focus, Some(ActivityFocus::Scope(_))));
+        if clipped {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &if detail_focus {
+                    self.detail_scroll.content_rect()
+                } else {
+                    self.catchup_scroll.content_rect()
+                },
+            );
+        }
         scene.stroke(
             &Stroke::new(2.0),
             transform,
@@ -3756,6 +3788,9 @@ impl RoomActivityPane {
             None,
             &RoundedRect::from_rect(rect.inset(-2.0), 7.0),
         );
+        if clipped {
+            scene.pop_layer();
+        }
     }
 
     fn draw_explorer_sidebars(
@@ -3814,7 +3849,22 @@ impl RoomActivityPane {
             self.draw_explorer_lenses(scene, transform, tr, theme, left);
         }
         if show_right {
-            self.draw_explorer_details(scene, transform, tr, theme, right);
+            self.detail_scroll.set_viewport(right, theme);
+            self.catchup_theme = theme.clone();
+            let mut content = Scene::new();
+            let mut bounds = right;
+            bounds.x1 -= f64::from(theme.tokens.metrics.scrollbar_gutter);
+            let bottom =
+                self.draw_explorer_details(&mut content, Affine::IDENTITY, tr, theme, bounds);
+            self.detail_scroll
+                .set_content_size(right.width(), bottom - right.y0 + 12.0);
+            self.detail_scroll
+                .paint(scene, transform, theme, |scene, content_transform| {
+                    scene.append(
+                        &content,
+                        Some(content_transform.pre_translate((-right.x0, -right.y0).into())),
+                    );
+                });
         }
     }
 
@@ -3873,7 +3923,7 @@ impl RoomActivityPane {
         tr: &mut TextRenderer,
         theme: &Theme,
         bounds: Rect,
-    ) {
+    ) -> f64 {
         let style = theme.text(TextRole::Caption);
         let heading = t(if self.host.history_groups_are_local() {
             "activity-local-group-provenance"
@@ -3885,7 +3935,7 @@ impl RoomActivityPane {
             &heading,
             theme.tokens.colors.text_primary,
             at(transform, bounds.x0 + 12.0, bounds.y0 + 12.0),
-            None,
+            Some(text_width(bounds.width() - 24.0)),
             &style
                 .clone()
                 .with_weight(ui::text_render::TextWeight::Medium),
@@ -3893,29 +3943,31 @@ impl RoomActivityPane {
         let width = text_width(bounds.width() - 24.0);
         if let Some(detail) = self.selection_detail() {
             if let Some(indexed) = self.selected_agent_run().cloned() {
-                self.draw_agent_task_detail(scene, transform, tr, theme, bounds, width, &indexed);
-                return;
+                return self
+                    .draw_agent_task_detail(scene, transform, tr, theme, bounds, width, &indexed);
             }
             let gap = f64::from(theme.tokens.spacing.s2);
             let title_style = theme.text(TextRole::Body);
-            let title = tr
-                .clamp_to_lines(&detail.title, &title_style, width, 2)
-                .join("\n");
-            let (_, heading_height) = tr.measure_style(&heading, None, &style);
+            let title = &detail.title;
+            let (_, heading_height) = tr.measure_style(
+                &heading,
+                Some(width),
+                &style
+                    .clone()
+                    .with_weight(ui::text_render::TextWeight::Medium),
+            );
             let title_y =
                 bounds.y0 + f64::from(theme.tokens.spacing.s3) + f64::from(heading_height) + gap;
-            let (_, title_height) = tr.measure_style(&title, Some(width), &title_style);
+            let (_, title_height) = tr.measure_style(title, Some(width), &title_style);
             tr.draw_style(
                 scene,
-                &title,
+                title,
                 theme.tokens.colors.text_primary,
                 at(transform, bounds.x0 + 12.0, title_y),
                 Some(width),
                 &title_style,
             );
-            let provenance = tr
-                .clamp_to_lines(&detail_provenance(&detail), &style, width, 4)
-                .join("\n");
+            let provenance = detail_provenance(&detail, self.timeline.entries());
             let provenance_y = title_y + f64::from(title_height) + gap;
             let (_, provenance_height) = tr.measure_style(&provenance, Some(width), &style);
             tr.draw_style(
@@ -3935,7 +3987,7 @@ impl RoomActivityPane {
                 &detail,
                 provenance_y + f64::from(provenance_height) + gap,
             );
-            self.draw_detail_comparison(
+            return self.draw_detail_comparison(
                 scene,
                 transform,
                 tr,
@@ -3944,28 +3996,69 @@ impl RoomActivityPane {
                 width,
                 actions_bottom + 14.0,
             );
-        } else {
-            tr.draw_style(
-                scene,
-                &t("activity-select-prompt"),
-                theme.tokens.colors.text_primary,
-                at(transform, bounds.x0 + 12.0, bounds.y0 + 44.0),
-                Some(width),
-                &theme.text(TextRole::Body),
-            );
-            tr.draw_style(
-                scene,
-                &t(if self.host.history_groups_are_local() {
-                    "activity-local-group-hint"
-                } else {
-                    "activity-select-hint"
-                }),
-                theme.tokens.colors.text_dim,
-                at(transform, bounds.x0 + 12.0, bounds.y0 + 88.0),
-                Some(width),
-                &style,
-            );
         }
+        self.draw_explorer_selection_prompt(
+            &mut PaintCtx::new(scene, transform, tr, theme),
+            bounds,
+            &heading,
+            width,
+        )
+    }
+
+    fn draw_explorer_selection_prompt(
+        &self,
+        paint: &mut PaintCtx<'_>,
+        bounds: Rect,
+        heading: &str,
+        width: f32,
+    ) -> f64 {
+        let PaintCtx {
+            scene,
+            transform,
+            text: tr,
+            theme,
+        } = paint;
+        let transform = *transform;
+        let style = theme.text(TextRole::Caption);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let mut y = bounds.y0
+            + 12.0
+            + f64::from(
+                tr.measure_style(
+                    heading,
+                    Some(width),
+                    &style
+                        .clone()
+                        .with_weight(ui::text_render::TextWeight::Medium),
+                )
+                .1,
+            )
+            + gap;
+        let prompt = t("activity-select-prompt");
+        let prompt_style = theme.text(TextRole::Body);
+        tr.draw_style(
+            scene,
+            &prompt,
+            theme.tokens.colors.text_primary,
+            at(transform, bounds.x0 + 12.0, y),
+            Some(width),
+            &prompt_style,
+        );
+        y += f64::from(tr.measure_style(&prompt, Some(width), &prompt_style).1) + gap;
+        let hint = t(if self.host.history_groups_are_local() {
+            "activity-local-group-hint"
+        } else {
+            "activity-select-hint"
+        });
+        tr.draw_style(
+            scene,
+            &hint,
+            theme.tokens.colors.text_dim,
+            at(transform, bounds.x0 + 12.0, y),
+            Some(width),
+            &style,
+        );
+        y + f64::from(tr.measure_style(&hint, Some(width), &style).1)
     }
 
     #[allow(
@@ -3981,22 +4074,48 @@ impl RoomActivityPane {
         bounds: Rect,
         width: f32,
         indexed: &IndexedAgentRun,
-    ) {
+    ) -> f64 {
         let run = &indexed.run;
         let style = theme.text(TextRole::Caption);
         let x = bounds.x0 + 12.0;
-        let mut y = bounds.y0 + 40.0;
+        let provenance_heading = t(if self.host.history_groups_are_local() {
+            "activity-local-group-provenance"
+        } else {
+            "activity-provenance"
+        });
+        let mut y = bounds.y0
+            + 12.0
+            + f64::from(
+                tr.measure_style(
+                    &provenance_heading,
+                    Some(width),
+                    &style
+                        .clone()
+                        .with_weight(ui::text_render::TextWeight::Medium),
+                )
+                .1,
+            )
+            + f64::from(theme.tokens.spacing.s2);
         tr.draw_style(
             scene,
             &t("activity-agent-task"),
             theme.tokens.colors.intent.inverted_hover,
             at(transform, x, y),
-            None,
+            Some(width),
             &theme
                 .text(TextRole::Body)
                 .with_weight(ui::text_render::TextWeight::Medium),
         );
-        y += 26.0;
+        y += f64::from(
+            tr.measure_style(
+                &t("activity-agent-task"),
+                Some(width),
+                &theme
+                    .text(TextRole::Body)
+                    .with_weight(ui::text_render::TextWeight::Medium),
+            )
+            .1,
+        ) + f64::from(theme.tokens.spacing.s2);
         let instruction = run.instruction.as_deref().unwrap_or(&run.label);
         tr.draw_style(
             scene,
@@ -4006,7 +4125,10 @@ impl RoomActivityPane {
             Some(width),
             &theme.text(TextRole::Body),
         );
-        y += 52.0;
+        y += f64::from(
+            tr.measure_style(instruction, Some(width), &theme.text(TextRole::Body))
+                .1,
+        ) + f64::from(theme.tokens.spacing.s2);
         tr.draw_style(
             scene,
             &t_args(
@@ -4021,18 +4143,38 @@ impl RoomActivityPane {
             Some(width),
             &style,
         );
-        y += 38.0;
+        y += f64::from(
+            tr.measure_style(
+                &t_args(
+                    "activity-agent-task-people",
+                    &[
+                        ("issuer", self.issuer_name(run).into()),
+                        ("agent", self.agent_name(run).into()),
+                    ],
+                ),
+                Some(width),
+                &theme.text(TextRole::Caption),
+            )
+            .1,
+        ) + f64::from(theme.tokens.spacing.s2);
         tr.draw_style(
             scene,
             &t("activity-why-this-work"),
             theme.tokens.colors.text_primary,
             at(transform, x, y),
-            None,
+            Some(width),
             &style
                 .clone()
                 .with_weight(ui::text_render::TextWeight::Medium),
         );
-        y += 20.0;
+        y += f64::from(
+            tr.measure_style(
+                &t("activity-why-this-work"),
+                Some(width),
+                &theme.text(TextRole::Caption),
+            )
+            .1,
+        ) + f64::from(theme.tokens.spacing.s2);
         let decision = run
             .decision
             .clone()
@@ -4045,18 +4187,28 @@ impl RoomActivityPane {
             Some(width),
             &style,
         );
-        y += 48.0;
+        y += f64::from(
+            tr.measure_style(&decision, Some(width), &theme.text(TextRole::Caption))
+                .1,
+        ) + f64::from(theme.tokens.spacing.s2);
         tr.draw_style(
             scene,
             &t("activity-affected-records"),
             theme.tokens.colors.text_primary,
             at(transform, x, y),
-            None,
+            Some(width),
             &style
                 .clone()
                 .with_weight(ui::text_render::TextWeight::Medium),
         );
-        y += 22.0;
+        y += f64::from(
+            tr.measure_style(
+                &t("activity-affected-records"),
+                Some(width),
+                &theme.text(TextRole::Caption),
+            )
+            .1,
+        ) + f64::from(theme.tokens.spacing.s2);
         for step in &run.steps {
             let app = self
                 .host
@@ -4079,7 +4231,14 @@ impl RoomActivityPane {
                     .clone()
                     .with_weight(ui::text_render::TextWeight::Medium),
             );
-            y += 18.0;
+            y += f64::from(
+                tr.measure_style(
+                    &format!("{app}  ·  {record}"),
+                    Some(width),
+                    &theme.text(TextRole::Caption),
+                )
+                .1,
+            ) + f64::from(theme.tokens.spacing.s2);
             tr.draw_style(
                 scene,
                 &step.sentence(),
@@ -4088,7 +4247,10 @@ impl RoomActivityPane {
                 Some((width - 10.0).max(0.0)),
                 &style,
             );
-            y += 28.0;
+            y += f64::from(
+                tr.measure_style(&step.sentence(), Some((width - 10.0).max(1.0)), &style)
+                    .1,
+            ) + f64::from(theme.tokens.spacing.s2);
         }
         if !self.can_undo_agent_run() {
             tr.draw_style(
@@ -4099,7 +4261,14 @@ impl RoomActivityPane {
                 Some(width),
                 &style,
             );
-            y += 38.0;
+            y += f64::from(
+                tr.measure_style(
+                    &t("activity-undo-task-needs-open"),
+                    Some(width),
+                    &theme.text(TextRole::Caption),
+                )
+                .1,
+            ) + f64::from(theme.tokens.spacing.s2);
         }
         if let Some((id, notice)) = &self.agent_undo_notice
             && id == &run.id
@@ -4112,11 +4281,24 @@ impl RoomActivityPane {
                 Some(width),
                 &style,
             );
-            y += 38.0;
+            y += f64::from(
+                tr.measure_style(notice, Some(width), &theme.text(TextRole::Caption))
+                    .1,
+            ) + f64::from(theme.tokens.spacing.s2);
         }
         if let Some(detail) = self.selection_detail() {
-            let _ = self.draw_detail_actions(scene, transform, tr, theme, bounds, &detail, y);
+            let bottom = self.draw_detail_actions(scene, transform, tr, theme, bounds, &detail, y);
+            return self.draw_detail_comparison(
+                scene,
+                transform,
+                tr,
+                theme,
+                bounds,
+                width,
+                bottom + 14.0,
+            );
         }
+        y
     }
 
     fn draw_detail_actions(
@@ -4171,11 +4353,16 @@ impl RoomActivityPane {
                 continue;
             }
             let label = self.detail_action_label(action);
+            let max_width = (bounds.width() - 2.0 * inset).max(1.0);
+            let label_limit = text_width((max_width - 2.0 * gap).max(1.0));
             let (label_width, label_height) =
-                tr.measure_style(&label, None, &theme.text(TextRole::Caption));
-            let button_width = (f64::from(label_width) + 2.0 * gap).max(
-                ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme),
-            );
+                tr.measure_style(&label, Some(label_limit), &theme.text(TextRole::Caption));
+            let button_width = (f64::from(label_width) + 2.0 * gap)
+                .max(ui::widget::ButtonFace::height(
+                    ui::widget::ControlSize::Regular,
+                    theme,
+                ))
+                .min(max_width);
             let button_height = (f64::from(label_height) + 2.0 * gap).max(
                 ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme),
             );
@@ -4202,7 +4389,7 @@ impl RoomActivityPane {
                 &label,
                 theme.tokens.colors.text_primary,
                 at(transform, rect.x0 + gap, rect.y0 + gap),
-                None,
+                Some(text_width((rect.width() - 2.0 * gap).max(1.0))),
                 &theme.text(TextRole::Caption),
             );
             self.detail_action_rects.push((action, rect));
@@ -4225,117 +4412,59 @@ impl RoomActivityPane {
         bounds: Rect,
         width: f32,
         y: f64,
-    ) {
+    ) -> f64 {
         if !self.comparison_attempted {
-            return;
+            return y;
         }
-        if y + 70.0 > bounds.y1 {
-            return;
-        }
-        let Some(comparison) = &self.comparison else {
-            Self::draw_unavailable_comparison(scene, transform, tr, theme, bounds, y);
-            return;
-        };
-        let labels = comparison_change_labels(&comparison.patches);
-        let visible = labels.len().min(4);
-        let overflow_height = if labels.len() > visible { 18.0 } else { 0.0 };
-        let card_height = 68.0 + 20.0 * visible as f64 + overflow_height;
-        let card = Rect::new(
-            bounds.x0 + 12.0,
-            y,
-            bounds.x1 - 12.0,
-            (y + card_height).min(bounds.y1 - 8.0),
-        );
-        let shape = RoundedRect::from_rect(card, 8.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.text_primary.with_alpha_factor(0.12),
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.text_primary.with_alpha_factor(0.55),
-            None,
-            &shape,
-        );
-        tr.draw_style(
-            scene,
-            &t("activity-what-changed"),
-            theme.tokens.colors.text_primary,
-            at(transform, card.x0 + 12.0, card.y0 + 10.0),
-            None,
-            &theme.text(TextRole::Label),
-        );
-        tr.draw_style(
-            scene,
-            &t_args(
-                "activity-comparison-counts",
-                &[
-                    ("actions", comparison.entries.len().into()),
-                    ("changes", comparison.patches.len().into()),
-                ],
-            ),
-            theme.tokens.colors.text_dim,
-            at(transform, card.x0 + 12.0, card.y0 + 32.0),
-            Some(width - 24.0),
-            &theme.text(TextRole::Caption),
-        );
-        if labels.is_empty() {
-            tr.draw_style(
-                scene,
-                &t("activity-no-differences"),
-                theme.tokens.colors.text_dim,
-                at(transform, card.x0 + 12.0, card.y0 + 52.0),
-                Some(width - 24.0),
-                &theme.text(TextRole::Caption),
-            );
-            return;
-        }
-        for (index, label) in labels.iter().take(visible).enumerate() {
-            tr.draw_style(
-                scene,
-                &format!("• {label}"),
-                theme.tokens.colors.text_primary,
-                at(
-                    transform,
-                    card.x0 + 12.0,
-                    card.y0 + 54.0 + index as f64 * 20.0,
+        let mut rows = vec![(t("activity-what-changed"), TextRole::Label, true)];
+        if let Some(comparison) = &self.comparison {
+            rows.push((
+                t_args(
+                    "activity-comparison-counts",
+                    &[
+                        ("actions", comparison.entries.len().into()),
+                        ("changes", comparison.patches.len().into()),
+                    ],
                 ),
-                Some(width - 24.0),
-                &theme.text(TextRole::Caption),
+                TextRole::Caption,
+                false,
+            ));
+            let labels = comparison_preview_labels(
+                comparison,
+                self.selection_detail().as_ref(),
+                self.timeline.entries(),
             );
-        }
-        if labels.len() > visible {
-            tr.draw_style(
-                scene,
-                &counted(
-                    "activity-comparison-more",
-                    labels.len().saturating_sub(visible),
+            if labels.is_empty() {
+                rows.push((t("activity-no-differences"), TextRole::Caption, false));
+            }
+            // Every description remains in the scrollable document; there is
+            // no hidden tail behind a "more" count.
+            for label in &labels {
+                rows.push((format!("• {label}"), TextRole::Caption, true));
+            }
+        } else {
+            rows = vec![
+                (t("activity-preview-unavailable"), TextRole::Label, true),
+                (
+                    t("activity-preview-unavailable-detail"),
+                    TextRole::Caption,
+                    false,
                 ),
-                theme.tokens.colors.text_dim,
-                at(
-                    transform,
-                    card.x0 + 22.0,
-                    card.y0 + 54.0 + visible as f64 * 20.0,
-                ),
-                Some(width - 34.0),
-                &theme.text(TextRole::Caption),
-            );
+            ];
         }
-    }
-
-    fn draw_unavailable_comparison(
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        bounds: Rect,
-        y: f64,
-    ) {
-        let card = Rect::new(bounds.x0 + 12.0, y, bounds.x1 - 12.0, y + 92.0);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let inner_width = (width - 24.0).max(1.0);
+        let heights: Vec<_> = rows
+            .iter()
+            .map(|(label, role, _)| {
+                f64::from(
+                    tr.measure_style(label, Some(inner_width), &theme.text(*role))
+                        .1,
+                )
+            })
+            .collect();
+        let height = heights.iter().sum::<f64>() + gap * rows.len().saturating_sub(1) as f64 + 24.0;
+        let card = Rect::new(bounds.x0 + 12.0, y, bounds.x1 - 12.0, y + height);
         ui::surface::card(
             scene,
             transform,
@@ -4343,22 +4472,23 @@ impl RoomActivityPane {
             f64::from(theme.tokens.radii.control),
             theme.tokens.colors.lift(0.35),
         );
-        tr.draw_style(
-            scene,
-            &t("activity-preview-unavailable"),
-            theme.tokens.colors.text_primary,
-            at(transform, card.x0 + 12.0, card.y0 + 10.0),
-            None,
-            &theme.text(TextRole::Label),
-        );
-        tr.draw_style(
-            scene,
-            &t("activity-preview-unavailable-detail"),
-            theme.tokens.colors.text_dim,
-            at(transform, card.x0 + 12.0, card.y0 + 36.0),
-            Some(text_width(card.width() - 24.0)),
-            &theme.text(TextRole::Caption),
-        );
+        let mut row_y = y + 12.0;
+        for ((label, role, primary), height) in rows.iter().zip(heights) {
+            tr.draw_style(
+                scene,
+                label,
+                if *primary {
+                    theme.tokens.colors.text_primary
+                } else {
+                    theme.tokens.colors.text_dim
+                },
+                at(transform, card.x0 + 12.0, row_y),
+                Some(inner_width),
+                &theme.text(*role),
+            );
+            row_y += height + gap;
+        }
+        card.y1
     }
 
     fn draw_lens_row(
@@ -4532,6 +4662,74 @@ impl RoomActivityPane {
 
     /// Task state is a live room projection, separate from read history. Seeing
     /// a summary never completes, dismisses or changes a waiting task.
+    /// Lay out every session, then let the shared viewport clip and scroll it.
+    fn draw_catch_up(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let viewport = Rect::new(
+            self.sheet.x0,
+            self.sheet.y0 + self.chrome_height(),
+            self.sheet.x1,
+            self.sheet.y1,
+        );
+        self.catchup_scroll.set_viewport(viewport, theme);
+        self.catchup_theme = theme.clone();
+        // Reserve the shared bar lane before measuring wrapped paragraphs.
+        let right = self.sheet.x1;
+        self.sheet.x1 -= f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let mut content = Scene::new();
+        let bottom = self.draw_catch_up_content(&mut content, Affine::IDENTITY, tr, theme);
+        self.sheet.x1 = right;
+        self.catchup_scroll
+            .set_content_size(viewport.width(), bottom - viewport.y0 + 8.0);
+        if self.catchup_focus_pending {
+            self.scroll_catchup_focus_into_view();
+            self.catchup_focus_pending = false;
+        }
+        self.catchup_scroll
+            .paint(scene, transform, theme, |scene, content_transform| {
+                scene.append(
+                    &content,
+                    Some(content_transform.pre_translate((-viewport.x0, -viewport.y0).into())),
+                );
+            });
+        // Only fully exposed cards count as reviewed; offscreen layout is not exposure.
+        for (index, logical_rect) in &self.brief_rects {
+            let rect = Affine::translate((
+                -self.catchup_scroll.offset().x,
+                -self.catchup_scroll.offset().y,
+            ))
+            .transform_rect_bbox(*logical_rect);
+            if self.scope == RoomScope::ThisRoom
+                && self.catchup_scroll.content_rect().intersect(rect) == rect
+                && self.review_clip.unwrap_or(self.viewport).intersect(rect) == rect
+                && let Some(workspace) = self.last_active
+                && let Some(brief) = self.digest.briefs.get(*index)
+            {
+                let viewed = self.viewed_changes.entry(workspace).or_default();
+                for id in &brief.entry_ids {
+                    if self
+                        .external_entry
+                        .as_ref()
+                        .is_some_and(|entry| entry.id == *id)
+                    {
+                        continue;
+                    }
+                    viewed.insert(self.projected_origins.get(id).cloned().unwrap_or(
+                        WorkspaceHistoryId {
+                            origin: super::index::HistoryOrigin::DesktopTree,
+                            change: *id,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
     fn draw_catch_up_tasks(
         &mut self,
         scene: &mut Scene,
@@ -4574,9 +4772,6 @@ impl RoomActivityPane {
         let (_, height) = tr.measure_style(&label, Some(width), &theme.text(TextRole::Body));
         let control_h = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
         let rect = Rect::new(x0, y, x1, y + (f64::from(height) + 16.0).max(control_h));
-        if rect.y1 > self.sheet.y1 - 10.0 {
-            return y;
-        }
         draw_task_button(scene, transform, tr, theme, rect, &label, true);
         self.view_rects.push((ActivityView::Tasks, rect));
         let mut next = rect.y1 + 8.0;
@@ -4598,9 +4793,6 @@ impl RoomActivityPane {
             let style = theme.text(TextRole::Caption);
             for line in tr.clamp_to_lines(&detail, &style, width, 2) {
                 let (_, height) = tr.measure_style(&line, Some(width), &style);
-                if next + f64::from(height) > self.sheet.y1 - 10.0 {
-                    break;
-                }
                 tr.draw_style(
                     scene,
                     &line,
@@ -4620,14 +4812,15 @@ impl RoomActivityPane {
         clippy::cast_precision_loss,
         reason = "catch-up cards share one ordered retained-rendering pass; count conversions only affect bounded display geometry"
     )]
-    fn draw_catch_up(
+    fn draw_catch_up_content(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-    ) {
+    ) -> f64 {
         self.brief_rects.clear();
+        self.summary_details_rect = None;
         self.summary_source_rects.clear();
         self.acknowledge_rect = None;
         self.boundary_rects.clear();
@@ -4645,11 +4838,9 @@ impl RoomActivityPane {
         let (_, height) = tr.measure_style(&label, Some(width), &theme.text(TextRole::Caption));
         let control_h = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
         let acknowledge = Rect::new(x0, y, x1, y + (f64::from(height) + 16.0).max(control_h));
-        if acknowledge.y1 < self.sheet.y1 - 10.0 {
-            draw_task_button(scene, transform, tr, theme, acknowledge, &label, false);
-            self.acknowledge_rect = Some(acknowledge);
-            y = acknowledge.y1 + 8.0;
-        }
+        draw_task_button(scene, transform, tr, theme, acknowledge, &label, false);
+        self.acknowledge_rect = Some(acknowledge);
+        y = acknowledge.y1 + 8.0;
         y = self.draw_catch_up_tasks(scene, transform, tr, theme, y);
         y = self.draw_morning_sources(scene, transform, tr, theme, y);
         if let Some(resume) = local_resume_snapshot(self.timeline.entries(), &self.local_user()) {
@@ -4676,7 +4867,7 @@ impl RoomActivityPane {
                 Some(text_width(x1 - x0 - 8.0)),
                 &theme.text(TextRole::Body),
             );
-            return;
+            return y + control_h;
         }
         let metrics = BriefCardMetrics::new(tr, theme);
         if self.narrative.is_none() {
@@ -4692,18 +4883,29 @@ impl RoomActivityPane {
             y += control_h;
         }
         if let Some(narrative) = self.narrative.as_ref() {
-            // Section-header role for the label (HIG §9.6: `xs`) — the former
-            // `sm - 1` was an invented size — over up to two body lines, each
-            // seated on its measured line so 200 % type grows the card.
+            // Measure the heading, full paragraph and expanded provenance at
+            // the available width so wrapping and larger type grow the card.
             let label_style = theme.text(TextRole::Caption);
             let body_style = theme.text(TextRole::Caption);
-            let label = self.summary_label();
+            let label = t_args(
+                "activity-summary-heading",
+                &[("model", narrative.generator.as_str().into())],
+            );
             let inner_w = text_width(x1 - x0 - 24.0);
             let (_, label_h) = tr.measure_style(&label, Some(inner_w), &label_style);
-            let lines = tr.clamp_to_lines(&narrative.text, &body_style, inner_w, 2);
+            let (_, body_h) = tr.measure_style(&narrative.text, Some(inner_w), &body_style);
+            let details = self.summary_label();
+            let (_, details_h) = tr.measure_style(&details, Some(inner_w), &label_style);
+            let disclosure_h = control_h
+                + if self.summary_details_open {
+                    f64::from(details_h) + metrics.gap
+                } else {
+                    0.0
+                };
             let body_top = metrics.pad + f64::from(label_h) + metrics.gap;
             let card_h = body_top
-                + 2.0 * metrics.line_lh
+                + f64::from(body_h)
+                + disclosure_h
                 + metrics.pad
                 + small_count_to_f64(narrative.source_ids.len()) * control_h;
             let card = Rect::new(x0, y, x1, y + card_h);
@@ -4722,21 +4924,41 @@ impl RoomActivityPane {
                 Some(inner_w),
                 &label_style,
             );
-            for (line, text) in lines.iter().enumerate() {
+            tr.draw_style(
+                scene,
+                &narrative.text,
+                theme.tokens.colors.text_primary,
+                at(transform, card.x0 + 12.0, card.y0 + body_top),
+                Some(inner_w),
+                &body_style,
+            );
+            let disclosure = Rect::new(
+                card.x0 + 12.0,
+                card.y0 + body_top + f64::from(body_h),
+                card.x1 - 12.0,
+                card.y0 + body_top + f64::from(body_h) + control_h,
+            );
+            draw_task_button(
+                scene,
+                transform,
+                tr,
+                theme,
+                disclosure,
+                &t("activity-summary-details"),
+                self.summary_details_open,
+            );
+            self.summary_details_rect = Some(disclosure);
+            if self.summary_details_open {
                 tr.draw_style(
                     scene,
-                    text,
-                    theme.tokens.colors.text_primary,
-                    at(
-                        transform,
-                        card.x0 + 12.0,
-                        card.y0 + body_top + small_count_to_f64(line) * metrics.line_lh,
-                    ),
+                    &details,
+                    theme.tokens.colors.text_dim,
+                    at(transform, disclosure.x0, disclosure.y1 + metrics.gap),
                     Some(inner_w),
-                    &body_style,
+                    &label_style,
                 );
             }
-            let mut source_y = card.y0 + body_top + 2.0 * metrics.line_lh;
+            let mut source_y = disclosure.y0 + disclosure_h;
             for id in &narrative.source_ids {
                 let Some(brief) = self
                     .digest
@@ -4762,15 +4984,8 @@ impl RoomActivityPane {
         if self.brief_offset >= self.digest.briefs.len() {
             self.brief_offset = 0;
         }
-        let mut shown = 0usize;
         let mut previous_index: Option<usize> = None;
-        for (index, brief) in self
-            .digest
-            .briefs
-            .iter()
-            .enumerate()
-            .skip(self.brief_offset)
-        {
+        for (index, brief) in self.digest.briefs.iter().enumerate() {
             let expansion = if self.expanded_brief == Some(index) {
                 self.brief_expansion_started
                     .filter(|(animated, _)| *animated == index)
@@ -4838,41 +5053,8 @@ impl RoomActivityPane {
             let collapsed_height = metrics.height(title_lines.len(), 0);
             let expanded_height = metrics.height(title_lines.len(), brief.actions.len());
             let height = collapsed_height + (expanded_height - collapsed_height) * expansion;
-            let more_room = 34.0;
-            let has_later = index
-                .checked_add(1)
-                .is_some_and(|next| next < self.digest.briefs.len())
-                || self.brief_offset > 0;
-            let available_height =
-                (self.sheet.y1 - 10.0 - y - if has_later { more_room } else { 0.0 })
-                    .max(collapsed_height);
-            let height = height.min(available_height);
-            if y + height + if has_later { more_room } else { 0.0 } > self.sheet.y1 - 10.0 {
-                break;
-            }
             let rect = Rect::new(x0, y, x1, y + height);
             self.brief_rects.push((index, rect));
-            if self.scope == RoomScope::ThisRoom
-                && self.review_clip.unwrap_or(self.viewport).intersect(rect) == rect
-                && let Some(workspace) = self.last_active
-            {
-                let viewed = self.viewed_changes.entry(workspace).or_default();
-                for id in &brief.entry_ids {
-                    if self
-                        .external_entry
-                        .as_ref()
-                        .is_some_and(|entry| entry.id == *id)
-                    {
-                        continue;
-                    }
-                    viewed.insert(self.projected_origins.get(id).cloned().unwrap_or(
-                        WorkspaceHistoryId {
-                            origin: super::index::HistoryOrigin::DesktopTree,
-                            change: *id,
-                        },
-                    ));
-                }
-            }
             scene.push_layer(
                 Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -4890,31 +5072,9 @@ impl RoomActivityPane {
             );
             scene.pop_layer();
             y += height + 8.0;
-            shown = shown.saturating_add(1);
             previous_index = Some(index);
         }
-        let remaining = self
-            .digest
-            .briefs
-            .len()
-            .saturating_sub(self.brief_offset.saturating_add(shown));
-        if remaining > 0 || self.brief_offset > 0 {
-            let label = t(if remaining > 0 {
-                "activity-more-sessions"
-            } else {
-                "activity-first-sessions"
-            });
-            self.brief_more_rect = draw_more_row(
-                scene,
-                transform,
-                tr,
-                theme,
-                Rect::new(x0, y, x1, self.sheet.y1 - 8.0),
-                y,
-                &label,
-            );
-            self.brief_more_advance = shown.max(1);
-        }
+        y
     }
 
     #[allow(
@@ -5111,7 +5271,10 @@ impl RoomActivityPane {
             scene,
             &t_args(
                 "activity-replay-source",
-                &[("source", frame.address.source.as_str().into())],
+                &[(
+                    "source",
+                    readable_replay_source(frame.address.source.as_str()).into(),
+                )],
             ),
             theme.tokens.colors.text_dim,
             at(transform, info.x0, info.y0 + 34.0),
@@ -5895,6 +6058,17 @@ impl RoomActivityPane {
             self.set_scope(scope, tree);
             return Some(handled_outcome());
         }
+        let point = if self.view == ActivityView::CatchUp {
+            if !self.catchup_scroll.content_rect().contains(point) {
+                return None;
+            }
+            Point::new(
+                point.x + self.catchup_scroll.offset().x,
+                point.y + self.catchup_scroll.offset().y,
+            )
+        } else {
+            point
+        };
         if let Some(view) = hit_value(&self.view_rects, point) {
             self.keyboard_focus = Some(ActivityFocus::View(view));
             self.set_view(view);
@@ -6404,6 +6578,14 @@ impl RoomActivityPane {
                 ..RoomActivityOutcome::default()
             });
         }
+        if self
+            .summary_details_rect
+            .is_some_and(|rect| rect.contains(point))
+        {
+            self.keyboard_focus = Some(ActivityFocus::SummaryDetails);
+            self.summary_details_open = !self.summary_details_open;
+            return Some(handled_outcome());
+        }
         if let Some(slot) = hit_value(&self.summary_source_rects, point) {
             self.keyboard_focus = Some(ActivityFocus::SummarySource(slot.clone()));
             self.open_summary_citation(&slot);
@@ -6643,7 +6825,11 @@ impl RoomActivityPane {
             self.explorer_pane = pane;
             return Some(handled_outcome());
         }
-        if let Some(action) = hit_value(&self.detail_action_rects, point) {
+        let offset = self.detail_scroll.offset();
+        let detail_point = Point::new(point.x + offset.x, point.y + offset.y);
+        if self.detail_scroll.content_rect().contains(point)
+            && let Some(action) = hit_value(&self.detail_action_rects, detail_point)
+        {
             self.keyboard_focus = Some(ActivityFocus::Detail(action));
             return Some(self.apply_detail_action(action, tree, records));
         }
@@ -6851,6 +7037,50 @@ impl RoomActivityPane {
         self.handle_navigation_key(logical_key, state.shift_key(), tree, records)
     }
 
+    fn handle_view_scroll_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+    ) -> bool {
+        if self.view == ActivityView::CatchUp {
+            // Directional keys navigate controls; paging keys scroll the viewport.
+            let paging = matches!(event, WindowEvent::KeyboardInput { event, .. }
+                if matches!(event.logical_key, Key::Named(NamedKey::PageUp | NamedKey::PageDown)));
+            self.catchup_scroll.set_focused(paging);
+            let mut handled = false;
+            let changed = self.catchup_scroll.handle_window_event(
+                event,
+                scale_factor,
+                modifiers.state(),
+                &mut handled,
+                &self.catchup_theme,
+            );
+            if handled || changed {
+                return true;
+            }
+        }
+        if self.view == ActivityView::Explore
+            && (self.sheet.width() >= 900.0 || self.explorer_pane == ExplorerPane::Details)
+        {
+            let paging = matches!(event, WindowEvent::KeyboardInput { event, .. }
+                if matches!(event.logical_key, Key::Named(NamedKey::PageUp | NamedKey::PageDown)));
+            self.detail_scroll.set_focused(paging);
+            let mut handled = false;
+            let changed = self.detail_scroll.handle_window_event(
+                event,
+                scale_factor,
+                modifiers.state(),
+                &mut handled,
+                &self.catchup_theme,
+            );
+            if handled || changed {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn handle_event_with_records(
         &mut self,
         event: &WindowEvent,
@@ -6865,6 +7095,9 @@ impl RoomActivityPane {
             return handled_outcome();
         }
         let mut out = RoomActivityOutcome::default();
+        if self.handle_view_scroll_event(event, scale_factor, *modifiers) {
+            return handled_outcome();
+        }
         if self.handle_replay_slider_event(event, scale_factor, *modifiers, cursor) {
             return handled_outcome();
         }
@@ -7010,12 +7243,14 @@ impl RoomActivityPane {
                     order.push(ActivityFocus::Resume);
                 }
                 if self.summary_presentation_present {
-                    order.extend(self.narrative.iter().flat_map(|narrative| {
-                        narrative
-                            .source_ids
+                    if self.summary_details_rect.is_some() {
+                        order.push(ActivityFocus::SummaryDetails);
+                    }
+                    order.extend(
+                        self.summary_source_rects
                             .iter()
-                            .map(|id| ActivityFocus::SummarySource(self.summary_source_key(id)))
-                    }));
+                            .map(|(key, _)| ActivityFocus::SummarySource(key.clone())),
+                    );
                 }
                 order.extend(
                     self.brief_rects
@@ -7142,11 +7377,14 @@ impl RoomActivityPane {
             0
         };
         self.keyboard_focus = order.get(next).cloned();
+        self.catchup_focus_pending = true;
+        self.scroll_catchup_focus_into_view();
         self.timeline
             .set_focus(self.keyboard_focus == Some(ActivityFocus::Timeline));
     }
 
     fn activate_brief(&mut self, index: usize) {
+        self.catchup_focus_pending = true;
         if self.expanded_brief == Some(index) {
             self.open_brief_in_explorer(index);
         } else {
@@ -7182,6 +7420,7 @@ impl RoomActivityPane {
             ActivityFocus::Resume => outcome.open_target.clone_from(&self.resume_target),
             ActivityFocus::Brief(index) => self.activate_brief(index),
             ActivityFocus::SummarySource(key) => self.open_summary_citation(&key),
+            ActivityFocus::SummaryDetails => self.summary_details_open = !self.summary_details_open,
             ActivityFocus::WorkSessionBoundary(boundary) => {
                 outcome.named = self.move_work_session_boundary(tree, boundary);
             }
@@ -7327,6 +7566,7 @@ impl RoomActivityPane {
                     &[("target", (&target.label).into())],
                 )
             }),
+            ActivityFocus::SummaryDetails => Some(t("activity-summary-details")),
             ActivityFocus::SummarySource(key) => self
                 .summary_source_id(key)
                 .and_then(|id| {
@@ -7473,6 +7713,12 @@ impl RoomActivityPane {
                     ),
                 )
             }
+            ActivityFocus::SummaryDetails => control(
+                Role::Button,
+                false,
+                Some(self.summary_details_open),
+                self.summary_label(),
+            ),
             ActivityFocus::SummarySource(key) => control(
                 Role::Button,
                 false,
@@ -7934,6 +8180,8 @@ impl RoomActivityPane {
             return false;
         };
         self.keyboard_focus = Some(focus);
+        self.catchup_focus_pending = true;
+        self.scroll_catchup_focus_into_view();
         self.timeline
             .set_focus(self.keyboard_focus == Some(ActivityFocus::Timeline));
         self.replay_slider
@@ -7942,6 +8190,52 @@ impl RoomActivityPane {
     }
 
     fn rect_for_focus(&self, focus: &ActivityFocus) -> Option<Rect> {
+        let rect = self.logical_rect_for_focus(focus)?;
+        Some(
+            if self.view == ActivityView::CatchUp && !matches!(focus, ActivityFocus::Scope(_)) {
+                Affine::translate((
+                    -self.catchup_scroll.offset().x,
+                    -self.catchup_scroll.offset().y,
+                ))
+                .transform_rect_bbox(rect)
+            } else if matches!(focus, ActivityFocus::Detail(_)) {
+                Affine::translate((
+                    -self.detail_scroll.offset().x,
+                    -self.detail_scroll.offset().y,
+                ))
+                .transform_rect_bbox(rect)
+            } else {
+                rect
+            },
+        )
+    }
+
+    fn scroll_catchup_focus_into_view(&mut self) {
+        if let Some(focus @ ActivityFocus::Detail(_)) = &self.keyboard_focus
+            && let Some(rect) = self.logical_rect_for_focus(focus)
+        {
+            let viewport = self.detail_scroll.content_rect();
+            self.detail_scroll.scroll_into_view(
+                Affine::translate((-viewport.x0, -viewport.y0)).transform_rect_bbox(rect),
+            );
+        }
+        if self.view != ActivityView::CatchUp {
+            return;
+        }
+        if let Some(focus) = &self.keyboard_focus
+            && !matches!(focus, ActivityFocus::Scope(_))
+            && let Some(rect) = self.logical_rect_for_focus(focus)
+        {
+            let viewport = self.catchup_scroll.content_rect();
+            let mut target =
+                Affine::translate((-viewport.x0, -viewport.y0)).transform_rect_bbox(rect);
+            // A tall expanded card reveals its heading, rather than jumping to its tail.
+            target.y1 = target.y1.min(target.y0 + viewport.height());
+            self.catchup_scroll.scroll_into_view(target);
+        }
+    }
+
+    fn logical_rect_for_focus(&self, focus: &ActivityFocus) -> Option<Rect> {
         match focus {
             ActivityFocus::Scope(value) => self
                 .scope_rects
@@ -7972,6 +8266,7 @@ impl RoomActivityPane {
                     })
             }
             ActivityFocus::Resume => Some(self.resume_rect),
+            ActivityFocus::SummaryDetails => self.summary_details_rect,
             ActivityFocus::SummarySource(value) => self
                 .summary_source_rects
                 .iter()
@@ -8486,18 +8781,59 @@ fn hit_value<T: Clone>(rects: &[(T, Rect)], point: Point) -> Option<T> {
         .map(|(value, _)| value.clone())
 }
 
-fn detail_provenance(detail: &HistorySelectionDetail) -> String {
+/// Resolve presentation from the selected historical context, not the live
+/// resource registry. Opaque addresses remain in the detail/action model.
+fn readable_resources(detail: &HistorySelectionDetail, entries: &[HistoryEntry]) -> Vec<String> {
+    let mut labels = Vec::new();
+    for resource in &detail.resources {
+        let historical = entries
+            .iter()
+            .filter(|entry| detail.entry_ids.contains(&entry.id))
+            .filter_map(|entry| entry.context.as_ref())
+            .filter_map(|context| context.resource.as_ref())
+            .find(|target| target.id == resource.id && target.kind == resource.kind);
+        let label = historical.map_or("", |target| target.label.as_str());
+        let label = if label.trim().is_empty() || label == resource.id {
+            t(match resource.kind.as_str() {
+                "task" | "tilo.task" => "activity-readable-task-unavailable",
+                "file" | "document" => "activity-readable-document-unavailable",
+                "receipt" | "tilo.receipt" => "activity-readable-receipt-unavailable",
+                _ => "activity-readable-resource-unavailable",
+            })
+        } else {
+            label.to_owned()
+        };
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    labels
+}
+
+fn readable_replay_source(source: &str) -> String {
+    t(if source == "workspace-tree" {
+        "activity-readable-workspace-tree"
+    } else {
+        "activity-readable-source-unavailable"
+    })
+}
+
+fn detail_provenance(detail: &HistorySelectionDetail, entries: &[HistoryEntry]) -> String {
     let people = detail.authors.join(", ");
-    let resources = detail
-        .resources
-        .iter()
-        .map(|resource| resource.label.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let resources = readable_resources(detail, entries).join(", ");
+    // Keep declared file metadata, but never paint arbitrary facet keys or
+    // correlation payloads (receipts, invocations, credentials).
     let facets = detail
         .facets
         .iter()
-        .map(|facet| format!("{}: {}", facet.key, facet.value))
+        .filter_map(|facet| {
+            let key = match facet.key.as_str() {
+                "file-type" => "activity-readable-file-type",
+                "mime-type" | "mime" => "activity-readable-mime-type",
+                _ => return None,
+            };
+            Some(t_args(key, &[("value", facet.value.as_str().into())]))
+        })
         .collect::<Vec<_>>()
         .join(", ");
     format!(
@@ -8520,12 +8856,149 @@ fn detail_provenance(detail: &HistorySelectionDetail) -> String {
     )
 }
 
+fn comparison_preview_labels(
+    comparison: &HistoryComparison,
+    detail: Option<&HistorySelectionDetail>,
+    entries: &[HistoryEntry],
+) -> Vec<String> {
+    if comparison.patches.is_empty() {
+        return Vec::new();
+    }
+    let mut labels = entries
+        .iter()
+        .filter(|entry| comparison.entries.contains(&entry.id))
+        .filter_map(|entry| entry.context.as_ref())
+        .filter_map(comparison_semantic_label)
+        .collect::<Vec<_>>();
+    labels.dedup();
+    // An understood committed action is the canonical explanation, not a
+    // second sentence about its low-level map writes.
+    if labels.is_empty() {
+        labels = comparison_change_labels(&comparison.patches);
+    }
+    if !labels.is_empty()
+        && let Some(detail) = detail
+    {
+        let resources = readable_resources(detail, entries);
+        if !resources.is_empty() {
+            labels.insert(
+                0,
+                t_args(
+                    "activity-readable-affected",
+                    &[("resources", resources.join(", ").into())],
+                ),
+            );
+        }
+    }
+    labels
+}
+
+/// Only structured, understood actions may supply a sentence. Legacy summaries
+/// and purposes can contain routing addresses, not human-facing action names.
+fn comparison_semantic_label(context: &tilo_actions::ActionContext) -> Option<String> {
+    use tilo_actions::Did;
+    let what = context.what.as_ref()?;
+    let accepted = match what {
+        Did::Edit(edit) => {
+            matches!(edit.ty.as_str(), "task" | "document" | "file" | "workspace")
+                && matches!(
+                    edit.field.as_str(),
+                    "title" | "name" | "status" | "body" | "text" | "content"
+                )
+        }
+        Did::Verb(verb) => {
+            let app = if verb.action.app.is_empty() {
+                context.app.as_ref().map_or("", |app| app.id.as_str())
+            } else {
+                &verb.action.app
+            };
+            let key = format!(
+                "{}-{}",
+                tilo_actions::entry::kebab(app.rsplit('.').next().unwrap_or(app)),
+                tilo_actions::entry::kebab(&verb.action.action),
+            );
+            ui::history_source::sentence::has_action_label(&verb.action)
+                || ui::i18n::I18nManager::has_message(&key)
+        }
+        Did::Group(_) | Did::History(_) => false,
+    };
+    if !accepted {
+        return Some(t("activity-comparison-action-unavailable"));
+    }
+    let sentence = ui::history_source::sentence::sentence(context);
+    // Historical labels are usable, but a label equal to (or containing) its
+    // machine address is not. The renderer must not leak addresses in values
+    // either. Leave all original context intact for machine consumers.
+    let addresses = context
+        .resource
+        .iter()
+        .map(|resource| resource.id.as_str())
+        .chain(context.item.iter().map(|item| item.id.as_str()))
+        .chain(context.app.iter().map(|app| app.id.as_str()));
+    if addresses
+        .filter(|address| !address.is_empty())
+        .any(|address| sentence.contains(address))
+    {
+        return Some(t("activity-comparison-action-unavailable"));
+    }
+    let app = context
+        .app
+        .as_ref()
+        .filter(|app| !app.label.trim().is_empty() && !app.label.contains(&app.id));
+    Some(app.map_or_else(
+        || sentence.clone(),
+        |app| {
+            t_args(
+                "activity-comparison-action-in-app",
+                &[
+                    ("action", sentence.as_str().into()),
+                    ("app", app.label.as_str().into()),
+                ],
+            )
+        },
+    ))
+}
+
+/// Receipt and durable-task blobs are transport projections, not changed
+/// document fields. Match their schema location, never an arbitrary task id:
+/// task actions themselves still appear through their committed context.
+fn comparison_bookkeeping_patch(patch: &automerge::Patch) -> bool {
+    let bookkeeping = |key: &str| matches!(key, "tasks_v1" | "effect_receipts_v1");
+    let workspace = |path: &[(automerge::ObjId, Prop)]| matches!(path, [(_, Prop::Map(key)), (_, Prop::Seq(_))] if key == "workspaces");
+    let map_path = patch
+        .path
+        .iter()
+        .position(|(_, prop)| matches!(prop, Prop::Map(key) if bookkeeping(key)));
+    if let Some(index) = map_path
+        && (index == 0 || patch.path.get(..index).is_some_and(workspace))
+    {
+        return true;
+    }
+    let key = match &patch.action {
+        automerge::PatchAction::PutMap { key, .. } | automerge::PatchAction::DeleteMap { key } => {
+            Some(key.as_str())
+        }
+        automerge::PatchAction::Increment {
+            prop: Prop::Map(key),
+            ..
+        }
+        | automerge::PatchAction::Conflict {
+            prop: Prop::Map(key),
+        } => Some(key.as_str()),
+        _ => None,
+    };
+    key.is_some_and(bookkeeping) && (patch.path.is_empty() || workspace(&patch.path))
+}
+
 /// Turn Automerge's structural patch vocabulary into a small, stable set of
 /// phrases suitable for the human-facing comparison preview. Resource-native
 /// renderers can still use the complete before/after documents when opened.
 fn comparison_change_labels(patches: &[automerge::Patch]) -> Vec<String> {
     let mut labels = Vec::new();
     for patch in patches {
+        if comparison_bookkeeping_patch(patch) {
+            continue;
+        }
         let label = match &patch.action {
             automerge::PatchAction::PutMap { key, conflict, .. } => field_change(
                 if *conflict {
@@ -8580,12 +9053,15 @@ fn comparison_change_labels(patches: &[automerge::Patch]) -> Vec<String> {
 }
 
 fn humanize_field(field: &str) -> String {
-    let words = field.replace(['_', '-'], " ");
-    if words.trim().is_empty() {
-        t("activity-change-content")
-    } else {
-        words
-    }
+    // Map only known schema fields. Arbitrary map keys may be resource IDs,
+    // receipt/invocation addresses, paths or sensitive user content.
+    t(match field {
+        "title" => "activity-readable-field-title",
+        "name" => "activity-readable-field-name",
+        "status" => "activity-readable-field-status",
+        "body" | "text" | "content" => "activity-change-content",
+        _ => "activity-readable-field-unavailable",
+    })
 }
 
 #[allow(
@@ -10125,6 +10601,10 @@ fn join_titles(titles: &[String]) -> String {
 // =====================================================================
 
 include!("workspace_activity_tests.rs");
+
+#[cfg(test)]
+#[path = "readable_comparison_tests.rs"]
+mod readable_comparison_tests;
 
 #[cfg(test)]
 #[path = "pane_tests.rs"]
