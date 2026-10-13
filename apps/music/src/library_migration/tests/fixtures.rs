@@ -75,20 +75,22 @@ pub(super) struct LegacyLibrary {
     saved_albums: BTreeMap<String, bool>,
     followed_artists: BTreeMap<String, bool>,
     playlist_tombstones: BTreeMap<String, bool>,
+    // Some(false) is an explicit legacy false; None leaves an absent key absent.
+    // Plain bool defaults would omit false on the initial typed write.
     #[model(rename = "recommendations/input/likes")]
-    likes_input: bool,
+    likes_input: Option<bool>,
     #[model(rename = "recommendations/input/saved-albums")]
-    saved_input: bool,
+    saved_input: Option<bool>,
     #[model(rename = "recommendations/input/followed-artists")]
-    followed_input: bool,
+    followed_input: Option<bool>,
     #[model(rename = "recommendations/preferred-artist/ar_midnight")]
-    preferred: bool,
+    preferred: Option<bool>,
     #[model(rename = "recommendations/preferred-artist/not-preferred")]
-    not_preferred: bool,
+    not_preferred: Option<bool>,
     #[model(rename = "recommendations/dismissed/tk_a2")]
-    dismissed: bool,
+    dismissed: Option<bool>,
     #[model(rename = "recommendations/dismissed/tk_a3")]
-    not_dismissed: bool,
+    not_dismissed: Option<bool>,
     #[model(rename = "unrelated-retained-value")]
     unrelated: Atom,
 }
@@ -96,9 +98,9 @@ pub(super) struct LegacyLibrary {
 impl LegacyLibrary {
     pub fn empty() -> Self {
         Self {
-            likes_input: true,
-            saved_input: true,
-            followed_input: true,
+            likes_input: Some(true),
+            saved_input: Some(true),
+            followed_input: Some(true),
             unrelated: Atom("keep me".into()),
             ..Self::default()
         }
@@ -110,6 +112,11 @@ impl LegacyLibrary {
         doc.commit();
         doc
     }
+}
+
+#[derive(Model)]
+pub(super) struct ScalarLayout {
+    pub playlists: Atom,
 }
 
 #[derive(Model)]
@@ -169,9 +176,11 @@ pub(super) fn populated_fixture() -> LegacyLibrary {
     fixture.liked = [("tk_a1".into(), true), ("tk_a3".into(), false)].into();
     fixture.saved_albums.insert("al_afterhours".into(), true);
     fixture.followed_artists.insert("ar_midnight".into(), true);
-    fixture.likes_input = false;
-    fixture.saved_input = false;
-    fixture.preferred = true;
-    fixture.dismissed = true;
+    fixture.likes_input = Some(false);
+    fixture.saved_input = Some(false);
+    fixture.preferred = Some(true);
+    fixture.dismissed = Some(true);
+    fixture.not_preferred = Some(false);
+    fixture.not_dismissed = Some(false);
     fixture
 }

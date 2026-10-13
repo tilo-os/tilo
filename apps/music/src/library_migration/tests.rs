@@ -1,6 +1,6 @@
 use automerge::{AutoCommit, ROOT, ReadDoc};
 use tilo_automerge::ApplyIncoming;
-use ui::tilo_resource::{self, Atom, Fields, Model, Resource, evolution};
+use ui::tilo_resource::{Atom, Fields, Resource, evolution};
 
 mod fixtures;
 use fixtures::{LegacyLibrary, LegacyPlaylist, populated_fixture};
@@ -159,11 +159,7 @@ fn duplicate_playlist_or_invalid_member_refuses_atomically() {
 fn conflicting_layouts_are_not_coerced_or_discarded() {
     let mut left = empty_legacy_library();
     let mut right = left.fork();
-    #[derive(Model)]
-    struct ScalarLayout {
-        playlists: Atom,
-    }
-    ScalarLayout {
+    fixtures::ScalarLayout {
         playlists: Atom("not a collection".into()),
     }
     .write_fields(&mut left, &ROOT)
