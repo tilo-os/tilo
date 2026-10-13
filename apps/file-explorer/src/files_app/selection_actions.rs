@@ -277,6 +277,9 @@ mod tests {
 
     #[test]
     fn selection_descriptor_budget_is_bounded_even_for_select_all() {
+        // The full budget is one descriptor per entry; an app launch raises
+        // the open-file limit to fit it (macOS starts processes at 256).
+        tilo_process::raise_open_file_limit();
         let root = tempfile::tempdir().unwrap();
         for index in 0..=MAX_MOVE_ENTRIES {
             std::fs::write(root.path().join(format!("{index}.txt")), b"shown").unwrap();

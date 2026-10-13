@@ -1352,11 +1352,16 @@ mod tests {
     ];
 
     fn temp_cache() -> PathBuf {
+        // The wall clock alone does not keep parallel tests apart: a capture
+        // test freezes it process-wide, and macOS reads it in whole
+        // microseconds. A per-process sequence number does.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut dir = std::env::temp_dir();
         let uniq = format!(
-            "tilo-maps-test-{}-{}",
+            "tilo-maps-test-{}-{}-{}",
             std::process::id(),
-            ui::time::try_unix_now_ns().unwrap()
+            ui::time::try_unix_now_ns().unwrap(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         dir.push(uniq);
         dir
