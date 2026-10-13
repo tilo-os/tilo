@@ -4918,9 +4918,8 @@ impl State {
         }
     }
 
-    /// Tell clients the layouts the presenting GPU was confirmed to sample
-    /// ([`crate::shell::gpu_frames::sampleable_formats`]: LINEAR only until
-    /// compressed sampling is proven), once its device exists. The first feedback is
+    /// Tell clients the tiled and compressed layouts the presenting GPU was
+    /// confirmed to sample, once its device exists. The first feedback is
     /// built before any renderer has opened a device, so it lists only the
     /// linear layouts; when the probe's answer changes, the default feedback
     /// is rebuilt and sent to every client that asked for it, so ordinary
