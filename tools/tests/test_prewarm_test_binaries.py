@@ -159,17 +159,22 @@ class PrewarmTests(unittest.TestCase):
             artifacts.write_text("not JSON\n")
             self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
 
-    def test_workflow_still_runs_all_original_tests_and_doctests_after_prewarm(self):
+    def test_nextest_workflow_owns_discovery_and_keeps_full_tests_and_doctests(self):
         source = (ROOT / ".forgejo/workflows/dev-apps-macos.yml").read_text()
-        self.assertIn('trap \'rm -f "$artifacts"\' EXIT', source)
-        self.assertIn("--no-run --message-format=json-render-diagnostics", source)
-        self.assertIn("if ! python3 tools/ci/prewarm_test_binaries.py", source)
-        self.assertIn("Prewarm unavailable; the complete Cargo test run remains required.", source)
-        self.assertIn(
-            "run: cargo nextest run --locked --profile ci --no-fail-fast $(python3 tools/ci/macos_apps.py)", source
-        )
-        self.assertIn("run: cargo test --locked --no-fail-fast --doc $(python3 tools/ci/macos_apps.py)", source)
-        self.assertLess(source.index("Compile and prewarm test entry"), source.index("Test every macOS app"))
+        apps = source.split("  apps:\n", 1)[1]
+        self.assertNotIn("prewarm_test_binaries.py", apps)
+        self.assertNotIn("--no-run", apps)
+        self.assertEqual(apps.count(
+            "run: cargo nextest run --locked --profile ci --no-fail-fast $(python3 tools/ci/macos_apps.py)"
+        ), 1)
+        self.assertEqual(apps.count(
+            "run: cargo test --locked --no-fail-fast --doc $(python3 tools/ci/macos_apps.py)"
+        ), 1)
+        self.assertIn("timeout-minutes: 180", apps)
+        self.assertIn("needs: sdk", apps)
+        doctests = apps.split("- name: Doctests of every macOS app", 1)[1]
+        self.assertIn("if: ${{ !cancelled() }}", doctests)
+        self.assertLess(apps.index("Test every macOS app"), apps.index("Doctests of every macOS app"))
 
 
 if __name__ == "__main__":

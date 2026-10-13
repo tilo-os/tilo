@@ -27,14 +27,14 @@ verified run as a browser-ready H.264 MP4. The recorder samples the live
 headless compositor; it does not replay a `shots` fixture or assemble a
 facsimile out of unrelated screenshots.
 
-    scripts/demo/install-on-open.py --out target/install-on-open \\
+    scripts/headless-examples/install-on-open.py --out target/install-on-open \\
         --record target/install-on-open/notes-open.mp4
 
 On the day, run it in the mode that sets the scene and gets out of the
 way — registry up, Notes absent, a real window to point a camera at —
 and type it yourself:
 
-    scripts/demo/install-on-open.py --backend winit --stage-only
+    scripts/headless-examples/install-on-open.py --backend winit --stage-only
 
 Everything it needs is built by:
 
@@ -52,8 +52,8 @@ headless backend; release builds omit the control socket, not those paint
 passes.
 
 Staged: the registry is a loopback server on this machine rather than a
-hosted one, and `HOME` is the synthetic tree `scripts/demo/home.py`
-builds so the palette shows a demo corpus instead of the operator's own
+hosted one, and `HOME` is the synthetic tree `scripts/headless-examples/isolated-home.py`
+builds so the palette shows a small fixture corpus instead of the operator's own
 files. Neither changes a code path — they change what the code path is
 pointed at.
 
@@ -78,8 +78,8 @@ import time
 import importlib.util
 
 
-def _load_demo_home():
-    """`scripts/demo/home.py`, by path.
+def _load_isolated_home():
+    """`isolated-home.py`, by path.
 
     The filename has a hyphen in it, so it is not importable as a
     module name however the sys.path is arranged.
@@ -87,14 +87,14 @@ def _load_demo_home():
     # Loading it by path otherwise drops a `scripts/__pycache__/` in the
     # working tree on every run.
     sys.dont_write_bytecode = True
-    path = pathlib.Path(__file__).resolve().parent / "home.py"
-    spec = importlib.util.spec_from_file_location("demo_home", path)
+    path = pathlib.Path(__file__).resolve().parent / "isolated-home.py"
+    spec = importlib.util.spec_from_file_location("isolated_home", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-stage_home = _load_demo_home().stage
+stage_home = _load_isolated_home().stage
 
 PACKAGE_ID = "so.tilo.notes"
 DISPLAY_NAME = "Notes"
@@ -436,7 +436,7 @@ class FrameRecorder:
 
     Captures are event-driven, not a polling screen recorder.  A 1600x900
     snapshot is itself a GPU paint/readback/PNG encode; continuously requesting
-    one starves the Wayland client whose startup this demo is meant to show.
+    one starves the Wayland client whose startup this run is meant to show.
     Instead the driver captures the real state at each meaningful beat and
     gives that beat a deliberate on-screen duration.  Package installation and
     client startup run unobserved between ``pending`` and ``notes-final``; no
@@ -733,7 +733,7 @@ def main() -> int:
     for d in (apps_dir, store_config, store_cache):
         d.mkdir(parents=True, exist_ok=True)
 
-    # A HOME of our own, so the palette's file results are a small demo
+    # A HOME of our own, so the palette's file results are a small fixture
     # corpus rather than the operator's actual home directory.
     home_env = stage_home(args.out / "home")
     home = pathlib.Path(home_env["HOME"])
