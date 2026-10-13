@@ -1,7 +1,4 @@
-use winit::{
-    dpi::PhysicalPosition,
-    event::{ElementState, WindowEvent},
-};
+use winit::event::{ElementState, WindowEvent};
 // The native event-loop runner (`app/native_runner.rs`) reaches these through
 // `use super::*`.
 #[cfg(feature = "native")]
