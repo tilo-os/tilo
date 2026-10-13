@@ -10,7 +10,9 @@ missing=()
 command -v dbus-daemon >/dev/null || missing+=(dbus-daemon)
 command -v xdg-dbus-proxy >/dev/null || missing+=(xdg-dbus-proxy)
 command -v secret-tool >/dev/null || missing+=(libsecret)
-python3 -c 'import gi; gi.require_version("Secret", "1")' 2>/dev/null || missing+=(python3-gobject libsecret)
+# Another package's gi overrides leave a bare namespace `gi` without
+# require_version; libsecret (above) brings the Secret-1 typelib itself.
+python3 -c 'import gi; gi.require_version' 2>/dev/null || missing+=(python3-gobject)
 (( ${#missing[@]} )) || exit 0
 if [[ ${GITHUB_ACTIONS:-} != true ]] || ! { test -f /.dockerenv || test -f /run/.containerenv; }; then
     echo 'session-bus tool installation is restricted to CI containers' >&2

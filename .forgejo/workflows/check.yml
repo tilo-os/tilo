@@ -298,6 +298,18 @@ jobs:
       - name: Ensure isolated audio test dependency
         run: bash tools/ensure-headless-audio.sh
 
+      # Likewise for libsecret's own client (python3-gobject), which
+      # tilo-secret-service's suite drives the service with.
+      - name: Ensure session-bus test tools
+        if: contains(matrix.test_packages, '-p tilo-secret-service')
+        run: bash tools/ci/ensure-session-bus-tools.sh
+
+      # And for the X11 bridge (xwayland-satellite and Xwayland) the shell's
+      # X11 clipboard and focus tests drive.
+      - name: Ensure X11 bridge test tools
+        if: contains(matrix.test_packages, '-p shell')
+        run: bash tools/ci/ensure-x11-bridge-tools.sh
+
       # Pinned/older builders may predate native PDF capture coverage. Stage
       # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
       # Where the runner's kernel can enforce Landlock, the PDF helper's
