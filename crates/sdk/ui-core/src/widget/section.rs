@@ -33,7 +33,6 @@ use std::rc::Rc;
 
 #[cfg(test)]
 use automerge::AutoCommit;
-use automerge::ObjId;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -552,15 +551,6 @@ impl HeaderRow {
 }
 
 impl Widget for HeaderRow {
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
@@ -1014,15 +1004,6 @@ impl Section {
 }
 
 impl Widget for Section {
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {

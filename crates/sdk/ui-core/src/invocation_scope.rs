@@ -1,5 +1,9 @@
 //! Host-local invocation custody. No wire caller can manufacture these checks.
 
+pub use runtime_collab::approved_checks::{
+    Receipt as ApprovedCheckReceipt, ReportObservation as ApprovedCheckReportObservation,
+};
+
 /// A typed host check response, suitable for an existing effect worker.
 pub type ApprovedCheckFuture = std::pin::Pin<
     Box<
@@ -7,6 +11,57 @@ pub type ApprovedCheckFuture = std::pin::Pin<
             + Send,
     >,
 >;
+
+/// Informational reports enter the caller's existing effect reporter.
+pub type ApprovedCheckReportSink =
+    Box<dyn Fn(runtime_collab::approved_checks::ReportObservation) -> Result<(), String> + Send>;
+/// A queued approved check, attached to its original reporter by the effect worker.
+pub type ApprovedCheckReportedWork =
+    Box<dyn FnOnce(ApprovedCheckReportSink) -> ApprovedCheckFuture + Send>;
+
+#[cfg(feature = "broker-transport")]
+pub(crate) fn reported_check_work(
+    route: &str,
+    request: runtime_collab::approved_checks::Request,
+    scope: Option<ResourceEffectScope>,
+) -> Result<ApprovedCheckReportedWork, String> {
+    let (mut receipt, mut reports) =
+        crate::collaboration::approved_checks::enqueue_reported(route, request)?;
+    Ok(Box::new(move |report| {
+        Box::pin(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    result = &mut receipt => {
+                        let receipt = result.map_err(|_| "approved-check transport retired")??;
+                        return match &scope {
+                            Some(scope) => scope.with_effect(|| Ok(receipt)),
+                            None => Ok(receipt),
+                        };
+                    }
+                    changed = reports.changed() => {
+                        if changed.is_err() {
+                            // Terminal delivery is the only completion authority.
+                            let receipt = receipt.await.map_err(|_| "approved-check transport retired")??;
+                            return match &scope {
+                                Some(scope) => scope.with_effect(|| Ok(receipt)),
+                                None => Ok(receipt),
+                            };
+                        }
+                        let observed = reports.borrow_and_update().clone();
+                        if let Some(observed) = observed {
+                            let forward = || report(observed.observation);
+                            match &scope {
+                                Some(scope) => scope.with_effect(forward)?,
+                                None => forward()?,
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }))
+}
 
 /// Inert delivered inputs. Only the registered host can associate these with
 /// an original admitted caller, contract and exact worker connection.
@@ -645,6 +700,34 @@ impl ResourceInvocationScope {
                     .map_err(|_| "approved-check transport retired")??;
                 scope.with_effect(|| Ok(receipt))
             }))
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            let _ = check_id;
+            Err("approved project checks require the admitted native broker transport".into())
+        }
+    }
+
+    /// Queue reported observations on the same admitted check and record channel.
+    ///
+    /// # Errors
+    /// Refuses changed custody, unavailable transport, malformed IDs or a full lane.
+    pub fn approved_check_reported(
+        &self,
+        check_id: &str,
+    ) -> Result<ApprovedCheckReportedWork, String> {
+        self.check()?;
+        #[cfg(feature = "broker-transport")]
+        {
+            reported_check_work(
+                &self.route().channel_id(),
+                runtime_collab::approved_checks::Request {
+                    version: 1,
+                    invocation: self.invocation().0.to_string(),
+                    check_id: check_id.into(),
+                },
+                Some(self.effect_scope()?),
+            )
         }
         #[cfg(not(feature = "broker-transport"))]
         {
