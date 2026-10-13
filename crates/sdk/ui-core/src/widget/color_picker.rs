@@ -1080,7 +1080,7 @@ impl Widget for ColorPicker {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 if self.drag_target.is_some() {
                     self.apply_drag(p);
@@ -1743,14 +1743,7 @@ mod tests {
 
     fn key(p: &mut ColorPicker, named: NamedKey) {
         let ev = crate::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
-        dispatch(
-            p,
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            },
-        );
+        dispatch(p, &crate::synthetic_input::keyboard_input(ev));
     }
 
     #[test]

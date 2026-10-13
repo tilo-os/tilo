@@ -1685,8 +1685,7 @@ impl Widget for Button {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let logical_pos = ctx.logical(position);
                 let hover = self.hit_rect().contains(logical_pos);
                 // A hover change is a repaint (`needs_redraw` compares the
                 // state), not consumed input: a parent that stops at the

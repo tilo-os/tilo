@@ -2196,9 +2196,6 @@ mod bound_lifetime_tests {
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Glyph("P")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
     #[allow(clippy::needless_pass_by_value, reason = "component factory contract")]
     fn factory(

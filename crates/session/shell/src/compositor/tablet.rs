@@ -202,18 +202,16 @@ pub fn tablet_pointer_events(input: &TabletInput) -> Vec<WindowEvent> {
 /// `tip` (a Linux button code), or nothing when `None`: an eraser mapped to
 /// a mouse button, or to a shortcut that runs on its own.
 pub fn tool_pointer_events(input: &TabletInput, tip: Option<u32>) -> Vec<WindowEvent> {
-    let moved = WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(input.position.0, input.position.1),
-    };
-    let button = |button: MouseButton, pressed: bool| WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        },
-        button,
+    let moved = ui::synthetic_input::cursor_moved(input.position.0, input.position.1);
+    let button = |button: MouseButton, pressed: bool| {
+        ui::synthetic_input::mouse_input(
+            if pressed {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
+            button,
+        )
     };
     let press = |code: Option<u32>, pressed: bool| match code.and_then(pointer_button) {
         Some(mouse) => vec![moved.clone(), button(mouse, pressed)],

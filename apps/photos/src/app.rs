@@ -11547,7 +11547,7 @@ impl Widget for PhotosApp {
     ) {
         self.reconcile_content();
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            let next = ctx.logical(position);
             if self.library_mode
                 && self.library_destination == LibraryDestination::Places
                 && let Some(previous) = self.places_drag_origin.replace(next)

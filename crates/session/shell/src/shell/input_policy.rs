@@ -957,11 +957,7 @@ mod super_tap_tests {
     fn key(logical: Key, state: ElementState) -> WindowEvent {
         let mut ev = ui::synthetic_input::key_event(logical, None, state);
         ev.location = KeyLocation::Left;
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ev)
     }
 
     fn super_key(state: ElementState) -> WindowEvent {
@@ -997,19 +993,11 @@ mod super_tap_tests {
     fn a_super_click_or_scroll_is_not_a_tap() {
         let mut tap = SuperTap::default();
         tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        tap.observe(&ui::synthetic_input::mouse_press());
         assert!(!tap.observe(&super_key(ElementState::Released)));
 
         tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, 1.0),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        tap.observe(&ui::synthetic_input::mouse_wheel(0.0, 1.0));
         assert!(!tap.observe(&super_key(ElementState::Released)));
     }
 
@@ -2338,7 +2326,7 @@ mod lock_chord_tests {
     use super::*;
     use crate::shell::input_policy as client_input;
     use crate::shell::test_control::keyboard_input_event;
-    use winit::dpi::PhysicalPosition;
+
     use winit::keyboard::{ModifiersState, SmolStr};
     fn mods_with_super(on: bool) -> Modifiers {
         let mut mask = ModifiersState::empty();
@@ -2451,10 +2439,7 @@ mod lock_chord_tests {
 
         /// A non-keyboard event (cursor move) is never the lock chord even with Super held.
         fn cursor_move_is_not_lock_chord() {
-            let ev = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: PhysicalPosition::new(10.0, 10.0),
-            };
+            let ev = ui::synthetic_input::cursor_moved(10.0, 10.0);
             assert!(!locks(&ev, mods_with_super(true)));
         }
 

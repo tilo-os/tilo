@@ -769,7 +769,7 @@ impl Widget for Slider {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 let hover = self.rect.inflate(KNOB_RADIUS, 0.0).contains(p);
                 if hover != self.is_hovered {

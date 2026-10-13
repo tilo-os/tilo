@@ -2300,11 +2300,7 @@ mod tests {
 
     /// `lines` is in `LineDelta` units; the widget scales by 16 px.
     fn wheel_event(lines: f32) -> WindowEvent {
-        WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines),
-            phase: winit::event::TouchPhase::Moved,
-        }
+        ui::synthetic_input::mouse_wheel(0.0, lines)
     }
 
     use ui::synthetic_input::mouse_release;

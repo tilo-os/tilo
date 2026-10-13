@@ -613,8 +613,7 @@ impl Widget for TimePicker {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 self.pointer_inside = self.rect.contains(self.last_cursor);
             }
             WindowEvent::CursorLeft { .. } => self.pointer_inside = false,
@@ -945,11 +944,7 @@ mod tests {
     use crate::synthetic_input::cursor_moved;
 
     fn wheel(dy: f32) -> WindowEvent {
-        WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, dy),
-            phase: winit::event::TouchPhase::Moved,
-        }
+        crate::synthetic_input::mouse_wheel(0.0, dy)
     }
 
     /// Populates `hour_rect`/`minute_rect`/`second_rect` by running
@@ -1040,14 +1035,7 @@ mod tests {
 
             let centre = tp.hour_rect.center();
             dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
-            dispatch(
-                &mut tp,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            dispatch(&mut tp, &crate::synthetic_input::mouse_press());
             assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
         }
 

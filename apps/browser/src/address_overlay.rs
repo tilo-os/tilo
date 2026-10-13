@@ -391,8 +391,7 @@ impl Widget for AddressSuggestions {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 self.hovered = self.row_at(self.last_cursor);
             }
             WindowEvent::MouseInput {
@@ -717,11 +716,7 @@ mod tests {
             let send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
                 let ev =
                     ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
-                let event = WindowEvent::KeyboardInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    event: ev,
-                    is_synthetic: false,
-                };
+                let event = ui::synthetic_input::keyboard_input(ev);
                 ui::testing::dispatch(w, &event)
             };
 
@@ -749,11 +744,7 @@ mod tests {
                 None,
                 ElementState::Pressed,
             );
-            let event = WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            };
+            let event = ui::synthetic_input::keyboard_input(ev);
             let handled = ui::testing::dispatch(&mut w, &event);
             assert!(handled);
             assert!(!w.is_visible(), "Escape clears the overlay");
@@ -771,19 +762,9 @@ mod tests {
             let row1_y = r.y0 + w.pad() + w.row_height() * 1.5;
             ui::testing::dispatch(
                 &mut w,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(r.x0 + 20.0, row1_y),
-                },
+                &ui::synthetic_input::cursor_moved(r.x0 + 20.0, row1_y),
             );
-            let handled = ui::testing::dispatch(
-                &mut w,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            let handled = ui::testing::dispatch(&mut w, &ui::synthetic_input::mouse_press());
             assert!(handled, "a click on a row is consumed");
             assert_eq!(
                 w.selected_index(),

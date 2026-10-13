@@ -16,7 +16,6 @@ use tilo_automerge::ApplyIncoming;
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
 use vello::kurbo::{Point, Rect};
-use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -320,11 +319,7 @@ impl ShellDriver {
     /// pixel deltas should multiply by ~`1.0/16.0` first to stay
     /// concept-faithful with the strip's per-line factor.
     pub fn mouse_wheel(&mut self, dx: f32, dy: f32) {
-        self.dispatch(&WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        self.dispatch(&ui::synthetic_input::mouse_wheel(dx, dy));
     }
 
     /// Synthesise a `CursorMoved` event WITHOUT pressing or releasing.
@@ -362,29 +357,21 @@ impl ShellDriver {
     }
 
     fn drag_with_button(&mut self, from: Point, to: Point, steps: u32, button: MouseButton) {
-        self.dispatch(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(from.x, from.y),
-        });
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
+        self.dispatch(&ui::synthetic_input::cursor_moved(from.x, from.y));
+        self.dispatch(&ui::synthetic_input::mouse_input(
+            ElementState::Pressed,
             button,
-        });
+        ));
         let n = f64::from(steps.max(1));
         for s in 1..=steps.max(1) {
             let t = f64::from(s) / n;
             let p = Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
-            self.dispatch(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: PhysicalPosition::new(p.x, p.y),
-            });
+            self.dispatch(&ui::synthetic_input::cursor_moved(p.x, p.y));
         }
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
+        self.dispatch(&ui::synthetic_input::mouse_input(
+            ElementState::Released,
             button,
-        });
+        ));
     }
 
     /// Synthesise a `KeyboardInput { state: Pressed }` for `key`.
@@ -2770,11 +2757,7 @@ pub fn key_press_event(key: &Key) -> WindowEvent {
     } else {
         None
     };
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ev)
 }
 
 // =====================================================================

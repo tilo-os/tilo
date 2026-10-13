@@ -1,15 +1,13 @@
-//! Layout and paint helpers shared by the app's panes, the fill-in dialog's
-//! preview and the history preview.
+//! Layout and paint helpers shared by the app's panes and the fill-in
+//! dialog's preview.
 
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle};
-use ui::theme::Theme;
 use ui::tokens::TextRole;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::Point;
 
 use crate::highlight::{self, Span};
-use crate::model::{Language, Snippet};
+use crate::model::Language;
 
 /// One painted row of wrapped code: the source line it starts (counted from
 /// 1; `None` when it continues the line above) and its highlighted runs.
@@ -168,78 +166,10 @@ pub(crate) fn paint_code_rows(
     }
 }
 
-/// The width of the line-number column for `body`.
-fn number_column(text: &mut TextRenderer, theme: &Theme, body: &str) -> f64 {
-    let lines = body.lines().count().max(1);
-    width_of(
-        text,
-        &lines.to_string(),
-        &theme.text(TextRole::Code).numeric(),
-    )
-}
-
-/// The code a well at `width` shows for `snippet`, wrapped to fit.
-fn snippet_rows(
-    text: &mut TextRenderer,
-    theme: &Theme,
-    width: f64,
-    snippet: &Snippet,
-) -> (Vec<CodeRow>, f64) {
-    let pad = f64::from(theme.tokens.spacing.s4);
-    let numbers = number_column(text, theme, &snippet.body);
-    let code_w = width - pad * 2.0 - numbers - f64::from(theme.tokens.spacing.s4);
-    let rows = wrap_code(
-        text,
-        &theme.text(TextRole::Code),
-        &snippet.body,
-        snippet.language,
-        code_w,
-    );
-    (rows, numbers)
-}
-
-/// Paint a snippet's body, syntax-highlighted with line numbers, in a code
-/// well at `card`: the read-only view History shows of a past version. Long
-/// lines wrap inside the well; [`code_height`] sizes the well to hold them.
-pub fn paint_code(
-    scene: &mut Scene,
-    t: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    card: Rect,
-    snippet: &Snippet,
-) {
-    let ground = theme.tokens.colors.surfaces.raised;
-    ui::surface::card(
-        scene,
-        t,
-        card,
-        f64::from(theme.tokens.radii.control),
-        ground,
-    );
-    let ink = theme.on_ground(ground);
-    let pad = f64::from(theme.tokens.spacing.s4);
-    let (rows, numbers) = snippet_rows(text, theme, card.width(), snippet);
-    let mut ctx = PaintCtx::new(scene, t, text, &ink);
-    paint_code_rows(
-        &mut ctx,
-        &rows,
-        Point::new(card.x0 + pad, card.y0 + pad),
-        Some(numbers),
-    );
-}
-
-/// The height of a code well `width` wide that shows all of `snippet`,
-/// long lines wrapped.
-pub fn code_height(text: &mut TextRenderer, theme: &Theme, width: f64, snippet: &Snippet) -> f64 {
-    let line_h = f64::from(theme.text(TextRole::Code).line_height_px());
-    let (rows, _) = snippet_rows(text, theme, width, snippet);
-    line_h * rows.len() as f64 + f64::from(theme.tokens.spacing.s4) * 2.0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::theme::Theme;
 
     /// Wrapped code keeps every character, in order, and every row fits.
     #[test]

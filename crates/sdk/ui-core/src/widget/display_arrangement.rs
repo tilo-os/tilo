@@ -602,8 +602,7 @@ impl Widget for DisplayArrangement {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let point = ctx.logical(position);
                 self.cursor = Some(point);
                 if self.drag_to(point) {
                     *ctx.handled = true;
@@ -877,10 +876,10 @@ mod tests {
             .get("display.arrangement")
             .copied()
             .expect("the actual arrangement is mounted");
-        host.send(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(rect.center().x, rect.center().y),
-        });
+        host.send(&crate::synthetic_input::cursor_moved(
+            rect.center().x,
+            rect.center().y,
+        ));
         assert!(!host.last_relayout().measured);
         host.verify_retained_geometry().unwrap();
         let nodes = host.layout_node_ids();

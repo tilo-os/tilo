@@ -387,10 +387,7 @@ fn directory_action_rows_paint_label_and_subtitle_at_normal_and_narrow_sizes() {
 }
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowEvent {
@@ -658,20 +655,12 @@ use ui::synthetic_input::mouse_press;
 
 fn key_pressed(key: Key) -> WindowEvent {
     let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }
 
 fn key_released(key: Key) -> WindowEvent {
     let event = ui::synthetic_input::key_event(key, None, ElementState::Released);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }
 
 /// One production paint, so the chip / scope rects a click router
@@ -2039,11 +2028,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
             );
 
             assert!(pump(&mut h, &cursor_moved_at(panel.center())));
-            let wheel = WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -2.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let wheel = ui::synthetic_input::mouse_wheel(0.0, -2.0);
             assert!(pump(&mut h, &wheel), "notification wheel must be consumed");
             assert_eq!(
                 h.host.notification_center.first_visible_row(),
@@ -2868,10 +2853,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
         .1;
     assert!(pump(
         &mut h,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(read.center().x, read.center().y),
-        }
+        &ui::synthetic_input::cursor_moved(read.center().x, read.center().y)
     ));
     assert!(pump(&mut h, &mouse_press()));
     assert!(h.host.notification_center.is_reading());
@@ -2879,10 +2861,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
     let back = h.host.qs_notification_back_rect();
     assert!(pump(
         &mut h,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(back.center().x, back.center().y),
-        }
+        &ui::synthetic_input::cursor_moved(back.center().x, back.center().y)
     ));
     assert!(pump(&mut h, &mouse_press()));
     assert!(!h.host.notification_center.is_reading());

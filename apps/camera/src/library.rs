@@ -83,16 +83,9 @@ fn encode_jpeg(frame: &FrameBuf) -> std::io::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Decode `path` to a greyscale (luma) buffer, downscaled so its longest
-/// side is at most `max` pixels. Returns the buffer plus its dimensions.
-/// This is what the scanner feeds to the QR detector when scanning a code
-/// out of a portal-selected image (no camera required).
-pub fn load_luma(path: &Path, max: u32) -> Option<(Vec<u8>, usize, usize)> {
-    let bytes = crate::files::read_bounded(path, thumbnail::MAX_IMAGE_BYTES)?;
-    load_luma_bytes(&bytes, max)
-}
-
-/// Decode verified shared-media bytes into a bounded luma image. The shared
+/// Decode image bytes to a greyscale (luma) buffer, downscaled so its longest
+/// side is at most `max` pixels, plus its dimensions — what the scanner feeds
+/// to the QR detector when scanning a code out of a chosen image. The shared
 /// decoder reads the header first, so attacker-controlled dimensions are
 /// refused before any pixel is allocated even after the content store has
 /// verified the byte hash.
@@ -183,7 +176,8 @@ mod tests {
             let dir = tmp();
             let frame = crate::frame::viewfinder(2, 200, 120);
             let name = write_photo(&dir, &frame, PhotoFormat::Png).unwrap();
-            let (luma, tw, th) = load_luma(&dir.join(&name), 50).expect("luma");
+            let (luma, tw, th) =
+                load_luma_bytes(&std::fs::read(dir.join(&name)).unwrap(), 50).expect("luma");
             assert!(tw <= 50 && th <= 50, "downscaled to {tw}x{th}");
             assert_eq!(luma.len(), tw * th);
             std::fs::remove_dir_all(&dir).ok();

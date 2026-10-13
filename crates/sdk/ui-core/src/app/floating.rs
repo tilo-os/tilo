@@ -883,7 +883,7 @@ impl App {
                 position,
             } => Some(WindowEvent::CursorMoved {
                 device_id: *device_id,
-                position: PhysicalPosition::new(position.x + dx, position.y + dy),
+                position: winit::dpi::PhysicalPosition::new(position.x + dx, position.y + dy),
             }),
             WindowEvent::Touch(touch) => {
                 let mut translated = *touch;

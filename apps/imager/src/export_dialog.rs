@@ -178,7 +178,7 @@ fn dismiss_event(event: &WindowEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::DeviceId;
+
     use winit::keyboard::{Key, NamedKey};
 
     fn escape_event() -> WindowEvent {
@@ -192,10 +192,7 @@ mod tests {
     use ui::synthetic_input::mouse_press;
 
     fn cursor_move() -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(12.0, 16.0),
-        }
+        ui::synthetic_input::cursor_moved(12.0, 16.0)
     }
 
     /// Compact pages follow the shorter window axis and resolved UI scale;

@@ -280,11 +280,7 @@ fn named_key_event(key: NamedKey, state: ElementState) -> WindowEvent {
         None,
         logical_key,
     );
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    crate::synthetic_input::keyboard_input(event)
 }
 
 fn send_widget_then_host_fallback(app: &mut App, event: &WindowEvent) -> bool {

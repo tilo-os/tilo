@@ -16,7 +16,7 @@ use ui::icons::Icon;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, ControlSize, FieldFace, SegmentedFace, TextInput, Widget};
-use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_desktop_model::{Collaborator, DesktopTree};
@@ -841,13 +841,10 @@ impl CollaboratorsOverlay {
         }
         let point = self.content_point(cursor?);
         let input = self.status_input.0.as_mut()?;
-        let moved = WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(
-                point.x * ctx.scale_factor,
-                point.y * ctx.scale_factor,
-            ),
-        };
+        let moved = ui::synthetic_input::cursor_moved(
+            point.x * ctx.scale_factor,
+            point.y * ctx.scale_factor,
+        );
         input.handle_event(&moved, ctx);
         if matches!(event, WindowEvent::MouseInput { .. }) {
             input.handle_event(event, ctx);
@@ -897,13 +894,10 @@ impl CollaboratorsOverlay {
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
         ) {
             if let Some(point) = cursor {
-                let moved = WindowEvent::CursorMoved {
-                    device_id: DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(
-                        point.x * ctx.scale_factor,
-                        point.y * ctx.scale_factor,
-                    ),
-                };
+                let moved = ui::synthetic_input::cursor_moved(
+                    point.x * ctx.scale_factor,
+                    point.y * ctx.scale_factor,
+                );
                 self.targets.handle_event(&moved, ctx);
                 self.scroll_event(&moved, ctx);
             } else {

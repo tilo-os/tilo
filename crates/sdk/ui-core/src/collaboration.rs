@@ -177,6 +177,19 @@ pub fn display_control(_command: Vec<u8>, _origin: DisplayOrigin) -> Result<Vec<
 
 pub use crate::host::ContinuationMetadata;
 
+/// The numbers a semantic checkpoint carries for the portable schemas a
+/// signed manifest can declare (`continuity.semantic_schema`). The tag says
+/// what the payload means, so a device that has not installed the app can
+/// still check its shape. They match `ContinuitySemanticSchema::wire_tag`
+/// in `tilo-app-package`.
+pub mod semantic_schema {
+    pub const WEB_LOCATION_V1: u16 = 0x0101;
+    pub const PUBLICATION_POSITION_V1: u16 = 0x0102;
+    pub const MEDIA_POSITION_V1: u16 = 0x0103;
+    pub const REALTIME_SESSION_V1: u16 = 0x0104;
+    pub const TEXT_POSITION_V1: u16 = 0x0105;
+}
+
 /// The launcher-only resume payload the host passed this window
 /// ([`crate::host::HostIdentity::continuity_resume`]).
 pub fn continuation_restore_env() -> Option<ContinuationMetadata> {

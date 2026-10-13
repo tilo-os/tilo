@@ -36,8 +36,7 @@ use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 const W: f32 = 1280.0;
@@ -272,29 +271,14 @@ impl Harness {
     }
 
     fn click(&mut self, p: Point) {
-        self.event(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(p.x, p.y),
-        });
-        self.event(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        self.event(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.event(&ui::synthetic_input::cursor_moved(p.x, p.y));
+        self.event(&ui::synthetic_input::mouse_press());
+        self.event(&ui::synthetic_input::mouse_release());
     }
 
     fn key(&mut self, logical: Key, mods: ModifiersState) {
         let ev = ui::synthetic_input::key_event(logical, None, ElementState::Pressed);
-        let event = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        };
+        let event = ui::synthetic_input::keyboard_input(ev);
         ui::testing::Dispatch::new()
             .modifiers(mods)
             .layout(&self.taffy, self.child)
@@ -304,15 +288,8 @@ impl Harness {
     /// A horizontally-dominant wheel event over the strip, the way a
     /// two-finger sideways swipe arrives.
     fn scroll_horizontally(&mut self, dx: f32) {
-        self.event(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(600.0, 500.0),
-        });
-        self.event(&WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(dx, 0.0),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        self.event(&ui::synthetic_input::cursor_moved(600.0, 500.0));
+        self.event(&ui::synthetic_input::mouse_wheel(dx, 0.0));
     }
 
     fn scroll_x(&self) -> f64 {

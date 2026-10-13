@@ -916,11 +916,7 @@ fn press(
     {
         event.text = Some(text.clone());
     }
-    let event = winit::event::WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    };
+    let event = ui::synthetic_input::keyboard_input(event);
     let handled = ui::testing::Dispatch::new()
         .modifiers(modifiers)
         .layout(&taffy, child)

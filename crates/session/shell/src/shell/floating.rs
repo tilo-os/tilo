@@ -1,9 +1,12 @@
 //! Shared floating-surface presentation and lifecycle policy.
+#[cfg(target_os = "linux")]
 use smithay::reexports::wayland_server::backend::ClientId;
 use std::sync::Arc;
 
 /// Immutable association with the actual source Wayland connection.
-/// A token never substitutes for this connection and room identity.
+/// A token never substitutes for this connection and room identity. Floating
+/// surfaces come from Wayland clients, so only the Linux compositor has them.
+#[cfg(target_os = "linux")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FloatingToplevelOwner {
     pub client: ClientId,
@@ -30,6 +33,7 @@ pub struct FloatingTransferSource {
 
 #[derive(Clone, Debug)]
 pub struct PendingFloatingToplevel {
+    #[cfg(target_os = "linux")]
     pub owner: Option<Arc<FloatingToplevelOwner>>,
     pub token: String,
     pub connection: u64,
@@ -45,6 +49,7 @@ pub struct PendingFloatingToplevel {
 
 #[derive(Clone, Debug)]
 pub struct FloatingToplevel {
+    #[cfg(target_os = "linux")]
     pub owner: Option<Arc<FloatingToplevelOwner>>,
     pub surface_id: u64,
     pub token: String,
@@ -238,6 +243,7 @@ mod floating_lifecycle_tests {
 
     fn live_surface() -> FloatingToplevel {
         FloatingToplevel {
+            #[cfg(target_os = "linux")]
             owner: None,
             surface_id: 41,
             token: "5e8f16a2a2e24bf7ad86758f2f28e316".into(),
