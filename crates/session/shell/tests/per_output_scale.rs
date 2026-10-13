@@ -22,8 +22,7 @@ use shell::compositor::frame::FrameBuilder;
 use tilo_cpu_raster::{CpuRasterizer, Options, Region, Target};
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Modifiers, MouseButton};
 
 /// A frame builder laid out across `fixture`, painted once so the chrome's
 /// hit rectangles (filled in while drawing) are current.
@@ -131,10 +130,7 @@ fn click_scene(fb: &mut FrameBuilder, outputs: &[Output], at: Point) {
     let placements = placements(outputs);
     let moved = event_to_logical(
         &placements,
-        BackendEvent::Input(WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(at.x, at.y),
-        }),
+        BackendEvent::Input(ui::synthetic_input::cursor_moved(at.x, at.y)),
     );
     let BackendEvent::Input(moved) = moved else {
         panic!("a cursor event stays a cursor event");
@@ -151,11 +147,7 @@ fn click_scene(fb: &mut FrameBuilder, outputs: &[Output], at: Point) {
     );
     for state in [ElementState::Pressed, ElementState::Released] {
         fb.dispatch_event(
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button: MouseButton::Left,
-            },
+            &ui::synthetic_input::mouse_input(state, MouseButton::Left),
             &mods,
             &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,

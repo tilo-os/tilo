@@ -167,10 +167,27 @@ where
     pub fn with_state(
         make: impl FnOnce(LoopHandle<'static, State>, DisplayHandle) -> State,
     ) -> Self {
+        Self::with_state_and_identity(make, |_| Arc::new(ClientState::default()))
+    }
+
+    pub fn with_identity(identity: impl FnOnce(&State) -> Arc<ClientState>) -> Self {
+        Self::with_state_and_identity(State::new, identity)
+    }
+
+    fn with_state_and_identity(
+        make: impl FnOnce(LoopHandle<'static, State>, DisplayHandle) -> State,
+        identity: impl FnOnce(&State) -> Arc<ClientState>,
+    ) -> Self {
         let event_loop = EventLoop::try_new().expect("calloop");
         let display: Display<State> = Display::new().expect("display");
         let state = make(event_loop.handle(), display.handle());
-        let conn = connect(&display);
+        let (server, client) = UnixStream::pair().expect("socket pair");
+        display
+            .handle()
+            .insert_client(server, identity(&state))
+            .expect("client insert");
+        client.set_nonblocking(true).expect("nonblocking");
+        let conn = Connection::from_socket(client).expect("client connection");
         let queue = conn.new_event_queue::<C>();
         let registry = conn.display().get_registry(&queue.handle(), ());
         let mut harness = Self {

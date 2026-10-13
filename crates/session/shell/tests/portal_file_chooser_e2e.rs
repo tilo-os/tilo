@@ -9,12 +9,8 @@
 //! pump by hand, as the compositor's tick would.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -40,10 +36,7 @@ const WS: u64 = 1;
 const APP: &str = "org.example.editor";
 
 fn cursor_at(p: vello::kurbo::Point) -> winit::event::WindowEvent {
-    winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 use ui::synthetic_input::mouse_press;
@@ -62,11 +55,7 @@ fn key_press(ch: char) -> winit::event::WindowEvent {
     ev.state = winit::event::ElementState::Pressed;
     ev.repeat = false;
     ev.text = Some(s);
-    winit::event::WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ev)
 }
 
 fn key_named(named: winit::keyboard::NamedKey) -> winit::event::WindowEvent {

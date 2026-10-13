@@ -143,7 +143,7 @@ pub struct WorkspaceRuntime {
     presence_mailboxes: HashMap<[u8; 32], Arc<crate::presence_mailbox::PresenceMailbox>>,
     /// Authors with a delta admitted here and not yet fanned out, and when
     /// it arrived: the caret and typing that follow it wait up to
-    /// [`crate::presence_mailbox::DELTA_HOLD`] to go with it (TIL-776).
+    /// [`crate::presence_mailbox::DELTA_HOLD`] to go with it.
     /// Published deltas leave at once; entries older than the hold are
     /// dropped whenever one is noted, so it holds at most the authors typing
     /// right now.
@@ -1950,7 +1950,7 @@ mod tests {
     }
 
     /// A keystroke's caret and typing follow its delta from the same author;
-    /// they are held to go with it, and nobody else's are (TIL-776).
+    /// they are held to go with it, and nobody else's are.
     #[test]
     fn presence_after_an_authors_delta_is_held_for_it() {
         use crate::presence_mailbox::{BATCH_WINDOW, DELTA_HOLD, PresenceMailbox};

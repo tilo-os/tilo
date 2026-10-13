@@ -12,8 +12,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
@@ -152,10 +150,6 @@ impl TypedPeer {
 ///
 /// Panics if the deterministic test room cannot be configured or its native
 /// collaboration broker cannot bind `path`.
-#[allow(
-    clippy::too_many_lines,
-    reason = "builds the whole agent test room in one place"
-)]
 pub fn spawn_with_agent_actions(
     path: &Path,
     actions: &[(&str, &str, &str)],

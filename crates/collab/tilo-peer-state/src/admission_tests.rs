@@ -1902,9 +1902,7 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
                 .unwrap();
         }
         outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
-        if delivered {
-            assert!(outbox.is_empty());
-        } else {
+        if !delivered {
             assert_eq!(outbox.len(), 2);
             assert_eq!(postcard::to_allocvec(&outbox[0]).unwrap(), old_bytes);
             let (
@@ -1955,8 +1953,8 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
                     .unwrap();
             }
             outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
-            assert!(outbox.is_empty());
         }
+        assert!(outbox.is_empty());
         assert_eq!(client.rows(), governor.rows());
         let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
         let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
@@ -3023,3 +3021,121 @@ fn selective_publication_cannot_discard_prior_document_basis() {
 mod copy_on_write;
 #[path = "delivery_admission_tests.rs"]
 mod delivery_admission;
+
+/// An invitation for `guest_cert` with `nonce`, redeemed by its device.
+fn guest_redemption(
+    peer: &StatePeer,
+    authority_key: &SigningKey,
+    guest_key: &SigningKey,
+    guest_cert: &DeviceCert,
+    nonce: u8,
+    now: SystemTime,
+) -> crate::join::VerifiedRedemption {
+    use crate::join::{
+        InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
+        verify_join_proof,
+    };
+    let now_ns: u64 = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .try_into()
+        .unwrap();
+    let signed = issue_invitation(
+        InviteGrant {
+            workspace_id: 7,
+            room: peer.room().into(),
+            authority: peer.authority().clone(),
+            issuer: peer.authority().clone(),
+            delegation: None,
+            role: MemberRole::Editor,
+            nonce: [nonce; 16],
+            recipient_user_public_key: Some(guest_cert.user_public_key),
+            invitee_name: Some("Guest".into()),
+            expires_at_ns: now_ns.saturating_add(10_000_000_000),
+            transport: vec![],
+        },
+        authority_key,
+    )
+    .unwrap();
+    let join = crate::join::decode_and_verify_invitation(
+        &signed,
+        Some(guest_cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let challenge = JoinChallenge::new(
+        &join,
+        guest_cert,
+        [nonce.wrapping_add(1); 32],
+        [nonce.wrapping_add(2); 32],
+        now_ns.saturating_add(1_000_000_000),
+        now_ns,
+    )
+    .unwrap();
+    let proof = sign_join_proof(challenge.clone(), guest_key).unwrap();
+    verify_join_proof(
+        &proof,
+        &challenge,
+        guest_cert,
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let guest_root = SigningKey::from_bytes(&[61; 32]);
+    let guest_key = SigningKey::from_bytes(&[62; 32]);
+    let mut guest_cert = DeviceCert {
+        user_public_key: guest_root.verifying_key().to_bytes(),
+        device_public_key: guest_key.verifying_key().to_bytes(),
+        device_label: "Guest".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut guest_cert, &guest_root).unwrap();
+    let first = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 70, now);
+    let unused = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 80, now);
+    assert!(
+        peer.admit_invited_member(&first, &authority_key, now)
+            .unwrap()
+    );
+    let owner = hex::encode(peer.authority().user_public_key);
+    assert!(
+        peer.ban_member(guest_cert.user_public_key, &owner, &authority_key, now)
+            .unwrap()
+    );
+    assert!(peer.permissions(guest_cert.device_public_key, now).is_err());
+    assert!(
+        !peer
+            .governed_access(now)
+            .unwrap()
+            .member_user_roots
+            .contains(&guest_cert.user_public_key)
+    );
+    assert!(
+        peer.admit_invited_member(&unused, &authority_key, now)
+            .is_err(),
+        "an invitation issued before the ban does not let them back"
+    );
+    assert!(
+        peer.unban_member(guest_cert.user_public_key, &authority_key, now)
+            .unwrap()
+    );
+    assert!(
+        peer.admit_invited_member(&unused, &authority_key, now)
+            .unwrap()
+    );
+    assert_eq!(
+        peer.permissions(guest_cert.device_public_key, now)
+            .unwrap()
+            .role,
+        collab_types::Role::Editor
+    );
+}

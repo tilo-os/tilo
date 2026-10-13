@@ -1531,10 +1531,7 @@ pub(crate) fn lay_out_detached(
     let child = widget.build_layout(&mut taffy, theme, &mut nodes);
     let root = taffy.new_with_children(
         taffy::Style {
-            size: Size {
-                width: taffy::Dimension::length(w),
-                height: taffy::Dimension::length(h),
-            },
+            size: Size::from_lengths(w, h),
             ..Default::default()
         },
         &[child],

@@ -470,10 +470,6 @@ impl ApplicationsProvider {
         self.catalogue_results_for_with_hosts(needle, apps, installed, &[], open_target)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "catalogue-result construction keeps ranking, alias suppression, install state, and action metadata together so duplicate offerings cannot diverge"
-    )]
     #[cfg(test)]
     fn catalogue_results_for_with_hosts(
         &self,
@@ -1029,7 +1025,7 @@ impl SearchProvider for ApplicationsProvider {
 
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         self.index
-            .refresh(&self.source_generation(), self.builder());
+            .refresh(|| self.source_generation(), self.builder());
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
@@ -1536,10 +1532,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn activating_an_app_is_idempotent_and_reports_failures() {
         // Phase `repeated_activation_while_opening_is_idempotent`.
         {
@@ -1828,10 +1820,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn application_rows_dedupe_only_true_identity_and_hide_malformed_records() {
         // Phase `duplicate_registry_offers_produce_one_application_row`.
         {
@@ -2184,10 +2172,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn installed_apps_and_catalogue_offers_never_double_up() {
         // Phase `an_app_you_have_wins_a_tie_but_not_a_better_match`.
         {

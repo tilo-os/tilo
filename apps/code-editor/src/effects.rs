@@ -207,7 +207,7 @@ mod tests {
             .into_iter()
             .map(|spec| spec.id)
             .collect();
-        for (command, _) in Command::all() {
+        for command in Command::ALL {
             let effect = command.effect();
             assert!(
                 published.iter().any(|id| id == effect.id()),

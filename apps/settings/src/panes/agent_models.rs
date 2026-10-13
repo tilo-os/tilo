@@ -1297,8 +1297,9 @@ impl AgentModelsModel {
                 }
             }
             let mut row = Row::new();
-            let mut any = false;
-            if model.installable() {
+            let installable = model.installable();
+            let removable = model.removable();
+            if installable {
                 row = row.push(Box::new(
                     self.cx.bind_invocation(
                         Button::new(
@@ -1312,9 +1313,8 @@ impl AgentModelsModel {
                         },
                     ),
                 ));
-                any = true;
             }
-            if model.removable() {
+            if removable {
                 row = row.push(Box::new(self.cx.bind_invocation(
                     Button::new(
                         &format!("agent-models-inprocess-remove-{widget_token}"),
@@ -1324,9 +1324,8 @@ impl AgentModelsModel {
                         model: package.id.clone(),
                     },
                 )));
-                any = true;
             }
-            if any {
+            if installable || removable {
                 body.push(Box::new(row.push(Box::new(Spacer::new()))));
             }
         }

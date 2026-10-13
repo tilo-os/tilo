@@ -53,7 +53,7 @@ impl FrameFeedback {
         if self.pixels.is_empty() {
             return;
         }
-        let event_time_ns = crate::compositor::client_input::monotonic_time_ns();
+        let event_time_ns = crate::compositor::metrics::monotonic_time_ns();
         for (surface_id, capture_seq) in &self.pixels {
             let record = serde_json::json!({
                 "event": event, "pipe_serial": serial, "surface_id": surface_id,
@@ -174,7 +174,7 @@ impl PresentationFeedback {
             pixels,
             omitted_pixels,
             composed_time_ns: enabled
-                .then(crate::compositor::client_input::monotonic_time_ns)
+                .then(crate::compositor::metrics::monotonic_time_ns)
                 .flatten(),
         }
     }

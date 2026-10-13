@@ -94,6 +94,10 @@ fn initial_history_action_publication_waits_for_actual_owner_application() {
     assert!(app.collaboration.manager.is_connected());
     assert!(!app.collaboration.manager.document_route_ready(None));
     assert!(!app.published_action_history_ready());
+    let admission = app.native_admission_snapshot();
+    assert!(admission.connection.manager_connected);
+    assert!(!admission.history.action_history_ready);
+    assert!(!admission.directory.directory_enqueued);
     app.publish_action_surface();
     assert!(app.actions.last_published_actions.is_none());
     assert!(
@@ -123,6 +127,12 @@ fn initial_history_action_publication_waits_for_actual_owner_application() {
     );
     app.publish_action_surface();
     assert!(app.actions.last_published_actions.is_some());
+    let admission = app.native_admission_snapshot();
+    assert!(admission.history.action_history_ready);
+    assert!(admission.history.primary_history_ready);
+    assert!(admission.history.all_owner_histories_ready);
+    assert!(admission.connection.custody_reconciled);
+    assert!(admission.directory.directory_enqueued);
     let page = app.published_action_directory_page(initial_history_query());
     assert!(!page.rows.is_empty());
     assert!(matches!(
@@ -754,4 +764,114 @@ fn initial_history_job2_does_not_wait_for_unowned_retained_native_route() {
     );
     drop(app);
     fixture.thread.join().unwrap();
+}
+
+#[test]
+fn ordinary_native_pump_exports_admission_before_any_action() {
+    const CHILD: &str = "TILO_ADMISSION_CHECKPOINT_CHILD";
+    if let Ok(case) = std::env::var(CHILD) {
+        let diagnostics = &crate::host::environment().diagnostics;
+        assert!(
+            !diagnostics.presentation_profile,
+            "this is not a synthetic scenario"
+        );
+        assert_eq!(diagnostics.presentation_timing, case == "enabled");
+        tilo_startup_metrics::init();
+        tilo_startup_metrics::mark("admission-probe-start");
+        let (mut app, calls) = initial_history_app();
+        let deadline = tilo_test_env::hang_deadline();
+        while !app.published_action_history_ready() {
+            app.pump_collab_presence();
+            assert!(
+                crate::time::now() < deadline,
+                "original socket-backed owner history never applied"
+            );
+            std::thread::yield_now();
+        }
+        // The directory RPC completes on the manager thread. Observe its one
+        // real reply before comparing the pump's checkpoint to a later live
+        // snapshot; otherwise the reply can land between those two reads.
+        while app
+            .native_admission_snapshot()
+            .directory
+            .transport_directory_rpc_successes
+            != Some(1)
+        {
+            app.pump_collab_presence();
+            assert!(
+                crate::time::now() < deadline,
+                "original action directory never answered"
+            );
+            std::thread::yield_now();
+        }
+        // Ordinary idle servicing exports the real current admission, without
+        // injecting a published invocation or synthetic scenario.
+        app.pump_collab_presence();
+        assert_eq!(calls.get(), 0);
+        let path = std::env::var_os("TILO_STARTUP_METRICS_PATH").unwrap();
+        let checkpoint: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(checkpoint["events"][0]["name"], "admission-probe-start");
+        if case == "enabled" {
+            assert_eq!(
+                checkpoint["native_admission"],
+                serde_json::json!(app.native_admission_snapshot())
+            );
+            assert_eq!(checkpoint["native_admission"]["action_history_ready"], true);
+            assert_eq!(
+                checkpoint["native_admission"]["transport_directory_rpc_successes"],
+                1
+            );
+            assert_eq!(
+                checkpoint["native_admission"]["transport_directory_rpc_failures"],
+                0
+            );
+        } else {
+            assert!(
+                checkpoint.get("native_admission").is_none(),
+                "default diagnostics remain quiet"
+            );
+        }
+        let previous_events = checkpoint["events"].as_array().unwrap();
+        tilo_startup_metrics::mark("admission-probe-done");
+        let later: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(later["native_admission"], checkpoint["native_admission"]);
+        let current_events = later["events"].as_array().unwrap();
+        assert_eq!(current_events.len(), previous_events.len() + 1);
+        assert_eq!(
+            current_events.get(..previous_events.len()).unwrap(),
+            previous_events,
+            "every existing startup event must remain unchanged"
+        );
+        assert_eq!(
+            current_events.last().unwrap()["name"],
+            "admission-probe-done"
+        );
+        return;
+    }
+    for case in ["enabled", "disabled"] {
+        let temp = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "app::framework_history_tests::ordinary_native_pump_exports_admission_before_any_action", "--nocapture"])
+            .env(CHILD, case)
+            .env("TILO_STARTUP_METRICS_PATH", temp.path().join("startup.json"))
+            .env("TILO_PROFILE_PRESENTATION", if case == "enabled" { "1" } else { "0" })
+            .env_remove("TILO_NATIVE_SCENARIO")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{case}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+            "child must execute exactly its production pump case"
+        );
+        assert!(
+            temp.path().join("startup.json").is_file(),
+            "child must publish its actual startup checkpoint"
+        );
+    }
 }

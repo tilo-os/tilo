@@ -20,6 +20,7 @@ struct Fixture {
     _construction: NativeConstruction,
     _sender: tokio::sync::mpsc::Sender<QueuedSdkCommand>,
     read: CommittedDocument,
+    original: Vec<u8>,
     room: String,
     checkout: RecordCheckout,
     receiver: Option<tokio::sync::mpsc::Receiver<QueuedSdkCommand>>,
@@ -30,9 +31,25 @@ async fn fixture(receipt: bool, wrong_room: bool) -> Fixture {
 }
 
 async fn fixture_graph(receipt: bool, wrong_room: bool, with_unknown: bool) -> Fixture {
+    fixture_record(receipt, wrong_room, with_unknown, None).await
+}
+
+async fn fixture_record(
+    receipt: bool,
+    wrong_room: bool,
+    with_unknown: bool,
+    existing_primary: Option<bool>,
+) -> Fixture {
     let room_id = uuid::Uuid::new_v4();
     let room = room_id.to_string();
-    let checkout = RecordCheckout::new(RecordId::room_default(), RecordKind::new("store.catalog"));
+    let checkout = RecordCheckout::new(
+        if existing_primary == Some(true) {
+            RecordId::package_primary()
+        } else {
+            RecordId::room_default()
+        },
+        RecordKind::new("store.catalog"),
+    );
     let mut document = AutoCommit::new();
     if with_unknown {
         document
@@ -40,7 +57,17 @@ async fn fixture_graph(receipt: bool, wrong_room: bool, with_unknown: bool) -> F
             .unwrap();
         document.commit();
     }
+    if existing_primary.is_some() {
+        assert!(crate::record::init_scoped(
+            &mut document,
+            &checkout.id,
+            &checkout.kind,
+            &room,
+            Some(&room)
+        ));
+    }
     let bytes = document.save();
+    let original = bytes.clone();
     let chunk = CreationChunk {
         capture: 1,
         revision: [3; 32],
@@ -77,7 +104,11 @@ async fn fixture_graph(receipt: bool, wrong_room: bool, with_unknown: bool) -> F
         .await
         .unwrap();
     let bridge_state = BridgeState::new();
-    let route = RouteSpec::record("so.tilo.store", room_id, checkout.id.as_str());
+    let route = if checkout.id.is_package_primary() {
+        RouteSpec::app("so.tilo.store", room_id)
+    } else {
+        RouteSpec::record("so.tilo.store", room_id, checkout.id.as_str())
+    };
     bridge_state
         .document_reads
         .stage_for_test(&route.channel_id(), read.clone());
@@ -101,6 +132,7 @@ async fn fixture_graph(receipt: bool, wrong_room: bool, with_unknown: bool) -> F
         _construction: NativeConstruction { state, previous },
         _sender: sender,
         read,
+        original,
         room,
         checkout,
         receiver: Some(receiver),
@@ -440,4 +472,107 @@ async fn named_original_receipt_survives_same_graph_refresh_but_never_masks_new_
     fixture.read.initialized();
     assert!(initialization.workspace().is_none());
     assert!(store.admission_route(&fixture.checkout).is_err());
+}
+
+async fn existing_read_again(bytes: Vec<u8>) -> CommittedDocument {
+    let (read, _) = read_capture_using(
+        Reply::Chunk {
+            capture: 2,
+            revision: [3; 32],
+            total: u32::try_from(bytes.len()).unwrap(),
+            offset: 0,
+            bytes,
+            token: [5; 16],
+        },
+        &ByteBudget::new(),
+        async |_| Ok(Reply::Cancelled),
+    )
+    .await
+    .unwrap();
+    read
+}
+
+fn refresh_existing_read(fixture: &Fixture, read: CommittedDocument) {
+    let bridge = fixture._construction.state.bridge.as_ref().unwrap();
+    let route = if fixture.checkout.id.is_package_primary() {
+        bridge.route.clone()
+    } else {
+        RouteSpec::record(
+            "so.tilo.store",
+            bridge.route.cluster_id,
+            fixture.checkout.id.as_str(),
+        )
+    };
+    bridge
+        .state
+        .document_reads
+        .stage_for_test(&route.channel_id(), read);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn independent_native_views_share_admitted_history_and_preserve_both_local_journals() {
+    for primary in [false, true] {
+        let fixture = fixture_record(false, false, true, Some(primary)).await;
+        let directory = tempfile::tempdir().unwrap();
+        let mut first_owners = RecordOwners::new(directory.path().to_owned());
+        let first = first_owners.open("so.tilo.store", &fixture.room).unwrap();
+        first.try_open_record(&fixture.checkout).unwrap();
+        first.try_flush_record(&fixture.checkout.id).unwrap();
+        let read = existing_read_again(fixture.original.clone()).await;
+        refresh_existing_read(&fixture, read);
+        let mut second_owners = RecordOwners::new(directory.path().to_owned());
+        let second = second_owners.open("so.tilo.store", &fixture.room).unwrap();
+        assert!(!first.same_owner(&second));
+        second.try_open_record(&fixture.checkout).unwrap();
+        let fill: Vec<u8> = (0..4096_u64)
+            .flat_map(|index| *blake3::hash(&index.to_le_bytes()).as_bytes())
+            .collect();
+        second
+            .with(&fixture.checkout.id, |doc| {
+                doc.put(ROOT, "journal_fill", automerge::ScalarValue::Bytes(fill))
+                    .unwrap();
+            })
+            .unwrap();
+        second.try_flush_record(&fixture.checkout.id).unwrap();
+        // The second cache has not seen this sibling's later append. Its next
+        // write crosses the real compaction threshold and must not replace it.
+        first
+            .with(&fixture.checkout.id, |doc| {
+                doc.put(ROOT, "first_local", true).unwrap()
+            })
+            .unwrap();
+        first.try_flush_record(&fixture.checkout.id).unwrap();
+        second
+            .with(&fixture.checkout.id, |doc| {
+                doc.put(ROOT, "second_local", true).unwrap()
+            })
+            .unwrap();
+        second.try_flush_record(&fixture.checkout.id).unwrap();
+        assert!(second.is_ready(&fixture.checkout.id));
+        drop((first, second, first_owners, second_owners));
+        let read = existing_read_again(fixture.original.clone()).await;
+        refresh_existing_read(&fixture, read);
+        let mut reopened_owners = RecordOwners::new(directory.path().to_owned());
+        let reopened = reopened_owners
+            .open("so.tilo.store", &fixture.room)
+            .unwrap();
+        reopened.try_open_record(&fixture.checkout).unwrap();
+        reopened
+            .read_checked(&fixture.checkout.id, |doc| {
+                for key in ["first_local", "second_local"] {
+                    let value = doc.get(ROOT, key).unwrap();
+                    assert!(value.is_some(), "shared cache lost sibling field {key}");
+                    assert_eq!(value.unwrap().0.as_bool(), Some(true));
+                }
+                assert_eq!(
+                    doc.get(ROOT, "future_owner_field")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_str(),
+                    Some("preserved")
+                );
+            })
+            .unwrap();
+    }
 }

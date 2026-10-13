@@ -695,21 +695,9 @@ impl ScrollRegion {
         &mut self,
         action: super::PrimaryScrollAction,
     ) -> super::PrimaryScrollResult {
-        use super::PrimaryScrollResult;
-        let Some(region) = self.primary_vertical_scroll() else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        let Some(next) = action.offset(region.metrics) else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        if (next - region.metrics.offset).abs() < f64::EPSILON {
-            return PrimaryScrollResult::Unchanged(region);
-        }
-        self.scroll_by(Vec2::new(0.0, next - self.offset.y));
-        self.primary_vertical_scroll().map_or(
-            PrimaryScrollResult::Unsupported,
-            PrimaryScrollResult::Changed,
-        )
+        action.apply_to(self, Self::primary_vertical_scroll, |region, _, next| {
+            region.scroll_by(Vec2::new(0.0, next - region.offset.y));
+        })
     }
 }
 
@@ -770,18 +758,11 @@ mod tests {
         let mut region = region(1000.0);
         send(
             &mut region,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(100.0, 100.0),
-            },
+            &crate::synthetic_input::cursor_moved(100.0, 100.0),
         );
         assert!(send(
             &mut region,
-            &WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
+            &crate::synthetic_input::mouse_wheel(0.0, -1.0),
         ));
         let line = f64::from(Theme::dark().tokens.metrics.wheel_line);
         assert!((region.offset().y - line).abs() < 1e-9);

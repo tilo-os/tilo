@@ -1110,12 +1110,6 @@ impl SearchRegistry {
         self.query_inner(args, true, false).0
     }
 
-    /// Explicit machine enumeration includes programmatic actions within the
-    /// same bounded provider, continuation and visibility machinery.
-    pub fn query_with_programmatic(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
-        self.query_inner(args, true, true).0
-    }
-
     pub fn begin_catalogue_query(&self) {
         for provider in self.enabled_providers() {
             provider.begin_catalogue_query();
@@ -2589,10 +2583,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn result_groups_stay_contiguous_and_a_lone_group_is_never_trimmed() {
         // Phase `reordering_groups_keeps_each_kind_contiguous`.
         // Each kind renders as one contiguous block, not interleaved.
@@ -2689,10 +2679,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn an_installed_apps_name_offers_the_app_first_even_in_a_capped_palette() {
         // Phase `typing_an_installed_apps_name_offers_the_app_first`.
         // Driven through the applications provider against an installed-app

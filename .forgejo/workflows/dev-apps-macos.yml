@@ -1,0 +1,121 @@
+name: Dev / apps-macos
+
+# Every app that runs on macOS (tools/ci/macos_apps.py reads the manifests)
+# must keep building and passing its tests there, and the SDK must keep
+# turning one app source into a working .app. No Linux lane observes either.
+#
+# One persistent development Mac (`macos-aarch64`) serves all macOS jobs, and
+# building and testing every app takes it over an hour even with a warm
+# target directory, so this runs nightly and on demand rather than per push
+# or pull request; pull requests keep the Mac for dev-runtime-macos.yml,
+# which checks the runtime the apps share. Nothing here requests an OIDC token or touches the release
+# label `imager-macos-aarch64`.
+on:
+  schedule:
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: dev-apps-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The generated template outside the repository, Calculator and Notes as
+  # ad-hoc-signed .app bundles rendered offscreen, and a packaged .app zip
+  # with its signing descriptor (Developer ID signing and notarization need
+  # release secrets; without them `package` signs ad hoc). The registry has no
+  # macOS artifact format yet, so the zip is not turned into an entry.
+  sdk:
+    runs-on: macos-aarch64
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+      - uses: ./.forgejo/actions/prepare-font-assets
+      - uses: ./.forgejo/actions/stable-source
+      - name: Build tilo-app and tilo-app-package
+        working-directory: ${{ env.SRC }}
+        run: |
+          cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
+          echo "bin=${CARGO_TARGET_DIR:-$PWD/target}/debug" >> "$GITHUB_ENV"
+      - name: Template outside the repository, as a git dependency
+        working-directory: ${{ env.SRC }}
+        env:
+          TILO_SDK_SOURCE: git
+        # Cargo fetches branches and tags from the file:// repository; the
+        # detached checkout's commit needs a branch to be found.
+        run: |
+          git update-ref refs/heads/outside-repo-sdk HEAD
+          rustup target add wasm32-unknown-unknown
+          cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture
+      - name: Calculator and Notes as .app bundles
+        working-directory: ${{ env.SRC }}
+        run: |
+          set -euo pipefail
+          shots="$RUNNER_TEMP/macos-shots"
+          mkdir -p "$shots"
+          for app in calculator notes; do
+            bundle="$("$bin"/tilo-app build --target macos "apps/$app" | tail -n 1)"
+            plutil -lint "$bundle/Contents/Info.plist"
+            codesign --verify --deep --strict "$bundle"
+            "$bundle/Contents/MacOS/$app" --shots "$shots/$app.png"
+            test -s "$shots/$app.png"
+          done
+      - name: Package Calculator for macOS
+        working-directory: ${{ env.SRC }}
+        run: |
+          "$bin"/tilo-app package --target macos apps/calculator \
+            --output "$RUNNER_TEMP/Calculator-macos.zip" --force
+          test -s "$RUNNER_TEMP/Calculator-macos.zip"
+          test -s "$RUNNER_TEMP/Calculator-macos.zip.json"
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: app-sdk-macos-shots
+          path: ${{ runner.temp }}/macos-shots
+          if-no-files-found: ignore
+
+
+  apps:
+    needs: sdk
+    if: ${{ !cancelled() }}
+    runs-on: macos-aarch64
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+      - uses: ./.forgejo/actions/prepare-font-assets
+      - uses: ./.forgejo/actions/stable-source
+      - name: Build every macOS app
+        working-directory: ${{ env.SRC }}
+        run: cargo build --locked $(python3 tools/ci/macos_apps.py)
+      - name: Compile and prewarm test entry
+        working-directory: ${{ env.SRC }}
+        run: |
+          set -euo pipefail
+          artifacts="$RUNNER_TEMP/macos-test-artifacts.jsonl"
+          trap 'rm -f "$artifacts"' EXIT
+          cargo test --locked --no-fail-fast --no-run --message-format=json-render-diagnostics \
+            $(python3 tools/ci/macos_apps.py) > "$artifacts"
+          # macOS first-entry checks consumed 45m38s serially in run 105502.
+          # Only --list runs here, at most four processes. The steps below still
+          # run every unit/integration test and doctest.
+          if ! python3 tools/ci/prewarm_test_binaries.py --artifacts "$artifacts" \
+            --target "${CARGO_TARGET_DIR:-$PWD/target}" \
+            --rust-library "$(rustc --print target-libdir)"; then
+            echo 'Prewarm unavailable; the complete Cargo test run remains required.'
+          fi
+      # One process per test, as the Linux lanes run them: tests that share
+      # process-wide state (the shell's live activity, frozen clocks) would
+      # otherwise interfere on cargo test's shared threads.
+      - name: Test every macOS app
+        working-directory: ${{ env.SRC }}
+        run: cargo nextest run --locked --profile ci --no-fail-fast $(python3 tools/ci/macos_apps.py)
+      - name: Doctests of every macOS app
+        if: ${{ !cancelled() }}
+        working-directory: ${{ env.SRC }}
+        run: cargo test --locked --no-fail-fast --doc $(python3 tools/ci/macos_apps.py)

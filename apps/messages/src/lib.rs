@@ -183,13 +183,6 @@ pub enum MessagesEffect {
     /// Return to the person overview.
     #[effect(view, idempotent)]
     Back,
-    /// Legacy recipient-only request. Always unavailable: an address without
-    /// a provider scope and identity revision cannot confirm a sending route.
-    ConfirmRecipient {
-        person: String,
-        service: String,
-        recipient: String,
-    },
     /// Review this exact person, association, sender account, provider scope,
     /// recipient and identity revision. This records an address-book decision;
     /// the adapter must separately verify current provider identity before I/O.

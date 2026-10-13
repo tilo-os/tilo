@@ -42,6 +42,7 @@ use crate::shell::network::ShellNetwork;
 /// A room's last-published cursor and when it went out, keyed by room —
 /// what [`should_publish_cursor`] rate-limits against.
 type CursorPublishHistory = HashMap<String, (PointerAnchor, Instant)>;
+type CertifiedPeopleInbound = Arc<Mutex<Vec<(String, Vec<ui::collaboration::Collaborator>)>>>;
 type DepartureKey = (u64, String, std::time::SystemTime);
 
 /// Where a person's pointer is, in terms every device in the room shares:
@@ -181,6 +182,13 @@ pub struct PeerPresence {
     /// cursor queue. They are drained into the same render-only
     /// [`PresenceCtx`] projection in [`Self::pump`].
     typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
+    /// Complete owner-backed People contexts. Ordinary app-authored Context
+    /// fanout is deliberately not an input: it cannot establish membership.
+    room_people: Arc<Mutex<HashMap<String, Vec<ui::collaboration::Collaborator>>>>,
+    certified_people_inbound: CertifiedPeopleInbound,
+    _certified_people_subscription:
+        Option<Arc<tilo_action_broker::collab_broker::CertifiedPeopleSubscription>>,
+    projected_people: Mutex<(Option<String>, HashSet<ui::permissions::UserId>)>,
     departures: Arc<crate::shell::network::PeerDepartureHistory>,
     seen_departures: Mutex<HashSet<DepartureKey>>,
     /// The departure history's generation [`Self::pump`] last read it at.
@@ -295,10 +303,18 @@ fn fold_typed_presence(
         if let PresencePayload::Interaction(update) = payload {
             // The broker and the network's ingress deliver an actor they
             // vouch for under its own id; anything else is its sender.
-            let actor = if update.actor.id == user {
+            let id = ui::permissions::UserId(user.clone());
+            let kind = match presence.participant_kind(&id) {
+                ui::presence::ParticipantKind::Person => tilo_actions::ActorKind::Person,
+                ui::presence::ParticipantKind::Agent => tilo_actions::ActorKind::Agent,
+                ui::presence::ParticipantKind::Shortcut => tilo_actions::ActorKind::Shortcut,
+                ui::presence::ParticipantKind::App => tilo_actions::ActorKind::App,
+                ui::presence::ParticipantKind::Bot => tilo_actions::ActorKind::Bot,
+            };
+            let actor = if update.actor.id == user && update.actor.kind == kind {
                 update.actor.clone()
             } else {
-                tilo_actions::InteractionActor::new(user, update.actor.kind)
+                tilo_actions::InteractionActor::new(user, kind)
             };
             let sequence = update.sequence;
             let update = (*update).normalized_by_broker(actor, sequence);
@@ -376,6 +392,15 @@ impl PeerPresence {
         let typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>> =
             Arc::new(Mutex::new(Vec::new()));
         let sink_typed = Arc::clone(&typed_inbound);
+        let room_people = Arc::new(Mutex::new(HashMap::new()));
+        let certified_people_inbound = Arc::new(Mutex::new(Vec::new()));
+        let certified_sink = Arc::clone(&certified_people_inbound);
+        let certified_people_subscription =
+            broker.observe_certified_people(Arc::new(move |room, people| {
+                if let Ok(mut inbound) = certified_sink.lock() {
+                    inbound.push((room, people));
+                }
+            }));
         let subscription = broker.subscribe_rooms(
             rooms.clone(),
             Box::new(move |event, route| {
@@ -431,7 +456,16 @@ impl PeerPresence {
                 net_for_subscription.publish_presence(key_str, (anchor.x, anchor.y));
             }),
         );
-        Self::assemble(cursor, typed_inbound, Some(subscription), net, rooms)
+        Self::assemble(
+            cursor,
+            typed_inbound,
+            room_people,
+            certified_people_inbound,
+            Some(certified_people_subscription),
+            Some(subscription),
+            net,
+            rooms,
+        )
     }
 
     /// [`Self::attach`] for a session with no collaboration broker: it
@@ -441,6 +475,9 @@ impl PeerPresence {
         Self::assemble(
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            None,
             None,
             net,
             rooms,
@@ -450,6 +487,11 @@ impl PeerPresence {
     fn assemble(
         cursor: Arc<Mutex<Option<PointerAnchor>>>,
         typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
+        room_people: Arc<Mutex<HashMap<String, Vec<ui::collaboration::Collaborator>>>>,
+        certified_people_inbound: CertifiedPeopleInbound,
+        certified_people_subscription: Option<
+            Arc<tilo_action_broker::collab_broker::CertifiedPeopleSubscription>,
+        >,
         subscription: Option<Arc<RoomSubscription>>,
         net: &Arc<ShellNetwork>,
         rooms: Vec<String>,
@@ -483,6 +525,10 @@ impl PeerPresence {
             anchored: Mutex::new(HashMap::new()),
             inbound: net.inbound_presence_handle(),
             typed_inbound,
+            room_people,
+            certified_people_inbound,
+            _certified_people_subscription: certified_people_subscription,
+            projected_people: Mutex::new((None, HashSet::new())),
             departures,
             seen_departures: Mutex::new(seen_departures),
             departures_applied,
@@ -514,9 +560,33 @@ impl PeerPresence {
             }
             g.clone_from(&rooms);
         }
+        if let Ok(mut people) = self.room_people.lock() {
+            people.retain(|room, _| rooms.contains(room));
+        }
         if let Some(subscription) = &self.subscription {
             subscription.set_rooms(rooms);
         }
+    }
+
+    /// Replace a room's complete roster from the existing owner-backed
+    /// certified People observer. The shell caller must use the same admitted
+    /// context as native apps, never an app's ordinary Context fanout.
+    pub(crate) fn set_certified_people(
+        &self,
+        room: &str,
+        people: Vec<ui::collaboration::Collaborator>,
+    ) {
+        let mine = self
+            .rooms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !mine.iter().any(|current| current == room) {
+            return;
+        }
+        if let Ok(mut current) = self.room_people.lock() {
+            current.insert(room.to_owned(), people);
+        }
+        drop(mine);
     }
 
     /// Follow the session's workspaces: after any write to `tree` since the
@@ -632,6 +702,14 @@ impl PeerPresence {
     /// [`ui::presence::POINTER_IDLE`] fades out and is retired; while one is
     /// fading this returns `true`, so the fade is painted frame by frame.
     pub fn pump_at(&self, presence: &mut PresenceCtx, tiles: &TabTiles, now: Instant) -> bool {
+        let certified = self
+            .certified_people_inbound
+            .lock()
+            .map(|mut inbound| std::mem::take(&mut *inbound))
+            .unwrap_or_default();
+        for (room, people) in certified {
+            self.set_certified_people(&room, people);
+        }
         let drained: Vec<_> = {
             let Ok(mut buf) = self.inbound.lock() else {
                 return false;
@@ -675,12 +753,51 @@ impl PeerPresence {
         let folded = folded || !typed.is_empty();
         // Attribution is normalized to the authenticated envelope identity
         // inside the fold; JSON supplied by an app cannot rename its actor.
+        let people_changed = self.project_people(presence);
         let typed_changed = fold_typed_presence(typed, presence);
         let departure_changed = self.fold_departures(presence);
-        if folded || cursor_changed || departure_changed {
+        if folded || cursor_changed || departure_changed || people_changed {
             self.presence_epoch.fetch_add(1, Ordering::Release);
         }
-        cursor_changed || typed_changed || departure_changed
+        cursor_changed || typed_changed || departure_changed || people_changed
+    }
+
+    fn project_people(&self, presence: &mut PresenceCtx) -> bool {
+        let tree = self.roster_tree.read();
+        let room = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string());
+        drop(tree);
+        let Ok(people) = self.room_people.lock() else {
+            return false;
+        };
+        let rows = room.as_ref().and_then(|room| people.get(room));
+        let current: HashSet<_> = rows
+            .into_iter()
+            .flatten()
+            .map(|participant| ui::permissions::UserId(participant.id.clone()))
+            .collect();
+        let Ok(mut projected) = self.projected_people.lock() else {
+            return false;
+        };
+        let mut changed = projected.0 != room || projected.1 != current;
+        for retired in projected.1.difference(&current) {
+            presence.unregister_peer(&retired.0);
+        }
+        for participant in rows.into_iter().flatten() {
+            let id = ui::permissions::UserId(participant.id.clone());
+            let kind = ui::presence::ParticipantKind::from(participant.is_agent);
+            changed |= presence.participant_kind(&id) != kind
+                || presence.names.get(&id) != Some(&participant.name);
+            presence.set_participant_kind(&id, kind);
+            presence.set_display_name(id.clone(), participant.name.clone());
+            if let Some(colour) = participant.colour {
+                presence.set_presence_hue(id, colour);
+            }
+        }
+        *projected = (room, current);
+        changed
     }
 
     /// Take everyone who left off `presence`, once each. Reads the departure
@@ -721,6 +838,11 @@ impl PeerPresence {
                     departure.participant_name.as_deref(),
                     &active_labels,
                 ) {
+                    if let Ok(mut people) = self.room_people.lock()
+                        && let Some(rows) = people.get_mut(&departure.route.cluster_id)
+                    {
+                        rows.retain(|row| row.id != id);
+                    }
                     presence.unregister_peer(&id);
                 }
                 changed = true;
@@ -821,9 +943,20 @@ impl PeerPresence {
                 return Some((false, String::new(), generation));
             }
             let labels = tree.room_peer_labels(ws.room);
-            // Two ways to be present: moving cursor, or CRDT participation.
+            // A live admitted tab is participation even without a pointer.
+            // Only tabs in this room contribute; another room's presence
+            // cannot make one of this room's invitees appear to have arrived.
             let room = ws.room.to_string();
             let mut arrived = handles_seen_in(presence, &room);
+            for (key, users) in &presence.here {
+                if workspace_presence_tab(ws, key).is_some() {
+                    arrived.extend(
+                        users
+                            .iter()
+                            .filter_map(|user| user.0.strip_prefix("peer@")?.parse::<u64>().ok()),
+                    );
+                }
+            }
             // A pointer this device can't place (its tab isn't shown here)
             // is still someone pointing at the room's work.
             if let Ok(anchored) = self.anchored.lock() {
@@ -845,12 +978,9 @@ impl PeerPresence {
                     .cloned()
                     .unwrap_or_else(|| ui::permissions::UserId(row.id.clone()));
                 row.active_tab = presence.here.iter().find_map(|(key, users)| {
-                    let PresenceKey::Tab { id } = key else {
-                        return None;
-                    };
                     users
                         .contains(&presence_id)
-                        .then(|| u64::from_str_radix(id, 16).ok())
+                        .then(|| workspace_presence_tab(ws, key))
                         .flatten()
                 });
             }
@@ -937,10 +1067,26 @@ fn roster_presence_print(
     print
 }
 
-/// The peer handles this session has had presence from in `room`.
-///
-/// Reads the same [`PresenceCtx`] the overlay paints cursors from, so the
-/// roster and the desktop can never disagree about who is present.
+/// Resolve a presence key only against the current room's admitted tabs.
+fn workspace_presence_tab(
+    workspace: &crate::shell::state::Workspace,
+    key: &PresenceKey,
+) -> Option<u64> {
+    let PresenceKey::Tab { id } = key else {
+        return None;
+    };
+    let id = u64::from_str_radix(id, 16).ok()?;
+    workspace
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .any(|tab| tab.id == id)
+        .then_some(id)
+}
+
+/// The peer handles this session has had pointer presence from in `room`.
+/// Reads the same [`PresenceCtx`] the overlay paints cursors from.
 fn handles_seen_in(presence: &PresenceCtx, room: &str) -> std::collections::BTreeSet<u64> {
     let mut out = std::collections::BTreeSet::new();
     for (key, peers) in &presence.pointers {
@@ -1194,6 +1340,7 @@ mod tests {
             PresencePayload::Interaction(update)
         };
         let mut presence = PresenceCtx::default();
+        presence.set_participant_kind(UserId("agent:claude".into()), true);
         assert!(fold_typed_presence(
             vec![
                 ("agent:claude".into(), resource.clone(), agent("ada")),
@@ -1212,6 +1359,35 @@ mod tests {
             .find(|update| update.actor.id == "peer@9")
             .expect("attributed to its sender");
         assert_eq!(forged.actor.for_person, None);
+        assert_eq!(forged.actor.kind, tilo_actions::ActorKind::Person);
+        assert!(!presence.is_agent(&UserId("peer@9".into())));
+    }
+
+    #[test]
+    fn a_payload_cannot_promote_an_unrostered_person_to_an_agent() {
+        let mut presence = PresenceCtx::default();
+        let PresencePayload::Interaction(mut update) = interaction("agent:invented") else {
+            unreachable!();
+        };
+        update.actor.kind = tilo_actions::ActorKind::Agent;
+        fold_typed_presence(
+            vec![(
+                "agent:invented".into(),
+                PresenceKey::Resource {
+                    app: "org.tilo.Writer".into(),
+                    id: "report:q3".into(),
+                    kind: "document".into(),
+                },
+                PresencePayload::Interaction(update),
+            )],
+            &mut presence,
+        );
+        assert!(!presence.is_agent(&UserId("agent:invented".into())));
+        assert!(
+            presence
+                .agent_marker_interactions(Instant::now())
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2207,6 +2383,63 @@ mod two_sessions {
     use crate::shell::output_scene::OutputGeometry;
     use crate::shell::state::{GroupId, PeerOrigin, RoomId, WorkspaceTree};
 
+    #[test]
+    fn certified_people_replacement_and_room_removal_retire_software_presence_without_a_pointer() {
+        let (tree, room) = host_naming(&[]);
+        let tree = tree.shared();
+        let (network, _commands) = shell_network_for_test(tree.clone(), 17);
+        let network = Arc::new(network);
+        let relay = PeerPresence::for_network(&network, rooms_of(&tree));
+        let mut presence = PresenceCtx::default();
+        let id = ui::permissions::UserId("opaque-certified-software".into());
+        let row = ui::collaboration::Collaborator {
+            id: id.0.clone(),
+            name: "Tide".into(),
+            colour: None,
+            is_agent: true,
+            is_self: false,
+        };
+        relay.set_certified_people(&room.to_string(), vec![row.clone()]);
+        relay.pump(&mut presence, &[]);
+        assert!(
+            !presence.is_agent(&id),
+            "a certified roster in an inactive room must not leak into desktop presence"
+        );
+        // Appending a workspace does not focus it. Projection follows the
+        // active room, so enter the fixture's room before checking its kind.
+        {
+            let mut tree = tree.write();
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == room)
+                .expect("the certified roster's room exists")
+                .id;
+            tree.set_active(workspace);
+        }
+        relay.pump(&mut presence, &[]);
+        assert!(
+            presence.is_agent(&id),
+            "kind comes from the certified roster, not an id prefix"
+        );
+        assert!(
+            presence.remote_cursors.is_empty(),
+            "a roster is not pointer evidence"
+        );
+        relay.set_certified_people(&room.to_string(), Vec::new());
+        relay.pump(&mut presence, &[]);
+        assert!(!presence.is_agent(&id));
+        assert!(!presence.names.contains_key(&id));
+        relay.set_certified_people(&room.to_string(), vec![row]);
+        relay.pump(&mut presence, &[]);
+        assert!(presence.is_agent(&id));
+        relay.set_rooms(Vec::new());
+        relay.pump(&mut presence, &[]);
+        assert!(!presence.is_agent(&id));
+        assert!(!presence.names.contains_key(&id));
+    }
+
     const OWNER: &str = "quinten";
 
     /// A real Iroh endpoint id, minted from a keypair, so the parse is
@@ -2922,6 +3155,75 @@ mod two_sessions {
             .collect()
     }
 
+    #[test]
+    fn admitted_tab_presence_is_arrival_without_a_pointer_and_stays_in_its_room() {
+        let guest_peer = peer_id(81);
+        let host_peer = peer_id(82);
+        let (mut tree, room) = host_naming(&[(&guest_peer, "Xaver")]);
+        looking_at_its_room(&mut tree);
+        tree.desktop.active_workspace_mut().unwrap().strips =
+            desk(room, &[]).desktop.workspaces[0].strips.clone();
+        let handle = tree.shared();
+        let directory = tempfile::tempdir().expect("private roster fixture directory");
+        let (host, _net, _commands) = session(directory.path(), "host.sock", &handle, &host_peer);
+        let mut presence = PresenceCtx::default();
+        let mut now = Instant::now();
+        assert!(host.refresh_roster_at(&presence, now));
+        assert_eq!(roster_of(&handle), vec![("Xaver".to_string(), None, true)]);
+        let user = ui::permissions::UserId(format!("peer@{}", handle_of(&guest_peer)));
+        let tab = desk_tab(DESK_GROUPS[0]);
+        presence.register_presence(
+            &PresenceKey::Tab {
+                id: format!("{tab:x}"),
+            },
+            user.clone(),
+        );
+        // This fixture writes the presence store directly, so use the same
+        // bounded periodic refresh that catches an input without a pump epoch.
+        now += ROSTER_RECHECK;
+        assert!(host.refresh_roster_at(&presence, now));
+        assert_eq!(
+            roster_of(&handle),
+            vec![("Xaver".to_string(), None, false)],
+            "a live admitted tab is participation even when its cursor is idle"
+        );
+        assert_eq!(
+            handle
+                .read()
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .collaborators[0]
+                .active_tab,
+            Some(tab)
+        );
+        assert!(presence.pointers.is_empty());
+        presence.here.clear();
+        presence.register_presence(
+            &PresenceKey::Tab {
+                id: "deadbeef".into(),
+            },
+            user,
+        );
+        now += ROSTER_RECHECK;
+        assert!(host.refresh_roster_at(&presence, now));
+        assert_eq!(
+            roster_of(&handle),
+            vec![("Xaver".to_string(), None, true)],
+            "a tab outside this room cannot turn an invitation into participation"
+        );
+        assert_eq!(
+            handle
+                .read()
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .collaborators[0]
+                .active_tab,
+            None
+        );
+    }
+
     /// Stand a session up around `tree` with `peer` as its identity.
     /// Returns the relay and the command channel, which has to be kept
     /// alive or the actor's sends start failing.
@@ -3246,10 +3548,6 @@ mod two_sessions {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario walks each roster input in turn on one fixture"
-    )]
     fn the_roster_is_derived_again_only_after_one_of_its_inputs_changed() {
         let guest_peer = peer_id(71);
         let host_peer = peer_id(72);
@@ -3405,7 +3703,7 @@ mod two_sessions {
         }
         let gated = started.elapsed();
         eprintln!(
-            "TIL-136 roster per idle frame, 30 named peers: derived every frame {:?}, gated {:?}",
+            "#3805 roster per idle frame, 30 named peers: derived every frame {:?}, gated {:?}",
             derived / FRAMES,
             gated / FRAMES,
         );

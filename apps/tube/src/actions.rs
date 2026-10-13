@@ -14,19 +14,6 @@ use crate::model::{Category, Route, Settings, SkipMode};
 const MAX_RESOURCE_LABEL_CHARS: usize = 160;
 pub(crate) const QUALITY_OPTIONS: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
-/// The binding of one fully specified effect, for a control: the same
-/// published effect the palette and agents invoke.
-pub fn effect_binding(effect: &TubeEffect) -> Option<ui::tilo_actions::ActionBinding<()>> {
-    use ui::tilo_resource::{Effect as _, Resource as _};
-    let spec = TubeEffect::specs()
-        .into_iter()
-        .find(|spec| spec.id == effect.id())?;
-    let app = crate::resource::Library::KIND;
-    let root = ui::tilo_actions::Resource::new(app, app, crate::resource::Library::LABEL)
-        .with_action(spec.clone());
-    ui::tilo_actions::ActionBinding::static_json(&root, &spec, effect.arguments()).ok()
-}
-
 /// What Tube does that changes no document, invoked from its own controls,
 /// the palette, an agent or a script alike. A live row offers the effects
 /// bound to its entity (open *this* video).
@@ -225,15 +212,6 @@ impl TubeEffect {
             _ => return None,
         }
         Some(Ok(changed))
-    }
-
-    /// The label a control invoking this effect is announced with.
-    pub(crate) fn label(&self) -> &'static str {
-        let id = self.id();
-        Self::declarations()
-            .into_iter()
-            .find(|decl| decl.id == id)
-            .map_or(id, |decl| decl.label)
     }
 }
 

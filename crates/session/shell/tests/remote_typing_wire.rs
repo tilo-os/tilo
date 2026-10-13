@@ -13,11 +13,12 @@
 )]
 
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 
 use shell::network::{Denial, InputEvent, ShellView, StreamingShare};
 use vello::kurbo::Rect;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, PhysicalKey};
@@ -150,11 +151,7 @@ fn local_key(code: winit::keyboard::KeyCode, pressed: bool) -> WindowEvent {
         },
     );
     event.physical_key = PhysicalKey::Code(code);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }
 
 #[test]
@@ -910,4 +907,195 @@ fn a_trusted_osk_toplevel_never_adopts_a_tab_before_its_app_id_arrives() {
     h.pump();
     let public_window = foreign_id(&h.state, "so.tilo.osk");
     assert_ne!(h.state.osk_surface, Some(public_window));
+}
+
+fn authenticated_window_harness() -> (Harness, shell::shell::state::RoomId, u32, u64) {
+    let room: shell::shell::state::RoomId = uuid::Uuid::new_v4().into();
+    let pid = std::process::id();
+    let kernel_stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let start: u64 = kernel_stat
+        .rsplit_once(')')
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let h = Harness::with_identity(|state| {
+        state.workspace_tree.write().workspaces[0].room = room;
+        let mut client = shell::compositor::state::ClientState::default();
+        client.package_id = Some("so.tilo.calculator".into());
+        client.workspace_id = Some(room.to_string());
+        client.enforce_package_id = true;
+        client.pid = Some(pid);
+        client.pid_start_time = Some(start);
+        Arc::new(client)
+    });
+    (h, room, pid, start)
+}
+
+#[test]
+fn native_window_provenance_requires_current_authenticated_surface_record_and_lifetime() {
+    use shell::shell::state::{LocalAppRecord, TileContent};
+    let (mut h, room, pid, start) = authenticated_window_harness();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let surface = compositor.create_surface(&h.queue.handle(), ());
+    let xdg = wm.get_xdg_surface(&surface, &h.queue.handle(), ());
+    let top = xdg.get_toplevel(&h.queue.handle(), ());
+    top.set_app_id("so.tilo.calculator".into());
+    top.set_title("private title excluded from owner provenance".into());
+    h.pump();
+    let id = foreign_id(&h.state, "so.tilo.calculator");
+    let tab = {
+        let tree = h.state.workspace_tree.read();
+        tree.workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|s| &s.window_groups)
+            .flat_map(|g| &g.tabs)
+            .find(|t| matches!(&t.tile, TileContent::Foreign {surface_id, ..} if *surface_id == id))
+            .unwrap()
+            .id
+    };
+    assert_eq!(
+        h.state.native_window_provenance_json()["windows"],
+        serde_json::json!([])
+    );
+    h.state.workspace_tree.write().local_app_records.insert(
+        tab,
+        LocalAppRecord {
+            room,
+            app_id: "so.tilo.calculator".into(),
+            record_instance: 77,
+        },
+    );
+    let proof = h.state.native_window_provenance_json();
+    assert_eq!(proof["windows"].as_array().unwrap().len(), 1);
+    assert_eq!(proof["windows"][0]["surface_id"], id);
+    assert_eq!(proof["windows"][0]["tab_id"], tab);
+    assert_eq!(proof["windows"][0]["record_instance"], 77);
+    assert_eq!(proof["windows"][0]["peer_pid"], pid);
+    assert_eq!(
+        proof["windows"][0]["peer_start_time_ticks"],
+        start.to_string()
+    );
+    let adoption: uuid::Uuid = proof["windows"][0]["adoption_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(!adoption.is_nil());
+    assert!(!proof.to_string().contains("private title"));
+    h.state
+        .workspace_tree
+        .write()
+        .local_app_records
+        .get_mut(&tab)
+        .unwrap()
+        .room = uuid::Uuid::new_v4().into();
+    assert_eq!(
+        h.state.native_window_provenance_json()["windows"],
+        serde_json::json!([])
+    );
+    h.state
+        .workspace_tree
+        .write()
+        .local_app_records
+        .get_mut(&tab)
+        .unwrap()
+        .room = room;
+    top.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.pump();
+    assert_eq!(
+        h.state.native_window_provenance_json()["windows"],
+        serde_json::json!([])
+    );
+    let dump = shell::shell::test_control::Command::StateDump {
+        include_history: false,
+    };
+    assert!(dump.admin_permitted());
+    assert!(!dump.agent_permitted());
+}
+
+fn record_window_for_provenance(h: &Harness, id: u64, instance: u64) -> serde_json::Value {
+    use shell::shell::state::{LocalAppRecord, TileContent};
+    let tree = h.state.workspace_tree.read();
+    let (room, tab) = tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().flat_map(|strip| &strip.window_groups).flat_map(|group| &group.tabs)
+            .find(|tab| matches!(&tab.tile, TileContent::Foreign {surface_id, ..} if *surface_id == id))
+            .map(|tab| (workspace.room, tab.id))
+    }).unwrap();
+    drop(tree);
+    h.state.workspace_tree.write().local_app_records.insert(
+        tab,
+        LocalAppRecord {
+            room,
+            app_id: "so.tilo.calculator".into(),
+            record_instance: instance,
+        },
+    );
+    h.state.native_window_provenance_json()["windows"][0].clone()
+}
+
+#[test]
+fn native_window_provenance_rejects_numeric_surface_id_reuse_across_resource_lifetimes() {
+    let (mut h, _, _, _) = authenticated_window_harness();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let surface = compositor.create_surface(&h.queue.handle(), ());
+    let xdg = wm.get_xdg_surface(&surface, &h.queue.handle(), ());
+    let top = xdg.get_toplevel(&h.queue.handle(), ());
+    top.set_app_id("so.tilo.calculator".into());
+    h.pump();
+    let id = foreign_id(&h.state, "so.tilo.calculator");
+    let original = record_window_for_provenance(&h, id, 77);
+    let protocol_id = surface.id().protocol_id();
+    top.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.pump();
+    assert_eq!(
+        h.state.native_window_provenance_json()["windows"],
+        serde_json::json!([])
+    );
+    let surfaces: Vec<_> = (0..3)
+        .map(|_| compositor.create_surface(&h.queue.handle(), ()))
+        .collect();
+    let replacement = surfaces
+        .iter()
+        .find(|surface| surface.id().protocol_id() == protocol_id)
+        .expect("the real client recycles one of its three destroyed object IDs");
+    let next_xdg = wm.get_xdg_surface(replacement, &h.queue.handle(), ());
+    let next_top = next_xdg.get_toplevel(&h.queue.handle(), ());
+    next_top.set_app_id("so.tilo.calculator".into());
+    h.pump();
+    let current = record_window_for_provenance(&h, id, 78);
+    assert_eq!(current["surface_id"], original["surface_id"]);
+    assert_eq!(current["peer_pid"], original["peer_pid"]);
+    assert_eq!(
+        current["peer_start_time_ticks"],
+        original["peer_start_time_ticks"]
+    );
+    assert_ne!(
+        current["adoption_id"], original["adoption_id"],
+        "the public Open lifetime cannot be reused even when the numeric surface and kernel worker are identical"
+    );
+    next_top.destroy();
+    next_xdg.destroy();
+    for surface in surfaces {
+        surface.destroy();
+    }
+    h.pump();
+    assert_eq!(
+        h.state.native_window_provenance_json()["windows"],
+        serde_json::json!([])
+    );
 }

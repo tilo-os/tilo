@@ -48,6 +48,14 @@ pub(crate) enum DesktopActionSession {
 }
 
 impl ActionSessionSource {
+    pub(crate) fn certified_marker_agent(
+        &self,
+        room: &str,
+        actor: &str,
+    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
+        self.broker.certified_agent_identity(room, actor)
+    }
+
     pub(crate) fn new(broker: AppActionBroker) -> Self {
         Self {
             broker,
@@ -143,6 +151,47 @@ impl ActionSessionSource {
 }
 
 impl DesktopActionSession {
+    /// Invoke through the session's original certified host and caller. Reads
+    /// that complete synchronously need no artificial broker-job mapping.
+    pub(crate) fn invoke(
+        &self,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        match self {
+            Self::Certified(session) => session.host.invoke(&session.caller, request),
+            #[cfg(test)]
+            Self::Mock { host, caller } => host.invoke(caller, request),
+            #[cfg(test)]
+            Self::Fixture { host, caller } => host.invoke(caller, request),
+        }
+    }
+
+    pub(crate) fn observe(
+        &self,
+        invocation: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        match self {
+            Self::Certified(session) => session.host.observe(&session.caller, invocation),
+            #[cfg(test)]
+            Self::Mock { host, caller } => host.observe(caller, invocation),
+            #[cfg(test)]
+            Self::Fixture { host, caller } => host.observe(caller, invocation),
+        }
+    }
+
+    pub(crate) fn next_change(
+        &self,
+        invocation: &tilo_actions::InvocationId,
+    ) -> Option<Pending<()>> {
+        match self {
+            Self::Certified(session) => session.host.next_change(&session.caller, invocation),
+            #[cfg(test)]
+            Self::Mock { host, caller } => host.next_change(caller, invocation),
+            #[cfg(test)]
+            Self::Fixture { host, caller } => host.next_change(caller, invocation),
+        }
+    }
+
     pub(crate) fn query(
         &self,
         query: CatalogueQuery,
@@ -253,5 +302,107 @@ impl CertifiedActionSession {
                 .ok_or(ActionHostError::UnknownInvocation)?;
             Ok((job, receipt))
         })
+    }
+}
+
+#[cfg(test)]
+mod forwarding_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tilo_actions::remote::{InvocationState, InvokeArgument, PendingPoll, RemoteActionTarget};
+    use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+
+    struct Probe {
+        caller: Caller,
+        calls: AtomicUsize,
+    }
+
+    impl Probe {
+        fn check(&self, caller: &Caller) {
+            assert_eq!(caller.principal(), self.caller.principal());
+            assert_eq!(caller.room(), self.caller.room());
+            assert_eq!(caller.user_public_key(), self.caller.user_public_key());
+            assert_eq!(caller.device_public_key(), self.caller.device_public_key());
+            assert_eq!(caller.execution_id(), self.caller.execution_id());
+            self.calls.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl ActionHost for Probe {
+        fn query(
+            &self,
+            caller: &Caller,
+            _: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            self.check(caller);
+            Pending::ready(Err(ActionHostError::NotPermitted))
+        }
+        fn invoke(
+            &self,
+            caller: &Caller,
+            _: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+            self.check(caller);
+            Pending::ready(Err(ActionHostError::NotPermitted))
+        }
+        fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+            self.check(caller);
+            Some(InvocationState::new(
+                *id,
+                InvocationUpdate::Accepted { invocation: *id },
+            ))
+        }
+        fn next_change(&self, caller: &Caller, _: &InvocationId) -> Option<Pending<()>> {
+            self.check(caller);
+            Some(Pending::ready(()))
+        }
+        fn cancel(&self, _: &Caller, _: &InvocationId) -> Result<(), ActionHostError> {
+            Err(ActionHostError::NotPermitted)
+        }
+    }
+
+    #[test]
+    fn session_forwarders_preserve_pinned_caller_and_exact_refusal() {
+        let caller = Caller::authenticated([11; 32], [12; 32])
+            .in_room("room")
+            .in_new_execution();
+        let probe = Arc::new(Probe {
+            caller: caller.clone(),
+            calls: AtomicUsize::new(0),
+        });
+        let session = DesktopActionSession::Mock {
+            host: probe.clone(),
+            caller,
+        };
+        let invocation = InvocationId::new();
+        let mut answer = session.invoke(InvokeRequest {
+            invocation,
+            target: RemoteActionTarget {
+                provider: "provider".into(),
+                address: ActionAddress::new("resource", "read"),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: Some("revision".into()),
+            on_behalf_of: None,
+            appearance: None,
+            wait_ms: None,
+        });
+        assert!(matches!(
+            crate::shell::search::invocation_wake::poll(&mut answer, std::task::Waker::noop()),
+            PendingPoll::Ready(Err(ActionHostError::NotPermitted))
+        ));
+        assert_eq!(
+            session.observe(&invocation).unwrap().invocation(),
+            invocation
+        );
+        let mut changed = session.next_change(&invocation).unwrap();
+        drop(session);
+        assert!(matches!(
+            crate::shell::search::invocation_wake::poll(&mut changed, std::task::Waker::noop()),
+            PendingPoll::Ready(())
+        ));
+        assert_eq!(probe.calls.load(Ordering::Relaxed), 3);
     }
 }

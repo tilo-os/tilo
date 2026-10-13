@@ -34,17 +34,21 @@ mod history_agents_tests;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
+mod native_checkout;
 #[cfg(test)]
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
 mod native_task_execution;
+mod native_task_launch;
 #[cfg(test)]
 mod policy_turn_tests;
 #[cfg(target_os = "linux")]
 mod process_binding;
 mod published_invocation;
 mod resolved_invocation;
+#[path = "workspace_checkpoints.rs"]
+mod workspace_checkpoints;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
 #[path = "workspace_tasks.rs"]
@@ -658,6 +662,19 @@ impl BrokerActor {
         }
     }
 
+    /// Installed bot `installation`, acting for the person who installed it:
+    /// it may do only what both its grant and that person may.
+    #[must_use]
+    pub fn bot(installation: &str, installer: impl Into<String>) -> Self {
+        Self {
+            id: format!("bot:{installation}"),
+            is_agent: false,
+            capped: false,
+            for_person: Some(installer.into()),
+            session_delegated: false,
+        }
+    }
+
     /// The same agent, acting for `person`.
     #[must_use]
     pub fn for_person(mut self, person: impl Into<String>) -> Self {
@@ -696,6 +713,11 @@ impl BrokerActor {
     fn delegate(&self) -> Option<Subject> {
         if let Some(app) = self.id.strip_prefix("app:") {
             return Some(Subject::App(app.to_owned()));
+        }
+        // A person's policy id is lowercase hex, so it never starts with
+        // `bot:` and the prefix cannot misread a person.
+        if let Some(bot) = self.id.strip_prefix("bot:") {
+            return Some(Subject::Bot(bot.to_owned()));
         }
         self.is_agent
             .then(|| Subject::agent(self.id.strip_prefix("agent:").unwrap_or(&self.id)))
@@ -803,7 +825,7 @@ impl BrokerActor {
     /// then needs the confirmation of the person it is made for, and the
     /// `Once` grants admitting it spends. Decided on one sample: the action
     /// where it is published; the task the call works in (`task`, and every
-    /// task an agent runs: [`tilo_desktop_model::Workspace::task_bound_at`]);
+    /// task an agent runs, including waiting tasks);
     /// and, for a person, a change of the route record it acts on, so a
     /// person restricted on one record cannot act on it through an action
     /// they may otherwise use.
@@ -816,6 +838,21 @@ impl BrokerActor {
         workspace: &tilo_desktop_model::Workspace,
         now: u64,
         task: Option<&str>,
+        (surface, action): (&PublishedSurface, &PublishedAction),
+    ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
+        self.admit_published_with_task_in(
+            workspace,
+            now,
+            workspace_tasks::TaskAdmission::Legacy(task),
+            (surface, action),
+        )
+    }
+
+    fn admit_published_with_task_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        now: u64,
+        task: workspace_tasks::TaskAdmission<'_>,
         (surface, action): (&PublishedSurface, &PublishedAction),
     ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
         let refused = || "caller no longer authorized for invocation".to_owned();
@@ -837,7 +874,7 @@ impl BrokerActor {
         let agent = self
             .is_agent
             .then(|| self.id.strip_prefix("agent:").unwrap_or(&self.id));
-        match workspace.task_bound_at(agent, task, &node, need.kind, now) {
+        match task.answer(workspace, agent, &node, need.kind, now) {
             Some(Answer::Deny) => return Err("the task's grants do not cover this action".into()),
             Some(Answer::Ask) => asks = true,
             Some(Answer::Allow) | None => {}
@@ -1594,6 +1631,7 @@ impl InvocationEnvelope {
 struct TaskRunEnvelope {
     task_id: String,
     title: String,
+    instruction: Option<String>,
     run_id: u64,
     lease: String,
     planning: runtime_collab::TaskRunPlanning,
@@ -1963,18 +2001,12 @@ mod witness;
 pub use local_action_host::CertifiedPersonContext;
 
 pub use launchable::launchable_provider;
-#[path = "desktop_commands.rs"]
-mod desktop_commands;
-#[path = "document_imports.rs"]
-mod document_imports;
 #[path = "peer_action_broker.rs"]
 mod peer_action_broker;
 #[path = "policy_context.rs"]
 mod policy_context;
 #[path = "room_service.rs"]
 mod room_service;
-#[path = "workspace_collaboration.rs"]
-mod workspace_collaboration;
 
 impl CapnpBrokerState {
     fn registered_policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
@@ -2149,7 +2181,9 @@ impl CapnpBrokerState {
             &contract.need(),
             &current.broker_actor(),
             now,
-        )
+        )?;
+        self.authorize_checkpoint_result(&caller.room, current.certificate.as_ref(), record)?;
+        Ok(())
     }
 
     pub(crate) fn verified_invocation_status(
@@ -2236,6 +2270,7 @@ impl CapnpBrokerState {
             request.peer_id,
             offered,
             InvocationInputs {
+                original_request: None,
                 requested: None,
                 caller: None,
                 execution: None,
@@ -3107,6 +3142,8 @@ struct PendingWorker {
 /// as, the one-use confirmation token it presents and its ambient context.
 /// Admission checks every field; none of them grants authority by itself.
 struct InvocationInputs<'a> {
+    /// Exact remote request before resolving a provider alias for delivery.
+    original_request: Option<&'a tilo_actions::remote::InvokeRequest>,
     /// The caller's lifecycle identity, independent of execution authority.
     requested: Option<tilo_actions::InvocationId>,
     /// Who the invocation is admitted for, when the door knows them as a
@@ -3179,6 +3216,7 @@ pub struct CapnpBrokerState {
     peer_action_rx: Mutex<Option<tokio::sync::mpsc::Receiver<super::peer_actions::Request>>>,
     action_directory_roots: Mutex<HashMap<u64, ActionDirectoryRoot>>,
     canonical_directories: Mutex<canonical_route::CanonicalDirectories>,
+    native_checkouts: Mutex<HashMap<u64, native_checkout::NativeCheckout>>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
@@ -3212,11 +3250,12 @@ pub struct CapnpBrokerState {
     admission_lock: Mutex<()>,
     journal: Mutex<Result<Option<InvocationJournal>, String>>,
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
-    /// The broker's own desktop command surface (not an app connection).
-    desktop_command_peer: Mutex<Option<u64>>,
     /// Broker-owned governed membership surface per native room.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
+    // Retain result authorization even when the host has no durable journal.
+    // Entries share the completed invocation cache's bounded lifetime.
+    checkpoint_jobs: Mutex<HashMap<u64, (String, String, tilo_actions::ActionContract)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     /// Confirmations people gave on their own device for an invocation
     /// someone acting for them makes; see [`Self::witness_confirmation`].
@@ -3410,6 +3449,7 @@ impl CapnpBrokerState {
         clear!(self.channels);
         clear!(self.surfaces);
         clear!(self.action_directory_roots);
+        clear!(self.native_checkouts);
         clear!(self.invocation_subscribers);
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
@@ -3688,6 +3728,9 @@ impl CapnpBrokerState {
                     break;
                 };
                 completed.remove(&oldest);
+                if let Ok(mut checkpoints) = self.checkpoint_jobs.lock() {
+                    checkpoints.remove(&oldest);
+                }
             }
         }
     }
@@ -3971,6 +4014,7 @@ impl CapnpBrokerState {
                 peer_action_queue,
                 peer_action_rx: Mutex::new(Some(peer_action_rx)),
                 action_directory_roots: Mutex::new(HashMap::new()),
+                native_checkouts: Mutex::new(HashMap::new()),
                 canonical_directories: Mutex::new(canonical_route::CanonicalDirectories::default()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 invocation_subscribers: Mutex::new(HashMap::new()),
@@ -3993,9 +4037,9 @@ impl CapnpBrokerState {
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
-                desktop_command_peer: Mutex::new(None),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
+                checkpoint_jobs: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 witnessed_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
@@ -4667,6 +4711,7 @@ impl CapnpBrokerState {
                 peer_id,
                 (surface, published),
                 InvocationInputs {
+                    original_request: None,
                     requested: None,
                     caller: None,
                     execution: None,
@@ -4806,12 +4851,27 @@ impl CapnpBrokerState {
             .membership
             .as_ref()
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
-        // Only this room's live surfaces and in-scope actions reach the
-        // borrow; everything else is dropped before authority is read.
-        let published = self
+        // Ordinary directed invocation needs a live publisher. Only native
+        // task custody can activate an inert retained route; its catalogue
+        // keeps stable providers discoverable without inventing a publisher.
+        let live = self
             .published_surfaces_for_scope(scope)
             .into_iter()
-            .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
+            .filter(|surface| surface.live)
+            .collect::<Vec<_>>();
+        let routes = live
+            .iter()
+            .map(|surface| surface.route.clone())
+            .collect::<Vec<_>>();
+        let retained = self.launchable.surfaces().into_iter().filter(|surface| {
+            scope.is_none()
+                && self.native_tasks(cluster_id).is_some()
+                && !routes.contains(&surface.route)
+        });
+        let published = live
+            .into_iter()
+            .chain(retained)
+            .filter(|surface| surface.route.cluster_id == cluster_id)
             .map(|mut surface| {
                 surface.actions.retain(|action| {
                     scope.is_none_or(|scope| {
@@ -4857,6 +4917,16 @@ impl CapnpBrokerState {
             let published = published
                 .into_iter()
                 .map(|mut surface| {
+                    if !surface.live
+                        && !actor.may_in(
+                            workspace,
+                            &app_node(workspace, &surface.app_id),
+                            ActionKind::Undoable,
+                            now,
+                        )
+                    {
+                        surface.actions.clear();
+                    }
                     // Listed when the actor may take it, or would be asked
                     // first.
                     surface.actions.retain(|action| {
@@ -4887,6 +4957,7 @@ impl CapnpBrokerState {
         let mut surfaces = published
             .into_iter()
             .filter_map(|surface| {
+                let provider = (!surface.live).then(|| launchable::launchable_provider(&surface));
                 let actions = surface
                     .actions
                     .into_iter()
@@ -4921,6 +4992,7 @@ impl CapnpBrokerState {
                 (!actions.is_empty()).then(|| {
                     serde_json::json!({
                         "peer_id": surface.peer_id,
+                        "provider": provider,
                         "app_id": surface.app_id,
                         "cluster_id": surface.route.cluster_id,
                         "record_id": surface.route.record_id,
@@ -4935,6 +5007,7 @@ impl CapnpBrokerState {
             let display_name = app.display_name;
             surfaces.push(serde_json::json!({
                 "peer_id": 0,
+                "provider": tilo_actions::remote::workspace_provider(cluster_id),
                 "app_id": package_id,
                 "cluster_id": cluster_id,
                 "record_id": "",
@@ -5126,6 +5199,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                original_request: None,
                 requested: None,
                 caller: None,
                 execution: None,
@@ -5258,6 +5332,7 @@ impl CapnpBrokerState {
         provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
         let InvocationInputs {
+            original_request,
             requested,
             caller,
             execution,
@@ -5280,6 +5355,21 @@ impl CapnpBrokerState {
             DurableContext::owner,
         );
         owner.validate()?;
+        // In native rooms an agent's action authority comes only from the
+        // authenticated task admission callback, never from ambient context
+        // or a room grant alone (including after its run has stopped).
+        if actor.is_agent && self.native_tasks(&offered.0.route.cluster_id).is_some() {
+            match durable {
+                Some(DurableContext::Task { binding, .. })
+                    if actor.id.strip_prefix("agent:").unwrap_or(&actor.id) == binding.agent_id => {
+                }
+                _ => {
+                    return Err(
+                        "native task agent requires authenticated task action admission".into(),
+                    );
+                }
+            }
+        }
         // Never trust an envelope's invoker: the host sets it.
         let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
         // A certified local origin retains its original registered clock and
@@ -5360,20 +5450,30 @@ impl CapnpBrokerState {
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
-        // Work done in a task — the one the call names, or the task its
-        // agent is running — is bounded by the task's grant set.
+        // A context group can only narrow legacy work. Only authenticated
+        // native custody selects the exact-run ceiling instead of all of an
+        // agent's running/waiting task ceilings.
         let task = context
             .as_ref()
             .and_then(|context| context.group.as_ref())
             .filter(|group| group.kind == "task")
-            .map(|group| group.id.clone());
+            .map(|group| group.id.as_str());
         let (asks, spent) = self
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .decide_in_room(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
-                actor.admit_published_in(workspace, now, task.as_deref(), (&offered.0, &offered.1))
+                match durable {
+                    Some(DurableContext::Task { binding, .. }) => actor
+                        .admit_published_with_task_in(
+                            workspace,
+                            now,
+                            workspace_tasks::TaskAdmission::Native(binding),
+                            (&offered.0, &offered.1),
+                        ),
+                    _ => actor.admit_published_in(workspace, now, task, (&offered.0, &offered.1)),
+                }
             })??;
 
         if (durable.is_some() || execution.is_some())
@@ -5472,16 +5572,53 @@ impl CapnpBrokerState {
                 invocation,
                 owner: owner.clone(),
             };
-            let request = match durable {
-                Some(context) => context.intent(),
-                None => serde_json::json!({
-                    "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
-                    "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
-                }),
+            let request = if offered.0.app_id == "so.tilo.desktop"
+                && offered.1.resource == workspace_checkpoints::RESOURCE
+            {
+                let certificate = match origin.as_ref() {
+                    Some(InvocationCaller::Certified { caller, .. }) => self
+                        .current_action_caller(caller)?
+                        .certificate
+                        .ok_or("checkpoint caller certificate absent")?,
+                    Some(InvocationCaller::NativePerson { certificate, .. }) => certificate.clone(),
+                    _ => return Err("checkpoint requires original certified caller custody".into()),
+                };
+                let mut intent = workspace_checkpoints::intent(
+                    &offered.0.route.cluster_id,
+                    &certificate,
+                    &InvocationEnvelope {
+                        id,
+                        invocation,
+                        resource: offered.1.resource.clone(),
+                        action: offered.1.action.clone(),
+                        argument: argument.map(str::to_owned),
+                        actor: actor.id.clone(),
+                        context: None,
+                    },
+                )?;
+                if let Some(request) = original_request {
+                    intent
+                        .as_object_mut()
+                        .ok_or("checkpoint intent invalid")?
+                        .insert(
+                            "remote_request".into(),
+                            workspace_checkpoints::remote_request(request)?,
+                        );
+                }
+                intent
+            } else {
+                match durable {
+                    Some(context) => context.intent(),
+                    None => serde_json::json!({
+                        "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
+                        "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
+                    }),
+                }
             };
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
                 "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
+                "record_id": offered.0.route.record_id,
                 "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
                 "action": offered.1.action, "revision": revision });
             if let Some(context) = durable {
@@ -5495,6 +5632,21 @@ impl CapnpBrokerState {
             None
         };
         drop(journal_guard);
+        if offered.0.app_id == "so.tilo.desktop"
+            && offered.1.resource == workspace_checkpoints::RESOURCE
+        {
+            self.checkpoint_jobs
+                .lock()
+                .map_err(|_| "checkpoint registry unavailable")?
+                .insert(
+                    id,
+                    (
+                        offered.0.route.cluster_id.clone(),
+                        offered.1.action.clone(),
+                        offered.1.contract.clone(),
+                    ),
+                );
+        }
         self.spend_once_grants(&offered.0.route.cluster_id, &spent);
         // Keep acceptance before an immediately completing application's first
         // update. Sending to the unbounded app queue and bounded observation
@@ -5596,6 +5748,26 @@ impl CapnpBrokerState {
         drop(registry);
         self.local_turn.notify_one();
         Ok(InvocationJob { id, completion: rx })
+    }
+
+    /// Retire only this run's transient presence, preserving its pending jobs.
+    pub fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
+        caller.retire_execution();
+        if let Ok(mut pending) = self.pending_invocations.lock() {
+            for invocation in pending.values_mut() {
+                if invocation
+                    .activity
+                    .as_ref()
+                    .is_some_and(|target| target.belongs_to(caller))
+                {
+                    self.execution_activity
+                        .publish_status(invocation.activity.as_ref(), ExecutionStatus::Ended);
+                    if let Some(target) = &mut invocation.activity {
+                        target.retire_scope();
+                    }
+                }
+            }
+        }
     }
 
     /// Observe subsequent broker execution events without scheduling app work.
@@ -6053,6 +6225,12 @@ impl CapnpBrokerState {
         tx.send(TaskRunEnvelope {
             task_id: task.id.clone(),
             title: task.title.clone(),
+            instruction: Some(
+                task.resource
+                    .as_ref()
+                    .and_then(|resource| resource.agent_request.as_ref())
+                    .map_or_else(|| task.title.clone(), |request| request.instruction.clone()),
+            ),
             run_id,
             lease: lease.clone(),
             planning: match task.route {
@@ -6239,9 +6417,10 @@ impl CapnpBrokerState {
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
             peer_id: target_peer,
+            provider: _,
             resource,
             action,
-            argument,
+            argument: _,
         } = target;
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
         if self.task_run_cancelled(peer_id, agent_id, run_id, lease)? {
@@ -6255,14 +6434,52 @@ impl CapnpBrokerState {
             .filter(|surface| surface.route.cluster_id == run.cluster_id)
             .and_then(|surface| surface.action_projection(resource, action))
             .ok_or("the task action is no longer published in this workspace")?;
+        self.admit_task_action(run, lease, target, provenance, (surface, descriptor))
+    }
+
+    fn admit_task_action(
+        &self,
+        run: PendingTaskRun,
+        lease: &str,
+        target: runtime_collab::TaskAction<'_>,
+        provenance: Option<&(
+            durable_local_invocation::LocalCaller,
+            tilo_actions::InvocationId,
+        )>,
+        offered: (PublishedSurface, PublishedAction),
+    ) -> Result<InvocationJob, String> {
+        let runtime_collab::TaskAction {
+            peer_id: target_peer,
+            provider: _,
+            resource,
+            action,
+            argument,
+        } = target;
+        let (surface, descriptor) = offered;
+        if surface.route.cluster_id != run.cluster_id
+            || surface.peer_id != target_peer
+            || !surface.live
+        {
+            return Err("task action publisher changed workspace or retired".into());
+        }
         let requirement = crate::services::NativeTaskActionRequirement {
-            app: surface.app_id,
+            binding: run.native.clone(),
+            app: surface.app_id.clone(),
             resource_kind: descriptor.resource_kind.clone(),
             resource: resource.into(),
             action: descriptor.action.clone(),
             need: descriptor.contract.need(),
         };
-        let confirmation_required = descriptor.contract.confirmation;
+        // Task transport carries a JSON argument map directly; the contract
+        // evaluator also accepts the action door's prefixed map encoding.
+        let contract_argument = argument.and_then(|text| {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+                .ok()
+                .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
+        });
+        let confirmation_required = descriptor
+            .contract
+            .confirmation_for_argument(contract_argument.as_deref().or(argument));
         if !matches!(
             confirmation_required,
             tilo_actions::ConfirmationPolicy::None
@@ -6281,7 +6498,13 @@ impl CapnpBrokerState {
             self.native_tasks(&run.cluster_id)
                 .ok_or("native task owner unavailable")?
                 .admit(&run.cluster_id, &current, &requirement, &mut || {
-                    self.start_native_task_invocation(&run, target, caller, *invocation)
+                    self.start_native_task_invocation(
+                        &run,
+                        target,
+                        caller,
+                        *invocation,
+                        (surface.clone(), descriptor.clone()),
+                    )
                 })
         } else {
             self.start_invocation_confirmed_for(
@@ -6289,6 +6512,7 @@ impl CapnpBrokerState {
                 resource,
                 action,
                 InvocationInputs {
+                    original_request: None,
                     requested: None,
                     caller: None,
                     execution: None,
@@ -6335,6 +6559,9 @@ impl CapnpBrokerState {
         }
         if let Ok(mut roots) = self.action_directory_roots.lock() {
             roots.remove(&peer_id);
+        }
+        if let Ok(mut checkouts) = self.native_checkouts.lock() {
+            checkouts.remove(&peer_id);
         }
         self.refresh_action_directory_root_snapshot();
         if let Ok(mut capabilities) = self.stable_invocation_subscribers.lock() {
@@ -6485,18 +6712,22 @@ impl CapnpBrokerState {
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
+        // The certificate was checked above; its connection ceiling must also
+        // reflect current governance, not just governance at the original join.
+        let verified = match &admitted.certificate {
+            Some(cert) => VerifiedJoinIdentity::of(cert, self.capped_in(&route.cluster_id, cert)),
+            None => admitted.verified.clone(),
+        };
         // The person and any delegated agent are revalidated on one sample.
         membership
             .decide_in_room(&route.cluster_id, |workspace| {
-                let mut current = admit_verified_join_at(
-                    workspace,
-                    route,
-                    admitted.verified.clone(),
-                    now / 1_000_000_000,
-                )
-                .map_err(|error| {
-                    format!("certified collaboration session is no longer admitted: {error}")
-                })?;
+                let mut current =
+                    admit_verified_join_at(workspace, route, verified, now / 1_000_000_000)
+                        .map_err(|error| {
+                            format!(
+                                "certified collaboration session is no longer admitted: {error}"
+                            )
+                        })?;
                 current.certificate.clone_from(&admitted.certificate);
                 current.host_scope.clone_from(&admitted.host_scope);
                 current
@@ -6957,6 +7188,8 @@ impl CapnpBrokerState {
             // A new admitted session brings its own certificate expiry: the
             // policy turn re-checks, and from then on wakes at that expiry.
             tilo_identity_host::policy_change::announce();
+            let room = CrdtRoute::from_channel_key(channel_id).cluster_id;
+            self.publish_certified_people(&room);
         }
         rx
     }
@@ -7074,6 +7307,110 @@ impl CapnpBrokerState {
         Ok(collaborators)
     }
 
+    /// Complete certified membership currently backing native Context
+    /// subscribers, normalized for host chrome (which has no app-local
+    /// `is_self`). Conflicting certified snapshots fail closed to empty.
+    /// Resolve an exact certified participant to its canonical workspace key.
+    /// Both the native roster and current owner-backed membership must agree.
+    pub fn certified_agent_identity(
+        &self,
+        room: &str,
+        actor: &str,
+    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
+        if !self
+            .certified_people_in_room(room)
+            .iter()
+            .any(|row| row.id == actor && row.is_agent)
+        {
+            return None;
+        }
+        let now = self.policy_now_ns().ok()? / 1_000_000_000;
+        self.membership
+            .as_ref()?
+            .decide_in_room(room, |workspace| {
+                workspace?
+                    .agent_members_at(now)
+                    .into_iter()
+                    .find_map(|(agent, _)| {
+                        let participant_id = format!("agent:{agent}");
+                        (participant_id == actor).then_some(
+                            ui::collaboration::CertifiedAgentIdentity {
+                                participant_id,
+                                agent_key: agent,
+                            },
+                        )
+                    })
+            })
+            .ok()
+            .flatten()
+    }
+
+    pub(crate) fn certified_people_in_room(
+        &self,
+        room: &str,
+    ) -> Vec<ui::collaboration::Collaborator> {
+        let Ok(channels) = self.channels.lock() else {
+            return Vec::new();
+        };
+        let mut people =
+            std::collections::BTreeMap::<String, ui::collaboration::Collaborator>::new();
+        for (channel, subscribers) in channels.iter() {
+            let route = CrdtRoute::from_channel_key(channel);
+            if route.cluster_id != room {
+                continue;
+            }
+            for native in subscribers
+                .context
+                .iter()
+                .filter_map(|subscriber| subscriber.native.as_ref())
+            {
+                for participant in &native.roster {
+                    let mut participant = participant.clone();
+                    participant.is_self = false;
+                    if let Some(held) = people.get(&participant.id) {
+                        if held.name != participant.name
+                            || held.packed_colour() != participant.packed_colour()
+                            || held.is_agent != participant.is_agent
+                        {
+                            return Vec::new();
+                        }
+                    } else {
+                        people.insert(participant.id.clone(), participant);
+                    }
+                }
+            }
+        }
+        people.into_values().collect()
+    }
+
+    pub(crate) fn certified_people_for_shell(
+        &self,
+    ) -> Vec<(String, Vec<ui::collaboration::Collaborator>)> {
+        let rooms = self
+            .channels
+            .lock()
+            .map(|channels| {
+                channels
+                    .iter()
+                    .filter(|(_, subscribers)| {
+                        subscribers
+                            .context
+                            .iter()
+                            .any(|subscriber| subscriber.native.is_some())
+                    })
+                    .map(|(channel, _)| CrdtRoute::from_channel_key(channel).cluster_id)
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        rooms
+            .into_iter()
+            .map(|room| {
+                let people = self.certified_people_in_room(&room);
+                (room, people)
+            })
+            .collect()
+    }
+
     fn native_roster_for_subscriber(
         &self,
         route: &CrdtRoute,
@@ -7093,6 +7430,12 @@ impl CapnpBrokerState {
             admitted: current,
             roster,
         }))
+    }
+
+    fn publish_certified_people(&self, room: &str) {
+        if let Some(fanout) = self.fanout.upgrade() {
+            fanout.publish_certified_people(room);
+        }
     }
 
     /// The delegated agents of the room `channel` belongs to whose person's
@@ -7205,6 +7548,7 @@ impl CapnpBrokerState {
                     });
                 }
                 drop(channels);
+                self.publish_certified_people(&route.cluster_id);
                 continue;
             };
             let roster = self.native_membership_roster(&route, &current)?;
@@ -7212,6 +7556,7 @@ impl CapnpBrokerState {
                 .channels
                 .lock()
                 .map_err(|_| "native context subscriptions unavailable")?;
+            let mut changed = false;
             if let Some(subscribers) = channels.get_mut(&channel) {
                 subscribers.context.retain_mut(|subscriber| {
                     let Some(native) = subscriber.native.as_mut() else {
@@ -7223,6 +7568,7 @@ impl CapnpBrokerState {
                     if same_roster(&native.roster, &roster) {
                         return true;
                     }
+                    changed = true;
                     if subscriber
                         .tx
                         .send(ContextEnvelope::Snapshot {
@@ -7237,12 +7583,16 @@ impl CapnpBrokerState {
                     true
                 });
             }
+            drop(channels);
+            if changed {
+                self.publish_certified_people(&route.cluster_id);
+            }
         }
         Ok(())
     }
 
-    /// Re-check every membership surface and native context subscriber
-    /// (TIL-707), and register with
+    /// Re-check every membership surface and native context subscriber,
+    /// and register with
     /// [`tilo_identity_host::policy_change::wake_at`] the first instant at
     /// which a time-bound input they read (a capability's expiry, a
     /// subscriber certificate's validity) changes the answer. Returns whether
@@ -7260,15 +7610,19 @@ impl CapnpBrokerState {
         // Sampled before anything is read: an expiry between this sample
         // and a read is registered as well, so none is skipped.
         let before = self.policy_now_ns();
-        let mut clocked = false;
-        if let Err(error) = self.refresh_workspace_membership_services() {
-            tracing::debug!(%error, "native membership surface could not be refreshed");
-            clocked = true;
-        }
-        if let Err(error) = self.refresh_workspace_context_services() {
-            tracing::debug!(%error, "native membership context could not be refreshed");
-            clocked = true;
-        }
+        let surface_failed = self
+            .refresh_workspace_membership_services()
+            .inspect_err(|error| {
+                tracing::debug!(%error, "native membership surface could not be refreshed");
+            })
+            .is_err();
+        let context_failed = self
+            .refresh_workspace_context_services()
+            .inspect_err(|error| {
+                tracing::debug!(%error, "native membership context could not be refreshed");
+            })
+            .is_err();
+        let clocked = surface_failed || context_failed;
         let announced = self
             .membership
             .as_ref()
@@ -9306,11 +9660,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 ActionDirectoryRoot {
                     peer_id: self.peer_id,
                     app_id,
-                    cluster_id: route.cluster_id,
-                    record_id: route.record_id,
+                    cluster_id: route.cluster_id.clone(),
+                    record_id: route.record_id.clone(),
                 },
             );
         }
+        self.retain_native_checkout(&route);
         self.state.refresh_action_directory_root_snapshot();
         // The directory can alter remote discoverability without an eager
         // action snapshot changing, so notify legacy catalogue subscribers.
@@ -9678,30 +10033,22 @@ impl channel_handle::Server for CapnpChannelHandle {
                         .and_then(|value| Ok(value.to_str()?.to_owned()))
                 })
                 .transpose()?;
+            let provider = request.get_provider()?.to_str()?.to_owned();
+            if !provider.is_empty() && request.get_peer_id() != 0 {
+                return Err(capnp::Error::failed(
+                    "task target mixes live and stable provider identities".into(),
+                ));
+            }
             let target = runtime_collab::TaskAction {
                 peer_id: request.get_peer_id(),
+                provider: &provider,
                 resource: &resource,
                 action: &action,
                 argument: argument.as_deref(),
             };
             let invocation = request.get_invocation()?.to_str()?;
-            let provenance = if runtime_collab::native_task_revision(&lease).is_some() {
-                let id = uuid::Uuid::parse_str(invocation).map_err(|_| {
-                    capnp::Error::failed("native task child requires stable invocation UUID".into())
-                })?;
-                if id.is_nil() {
-                    return Err(capnp::Error::failed("nil task invocation".into()));
-                }
-                Some((
-                    caller.ok_or_else(|| {
-                        capnp::Error::failed("native task channel custody unavailable".into())
-                    })?,
-                    tilo_actions::InvocationId(id),
-                ))
-            } else {
-                None
-            };
-            let observed = if let Some((caller, invocation)) = &provenance {
+            let provenance = native_task_execution::child_provenance(&lease, invocation, caller)?;
+            let (id, update) = if let Some((caller, invocation)) = &provenance {
                 let reask = native_task_execution::ChildReask {
                     peer_id,
                     agent_id: &agent_id,
@@ -9713,14 +10060,15 @@ impl channel_handle::Server for CapnpChannelHandle {
                 };
                 let wait = native_task_execution::ChildWait::read(&request)?;
                 state
-                    .observe_native_child(&reask, wait, (&route, &identity))
+                    .invoke_native_task_child(&reask, wait, (&route, &identity))
                     .await?
             } else {
-                None
-            };
-            let (id, update) = if let Some(observed) = observed {
-                observed
-            } else {
+                if !provider.is_empty() {
+                    return Err(capnp::Error::failed(
+                        "closed-app activation requires a native task's authenticated custody"
+                            .into(),
+                    ));
+                }
                 let job = state
                     .start_task_action(
                         peer_id,
@@ -9728,7 +10076,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         request.get_run_id(),
                         &lease,
                         target,
-                        provenance.as_ref(),
+                        None,
                     )
                     .map_err(capnp::Error::failed)?;
                 let update = state.invocation_status(job.id).ok_or_else(|| {
@@ -10163,6 +10511,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            original_request: None,
                             requested: None,
                             caller: None,
                             execution: None,
@@ -10201,6 +10550,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            original_request: None,
                             requested: None,
                             caller: None,
                             execution: None,
@@ -10231,6 +10581,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            original_request: None,
                             requested: None,
                             caller: None,
                             execution: None,
@@ -11648,6 +11999,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 version: 1,
                 task_id: run.task_id,
                 title: run.title,
+                instruction: run.instruction,
                 run_id: run.run_id,
                 lease: run.lease,
                 planning: run.planning,
@@ -12498,24 +12850,6 @@ async fn serve_broker_thread(
     socket_path_for_thread: PathBuf,
     quit: Arc<AtomicBool>,
 ) {
-    if let Err(error) = state.start_desktop_commands() {
-        if let Ok(mut failure) = state.owner_commit_failure.lock() {
-            failure.get_or_insert(error);
-        }
-        return;
-    }
-    if let Err(error) = state.start_document_imports() {
-        if let Ok(mut failure) = state.owner_commit_failure.lock() {
-            failure.get_or_insert(error);
-        }
-        return;
-    }
-    if let Err(error) = state.start_workspace_collaboration() {
-        if let Ok(mut failure) = state.owner_commit_failure.lock() {
-            failure.get_or_insert(error);
-        }
-        return;
-    }
     state.start_peer_action_bridge(Rc::clone(&directories));
     let listener = match tokio::net::UnixListener::from_std(std_listener) {
         Ok(l) => l,
@@ -12529,7 +12863,7 @@ async fn serve_broker_thread(
     };
     // Membership surfaces and native context subscribers are re-checked when
     // an input announces a change or a registered expiry comes due, not on a
-    // clock (TIL-707). The watch wakes this turn for the first announcement
+    // clock. The watch wakes this turn for the first announcement
     // after it is armed; the schedule coalesces the rest.
     let policy_turn = Arc::new(tokio::sync::Notify::new());
     let policy_watch = {
@@ -14328,6 +14662,8 @@ pub mod tests {
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
     include!("canonical_route_tests.rs");
+    #[cfg(all(test, target_os = "linux"))]
+    include!("native_checkout_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
@@ -15070,6 +15406,7 @@ pub mod tests {
                     revision: Some("directory-r1".into()),
                     on_behalf_of: None,
                     wait_ms: None,
+                    appearance: None,
                 };
                 let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
                 let admitted = tokio::time::timeout(Duration::from_secs(2), async {
@@ -15183,6 +15520,7 @@ pub mod tests {
                 argument: InvokeArgument::None, context: None, confirmation: None,
                 revision: None, on_behalf_of: None,
                 wait_ms: None,
+                appearance: None,
             };
             let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
             let PendingPoll::Ready(Ok(receipt)) = pending.poll_ready() else {
@@ -15987,8 +16325,17 @@ pub mod tests {
         admitted.display_handle = Some(tide.into());
         assert_eq!(CapnpBrokerState::participant_id(&admitted), person);
         let membership = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let observed = Arc::new(Mutex::new(Vec::<(
+            String,
+            Vec<ui::collaboration::Collaborator>,
+        )>::new()));
+        let observed_sink = Arc::clone(&observed);
+        let _people = fanout.subscribe_certified_people(Arc::new(move |room, people| {
+            observed_sink.lock().unwrap().push((room, people));
+        }));
         let (state, _bridge_rx) = CapnpBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
+            &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
             Some(membership.authority()),
@@ -15999,6 +16346,7 @@ pub mod tests {
                 ..Default::default()
             },
         );
+        fanout.attach_capnp(state.clone());
 
         let roster = state.native_membership_roster(&route, &admitted).unwrap();
         let legacy_route =
@@ -16058,6 +16406,14 @@ pub mod tests {
             stream.try_recv(),
             Ok(ContextEnvelope::Snapshot { .. })
         ));
+        assert_eq!(
+            state.certified_agent_identity(&room, &format!("agent:{tide}")),
+            Some(ui::collaboration::CertifiedAgentIdentity {
+                participant_id: format!("agent:{tide}"),
+                agent_key: tide.into(),
+            }),
+        );
+        assert!(state.certified_agent_identity(&room, &person).is_none());
         let forged = ui::collaboration::Collaborator {
             id: "agent:forged".into(),
             name: "forged".into(),
@@ -16090,6 +16446,17 @@ pub mod tests {
         assert_eq!(collaborators[0].name, forged.name);
         assert!(collaborators[0].is_agent);
         assert!(!collaborators[0].is_self);
+        assert!(
+            observed
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .iter()
+                .all(|row| row.id != forged.id),
+            "ordinary Context cannot enter the certified People observer"
+        );
         assert!(membership.write().workspaces[0].revoke_grant(&collision));
         assert!(membership.write().workspaces[0].dismiss(other_person));
         state.refresh_workspace_context_services().unwrap();
@@ -16100,6 +16467,17 @@ pub mod tests {
             collaborators
                 .iter()
                 .all(|row| row.id != format!("agent:{person}"))
+        );
+        assert!(
+            observed
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .iter()
+                .all(|row| row.id != format!("agent:{person}")),
+            "membership replacement retires the certified agent from shell projection"
         );
         assert!(collaborators.iter().all(|row| row.id != other_person));
         assert!(
@@ -16133,6 +16511,17 @@ pub mod tests {
                 .iter()
                 .any(|row| row.id == "agent:reed" && row.is_agent)
         );
+        assert!(
+            observed
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .iter()
+                .any(|row| row.id == "agent:reed" && row.is_agent),
+            "certified kind comes from the owner row, not an id convention"
+        );
 
         let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));
         assert!(matches!(
@@ -16158,10 +16547,25 @@ pub mod tests {
         );
         membership.write().workspaces[0].policy.owner = None;
         state.refresh_workspace_context_services().unwrap();
+        assert!(
+            observed.lock().unwrap().last().unwrap().1.is_empty(),
+            "losing the certified source withdraws the complete shell roster"
+        );
         let Err(error) = pending.await else {
             panic!("revocation must terminate an already waiting native read");
         };
         assert!(error.to_string().contains("context stream fanout closed"));
+        assert!(
+            state
+                .certified_agent_identity(&room, &format!("agent:{tide}"))
+                .is_none(),
+            "an empty certified roster immediately revokes marker activation identity"
+        );
+        assert!(
+            state
+                .certified_agent_identity(&room, "agent:forged")
+                .is_none()
+        );
     }
 
     #[test]

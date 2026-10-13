@@ -10,7 +10,6 @@
 use std::collections::HashMap;
 use ui::num::f64_of_usize;
 
-use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::{TabId, WorkspaceId};
 use ui::TextRole;
@@ -20,7 +19,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{AppModel, ModelPath, TaffyTreeExt as _, Widget};
+use ui::widget::{TaffyTreeExt as _, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -729,10 +728,7 @@ impl Widget for OverviewPanel {
             self.dirty = true;
         }
         let style = Style {
-            size: taffy::Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
-            },
+            size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
             ..Default::default()
         };
         taffy.widget_leaf(style, map, self)
@@ -744,10 +740,6 @@ impl Widget for OverviewPanel {
             self.rect = rect;
             self.dirty = true;
         }
-    }
-
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        false
     }
 
     fn draw(
@@ -772,8 +764,7 @@ impl Widget for OverviewPanel {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let before = self.hovered();
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 // Others still see the pointer move, so their hover ends.
                 self.dirty |= before != self.hovered();
             }
@@ -806,13 +797,7 @@ impl Widget for OverviewPanel {
         }
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    ui::redraw_flag!();
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         (self.open && self.rows.iter().any(|(_, rect)| rect.contains(point)))
@@ -850,11 +835,11 @@ impl Widget for OverviewPanel {
                             AccessNode::new(Role::Button)
                                 .with_name(name(target))
                                 .with_bounds(*rect)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.selected == Some(index),
-                                    ..Default::default()
-                                })
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(self.selected == Some(index)),
+                                )
                         })
                         .collect(),
                 ),

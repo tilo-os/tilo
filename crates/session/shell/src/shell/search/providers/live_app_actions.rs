@@ -482,6 +482,7 @@ impl LocalStart {
             confirmation,
             revision: None,
             wait_ms: None,
+            appearance: None,
         })
     }
 }
@@ -2017,6 +2018,7 @@ impl LiveAppActionsProvider {
                         confirmation,
                         revision: Some(revision.clone()),
                         wait_ms: None,
+                        appearance: None,
                     });
                 let ticket = directory_start_ticket(
                     admission,
@@ -3766,6 +3768,66 @@ mod tests {
     }
 
     #[test]
+    fn rejected_directory_ticket_releases_the_retained_empty_projection() {
+        for outcome in ["refused", "stale", "abandoned"] {
+            let provider = LiveAppActionsProvider::new(
+                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+            );
+            let key: DirectoryCacheKey = (7, "actor".into(), "read".into(), Vec::new());
+            let retained: DirectoryCacheKey = (8, "actor".into(), "read".into(), Vec::new());
+            provider
+                .directory_pages
+                .borrow_mut()
+                .insert(retained.clone(), page(Vec::new(), Vec::new()));
+            let (sender, receiver) = pending();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            provider.directory_pending.borrow_mut().insert(
+                key.clone(),
+                PendingDirectoryPage {
+                    receiver,
+                    deadline,
+                    initial_page: true,
+                },
+            );
+            *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+                revision: "r1".into(),
+                query: "read".into(),
+                scope: String::new(),
+                resume: AuxiliaryResume {
+                    root_after: None,
+                    directory: None,
+                },
+                entries: Vec::new(),
+                pending_directory: Vec::new(),
+                next_resume: None,
+            });
+            match outcome {
+                "refused" => sender.complete(Err(ActionHostError::NotPermitted)),
+                "stale" => {
+                    let mut reply = page(Vec::new(), Vec::new());
+                    reply.stale_cursor = true;
+                    sender.complete(Ok(reply));
+                }
+                _ => drop(sender),
+            }
+            provider.poll_directory_pages_at(deadline.checked_sub(Duration::from_secs(1)).unwrap());
+            assert!(provider.directory_pending.borrow().is_empty());
+            assert!(!provider.directory_pages.borrow().contains_key(&key));
+            assert!(provider.directory_pages.borrow().contains_key(&retained));
+            assert!(
+                provider.auxiliary_snapshot.borrow().is_none(),
+                "same-query discovery must retry after {outcome}"
+            );
+            assert_eq!(
+                provider
+                    .directory_epoch
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+        }
+    }
+
+    #[test]
     fn completed_directory_page_survives_idle_poll() {
         let provider = LiveAppActionsProvider::new(
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
@@ -4860,6 +4922,63 @@ mod tests {
                 .results
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn confirmed_local_action_delivers_through_the_published_resource_door() {
+        use crate::shell::search::action_api::{ActionArgs, ArgValue};
+        let chrome = chrome();
+        chrome.borrow_mut().act_as("call-owner".into());
+        chrome.borrow().tree_mut().desktop.workspaces[0].set_owner("call-owner");
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let mut action = local_action("Start call", "start-call");
+        action.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.chat".into(),
+            route: CrdtRoute::app("so.tilo.chat", &room),
+            actions: vec![action],
+            live: true,
+        };
+        let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[0]);
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let mut delivered = broker.capture_invocations_for_test(7);
+        let mut doc = AutoCommit::new();
+        let row = provider
+            .resolve(&id, context("", &chrome.borrow(), &doc))
+            .unwrap();
+        let unconfirmed =
+            ActionArgs::bind(&row.params, [("confirm".into(), ArgValue::Boolean(false))]).unwrap();
+        assert!(
+            (row.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &unconfirmed,
+            )
+            .is_err()
+        );
+        assert!(delivered.try_recv().is_err());
+        let confirmed =
+            ActionArgs::bind(&row.params, [("confirm".into(), ArgValue::Boolean(true))]).unwrap();
+        (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &confirmed,
+        )
+        .expect("explicit evidence is admitted by the real local broker");
+        assert_eq!(
+            delivered
+                .try_recv()
+                .expect("confirmed action reaches the current peer")
+                .action,
+            "start-call"
         );
     }
 

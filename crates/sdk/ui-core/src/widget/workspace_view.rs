@@ -8,7 +8,7 @@ use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Rect, Vec2};
 use winit::event::WindowEvent;
 
 #[derive(Clone, Copy, Debug)]
@@ -123,9 +123,7 @@ impl Widget for WorkspaceView {
         };
         taffy.widget_leaf(style, node_map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, n: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, n, origin);
-    }
+    crate::rect_geometry!();
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -177,8 +175,5 @@ impl Widget for WorkspaceView {
     }
     fn name(&self) -> &'static str {
         "WorkspaceView"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }

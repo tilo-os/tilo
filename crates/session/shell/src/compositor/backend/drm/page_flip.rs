@@ -124,7 +124,7 @@ pub(super) fn submit_atomic(
 }
 
 pub(super) fn monotonic_now() -> Option<Duration> {
-    let ns = crate::compositor::client_input::monotonic_time_ns()?;
+    let ns = crate::compositor::metrics::monotonic_time_ns()?;
     Some(Duration::from_nanos(u64::try_from(ns).ok()?))
 }
 

@@ -373,8 +373,7 @@ impl VaultFormat {
 /// blocking API cannot use).
 #[cfg(not(windows))]
 pub fn system_store_available() -> bool {
-    tilo_secrets::availability(tilo_secrets::Feature::Blocking)
-        == tilo_secrets::Availability::Available
+    tilo_secrets::available(tilo_secrets::Feature::Blocking)
         && SecretStore::for_app("Tilo").probe_blocking().is_ok()
 }
 

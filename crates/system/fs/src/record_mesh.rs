@@ -539,7 +539,7 @@ mod tests {
     use fs_protocol::{FileMetadataV1, IndexStatus};
 
     use crate::record_replication::RecordOperationV1;
-    use crate::record_replication::{RecordAction, RecordAuthorizer};
+    use crate::record_replication::test_authorizers::AllowActorOn;
     use crate::record_repository::RecordRepositoryKey;
 
     fn actor(seed: u8) -> FileActor {
@@ -778,22 +778,6 @@ mod tests {
         }
         // Phase `authorized_repository_response_pages_and_checks_prefix_digest`.
         {
-            struct Allow(FileActor, FileRecordId);
-            impl RecordAuthorizer for Allow {
-                fn actor_is_certified(&self, actor: &FileActor) -> bool {
-                    *actor == self.0
-                }
-
-                fn allows(
-                    &self,
-                    actor: &FileActor,
-                    record_id: FileRecordId,
-                    _action: RecordAction,
-                ) -> bool {
-                    *actor == self.0 && record_id == self.1
-                }
-            }
-
             let dir = tempfile::tempdir().unwrap();
             let repository = RecordRepository::open(dir.path()).unwrap();
             let workspace_id = Uuid::new_v4();
@@ -833,7 +817,10 @@ mod tests {
                 .apply_batch(
                     key,
                     &[make_envelope(1), make_envelope(2)],
-                    &Allow(actor, record_id),
+                    &AllowActorOn {
+                        actor,
+                        records: [record_id].into(),
+                    },
                 )
                 .unwrap();
 

@@ -975,8 +975,7 @@ impl Widget for EmptyState {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1102,28 +1101,25 @@ impl Widget for EmptyState {
             node = node.with_description(msg.clone());
         }
         if self.spinner.is_some() {
-            node = node.with_state(AccessState {
-                busy: true,
-                ..Default::default()
-            });
+            node = node.with_state(AccessState::new().busy(true));
         }
         if let Some(action) = &self.resolved.2 {
             node = node
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.action_focused,
-                    busy: self.spinner.is_some(),
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.action_focused)
+                        .busy(self.spinner.is_some()),
+                )
                 .with_children(vec![
                     AccessNode::new(Role::Button)
                         .with_name(action.clone())
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.action_focused,
-                            disabled: !self.is_enabled(),
-                            ..Default::default()
-                        })
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.action_focused)
+                                .disabled(!self.is_enabled()),
+                        )
                         .with_action_target(self.action_control_id()),
                 ]);
         }
@@ -1232,10 +1228,7 @@ mod tests {
     }
 
     fn cursor(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
     use crate::synthetic_input::mouse_press;
 

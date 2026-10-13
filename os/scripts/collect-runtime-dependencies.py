@@ -4,7 +4,7 @@
 A dependency is what `ldd` resolves (DT_NEEDED, transitively) and, for the
 shared runtime, the libraries it loads on first use: GLib and GStreamer, which
 tools/ci/runtime-dylib-lazy-link.py keeps out of DT_NEEDED and names in the
-`.tilo.lazy_needed` section (TIL-713). Those are resolved by SONAME and
+`.tilo.lazy_needed` section. Those are resolved by SONAME and
 collected with their own closure, so the signed runtime still carries them.
 """
 import argparse

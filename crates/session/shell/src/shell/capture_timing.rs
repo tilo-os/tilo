@@ -63,8 +63,7 @@ fn admit(enabled: bool, budget: &AtomicUsize) -> bool {
 pub(crate) fn now() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
-        crate::compositor::client_input::monotonic_time_ns()
-            .and_then(|value| u64::try_from(value).ok())
+        crate::compositor::metrics::monotonic_time_ns().and_then(|value| u64::try_from(value).ok())
     }
     #[cfg(not(target_os = "linux"))]
     {

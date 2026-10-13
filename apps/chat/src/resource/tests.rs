@@ -515,7 +515,8 @@ fn the_root_offers_call_starts_only_once_there_is_a_workspace() {
 #[test]
 fn start_call_through_the_door_makes_a_voice_channel_and_joins_it() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
-    app.call("start-call", serde_json::json!({})).unwrap();
+    app.call_confirmed("start-call", serde_json::json!({}))
+        .unwrap();
     app.settle();
     assert!(
         app.state()
@@ -809,4 +810,222 @@ fn stopping_shared_context_wakes_the_native_presentation() {
         app.harness().root_widget().needs_redraw(),
         "semantic Stop must schedule its privacy indicator and withdrawn view frame"
     );
+}
+
+#[test]
+fn explicit_start_is_semantic_and_refuses_without_a_selected_saved_task() {
+    let mut surface = ChatApp::new_ephemeral();
+    assert_eq!(
+        crate::app::Hit::AgentStart.semantic_id(),
+        "chat.agent-start"
+    );
+    assert!(!surface.start_agent_task());
+    assert!(
+        surface
+            .answer_effect(crate::effects::ChatEffect::StartAgentTask)
+            .is_err()
+    );
+    assert_eq!(
+        crate::effects::ChatEffect::START_AGENT_TASK.id,
+        "start-agent-task"
+    );
+}
+
+#[test]
+fn agent_row_task_navigation_keeps_source_custody_through_the_production_door() {
+    // Capture mode deliberately has inert effects. Stage the same explicit
+    // fixture on a live host so the published door must reach Chat's handler.
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    app.with_surface::<ChatApp, _>(|surface| surface.stage_scenario("agent-task"));
+    let workspace = app.surface_mut::<ChatApp>().active_ws.clone();
+    let target = "chat.agent:scribe";
+    // The quick composer has saved this task, but Chat has not projected it.
+    let arguments = serde_json::json!({"task": "task:newly-queued", "run_epoch": 0});
+    app.call_on(target, "open-task-conversation", arguments.clone())
+        .unwrap();
+    app.settle();
+    let surface = app.surface_mut::<ChatApp>();
+    assert_eq!(surface.active_ws, workspace);
+    assert_eq!(surface.direct_agent.as_deref(), Some("scribe"));
+    assert_eq!(
+        surface.direct_agent_tasks().unwrap().selected_identity(),
+        Some(("task:newly-queued", 0))
+    );
+    assert!(surface.direct_agent_tasks().unwrap().current().is_none());
+    assert!(
+        app.call("start-agent-task", serde_json::json!({})).is_err(),
+        "opening is not approval and must not start a different projected task"
+    );
+
+    for (field, value) in [("workspace", "another-room"), ("agent", "another-agent")] {
+        let mut forged = arguments.clone();
+        forged[field] = value.into();
+        assert!(
+            app.call_on(target, "open-task-conversation", forged)
+                .is_err(),
+            "the caller cannot select {field}"
+        );
+    }
+    assert!(
+        app.call_on(
+            target,
+            "open-task-conversation",
+            serde_json::json!({"task": "task:newly-queued"})
+        )
+        .is_err(),
+        "epoch zero must be explicit, never a default chosen for the caller"
+    );
+    assert!(
+        app.call_on("chat.agent:unadmitted", "open-task-conversation", arguments)
+            .is_err()
+    );
+    app.harness().resize((420, 680)).unwrap();
+    let chat = app
+        .harness()
+        .targets()
+        .keys()
+        .find(|name| name.ends_with("/ResourceApp[0]"))
+        .cloned()
+        .expect("the live Chat surface is addressable");
+    app.harness()
+        .perform_semantic_named(
+            &chat,
+            Some("chat.agent-window"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    let id = app
+        .surface_mut::<ChatApp>()
+        .agent_surfaces
+        .values()
+        .next()
+        .map(|surface| {
+            assert_eq!(
+                surface
+                    .view
+                    .direct_agent_tasks()
+                    .unwrap()
+                    .selected_identity(),
+                Some(("task:newly-queued", 0))
+            );
+            surface.id.clone()
+        })
+        .expect("floating retains the selected task conversation");
+    app.with_surface::<ChatApp, _>(|surface| {
+        ui::widget::FloatingSurfaceProvider::on_floating_surface_host_message(
+            surface,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id },
+        );
+    });
+    app.settle();
+    let surface = app.surface_mut::<ChatApp>();
+    assert_eq!(surface.active_ws, workspace);
+    assert_eq!(surface.direct_agent.as_deref(), Some("scribe"));
+    assert_eq!(
+        surface.direct_agent_tasks().unwrap().selected_identity(),
+        Some(("task:newly-queued", 0))
+    );
+}
+
+#[test]
+fn generated_agent_task_surface_report() {
+    let report = ui::framework::testing::surface_report::<crate::ChatShell>();
+    assert!(report["unbound"].as_array().unwrap().is_empty());
+    assert!(report["view"].is_null());
+    let effects = report["effects"].as_array().unwrap();
+    for action in ["start-agent-task", "open-task-conversation"] {
+        assert!(effects.iter().any(|id| id == action), "missing {action}");
+    }
+}
+
+#[test]
+fn authenticated_agent_entry_has_navigation_without_an_ordinary_authority_lane() {
+    let mut surface = ChatApp::new_ephemeral();
+    surface.active_ws = "ws_home".into();
+    surface.room_agents.push("scribe".into());
+
+    let expected_identity =
+        ui::tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.agent:scribe");
+    let listed = surface
+        .published_rows()
+        .into_iter()
+        .find(|row| row.id() == "chat.agent:scribe")
+        .expect("the authenticated Agent is in the live row listing")
+        .into_resource();
+    assert_eq!(listed.semantic_identity, expected_identity);
+    let resolved = surface
+        .published_row("chat.agent:scribe")
+        .expect("the exact authenticated Agent row resolves")
+        .into_resource();
+    assert_eq!(resolved.semantic_identity, expected_identity);
+
+    assert_eq!(listed.actions.len(), 2);
+    assert_eq!(listed.actions[0].id, "open-agent-conversation");
+    let open_task = &listed.actions[1];
+    assert_eq!(open_task.id, "open-task-conversation");
+    assert_eq!(
+        open_task
+            .params()
+            .iter()
+            .map(|param| param.name.as_ref())
+            .collect::<Vec<_>>(),
+        ["task", "run_epoch"]
+    );
+    assert_eq!(resolved.actions[1].params(), open_task.params());
+    assert!(surface.published_row("chat.agent:unadmitted").is_none());
+    assert!(
+        !<Chat as ui::tilo_resource::Resource>::declarations()
+            .iter()
+            .any(|declaration| declaration.id == "post-agent-message"),
+        "execution interaction is task steering, not a second message lane"
+    );
+}
+
+#[test]
+fn shared_space_context_status_without_broker_custody_cannot_fabricate_native_view() {
+    for room in [
+        "4d68838c-675a-4e63-9d17-10ed76cbb74b",
+        "a4bd617a-2f42-4b2c-b5dc-df2c43362339",
+    ] {
+        let mut app = TestApp::<ChatShell>::in_room(room).unwrap();
+        let output = app
+            .effect(&crate::effects::ChatEffect::LiveContextStatus)
+            .unwrap()
+            .value
+            .unwrap();
+        // This direct standalone door has no original broker custody.
+        // The signed two-person native journey supplies that custody
+        // and independently requires exact room and launcher instance.
+        assert!(output.get("nativeView").is_none());
+        assert_eq!(output["sharing"], false);
+        assert_eq!(output["following"], false);
+        assert_eq!(output["videoCapture"], false);
+    }
+}
+
+#[test]
+fn call_effect_declarations_require_explicit_confirmation() {
+    use ui::tilo_resource::Effect as _;
+    for effect in [
+        ChatEffect::StartCall,
+        ChatEffect::JoinCall {
+            channel: "fixture".into(),
+        },
+        ChatEffect::Unmute {
+            channel: "fixture".into(),
+        },
+    ] {
+        let spec = effect.bound();
+        assert_eq!(
+            spec.contract.confirmation,
+            ui::tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert_eq!(spec.contract.risk, ui::tilo_actions::RiskLevel::Sensitive);
+        assert!(
+            spec.contract
+                .tags
+                .iter()
+                .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
+        );
+    }
 }

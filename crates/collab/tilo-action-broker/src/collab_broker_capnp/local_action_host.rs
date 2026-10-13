@@ -22,6 +22,9 @@ impl CapnpBrokerState {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Err(refused) = tilo_actions::appearance::refuse_here(request) {
+            return Pending::ready(Err(refused));
+        }
         if request.on_behalf_of.is_some()
             || caller.is_foreign_device()
             || !matches!(caller.principal(), CallerPrincipal::Person(_))
@@ -78,6 +81,18 @@ impl CapnpBrokerState {
         })();
         match origin {
             Ok(origin) => {
+                if let InvocationCaller::NativePerson {
+                    room, certificate, ..
+                } = &origin
+                {
+                    match self.checkpoint_replay(room, certificate, caller, request) {
+                        Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
+                        Err(reason) => {
+                            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
+                        }
+                        Ok(None) => {}
+                    }
+                }
                 self.action_invoke_with_origin(caller, None, None, Some(&origin), request)
             }
             Err(error) => Pending::ready(Err(error)),
@@ -338,12 +353,43 @@ impl ActionHost for CertifiedLocalActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
+            return Pending::ready(Err(refused));
+        }
         let admitted = match self.check(caller) {
             Ok(admitted) => admitted,
             Err(error) => return Pending::ready(Err(error)),
         };
         if !certified_provider(&request.target.provider) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
+        }
+        if request.target.address.resource.as_str() == super::workspace_checkpoints::RESOURCE
+            && admitted.agent_id.is_some()
+        {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        let person_certificate = admitted
+            .certificate
+            .as_ref()
+            .filter(|_| admitted.agent_id.is_none());
+        if let Some(certificate) = person_certificate {
+            match self.state.checkpoint_replay(
+                &self.admission.room,
+                certificate,
+                &self.effective,
+                &request,
+            ) {
+                Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
+                Err(reason) => return Pending::ready(Err(ActionHostError::Unavailable { reason })),
+                Ok(None) => {}
+            }
+        }
+        if let Some(job) = self.state.remote_job(&self.effective, &request.invocation)
+            && let Err(reason) =
+                self.state
+                    .authorize_checkpoint_job(&self.admission.room, person_certificate, job)
+        {
+            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
         }
         // This admission stands for the dispatch this call reaches; whatever
         // continues after it returns verifies again.
@@ -362,7 +408,18 @@ impl ActionHost for CertifiedLocalActionHost {
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.check(caller).ok()?;
+        let admitted = self.check(caller).ok()?;
+        let job = self.state.remote_job(&self.effective, id)?;
+        self.state
+            .authorize_checkpoint_job(
+                &self.admission.room,
+                admitted
+                    .certificate
+                    .as_ref()
+                    .filter(|_| admitted.agent_id.is_none()),
+                job,
+            )
+            .ok()?;
         self.state.action_observe(&self.effective, id)
     }
 

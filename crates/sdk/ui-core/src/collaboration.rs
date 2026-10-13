@@ -174,6 +174,19 @@ pub fn display_control(_command: Vec<u8>, _origin: DisplayOrigin) -> Result<Vec<
 
 pub use crate::host::ContinuationMetadata;
 
+/// The numbers a semantic checkpoint carries for the portable schemas a
+/// signed manifest can declare (`continuity.semantic_schema`). The tag says
+/// what the payload means, so a device that has not installed the app can
+/// still check its shape. They match `ContinuitySemanticSchema::wire_tag`
+/// in `tilo-app-package`.
+pub mod semantic_schema {
+    pub const WEB_LOCATION_V1: u16 = 0x0101;
+    pub const PUBLICATION_POSITION_V1: u16 = 0x0102;
+    pub const MEDIA_POSITION_V1: u16 = 0x0103;
+    pub const REALTIME_SESSION_V1: u16 = 0x0104;
+    pub const TEXT_POSITION_V1: u16 = 0x0105;
+}
+
 /// The launcher-only resume payload the host passed this window
 /// ([`crate::host::HostIdentity::continuity_resume`]).
 pub fn continuation_restore_env() -> Option<ContinuationMetadata> {
@@ -448,6 +461,8 @@ pub enum CollabRequest {
         run_id: u64,
         lease: String,
         peer_id: u64,
+        /// Stable catalogue provider for a closed app; never a publisher identity.
+        provider: String,
         resource: String,
         action: String,
         arguments: serde_json::Map<String, serde_json::Value>,
@@ -505,6 +520,9 @@ pub use runtime_collab::{ExportedAction, ExportedInput};
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct BrokerActionSurface {
     pub peer_id: u64,
+    /// Stable route for retained offers; not a connection or trusted publisher.
+    #[serde(default)]
+    pub provider: Option<String>,
     pub app_id: String,
     pub cluster_id: String,
     pub record_id: String,
@@ -881,6 +899,14 @@ pub enum PresencePayload {
         text: String,
         automatic: bool,
     },
+}
+
+/// Explicit correlation supplied by owner-backed membership, never decoded
+/// from a participant label or an actor-id prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertifiedAgentIdentity {
+    pub participant_id: String,
+    pub agent_key: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1550,6 +1576,14 @@ impl CollaborationManager {
         {
             self.action_directory_published = true;
         }
+    }
+
+    pub(crate) fn action_directory_observation(&self) -> (bool, Option<(u64, u64)>) {
+        let counts = match &self.backend {
+            Backend::Transport(transport) => transport.action_directory_publication_counts(),
+            Backend::Disabled(_) => None,
+        };
+        (self.action_directory_published, counts)
     }
 
     /// Drain requests issued by the transport's `ActionDirectory` server.

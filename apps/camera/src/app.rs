@@ -31,7 +31,7 @@ use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::ObjId;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -767,7 +767,9 @@ impl CameraApp {
             return Err("Camera job counter exhausted; restart Camera".into());
         };
         let dir = match &self.storage {
-            Storage::Disk(dir) => native_paths().then(|| dir.clone()),
+            Storage::Disk(dir) => {
+                tilo_files::available(tilo_files::Feature::NativePaths).then(|| dir.clone())
+            }
             Storage::Sample => None,
         };
         // AVI muxing can copy tens of MiB, including when screenshots/tests
@@ -2078,7 +2080,8 @@ impl CameraApp {
                 self.worker.submit(crate::worker::PhotoJob {
                     invocation,
                     generation,
-                    dir: native_paths().then(|| dir.clone()),
+                    dir: tilo_files::available(tilo_files::Feature::NativePaths)
+                        .then(|| dir.clone()),
                     frame,
                     format: self.settings.photo_format,
                     facing: self.facing,
@@ -2510,15 +2513,6 @@ fn cycle<T: Copy + PartialEq>(all: &[T], cur: T) -> T {
 
 /// The empty-state category for a capture that could not start.
 #[cfg(feature = "live-capture")]
-/// Whether captures can be projected into a native directory here; a
-/// browser page keeps them only in the content store.
-fn native_paths() -> bool {
-    matches!(
-        tilo_files::availability(tilo_files::Feature::NativePaths),
-        tilo_files::Availability::Available
-    )
-}
-
 fn camera_issue_for(error: Option<&tilo_capture::CaptureError>) -> CameraIssue {
     match error {
         Some(tilo_capture::CaptureError::PermissionDenied) => CameraIssue::PermissionDenied,
@@ -2877,10 +2871,7 @@ impl Widget for CameraApp {
         let node = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
+                    size: Size::from_percent(1.0, 1.0),
                     ..Default::default()
                 },
                 &self.document_controls.nodes,
@@ -2973,8 +2964,7 @@ impl Widget for CameraApp {
         use winit::keyboard::{Key, NamedKey};
 
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse = ctx.logical(position);
             self.dirty = true;
         }
         let path = ctx.path;
@@ -3049,10 +3039,7 @@ impl Widget for CameraApp {
                 }
             }
             WindowEvent::Touch(touch) => {
-                let point = Point::new(
-                    touch.location.x / ctx.scale_factor,
-                    touch.location.y / ctx.scale_factor,
-                );
+                let point = ctx.logical(touch.location);
                 match touch.phase {
                     TouchPhase::Started if self.active_touch.is_none() => {
                         if let Some((rect, action)) = self
@@ -3900,15 +3887,10 @@ mod tests {
             let sheet = app.settings_sheet.dialog.dialog_rect();
             assert!(sheet.y0 >= 0.0 && sheet.y1 <= 600.0);
             let center = sheet.center();
-            Framed::harness_mut(&mut app).dispatch_to_root(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-            });
-            Framed::harness_mut(&mut app).dispatch_to_root(&WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: winit::event::MouseScrollDelta::LineDelta(0.0, -10.0),
-                phase: winit::event::TouchPhase::Moved,
-            });
+            Framed::harness_mut(&mut app)
+                .dispatch_to_root(&ui::synthetic_input::cursor_moved(center.x, center.y));
+            Framed::harness_mut(&mut app)
+                .dispatch_to_root(&ui::synthetic_input::mouse_wheel(0.0, -10.0));
             assert!(app.settings_sheet.dialog.scroll_offset() > 0.0);
         }
     }
@@ -4194,7 +4176,7 @@ mod tests {
         }
         // Phase `disk_shutter_writes_a_real_jpeg_via_handle_event`.
         {
-            use winit::event::{ElementState, WindowEvent};
+            use winit::event::ElementState;
             use winit::keyboard::{Key, NamedKey};
 
             let dir =
@@ -4219,11 +4201,7 @@ mod tests {
                 None,
                 ElementState::Pressed,
             );
-            let event = WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            };
+            let event = ui::synthetic_input::keyboard_input(ev);
             let handled = drive(&mut app, &event, &mut doc, &root);
             assert!(handled, "space should be handled on the camera screen");
 

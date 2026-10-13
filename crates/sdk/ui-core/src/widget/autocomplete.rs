@@ -575,8 +575,7 @@ impl SuggestionList {
             x += m.icon + m.spacing;
         }
         // The detail column is trailing; the label takes what is left.
-        let mut label_x1 = row.x1 - m.pad;
-        if let Some(detail) = &s.detail {
+        let label_x1 = if let Some(detail) = &s.detail {
             let room = f32_of_f64(((row.x1 - m.pad) - x).max(0.0) / 2.0);
             let shown = text.elide_to_width_style(detail, room, &detail_style);
             let (dw, dh) = text.measure_style(&shown, None, &detail_style);
@@ -589,8 +588,10 @@ impl SuggestionList {
                 None,
                 &detail_style,
             );
-            label_x1 = dx - 2.0 * m.spacing;
-        }
+            dx - 2.0 * m.spacing
+        } else {
+            row.x1 - m.pad
+        };
         let label =
             text.elide_to_width_style(&s.label, f32_of_f64((label_x1 - x).max(0.0)), &label_style);
         let (_, lh) = text.measure_style(&label, None, &label_style);
@@ -1075,8 +1076,7 @@ impl Widget for Autocomplete {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_pointer = ctx.logical(position);
             if self.open {
                 self.list.hover_at(self.last_pointer);
             }

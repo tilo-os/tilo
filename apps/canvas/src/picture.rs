@@ -15,10 +15,9 @@
 )]
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use ui::vello::kurbo::{Affine, Rect};
-use ui::vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use ui::vello::peniko::ImageData;
 
 use crate::adjust::Grade;
 use crate::model::{Adjust, Shape};
@@ -51,13 +50,7 @@ pub fn decode(bytes: &[u8]) -> Result<ImageData, String> {
         image::load_from_memory_with_format(bytes, format).map_err(|error| error.to_string())?;
     let rgba = decoded.to_rgba8();
     let (width, height) = rgba.dimensions();
-    Ok(ImageData {
-        data: Blob::new(Arc::new(rgba.into_raw())),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width,
-        height,
-    })
+    Ok(ui::raster::rgba8(rgba.into_raw(), width, height))
 }
 
 /// A picture's size in pixels, read from its header.
@@ -254,13 +247,7 @@ impl Pyramid {
 }
 
 fn blank() -> ImageData {
-    ImageData {
-        data: Blob::new(Arc::new(vec![0; 4])),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: 1,
-        height: 1,
-    }
+    ui::raster::rgba8(vec![0; 4], 1, 1)
 }
 
 /// `image` at half the size, each pixel the mean of the two by two it
@@ -292,13 +279,11 @@ fn halve(image: &ImageData) -> ImageData {
 
 /// RGBA bytes as an image.
 pub fn image_of(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
-    ImageData {
-        data: Blob::new(Arc::new(pixels)),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: u32::try_from(width).unwrap_or(1),
-        height: u32::try_from(height).unwrap_or(1),
-    }
+    ui::raster::rgba8(
+        pixels,
+        u32::try_from(width).unwrap_or(1),
+        u32::try_from(height).unwrap_or(1),
+    )
 }
 
 /// What a picture is graded with: the per-pixel steps, then blur and
@@ -572,32 +557,6 @@ impl Pictures {
         }
         Some((treated, step))
     }
-}
-
-/// The colour of the picture under `local` (in the mark's units), as the
-/// placement shows it, before grading.
-pub fn pixel_at(
-    image: &ImageData,
-    placement: &Placement,
-    local: ui::vello::kurbo::Point,
-) -> Option<[u8; 4]> {
-    if !placement.frame.contains(local) {
-        return None;
-    }
-    let at = placement
-        .picture_to_local((image.width, image.height))
-        .inverse()
-        * local;
-    if at.x < 0.0 || at.y < 0.0 {
-        return None;
-    }
-    let (column, row) = (at.x.floor() as u32, at.y.floor() as u32);
-    if column >= image.width || row >= image.height {
-        return None;
-    }
-    let start = ((u64::from(row) * u64::from(image.width) + u64::from(column)) * 4) as usize;
-    let rgba = image.data.data().get(start..start + 4)?;
-    <[u8; 4]>::try_from(rgba).ok()
 }
 
 #[cfg(test)]

@@ -2476,10 +2476,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn composer_metrics_follow_the_theme_and_grow_with_the_text() {
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
@@ -2518,10 +2514,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn composer_formats_and_drafts_round_trip_content() {
         // Phase `format_toggle_round_trips_content`.
         {
@@ -2640,10 +2632,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn composer_window_moves_resizes_docks_and_owns_its_input() {
         // Phase `move_keeps_window_in_bounds`.
         {
@@ -2707,11 +2695,7 @@ mod tests {
             let modifiers = winit::event::Modifiers::default();
             let mut doc = crate::resource::TestMail::doc();
             let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-            let press = WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            };
+            let press = ui::synthetic_input::mouse_press();
             let (consumed, action) = w.handle_event(
                 &press,
                 &mut ComposeEventContext {
@@ -2788,10 +2772,7 @@ mod tests {
         let mut doc = crate::resource::TestMail::doc();
         let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let node = taffy::NodeId::new(0);
-        let mv = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        };
+        let mv = ui::synthetic_input::cursor_moved(p.x, p.y);
         w.handle_event(
             &mv,
             &mut ComposeEventContext {
@@ -2803,11 +2784,7 @@ mod tests {
                 taffy: &taffy,
             },
         );
-        let pr = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        let pr = ui::synthetic_input::mouse_press();
         w.handle_event(
             &pr,
             &mut ComposeEventContext {

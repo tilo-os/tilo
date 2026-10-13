@@ -2504,10 +2504,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn headers_and_footers_roundtrip_through_odt() {
         // Phase `header_footer_with_page_number_roundtrip_through_odt`.
         {

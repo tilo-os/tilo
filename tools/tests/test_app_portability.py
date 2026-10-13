@@ -90,6 +90,14 @@ class AppPortabilityTests(unittest.TestCase):
         sites = [(Path(f.path).name, f.line) for f in self.findings() if f.rule == "R1"]
         self.assertEqual(sites, [("Cargo.toml", 8), ("lib.rs", 2), ("lib.rs", 4), ("lib.rs", 5)])
 
+    def test_target_dev_dependencies_reach_only_tests(self):
+        self.app(
+            "notes",
+            "pub fn a() {}\n",
+            cargo_extra="\n[target.'cfg(target_os = \"linux\")'.dev-dependencies]\nserde = \"1\"\n",
+        )
+        self.assertEqual([f for f in self.findings() if f.rule == "R1"], [])
+
     def test_os_interfaces_are_r2(self):
         self.app(
             "terminal",

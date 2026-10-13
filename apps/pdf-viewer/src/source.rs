@@ -33,8 +33,8 @@ fn profiling() -> bool {
 }
 
 use anyhow::{Context, anyhow};
-use tilo_content::{ContentState, ContentStore};
-use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
+use tilo_content::ContentStore;
+use vello::peniko::{Blob, ImageData as PenikoImage};
 
 use crate::markup::{ImportedPage, PagePlanEntry};
 use crate::model::{
@@ -146,12 +146,9 @@ fn valid_page_size(width: f64, height: f64) -> bool {
 /// A document loaded from disk plus the engine-backed rasteriser for it.
 pub struct LoadedDoc {
     pub doc: Document,
-    pub raster: Rasterizer,
+    pub raster: RasterBackend,
     /// The file's display name (for the window chrome / status bar).
     pub name: String,
-    /// The file's durable record identity ([`ui::RecordId::identify_file`]):
-    /// the same across renames and moves, so its markup follows it.
-    pub file: ui::RecordId,
 }
 
 /// Load a PDF from `path` through the shared PDF engine. Pages the shared
@@ -166,12 +163,10 @@ pub fn open(path: &Path, content: &ContentStore) -> anyhow::Result<LoadedDoc> {
     let t = ui::time::now();
     let bytes = read_file_bounded(path, MAX_OPEN_BYTES)?;
     prof("fs::read", t);
-    open_bytes_at(path, &bytes, content, ui::RecordId::identify_file(path))
+    open_bytes_at(path, &bytes, content)
 }
 
 /// Open a PDF the host handed over as bytes (a browser page has no paths).
-/// Its durable identity is its content, so reopening the same file finds the
-/// same markup.
 ///
 /// # Errors
 ///
@@ -184,17 +179,10 @@ pub fn open_contents(
     if bytes.len() > MAX_OPEN_BYTES {
         anyhow::bail!("the document is too large");
     }
-    let hash = blake3::hash(bytes).to_hex();
-    let path = Path::new("picked").join(hash.as_str()).join(name);
-    open_bytes_at(&path, bytes, content, ui::RecordId::for_file(&path))
+    open_bytes_at(Path::new(name), bytes, content)
 }
 
-fn open_bytes_at(
-    path: &Path,
-    bytes: &[u8],
-    content: &ContentStore,
-    file: ui::RecordId,
-) -> anyhow::Result<LoadedDoc> {
+fn open_bytes_at(path: &Path, bytes: &[u8], content: &ContentStore) -> anyhow::Result<LoadedDoc> {
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -207,8 +195,8 @@ fn open_bytes_at(
         .to_string();
 
     let t = ui::time::now();
-    let r = Rasterizer::open(bytes, content.clone())?;
-    prof("Rasterizer::open (engine parse + page sizes)", t);
+    let r = RasterBackend::open(bytes, content.clone())?;
+    prof("RasterBackend::open (engine parse + page sizes)", t);
     let (mut title, author, subject) = r.metadata();
     if title.trim().is_empty() {
         title = stem;
@@ -223,7 +211,6 @@ fn open_bytes_at(
         doc,
         raster: r,
         name,
-        file,
     })
 }
 
@@ -264,7 +251,6 @@ pub struct RasterBackend {
     /// Dimensions supplied by the durable plan for a not-yet-downloaded page.
     /// This lets UI layout remain stable while the content store fetches it.
     pending_sizes: Vec<Option<(f64, f64)>>,
-    pending_hashes: Vec<Option<String>>,
     /// Recorded rotation (degrees) of each displayed page occurrence.
     rotations: Vec<i32>,
     /// Rendered bitmaps keyed by (source, source-page, target-width bucket,
@@ -434,7 +420,6 @@ impl RasterBackend {
             sources: vec![source],
             plan,
             pending_sizes: vec![None; source_len],
-            pending_hashes: vec![None; source_len],
             rotations: vec![0; source_len],
             cache: HashMap::new(),
             cache_sizes: HashMap::new(),
@@ -577,15 +562,6 @@ impl RasterBackend {
                 })
             })
             .collect();
-        self.pending_hashes = entries
-            .iter()
-            .map(|entry| {
-                entry
-                    .imported
-                    .as_ref()
-                    .map(|imported| imported.hash.clone())
-            })
-            .collect();
         self.rotations = entries
             .iter()
             .map(|entry| entry.rotation.rem_euclid(360))
@@ -611,17 +587,6 @@ impl RasterBackend {
     /// `display_idx`.
     fn slot(&self, display_idx: usize) -> Option<PageSlot> {
         self.plan.get(display_idx).copied().flatten()
-    }
-
-    /// `None` for a normal/original page; otherwise the truthful transfer
-    /// state for an imported occurrence whose bytes have not materialised yet.
-    pub fn page_blob_state(&self, display_idx: usize) -> Option<ContentState> {
-        self.slot(display_idx).is_none().then(|| {
-            self.pending_hashes
-                .get(display_idx)
-                .and_then(Option::as_deref)
-                .map(|hash| self.content.state(hash))
-        })?
     }
 
     pub fn first_page_size(&self) -> (f64, f64) {
@@ -666,82 +631,6 @@ impl RasterBackend {
                 .map(|i| self.page_rotation(i))
                 .collect(),
         )
-    }
-
-    // ---- page editing -----------------------------------------------
-
-    /// Move displayed page `from` to final index `to` (matching a
-    /// [`ui::widget::page_sidebar::move_item`]-style move). Content, text and
-    /// bitmap caches are keyed by source page, so no re-render is needed.
-    pub fn reorder_page(&mut self, from: usize, to: usize) {
-        if from == to || from >= self.plan.len() || to >= self.plan.len() {
-            return;
-        }
-        let slot = self.plan.remove(from);
-        let size = self.pending_sizes.remove(from);
-        let hash = self.pending_hashes.remove(from);
-        let rotation = if from < self.rotations.len() {
-            self.rotations.remove(from)
-        } else {
-            0
-        };
-        self.plan.insert(to, slot);
-        self.pending_sizes.insert(to, size);
-        self.pending_hashes.insert(to, hash);
-        self.rotations
-            .insert(to.min(self.rotations.len()), rotation);
-    }
-
-    /// Remove displayed page `idx`. Keeps at least one page.
-    pub fn delete_page(&mut self, idx: usize) {
-        if self.plan.len() > 1 && idx < self.plan.len() {
-            self.plan.remove(idx);
-            self.pending_sizes.remove(idx);
-            self.pending_hashes.remove(idx);
-            if idx < self.rotations.len() {
-                self.rotations.remove(idx);
-            }
-        }
-    }
-
-    /// Duplicate displayed page `idx`, inserting the copy right after it. The
-    /// duplicate points at the same source page (cheap; shares the render cache).
-    pub fn duplicate_page(&mut self, idx: usize) {
-        if let Some(slot) = self.slot(idx) {
-            self.plan.insert(idx + 1, Some(slot));
-            self.pending_sizes
-                .insert(idx + 1, self.pending_sizes.get(idx).copied().flatten());
-            self.pending_hashes
-                .insert(idx + 1, self.pending_hashes.get(idx).cloned().flatten());
-            let rotation = self.page_rotation(idx);
-            self.rotations
-                .insert((idx + 1).min(self.rotations.len()), rotation);
-        }
-    }
-
-    /// Import an image (`bytes` = PNG/JPEG/… file contents) as a new page,
-    /// inserted at displayed index `at`. The image is placed to fill a page
-    /// sized to its own aspect ratio.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the engine cannot decode `bytes` as an image.
-    pub fn import_image(&mut self, bytes: &[u8], at: usize) -> anyhow::Result<()> {
-        let source = Self::image_source(&self.engine, bytes)?;
-        let src_idx = self.sources.len();
-        self.sources.push(source);
-        let at = at.min(self.plan.len());
-        self.plan.insert(
-            at,
-            Some(PageSlot {
-                source: src_idx,
-                page: 0,
-            }),
-        );
-        self.pending_sizes.insert(at, None);
-        self.pending_hashes.insert(at, None);
-        self.rotations.insert(at.min(self.rotations.len()), 0);
-        Ok(())
     }
 
     fn metadata(&self) -> (String, String, String) {
@@ -835,35 +724,10 @@ impl RasterBackend {
         Some(PageText::from_layer(layer))
     }
 
-    /// The width bucket `render` snaps `target_w` to. Exposed so the draw loop
-    /// can probe the cache (`is_page_cached`) with the exact key `render` uses.
+    /// The width bucket `render` snaps `target_w` to. Exposed so the reader
+    /// keys the worker's results with the exact bucket `render` uses.
     pub(crate) fn bucket_for(target_w: u32) -> u32 {
         ((target_w / 24).max(1) * 24).clamp(96, 4096)
-    }
-
-    /// Whether displayed page `display_idx` already has a cached bitmap at the
-    /// bucket `render(display_idx, target_w)` would use — i.e. drawing it this
-    /// frame is a free cache hit rather than a fresh (expensive) rasterisation.
-    pub fn is_page_cached(&self, display_idx: usize, target_w: u32) -> bool {
-        match self.slot(display_idx) {
-            Some(slot) => {
-                let Some(size) = self
-                    .sources
-                    .get(slot.source)
-                    .and_then(|source| source.page_sizes.get(slot.page))
-                else {
-                    return false;
-                };
-                let rotation = self.page_rotation(display_idx);
-                let Some(bucket) = Self::bucket_for_page(target_w, rotated_size(*size, rotation))
-                else {
-                    return false;
-                };
-                self.cache
-                    .contains_key(&(slot.source, slot.page, bucket, rotation))
-            }
-            None => false,
-        }
     }
 
     /// Test-only: how many *full-page* bitmaps are cached (buckets above the
@@ -968,13 +832,7 @@ impl RasterBackend {
         if w == 0 || h == 0 || bitmap.pixels().len() != (w as usize) * (h as usize) * 4 {
             return None;
         }
-        let img = PenikoImage {
-            data: Blob::new(bitmap.shared_pixels()),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: w,
-            height: h,
-        };
+        let img = ui::raster::rgba8(Blob::new(bitmap.shared_pixels()), w, h);
         self.cache_image(key, img.clone());
         Some(img)
     }
@@ -1040,35 +898,9 @@ impl RasterBackend {
         if w == 0 || h == 0 || bitmap.pixels().len() != (w as usize) * (h as usize) * 4 {
             return None;
         }
-        let image = PenikoImage {
-            data: Blob::new(bitmap.shared_pixels()),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: w,
-            height: h,
-        };
+        let image = ui::raster::rgba8(Blob::new(bitmap.shared_pixels()), w, h);
         self.tiles.insert(key, image.clone());
         Some(image)
-    }
-
-    /// Whether tile `(col, row)` of `display_idx` at `level` is cached.
-    pub fn is_tile_cached(
-        &self,
-        display_idx: usize,
-        level: crate::tiles::Level,
-        col: u32,
-        row: u32,
-    ) -> bool {
-        self.slot(display_idx).is_some_and(|slot| {
-            self.tiles.contains(&TileKey {
-                source: slot.source,
-                page: slot.page,
-                level,
-                rotation: self.page_rotation(display_idx),
-                col,
-                row,
-            })
-        })
     }
 
     /// Test-only: the zoom levels this backend holds tiles for.
@@ -1094,28 +926,6 @@ impl RasterBackend {
         // width; decline instead of silently returning a blurry or unsafe
         // bitmap.
         (max_width >= 24).then(|| Self::bucket_for(target_w).min(max_width))
-    }
-
-    /// Drop oversized stale zoom levels. Smaller safe buckets (including a
-    /// tall page capped by `MAX_RASTER_PIXELS`) and thumbnails may stay until
-    /// the LRU byte budget evicts them, so this never churns a freshly rendered
-    /// page. Called once per frame.
-    pub fn prune(&mut self, keep_bucket: u32) {
-        const THUMB_MAX: u32 = 600;
-        // Cache keys store the *snapped* bucket (`bucket_for`), so snap the
-        // keep-width the same way. Comparing against the raw width would match
-        // nothing — silently evicting the current page every frame and forcing
-        // a full re-rasterise on the very next one.
-        let keep = Self::bucket_for(keep_bucket);
-        let stale: Vec<_> = self
-            .cache
-            .keys()
-            .copied()
-            .filter(|(_, _, bucket, _)| *bucket > keep && *bucket > THUMB_MAX)
-            .collect();
-        for key in stale {
-            self.evict_cache(key);
-        }
     }
 
     /// The annotations the engine reads back from displayed page
@@ -1526,13 +1336,6 @@ fn signature_stamp(page: usize, s: &Signature) -> tilo_pdf::NewAnnotation {
     }
 }
 
-/// Compatibility name for the synchronous, owner-thread-only backend.
-///
-/// New UI code must use [`RasterHandle`]. This alias is retained temporarily
-/// while the reader application is migrated in a separate change; it must not
-/// cross a thread boundary.
-pub type Rasterizer = RasterBackend;
-
 /// A request to open a path on the PDF owner worker.
 ///
 /// `id` is monotonically increasing per handle and also becomes the opened
@@ -1758,8 +1561,6 @@ pub enum RasterEvent {
         document: Document,
         name: String,
         raster: RasterDocument,
-        /// The file's durable record identity.
-        file: ui::RecordId,
     },
     OpenFailed {
         request: OpenRequest,
@@ -1784,7 +1585,6 @@ pub enum RasterEvent {
     },
     TileFailed {
         request: TileRequest,
-        error: String,
     },
     RenderFailed {
         request: RenderRequest,
@@ -1796,7 +1596,6 @@ pub enum RasterEvent {
     },
     LinksFailed {
         request: LinksRequest,
-        error: String,
     },
     TextFailed {
         request: TextRequest,
@@ -2523,7 +2322,7 @@ fn shared_worker_queue() -> Arc<WorkerQueue> {
             state: Mutex::new(QueueState::default()),
             ready: Condvar::new(),
         });
-        if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
+        if !ui::rt::available(ui::rt::Feature::Threads) {
             // A browser page: the UI thread serves the queue between frames.
             *INLINE_WORKER
                 .lock()
@@ -2794,12 +2593,7 @@ impl SourceWorker {
                     None => open(&request.path, &content),
                 };
                 match opened {
-                    Ok(LoadedDoc {
-                        doc,
-                        raster,
-                        name,
-                        file,
-                    }) => {
+                    Ok(LoadedDoc { doc, raster, name }) => {
                         let page_sizes = (0..raster.page_count())
                             .map(|page| raster.page_size(page))
                             .collect();
@@ -2825,7 +2619,6 @@ impl SourceWorker {
                             document: doc,
                             name,
                             raster,
-                            file,
                         }
                     }
                     Err(error) => RasterEvent::OpenFailed {
@@ -2903,10 +2696,7 @@ impl SourceWorker {
                         request.row,
                     ),
                 },
-                _ => RasterEvent::TileFailed {
-                    request,
-                    error: "the requested raster document is no longer active".to_string(),
-                },
+                _ => RasterEvent::TileFailed { request },
             },
             // Batches are unpacked at admission and never reach the worker.
             RasterCommand::Tiles(_) => return,
@@ -2931,10 +2721,7 @@ impl SourceWorker {
                     request,
                     links: backend.page_links(request.page),
                 },
-                _ => RasterEvent::LinksFailed {
-                    request,
-                    error: "the requested raster document is no longer active".to_string(),
-                },
+                _ => RasterEvent::LinksFailed { request },
             },
             RasterCommand::Reconcile(request) => match active
                 .get_mut(&session_id)
@@ -3201,10 +2988,7 @@ fn bound_page_event(event: RasterEvent) -> RasterEvent {
             request,
             error: "the extracted text layer exceeds the UI result memory limit".to_string(),
         },
-        RasterEvent::TileRendered { request, .. } => RasterEvent::TileFailed {
-            request,
-            error: "the rendered tile exceeds the UI result memory limit".to_string(),
-        },
+        RasterEvent::TileRendered { request, .. } => RasterEvent::TileFailed { request },
         _ => event,
     }
 }
@@ -3293,7 +3077,7 @@ mod tests {
             assert_eq!(valid_page_size(w, h), valid, "page size {w}x{h}");
         }
 
-        let bucket = Rasterizer::bucket_for_page(4_096, (612.0, 20_000.0))
+        let bucket = RasterBackend::bucket_for_page(4_096, (612.0, 20_000.0))
             .expect("a tall but valid page still gets a bounded raster");
         let pixels = f64::from(bucket) * f64::from(bucket) * 20_000.0 / 612.0;
         assert!(pixels <= MAX_RASTER_PIXELS * 1.01);
@@ -3311,13 +3095,8 @@ mod tests {
             page: 0,
             target_width: 4_096,
         };
-        let oversized_image = PenikoImage {
-            data: Blob::new(Arc::new(vec![0; MAX_PENDING_RESULT_BYTES + 1])),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: 4_097,
-            height: 2_048,
-        };
+        let oversized_image =
+            ui::raster::rgba8(vec![0; MAX_PENDING_RESULT_BYTES + 1], 4_097, 2_048);
         assert!(matches!(
             bound_page_event(RasterEvent::Rendered {
                 request,

@@ -162,7 +162,7 @@ static WINDOWS_COMPAT_ENTRY_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(target_os = "linux")]
-pub(super) fn proc_stat(pid: u32) -> Option<(u32, u64)> {
+pub(crate) fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm is parenthesised and may contain spaces/parentheses; the final ')'
     // is the only safe place from which to index the remaining fields.
@@ -175,7 +175,7 @@ pub(super) fn proc_stat(pid: u32) -> Option<(u32, u64)> {
 // Linux process ancestry is the authority for sandbox launch attribution.
 // Other hosts must not infer equivalent authority from numeric PIDs.
 #[cfg(not(target_os = "linux"))]
-pub(super) fn proc_stat(_pid: u32) -> Option<(u32, u64)> {
+pub(crate) fn proc_stat(_pid: u32) -> Option<(u32, u64)> {
     None
 }
 
@@ -574,10 +574,26 @@ pub(crate) struct VerifiedLaunchIdentity {
     pub confined: bool,
 }
 
+/// Kernel-bound identity of one supervised launcher process. The start time
+/// makes a recycled numeric PID a different custody domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedLaunchCustody {
+    pub supervisor_pid: u32,
+    pub supervisor_start_time: u64,
+}
+
 /// Resolve a descendant to the exact live launch record that owns it.
 /// Kernel parent links and process start-times prevent app-id spoofing and PID
 /// reuse; the bounded walk fails closed for daemonised or unknown clients.
-pub(crate) fn verified_launch_for_descendant(mut pid: u32) -> Option<VerifiedLaunchIdentity> {
+pub(crate) fn verified_launch_for_descendant(pid: u32) -> Option<VerifiedLaunchIdentity> {
+    verified_launch_custody_for_descendant(pid).map(|(identity, _)| identity)
+}
+
+/// Resolve both the durable launch identity and the exact live supervising
+/// process which authenticated this descendant.
+pub(crate) fn verified_launch_custody_for_descendant(
+    mut pid: u32,
+) -> Option<(VerifiedLaunchIdentity, VerifiedLaunchCustody)> {
     const MAX_ANCESTORS: usize = 32;
     for _ in 0..MAX_ANCESTORS {
         let (parent_pid, start_time) = proc_stat(pid)?;
@@ -585,11 +601,17 @@ pub(crate) fn verified_launch_for_descendant(mut pid: u32) -> Option<VerifiedLau
             && let Some(known) = map.get(&pid)
             && known.start_time == start_time
         {
-            return Some(VerifiedLaunchIdentity {
-                package_id: known.package_id.clone(),
-                workspace_id: known.workspace_id.clone(),
-                confined: known.confined,
-            });
+            return Some((
+                VerifiedLaunchIdentity {
+                    package_id: known.package_id.clone(),
+                    workspace_id: known.workspace_id.clone(),
+                    confined: known.confined,
+                },
+                VerifiedLaunchCustody {
+                    supervisor_pid: pid,
+                    supervisor_start_time: start_time,
+                },
+            ));
         }
         if parent_pid == 0 || parent_pid == pid {
             return None;
@@ -597,6 +619,27 @@ pub(crate) fn verified_launch_for_descendant(mut pid: u32) -> Option<VerifiedLau
         pid = parent_pid;
     }
     None
+}
+
+pub(crate) fn launch_custody_is_current(
+    custody: VerifiedLaunchCustody,
+    package_id: &str,
+    workspace_id: &str,
+) -> bool {
+    let Some((_, start_time)) = proc_stat(custody.supervisor_pid) else {
+        return false;
+    };
+    if start_time != custody.supervisor_start_time {
+        return false;
+    }
+    LAUNCHED_PROCESSES.lock().is_ok_and(|launches| {
+        launches.get(&custody.supervisor_pid).is_some_and(|launch| {
+            launch.start_time == custody.supervisor_start_time
+                && launch.confined
+                && launch.package_id == package_id
+                && launch.workspace_id.as_deref() == Some(workspace_id)
+        })
+    })
 }
 
 /// Resolve a host process (normally xdg-dbus-proxy) to the Tilo package
@@ -1688,25 +1731,30 @@ pub fn installed_continuity_contract(package_id: &str) -> InstalledContinuityReq
 /// Returns an error if the cache is stale and re-reading the registry
 /// fails — see [`read_installed_apps`].
 pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
+    installed_apps_snapshot().map(|(_, apps)| apps)
+}
+
+/// Pair records with their cache revision while holding the cache lock.
+fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
     {
         let cache = lock(&APP_CACHE);
         if let Some((apps, Some(at))) = cache.as_ref()
             && at.elapsed() < APP_CACHE_TTL
         {
-            return Ok(apps.clone());
+            return Ok((APP_CACHE_REVISION.load(Ordering::Acquire), apps.clone()));
         }
     }
     let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
     let apps = read_installed_apps()?;
-    record_app_read(epoch, &apps);
+    let generation = record_app_read(epoch, &apps);
     // Watch after the first memoize so opening the registry to fill the
     // cache cannot look like an install and wipe the snapshot we just wrote.
     ensure_app_cache_watch();
-    Ok(apps)
+    Ok((generation, apps))
 }
 
 /// Store a registry read that started at `read_epoch` as the new baseline.
-fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) {
+fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) -> u64 {
     let mut cache = lock(&APP_CACHE);
     // An invalidation (install, removal, watch event, repointed registry)
     // that raced this read means the read may predate it: keep it only as
@@ -1721,6 +1769,13 @@ fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) {
         APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     }
     *cache = Some((apps.to_vec(), fresh));
+    let generation = if fresh.is_some() {
+        APP_CACHE_REVISION.load(Ordering::Acquire)
+    } else {
+        0
+    };
+    drop(cache);
+    generation
 }
 
 /// Drop the memoised enumeration. Used after an install/remove and by
@@ -1827,14 +1882,17 @@ fn watch_app_cache_roots(roots: &[PathBuf], ready: &std::sync::mpsc::Sender<()>)
 
 /// Immutable installed-app snapshot revision for retained search projections.
 pub fn gui_apps_snapshot() -> (u64, Vec<InstalledApp>) {
-    // Pair a source generation with the exact projection read under it. If
-    // cache invalidation races this small read, return the observed changed
-    // generation; retained index workers will reject it instead of treating
-    // old records as a current snapshot.
-    let before = APP_CACHE_REVISION.load(Ordering::Acquire);
-    let apps = gui_apps();
-    let after = APP_CACHE_REVISION.load(Ordering::Acquire);
-    (if before == after { before } else { 0 }, apps)
+    // Cache population advances the revision but does not invalidate the
+    // records it just read. Only an invalidation racing the read stamps it
+    // stale; the generation is paired under the cache lock.
+    let before = gui_apps_generation();
+    let (generation, mut apps) = installed_apps_snapshot().unwrap_or_else(|_| {
+        let after = gui_apps_generation();
+        (if before == after { before } else { 0 }, Vec::new())
+    });
+    apps.retain(|app| app.has_gui);
+    apps.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    (generation, apps)
 }
 
 /// Current installed-app source generation.  Search projections use this
@@ -4256,8 +4314,13 @@ pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
 
 /// An accepted toplevel's kernel peer, after ordinary workspace admission.
 /// A client-announced application id cannot produce a startup receipt.
-pub(crate) fn record_startup_window(pid: u32) {
-    LaunchSession::current().startup.adopted(pid);
+pub(crate) fn record_startup_window(
+    pid: u32,
+    adoption: Option<tilo_action_broker::services::LaunchAdoption>,
+) {
+    LaunchSession::current()
+        .startup
+        .adopted_window(pid, adoption);
 }
 
 /// Live unconfined launches a close of an unmatched toolkit window may stop.
@@ -5895,8 +5958,14 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_APPS_DATA_DIR", tmp.path());
             invalidate_app_cache();
-            let initial = installed_apps().unwrap();
+            let (snapshot_generation, initial_gui) = gui_apps_snapshot();
             let initial_generation = gui_apps_generation();
+            assert_eq!(
+                snapshot_generation, initial_generation,
+                "populating a cold cache must not invalidate its own snapshot"
+            );
+            assert_eq!(initial_gui.len(), 1);
+            let initial = installed_apps().unwrap();
             let expire = || {
                 lock(&APP_CACHE).as_mut().unwrap().1 = None;
             };
@@ -5955,7 +6024,8 @@ mod tests {
             let read_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
             let raced = read_installed_apps().unwrap();
             expire_watched_app_cache();
-            record_app_read(read_epoch, &raced);
+            let raced_snapshot_generation = record_app_read(read_epoch, &raced);
+            assert_eq!(raced_snapshot_generation, 0, "a raced read stays stale");
             let raced_generation = gui_apps_generation();
             let stale = lock(&APP_CACHE).as_ref().unwrap().1.is_none();
             let reread_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
@@ -6794,8 +6864,24 @@ mod tests {
                     confined: true,
                 })
             );
+            let (_, custody) = verified_launch_custody_for_descendant(descendant)
+                .expect("the live descendant retains exact launcher custody");
+            assert!(launch_custody_is_current(
+                custody,
+                "so.tilo.mail",
+                "room-mail"
+            ));
+            assert!(!launch_custody_is_current(
+                custody,
+                "so.tilo.chat",
+                "room-mail"
+            ));
             unregister_launched_process(launcher.pid());
             assert_eq!(verified_package_for_descendant(descendant), None);
+            assert!(
+                !launch_custody_is_current(custody, "so.tilo.mail", "room-mail"),
+                "the persisted numeric pid/start pair loses authority when its live launch retires"
+            );
         }
 
         fn an_unconfined_launch_is_portal_attributed_without_service_authority() {

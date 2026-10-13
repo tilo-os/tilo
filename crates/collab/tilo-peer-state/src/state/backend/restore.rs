@@ -163,8 +163,10 @@ pub(in crate::state) fn restore(
         native_cut_publisher: None,
         _retention: (),
     };
-    let mut media_policy = None;
-    if let Some(doc) = &core.room_doc {
+    let media_policy = if let Some(doc) = &core.room_doc {
+        if doc.has_missing_dependencies() {
+            return Err(invalid(BoundedPeerInvalid::Governance));
+        }
         let read = doc.read();
         let policy = media::read::parse(
             &read,
@@ -185,17 +187,16 @@ pub(in crate::state) fn restore(
                 allocation_bytes: limits.governance_json.allocation_bytes,
                 collection_entries: limits.governance_json.collection_entries,
             };
-            if doc.has_missing_dependencies()
-                || policy.authorization_basis
-                    != media::basis::bounded(
-                        &read,
-                        &[],
-                        media::basis::BasisLimits {
-                            collection_bytes: limits.governance_collection_bytes,
-                            json,
-                        },
-                    )
-                    .map_err(policy_error)?
+            if policy.authorization_basis
+                != media::basis::bounded(
+                    &read,
+                    &[],
+                    media::basis::BasisLimits {
+                        collection_bytes: limits.governance_collection_bytes,
+                        json,
+                    },
+                )
+                .map_err(policy_error)?
             {
                 return Err(invalid(BoundedPeerInvalid::Media));
             }
@@ -230,8 +231,10 @@ pub(in crate::state) fn restore(
                 _ => invalid(BoundedPeerInvalid::Media),
             })?;
         }
-        media_policy = policy;
-    }
+        policy
+    } else {
+        None
+    };
     if let Some(exact) = &core.exact_admissions {
         for (key, _) in exact.iter() {
             let floor = core

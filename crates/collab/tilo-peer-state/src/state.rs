@@ -31,6 +31,7 @@ pub use bounded::{
 pub(crate) mod json_resource_tests;
 use backend::{LegacyNative, PeerCore, PeerDocument};
 mod agent_members;
+mod bans;
 pub use agent_members::GovernedAgent;
 mod local_admission;
 mod local_outbox;
@@ -750,22 +751,6 @@ impl StatePeer {
         self.set_member(user_public_key, role.into(), false, key, now)
     }
 
-    /// Make a governed collaborator an administrator of the workspace: an
-    /// editor granted every governance action of the room (never its
-    /// governance key). [`Self::set_member_role`] demotes them again.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::set_member_role`].
-    pub fn set_member_administrator(
-        &mut self,
-        user_public_key: [u8; 32],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.set_member(user_public_key, Role::Editor, true, key, now)
-    }
-
     fn set_member(
         &mut self,
         user_public_key: [u8; 32],
@@ -898,48 +883,6 @@ impl StatePeer {
                 &map,
                 grant.id.as_str(),
                 automerge::ScalarValue::Bytes(serde_json::to_vec(grant).map_err(err)?),
-            )
-            .map_err(err)?;
-        }
-        doc.commit();
-        self.apply_governance_doc(doc, &before, key, now)
-    }
-
-    /// Write sandbox capabilities the governance writer decided for apps in
-    /// the room, keyed by their ids.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer, a capability
-    /// has no id, or governance cannot be updated.
-    pub fn put_governed_sandbox(
-        &mut self,
-        capabilities: &[collab_types::caps::CapOverride],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
-        let mut doc = self
-            .core
-            .room_doc
-            .clone()
-            .ok_or("room governance missing")?;
-        let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
-        let map = match doc.get(ROOT, "sandbox").map_err(err)? {
-            Some((_, map)) => map,
-            None => doc.put_object(ROOT, "sandbox", ObjType::Map).map_err(err)?,
-        };
-        for capability in capabilities {
-            if capability.id.trim().is_empty() {
-                return Err("a sandbox capability needs an id".into());
-            }
-            doc.put(
-                &map,
-                capability.id.as_str(),
-                automerge::ScalarValue::Bytes(serde_json::to_vec(capability).map_err(err)?),
             )
             .map_err(err)?;
         }
@@ -1686,6 +1629,17 @@ impl StatePeer {
     /// The authority of `source` for the change `envelope` makes on `record`
     /// of `app_id`, refused when the change is not granted; `None` while
     /// the app surface it is decided against is not here.
+    /// The bot actor `source` may show other names as. None yet: until bot
+    /// installations are governed rows a peer can read, a change carrying an
+    /// appearance is refused from every device.
+    #[expect(
+        clippy::unused_self,
+        reason = "reads the device's installation once installations are rows"
+    )]
+    fn appearance_author(&self, _source: &[u8; 32], _now: SystemTime) -> Option<String> {
+        None
+    }
+
     fn authorize_document(
         &self,
         source: &[u8; 32],
@@ -2011,7 +1965,7 @@ impl StatePeer {
                 let pinned = hex::encode(self.core.authority.device_public_key);
                 let from = hex::encode(source);
                 // The one room admission the shell's workspace tree runs too.
-                let room::AdmittedRoom { candidate, media } = room::admit_room_changes(
+                let admitted = room::admit_room_changes(
                     room::RoomAdmission {
                         before: self.core.room_doc.as_deref(),
                         room: &self.core.room,
@@ -2024,8 +1978,23 @@ impl StatePeer {
                         caps_now: now_secs(now),
                     },
                     &changes,
-                )
-                .map_err(err)?;
+                );
+                let room::AdmittedRoom { candidate, media } = match admitted {
+                    Err(room::RoomRefusal::MissingDependencies)
+                        if source == self.core.authority.device_public_key =>
+                    {
+                        return self.defer(
+                            source,
+                            NeighbourMsg::SyncResp {
+                                changes,
+                                room: received,
+                            },
+                            retained_replay,
+                            MissingPrerequisite::CausalDependencies,
+                        );
+                    }
+                    result => result.map_err(err)?,
+                };
                 // Receipts this peer admitted earlier stay immutable even once
                 // the room document omits them.
                 let mut receipts = self.core.receipts.clone();
@@ -2462,6 +2431,12 @@ impl StatePeer {
             },
         };
         candidate.channel = validated_channel;
+        if let DocumentMutation::Incremental(bytes) = &mutation {
+            let changes = collab_types::parse_changes(bytes).map_err(err)?;
+            let shows = self.appearance_author(&source, authorization_time);
+            collab_types::check_appearances(&changes, shows.as_deref())
+                .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
+        }
         if let DocumentMutation::Snapshot(bytes) = &mutation
             && !local_app
         {
@@ -3616,6 +3591,14 @@ impl StatePeer {
                     .map_err(err)
             })
             .transpose()?;
+        if peer
+            .core
+            .room_doc
+            .as_deref()
+            .is_some_and(|room| !room.get_missing_deps(&[]).is_empty())
+        {
+            return Err("durable room has unresolved governance dependencies".into());
+        }
         for document in durable.documents {
             check_governed_snapshot(
                 peer.core.room_doc.as_deref(),
@@ -3722,6 +3705,7 @@ fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
         Role::Viewer => Some(crate::join::MemberRole::Viewer),
         Role::Commenter => Some(crate::join::MemberRole::Commenter),
         Role::Editor => Some(crate::join::MemberRole::Editor),
+        Role::Moderator => Some(crate::join::MemberRole::Moderator),
         Role::Owner => None,
     }
 }

@@ -140,10 +140,6 @@ impl HistoryHost for MessagingRouter {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "isolated registry fixtures must construct before routing assertions"
-)]
 mod tests {
     use super::*;
     use crate::{Delivery, HistoryPage, SendReceipt};
