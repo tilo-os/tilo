@@ -166,7 +166,12 @@ containerfile="$repo/os/Containerfile"
 # which compiles it in; the installed path is unchanged.
 # The atomic firstboot file helper is one intentional payload addition in
 # the existing libexec COPY instruction; the layer budget is unchanged.
-expected_contract=e583dc97e73beb0da47eea575cb6151997bc1a9d1b38ac15ab3a78591dc713d4
+# The runtime and browser-runtime publisher keys arrive in the
+# runtime-image-payload tree, from the same builder result as the runtimes
+# they sign, instead of from native-builder-payload: buildkit could serve that
+# stage from an earlier invocation's cache while the builder re-ran and signed
+# the runtime with a fresh key. The installed paths are unchanged.
+expected_contract=d9fb721cef05b0f4ff2f96482b03a473952c90aaaa90457902d4c946adfa26b8
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
