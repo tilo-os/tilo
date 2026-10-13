@@ -1962,6 +1962,23 @@ fn assert_nothing_lost(
                 &unlayered[at..at + 4]
             );
         }
+        // Check the same two scene encodings with an independent rasterizer.
+        // A CPU difference points to the producer's composition; agreement
+        // confines the discrepancy to how the GPU rasterizes those scenes.
+        let cpu_layered = render_cpu(&painted.scene, size);
+        let cpu_dense = render_cpu(&screen, size);
+        let cpu_apart = pixels_apart(&cpu_layered, &cpu_dense, size.0);
+        eprintln!(
+            "strip layers {label}: independent CPU raster has {} different pixels, \
+             first {:?}, max channel step {}",
+            cpu_apart.len(),
+            cpu_apart.first(),
+            cpu_apart
+                .iter()
+                .map(|&(_, _, step)| step)
+                .max()
+                .unwrap_or(0)
+        );
         // The dense draw can itself advance hosted widget presentation. A
         // second retained draw distinguishes that state change from a stable
         // discrepancy in the two scene compositions; this runs only after
