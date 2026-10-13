@@ -3509,7 +3509,7 @@ mod tests {
         let mut taffy = TaffyTree::new();
         let mut node_map = std::collections::HashMap::new();
         let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
-        let mut send = |host: &mut TileHost, event: &WindowEvent| {
+        let send = |host: &mut TileHost, event: &WindowEvent| {
             crate::testing::Dispatch::new()
                 .layout(&taffy, node)
                 .send(host, event)
