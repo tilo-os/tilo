@@ -21,7 +21,7 @@ use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
+    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_index,
 };
 
 #[derive(Clone, Debug)]
@@ -161,11 +161,8 @@ pub struct CategoryChart {
     title: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
-    hovered: Option<(usize, usize)>,
+    inspection: ChartInspection<(usize, usize)>,
     activated: Option<(String, String)>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
     toggles: chart_legend::SeriesToggles,
 }
 
@@ -178,11 +175,8 @@ impl CategoryChart {
             title: String::new(),
             height: 340.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
+            inspection: ChartInspection::default(),
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
             toggles: chart_legend::SeriesToggles::default(),
         }
     }
@@ -211,7 +205,7 @@ impl CategoryChart {
         self.series = series;
         self.toggles
             .retain(|id| self.series.iter().any(|series| series.id == id));
-        self.hovered = None;
+        self.inspection.hovered = None;
     }
     pub fn is_series_visible(&self, id: &str) -> bool {
         self.series.iter().any(|series| series.id == id) && !self.toggles.is_hidden(id)
@@ -223,11 +217,12 @@ impl CategoryChart {
         let changed = self.toggles.set(id, visible);
         if changed {
             if self
+                .inspection
                 .hovered
                 .and_then(|(_, index)| self.series.get(index))
                 .is_some_and(|series| series.id == id)
             {
-                self.hovered = None;
+                self.inspection.hovered = None;
             }
         }
         changed
@@ -242,7 +237,7 @@ impl CategoryChart {
         self.activated.take()
     }
     pub fn inspect(&mut self, series_id: &str, category_id: &str) -> bool {
-        self.hovered = self.series.iter().enumerate().find_map(|(series, values)| {
+        self.inspection.hovered = self.series.iter().enumerate().find_map(|(series, values)| {
             (!self.toggles.is_hidden(&values.id) && values.id == series_id)
                 .then(|| {
                     self.categories
@@ -255,20 +250,19 @@ impl CategoryChart {
                 })
                 .flatten()
         });
-        self.keyboard_inspection = self.hovered.is_some();
-        if let Some((category, series)) = self.hovered
+        self.inspection.keyboard = self.inspection.hovered.is_some();
+        if let Some((category, series)) = self.inspection.hovered
             && let Some(bar) = self
                 .bars()
                 .into_iter()
                 .find(|bar| bar.category == category && bar.series == series)
         {
-            self.pointer = bar.rect.center();
+            self.inspection.pointer = bar.rect.center();
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
 
     fn plot_rect(&self) -> Rect {
@@ -551,26 +545,20 @@ mod range_tests {
 }
 
 impl InteractiveChart for CategoryChart {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = (usize, usize);
+    fn inspection(&mut self) -> &mut ChartInspection<(usize, usize)> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
-        self.hovered = self
+        self.inspection.hovered = self
             .bars()
             .into_iter()
             .rev()
-            .find(|bar| bar.rect.inflate(2.0, 2.0).contains(self.pointer))
+            .find(|bar| bar.rect.inflate(2.0, 2.0).contains(self.inspection.pointer))
             .map(|bar| (bar.category, bar.series));
     }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
-    }
     fn activate_hovered(&mut self) -> bool {
-        let Some((category, series)) = self.hovered else {
+        let Some((category, series)) = self.inspection.hovered else {
             return false;
         };
         let (Some(category), Some(series)) =
@@ -583,21 +571,21 @@ impl InteractiveChart for CategoryChart {
     }
     fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
         let bars = self.bars();
-        let current = self.hovered.and_then(|selected| {
+        let current = self.inspection.hovered.and_then(|selected| {
             bars.iter()
                 .position(|bar| (bar.category, bar.series) == selected)
         });
-        self.hovered = moved_index(current, bars.len(), action)
+        self.inspection.hovered = moved_index(current, bars.len(), action)
             .and_then(|index| bars.get(index))
             .map(|bar| (bar.category, bar.series));
-        if let Some((category, series)) = self.hovered
+        if let Some((category, series)) = self.inspection.hovered
             && let Some(bar) = bars
                 .iter()
                 .find(|bar| bar.category == category && bar.series == series)
         {
-            self.pointer = bar.rect.center();
+            self.inspection.pointer = bar.rect.center();
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     fn toggle_legend_at(&mut self, point: Point) -> bool {
         if !self.style.interactive_legend {
@@ -629,14 +617,14 @@ impl Widget for CategoryChart {
     ) {
         let plot = self.plot_rect();
         let range = self.range();
-        if self.keyboard_inspection
-            && let Some((category, series)) = self.hovered
+        if self.inspection.keyboard
+            && let Some((category, series)) = self.inspection.hovered
             && let Some(bar) = self
                 .bars()
                 .into_iter()
                 .find(|bar| bar.category == category && bar.series == series)
         {
-            self.pointer = bar.rect.center();
+            self.inspection.pointer = bar.rect.center();
         }
         if !self.title.is_empty() {
             tr.draw_style(
@@ -695,7 +683,7 @@ impl Widget for CategoryChart {
                 self.style.corner_radius.min(bar.rect.width() / 3.0),
             );
             scene.fill(Fill::NonZero, transform, color, None, &shape);
-            if self.hovered == Some((bar.category, bar.series)) {
+            if self.inspection.hovered == Some((bar.category, bar.series)) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -788,7 +776,8 @@ impl Widget for CategoryChart {
         } else {
             self.toggles.clear_hits();
         }
-        if let Some((category_index, series_index)) = self.hovered.filter(|_| self.style.tooltip)
+        if let Some((category_index, series_index)) =
+            self.inspection.hovered.filter(|_| self.style.tooltip)
             && let (Some(category), Some(series), Some(value)) = (
                 self.categories.get(category_index),
                 self.series.get(series_index),
@@ -810,7 +799,7 @@ impl Widget for CategoryChart {
                 transform,
                 tr,
                 theme,
-                self.pointer,
+                self.inspection.pointer,
                 self.rect,
                 130.0,
                 (&title, &detail),

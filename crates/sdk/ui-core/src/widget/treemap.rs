@@ -7,7 +7,7 @@
 
 use crate::widget::ModelPath;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -20,7 +20,7 @@ use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
+    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
 };
 
 #[derive(Clone, Debug)]
@@ -58,11 +58,8 @@ pub struct Treemap {
     title: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
-    hovered: Option<usize>,
+    inspection: ChartInspection<usize>,
     activated: Option<String>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
 }
 
 impl Treemap {
@@ -73,11 +70,8 @@ impl Treemap {
             title: String::new(),
             height: 360.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
+            inspection: ChartInspection::default(),
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
         }
     }
     #[must_use]
@@ -97,27 +91,26 @@ impl Treemap {
     }
     pub fn set_items(&mut self, items: Vec<ChartItem>) {
         self.items = items;
-        self.hovered = None;
+        self.inspection.hovered = None;
     }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.hovered = self.items.iter().position(|item| item.id == id);
-        self.keyboard_inspection = self.hovered.is_some();
+        self.inspection.hovered = self.items.iter().position(|item| item.id == id);
+        self.inspection.keyboard = self.inspection.hovered.is_some();
         if let Some(rect) = self
             .layout()
             .into_iter()
-            .find(|tile| Some(tile.index) == self.hovered)
+            .find(|tile| Some(tile.index) == self.inspection.hovered)
             .map(|tile| self.tile_rect(tile))
         {
-            self.pointer = rect.center();
+            self.inspection.pointer = rect.center();
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
 
     fn content_rect(&self) -> Rect {
@@ -241,25 +234,23 @@ impl SafeRect for Rect {
 }
 
 impl InteractiveChart for Treemap {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = usize;
+    fn inspection(&mut self) -> &mut ChartInspection<usize> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
-        self.hovered = self
+        self.inspection.hovered = self
             .layout()
             .into_iter()
-            .find(|tile| self.tile_rect(*tile).contains(self.pointer))
+            .find(|tile| self.tile_rect(*tile).contains(self.inspection.pointer))
             .map(|tile| tile.index);
     }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
-    }
     fn activate_hovered(&mut self) -> bool {
-        let Some(item) = self.hovered.and_then(|index| self.items.get(index)) else {
+        let Some(item) = self
+            .inspection
+            .hovered
+            .and_then(|index| self.items.get(index))
+        else {
             return false;
         };
         self.activated = Some(item.id.clone());
@@ -267,16 +258,16 @@ impl InteractiveChart for Treemap {
     }
     fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
         let candidates = self.valid_items();
-        self.hovered = moved_item(self.hovered, &candidates, action);
+        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
         if let Some(rect) = self
             .layout()
             .into_iter()
-            .find(|tile| Some(tile.index) == self.hovered)
+            .find(|tile| Some(tile.index) == self.inspection.hovered)
             .map(|tile| self.tile_rect(tile))
         {
-            self.pointer = rect.center();
+            self.inspection.pointer = rect.center();
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
@@ -295,14 +286,14 @@ impl Widget for Treemap {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.keyboard_inspection
+        if self.inspection.keyboard
             && let Some(rect) = self
                 .layout()
                 .into_iter()
-                .find(|tile| Some(tile.index) == self.hovered)
+                .find(|tile| Some(tile.index) == self.inspection.hovered)
                 .map(|tile| self.tile_rect(tile))
         {
-            self.pointer = rect.center();
+            self.inspection.pointer = rect.center();
         }
         if !self.title.is_empty() {
             tr.draw_style(
@@ -327,7 +318,7 @@ impl Widget for Treemap {
                 .unwrap_or_else(|| Self::palette(theme, tile.index));
             let shape = RoundedRect::from_rect(rect, self.style.corner_radius);
             scene.fill(Fill::NonZero, transform, color, None, &shape);
-            if self.hovered == Some(tile.index) {
+            if self.inspection.hovered == Some(tile.index) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -365,7 +356,7 @@ impl Widget for Treemap {
                 }
             }
         }
-        if let Some(index) = self.hovered.filter(|_| self.style.tooltip)
+        if let Some(index) = self.inspection.hovered.filter(|_| self.style.tooltip)
             && let Some(item) = self.items.get(index)
         {
             let detail = if item.detail.is_empty() {
@@ -378,7 +369,7 @@ impl Widget for Treemap {
                 transform,
                 tr,
                 theme,
-                self.pointer,
+                self.inspection.pointer,
                 self.rect,
                 130.0,
                 (&item.label, &detail),
