@@ -495,6 +495,7 @@ async fn every_web_app_over_the_session() {
         confirmation: None,
         revision: None,
         wait_ms: None,
+        appearance: None,
     };
     let RemoteActionMessage::Receipt(receipt) = ask(
         &browser,
@@ -594,6 +595,7 @@ async fn every_web_app_over_the_session() {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         }),
         &mut documents,
     )
@@ -627,6 +629,7 @@ async fn every_web_app_over_the_session() {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         }),
         &mut documents,
     )

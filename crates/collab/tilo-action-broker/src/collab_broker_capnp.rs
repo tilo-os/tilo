@@ -662,6 +662,19 @@ impl BrokerActor {
         }
     }
 
+    /// Installed bot `installation`, acting for the person who installed it:
+    /// it may do only what both its grant and that person may.
+    #[must_use]
+    pub fn bot(installation: &str, installer: impl Into<String>) -> Self {
+        Self {
+            id: format!("bot:{installation}"),
+            is_agent: false,
+            capped: false,
+            for_person: Some(installer.into()),
+            session_delegated: false,
+        }
+    }
+
     /// The same agent, acting for `person`.
     #[must_use]
     pub fn for_person(mut self, person: impl Into<String>) -> Self {
@@ -700,6 +713,11 @@ impl BrokerActor {
     fn delegate(&self) -> Option<Subject> {
         if let Some(app) = self.id.strip_prefix("app:") {
             return Some(Subject::App(app.to_owned()));
+        }
+        // A person's policy id is lowercase hex, so it never starts with
+        // `bot:` and the prefix cannot misread a person.
+        if let Some(bot) = self.id.strip_prefix("bot:") {
+            return Some(Subject::Bot(bot.to_owned()));
         }
         self.is_agent
             .then(|| Subject::agent(self.id.strip_prefix("agent:").unwrap_or(&self.id)))
@@ -15388,6 +15406,7 @@ pub mod tests {
                     revision: Some("directory-r1".into()),
                     on_behalf_of: None,
                     wait_ms: None,
+                    appearance: None,
                 };
                 let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
                 let admitted = tokio::time::timeout(Duration::from_secs(2), async {
@@ -15501,6 +15520,7 @@ pub mod tests {
                 argument: InvokeArgument::None, context: None, confirmation: None,
                 revision: None, on_behalf_of: None,
                 wait_ms: None,
+                appearance: None,
             };
             let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
             let PendingPoll::Ready(Ok(receipt)) = pending.poll_ready() else {

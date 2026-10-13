@@ -1567,6 +1567,9 @@ impl ActionHost for SupervisorHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
+            return Pending::ready(Err(refused));
+        }
         if !self.0.authorized(caller) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
@@ -1680,6 +1683,7 @@ pub(crate) mod tests {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         }
     }
 

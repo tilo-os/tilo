@@ -629,6 +629,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         Ok(Prepared {
             request: InvokeRequest {
                 on_behalf_of: None,
+                appearance: None,
                 invocation: invocation_id(self.run, path),
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: row.provider.clone(),

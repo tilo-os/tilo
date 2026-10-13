@@ -94,6 +94,7 @@ fn invoke(invocation: InvocationId) -> RemoteActionMessage {
         confirmation: None,
         revision: None,
         wait_ms: None,
+        appearance: None,
     })
 }
 
