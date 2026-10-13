@@ -21,10 +21,7 @@ use ui::widget::Element;
 use crate::app::TypstApp;
 use crate::samples::{DEFAULT_INDEX, SAMPLES};
 
-/// Typst Editor's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
 /// One Typst file of the workspace.
 #[derive(Model, Clone, Debug, Default, PartialEq)]

@@ -1,13 +1,6 @@
 //! The room gate decides every wire variant explicitly, and a document op
 //! from a member who may only read is refused at the gate itself.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ed25519_dalek::SigningKey;

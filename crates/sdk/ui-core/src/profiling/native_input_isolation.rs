@@ -56,7 +56,7 @@ mod tests {
         widget::{Column, Scrollable, Text, TextInput, Widget},
     };
     use std::{cell::Cell, rc::Rc};
-    use winit::event::{DeviceId, ElementState, MouseScrollDelta, TouchPhase};
+    use winit::event::{DeviceId, ElementState};
 
     fn driver(root: Box<dyn Widget>) -> FrameHarness {
         FrameHarness::new_with_controlled_inputs(
@@ -72,11 +72,7 @@ mod tests {
     use crate::synthetic_input::cursor_moved;
 
     fn wheel() -> WindowEvent {
-        WindowEvent::MouseWheel {
-            device_id: DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-            phase: TouchPhase::Moved,
-        }
+        crate::synthetic_input::mouse_wheel(0.0, -3.0)
     }
 
     #[test]

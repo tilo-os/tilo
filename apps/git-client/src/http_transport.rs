@@ -512,12 +512,6 @@ impl Helper {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "owned configuration fixtures"
-)]
 mod tests {
     use super::*;
 

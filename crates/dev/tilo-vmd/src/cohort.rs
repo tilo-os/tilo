@@ -12,6 +12,14 @@ use runtime_bundle::{VerifyOptions, verify_bundle_with};
 
 use crate::error::DaemonError;
 
+/// Maintained installer snapshot from the exact account/candidate namespace.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedApps {
+    pub apps: Vec<InstalledPackage>,
+    pub runtime_paths: std::collections::BTreeMap<String, PathBuf>,
+}
+
 pub(crate) struct VerifiedCohort {
     pub(crate) version: String,
     pub(crate) packages: Vec<CohortPackage>,
@@ -395,8 +403,22 @@ pub(crate) fn select(
     cohort: &VerifiedCohort,
 ) -> Result<Vec<tilo_vm_protocol::CohortSelection>, DaemonError> {
     let mut selections = Vec::new();
+    select_into(apply, session, cohort, None, &mut selections)?;
+    Ok(selections)
+}
+
+pub(crate) fn select_into(
+    apply: &mut dyn crate::apply::Apply,
+    session: &crate::apply::Session,
+    cohort: &VerifiedCohort,
+    layers: Option<&[PathBuf]>,
+    selections: &mut Vec<tilo_vm_protocol::CohortSelection>,
+) -> Result<(), DaemonError> {
     for package in &cohort.packages {
-        let output = apply.install_cohort_app(session, &package.archive)?;
+        let output = match layers {
+            Some(layers) => apply.install_cohort_app_in_view(session, &package.archive, layers)?,
+            None => apply.install_cohort_app(session, &package.archive)?,
+        };
         let receipts = output
             .lines()
             .filter_map(|line| line.strip_prefix("cohort-selection: "))
@@ -426,8 +448,8 @@ pub(crate) fn select(
             pinned: receipt.pinned,
         });
     }
-    Ok(selections)
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -115,7 +115,13 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
         .relay
         .rooms()
         .unwrap()
-        .prepare_application(&room.room, &host.cert, &common::catalogue(), "so.tilo.chat")
+        .prepare_application(
+            &room.room,
+            &host.cert,
+            &common::catalogue(),
+            "so.tilo.chat",
+            "",
+        )
         .await
         .unwrap();
     let route = create_feedback_record(&mut browser).await;
@@ -361,7 +367,7 @@ fn participant(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Re
         &route.app_id,
         &route.cluster_id,
         person,
-        false,
+        tilo_agent_participant::ReplicaActor::Owner,
         Seed::Existing {
             record: ui::record::RecordId::package_primary(),
             changes,

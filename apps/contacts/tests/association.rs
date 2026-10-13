@@ -9,12 +9,7 @@
 //! format-host reads `providers` today. See the crate's report for detail.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 

@@ -56,13 +56,6 @@ pub fn encoded_video_only() -> std::path::PathBuf {
     CLIP.get_or_init(|| encode_fixture(false)).clone()
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test-fixture dimensions are fixed; panics make a missing codec or malformed buffer fail loudly"
-)]
 fn encode_fixture(with_audio: bool) -> std::path::PathBuf {
     // Test binaries live in `target/<profile>/deps`; keep the clip next to
     // that profile's other outputs.
@@ -102,13 +95,6 @@ fn encode_fixture(with_audio: bool) -> std::path::PathBuf {
     path
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test-fixture dimensions are fixed; panics make a missing codec or malformed buffer fail loudly"
-)]
 fn encode_to(path: &std::path::Path, with_audio: bool) {
     gst::init().expect("initialize GStreamer for generated video fixture");
     std::fs::remove_file(path).ok();
@@ -188,9 +174,6 @@ fn encode_to(path: &std::path::Path, with_audio: bool) {
 
 #[allow(
     clippy::arithmetic_side_effects,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
     reason = "test-fixture dimensions are fixed; panics make a missing codec or malformed buffer fail loudly"
 )]
 fn push_video_frames(source: &gst_app::AppSrc) {
@@ -210,11 +193,16 @@ fn push_video_frames(source: &gst_app::AppSrc) {
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
                 let stripe = ((x + phase) / 16).is_multiple_of(2);
-                let mut colour = if stripe { [24, 50, 78] } else { [76, 38, 24] };
-                if i64::from(x) >= block_x && i64::from(x) < block_x + 64 && (56..124).contains(&y)
-                {
-                    colour = [230, 118, 24];
-                }
+                let in_block = i64::from(x) >= block_x
+                    && i64::from(x) < block_x + 64
+                    && (56..124).contains(&y);
+                let colour = if in_block {
+                    [230, 118, 24]
+                } else if stripe {
+                    [24, 50, 78]
+                } else {
+                    [76, 38, 24]
+                };
                 let offset =
                     usize::try_from((y * WIDTH + x) * 4).expect("fixture pixel offset fits usize");
                 rgba[offset..offset + 3].copy_from_slice(&colour);

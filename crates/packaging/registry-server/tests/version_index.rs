@@ -31,18 +31,20 @@ const NOTES: &str = "so.tilo.notes";
 fn version(number: &str) -> RegistryVersion {
     RegistryVersion {
         version: number.into(),
-        tapp_url: format!("https://apps.tilo.so/artifacts/notes-{number}.tapp"),
-        tapp_root_hash_hex: "ab".repeat(32),
-        tapp_size_bytes: 1,
         released_at_unix: 1,
-        tapp_blake3_hex: "cd".repeat(32),
-        target: RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: "x86_64".into(),
-            isa: "x86_64-v3".into(),
-            runtime: None,
-            interfaces: Vec::new(),
-        },
+        artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+            tapp_url: format!("https://apps.tilo.so/artifacts/notes-{number}.tapp"),
+            tapp_root_hash_hex: "ab".repeat(32),
+            tapp_size_bytes: 1,
+            tapp_blake3_hex: "cd".repeat(32),
+            target: RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: None,
+                interfaces: Vec::new(),
+            },
+        }),
     }
 }
 
@@ -50,6 +52,7 @@ fn entry(package_id: &str, versions: &[&str], updated_at: u64) -> RegistryEntry 
     let publisher = SigningKey::from_bytes(&[52; 32]);
     let mut entry = RegistryEntry {
         package_id: package_id.into(),
+        kind: registry_types::EntryKind::App,
         name: "Notes".into(),
         description: "A test app".into(),
         tagline: "Test on Tilo OS".into(),

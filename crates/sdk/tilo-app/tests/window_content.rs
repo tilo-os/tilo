@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! Every window has its own content store, handed to its code wherever it
 //! runs: two windows of one app in two rooms, in one process, keep what they
 //! store apart — what an action applying stores, what an action's arguments

@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! Every replica of a record writes under an Automerge actor of its own. Two
 //! windows sharing one would number their changes from the same sequence,
 //! and a peer would drop the second window's changes as duplicates.

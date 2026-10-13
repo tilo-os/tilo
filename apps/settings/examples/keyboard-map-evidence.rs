@@ -7,22 +7,18 @@ use winit::{
 };
 fn event(code: KeyCode, logical: &str, state: ElementState) -> WindowEvent {
     let key = Key::Character(logical.into());
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        is_synthetic: false,
-        event: KeyEvent::synthetic(
-            RawKeyEvent {
-                physical_key: PhysicalKey::Code(code),
-                state,
-            },
-            key.clone(),
-            Some(logical.into()),
-            KeyLocation::Standard,
-            false,
-            Some(logical.into()),
-            key,
-        ),
-    }
+    ui::synthetic_input::keyboard_input(KeyEvent::synthetic(
+        RawKeyEvent {
+            physical_key: PhysicalKey::Code(code),
+            state,
+        },
+        key.clone(),
+        Some(logical.into()),
+        KeyLocation::Standard,
+        false,
+        Some(logical.into()),
+        key,
+    ))
 }
 fn main() -> Result<(), String> {
     let mut arguments = std::env::args_os().skip(1);

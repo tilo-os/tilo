@@ -630,15 +630,18 @@ impl CargoFacts {
                 || predicates
                     .iter()
                     .any(|predicate| contains_word(target, predicate));
-            let named: Vec<&String> = ["dependencies", "dev-dependencies", "build-dependencies"]
+            let named: Vec<&String> = ["dependencies", "build-dependencies"]
                 .iter()
                 .filter_map(|kind| tables.get(*kind).and_then(toml::Value::as_table))
                 .flat_map(toml::Table::keys)
                 .collect();
-            let plumbing = !named.is_empty()
-                && named
-                    .iter()
-                    .all(|alias| build_only.contains(&alias.as_str()));
+            // Target-specific dev-dependencies only reach tests, which are exempt.
+            let tests_only = named.is_empty() && tables.get("dev-dependencies").is_some();
+            let plumbing = tests_only
+                || (!named.is_empty()
+                    && named
+                        .iter()
+                        .all(|alias| build_only.contains(&alias.as_str())));
             if selects && !plumbing {
                 self.push(
                     header_line(text, target),

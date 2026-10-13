@@ -442,7 +442,6 @@ fn engine_fixture(name: &str) -> std::path::PathBuf {
 }
 
 #[serial_test::serial(pdfium)]
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn exports_are_deterministic_and_carry_page_operations() {
     eprintln!("phase export_is_deterministic_and_reloads_with_the_records");
@@ -450,13 +449,11 @@ fn exports_are_deterministic_and_carry_page_operations() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("form.pdf");
         std::fs::copy(engine_fixture("form.pdf"), &path).expect("copy fixture");
-        let mut app = PdfApp::open(&path);
-        if app.raster.is_none() {
-            eprintln!("SKIPPING: no PDF engine on this host");
+        let Some(mut app) = tests::open_settled(&path) else {
             break 'phase;
-        }
+        };
         let mut state = ui::State::new();
-        app.sync_settled(&mut state.doc, &state.root);
+        tests::settle_record(&mut app, &mut state);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
@@ -521,8 +518,16 @@ fn exports_are_deterministic_and_carry_page_operations() {
         // The same records on the same bytes export byte-identically.
         let out1 = dir.path().join("one.pdf");
         let out2 = dir.path().join("two.pdf");
-        assert!(app.save_annotated_to(&out1), "{:?}", app.status_note);
-        assert!(app.save_annotated_to(&out2), "{:?}", app.status_note);
+        assert!(
+            tests::save_settled(&mut app, &out1),
+            "{:?}",
+            app.status_note
+        );
+        assert!(
+            tests::save_settled(&mut app, &out2),
+            "{:?}",
+            app.status_note
+        );
         let one = std::fs::read(&out1).unwrap();
         assert_eq!(one, std::fs::read(&out2).unwrap(), "deterministic export");
         assert!(
@@ -567,20 +572,18 @@ fn exports_are_deterministic_and_carry_page_operations() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("multipage.pdf");
         std::fs::copy(engine_fixture("multipage.pdf"), &path).expect("copy fixture");
-        let mut app = PdfApp::open(&path);
-        if app.raster.is_none() {
-            eprintln!("SKIPPING: no PDF engine on this host");
+        let Some(mut app) = tests::open_settled(&path) else {
             break 'phase;
-        }
+        };
         let mut state = ui::State::new();
-        app.sync_settled(&mut state.doc, &state.root);
+        tests::settle_record(&mut app, &mut state);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
 
         // Highlight "needle" on page 3 from its text, then rotate that page,
         // move it first and delete page 2.
-        let text = app.ensure_raster_text(3).expect("text layer");
+        let text = tests::text_layer(&mut app, &mut state, 3);
         let hit = text
             .search(3, "needle", crate::model::SearchOptions::default())
             .into_iter()
@@ -613,7 +616,9 @@ fn exports_are_deterministic_and_carry_page_operations() {
             &mut Edits::lend(&mut state.doc),
             delete_page_plan_action("source-2"),
         );
-        app.sync_settled(&mut state.doc, &state.root);
+        tests::settle_until(&mut app, &mut state, |app| {
+            app.pending_worker_plan.is_none()
+        });
         let stored = PdfMarkup::of(&state.doc).list_annotations();
         assert_eq!(stored.len(), 1);
         assert_eq!(
@@ -625,12 +630,19 @@ fn exports_are_deterministic_and_carry_page_operations() {
         // On screen the page is rotated and the highlight still covers the word.
         let map = app.page_map(1);
         assert_eq!(map.effective.rotation, tilo_pdf::Rotation::Cw90);
-        let bitmap = app
-            .raster
-            .as_mut()
-            .unwrap()
-            .render(0, 400)
-            .expect("rotated page renders");
+        let key = (0, crate::source::RasterBackend::bucket_for(400));
+        let document_id = app.raster_document.as_ref().expect("open").id;
+        app.raster_handle
+            .as_ref()
+            .expect("the PDF worker")
+            .request_render(crate::source::RenderRequest {
+                document_id,
+                page: 0,
+                target_width: 400,
+            })
+            .expect("the render is queued");
+        tests::drain_until(&mut app, |app| app.raster_images.contains_key(&key));
+        let bitmap = app.raster_images[&key].clone();
         assert!(
             bitmap.height > bitmap.width,
             "the landscape page renders portrait once rotated ({}x{})",
@@ -639,7 +651,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
         );
 
         let out = dir.path().join("edited.pdf");
-        assert!(app.save_annotated_to(&out), "{:?}", app.status_note);
+        assert!(tests::save_settled(&mut app, &out), "{:?}", app.status_note);
         let engine = tilo_pdf::Engine::shared().expect("engine");
         let reloaded = engine.open_bytes(&std::fs::read(&out).unwrap()).unwrap();
         assert_eq!(reloaded.page_count(), 2);

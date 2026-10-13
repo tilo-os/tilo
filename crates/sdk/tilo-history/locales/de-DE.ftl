@@ -77,4 +77,5 @@ history-actor-unknown = Jemand
 history-actor-agent = { $actor } · Agent
 history-actor-shortcut = { $actor } · Kurzbefehl
 history-actor-app = { $actor } · App
+history-actor-bot = { $actor } · Bot
 history-actor-for-you = dich

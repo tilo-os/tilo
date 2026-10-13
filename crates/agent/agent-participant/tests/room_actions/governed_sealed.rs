@@ -234,6 +234,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         })
         .await;
     let ReceiptStatus::Completed { output } = &opened.status else {

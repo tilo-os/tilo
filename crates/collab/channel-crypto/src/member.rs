@@ -10,7 +10,13 @@
 //! 2. It applies the steward's frames ([`ChannelMember::receive`]) once each
 //!    and in chain order, whatever order the transport delivers them in: a
 //!    Welcome addressed to it joins the group with the full key history,
-//!    commits advance the group, and a removal ends access.
+//!    commits advance the group, and a removal ends access. The steward
+//!    keeps only its head frame, so a joining device starts its chain at
+//!    the admission that names it, and a member that finds a commit it can
+//!    never reach (it missed one) waits again and asks anew.
+//!    An admission reaches the devices it adds with what they join from,
+//!    and everyone else with that withheld: a device it adds that gets the
+//!    withheld copy first waits for its own.
 //! 3. It acknowledges cumulatively ([`ChannelMember::acknowledgement`]), so
 //!    the steward can stop redelivering.
 //!
@@ -27,8 +33,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use collab_types::{
-    ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
-    MlsGovernanceFrameV1,
+    Admission, ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1,
+    MlsGovernanceAction, MlsGovernanceFrameV1,
 };
 use ed25519_dalek::SigningKey;
 
@@ -200,17 +206,7 @@ impl ChannelMember {
                 "member state names another channel".into(),
             ));
         }
-        let mut journal = GovernanceJournal::in_memory();
-        for frame in exported.frames {
-            if !matches!(
-                journal.append_mirrored(channel, steward, frame)?,
-                MirrorAppend::Appended(_)
-            ) {
-                return Err(Error::InvalidState(
-                    "exported journal is out of order".into(),
-                ));
-            }
-        }
+        let journal = GovernanceJournal::mirrored(channel, steward, exported.frames)?;
         Ok(Self {
             channel,
             device,
@@ -346,17 +342,82 @@ impl ChannelMember {
         if self.journal.contains(digest) {
             return Ok(vec![MemberEvent::Duplicate]);
         }
-        if frame.previous_frame_digest != self.journal.head_digest() {
-            if self.buffered.len() < MAX_BUFFERED_FRAMES {
-                self.buffered.insert(frame.previous_frame_digest, frame);
-            }
+        if self.awaits_material(&frame) {
             return Ok(vec![MemberEvent::Buffered]);
         }
-        let mut events = vec![self.apply(frame, vault)?];
+        let mut events = Vec::new();
+        if frame.previous_frame_digest == self.journal.head_digest() {
+            events.push(self.apply(frame, vault)?);
+        } else {
+            match self.off_chain(&frame) {
+                OffChain::Admission => events.push(self.rebase(frame, vault)?),
+                OffChain::Behind => {
+                    self.store(
+                        MemberRecord::Waiting(Box::new(MemberKey::for_device(&self.device)?)),
+                        vault,
+                    )?;
+                    self.buffered.clear();
+                    return Ok(vec![MemberEvent::Desynchronised]);
+                }
+                OffChain::Stale => return Ok(vec![MemberEvent::Duplicate]),
+                OffChain::Early => {
+                    if self.buffered.len() < MAX_BUFFERED_FRAMES {
+                        self.buffered.insert(frame.previous_frame_digest, frame);
+                    }
+                    return Ok(vec![MemberEvent::Buffered]);
+                }
+            }
+        }
         while let Some(next) = self.buffered.remove(&self.journal.head_digest()) {
             events.push(self.apply(next, vault)?);
         }
         Ok(events)
+    }
+
+    /// Whether `frame` admits this waiting device but withholds what it
+    /// joins from: its own copy, carrying it, is on the way (or, if lost,
+    /// the next request is admitted anew). Recording the withheld copy
+    /// would make the real one a duplicate.
+    fn awaits_material(&self, frame: &MlsGovernanceFrameV1) -> bool {
+        matches!(self.record, MemberRecord::Waiting(_))
+            && frame.action.admission().is_some_and(|admission| {
+                admission.welcome.is_none() && admission.recipients.contains(&self.device)
+            })
+    }
+
+    /// What a frame that does not follow the mirror's head is to this device.
+    fn off_chain(&self, frame: &MlsGovernanceFrameV1) -> OffChain {
+        match &self.record {
+            MemberRecord::Waiting(pending) => {
+                let names_me = frame.action.admission().is_some_and(|admission| {
+                    admission.recipients.contains(&self.device)
+                        && admission
+                            .welcome
+                            .is_some_and(|welcome| ChannelGroup::welcome_names(welcome, pending))
+                });
+                if names_me {
+                    OffChain::Admission
+                } else {
+                    OffChain::Early
+                }
+            }
+            MemberRecord::Joined(group) if frame.epoch <= group.epoch() => OffChain::Stale,
+            // The steward sends only its head: the commits between are gone.
+            MemberRecord::Joined(group) if frame.epoch > group.epoch().saturating_add(1) => {
+                OffChain::Behind
+            }
+            MemberRecord::Joined(_) | MemberRecord::Removed => OffChain::Early,
+        }
+    }
+
+    /// Join from an admission that starts this device's chain afresh.
+    fn rebase(&mut self, frame: MlsGovernanceFrameV1, vault: &VaultKey) -> Result<MemberEvent> {
+        let event = self.transition(&frame, vault)?;
+        if matches!(event, MemberEvent::Joined { .. }) {
+            self.buffered.clear();
+            self.journal.rebase(self.channel, self.steward, frame)?;
+        }
+        Ok(event)
     }
 
     fn apply(&mut self, frame: MlsGovernanceFrameV1, vault: &VaultKey) -> Result<MemberEvent> {
@@ -365,7 +426,12 @@ impl ChannelMember {
             .journal
             .append_mirrored(self.channel, self.steward, frame)?
         {
-            MirrorAppend::Appended(_) | MirrorAppend::Duplicate => Ok(event),
+            MirrorAppend::Appended(_) => {
+                // The frames before the head are of no further use here.
+                self.journal.compact()?;
+                Ok(event)
+            }
+            MirrorAppend::Duplicate => Ok(event),
             MirrorAppend::OutOfOrder => Err(Error::InvalidState(
                 "mirror head moved while applying a frame".into(),
             )),
@@ -387,10 +453,16 @@ impl ChannelMember {
                 Ok(MemberEvent::Removed)
             }
             (action, MemberRecord::Waiting(pending)) => {
-                let Some((recipient, welcome, _, key_history)) = action.admission() else {
+                let Some(Admission {
+                    recipients,
+                    welcome: Some(welcome),
+                    key_history,
+                    ..
+                }) = action.admission()
+                else {
                     return Ok(MemberEvent::Recorded);
                 };
-                if *recipient != me || !ChannelGroup::welcome_names(welcome, pending) {
+                if !recipients.contains(&me) || !ChannelGroup::welcome_names(welcome, pending) {
                     return Ok(MemberEvent::Recorded);
                 }
                 let attempt = pending.duplicate()?;
@@ -417,7 +489,9 @@ impl ChannelMember {
             (action, MemberRecord::Joined(group)) => {
                 let commit = match action {
                     MlsGovernanceAction::Remove { commit, .. } => Some(commit.as_slice()),
-                    other => other.admission().and_then(|(_, _, commit, _)| commit),
+                    other => other
+                        .admission()
+                        .and_then(|admission| admission.existing_member_commit),
                 };
                 let Some(commit) = commit else {
                     return Ok(MemberEvent::Recorded);
@@ -497,6 +571,19 @@ impl ChannelMember {
             issued_at,
         )))
     }
+}
+
+/// A frame that does not follow the mirror's head, by what it means here.
+enum OffChain {
+    /// The admission of this waiting device: its chain starts there.
+    Admission,
+    /// A commit past the next epoch of a joined device: the ones between
+    /// will not come, so it must be admitted again.
+    Behind,
+    /// A frame for an epoch this device already holds.
+    Stale,
+    /// A frame whose predecessor may still arrive.
+    Early,
 }
 
 /// What [`ChannelMember::export_sealed`] writes.

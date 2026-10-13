@@ -17,7 +17,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -5110,7 +5110,7 @@ impl VideoEditorApp {
     /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
         self.import_notice = Some(Notice::ok("Choose media to import…"));
-        if crate::files::native_paths() {
+        if tilo_files::available(tilo_files::Feature::NativePaths) {
             self.import_rx = Some(portal::request_import());
         } else {
             self.import_contents_rx = Some(portal::request_import_contents());
@@ -6464,10 +6464,7 @@ impl Widget for VideoEditorApp {
         self.text_scale = f64::from(theme.text_scale);
         taffy.widget_leaf(
             Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             node_map,
@@ -6914,7 +6911,7 @@ impl Widget for VideoEditorApp {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_mouse = p;
                 self.update_hover(&r);
                 if !bin_overlay_open {
@@ -7386,11 +7383,11 @@ impl Widget for VideoEditorApp {
                     crate::timecode::timecode(self.playhead, self.project.fps),
                     self.focus.pane.label()
                 ))
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.presentation.keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.presentation.keyboard_focus),
+                )
                 .with_children(kids)
                 .with_keyed_action_routes("video-editor"),
         )

@@ -56,7 +56,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -2488,10 +2488,9 @@ impl NavShell {
     }
 
     fn take_requests(&mut self) -> bool {
-        let mut acted = false;
-        if self.requests.toggle.replace(false) {
+        let mut acted = self.requests.toggle.replace(false);
+        if acted {
             self.toggle_sidebar();
-            acted = true;
         }
         if self.requests.back.replace(false) {
             acted |= self.back();
@@ -3347,10 +3346,7 @@ impl Widget for NavShell {
         self.structure_dirty = false;
         self.invalidation.invalidate();
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &nodes, node_map, self)
@@ -3738,11 +3734,7 @@ impl WindowHeader for NavShell {
 
 impl crate::widget::controls::ActionControls for NavShell {
     fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        let mut bindings = Vec::new();
-        self.for_each_child(&mut |child| {
-            bindings.extend(crate::widget::controls::action_control_bindings(child));
-        });
-        bindings
+        crate::widget::controls::children_action_control_bindings(self)
     }
     fn install_control_custody(
         &mut self,
@@ -3777,13 +3769,7 @@ impl crate::widget::controls::ActionControls for NavShell {
     }
 
     fn has_action_control_bindings(&self) -> bool {
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = crate::widget::controls::has_action_control_bindings(child);
-            }
-        });
-        found
+        crate::widget::controls::children_have_action_control_bindings(self)
     }
 
     fn refresh_control_action_availability(
@@ -3815,8 +3801,7 @@ impl NavShell {
     ) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 if let Some(resize) = self.resize {
                     self.drag_sidebar_to(resize, self.last_cursor.x);
                     return true;

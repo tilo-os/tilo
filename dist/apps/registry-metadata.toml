@@ -50,6 +50,9 @@ tagline = "See the shape of your data"
 [apps.diffmerge]
 description = "Compare files and resolve changes with a side-by-side view."
 tagline = "Understand every change"
+[apps.discord]
+description = "Bridge a Discord server and a Tilo room: channels, messages, reactions and moderation, both ways."
+tagline = "One community, two homes"
 [apps.disk-usage]
 description = "Find what uses space and reclaim it with confidence."
 tagline = "Know where your storage went"
@@ -74,9 +77,6 @@ tagline = "Version control you can see"
 [apps.hex-editor]
 description = "Inspect and edit binary files with precision."
 tagline = "See every byte"
-[apps.hot-reload-demo]
-description = "A small document you can keep editing while its code reloads in the same windows."
-tagline = "Change the app without closing it"
 [apps.imager]
 description = "Write verified Tilo and disk images to removable media."
 tagline = "Prepare media with confidence"

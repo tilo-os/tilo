@@ -49,22 +49,15 @@ fn app() -> (TestApp<notes::NotesShell>, notes::PageId) {
 }
 
 fn menu(app: &mut TestApp<notes::NotesShell>, item: usize) {
-    use ui::winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+    use ui::winit::event::{ElementState, Modifiers, MouseButton};
     let rect = app.harness().targets()["block_editor"];
     app.harness().set_modifiers(&[]);
     app.harness().dispatch_to_root_with(
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: ui::winit::dpi::PhysicalPosition::new(rect.x0 + 20.0, rect.y0 + 10.0),
-        },
+        &ui::synthetic_input::cursor_moved(rect.x0 + 20.0, rect.y0 + 10.0),
         &Modifiers::default(),
     );
     app.harness().dispatch_to_root_with(
-        &WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Right,
-        },
+        &ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
         &Modifiers::default(),
     );
     for _ in 0..=item {

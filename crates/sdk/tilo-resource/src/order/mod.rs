@@ -76,7 +76,7 @@ fn spell(prefix: u8, run: usize, body: &[u8]) -> String {
 ///
 /// Halving the gap to the end, as [`between`] does between two keys, adds
 /// a character every few appends: 50,000 appends made keys 8,000
-/// characters long, 208 MB of keys in all (TIL-758). Instead a key is read
+/// characters long, 208 MB of keys in all. Instead a key is read
 /// as a run of `z`s and a body after it, and the next key adds one to the
 /// body. When the body is used up (its first digit would become `z`), the
 /// run and the body both grow by one: `y` → `z01`, `zyz` → `zz001`. Each

@@ -296,3 +296,61 @@ fn claims_derived_from_real_changes_pass_the_relay() {
         assert_eq!(receipt.is_ok(), expected, "{person}: {receipt:?}");
     }
 }
+
+fn change_by(invoker: tilo_actions::ActionInvoker) -> Vec<automerge::Change> {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "v", 1).unwrap();
+    let context = ActionContext::default().with_invoker(invoker);
+    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    parse_changes(&doc.save()).unwrap()
+}
+
+fn bot(actor: &str) -> tilo_actions::ActionInvoker {
+    tilo_actions::ActionInvoker::actor(actor).with_kind(tilo_actions::ActorKind::Bot)
+}
+
+#[test]
+fn an_appearance_is_admitted_only_from_the_bot_allowed_it() {
+    let alice = tilo_actions::Appearance::new("alice", None, None).unwrap();
+    let by_bot = change_by(bot("bot:7f1c").with_appearance(Some(alice.clone())));
+    assert_eq!(check_appearances(&by_bot, Some("bot:7f1c")), Ok(()));
+    assert!(matches!(
+        check_appearances(&by_bot, None),
+        Err(ReceiptRefusal::Appearance { .. })
+    ));
+    assert!(matches!(
+        check_appearances(&by_bot, Some("bot:other")),
+        Err(ReceiptRefusal::Appearance { .. })
+    ));
+    // An invoker that names the bot's actor id without being a bot is refused.
+    let posing = change_by(
+        tilo_actions::ActionInvoker::actor("bot:7f1c").with_appearance(Some(alice.clone())),
+    );
+    assert!(matches!(
+        check_appearances(&posing, Some("bot:7f1c")),
+        Err(ReceiptRefusal::Appearance { .. })
+    ));
+    let by_person = change_by(
+        tilo_actions::ActionInvoker::actor("person:mallory").with_appearance(Some(alice)),
+    );
+    assert!(matches!(
+        check_appearances(&by_person, Some("bot:7f1c")),
+        Err(ReceiptRefusal::Appearance { .. })
+    ));
+    let plain = change_by(tilo_actions::ActionInvoker::actor("person:ada"));
+    assert_eq!(check_appearances(&plain, None), Ok(()));
+}
+
+#[test]
+fn an_invalid_appearance_is_refused_even_from_the_bot() {
+    let hidden = tilo_actions::Appearance {
+        name: "a\u{200B}lice".into(),
+        avatar: None,
+        persona: None,
+    };
+    let changes = change_by(bot("bot:7f1c").with_appearance(Some(hidden)));
+    assert!(matches!(
+        check_appearances(&changes, Some("bot:7f1c")),
+        Err(ReceiptRefusal::Appearance { .. })
+    ));
+}

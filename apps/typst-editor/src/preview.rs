@@ -214,25 +214,6 @@ impl PreviewPane {
         self.recompute_current();
     }
 
-    /// Forget every page: a newly opened document starts with none, and shows
-    /// its own render (or its own failure) rather than the last one's.
-    pub fn clear(&mut self) {
-        self.images.clear();
-        self.sizes_px.clear();
-        self.page_pt.clear();
-        self.page_text.clear();
-        self.boxes.clear();
-        self.cells.clear();
-        self.content_w = 0.0;
-        self.content_h = 0.0;
-        self.viewport.set_content_size(0.0, 0.0);
-        self.stale = false;
-        self.fit_width = true;
-        self.current = 0;
-        self.empty = Empty::Compiling;
-        self.clear_selection();
-    }
-
     /// Install freshly compiled pages together with their extracted text layer.
     /// `page_text` is parallel to `pages` (empty when the compile failed).
     pub fn set_pages_with_text(&mut self, pages: &[PageImage], page_text: &[Vec<TextRun>]) {
@@ -386,14 +367,6 @@ impl PreviewPane {
         self.recompute_current();
     }
 
-    /// Show the document from its top at fit-width: the view a freshly opened
-    /// document starts in.
-    pub fn reset_view(&mut self) {
-        self.fit_width();
-        self.viewport.set_scroll(self.viewport.scroll_x(), 0.0);
-        self.recompute_current();
-    }
-
     pub fn fit_width(&mut self) {
         self.fit_width = true;
         self.viewport.set_zoom(self.viewport.fit_width_zoom());
@@ -449,13 +422,6 @@ impl PreviewPane {
     }
 
     // ----- scrolling / zoom input ----------------------------------------
-
-    /// Plain wheel scroll (kept for callers that only have a vertical delta —
-    /// e.g. keyboard `PageDown` mapping). Positive `dy` scrolls down.
-    pub fn scroll_by(&mut self, dy: f64) {
-        self.viewport.pan_by(0.0, dy);
-        self.recompute_current();
-    }
 
     /// Reduce a mouse-wheel event: Ctrl/Cmd → cursor-anchored zoom; Shift →
     /// horizontal pan; otherwise vertical pan. A tilt (horizontal) wheel is

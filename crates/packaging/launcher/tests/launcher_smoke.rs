@@ -10,10 +10,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -873,10 +869,6 @@ fn optional_runtimes_mount_when_installed_and_trusted() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
 fn bundle_signatures_gate_the_runtime_mount() {
     // Phase `unsigned_bundle_is_refused_unless_opted_in`.
     // A runtime bundle that exists but is unsigned is refused by default;

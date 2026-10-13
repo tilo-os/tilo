@@ -104,19 +104,13 @@ pub(super) fn import_report_notice(report: &ImportReport) -> Notice {
 /// runs with or without a decoder, drawing real footage when it has any and
 /// representative fills when it does not.
 pub(super) fn blit_frame(scene: &mut Scene, tf: Affine, frame: &::media::VideoFrame, canvas: Rect) {
-    use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+    use vello::peniko::{Blob, ImageBrush};
     let iw = f64::from(frame.width);
     let ih = f64::from(frame.height);
     if iw <= 0.0 || ih <= 0.0 || canvas.width() <= 0.0 || canvas.height() <= 0.0 {
         return;
     }
-    let img = ImageData {
-        data: Blob::new(frame.rgba.clone()),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: frame.width,
-        height: frame.height,
-    };
+    let img = ui::raster::rgba8(Blob::new(frame.rgba.clone()), frame.width, frame.height);
     let scale = (canvas.width() / iw).min(canvas.height() / ih);
     let dw = iw * scale;
     let dh = ih * scale;

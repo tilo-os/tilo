@@ -47,7 +47,7 @@ pub enum Feature {
     Scanner,
 }
 
-pub use tilo_platform_caps::{Availability, availability};
+pub use tilo_platform_caps::{Availability, availability, available};
 
 const NO_SCANNER: &str = "document scanners are reached through SANE, on Linux only";
 

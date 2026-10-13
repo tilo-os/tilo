@@ -55,6 +55,9 @@ pub struct Chat {
     pub drafts: BTreeMap<String, RichText>,
     /// Reviewed feedback filed in a channel, under its submission's id.
     pub feedback: Collection<FeedbackReport>,
+    /// Reports of people and messages, and what the room's moderators (or
+    /// its host's moderation agent) decided on them.
+    pub moderation: moderation_model::Moderation,
 }
 
 /// A workspace: the left rail's entry.
@@ -98,6 +101,10 @@ pub struct Channel {
     pub kind: ChannelKind,
     /// Archived channels leave the sidebar and stay in the record.
     pub archived: bool,
+    /// Bare authenticated Agent id for a direct conversation; ordinary
+    /// channels leave it empty and remain in the navigation list.
+    #[model(readonly)]
+    pub conversation_with: Option<Atom>,
 }
 
 /// One message of a channel.
@@ -149,6 +156,10 @@ pub struct Message {
     /// answers.
     #[model(readonly)]
     pub work: Option<Work>,
+    /// The name and avatar a bot showed for it instead of its own (a bridge
+    /// posting an outside person's line); the author stays the bot.
+    #[model(readonly)]
+    pub appearance: Json<Option<tilo_actions::Appearance>>,
 }
 
 impl Default for Category {
@@ -169,6 +180,7 @@ impl Default for Channel {
             topic: String::new(),
             kind: ChannelKind::default(),
             archived: false,
+            conversation_with: None,
         }
     }
 }
@@ -191,6 +203,7 @@ impl Default for Message {
             attachment: Json::default(),
             pinned: false,
             work: None,
+            appearance: Json::default(),
         }
     }
 }
@@ -461,6 +474,19 @@ fn author(cx: &ActionCx) -> Result<String, Refusal> {
         .ok_or_else(|| Refusal::new("an action in chat is always someone's"))
 }
 
+/// Refuses anyone but `message`'s author: editing and deleting a message is
+/// its author's. Removing someone else's is moderation (`remove-message`),
+/// which the room's roles decide.
+fn own(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
+    if author(cx)? == message.author.0 {
+        Ok(())
+    } else {
+        Err(Refusal::new(
+            "only its author can change a message; a moderator can remove it",
+        ))
+    }
+}
+
 fn seconds(cx: &ActionCx) -> i64 {
     cx.now_ms().div_euclid(1000)
 }
@@ -536,7 +562,7 @@ pub(crate) fn valid_source_provider(provider: &str) -> bool {
 
 /// A monogram for a workspace glyph: the initials of its first two words,
 /// as written.
-pub(crate) fn monogram(name: &str) -> String {
+pub fn monogram(name: &str) -> String {
     let letters: String = name
         .split_whitespace()
         .filter_map(|word| word.chars().next())
@@ -562,6 +588,19 @@ pub fn reply_id(summons: &Id, agent: &str) -> Id {
     Id::from_raw(format!("m_reply_{:016x}", hash.finish()))
 }
 
+/// Stable hidden conversation shared by every replica for this workspace and
+/// authenticated Agent. The id is an address only; admission still comes
+/// from the live room roster.
+#[must_use]
+pub fn agent_conversation_channel_id(workspace: &str, agent: &str) -> Id {
+    use std::hash::Hasher as _;
+    let mut hash = fnv::FnvHasher::default();
+    hash.write(workspace.as_bytes());
+    hash.write(&[0]);
+    hash.write(agent.as_bytes());
+    Id::from_raw(format!("c_agent_{:016x}", hash.finish()))
+}
+
 /// A new message's fields beyond its channel, author and time.
 #[derive(Default)]
 pub(crate) struct Posting {
@@ -571,6 +610,7 @@ pub(crate) struct Posting {
     pub attachment: Option<crate::model::Attachment>,
     pub reference: Option<tilo_reference::ResourceRef>,
     pub source_provider: Option<String>,
+    pub appearance: Option<tilo_actions::Appearance>,
 }
 
 impl Chat {
@@ -666,6 +706,7 @@ impl Chat {
                 reference: Json(posting.reference),
                 source_provider: posting.source_provider.map(Atom),
                 attachment: Json(posting.attachment),
+                appearance: Json(posting.appearance),
                 ..Message::default()
             },
         );
@@ -1059,7 +1100,7 @@ impl Chat {
     /// Post a message.
     ///
     /// `@Name` of a member becomes a mention of them.
-    #[action(item = channels)]
+    #[action(item = channels, incoming_message)]
     pub fn post(
         &mut self,
         cx: &mut ActionCx,
@@ -1095,6 +1136,7 @@ impl Chat {
                 body: body.unwrap_or_default(),
                 parent,
                 attachment,
+                appearance: cx.appearance(),
                 ..Posting::default()
             },
         )
@@ -1105,7 +1147,7 @@ impl Chat {
     ///
     /// Post the address of something, with words about it; whoever opens it
     /// still needs their own access to it.
-    #[action(item = channels)]
+    #[action(item = channels, incoming_message)]
     pub fn share_resource(
         &mut self,
         cx: &mut ActionCx,
@@ -1177,6 +1219,7 @@ impl Chat {
             .messages
             .get_mut(message)
             .ok_or_else(|| Refusal::new("there is no such message"))?;
+        own(cx, row)?;
         if row.text == text && row.body.0 == body {
             return Ok(());
         }
@@ -1194,12 +1237,106 @@ impl Chat {
     }
 
     /// Delete message.
+    ///
+    /// One of your own.
     #[action(item = messages, destructive)]
-    pub fn delete_message(&mut self, message: &Id) -> Result<(), Refusal> {
+    pub fn delete_message(&mut self, cx: &mut ActionCx, message: &Id) -> Result<(), Refusal> {
+        let row = self
+            .messages
+            .get(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        own(cx, row)?;
         self.messages
             .remove(message)
             .map(drop)
             .ok_or_else(|| Refusal::new("there is no such message"))
+    }
+
+    /// Remove message.
+    ///
+    /// Someone else's message, as a moderator: the room's roles decide who
+    /// may (Moderators and the owner).
+    #[action(item = messages, moderation, destructive)]
+    pub fn remove_message(&mut self, message: &Id) -> Result<(), Refusal> {
+        self.messages
+            .remove(message)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("there is no such message"))
+    }
+
+    /// Report message.
+    ///
+    /// Tells the room's moderators that this message, and its author,
+    /// should not be here.
+    #[action(item = messages)]
+    pub fn report_message(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        #[param("What is wrong with it")] reason: String,
+    ) -> Result<(), Refusal> {
+        let person = self
+            .messages
+            .get(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?
+            .author
+            .0
+            .clone();
+        self.moderation.report(
+            cx,
+            person,
+            Some("so.tilo.chat".to_owned()),
+            None,
+            Some(message.to_string()),
+            reason,
+        )
+    }
+
+    /// Report person.
+    ///
+    /// Tells the room's moderators that this person is misbehaving.
+    #[action(item = people)]
+    pub fn report_person(
+        &mut self,
+        cx: &mut ActionCx,
+        person: &Id,
+        #[param("What they did")] reason: String,
+    ) -> Result<(), Refusal> {
+        if self.people.find(person).is_none() {
+            return Err(Refusal::new("there is no such person"));
+        }
+        self.moderation
+            .report(cx, person.to_string(), None, None, None, reason)
+    }
+
+    /// Decide on a report.
+    ///
+    /// Records what was done about a person and why, settling their
+    /// reports; the room's governance and history carry it out.
+    #[action(moderation)]
+    pub fn decide_reports(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("A new id for the decision")] id: String,
+        #[param("The person decided on")] person: String,
+        #[param("The reports it settles")] reports: Vec<String>,
+        #[param("What is done, and why")] ruling: moderation_model::Ruling,
+    ) -> Result<(), Refusal> {
+        self.moderation.decide(cx, id, person, reports, ruling)
+    }
+
+    /// Overturn a decision.
+    ///
+    /// A Moderator's word against an earlier decision; the host lifts what
+    /// it imposed and restores what it took back.
+    #[action(moderation)]
+    pub fn overturn_decision(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The decision")] decision: String,
+        #[param("Why")] note: String,
+    ) -> Result<(), Refusal> {
+        self.moderation.overturn(cx, decision, note)
     }
 
     /// React.

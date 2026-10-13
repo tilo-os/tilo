@@ -53,6 +53,15 @@ pub struct Session {
 }
 
 impl Session {
+    pub(crate) fn identity(&self) -> tilo_vm_protocol::UserspaceSession {
+        tilo_vm_protocol::UserspaceSession {
+            user: self.user.clone(),
+            unit: self.unit.clone(),
+            login_session: self.login.as_ref().and_then(|login| login.session.clone()),
+            login_wrapper: self.login.as_ref().and_then(|login| login.wrapper),
+        }
+    }
+
     /// A login whose owner is logged out: nothing runs to restart.
     pub fn logged_out(&self) -> bool {
         self.login
@@ -230,6 +239,33 @@ pub trait Apply {
         &mut self,
         session: &Session,
         tapp: &std::path::Path,
+    ) -> Result<String, DaemonError>;
+    /// Prepare one request-scoped verified installer view.
+    fn prepare_cohort_selection(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+    ) -> Result<(), DaemonError>;
+    /// Read the canonical selected rows in the exact candidate namespace,
+    /// before changing any selection or refreshing the owner desktop.
+    fn cohort_selected_apps(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+    ) -> Result<crate::SelectedApps, DaemonError>;
+    /// Readonly prior namespace for exact admitted runtime retention.
+    fn cohort_runtime_view(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+        prior: bool,
+    ) -> Result<PathBuf, DaemonError>;
+    /// Select through the exact verified candidate view before its sole restart.
+    fn install_cohort_app_in_view(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+        layers: &[PathBuf],
     ) -> Result<String, DaemonError>;
     /// Make the kernel in `layer` (already merged into `/usr`) the next boot,
     /// or with `None` put the image's own kernel back (see [`crate::boot`]).
@@ -460,6 +496,8 @@ pub enum SessionChange {
     Restart,
     /// Leave the running session alone.
     Keep,
+    /// Stage a verified cohort view without the policy upgrading this to restart.
+    Stage,
 }
 
 /// Bring a slot's system state in line with `generation`.
@@ -564,7 +602,7 @@ pub fn activate(
             actions.push(Action::StartUnit { unit: session.unit });
         }
         SessionChange::Restart => actions.extend(restart_session(apply, &session, uid)?),
-        SessionChange::Keep => actions.push(Action::Deferred {
+        SessionChange::Keep | SessionChange::Stage => actions.push(Action::Deferred {
             reason:
                 "app-only change: live at next app launch; other layers at next session restart"
                     .into(),
@@ -592,7 +630,7 @@ fn activate_login(
     match change {
         // A login is started by its owner at the greeter, never by tilo-vmd.
         SessionChange::Ensure => {}
-        SessionChange::Keep => actions.push(Action::Deferred {
+        SessionChange::Keep | SessionChange::Stage => actions.push(Action::Deferred {
             reason:
                 "app-only change: live at next app launch; other layers at the next desktop restart"
                     .into(),
@@ -1000,6 +1038,51 @@ impl Apply for RecordingApply {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         Ok(format!("installed: so.tilo.{name} 0.1.0\n"))
+    }
+    fn prepare_cohort_selection(
+        &mut self,
+        session: &Session,
+        layers: &[PathBuf],
+    ) -> Result<(), DaemonError> {
+        self.call(format!(
+            "prepare_cohort_view {} {}",
+            session.user,
+            layers.len()
+        ));
+        Ok(())
+    }
+    fn cohort_selected_apps(
+        &mut self,
+        session: &Session,
+        _layers: &[PathBuf],
+    ) -> Result<crate::SelectedApps, DaemonError> {
+        self.call(format!("cohort_selected_apps {}", session.user));
+        Ok(crate::SelectedApps::default())
+    }
+    fn cohort_runtime_view(
+        &mut self,
+        _session: &Session,
+        _layers: &[PathBuf],
+        _prior: bool,
+    ) -> Result<PathBuf, DaemonError> {
+        Ok(PathBuf::from("/"))
+    }
+    fn install_cohort_app_in_view(
+        &mut self,
+        session: &Session,
+        tapp: &std::path::Path,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError> {
+        self.call(format!(
+            "cohort_view {} {}",
+            session.user,
+            layers
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        self.install_cohort_app(session, tapp)
     }
     fn install_cohort_app(
         &mut self,
