@@ -382,10 +382,6 @@ impl Widget for AddForm {
         self.tree.sync(state, path);
     }
 
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.tree.update(state, path)
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -1081,14 +1081,6 @@ impl Widget for ProcessesPane {
         self.children().iter().any(|c| c.wants_pointer_capture())
     }
 
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.update(state, path);
-        }
-        changed
-    }
-
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.children().iter().any(|c| c.is_layout_dirty())
     }
