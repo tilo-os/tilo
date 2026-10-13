@@ -1344,6 +1344,7 @@ search-action-strip-focus-previous-subtitle = Den Fokus auf die Leiste darüber 
 search-action-strip-focus-next = Zur Leiste darunter
 search-action-strip-focus-next-subtitle = Den Fokus auf die Leiste darunter in diesem Arbeitsbereich setzen
 search-action-workspace-previous = Zum vorherigen Arbeitsbereich
+workspace-new-default-name = Unbenannt
 search-action-workspace-previous-subtitle = Zum Arbeitsbereich vor diesem wechseln
 search-action-workspace-next = Zum nächsten Arbeitsbereich
 search-action-workspace-next-subtitle = Zum Arbeitsbereich nach diesem wechseln
