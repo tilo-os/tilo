@@ -82,7 +82,7 @@ for line in sys.stdin:
   provenance=request['params']['provenance'];result={"hash":'c'*64 if corrupt=='content' else hash,"existed":False}
  elif method=='layer.verify':
   if corrupt=='unsupported':
-   print(json.dumps({"jsonrpc":"2.0","id":request['id'],"error":{"code":-32601,"message":"layer.verify unavailable"}}),flush=True)
+   print(json.dumps({"jsonrpc":"2.0","id":request['id'],"error":{"code":-32601,"message":"layer.verify unavailable","hint":"use a daemon with native layer verification","see":None}}),flush=True)
    continue
   if corrupt=='yes':provenance['source_commit']='f'*40
   result={"hash":hash,"provenance":provenance}
