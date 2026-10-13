@@ -114,11 +114,14 @@ fn stewardship(
     room: &str,
     authority: &DeviceCert,
     key: &SigningKey,
-) -> Option<stewardship::Stewardship> {
-    authority
-        .capabilities
-        .can_own_workspaces
-        .then(|| stewardship::Stewardship::new(room, dir.join(format!("{room}.channels")), key))
+) -> Option<Arc<AsyncMutex<stewardship::Stewardship>>> {
+    authority.capabilities.can_own_workspaces.then(|| {
+        Arc::new(AsyncMutex::new(stewardship::Stewardship::new(
+            room,
+            dir.join(format!("{room}.channels")),
+            key,
+        )))
+    })
 }
 
 /// A room this relay governs.
@@ -127,8 +130,11 @@ struct GovernedRoom {
     peer: StatePeer,
     path: PathBuf,
     /// Its channels' stewards, when this relay is a node that may own
-    /// workspaces ([`stewardship`]).
-    stewardship: Option<stewardship::Stewardship>,
+    /// workspaces ([`stewardship`]). Locked apart from the room: admitting
+    /// a crowd's devices to the channels held the room for an MLS change
+    /// and its writes per batch, and every join queued behind them. Taken
+    /// after the room by whoever holds both.
+    stewardship: Option<Arc<AsyncMutex<stewardship::Stewardship>>>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
 }
@@ -1089,8 +1095,27 @@ impl Rooms {
     )]
     async fn steward_notices(&self, room: &str) -> Result<(), String> {
         let governed = self.room(room).await.map_err(|error| error.to_string())?;
+        let (workspace_id, generation, readers, steward) = {
+            let governed = governed.lock().await;
+            let Some(steward) = governed.stewardship.clone() else {
+                self.inner
+                    .channel_notices
+                    .lock()
+                    .map_err(|_| "channel notices poisoned")?
+                    .remove(room);
+                return Ok(());
+            };
+            (
+                governed.workspace_id(),
+                governed.record.generation,
+                readers(&governed.peer().governed_access(SystemTime::now())?),
+                steward,
+            )
+        };
         let admissions = {
-            let mut governed = governed.lock().await;
+            let mut stewardship = steward.lock().await;
+            // Taken under the steward: notices that queue while it works
+            // start the next pass, which takes all of them at once.
             let waiting = self
                 .inner
                 .channel_notices
@@ -1098,11 +1123,7 @@ impl Rooms {
                 .map_err(|_| "channel notices poisoned")?
                 .remove(room)
                 .unwrap_or_default();
-            let workspace_id = governed.workspace_id();
-            let readers = readers(&governed.peer().governed_access(SystemTime::now())?);
-            let Some(stewardship) = governed.stewardship.as_mut() else {
-                return Ok(());
-            };
+            let readers = stewardship.readers(generation, readers);
             let mut asked = false;
             let mut acks = Vec::new();
             for (author, notice) in waiting {
@@ -1241,12 +1262,15 @@ impl Rooms {
             );
             room.record.published = room.record.published.saturating_add(1);
         }
-        if let Some(stewardship) = room.stewardship.as_mut() {
-            let messages = stewardship.reconcile_all(&readers)?;
-            admissions.extend(
-                self.enqueue_channel_governance(room.workspace_id(), messages)
-                    .await?,
-            );
+        if let Some(stewardship) = room.stewardship.clone() {
+            let mut stewardship = stewardship.lock().await;
+            let messages = stewardship.reconcile_all(room.record.generation, &readers)?;
+            // Queued under the steward, which orders its channels' changes.
+            let queued = self
+                .enqueue_channel_governance(room.workspace_id(), messages)
+                .await?;
+            drop(stewardship);
+            admissions.extend(queued);
         }
         if !admissions.is_empty() {
             let name = room.room().to_owned();

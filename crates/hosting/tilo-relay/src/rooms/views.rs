@@ -105,7 +105,7 @@ impl Rooms {
             .room(&source.cluster_id)
             .await
             .map_err(|error| error.to_string())?;
-        let mut room = state.lock().await;
+        let room = state.lock().await;
         if room.workspace_id() != workspace {
             return Err("source room mismatch".into());
         }
@@ -115,10 +115,10 @@ impl Rooms {
             .ok_or("resource read not permitted")?;
         let channel =
             collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
-        let keys = room
-            .stewardship
-            .as_mut()
-            .and_then(|steward| steward.existing_keys(channel).ok());
+        let keys = match room.stewardship.clone() {
+            Some(steward) => steward.lock().await.existing_keys(channel).ok(),
+            None => None,
+        };
         let primary_governor = (source.record.is_empty()
             && room.peer().document(&source.app_id, "").is_some())
         .then_some(room.peer().authority().device_public_key);

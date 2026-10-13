@@ -38,6 +38,9 @@ pub(super) struct Stewardship {
     /// whoever is live, so each is published once.
     published: HashMap<ChannelId, BTreeSet<[u8; 32]>>,
     delivery: u64,
+    /// The readers the room's newest governance generation let in, as the
+    /// room last reconciled its channels to them.
+    reconciled: Option<(u64, BTreeSet<Ed25519PublicKey>)>,
 }
 
 impl Stewardship {
@@ -58,6 +61,7 @@ impl Stewardship {
             requests: HashMap::new(),
             published: HashMap::new(),
             delivery: 0,
+            reconciled: None,
         }
     }
 
@@ -179,11 +183,30 @@ impl Stewardship {
         }
     }
 
-    /// Move every open channel to `allowed`, after governance changed.
+    /// The readers of the newer of governance `generation`, whose readers
+    /// are `taken`, and the generation the channels were last reconciled
+    /// to. A pass reads the room before it waits for the steward; a
+    /// governance change reconciled meanwhile admitted devices whose
+    /// requests the pass now takes.
+    pub(super) fn readers(
+        &self,
+        generation: u64,
+        taken: BTreeSet<Ed25519PublicKey>,
+    ) -> BTreeSet<Ed25519PublicKey> {
+        match &self.reconciled {
+            Some((reconciled, readers)) if *reconciled > generation => readers.clone(),
+            _ => taken,
+        }
+    }
+
+    /// Move every open channel to `allowed`, the readers of governance
+    /// `generation`, after governance changed.
     pub(super) fn reconcile_all(
         &mut self,
+        generation: u64,
         allowed: &BTreeSet<Ed25519PublicKey>,
     ) -> Result<Vec<NeighbourMsg>, String> {
+        self.reconciled = Some((generation, allowed.clone()));
         let channels: Vec<ChannelId> = self.stewards.keys().copied().collect();
         let mut messages = Vec::new();
         for channel in channels {
