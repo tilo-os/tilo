@@ -12,6 +12,7 @@ pub mod import;
 pub mod inbound;
 pub mod layout;
 pub mod link;
+pub mod locales;
 pub mod outbound;
 pub mod record;
 pub mod resource;
