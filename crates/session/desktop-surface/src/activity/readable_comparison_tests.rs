@@ -318,6 +318,141 @@ fn comparison_values_use_token_boundaries_too() {
 }
 
 #[test]
+fn displayed_provenance_filters_all_public_facet_values_without_mutating_evidence() {
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let mixed_target = "opaque:target-123";
+    let item_target = "item-opaque-456";
+    for key in ["file-type", "mime-type", "mime"] {
+        let mut context = ActionContext::for_resource("ann", "document", "Annual report")
+            .with_app(uuid, "Documents")
+            .with_facet(ActionFacet::new(key, "Receipt invocation:private"))
+            .with_facet(ActionFacet::new(key, format!("Target ({uuid})")))
+            .with_facet(ActionFacet::new(key, format!("Target ({mixed_target})")))
+            .with_facet(ActionFacet::new(key, format!("Target ({item_target})")))
+            .with_facet(ActionFacet::new("file-type", "image/png"))
+            .with_facet(ActionFacet::new("mime-type", "image/png"))
+            .with_facet(ActionFacet::new("mime", "image/png"));
+        context.item = Some(tilo_actions::ActionItem {
+            id: item_target.into(),
+            label: "Section".into(),
+        });
+        // Another selected target must also be recognized, even when its
+        // address has no known routing prefix.
+        let other = ActionContext::for_resource(mixed_target, "document", "Related document");
+        let mut doc = automerge::AutoCommit::new();
+        for (index, context) in [&context, &other].into_iter().enumerate() {
+            doc.put(automerge::ROOT, "revision", i64::try_from(index).unwrap())
+                .unwrap();
+            doc.commit_with(
+                CommitOptions::default().with_message(context.change_message().unwrap()),
+            );
+        }
+        let entries = HistorySource::new().entries(&mut doc);
+        let detail = HistorySelectionDetail::from_range(&entries, (0, 1)).unwrap();
+        let facets = detail.facets.clone();
+        let resources = detail.resources.clone();
+        let contexts = entries
+            .iter()
+            .map(|entry| entry.context.clone())
+            .collect::<Vec<_>>();
+        let displayed_provenance = detail_provenance(&detail, &entries);
+        for private in ["invocation:private", uuid, mixed_target, item_target] {
+            assert!(
+                !displayed_provenance.contains(private),
+                "{displayed_provenance}"
+            );
+        }
+        for public in ["Annual report", "Related document", "image/png"] {
+            assert!(
+                displayed_provenance.contains(public),
+                "{displayed_provenance}"
+            );
+        }
+        assert_eq!(detail.facets, facets);
+        assert_eq!(detail.resources, resources);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.context.clone())
+                .collect::<Vec<_>>(),
+            contexts
+        );
+        assert!(
+            detail
+                .facets
+                .iter()
+                .any(|facet| facet.value == "Receipt invocation:private")
+        );
+        assert!(
+            entries
+                .iter()
+                .filter_map(|entry| entry.context.as_ref())
+                .any(|recorded| recorded == &context)
+        );
+
+        // Exercise the actual explorer renderer with the same selected rows.
+        let mut pane = RoomActivityPane::new();
+        pane.timeline.set_entries(entries);
+        pane.timeline.set_selection(Some((0, 1)));
+        let mut scene = Scene::new();
+        let height = pane.draw_explorer_details(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            Rect::new(0.0, 0.0, 600.0, 900.0),
+        );
+        assert!(height > 0.0);
+        assert_eq!(
+            detail_provenance(&pane.selection_detail().unwrap(), pane.timeline.entries()),
+            displayed_provenance
+        );
+    }
+}
+
+#[test]
+fn adjacent_structured_labels_and_values_share_target_address_policy() {
+    use tilo_actions::{Did, EditOp, FieldEdit, Scalar};
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let mut context =
+        ActionContext::for_resource("ann", "document", "Annual report").with_app(uuid, "Documents");
+    context.what = Some(Did::Edit(FieldEdit {
+        ty: "document".into(),
+        field: "status".into(),
+        path: Vec::new(),
+        op: EditOp::Set,
+        old: None,
+        new: Some(Scalar::text("Draft")),
+        args: BTreeMap::default(),
+    }));
+    assert!(!comparison_values_have_addresses(&context));
+    assert!(
+        comparison_semantic_label(&context)
+            .unwrap()
+            .contains("Draft")
+    );
+    context.resource.as_mut().unwrap().label = format!("Target ({uuid})");
+    assert_eq!(
+        comparison_semantic_label(&context),
+        Some(t("activity-comparison-action-unavailable"))
+    );
+    context.resource.as_mut().unwrap().label = "Annual report".into();
+    context.item = Some(tilo_actions::ActionItem {
+        id: "section-1".into(),
+        label: format!("Target ({uuid})"),
+    });
+    assert_eq!(
+        comparison_semantic_label(&context),
+        Some(t("activity-comparison-action-unavailable"))
+    );
+    context.item = None;
+    context.app.as_mut().unwrap().label = "Target ann".into();
+    let label = comparison_semantic_label(&context).unwrap();
+    assert!(label.contains("Annual report"));
+    assert!(!label.contains("Target ann"));
+}
+
+#[test]
 fn scroll_fade_deadline_and_animation_reach_idle() {
     let mut pane = RoomActivityPane::new();
     let start = ui::time::now();

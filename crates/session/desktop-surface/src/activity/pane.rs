@@ -8865,6 +8865,39 @@ fn address_in_label(label: &str, address: &str) -> bool {
         })
 }
 
+fn context_addresses(context: &tilo_actions::ActionContext) -> impl Iterator<Item = &str> {
+    context
+        .resource
+        .iter()
+        .map(|r| r.id.as_str())
+        .chain(context.item.iter().map(|r| r.id.as_str()))
+        .chain(context.app.iter().map(|r| r.id.as_str()))
+}
+
+/// Apply the same local routing-token policy to every structured display value.
+fn presentation_value_has_addresses<'a>(
+    value: &str,
+    addresses: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    address_in_label(value, "")
+        || addresses
+            .into_iter()
+            .any(|address| address_in_label(value, address))
+}
+
+fn selection_addresses<'a>(
+    detail: &'a HistorySelectionDetail,
+    entries: &'a [HistoryEntry],
+) -> impl Iterator<Item = &'a str> {
+    detail.resources.iter().map(|r| r.id.as_str()).chain(
+        entries
+            .iter()
+            .filter(|entry| detail.entry_ids.contains(&entry.id))
+            .filter_map(|entry| entry.context.as_ref())
+            .flat_map(context_addresses),
+    )
+}
+
 fn comparison_empty_label(comparison: &HistoryComparison) -> String {
     t(if comparison.patches.is_empty() {
         "activity-no-differences"
@@ -8885,7 +8918,9 @@ fn readable_resources(detail: &HistorySelectionDetail, entries: &[HistoryEntry])
             .filter_map(|context| context.resource.as_ref())
             .find(|target| target.id == resource.id && target.kind == resource.kind);
         let label = historical.map_or("", |target| target.label.as_str());
-        let label = if label.trim().is_empty() || address_in_label(label, &resource.id) {
+        let label = if label.trim().is_empty()
+            || presentation_value_has_addresses(label, selection_addresses(detail, entries))
+        {
             t(match resource.kind.as_str() {
                 "task" | "tilo.task" => "activity-readable-task-unavailable",
                 "file" | "document" => "activity-readable-document-unavailable",
@@ -8924,6 +8959,10 @@ fn detail_provenance(detail: &HistorySelectionDetail, entries: &[HistoryEntry]) 
                 "mime-type" | "mime" => "activity-readable-mime-type",
                 _ => return None,
             };
+            if presentation_value_has_addresses(&facet.value, selection_addresses(detail, entries))
+            {
+                return None;
+            }
             Some(t_args(key, &[("value", facet.value.as_str().into())]))
         })
         .collect::<Vec<_>>()
@@ -9023,20 +9062,20 @@ fn comparison_semantic_label(context: &tilo_actions::ActionContext) -> Option<St
     if context
         .resource
         .as_ref()
-        .is_some_and(|r| address_in_label(&r.label, &r.id))
+        .is_some_and(|r| presentation_value_has_addresses(&r.label, context_addresses(context)))
         || context
             .item
             .as_ref()
-            .is_some_and(|r| address_in_label(&r.label, &r.id))
+            .is_some_and(|r| presentation_value_has_addresses(&r.label, context_addresses(context)))
         || comparison_values_have_addresses(context)
     {
         return Some(t("activity-comparison-action-unavailable"));
     }
     let sentence = ui::history_source::sentence::sentence(context);
-    let app = context
-        .app
-        .as_ref()
-        .filter(|app| !app.label.trim().is_empty() && !address_in_label(&app.label, &app.id));
+    let app = context.app.as_ref().filter(|app| {
+        !app.label.trim().is_empty()
+            && !presentation_value_has_addresses(&app.label, context_addresses(context))
+    });
     Some(app.map_or_else(
         || sentence.clone(),
         |app| {
@@ -9063,22 +9102,10 @@ fn comparison_values_have_addresses(context: &tilo_actions::ActionContext) -> bo
         Some(Did::Verb(verb)) => verb.args.values().collect(),
         _ => return false,
     };
-    let addresses = context
-        .resource
-        .iter()
-        .map(|r| r.id.as_str())
-        .chain(context.item.iter().map(|r| r.id.as_str()))
-        .chain(context.app.iter().map(|r| r.id.as_str()))
-        .collect::<Vec<_>>();
     values
         .into_iter()
         .filter_map(tilo_actions::Scalar::as_str)
-        .any(|value| {
-            address_in_label(value, "")
-                || addresses
-                    .iter()
-                    .any(|address| address_in_label(value, address))
-        })
+        .any(|value| presentation_value_has_addresses(value, context_addresses(context)))
 }
 
 /// Receipt and durable-task blobs are transport projections, not changed
