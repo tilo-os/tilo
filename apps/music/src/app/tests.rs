@@ -38,7 +38,7 @@ fn private_queue_metadata_restores_unsaved_songs_before_resume() {
     crate::storage::save_device_profile_to(&path, &profile).unwrap();
     let restored = crate::storage::load_device_profile_from(&path);
     let mut app = MusicApp::from_device_profile(restored, false, String::new(), None);
-    let mut doc = AutoCommit::new();
+    let mut doc = seed::empty_document();
     app.reload(&doc);
     let before = doc.get_heads();
     assert!(!app.pb.playing, "restoration never starts audio");

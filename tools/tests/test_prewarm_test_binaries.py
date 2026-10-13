@@ -115,8 +115,11 @@ class PrewarmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             marker = root / "listing.pid"
+            pending_marker = root / "listing.pid.pending"
+            # The marker's existence means its PID is ready to read.
             body = ("import signal\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-                    f"open({str(marker)!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)")
+                    f"open({str(pending_marker)!r}, 'w').write(str(os.getpid()))\n"
+                    f"os.replace({str(pending_marker)!r}, {str(marker)!r})\ntime.sleep(60)")
             source, target, row = self.fixture(root, body=body)
             artifacts = root / "artifacts.jsonl"
             artifacts.write_text(json.dumps(row) + "\n")
@@ -162,7 +165,10 @@ class PrewarmTests(unittest.TestCase):
         self.assertIn("--no-run --message-format=json-render-diagnostics", source)
         self.assertIn("if ! python3 tools/ci/prewarm_test_binaries.py", source)
         self.assertIn("Prewarm unavailable; the complete Cargo test run remains required.", source)
-        self.assertIn("run: cargo test --locked --no-fail-fast $(python3 tools/ci/macos_apps.py)", source)
+        self.assertIn(
+            "run: cargo nextest run --locked --profile ci --no-fail-fast $(python3 tools/ci/macos_apps.py)", source
+        )
+        self.assertIn("run: cargo test --locked --no-fail-fast --doc $(python3 tools/ci/macos_apps.py)", source)
         self.assertLess(source.index("Compile and prewarm test entry"), source.index("Test every macOS app"))
 
 

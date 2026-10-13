@@ -250,6 +250,18 @@ Adds `WgpuEngine::clear_pool()`: drops every buffer the size-class pool is
 holding for reuse. Called only when the budget just grew, so old size
 classes stop being kept for a request that will not come again.
 
+## `vendor/vello_encoding/src/encoding.rs`: append keeps forced state
+
+Upstream `Encoding::append` sets `self.flags = other.flags`. A glyph run
+writes its own transform into the resolved stream and sets
+`FORCE_NEXT_TRANSFORM` so the next draw re-encodes its transform. Appending
+an encoding that encodes no transform (an empty sub-scene) cleared that flag,
+so the next draw whose transform equalled `transforms.last()` skipped it and
+was placed with the glyph run's transform instead — in Chat, pictures painted
+after a line of text landed off their card and never showed. `append` now
+keeps our force bits when the appended encoding has no transforms (or
+styles) of its own.
+
 ## `vendor/vello_encoding/src/resolve.rs`
 
 Adds `report_dropped_image`: when the image atlas is full and an image is

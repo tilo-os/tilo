@@ -434,6 +434,7 @@ activity-capability-one-shared-file = one shared file
 activity-capability-network = network { $host }
 activity-capability-role = { $role ->
         [owner] owners
+        [moderator] moderators
         [editor] editors
         [commenter] commenters
        *[viewer] viewers
@@ -454,9 +455,11 @@ activity-grant = { $answer ->
     } on { $node } to { $subject }
 activity-grant-task = task { $task }
 activity-grant-shortcut = Shortcut { $shortcut }
+activity-grant-bot = Bot { $bot }
 activity-grant-foreign-device = devices that are not their own
 activity-member = { $person } as { $role ->
         [owner] owner
+        [moderator] moderator
         [editor] editor
         [commenter] commenter
        *[viewer] viewer
@@ -592,6 +595,7 @@ workspace-settings-tab-apps = Apps
 workspace-settings-close-hint = Press Esc to close
 workspace-settings-edit-hint = Enter to save · Esc to cancel
 workspace-settings-role-owner = Owner
+workspace-settings-role-moderator = Moderator
 workspace-settings-role-editor = Editor
 workspace-settings-role-commenter = Commenter
 workspace-settings-role-viewer = Viewer
@@ -599,6 +603,7 @@ workspace-settings-role-blocked = Blocked
 workspace-settings-role-admin = Admin
 workspace-settings-role-guest = Guest
 workspace-settings-role-owner-preview = Can manage people, permissions, and workspace settings.
+workspace-settings-role-moderator-preview = Can edit shared work, remove other people's messages, lock channels, and remove or ban editors and below.
 workspace-settings-role-editor-preview = Can view, comment on, and edit shared work.
 workspace-settings-role-commenter-preview = Can view shared work and add comments, but cannot edit it.
 workspace-settings-role-viewer-preview = Can view shared work, but cannot comment or edit it.
@@ -684,6 +689,7 @@ workspace-settings-section-people = People
 workspace-settings-section-agents = Agents
 workspace-settings-section-roles = Roles
 workspace-settings-section-other = Other
+workspace-settings-subject-bot = Bot { $id }
 workspace-settings-subject-role = everyone with { $role }
 workspace-settings-subject-token = token { $id }
 workspace-settings-subject-workspace = workspace { $id }

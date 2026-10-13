@@ -595,6 +595,7 @@ mod tests {
                 confirmation,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         )
         .wait_timeout(tilo_test_env::hang_bound())
@@ -828,6 +829,7 @@ mod tests {
                         confirmation: None,
                         revision: None,
                         wait_ms: None,
+                        appearance: None,
                     },
                 )
                 .wait_timeout(tilo_test_env::hang_bound())
@@ -900,6 +902,7 @@ mod tests {
                         confirmation: None,
                         revision: None,
                         wait_ms: None,
+                        appearance: None,
                     },
                 )
                 .wait_timeout(tilo_test_env::hang_bound())
@@ -1558,6 +1561,7 @@ mod tests {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         );
         wait_for_parked_launches(&state, &launches, 1);
@@ -1597,6 +1601,7 @@ mod tests {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         )
     }

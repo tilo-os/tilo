@@ -2022,7 +2022,25 @@ impl PdfApp {
                 },
                 |pending| pending != &plan,
             );
-            if needs_reconcile {
+            // Imported bytes that have not arrived cannot be materialised:
+            // asking the owner anyway only answers with a refusal that reads
+            // like a broken plan. Say what is missing and ask again once
+            // their availability changes.
+            let missing = blobs
+                .iter()
+                .find(|state| **state != ContentState::Resolved)
+                .copied();
+            if needs_reconcile && let Some(missing) = missing {
+                self.status_note = Some(
+                    if missing == ContentState::Pending {
+                        "Imported page content is arriving from collaborators"
+                    } else {
+                        "Imported page content is unavailable on this device"
+                    }
+                    .into(),
+                );
+                self.worker_plan_blobs = blobs;
+            } else if needs_reconcile {
                 let request = ReconcileRequest {
                     document_id: document.id,
                     plan: plan.clone(),
@@ -6361,6 +6379,46 @@ mod tests {
 
     #[serial(pdfium)]
     #[test]
+    fn worker_reader_says_when_imported_page_bytes_are_missing() {
+        let Some(mut app) = open_raster_sample() else {
+            return;
+        };
+        let mut state = ui::State::new();
+        settle_record(&mut app, &mut state);
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            crate::actions::import_pages_action(
+                Some("source-1"),
+                vec![crate::markup::PagePlanEntry {
+                    id: "missing-import".into(),
+                    source_page: 1,
+                    imported: Some(crate::markup::ImportedPage {
+                        hash: "d".repeat(64),
+                        kind: "image".into(),
+                        page: 1,
+                        width_milli: 612_000,
+                        height_milli: 408_000,
+                    }),
+                    rotation: 0,
+                }],
+            ),
+        );
+        app.sync_settled(&mut state.doc, &state.root);
+        assert!(
+            app.status_note
+                .as_deref()
+                .is_some_and(|note| note.starts_with("Imported page content is")),
+            "{:?}",
+            app.status_note
+        );
+        assert!(
+            app.pending_worker_plan.is_none(),
+            "a plan whose bytes are missing is not sent to the owner"
+        );
+    }
+
+    #[serial(pdfium)]
+    #[test]
     fn shot_drivers_render_every_review_and_product_state() {
         // Draw the truthful page-shaped state a collaborator without a PDF
         // renderer sees for an imported page. Kept as a screenshot driver as
@@ -8056,10 +8114,23 @@ mod tests {
     /// Page `page`'s (1-based) engine text layer, as the worker delivers it
     /// for a selection or search.
     pub(super) fn text_layer(app: &mut PdfApp, st: &mut ui::State, page: usize) -> Arc<PageText> {
-        if app.ensure_raster_text(page).is_none() {
-            settle_until(app, st, |app| app.raster_text.contains_key(&page));
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            if let Some(layer) = app.ensure_raster_text(page) {
+                return layer;
+            }
+            assert!(
+                ui::time::now() < deadline,
+                "the PDF worker never answered ({:?})",
+                app.status_note
+            );
+            // A reconcile answered in the same frame as the text drops both
+            // the layer and the request; ask again, as the next drawn frame does.
+            settle_until(app, st, |app| {
+                app.raster_text.contains_key(&page)
+                    || !app.raster_text_pending.contains(&(page - 1))
+            });
         }
-        app.raster_text[&page].clone()
     }
 
     /// Take the PDF worker's results until `done` holds, for results that

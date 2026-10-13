@@ -496,6 +496,7 @@ impl Door {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         ))?;
         Ok((invocation, receipt.status))
@@ -634,6 +635,7 @@ fn invoke_step(id: &str, action: &str, args: &[(&str, Binding)]) -> Step {
                 .iter()
                 .map(|(name, binding)| ((*name).to_string(), binding.clone()))
                 .collect(),
+            appearance: None,
         },
     )
 }
@@ -1431,6 +1433,7 @@ impl AppConnection {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             }),
             |message| {
                 matches!(
@@ -1842,6 +1845,7 @@ fn a_grant_that_asks_first_runs_each_call_on_the_persons_confirmation() {
                 confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             }),
             |message| {
                 matches!(
@@ -2005,6 +2009,7 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
                     confirmation,
                     revision: None,
                     wait_ms: None,
+                    appearance: None,
                 },
             ),
         )
