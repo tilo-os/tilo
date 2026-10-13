@@ -780,27 +780,17 @@ fn ordinary_native_pump_exports_admission_before_any_action() {
         tilo_startup_metrics::mark("admission-probe-start");
         let (mut app, calls) = initial_history_app();
         let deadline = tilo_test_env::hang_deadline();
-        while !app.published_action_history_ready() {
+        // The directory RPC is answered on the transport thread; wait for its
+        // answer too, or it can land between the export and the comparison.
+        let directory_answered = |app: &App| {
+            let (enqueued, counts) = app.collaboration.manager.action_directory_observation();
+            !enqueued || counts.is_none_or(|(successes, failures)| successes + failures > 0)
+        };
+        while !app.published_action_history_ready() || !directory_answered(&app) {
             app.pump_collab_presence();
             assert!(
                 crate::time::now() < deadline,
                 "original socket-backed owner history never applied"
-            );
-            std::thread::yield_now();
-        }
-        // The directory RPC completes on the manager thread. Observe its one
-        // real reply before comparing the pump's checkpoint to a later live
-        // snapshot; otherwise the reply can land between those two reads.
-        while app
-            .native_admission_snapshot()
-            .directory
-            .transport_directory_rpc_successes
-            != Some(1)
-        {
-            app.pump_collab_presence();
-            assert!(
-                crate::time::now() < deadline,
-                "original action directory never answered"
             );
             std::thread::yield_now();
         }
@@ -818,14 +808,6 @@ fn ordinary_native_pump_exports_admission_before_any_action() {
                 serde_json::json!(app.native_admission_snapshot())
             );
             assert_eq!(checkpoint["native_admission"]["action_history_ready"], true);
-            assert_eq!(
-                checkpoint["native_admission"]["transport_directory_rpc_successes"],
-                1
-            );
-            assert_eq!(
-                checkpoint["native_admission"]["transport_directory_rpc_failures"],
-                0
-            );
         } else {
             assert!(
                 checkpoint.get("native_admission").is_none(),

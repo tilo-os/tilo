@@ -313,22 +313,6 @@ impl StatePeer {
         record: &str,
         channel: &str,
     ) -> Result<media::ChatCallBindingV1, String> {
-        self.media_binding_if_admitted(app, record, channel)?
-            .ok_or_else(|| "conflicting media policy".into())
-    }
-
-    /// Read binding data once a newly authored channel reaches admitted state.
-    /// Absence in a complete record is pending; conflicting or invalid data is
-    /// refused. Neither result grants permission to join or publish media.
-    ///
-    /// # Errors
-    /// Missing/encrypted record, incomplete document, or an invalid binding.
-    pub fn media_binding_if_admitted(
-        &self,
-        app: &str,
-        record: &str,
-        channel: &str,
-    ) -> Result<Option<media::ChatCallBindingV1>, String> {
         let document = self
             .core
             .documents
@@ -340,12 +324,7 @@ impl StatePeer {
         if document.encryption_required {
             return Err("exact admitted Chat is encrypted".into());
         }
-        if !media::binding::channel_present(&*document.doc, channel).map_err(err)? {
-            return Ok(None);
-        }
-        media::resolve_chat_binding(app, record, channel, &*document.doc)
-            .map(Some)
-            .map_err(err)
+        media::resolve_chat_binding(app, record, channel, &*document.doc).map_err(err)
     }
 
     /// Author a room media policy as the governance writer.

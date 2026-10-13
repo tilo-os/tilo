@@ -65,8 +65,8 @@ use tab_menu::TabMenuTarget;
 pub use device_fabric::{
     BluetoothHandoffAuthorizationView, DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView,
     FabricDeviceView, FabricMediaView, FabricTransferStatus, FabricTransferView,
-    GamepadAuthorizationView, InputControlReceipt, LocalMediaInputView, LocalMediaOutputView,
-    RealtimeContinuityBridge, RealtimeContinuityUiAction,
+    GamepadAuthorizationView, LocalMediaInputView, LocalMediaOutputView, RealtimeContinuityBridge,
+    RealtimeContinuityUiAction,
 };
 use device_fabric::{
     DeviceFabricPaneRow, bluetooth_handoff_failure_key, device_fabric_pane_rows,

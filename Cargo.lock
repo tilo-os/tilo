@@ -12549,10 +12549,8 @@ checksum = "4b967ec6489a42067a20724f11987bb96178ea796873cbe1afd25fb93ee6f85f"
 dependencies = [
  "calloop",
  "enumflags2",
- "futures-util",
  "log",
  "rustix 1.1.4",
- "tokio",
 ]
 
 [[package]]
@@ -14215,7 +14213,6 @@ dependencies = [
  "agent-provider-config",
  "app-cli",
  "ash",
- "ashpd",
  "base64",
  "blake3",
  "bounded-command",
