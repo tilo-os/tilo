@@ -288,18 +288,10 @@ fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Of
                 broker_peer_id: surface.provider.is_none().then_some(surface.peer_id),
                 broker_provider: surface.provider.clone(),
                 descriptor: ActionDescriptor {
-                    semantic_identity: action.semantic_identity.clone(),
-                    address: ActionAddress::new(&action.resource, &action.action),
-                    resource_kind: action.resource_kind.clone(),
-                    resource_label: action.resource_label.clone(),
-                    action_label: action.action_label.clone(),
-                    description: action.description.clone(),
-                    locus: tilo_actions::ExecutionLocus::ServerPreferred,
-                    kind: action.operation_kind,
-                    contract: action.contract.clone(),
-                    params: action.params.clone(),
-                    input: (&action.input).into(),
+                    // The pushed directory routes invocations; it does not
+                    // open views.
                     view: None,
+                    ..action.descriptor(tilo_actions::ExecutionLocus::ServerPreferred)
                 },
             })
         })

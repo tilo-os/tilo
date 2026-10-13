@@ -12,8 +12,9 @@
 //! along by whoever happened to parse it.
 
 use tilo_actions::{
-    ActionContract, ActionDescriptor, ActionParam, Collects, InputSpec, OperationKind,
-    ResourcePresentation, ResourceSemanticIdentity, ResourceViewDescriptor,
+    ActionAddress, ActionContract, ActionDescriptor, ActionParam, Collects, ExecutionLocus,
+    InputSpec, OperationKind, ResourcePresentation, ResourceSemanticIdentity,
+    ResourceViewDescriptor,
 };
 
 pub use tilo_actions::remote::RowVisibility;
@@ -102,6 +103,27 @@ pub struct ExportedAction {
     pub contract: ActionContract,
     pub view: Option<ResourceViewDescriptor>,
     pub input: ExportedInput,
+}
+
+impl ExportedAction {
+    /// The typed descriptor this action exports, run at `locus`: the wire
+    /// carries no locus of its own.
+    pub fn descriptor(&self, locus: ExecutionLocus) -> ActionDescriptor {
+        ActionDescriptor {
+            semantic_identity: self.semantic_identity.clone(),
+            address: ActionAddress::new(&self.resource, &self.action),
+            resource_kind: self.resource_kind.clone(),
+            resource_label: self.resource_label.clone(),
+            action_label: self.action_label.clone(),
+            description: self.description.clone(),
+            locus,
+            kind: self.operation_kind,
+            contract: self.contract.clone(),
+            input: (&self.input).into(),
+            params: self.params.clone(),
+            view: self.view.clone(),
+        }
+    }
 }
 
 impl From<&ActionDescriptor> for ExportedAction {
