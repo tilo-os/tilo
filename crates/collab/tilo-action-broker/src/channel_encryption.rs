@@ -798,12 +798,20 @@ impl ChannelEncryption {
                 if !sent.insert(digest) {
                     continue;
                 }
-                self.delivery = self.delivery.wrapping_add(1);
-                let _ = transport.publish(NeighbourMsg::MlsGovernance {
-                    room: entry.room.to_string(),
-                    frame: Box::new(frame),
-                    delivery: self.delivery,
-                });
+                // An admission goes out whole for the devices it adds and
+                // without what they join from for everyone else; a host
+                // delivers the whole copy to those devices alone.
+                let Ok(deliveries) = frame.into_deliveries() else {
+                    continue;
+                };
+                for frame in deliveries {
+                    self.delivery = self.delivery.wrapping_add(1);
+                    let _ = transport.publish(NeighbourMsg::MlsGovernance {
+                        room: entry.room.to_string(),
+                        frame: Box::new(frame),
+                        delivery: self.delivery,
+                    });
+                }
             }
         }
     }

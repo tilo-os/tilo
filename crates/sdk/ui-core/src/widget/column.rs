@@ -297,20 +297,10 @@ flow_capabilities!(Column);
 
 impl crate::widget::controls::ActionControls for Column {
     fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        let mut bindings = Vec::new();
-        self.for_each_child(&mut |child| {
-            bindings.extend(crate::widget::controls::action_control_bindings(child));
-        });
-        bindings
+        crate::widget::controls::children_action_control_bindings(self)
     }
     fn has_action_control_bindings(&self) -> bool {
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = crate::widget::controls::has_action_control_bindings(child);
-            }
-        });
-        found
+        crate::widget::controls::children_have_action_control_bindings(self)
     }
 }
 

@@ -386,7 +386,7 @@ impl ChannelGroup {
     where
         F: FnOnce(&ChannelGroup, &MemberAddition) -> Result<()>,
     {
-        let addition = self.stage_add(candidate_key_package)?;
+        let addition = self.stage_add(&[candidate_key_package])?;
         if let Err(error) = persist(self, &addition) {
             self.clear_pending()?;
             return Err(error);
@@ -395,21 +395,22 @@ impl ChannelGroup {
         Ok(addition)
     }
 
-    /// Stage an add and leave it pending: the caller records it durably,
-    /// then merges it ([`Self::merge_pending_transaction`]) or drops it
-    /// ([`Self::discard_pending_transaction`]).
-    pub(crate) fn stage_add(
-        &mut self,
-        candidate_key_package: KeyPackage,
-    ) -> Result<MemberAddition> {
+    /// Stage one commit adding every key package's device and leave it
+    /// pending: the caller records it durably, then merges it
+    /// ([`Self::merge_pending_transaction`]) or drops it
+    /// ([`Self::discard_pending_transaction`]). The one Welcome it returns
+    /// admits them all.
+    pub(crate) fn stage_add(&mut self, key_packages: &[KeyPackage]) -> Result<MemberAddition> {
         let preexisting_members = self.member_count();
+        // An add-only commit needs no update path (RFC 9420, 12.4): the
+        // epoch secret still changes, and joiners get the key history from
+        // the steward anyway. A path is encrypted to the resolution of every
+        // copath node, which grows with each member added without one, so
+        // in a busy channel it made each commit, and every member's work to
+        // apply it, grow with the channel.
         let (commit_msg, welcome_msg, _gi) = self
             .group
-            .add_members(
-                &self.member.provider,
-                &self.member.signer,
-                &[candidate_key_package],
-            )
+            .add_members_without_update(&self.member.provider, &self.member.signer, key_packages)
             .map_err(Error::openmls)?;
         let staged = (|| {
             let welcome = welcome_msg

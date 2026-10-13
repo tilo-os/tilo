@@ -300,6 +300,23 @@ pub(super) const APPS: &[CatalogApp] = &[
         ],
     },
     CatalogApp {
+        id: "so.tilo.discord",
+        name: "Discord",
+        category: "Network",
+        platforms: &["linux"],
+        keywords: &[
+            "discord bridge",
+            "discord server",
+            "connector",
+            "bridge a server",
+            "discord-brücke",
+            "discord-bruecke",
+            "discord-server",
+            "konnektor",
+            "server verbinden",
+        ],
+    },
+    CatalogApp {
         id: "so.tilo.disk-usage",
         name: "Disk Usage Analyzer",
         category: "System",

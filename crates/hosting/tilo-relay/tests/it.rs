@@ -20,6 +20,9 @@ mod common;
 mod anti_entropy_recovers_lost_delta;
 #[path = "auth_reject.rs"]
 mod auth_reject;
+#[cfg(feature = "agents")]
+#[path = "bridged_avatar.rs"]
+mod bridged_avatar;
 #[path = "browser_transport.rs"]
 mod browser_transport;
 #[path = "client_owns_its_endpoint.rs"]
@@ -73,6 +76,9 @@ mod multi_host;
 #[cfg(unix)]
 #[path = "out_of_band_join_modes.rs"]
 mod out_of_band_join_modes;
+#[cfg(feature = "agents")]
+#[path = "persistent_room.rs"]
+mod persistent_room;
 #[path = "personal_device_process.rs"]
 mod personal_device_process;
 #[path = "presence_coalescing.rs"]

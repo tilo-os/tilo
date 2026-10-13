@@ -542,3 +542,69 @@ fn a_persons_change_showing_another_name_is_refused() {
     );
     receive(&mut peer, &guest, plain).expect("an editor's own edit is admitted");
 }
+
+/// The bot device whose installation allows Personas may show another
+/// name; the same bot installed with its own appearance only may not.
+#[test]
+fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
+    use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
+    let edit = Rule::new(
+        TreePath::root()
+            .any(Level::Room)
+            .app(APP)
+            .kind(KIND)
+            .resource(RECORD)
+            .field("value")
+            .action("field-edit"),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+    );
+    let program = crate::state::bot_members_tests::program_invoking(
+        ActionKey::new(APP, KIND, "field-edit"),
+        vec![edit],
+    );
+    for (policy, admitted) in [
+        (crate::AppearancePolicy::Personas, true),
+        (crate::AppearancePolicy::Own, false),
+    ] {
+        let (mut peer, _, _) = room_with(MemberRole::Viewer);
+        let owner_key = SigningKey::from_bytes(&[2; 32]);
+        let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
+        let (key, device) = crate::state::bot_members_tests::installed_bot(
+            &mut peer,
+            &owner_key,
+            &owner,
+            &program,
+            policy,
+            now(),
+        );
+        let actor = format!("bot:{}", crate::state::bot_members_tests::BOT);
+        let invoker = |appearance: Option<tilo_actions::Appearance>| {
+            tilo_actions::ActionInvoker::actor(actor.clone())
+                .with_kind(tilo_actions::ActorKind::Bot)
+                .with_appearance(appearance)
+        };
+        let shown = guest_write_by(
+            &peer,
+            &key,
+            |doc| doc.put(ROOT, "value", "hi").unwrap(),
+            edit_value(),
+            invoker(Some(
+                tilo_actions::Appearance::new("alice", None, None).unwrap(),
+            )),
+        );
+        assert_eq!(
+            receive(&mut peer.clone(), &device, shown).is_ok(),
+            admitted,
+            "{policy:?}"
+        );
+        let plain = guest_write_by(
+            &peer,
+            &key,
+            |doc| doc.put(ROOT, "value", "own name").unwrap(),
+            edit_value(),
+            invoker(None),
+        );
+        receive(&mut peer, &device, plain).expect("a bot writes under its own name");
+    }
+}

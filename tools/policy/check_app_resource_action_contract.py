@@ -18,6 +18,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import line_number  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 # Audited ceilings, one file per app (`<app>.toml`, `[ratchets.<rule>]` tables
@@ -516,10 +519,6 @@ def audit_ratchets(
             )
 
 
-def line_number(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1
-
-
 CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
 RUST_CODE_RUN = re.compile(r"[^/'\"]+")
 
@@ -985,8 +984,10 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 )
         app_name = manifest_path.parent.name
         # The headless agent publishes nothing of its own: it acts only
-        # through the broker's task-bound action surfaces.
-        if app_name != "agent":
+        # through the broker's task-bound action surfaces. An `apps/*-model`
+        # crate is a record shape apps embed (the portability rules let apps
+        # depend on it), not an app: the apps embedding it publish its actions.
+        if app_name != "agent" and not app_name.endswith("-model"):
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
                 and FRAMEWORK_RESOURCE.search(combined) is not None

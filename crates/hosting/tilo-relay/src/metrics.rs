@@ -235,6 +235,13 @@ impl Metrics {
                 .load(Ordering::Relaxed),
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
             bytes_sent_live: self.bytes_sent_live.load(Ordering::Relaxed),
+            sessions_open: u64::try_from(
+                self.sessions
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .len(),
+            )
+            .unwrap_or(u64::MAX),
             rooms: self.room_egress(),
         }
     }

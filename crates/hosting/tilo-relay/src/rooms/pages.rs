@@ -13,18 +13,32 @@ use tilo_peer_state::join::{
     JoinChallenge, JoinChallengeRequest, JoinProof, MemberRole, VerifiedRedemption,
 };
 use tilo_relay_protocol::rooms::{
-    Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_NAME_CHARS, MAX_JOIN_REQUESTS,
-    PendingInvite, PreAdmission, Room, RoomMember, RoomNotice, RoomRole, RoomsReply, RoomsRequest,
+    Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_REQUESTS, PendingInvite, PreAdmission,
+    Room, RoomMember, RoomNotice, RoomRole, RoomsReply, RoomsRequest,
 };
 use tilo_user_identity::DeviceCert;
 
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedRoom, IssueInvitationRequest,
-    RemoveMemberRequest, Rooms, SetMemberRoleRequest, system_time,
+    IssuedInvitation, RemoveMemberRequest, Rooms, SetMemberRoleRequest, system_time,
 };
 
 /// How long a declined request still answers its device's status.
 const DECIDED_LIFETIME_NS: u64 = 10 * 60 * 1_000_000_000;
+
+/// One pre-admission to record: the owner's signed grant and, when the
+/// invitation is for one person only, that person.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreAdmitRequest {
+    /// Caller-chosen idempotency key: the same request again is a retry.
+    pub request_id: [u8; 32],
+    /// The owner's signed grant.
+    pub grant: PreAdmission,
+    /// The only person who may redeem the invitation, if restricted.
+    pub recipient_user_public_key: Option<[u8; 32]>,
+    /// How the invitation names who issued it.
+    pub inviter_name: Option<String>,
+}
 
 /// A verified redemption waiting for the room's owner.
 #[derive(Debug)]
@@ -119,14 +133,9 @@ fn page_room(room: &GovernedRoom) -> Room {
 }
 
 fn valid_name(name: &str) -> Result<String, CollaborationError> {
-    let name = name.trim();
-    if name.is_empty()
-        || name.chars().count() > MAX_JOIN_NAME_CHARS
-        || name.chars().any(char::is_control)
-    {
-        return Err(CollaborationError::new("name is invalid"));
-    }
-    Ok(name.to_owned())
+    tilo_user_identity::display_name(name)
+        .map(str::to_owned)
+        .map_err(|error| CollaborationError::new(error.reason()))
 }
 
 impl Rooms {
@@ -200,6 +209,34 @@ impl Rooms {
                 self.decline_page(&room, request_id, now).await?;
                 RoomsReply::Requests(self.waiting(&room, now))
             }
+            request @ (RoomsRequest::SetRole { .. }
+            | RoomsRequest::Remove { .. }
+            | RoomsRequest::Ban { .. }
+            | RoomsRequest::Unban { .. }) => self.page_membership(device, request).await?,
+            RoomsRequest::PreAdmit {
+                request_id,
+                grant,
+                inviter_name,
+            } => {
+                self.page_pre_admit(device, request_id, grant, inviter_name)
+                    .await?
+            }
+            RoomsRequest::Notices { room } => {
+                self.authorize(device, now, "room.notices")?;
+                let room = self.room(&room).await?;
+                let notices = room.lock().await.admissions.notices();
+                RoomsReply::Notices(notices)
+            }
+        })
+    }
+
+    /// A page's change to who is in a room and with which role.
+    async fn page_membership(
+        &self,
+        device: &DeviceCert,
+        request: RoomsRequest,
+    ) -> Result<RoomsReply, CollaborationError> {
+        Ok(match request {
             RoomsRequest::SetRole {
                 room,
                 request_id,
@@ -226,21 +263,67 @@ impl Rooms {
                 self.page_remove(&room, device, request_id, user_public_key)
                     .await?
             }
-            RoomsRequest::PreAdmit {
+            RoomsRequest::Ban {
+                room,
                 request_id,
-                grant,
-                inviter_name,
+                user_public_key,
             } => {
-                self.pre_admit(device, request_id, grant, inviter_name, now)
+                self.page_ban(&room, device, request_id, user_public_key, true)
                     .await?
             }
-            RoomsRequest::Notices { room } => {
-                self.authorize(device, now, "room.notices")?;
-                let room = self.room(&room).await?;
-                let notices = room.lock().await.admissions.notices();
-                RoomsReply::Notices(notices)
+            RoomsRequest::Unban {
+                room,
+                request_id,
+                user_public_key,
+            } => {
+                self.page_ban(&room, device, request_id, user_public_key, false)
+                    .await?
             }
+            _ => return Err(CollaborationError::new("not a membership request")),
         })
+    }
+
+    /// A page's pre-admission: an invitation anyone holding the token may
+    /// redeem.
+    async fn page_pre_admit(
+        &self,
+        device: &DeviceCert,
+        request_id: [u8; 32],
+        grant: PreAdmission,
+        inviter_name: Option<String>,
+    ) -> Result<RoomsReply, CollaborationError> {
+        let request = PreAdmitRequest {
+            request_id,
+            grant,
+            recipient_user_public_key: None,
+            inviter_name,
+        };
+        let issued = self.pre_admit(device, request).await?;
+        Ok(RoomsReply::Invitation {
+            invite_id: issued.invite_id,
+            signed_invitation: issued.signed_invitation,
+        })
+    }
+
+    /// Ban (`ban`) or unban a person, as the room's policy lets `device`.
+    async fn page_ban(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        request_id: [u8; 32],
+        user_public_key: [u8; 32],
+        ban: bool,
+    ) -> Result<RoomsReply, CollaborationError> {
+        let request = RemoveMemberRequest {
+            request_id,
+            user_public_key,
+        };
+        if ban {
+            self.ban_member(room, device, request).await?;
+        } else {
+            self.unban_member(room, device, request).await?;
+        }
+        self.page_room(room).await
     }
 
     async fn page_remove(
@@ -265,16 +348,25 @@ impl Rooms {
         self.page_room(room).await
     }
 
-    /// Issue the single-use invitation of the owner's `grant` and record
-    /// the grant with it.
-    async fn pre_admit(
+    /// Issue the single-use invitation of the owner's grant and record the
+    /// grant with it. With a recipient, only that person can redeem it.
+    ///
+    /// # Errors
+    ///
+    /// Refuses non-administrators, grants the room's owner did not sign,
+    /// and a full grant table.
+    pub async fn pre_admit(
         &self,
         device: &DeviceCert,
-        request_id: [u8; 32],
-        grant: PreAdmission,
-        inviter_name: Option<String>,
-        now: u64,
-    ) -> Result<RoomsReply, CollaborationError> {
+        request: PreAdmitRequest,
+    ) -> Result<IssuedInvitation, CollaborationError> {
+        let PreAdmitRequest {
+            request_id,
+            grant,
+            recipient_user_public_key,
+            inviter_name,
+        } = request;
+        let now = tilo_clock::unix_now_ns();
         self.authorize(device, now, "invitation.pre-admit")?;
         grant.verify()?;
         if grant.owner_user_public_key != self.inner.host.cert.user_public_key {
@@ -289,7 +381,7 @@ impl Rooms {
                 IssueInvitationRequest {
                     request_id,
                     role: member_role(grant.role),
-                    recipient_user_public_key: None,
+                    recipient_user_public_key,
                     invitee_name: None,
                     expires_at_ns: grant.expires_at_ns,
                     inviter_name,
@@ -297,14 +389,13 @@ impl Rooms {
             )
             .await?;
         let room = self.room(&grant.room).await?;
-        room.lock()
-            .await
-            .admissions
-            .record(issued.invite_id, grant)?;
-        Ok(RoomsReply::Invitation {
-            invite_id: issued.invite_id,
-            signed_invitation: issued.signed_invitation,
-        })
+        room.lock().await.admissions.record(
+            issued.invite_id,
+            grant,
+            now,
+            self.inner.host.max_pre_admissions,
+        )?;
+        Ok(issued)
     }
 
     async fn page_create(
