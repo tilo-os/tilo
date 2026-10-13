@@ -3843,6 +3843,7 @@ impl ActionsProvider {
                 let subtitle = t("search-action-history-summary-subtitle");
                 candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), &id);
                 let binding = binding.clone();
+                let owner = ctx.chrome.history_summary_owner();
                 out.push(SearchResult {
                     kind: ResourceKind::Action,
                     operation_kind: tilo_actions::OperationKind::View,
@@ -3855,6 +3856,13 @@ impl ActionsProvider {
                     params: vec![],
                     contract: Some(tilo_actions::ActionContract::view()),
                     on_open: Rc::new(move |_, _, chrome, _| {
+                        if owner.upgrade().is_none()
+                            || !owner.ptr_eq(&chrome.borrow().history_summary_owner())
+                        {
+                            return Err(ActionError::Refused(
+                                "History summary owner changed".into(),
+                            ));
+                        }
                         chrome
                             .borrow_mut()
                             .request_history_summary_action(&binding, slot)
@@ -4711,6 +4719,9 @@ mod tests {
             request: Some(Box::new(request.clone())),
         };
         crate::shell::chrome_state::HistorySummaryBinding {
+            epoch: 0,
+            native_owner: 1,
+            native_generation: 1,
             workspace,
             room,
             request,
@@ -4743,9 +4754,9 @@ mod tests {
                 .all(|row| !row.id.starts_with("history.summary."))
         );
         let binding = summary_binding(&chrome);
-        chrome
-            .borrow_mut()
-            .publish_history_summary(Some(binding.clone()));
+        chrome.borrow_mut().publish_history_summary(Some(binding));
+        let binding = chrome.borrow().history_summary_binding().unwrap().clone();
+        assert!(binding.epoch > 0);
         let results = action_results(&provider, &chrome);
         let ids = results
             .iter()
@@ -4796,9 +4807,8 @@ mod tests {
         let chrome = chrome_with_room();
         let provider = ActionsProvider::new();
         let binding = summary_binding(&chrome);
-        chrome
-            .borrow_mut()
-            .publish_history_summary(Some(binding.clone()));
+        chrome.borrow_mut().publish_history_summary(Some(binding));
+        let binding = chrome.borrow().history_summary_binding().unwrap().clone();
         let results = action_results(&provider, &chrome);
         let assert_stale = || {
             for id in [binding.action_id(None), binding.action_id(Some(0))] {
@@ -4864,14 +4874,21 @@ mod tests {
     }
 
     #[test]
-    fn summary_deferred_dispatch_preserves_exact_brief_binding_across_refresh() {
+    fn summary_deferred_dispatch_preserves_exact_brief_and_revokes_on_refresh() {
         let chrome = chrome_with_room();
         let provider = ActionsProvider::new();
         let binding = summary_binding(&chrome);
-        chrome
-            .borrow_mut()
-            .publish_history_summary(Some(binding.clone()));
+        chrome.borrow_mut().publish_history_summary(Some(binding));
+        let binding = chrome.borrow().history_summary_binding().unwrap().clone();
         let results = action_results(&provider, &chrome);
+        try_summary_action(&results, &binding.action_id(Some(0)), &chrome).unwrap();
+        let queued = chrome
+            .borrow_mut()
+            .take_history_summary_action_request()
+            .unwrap();
+        assert_eq!(queued.binding, binding);
+        assert_eq!(queued.source, Some(binding.narrative.source_ids[0]));
+        assert_eq!(queued.brief, Some(binding.request.sources[0].clone()));
         try_summary_action(&results, &binding.action_id(Some(0)), &chrome).unwrap();
         let mut replacement = binding.clone();
         replacement.narrative.source_ids = vec![replacement.request.source_ids[1]];
@@ -4880,13 +4897,12 @@ mod tests {
         chrome
             .borrow_mut()
             .publish_history_summary(Some(replacement));
-        let queued = chrome
-            .borrow_mut()
-            .take_history_summary_action_request()
-            .unwrap();
-        assert_eq!(queued.binding, binding);
-        assert_eq!(queued.source, Some(binding.narrative.source_ids[0]));
-        assert_eq!(queued.brief, Some(binding.request.sources[0].clone()));
+        assert!(
+            chrome
+                .borrow_mut()
+                .take_history_summary_action_request()
+                .is_none()
+        );
         assert_ne!(
             chrome.borrow().history_summary_binding(),
             Some(&queued.binding)
@@ -4914,6 +4930,133 @@ mod tests {
         );
         assert!(read.source.is_none());
         assert!(read.brief.is_none());
+    }
+
+    #[test]
+    fn summary_cached_actions_reject_aba_and_absence_then_same_presentation() {
+        for absent in [false, true] {
+            let chrome = chrome_with_room();
+            let provider = ActionsProvider::new();
+            let original = summary_binding(&chrome);
+            chrome
+                .borrow_mut()
+                .publish_history_summary(Some(original.clone()));
+            let binding = chrome.borrow().history_summary_binding().unwrap().clone();
+            let cached = action_results(&provider, &chrome);
+            // Republishing identical native evidence must not invalidate actions,
+            // even when the caller supplies an old epoch.
+            chrome
+                .borrow_mut()
+                .publish_history_summary(Some(original.clone()));
+            assert_eq!(chrome.borrow().history_summary_binding(), Some(&binding));
+            for slot in [None, Some(0)] {
+                try_summary_action(&cached, &binding.action_id(slot), &chrome).unwrap();
+                assert!(
+                    chrome
+                        .borrow_mut()
+                        .take_history_summary_action_request()
+                        .is_some()
+                );
+            }
+            if absent {
+                chrome.borrow_mut().publish_history_summary(None);
+            } else {
+                let mut other = original.clone();
+                other.narrative.text.push_str(" Updated.");
+                chrome.borrow_mut().publish_history_summary(Some(other));
+                assert!(chrome.borrow().history_summary_binding().is_some());
+            }
+            chrome.borrow_mut().publish_history_summary(Some(original));
+            let restored = chrome.borrow().history_summary_binding().unwrap().clone();
+            assert!(restored.epoch > binding.epoch);
+            let fresh = action_results(&provider, &chrome);
+            for slot in [None, Some(0)] {
+                assert!(matches!(
+                    try_summary_action(&cached, &binding.action_id(slot), &chrome),
+                    Err(ActionError::Refused(_))
+                ));
+                assert!(
+                    chrome
+                        .borrow_mut()
+                        .take_history_summary_action_request()
+                        .is_none()
+                );
+                assert_ne!(binding.action_id(slot), restored.action_id(slot));
+                try_summary_action(&fresh, &restored.action_id(slot), &chrome).unwrap();
+                assert_eq!(
+                    chrome
+                        .borrow_mut()
+                        .take_history_summary_action_request()
+                        .unwrap()
+                        .binding,
+                    restored
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn summary_cached_actions_belong_to_original_chrome_not_identical_replacement() {
+        let original = chrome_with_room();
+        let replacement = ChromeState::new_with_fixture_handle(
+            original.borrow().tree_handle(),
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        );
+        let binding = summary_binding(&original);
+        original
+            .borrow_mut()
+            .publish_history_summary(Some(binding.clone()));
+        replacement
+            .borrow_mut()
+            .publish_history_summary(Some(binding));
+        let binding = original.borrow().history_summary_binding().unwrap().clone();
+        assert_eq!(
+            replacement.borrow().history_summary_binding(),
+            Some(&binding)
+        );
+        let provider = ActionsProvider::new();
+        let cached = action_results(&provider, &original);
+        let fresh = action_results(&provider, &replacement);
+        for slot in [None, Some(0)] {
+            let id = binding.action_id(slot);
+            assert!(matches!(
+                try_summary_action(&cached, &id, &replacement),
+                Err(ActionError::Refused(_))
+            ));
+            assert!(
+                replacement
+                    .borrow_mut()
+                    .take_history_summary_action_request()
+                    .is_none()
+            );
+            try_summary_action(&cached, &id, &original).unwrap();
+            assert!(
+                original
+                    .borrow_mut()
+                    .take_history_summary_action_request()
+                    .is_some()
+            );
+            try_summary_action(&fresh, &id, &replacement).unwrap();
+            assert!(
+                replacement
+                    .borrow_mut()
+                    .take_history_summary_action_request()
+                    .is_some()
+            );
+        }
+        drop(original);
+        for slot in [None, Some(0)] {
+            assert!(matches!(
+                try_summary_action(&cached, &binding.action_id(slot), &replacement),
+                Err(ActionError::Refused(_))
+            ));
+            assert!(
+                replacement
+                    .borrow_mut()
+                    .take_history_summary_action_request()
+                    .is_none()
+            );
+        }
     }
 
     #[test]

@@ -10944,6 +10944,9 @@ impl ShellOverlayHost {
                     let (workspace, room) = (workspace.id, workspace.room);
                     drop(tree);
                     Some(crate::shell::chrome_state::HistorySummaryBinding {
+                        epoch: 0,
+                        native_owner: self.room_activity.narrative_owner(),
+                        native_generation: self.room_activity.narrative_generation(),
                         workspace,
                         room,
                         request,

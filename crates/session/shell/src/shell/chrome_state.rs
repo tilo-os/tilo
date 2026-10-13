@@ -553,6 +553,9 @@ impl QuickSettingsState {
 /// here is replicated; request equality includes scope, coverage and frontiers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistorySummaryBinding {
+    pub epoch: u64,
+    pub native_owner: u64,
+    pub native_generation: u64,
     pub workspace: WorkspaceId,
     pub room: crate::shell::state::RoomId,
     pub request: ui::NarrativeRequest,
@@ -681,6 +684,8 @@ pub struct ChromeState {
     pub(crate) history_editorial_request:
         Option<crate::shell::overlay_host::history_editorial::Pending>,
     history_summary: Option<HistorySummaryBinding>,
+    history_summary_epoch: u64,
+    history_summary_owner: std::rc::Rc<()>,
     history_summary_action_request: Option<HistorySummaryAction>,
     /// The portal D-Bus backend's prompt queue drains onto the back
     /// every frame; the overlay host renders `front()` and drains it
@@ -938,6 +943,8 @@ impl ChromeState {
             history_action_request: None,
             history_editorial_request: None,
             history_summary: None,
+            history_summary_epoch: 0,
+            history_summary_owner: std::rc::Rc::new(()),
             history_summary_action_request: None,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
@@ -1754,11 +1761,26 @@ impl ChromeState {
     /// Publish the exact summary currently presented by Activity. Refreshes
     /// must clear this binding when there is no summary, including scope changes.
     pub fn publish_history_summary(&mut self, binding: Option<HistorySummaryBinding>) {
-        let binding = binding.filter(HistorySummaryBinding::is_valid);
+        let mut binding = binding.filter(HistorySummaryBinding::is_valid);
+        if let Some(binding) = binding.as_mut() {
+            binding.epoch = self.history_summary_epoch;
+        }
         if self.history_summary != binding {
+            self.history_summary_epoch = self
+                .history_summary_epoch
+                .checked_add(1)
+                .unwrap_or_else(|| std::process::abort());
+            if let Some(binding) = binding.as_mut() {
+                binding.epoch = self.history_summary_epoch;
+            }
+            self.history_summary_action_request = None;
             self.history_summary = binding;
             self.bump();
         }
+    }
+
+    pub fn history_summary_owner(&self) -> std::rc::Weak<()> {
+        std::rc::Rc::downgrade(&self.history_summary_owner)
     }
 
     pub fn history_summary_binding(&self) -> Option<&HistorySummaryBinding> {

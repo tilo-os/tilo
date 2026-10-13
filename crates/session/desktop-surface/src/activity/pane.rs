@@ -32,6 +32,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use ui::i18n::ArgValue;
 use ui::time::{Duration, Instant, SystemTime};
 
@@ -74,6 +75,9 @@ use ui::widget::ButtonRole;
 const AWAY_RECAP_AFTER: Duration = Duration::from_secs(45 * 60);
 /// How long an expanding catch-up card takes to open.
 const BRIEF_EXPANSION_DURATION: Duration = Duration::from_millis(180);
+
+/// Process-local pane lifetimes must never reuse deferred presentation identities.
+static NEXT_NARRATIVE_OWNER: AtomicU64 = AtomicU64::new(1);
 
 fn away_recap_is_due(departed_at_secs: u64, now: SystemTime) -> bool {
     let departed_at = SystemTime::UNIX_EPOCH
@@ -877,6 +881,10 @@ pub struct RoomActivityPane {
     replay_slider_doc: automerge::AutoCommit,
     narrative: Option<ui::GroundedNarrative>,
     narrative_request: Option<NarrativeRequest>,
+    narrative_owner: u64,
+    // Presentation identity must not be resurrected by an A → B → A transition.
+    narrative_generation: u64,
+    narrative_locale: String,
     summary_source_rects: Vec<(String, Rect)>,
     narrative_feedback: &'static str,
     /// Task receipts live beside the records they describe. They are indexed
@@ -1113,6 +1121,13 @@ impl RoomActivityPane {
             replay_slider_doc: automerge::AutoCommit::new(),
             narrative: None,
             narrative_request: None,
+            narrative_owner: NEXT_NARRATIVE_OWNER
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |owner| {
+                    owner.checked_add(1)
+                })
+                .unwrap_or_else(|_| std::process::abort()),
+            narrative_generation: 0,
+            narrative_locale: ui::i18n::I18nManager::current_locale(),
             summary_source_rects: Vec::new(),
             narrative_feedback: "activity-summary-unavailable",
             agent_runs: Vec::new(),
@@ -3239,9 +3254,12 @@ impl RoomActivityPane {
             );
             request
         });
-        if self.narrative_request == request {
+        let locale = ui::i18n::I18nManager::current_locale();
+        if self.narrative_request == request && self.narrative_locale == locale {
             return;
         }
+        self.advance_narrative_generation();
+        self.narrative_locale = locale;
         // The deterministic summary only restates the brief titles below
         // it, so the card waits for prose that adds something.
         self.narrative = None;
@@ -3250,7 +3268,18 @@ impl RoomActivityPane {
         self.narrative_request = request;
     }
 
+    fn advance_narrative_generation(&mut self) {
+        self.narrative_generation = self
+            .narrative_generation
+            .checked_add(1)
+            .unwrap_or_else(|| std::process::abort());
+        self.summary_source_rects.clear();
+    }
+
     pub fn set_narrative_feedback(&mut self, feedback: &'static str) {
+        if self.narrative_feedback != feedback {
+            self.advance_narrative_generation();
+        }
         if feedback == "activity-summary-pending" && self.narrative_feedback != feedback {
             self.narrative = None;
             self.summary_source_rects.clear();
@@ -3312,22 +3341,34 @@ impl RoomActivityPane {
             return Some(
                 AccessNode::new(Role::StaticText)
                     .with_name(narrative.text.clone())
-                    .with_description(self.summary_label()),
+                    .with_description(self.summary_label())
+                    .with_hashed_key(self.summary_presentation_key("text")),
             );
         }
-        self.narrative_request
-            .as_ref()
-            .map(|_| AccessNode::new(Role::StaticText).with_name(t(self.narrative_feedback)))
+        self.narrative_request.as_ref().map(|_| {
+            AccessNode::new(Role::StaticText)
+                .with_name(t(self.narrative_feedback))
+                .with_hashed_key(self.summary_presentation_key("feedback"))
+        })
+    }
+
+    fn summary_presentation_key(&self, kind: &str) -> String {
+        let scope = format!(
+            "{:?}:{:?}:{:?}:{:?}",
+            self.task_room, self.scope, self.narrative_request, self.narrative_locale
+        );
+        format!(
+            "history.summary.{}.{}.{}.{}",
+            self.narrative_owner,
+            self.narrative_generation,
+            blake3::hash(scope.as_bytes()),
+            kind
+        )
     }
 
     fn summary_source_key(&self, id: &HistoryEntryId) -> String {
-        // The entire request authorizes the citation; its position in model output does not.
-        let request = format!("{:?}", self.narrative_request);
-        format!(
-            "history.summary.source.{}.{}",
-            blake3::hash(request.as_bytes()),
-            ui::widget::history_group::hex16(id)
-        )
+        // Identity includes the presentation epoch, not the citation's ordinal.
+        self.summary_presentation_key(&format!("source.{}", ui::widget::history_group::hex16(id)))
     }
 
     fn summary_source_id(&self, key: &str) -> Option<HistoryEntryId> {
@@ -3362,6 +3403,17 @@ impl RoomActivityPane {
         self.narrative_request.clone()
     }
 
+    /// Unique process-local pane lifetime for deferred actions, even when a
+    /// replacement has the same request and presentation generation.
+    pub fn narrative_owner(&self) -> u64 {
+        self.narrative_owner
+    }
+
+    /// Monotonic identity for deferred actions, including identical prose shown again.
+    pub fn narrative_generation(&self) -> u64 {
+        self.narrative_generation
+    }
+
     /// Exact presentation snapshot for deferred semantic actions.
     pub fn narrative(&self) -> Option<ui::GroundedNarrative> {
         self.narrative.clone()
@@ -3391,7 +3443,10 @@ impl RoomActivityPane {
         let Some(valid) = ui::validate_narrative(request, narrative) else {
             return false;
         };
-        self.narrative = Some(valid);
+        if self.narrative.as_ref() != Some(&valid) {
+            self.advance_narrative_generation();
+            self.narrative = Some(valid);
+        }
         true
     }
 

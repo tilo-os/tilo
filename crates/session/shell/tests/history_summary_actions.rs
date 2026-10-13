@@ -39,6 +39,40 @@ fn citation_path(
     })
 }
 
+fn summary_actions(
+    chrome: &shell::shell::chrome_state::Chrome,
+) -> Vec<shell::shell::search::SearchResult> {
+    use shell::shell::search::{ResourceKind, SearchContext, SearchProvider as _};
+    let doc = automerge::AutoCommit::new();
+    shell::shell::search::providers::actions::ActionsProvider::new().query(SearchContext {
+        query_scope: None,
+        include_programmatic: false,
+        needle: "",
+        wanted: &[ResourceKind::Action],
+        chrome: &chrome.borrow(),
+        doc: &doc,
+        doc_root: &automerge::ROOT,
+    })
+}
+
+fn invoke_summary(
+    actions: &[shell::shell::search::SearchResult],
+    id: &str,
+    chrome: &shell::shell::chrome_state::Chrome,
+) -> Result<(), shell::shell::search::action_api::ActionError> {
+    let action = actions
+        .iter()
+        .find(|action| action.id == id)
+        .expect("published summary action");
+    let mut doc = automerge::AutoCommit::new();
+    (action.on_open)(
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+        chrome,
+        &shell::shell::search::action_api::ActionArgs::none(),
+    )
+}
+
 /// Record real workspace changes and ground a summary in the host's history.
 fn accessibility_summary_fixture() -> (
     shell::shell::overlay_host::ShellOverlayHost,
@@ -85,6 +119,20 @@ fn accessibility_summary_fixture() -> (
     (host, chrome, narrative)
 }
 
+fn assert_summary_text_exported(
+    host: &shell::shell::overlay_host::ShellOverlayHost,
+    text: &str,
+    expected: bool,
+) {
+    let root = host.accessibility().expect("shell accessibility tree");
+    let exported = root.children.iter().any(|window| {
+        window.children.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText && node.name.as_deref() == Some(text)
+        })
+    });
+    assert_eq!(exported, expected);
+}
+
 #[test]
 fn history_summary_host_accessibility_keeps_exact_citations_and_revokes_stale_ones() {
     use shell::shell::room_activity::ActivityView;
@@ -107,18 +155,10 @@ fn history_summary_host_accessibility_keeps_exact_citations_and_revokes_stale_on
     );
     host.force_room_activity_settled();
     paint(&mut host);
-    let root = host.accessibility().unwrap();
-    assert!(
-        root.children
-            .iter()
-            .any(|window| window.children.iter().any(|node| {
-                node.role == ui::a11y::Role::StaticText
-                    && node.name.as_deref() == Some(narrative.text.as_str())
-            }))
-    );
+    assert_summary_text_exported(&host, &narrative.text, true);
     let path = citation_path(&host, &ids[0]).expect("citation exported by shell host");
-    let other_path = citation_path(&host, &ids[1]).expect("second citation exported");
-    assert_ne!(path, other_path);
+    let initial_other_path = citation_path(&host, &ids[1]).expect("second citation exported");
+    assert_ne!(path, initial_other_path);
     let heads = chrome.borrow().tree_mut().doc.get_heads();
 
     let mut replacement = narrative.clone();
@@ -129,9 +169,11 @@ fn history_summary_host_accessibility_keeps_exact_citations_and_revokes_stale_on
     );
     host.force_room_activity_settled();
     paint(&mut host);
-    assert_eq!(citation_path(&host, &ids[0]), Some(path.clone()));
-    assert_eq!(citation_path(&host, &ids[1]), Some(other_path.clone()));
-    assert!(host.focus_synthetic_accessibility(&path));
+    let reordered_path = citation_path(&host, &ids[0]).expect("reordered citation exported");
+    let other_path = citation_path(&host, &ids[1]).expect("second reordered citation exported");
+    assert_ne!(reordered_path, path);
+    assert!(!host.focus_synthetic_accessibility(&path));
+    assert!(host.focus_synthetic_accessibility(&reordered_path));
     let (taffy, node) = layout_host(&mut host);
     assert!(press_key(
         &mut host,
@@ -154,7 +196,10 @@ fn history_summary_host_accessibility_keeps_exact_citations_and_revokes_stale_on
     host.force_room_activity_settled();
     paint(&mut host);
     assert!(citation_path(&host, &ids[0]).is_none());
-    assert_eq!(citation_path(&host, &ids[1]), Some(other_path.clone()));
+    let surviving_path = citation_path(&host, &ids[1]).expect("surviving citation exported");
+    assert_ne!(surviving_path, other_path);
+    assert!(!host.focus_synthetic_accessibility(&other_path));
+    let other_path = surviving_path;
     let selection = host.room_activity().selected_ids();
     assert!(!host.focus_synthetic_accessibility(&path));
     assert_eq!(host.room_activity().selected_ids(), selection);
@@ -253,7 +298,8 @@ fn history_summary_host_revalidates_deferred_citations() {
     assert_eq!(host.room_activity().view(), ActivityView::Explore);
     assert!(host.room_activity().selected_ids().contains(&ids[0]));
 
-    // Read reveals the same prose without rewriting history.
+    // Read reveals the currently published prose without rewriting history.
+    let binding = chrome.borrow().history_summary_binding().unwrap().clone();
     chrome
         .borrow_mut()
         .request_history_summary_action(&binding, None)
@@ -276,7 +322,10 @@ fn history_summary_host_revalidates_deferred_citations() {
     host.force_room_activity_settled();
     assert_eq!(host.room_activity().view(), ActivityView::CatchUp);
     let reordered = chrome.borrow().history_summary_binding().unwrap().clone();
-    assert_eq!(binding.action_id(Some(0)), reordered.action_id(Some(1)));
+    assert_ne!(binding.action_id(Some(0)), reordered.action_id(Some(1)));
+    assert!(reordered.epoch > binding.epoch);
+    assert_eq!(reordered.native_owner, binding.native_owner);
+    assert!(reordered.native_generation > binding.native_generation);
     chrome
         .borrow_mut()
         .request_history_summary_action(&reordered, Some(1))
@@ -297,4 +346,97 @@ fn history_summary_host_revalidates_deferred_citations() {
     assert!(chrome.borrow().history_summary_binding().is_none());
     assert_eq!(host.room_activity().view(), ActivityView::Explore);
     assert_eq!(chrome.borrow().tree_mut().doc.get_heads(), heads);
+}
+
+#[test]
+fn history_summary_cached_actions_reject_native_aba_absence_and_pane_replacement() {
+    use shell::shell::room_activity::ActivityView;
+    use shell::shell::search::action_api::ActionError;
+
+    for transition in ["changed", "absent", "replacement"] {
+        let (mut host, chrome, narrative) = accessibility_summary_fixture();
+        host.room_activity_mut().set_view(ActivityView::CatchUp);
+        assert!(
+            host.room_activity_mut()
+                .apply_generated_narrative(narrative.clone())
+        );
+        host.force_room_activity_settled();
+        let binding = chrome.borrow().history_summary_binding().unwrap().clone();
+        let cached = summary_actions(&chrome);
+        let heads = chrome.borrow().tree_mut().doc.get_heads();
+        match transition {
+            "changed" => {
+                let mut other = narrative.clone();
+                other.source_ids.reverse();
+                assert!(host.room_activity_mut().apply_generated_narrative(other));
+                host.force_room_activity_settled();
+            }
+            "absent" => {
+                host.room_activity_mut()
+                    .set_narrative_feedback("activity-summary-unavailable");
+                host.room_activity_mut()
+                    .set_narrative_feedback("activity-summary-pending");
+                host.force_room_activity_settled();
+                assert!(chrome.borrow().history_summary_binding().is_none());
+            }
+            "replacement" => {
+                *host.room_activity_mut() = RoomActivityPane::new();
+                host.room_activity_mut().set_view(ActivityView::Explore);
+                host.force_room_activity_settled();
+                assert_eq!(
+                    host.room_activity().narrative_request(),
+                    Some(binding.request.clone())
+                );
+                host.room_activity_mut().set_view(ActivityView::CatchUp);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            host.room_activity_mut()
+                .apply_generated_narrative(narrative.clone())
+        );
+        host.force_room_activity_settled();
+        let restored = chrome.borrow().history_summary_binding().unwrap().clone();
+        assert_eq!(restored.request, binding.request);
+        assert_eq!(restored.narrative, binding.narrative);
+        assert!(restored.epoch > binding.epoch);
+        if transition == "replacement" {
+            assert_ne!(restored.native_owner, binding.native_owner);
+        } else {
+            assert_eq!(restored.native_owner, binding.native_owner);
+            assert!(restored.native_generation > binding.native_generation);
+        }
+        let fresh = summary_actions(&chrome);
+        for slot in [None, Some(0)] {
+            let selection = host.room_activity().selected_ids();
+            let view = host.room_activity().view();
+            assert!(matches!(
+                invoke_summary(&cached, &binding.action_id(slot), &chrome),
+                Err(ActionError::Refused(_))
+            ));
+            assert!(
+                chrome
+                    .borrow_mut()
+                    .take_history_summary_action_request()
+                    .is_none()
+            );
+            host.force_room_activity_settled();
+            assert_eq!(host.room_activity().view(), view);
+            assert_eq!(host.room_activity().selected_ids(), selection);
+            invoke_summary(&fresh, &restored.action_id(slot), &chrome).unwrap();
+            host.force_room_activity_settled();
+            match slot {
+                None => assert_eq!(host.room_activity().view(), ActivityView::CatchUp),
+                Some(slot) => {
+                    assert_eq!(host.room_activity().view(), ActivityView::Explore);
+                    assert!(
+                        host.room_activity()
+                            .selected_ids()
+                            .contains(&narrative.source_ids[slot])
+                    );
+                }
+            }
+        }
+        assert_eq!(chrome.borrow().tree_mut().doc.get_heads(), heads);
+    }
 }

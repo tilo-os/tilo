@@ -1,4 +1,4 @@
-//! Citation identity survives model ordering but never a different request.
+//! Held accessibility nodes authorize only their original summary presentation.
 use super::*;
 use crate::activity::testing::{TestHost, TestTree};
 
@@ -39,7 +39,87 @@ fn install(pane: &mut RoomActivityPane, ids: Vec<HistoryEntryId>) {
 }
 
 #[test]
-fn citation_keys_follow_exact_evidence_not_model_order_or_labels() {
+fn held_native_summary_nodes_authorize_only_the_original_pane_lifetime() {
+    let mut tree = TestTree::bootstrap_demo();
+    let mut original = RoomActivityPane::new();
+    let mut replacement = RoomActivityPane::with_local_user(TestHost::default().local_user());
+    // The constructors share one allocation sequence, independent of host services.
+    assert!(replacement.narrative_owner() > original.narrative_owner());
+    let owner = original.narrative_owner();
+    for pane in [&mut original, &mut replacement] {
+        pane.set_host(Rc::new(TestHost::default()));
+        pane.set_view(ActivityView::Explore);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+    }
+    let reader = tree.doc.get_actor().clone();
+    tree.doc
+        .set_actor(automerge::ActorId::from(b"citation-peer".as_slice()));
+    tree.desktop.workspaces[0].name = "Recorded rename".into();
+    tree.seed_doc_from_cache();
+    tree.doc.set_actor(reader);
+    for pane in [&mut original, &mut replacement] {
+        pane.refresh(&mut tree);
+    }
+    assert_eq!(
+        original.narrative_request(),
+        replacement.narrative_request()
+    );
+    let id = *original
+        .narrative_request()
+        .unwrap()
+        .supplied_ids()
+        .iter()
+        .next()
+        .unwrap();
+    for pane in [&mut original, &mut replacement] {
+        install(pane, vec![id]);
+    }
+    assert_eq!(original.narrative(), replacement.narrative());
+    assert_eq!(
+        original.narrative_generation(),
+        replacement.narrative_generation()
+    );
+    assert_eq!(original.narrative_owner(), owner);
+    let heads = tree.doc.get_heads();
+    let held_text = original.summary_accessibility_node().unwrap();
+    let held_citation = original.summary_source_key(&id);
+    let key = usize::try_from(
+        ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+            .with_hashed_key(&held_citation)
+            .key
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        original
+            .accessibility_snapshot()
+            .children
+            .iter()
+            .any(|node| node.key == Some(key as u64))
+    );
+    assert!(original.focus_accessibility_path(&[0, key]));
+    assert!(!replacement.focus_accessibility_path(&[0, key]));
+    assert_ne!(
+        replacement.summary_accessibility_node().unwrap().key,
+        held_text.key
+    );
+    assert!(replacement.summary_source_id(&held_citation).is_none());
+    let selection = replacement.selected_ids();
+    replacement.open_summary_citation(&held_citation);
+    assert_eq!(replacement.selected_ids(), selection);
+    original.open_summary_citation(&held_citation);
+    assert!(original.selected_ids().contains(&id));
+    let current = replacement.summary_source_key(&id);
+    replacement.open_summary_citation(&current);
+    assert!(replacement.selected_ids().contains(&id));
+    drop(original);
+    assert!(RoomActivityPane::default().narrative_owner() > replacement.narrative_owner());
+    assert_eq!(tree.doc.get_heads(), heads);
+}
+
+#[test]
+fn held_citation_keys_refuse_replacements_and_citation_count_changes() {
     let (mut tree, mut pane) = fixture();
     let ids: Vec<_> = pane
         .narrative_request()
@@ -70,7 +150,8 @@ fn citation_keys_follow_exact_evidence_not_model_order_or_labels() {
             .unwrap(),
     )
     .expect("accessibility key fits usize");
-    install(&mut pane, vec![ids[1], ids[0]]);
+    // Repeated publication of the exact same presentation preserves its keys.
+    install(&mut pane, ids.clone());
     assert!(pane.focus_accessibility_path(&[0, key]));
     assert_eq!(
         pane.keyboard_focus,
@@ -80,7 +161,27 @@ fn citation_keys_follow_exact_evidence_not_model_order_or_labels() {
     assert!(pane.selected_ids().contains(&ids[0]));
 
     pane.set_view(ActivityView::CatchUp);
-    install(&mut pane, vec![ids[1]]);
+    let mut replacement = pane.narrative().unwrap();
+    replacement.text = "A different generated account of the same evidence.".into();
+    assert!(pane.apply_generated_narrative(replacement));
+    assert!(!pane.focus_accessibility_path(&[0, key]));
+    assert!(pane.summary_source_id(&identity).is_none());
+    let generation = pane.narrative_generation();
+    install(&mut pane, vec![ids[1], ids[0]]);
+    assert!(pane.narrative_generation() > generation);
+    assert!(!pane.focus_accessibility_path(&[0, key]));
+    let selection = pane.selected_ids();
+    pane.open_summary_citation(&identity);
+    assert_eq!(pane.selected_ids(), selection);
+    // Even returning to the original prose and evidence cannot revive a held node.
+    install(&mut pane, ids.clone());
+    assert!(!pane.focus_accessibility_path(&[0, key]));
+    let replacement_key = pane.summary_source_key(&ids[0]);
+    install(&mut pane, vec![ids[0]]);
+    assert!(pane.summary_source_id(&replacement_key).is_none());
+    assert_eq!(pane.summary_source_rects.len(), 1);
+    install(&mut pane, ids.clone());
+    assert_eq!(pane.summary_source_rects.len(), 2);
     assert!(!pane.focus_accessibility_path(&[0, key]));
     pane.set_scope(RoomScope::AllWorkspaces, &tree);
     assert_ne!(pane.summary_source_key(&ids[0]), identity);
@@ -92,12 +193,94 @@ fn citation_keys_follow_exact_evidence_not_model_order_or_labels() {
 }
 
 #[test]
+fn held_text_feedback_and_citations_never_revive_after_absence_or_scope_aba() {
+    let (tree, mut pane) = fixture();
+    let id = *pane
+        .narrative_request()
+        .unwrap()
+        .supplied_ids()
+        .iter()
+        .next()
+        .unwrap();
+    install(&mut pane, vec![id]);
+    let held_text = pane.summary_accessibility_node().unwrap();
+    let held_citation = pane.summary_source_key(&id);
+    assert!(held_text.key.is_some());
+    assert_eq!(
+        pane.summary_accessibility_node().unwrap().key,
+        held_text.key
+    );
+
+    pane.set_scope(RoomScope::AllWorkspaces, &tree);
+    pane.set_scope(RoomScope::ThisRoom, &tree);
+    install(&mut pane, vec![id]);
+    assert_ne!(
+        pane.summary_accessibility_node().unwrap().key,
+        held_text.key
+    );
+    assert!(pane.summary_source_id(&held_citation).is_none());
+
+    let digest = pane.digest.clone();
+    let generation = pane.narrative_generation();
+    pane.digest = ActivityDigest::default();
+    pane.reset_narrative();
+    assert!(pane.narrative_request().is_none());
+    assert!(pane.summary_accessibility_node().is_none());
+    assert!(pane.narrative_generation() > generation);
+    let absent_generation = pane.narrative_generation();
+    pane.reset_narrative();
+    assert_eq!(pane.narrative_generation(), absent_generation);
+    // Locale transitions are tracked even while there is no request or prose.
+    let original_locale = ui::i18n::I18nManager::current_locale();
+    let next = if original_locale == "de-DE" {
+        "en-US"
+    } else {
+        "de-DE"
+    };
+    ui::i18n::I18nManager::set_locale(next);
+    pane.refresh_narrative_locale();
+    assert!(pane.narrative_generation() > absent_generation);
+    let localized_absence = pane.narrative_generation();
+    ui::i18n::I18nManager::set_locale(&original_locale);
+    pane.refresh_narrative_locale();
+    assert!(pane.narrative_generation() > localized_absence);
+    pane.digest = digest;
+    pane.reset_narrative();
+    let held_feedback = pane.summary_accessibility_node().unwrap();
+    assert!(held_feedback.key.is_some());
+    assert_eq!(
+        pane.summary_accessibility_node().unwrap().key,
+        held_feedback.key
+    );
+    pane.set_narrative_feedback("activity-summary-pending");
+    pane.set_narrative_feedback("activity-summary-unavailable");
+    assert_ne!(
+        pane.summary_accessibility_node().unwrap().key,
+        held_feedback.key
+    );
+    install(&mut pane, vec![id]);
+    assert_ne!(
+        pane.summary_accessibility_node().unwrap().key,
+        held_text.key
+    );
+    assert!(pane.summary_source_id(&held_citation).is_none());
+    let current = pane.summary_source_key(&id);
+    pane.set_narrative_feedback("activity-summary-pending");
+    assert!(pane.narrative().is_none());
+    install(&mut pane, vec![id]);
+    assert!(pane.summary_source_id(&current).is_none());
+}
+
+#[test]
 fn language_change_invalidates_summary_on_tick_and_rebuilds_unchanged_history() {
     let (mut tree, mut pane) = fixture();
     let original_locale = ui::i18n::I18nManager::current_locale();
     let old = pane.narrative_request().unwrap();
     let id = *old.supplied_ids().iter().next().unwrap();
     install(&mut pane, vec![id]);
+    let held = pane.summary_source_key(&id);
+    let held_text = pane.summary_accessibility_node().unwrap().key;
+    let generation = pane.narrative_generation();
     let heads = tree.doc.get_heads();
     let next = if original_locale == "de-DE" {
         "en-US"
@@ -108,6 +291,9 @@ fn language_change_invalidates_summary_on_tick_and_rebuilds_unchanged_history() 
     pane.refresh_narrative_locale();
     assert!(pane.narrative.is_none());
     assert!(pane.summary_source_rects.is_empty());
+    assert!(pane.narrative_generation() > generation);
+    assert!(pane.summary_source_id(&held).is_none());
+    assert_ne!(pane.summary_accessibility_node().unwrap().key, held_text);
     assert_eq!(pane.narrative_request().unwrap().locale, next);
     assert!(!pane.apply_generated_narrative(ui::GroundedNarrative {
         text: "Stale language.".into(),
@@ -121,4 +307,8 @@ fn language_change_invalidates_summary_on_tick_and_rebuilds_unchanged_history() 
     assert_eq!(tree.doc.get_heads(), heads);
     assert!(!pane.entries().is_empty());
     ui::i18n::I18nManager::set_locale(&original_locale);
+    pane.refresh_narrative_locale();
+    install(&mut pane, vec![id]);
+    assert!(pane.summary_source_id(&held).is_none());
+    assert_ne!(pane.summary_accessibility_node().unwrap().key, held_text);
 }
