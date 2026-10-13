@@ -89,7 +89,14 @@ fn bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch() {
     assert_eq!(snapshot.stats().hydration_reads, 0);
     let budget = ReplayBudget::new(256 * 1024 * 1024);
     let batch = store
-        .read_replay_batch(&mut snapshot, ReplayLimits::default(), &budget)
+        .read_replay_batch(
+            &mut snapshot,
+            ReplayLimits {
+                max_frames: 8,
+                ..ReplayLimits::default()
+            },
+            &budget,
+        )
         .unwrap();
     assert_eq!(batch.frames.len(), 8);
     assert_eq!(snapshot.stats().hydration_reads, 8);

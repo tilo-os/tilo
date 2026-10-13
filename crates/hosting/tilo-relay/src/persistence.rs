@@ -93,7 +93,7 @@ fn replay_byte_budget() -> &'static Arc<Semaphore> {
 
 fn detached_replay_budget() -> &'static Arc<Semaphore> {
     static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    WORKERS.get_or_init(|| Arc::new(Semaphore::new(1)))
+    WORKERS.get_or_init(|| Arc::new(Semaphore::new(2)))
 }
 
 #[derive(Clone)]

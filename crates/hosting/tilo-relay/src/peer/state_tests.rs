@@ -42,6 +42,18 @@ impl Fixture {
     fn new() -> Self {
         Self::with_delivery_capacity(32)
     }
+    /// The commits running catch-ups hold for their final cuts.
+    fn count_held(&self) -> usize {
+        let work = self.store.root().join(crate::store::replay::WORK_DIR);
+        std::fs::read_dir(work).map_or(0, |entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("held-"))
+                .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
+                .map(Iterator::count)
+                .sum()
+        })
+    }
     fn with_delivery_capacity(delivery_capacity: usize) -> Self {
         Self::with_delivery_capacity_and_workers(
             delivery_capacity,
@@ -2863,25 +2875,15 @@ async fn cancelled_before_pending_catchup_preserves_semantic_update_for_reconnec
     drop(prepare_release);
     capture_reached.await.unwrap();
     assert_eq!(
-        fixture
-            .store
-            .count_pending(&fixture.recipient.device_public_key)
-            .unwrap(),
+        fixture.count_held(),
         1,
-        "post-cut retained output was not durable before catch-up"
+        "post-cut retained output was not held for the final cut"
     );
     task.abort();
     assert!(matches!(task.await, Err(error) if error.is_cancelled()));
     drop(capture_release);
     fixture.drained_wait().await;
-    assert_eq!(
-        fixture
-            .store
-            .count_pending(&fixture.recipient.device_public_key)
-            .unwrap(),
-        1,
-        "cancelled catch-up retired an unwritten semantic update"
-    );
+    // The update stays in retained history, which the reconnect replays.
 
     let mut wire = Vec::new();
     Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
@@ -2906,6 +2908,11 @@ async fn cancelled_before_pending_catchup_preserves_semantic_update_for_reconnec
             .count_pending(&fixture.recipient.device_public_key)
             .unwrap(),
         0
+    );
+    assert_eq!(
+        fixture.count_held(),
+        0,
+        "the replaced session's catch-up left its held commits"
     );
 }
 
@@ -2932,7 +2939,9 @@ async fn replay_boundary_cross_workspace_full_live_queue_fences_exact_session() 
                 live: session.live.clone(),
             })
             .unwrap();
-        let catchup = Arc::new(ReplayCatchup::new());
+        let catchup = Arc::new(ReplayCatchup::new(
+            &fixture.store.root().join(crate::store::replay::WORK_DIR),
+        ));
         catchup
             .phase
             .store(ReplayCatchup::BOUNDARY, std::sync::atomic::Ordering::SeqCst);
@@ -2958,7 +2967,9 @@ async fn replay_boundary_live_byte_exhaustion_fences_exact_session() {
             .state_sessions
             .get_mut(&fixture.recipient.device_public_key)
             .unwrap();
-        let catchup = Arc::new(ReplayCatchup::new());
+        let catchup = Arc::new(ReplayCatchup::new(
+            &fixture.store.root().join(crate::store::replay::WORK_DIR),
+        ));
         catchup
             .phase
             .store(ReplayCatchup::BOUNDARY, std::sync::atomic::Ordering::SeqCst);

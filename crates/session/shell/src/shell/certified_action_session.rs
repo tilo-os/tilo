@@ -279,6 +279,12 @@ impl CertifiedActionSession {
         self.host.query(&self.caller, query)
     }
 
+    /// The host and the certified caller it admits, for a caller that runs
+    /// its own catalogue reads and invocations off the shell's thread.
+    pub(crate) fn door(self) -> (Arc<dyn ActionHost + Send + Sync>, Caller) {
+        (self.host, self.caller)
+    }
+
     #[cfg(test)]
     pub(crate) fn cancel(
         &self,

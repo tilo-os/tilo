@@ -109,7 +109,8 @@ impl LiveRow {
     }
 
     /// The row as the published tree carries it.
-    pub fn into_resource(self) -> Resource {
+    pub fn into_resource(mut self) -> Resource {
+        tilo_resource::share::offer_tree(&mut self.resource);
         self.resource
     }
 }
@@ -184,10 +185,16 @@ pub(crate) fn join(existing: &mut Resource, row: Resource) {
             existing.actions.push(action);
         }
     }
+    let mut views_added = false;
     for view in row.views {
         if !existing.views.iter().any(|known| known.id == view.id) {
             existing.views.push(view);
+            views_added = true;
         }
+    }
+    if views_added {
+        // The link actions name the views they were offered with.
+        tilo_resource::share::reoffer(existing);
     }
     merge(&mut existing.children, row.children);
 }

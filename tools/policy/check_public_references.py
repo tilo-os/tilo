@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep tracked files free of references to the internal issue tracker.
+"""Keep tracked files free of references to the internal issue tracker and private documents.
 
 The repository is public, so its text has to stand on its own: an issue key or a
 tracker link tells an outside reader nothing. Say what changed and why instead;
@@ -15,11 +15,16 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-# Issue keys, also inside identifiers and labels, tracker links, and prose that
-# points at tracker documents. git grep preselects lines cheaply; PATTERN decides.
-GIT_PATTERNS = (r"til-?[0-9]", r"linear\.app/", r"linear (document|issue|ticket|project|note)")
+# Issue keys, also inside identifiers and labels, tracker links, prose that
+# points at tracker documents, and links to private documents and chat threads.
+# git grep preselects lines cheaply; PATTERN decides.
+GIT_PATTERNS = (
+    r"til-?[0-9]", r"linear\.app/", r"linear (document|issue|ticket|project|note)",
+    r"notion\.(so|site)/", r"slack\.com/(archives|client)/",
+)
 PATTERN = re.compile(
-    r"(?<![^\W_])til-?\d+(?![^\W_])|linear\.app/|\bLinear (?:document|issue|ticket|project|note)s?\b",
+    r"(?<![^\W_])til-?\d+(?![^\W_])|linear\.app/|\bLinear (?:document|issue|ticket|project|note)s?\b"
+    r"|(?<![^\W_])notion\.(?:so|site)/|slack\.com/(?:archives|client)/",
     re.IGNORECASE,
 )
 
