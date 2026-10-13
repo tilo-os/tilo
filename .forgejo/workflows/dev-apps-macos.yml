@@ -93,22 +93,10 @@ jobs:
       - name: Build every macOS app
         working-directory: ${{ env.SRC }}
         run: cargo build --locked $(python3 tools/ci/macos_apps.py)
-      - name: Compile and prewarm test entry
-        working-directory: ${{ env.SRC }}
-        run: |
-          set -euo pipefail
-          artifacts="$RUNNER_TEMP/macos-test-artifacts.jsonl"
-          trap 'rm -f "$artifacts"' EXIT
-          cargo test --locked --no-fail-fast --no-run --message-format=json-render-diagnostics \
-            $(python3 tools/ci/macos_apps.py) > "$artifacts"
-          # macOS first-entry checks consumed 45m38s serially in run 105502.
-          # Only --list runs here, at most four processes. The steps below still
-          # run every unit/integration test and doctest.
-          if ! python3 tools/ci/prewarm_test_binaries.py --artifacts "$artifacts" \
-            --target "${CARGO_TARGET_DIR:-$PWD/target}" \
-            --rust-library "$(rustc --print target-libdir)"; then
-            echo 'Prewarm unavailable; the complete Cargo test run remains required.'
-          fi
+      # Nextest builds and discovers the tests through the Cargo target runner.
+      # A separate direct --list prewarm discards that discovery and launches
+      # the binaries again outside the shared test environment. In run 106607
+      # it spent its entire 20-minute budget before Nextest began discovery.
       # One process per test, as the Linux lanes run them: tests that share
       # process-wide state (the shell's live activity, frozen clocks) would
       # otherwise interfere on cargo test's shared threads.

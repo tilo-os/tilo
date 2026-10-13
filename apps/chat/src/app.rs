@@ -92,6 +92,7 @@ impl ContextMenu {
             let icon = match action {
                 MenuAction::Rename | MenuAction::EditMessage => Icon::Pencil,
                 MenuAction::Delete | MenuAction::DeleteMessage => Icon::Trash,
+                MenuAction::BanAuthor => Icon::Ban,
                 MenuAction::MoveUp => Icon::ChevronUp,
                 MenuAction::MoveDown | MenuAction::ToggleCollapse => Icon::ChevronDown,
                 MenuAction::NewChannelHere
@@ -99,6 +100,7 @@ impl ContextMenu {
                 | MenuAction::NewCategory => Icon::Plus,
                 MenuAction::Archive => Icon::Archive,
                 MenuAction::PinMessage => Icon::Pin,
+                MenuAction::ReportMessage | MenuAction::ReportAuthor => Icon::Flag,
             };
             widget.push(item.with_icon(icon));
         }
@@ -146,8 +148,14 @@ pub(crate) enum MenuAction {
     EditMessage,
     /// Pin / unpin one of your own messages (shared truth every peer sees).
     PinMessage,
-    /// Delete one of your own messages.
+    /// Delete one of your own messages, or as a moderator someone else's.
     DeleteMessage,
+    /// Report someone else's message to the room's moderators.
+    ReportMessage,
+    /// Report a message's author to the room's moderators.
+    ReportAuthor,
+    /// As a moderator, ban a message's author from the room.
+    BanAuthor,
 }
 
 impl MenuAction {
@@ -165,10 +173,16 @@ impl MenuAction {
             MenuAction::EditMessage => "Edit message",
             MenuAction::PinMessage => "Pin message",
             MenuAction::DeleteMessage => "Delete message",
+            MenuAction::ReportMessage => "Report message",
+            MenuAction::ReportAuthor => "Report sender",
+            MenuAction::BanAuthor => "Ban from the room",
         }
     }
     pub fn is_destructive(self) -> bool {
-        matches!(self, MenuAction::Delete | MenuAction::DeleteMessage)
+        matches!(
+            self,
+            MenuAction::Delete | MenuAction::DeleteMessage | MenuAction::BanAuthor
+        )
     }
     /// Menu items for a channel row, in order: the destructive one last.
     pub fn for_channel() -> [MenuAction; 5] {
@@ -200,6 +214,15 @@ impl MenuAction {
         [
             MenuAction::EditMessage,
             MenuAction::PinMessage,
+            MenuAction::DeleteMessage,
+        ]
+    }
+    /// Menu items for someone else's message: reporting it or its sender,
+    /// and removing it, which only the room's moderators may.
+    pub fn for_others_message() -> [MenuAction; 3] {
+        [
+            MenuAction::ReportMessage,
+            MenuAction::ReportAuthor,
             MenuAction::DeleteMessage,
         ]
     }
@@ -656,6 +679,7 @@ pub struct ChatApp {
     pub(crate) call: CallState,
     pub(crate) native_voice: crate::local_voice::LocalVoice,
     pub(crate) resource_navigation: crate::shared_resources::Navigation,
+    pub(crate) moderation: crate::moderation::Moderation,
     /// Measured control/header sizes of the expanded call overlay, refreshed
     /// by the paint pass and read by the renderer-less layout functions.
     pub(crate) call_overlay_metrics: crate::render_call::CallOverlayMetrics,
@@ -950,6 +974,7 @@ impl ChatApp {
             call: CallState::default(),
             native_voice: crate::local_voice::LocalVoice::default(),
             resource_navigation: crate::shared_resources::Navigation::default(),
+            moderation: crate::moderation::Moderation::default(),
             call_overlay_metrics: crate::render_call::CallOverlayMetrics::default(),
             call_overlay_metrics_key: None,
             realtime: crate::continuity::ChatRealtimeContinuity::default(),
@@ -3043,6 +3068,16 @@ impl ChatApp {
         ws_changed
     }
 
+    /// The decoded avatar `m`'s bot showed for it, requesting it from the
+    /// content store (and so from the room) until it is there.
+    pub(crate) fn shown_avatar(
+        &self,
+        m: &crate::model::Message,
+    ) -> Option<vello::peniko::ImageData> {
+        let avatar = m.appearance.as_ref()?.avatar.as_deref()?;
+        self.images.get(&crate::images::blob_key(avatar))
+    }
+
     /// Warm the attachment-image cache for the current channel and an open
     /// picker, so the frame shows decoded thumbnails as soon as the
     /// background loader has them.
@@ -3051,6 +3086,7 @@ impl ChatApp {
         // including threaded replies and the thread parent, so one pass covers
         // the timeline and the open thread panel.
         for m in &self.messages {
+            let _ = self.shown_avatar(m);
             match &m.attachment {
                 // Never hydrate the bytes of an embed this peer isn't granted.
                 Some(crate::model::Attachment::Image { blob, .. }) if self.embed_allowed(blob) => {
@@ -3240,13 +3276,13 @@ impl ChatApp {
                     Hit::StopSharingLiveContext => {
                         (crate::i18n::t("chat-context-stop"), Role::Button, false)
                     }
-                    Hit::CopyResourceLink(_) => (
-                        crate::i18n::t("chat-resource-copy-link"),
+                    Hit::CopyResourceLink(message) => (
+                        self.resource_navigation.label(message, false, true),
                         Role::Button,
                         false,
                     ),
-                    Hit::OpenResourceLink(_) => (
-                        crate::i18n::t("chat-resource-open-link"),
+                    Hit::OpenResourceLink(message) => (
+                        self.resource_navigation.label(message, true, true),
                         Role::Button,
                         false,
                     ),
@@ -3459,7 +3495,9 @@ impl Collaborative for ChatApp {
             self.realtime.target_media_ready = false;
         }
         let mut requests = std::mem::take(&mut self.realtime.requests);
-        requests.extend(self.resource_navigation_requests());
+        self.settle_resource_navigation();
+        requests.extend(self.resource_navigation.remote_mut().take_collab_requests());
+        requests.extend(self.moderation_requests());
         requests.extend(self.agent_tasks.actions_mut().take_collab_requests());
         for surface in self.agent_surfaces.values_mut() {
             requests.extend(
@@ -3489,7 +3527,11 @@ impl Collaborative for ChatApp {
         }
         match event {
             ui::collaboration::CollabEvent::RemoteAction { message } => {
-                self.complete_resource_navigation(message);
+                self.complete_moderation(message);
+                self.resource_navigation
+                    .remote_mut()
+                    .handle_collab_event(event);
+                self.settle_resource_navigation();
             }
             ui::collaboration::CollabEvent::FollowChanged { peer_id } => {
                 self.context_follow_requested = peer_id.is_some();

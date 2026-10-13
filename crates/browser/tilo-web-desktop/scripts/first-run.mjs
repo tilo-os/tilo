@@ -84,8 +84,8 @@ async function press(name) {
 }
 
 async function open(query = '') {
-  await tab.navigate(`${server.url}/index.html${query}`);
-  await tab.waitFor("/frames [1-9]/.test(document.getElementById('status')?.textContent ?? '')", {timeout: 300000});
+  await tab.navigate(`${server.url}/${query}`);
+  await tab.waitFor("/frames [1-9]/.test((document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? ''))", {timeout: 300000});
   await sleep(2000);
 }
 

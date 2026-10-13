@@ -83,10 +83,23 @@ fn upgrade_library(
 /// The most photographs one verb changes at once.
 pub(crate) const MAX_BATCH_PHOTOS: usize = 256;
 
+/// The view a photograph opens in: this window, showing it. Declaring it
+/// is what gives each photograph its link (`share-link`).
+fn item_views(field: &str, _item: &Id) -> Vec<ui::tilo_actions::ResourceViewSpec> {
+    match field {
+        "photos" => vec![
+            ui::tilo_actions::ResourceViewSpec::new("photo", "Photo", PhotosEffect::VIEW.id)
+                .with_primary(true),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 #[resource(
     kind = "photos.library",
     label = "Photos",
     children = PhotoLibrary::places,
+    item_views = item_views,
     search = crate::search::library_search_entries,
     read_content = PhotoLibrary::content,
     effects = PhotosEffect,

@@ -20,7 +20,7 @@ use std::{
     },
 };
 
-pub(crate) const DEFAULT_BATCH_FRAMES: usize = 8;
+pub(crate) const DEFAULT_BATCH_FRAMES: usize = 64;
 pub(crate) const DEFAULT_BATCH_BYTES: usize = 1024 * 1024;
 pub(crate) const DEFAULT_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const DEFAULT_REPLAY_TICKETS: usize = 32;
@@ -106,6 +106,10 @@ impl ReplayBatch {
     }
     pub(crate) fn len(&self) -> usize {
         self.frames.len()
+    }
+    /// The frames still to write, in order.
+    pub(crate) fn frames(&self) -> impl Iterator<Item = &Envelope> {
+        self.frames.iter()
     }
 }
 
@@ -261,6 +265,11 @@ pub(crate) struct ReplayBuild {
     root: PathBuf,
     workspace: PathBuf,
     device: [u8; 32],
+    /// What a catch-up held while it ran, which its final cut takes before
+    /// the device's own queue (where commits with continuity receipts wait).
+    held: Option<PathBuf>,
+    /// The held queue was listed; the device's own comes next.
+    held_listed: bool,
     phase: u8,
     outer: Option<fs::ReadDir>,
     child: Option<(OsString, PathBuf, fs::ReadDir)>,
@@ -304,6 +313,8 @@ pub(crate) struct ReplaySnapshot {
     workspace: PathBuf,
     workspace_id: u64,
     pending_root: PathBuf,
+    /// A final cut's held queue, which it cleans up like the device's own.
+    held_root: Option<PathBuf>,
     sorter: Option<Sorter>,
     ordered: Option<File>,
     continuity_sorter: Option<Sorter>,
@@ -521,22 +532,29 @@ impl WorkspaceStore {
         id: ReplayId,
         device: [u8; 32],
     ) -> Result<ReplayBuild, StoreError> {
-        self.start_replay_capture_at(id, device, false)
+        self.start_replay_capture_at(id, device, None)
     }
+    /// The final cut of a catch-up: the queue under `held`, which must be in
+    /// this store's work directory.
     pub(crate) fn start_pending_replay_capture(
         &self,
         id: ReplayId,
         device: [u8; 32],
+        held: &Path,
     ) -> Result<ReplayBuild, StoreError> {
-        self.start_replay_capture_at(id, device, true)
+        if held.parent() != Some(self.root.join(WORK_DIR).as_path()) {
+            return Err(invalid("held catch-up outside the store's work"));
+        }
+        self.start_replay_capture_at(id, device, Some(held.to_owned()))
     }
     fn start_replay_capture_at(
         &self,
         id: ReplayId,
         device: [u8; 32],
-        pending_only: bool,
+        held: Option<PathBuf>,
     ) -> Result<ReplayBuild, StoreError> {
-        let root = self.root.join("store-work-v1");
+        let pending_only = held.is_some();
+        let root = self.root.join(WORK_DIR);
         fs::create_dir_all(&root)?;
         let root = root.join(format!("replay-{}", hex::encode(id.0)));
         fs::create_dir(&root)?;
@@ -563,6 +581,8 @@ impl WorkspaceStore {
             root: root.clone(),
             workspace: self.root.clone(),
             device,
+            held,
+            held_listed: false,
             phase: if pending_only { 3 } else { 2 },
             outer: None,
             child: None,
@@ -637,6 +657,15 @@ impl WorkspaceStore {
                     workspace: self.root.clone(),
                     workspace_id: self.workspace_id,
                     pending_root: PathBuf::from("pending").join(hex::encode(build.device)),
+                    held_root: build
+                        .held
+                        .as_ref()
+                        .map(|held| {
+                            held.strip_prefix(&self.root)
+                                .map(Path::to_path_buf)
+                                .map_err(|_| invalid("invalid held catch-up path"))
+                        })
+                        .transpose()?,
                     sorter: build.sorter.take(),
                     ordered: None,
                     continuity_sorter: None,
@@ -700,13 +729,18 @@ impl WorkspaceStore {
                 continue;
             }
             if build.outer.is_none() {
-                let dir = match build.phase {
-                    2 => self.root.join("retained/v2"),
+                let dir = match (build.phase, &build.held) {
+                    (2, _) => self.root.join("retained/v2"),
+                    (_, Some(held)) if !build.held_listed => held.clone(),
                     _ => self.pending_dir_for(&build.device),
                 };
                 build.outer = open_dir(&dir)?;
                 if build.outer.is_none() {
-                    build.phase = build.phase.saturating_add(1);
+                    listed(
+                        &mut build.phase,
+                        build.held.is_some(),
+                        &mut build.held_listed,
+                    );
                     continue;
                 }
             }
@@ -749,7 +783,11 @@ impl WorkspaceStore {
                     }
                 } else {
                     build.outer = None;
-                    build.phase = build.phase.saturating_add(1);
+                    listed(
+                        &mut build.phase,
+                        build.held.is_some(),
+                        &mut build.held_listed,
+                    );
                     None
                 }
             };
@@ -1041,7 +1079,11 @@ impl WorkspaceStore {
             let Some(meta) = read_meta(&mut input)? else {
                 return Ok(Step::Done(()));
             };
-            if !meta.pending || meta.source.parent() != Some(snapshot.pending_root.as_path()) {
+            let parent = meta.source.parent();
+            if !meta.pending
+                || (parent != Some(snapshot.pending_root.as_path())
+                    && parent != snapshot.held_root.as_deref())
+            {
                 return Err(invalid("invalid pending cleanup identity"));
             }
             let source = self.root.join(&meta.source);
@@ -1228,13 +1270,33 @@ fn remove_empty(path: &Path) -> Result<(), StoreError> {
 fn is_hex(value: &str, len: usize) -> bool {
     value.len() == len && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
+/// A capture listed the directory of its `phase`: on to the next. A final
+/// cut with a `held` queue lists it before the device's own.
+const fn listed(phase: &mut u8, held: bool, held_listed: &mut bool) {
+    if *phase == 3 && held && !*held_listed {
+        *held_listed = true;
+    } else {
+        *phase = phase.saturating_add(1);
+    }
+}
+
 fn owned_work_name(name: &std::ffi::OsStr) -> bool {
     name.to_str()
         .and_then(|s| {
             s.strip_prefix("replay-")
                 .or_else(|| s.strip_prefix("retain-"))
+                .or_else(|| s.strip_prefix(HELD_PREFIX))
         })
         .is_some_and(|s| is_hex(s, 32))
+}
+
+/// Where a store keeps work no restart needs; reclaimed on open.
+pub(crate) const WORK_DIR: &str = "store-work-v1";
+const HELD_PREFIX: &str = "held-";
+
+/// The work directory name of a catch-up's held commits.
+pub(crate) fn held_work_name(id: [u8; 16]) -> String {
+    format!("{HELD_PREFIX}{}", hex::encode(id))
 }
 fn owned_work_file(dir: &std::ffi::OsStr, name: &std::ffi::OsStr) -> bool {
     let Some(name) = name.to_str() else {

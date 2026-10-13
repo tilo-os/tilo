@@ -17178,8 +17178,11 @@ impl ShellOverlayHost {
                     (f32_of_f64(p.x) / 40.0, f32_of_f64(p.y) / 40.0)
                 }
             };
+            // Winit's deltas are negative for a wheel turned (or fingers
+            // scrolling) rightward, which scrolls content toward its later
+            // columns: forward, as Super+Right.
             if dx.abs() > 0.5 && dx.abs() > dy.abs() {
-                let dir = if dx > 0.0 { 1 } else { -1 };
+                let dir = if dx < 0.0 { 1 } else { -1 };
                 if self.step_focus_along_strip(dir) {
                     *ctx.handled = true;
                     return;

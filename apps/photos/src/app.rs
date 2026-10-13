@@ -1233,6 +1233,23 @@ impl PhotosApp {
         true
     }
 
+    /// Settle a completed library analysis with its counts.
+    fn finish_library_analysis(&mut self, invocation: tilo_actions::InvocationId) {
+        self.active_analysis.remove(&invocation);
+        self.settle(tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({
+                    "analyzed": self.library_analysis.succeeded,
+                    "failed": self.library_analysis.failed,
+                    "unavailable": self.library_analysis.unavailable,
+                })),
+                resources: vec!["photos.library-analysis".to_owned()],
+            },
+        });
+        self.notice = Some(self.analysis_finished_notice());
+    }
+
     fn schedule_next_library_analysis(
         &mut self,
         library: &crate::model::PhotoLibrary,
@@ -1245,19 +1262,7 @@ impl PhotosApp {
                 if self.library_analysis.finish_if_empty()
                     && let Some(invocation) = self.library_analysis.invocation
                 {
-                    self.active_analysis.remove(&invocation);
-                    self.settle(tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::json!({
-                                "analyzed": self.library_analysis.succeeded,
-                                "failed": self.library_analysis.failed,
-                                "unavailable": self.library_analysis.unavailable,
-                            })),
-                            resources: vec!["photos.library-analysis".to_owned()],
-                        },
-                    });
-                    self.notice = Some(self.analysis_finished_notice());
+                    self.finish_library_analysis(invocation);
                 }
                 return Ok(());
             };
@@ -1294,10 +1299,6 @@ impl PhotosApp {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "each analysis outcome variant is reconciled against the presented library and library-analysis progress in one exhaustive match"
-    )]
     fn drain_library_analysis_result(&mut self, completed: AnalysisResult) {
         let photo_name = self
             .library_analysis
@@ -1351,19 +1352,7 @@ impl PhotosApp {
             if self.library_analysis.phase
                 == crate::library_analysis::LibraryAnalysisPhase::Complete
             {
-                self.active_analysis.remove(&invocation);
-                self.settle(tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput {
-                        value: Some(serde_json::json!({
-                            "analyzed": self.library_analysis.succeeded,
-                            "failed": self.library_analysis.failed,
-                            "unavailable": self.library_analysis.unavailable,
-                        })),
-                        resources: vec!["photos.library-analysis".to_owned()],
-                    },
-                });
-                self.notice = Some(self.analysis_finished_notice());
+                self.finish_library_analysis(invocation);
             } else {
                 self.settle(tilo_actions::InvocationUpdate::Progress {
                     invocation,
@@ -3239,6 +3228,42 @@ impl PhotosApp {
         self.bind_controls();
     }
 
+    /// Ask for the open photograph's link: the framework mints it from the
+    /// photograph's view and copies it, as for an agent asking for
+    /// `share-link`, so every path shares the same URL.
+    fn share_open_photo(&mut self) {
+        match (&self.open_photo, &self.dispatch) {
+            (Some(photo), Some(dispatch)) => {
+                dispatch.share_link(&crate::resource::photo_resource_id(photo.as_str()));
+            }
+            _ => self.notice = Some(tr("photos-share-failed")),
+        }
+    }
+
+    /// Say what asking for a photograph's link came to, once.
+    fn drain_share_outcome(&mut self) {
+        let Some(dispatch) = &self.dispatch else {
+            return;
+        };
+        let share = ui::tilo_resource::share::SHARE_LINK;
+        let landed = dispatch.landed();
+        if landed.with(|landed| landed.as_ref().is_some_and(|landed| landed.action == share)) {
+            landed.set(None);
+            self.notice = Some(tr("photos-share-copied"));
+        }
+        let refused = dispatch.refused();
+        let reason = refused.with(|refused| {
+            refused
+                .as_ref()
+                .filter(|refused| refused.action == share)
+                .map(|refused| refused.reason.clone())
+        });
+        if let Some(reason) = reason {
+            refused.set(None);
+            self.notice = Some(reason);
+        }
+    }
+
     /// Build the retained controls again, bound to their effects.
     fn bind_controls(&mut self) {
         self.invalidate_toolbar();
@@ -4480,21 +4505,6 @@ impl PhotosApp {
             PhotosEffect::Copy => {
                 self.copy_to_clipboard();
             }
-            PhotosEffect::ShareReference { resource_id } => {
-                let exists = library.photo(&resource_id).cloned().is_some();
-                if exists {
-                    // This is deliberately a local clipboard handoff, not an
-                    // invented upload or recipient-delivery success. The
-                    // address identifies either the open editor image or an
-                    // unselected, addressable library card.
-                    ui::clipboard_copy(&format!("tilo://resource/{resource_id}"));
-                    self.notice = Some(tr("photos-share-copied"));
-                } else {
-                    let error = tr("photos-share-failed");
-                    self.notice = Some(error.clone());
-                    return Err(error);
-                }
-            }
             PhotosEffect::Save { path } => {
                 if let Some(open) = self.shown_photo_in(library) {
                     self.save_to(
@@ -4847,18 +4857,7 @@ impl PhotosApp {
             Hit::Copy => {
                 let _ = self.perform_effect(PhotosEffect::Copy, &self.presented());
             }
-            Hit::Share => {
-                if let Some(photo_id) = self.open_photo.clone() {
-                    let _ = self.perform_effect(
-                        PhotosEffect::ShareReference {
-                            resource_id: photo_id,
-                        },
-                        &self.presented(),
-                    );
-                } else {
-                    self.notice = Some(tr("photos-share-failed"));
-                }
-            }
+            Hit::Share => self.share_open_photo(),
             Hit::Save => {
                 let _ = self.perform_effect(PhotosEffect::Save { path: None }, &self.presented());
             }
@@ -10947,6 +10946,7 @@ impl Widget for PhotosApp {
         self.drain_action_control_pending();
         self.drain_opens();
         self.drain_analysis_results();
+        self.drain_share_outcome();
         if let Some((invocation, path)) = self.pending_resource_open.take() {
             self.import_content = None;
             self.open_path(&path);

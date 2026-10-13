@@ -22,7 +22,9 @@ export function createDesktopNavigation({snapshot,revision,dispatch,active}) {
   for(const listener of [...listeners])listener(value);
  }
  const controller={version:1,
-  getSnapshot(){check();return value;},
+  // The surface also moves on its own (a key chord, a click), between the
+  // host's status reports: read the current state, not the last report's.
+  getSnapshot(){check();refresh();return value;},
   subscribe(listener){check();listeners.add(listener);return()=>listeners.delete(listener);},
   dispatch(command){
    try{

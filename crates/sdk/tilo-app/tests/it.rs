@@ -78,6 +78,8 @@ pub mod scenarios;
 pub mod scroll_copy;
 #[path = "settings.rs"]
 pub mod settings;
+#[path = "share_links.rs"]
+pub mod share_links;
 #[path = "surface_report.rs"]
 pub mod surface_report;
 #[path = "surface_semantics.rs"]

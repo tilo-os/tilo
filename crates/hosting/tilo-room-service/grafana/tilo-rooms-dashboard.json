@@ -1,0 +1,46 @@
+{
+  "title": "Tilo rooms",
+  "uid": "tilo-rooms",
+  "tags": ["tilo", "rooms"],
+  "schemaVersion": 39,
+  "time": {"from": "now-3h", "to": "now"},
+  "refresh": "10s",
+  "templating": {"list": [{"name": "ds", "type": "datasource", "query": "prometheus", "label": "Prometheus"}]},
+  "panels": [
+    {"id": 1, "type": "stat", "title": "Guests online", "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [{"refId": "A", "expr": "sum(tilo_rooms_online_guests)"}]},
+    {"id": 2, "type": "stat", "title": "Spectators online", "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [{"refId": "A", "expr": "sum(tilo_rooms_online_spectators)"}]},
+    {"id": 3, "type": "stat", "title": "Relay up", "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [{"refId": "A", "expr": "min(tilo_rooms_relay_up)"}]},
+    {"id": 4, "type": "stat", "title": "Mode (1 = active)", "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [{"refId": "A", "expr": "tilo_rooms_mode == 1", "legendFormat": "{{mode}}"}]},
+    {"id": 5, "type": "stat", "title": "Relay sessions", "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [{"refId": "A", "expr": "sum(tilo_rooms_relay_sessions)"}]},
+    {"id": 6, "type": "timeseries", "title": "Joins per second", "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [{"refId": "A", "expr": "sum(rate(tilo_rooms_joins_total[1m]))"}]},
+    {"id": 7, "type": "timeseries", "title": "Join failures per second by reason", "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [{"refId": "A", "expr": "sum by (reason) (rate(tilo_rooms_join_failures_total[1m]))", "legendFormat": "{{reason}}"}]},
+    {"id": 8, "type": "timeseries", "title": "Live-plane drops and auth rejections per second", "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [
+       {"refId": "A", "expr": "sum(rate(tilo_rooms_relay_live_drops_total[1m]))", "legendFormat": "live drops"},
+       {"refId": "B", "expr": "sum(rate(tilo_rooms_relay_auth_rejected_total[1m]))", "legendFormat": "auth rejected"}]},
+    {"id": 9, "type": "timeseries", "title": "Mean record size (bytes)", "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [{"refId": "A", "expr": "sum(rate(tilo_rooms_relay_record_bytes_total[5m])) / clamp_min(sum(rate(tilo_rooms_relay_records_total[5m])), 1)"}]},
+    {"id": 10, "type": "timeseries", "title": "Bridge lag (s) and queue depth", "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [
+       {"refId": "A", "expr": "max(tilo_rooms_bridge_lag_seconds)", "legendFormat": "lag"},
+       {"refId": "B", "expr": "max(tilo_rooms_bridge_queue_depth)", "legendFormat": "queue"}]},
+    {"id": 11, "type": "timeseries", "title": "Discord 429s per second", "gridPos": {"x": 12, "y": 20, "w": 6, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [{"refId": "A", "expr": "sum(rate(tilo_rooms_bridge_rate_limited_total[1m]))"}]},
+    {"id": 12, "type": "timeseries", "title": "Browser errors per second", "gridPos": {"x": 18, "y": 20, "w": 6, "h": 8},
+     "datasource": {"type": "prometheus", "uid": "${ds}"}, "targets": [
+       {"refId": "A", "expr": "sum(rate(tilo_rooms_client_errors_total[1m]))", "legendFormat": "logged"},
+       {"refId": "B", "expr": "sum(rate(tilo_rooms_client_errors_dropped_total[1m]))", "legendFormat": "dropped"}]}
+  ],
+  "alertExpressions": {
+    "relay down (for 1m)": "min(tilo_rooms_relay_up) < 1 or absent(tilo_rooms_relay_up)",
+    "join failure ratio (for 5m)": "sum(rate(tilo_rooms_join_failures_total{reason!=\"paused\"}[5m])) / clamp_min(sum(rate(tilo_rooms_joins_total[5m])) + sum(rate(tilo_rooms_join_failures_total{reason!=\"paused\"}[5m])), 0.05) > 0.3",
+    "bridge lag (for 3m)": "max(tilo_rooms_bridge_lag_seconds) > 30 or max(tilo_rooms_textfile_age_seconds{file=\"bridge.prom\"}) > 60"
+  }
+}

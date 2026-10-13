@@ -89,6 +89,10 @@ pub struct NotificationStack {
     /// stale hit cannot fire after expiry.
     hit_rects: Vec<(u64, Rect, Rect)>,
     action_rects: Vec<(u64, String, Rect)>,
+    /// What a press on a painted banner does, as buttons for assistive
+    /// technology (and anything else that reads the semantics): each card
+    /// (opening it, labelled by its title) and its action buttons.
+    action_buttons: Vec<(Rect, String)>,
     rect: Rect,
     /// Mirrored from the last paint so the frame and deadline hooks obey
     /// reduced motion without a theme argument.
@@ -382,6 +386,7 @@ impl NotificationStack {
                 &card,
             );
             self.register_target(BannerTarget::Open(n.id), card_rect, &n.title);
+            self.action_buttons.push((card_rect, n.title.clone()));
             self.register_target(
                 BannerTarget::Dismiss(n.id),
                 hit.close_rect,
@@ -395,6 +400,7 @@ impl NotificationStack {
                 };
                 self.register_target(BannerTarget::Action(n.id, key.clone()), rect, label);
                 self.action_rects.push((n.id, key.clone(), rect));
+                self.action_buttons.push((rect, label.clone()));
             }
             if let Some((key, label)) = actions.get(1) {
                 self.register_target(
@@ -404,6 +410,8 @@ impl NotificationStack {
                 );
                 self.action_rects
                     .push((n.id, key.clone(), hit.primary_action_rect));
+                self.action_buttons
+                    .push((hit.primary_action_rect, label.clone()));
             }
             self.hit_rects.push((n.id, card_rect, hit.close_rect));
             y += height + TOAST_GAP;
@@ -422,6 +430,7 @@ impl NotificationStack {
     ) {
         self.hit_rects.clear();
         self.action_rects.clear();
+        self.action_buttons.clear();
         self.targets.begin_frame();
         self.target_actions.clear();
         self.reduce_motion = theme.reduce_motion;
@@ -593,7 +602,17 @@ impl NotificationStack {
             AccessNode::new(Role::Group)
                 .with_name(t("notification-stack-a11y"))
                 .with_live(politeness)
-                .with_value(text),
+                .with_value(text)
+                .with_children(
+                    self.action_buttons
+                        .iter()
+                        .map(|(rect, label)| {
+                            AccessNode::new(Role::Button)
+                                .with_name(label.clone())
+                                .with_bounds(*rect)
+                        })
+                        .collect(),
+                ),
         )
     }
 }
@@ -735,6 +754,21 @@ pub(super) mod tests {
                 "both real painted controls must exist"
             );
             let actions = stack.action_rects.clone();
+            let buttons = stack.accessibility(&host).expect("a live region").children;
+            let mut named: Vec<_> = buttons
+                .iter()
+                .map(|button| (button.role, button.name.clone().unwrap_or_default()))
+                .collect();
+            named.sort_by(|a, b| a.1.cmp(&b.1));
+            assert_eq!(
+                named,
+                [
+                    (ui::a11y::Role::Button, "Alarm".to_owned()),
+                    (ui::a11y::Role::Button, "Dismiss".to_owned()),
+                    (ui::a11y::Role::Button, "Snooze".to_owned())
+                ],
+                "the painted choices are buttons a reader can press"
+            );
             let card = stack.hit_rects[0].1;
             for (actual, _, rect) in &actions {
                 assert_eq!(*actual, id);

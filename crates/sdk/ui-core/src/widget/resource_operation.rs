@@ -98,6 +98,39 @@ impl OperationTarget {
             Err("approved project checks require the admitted native broker transport".into())
         }
     }
+    /// Observe reported phases for the exact dispatched project check.
+    ///
+    /// # Errors
+    /// Refuses other action types, absent routing, malformed IDs or unavailable transport.
+    pub fn approved_check_reported(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        check_id: &str,
+    ) -> Result<crate::invocation_scope::ApprovedCheckReportedWork, String> {
+        if self.address.action != runtime_collab::approved_checks::ACTION_ID
+            || self.address.resource.is_empty()
+            || self.route.record.as_deref().is_none_or(str::is_empty)
+        {
+            return Err("approved check requires the exact dispatched project resource".into());
+        }
+        #[cfg(feature = "broker-transport")]
+        {
+            crate::invocation_scope::reported_check_work(
+                &self.route.channel_id(),
+                runtime_collab::approved_checks::Request {
+                    version: 1,
+                    invocation: invocation.0.to_string(),
+                    check_id: check_id.into(),
+                },
+                None,
+            )
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            let _ = (invocation, check_id);
+            Err("approved project checks require the admitted native broker transport".into())
+        }
+    }
 }
 
 /// An exported effect/view operation offered to the retained tree.

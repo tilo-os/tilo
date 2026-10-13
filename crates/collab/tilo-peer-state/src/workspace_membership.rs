@@ -3,6 +3,51 @@ use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::AgentPreset;
 use tilo_action_policy::{Answer, Grant, GrantId, KindSet, TreePath};
 
+use crate::installation::{Installation, InstallationId};
+use tilo_relay_protocol::delegation::Delegation;
+use tilo_user_identity::DeviceCert;
+
+/// A bot's device: its capability-free certificate and its installer's
+/// delegation naming it the installation in this room.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotDevice {
+    /// The bot device's certificate, signed by its installer's root.
+    pub cert: DeviceCert,
+    /// The installer's delegation naming the device.
+    pub delegation: Delegation,
+}
+
+/// Install a bot, or update an installed bot's program.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotInstall {
+    /// The row to install, or the updated row.
+    pub installation: Installation,
+    /// The program's canonical bytes, as text. The room keeps them so every
+    /// member can read exactly what runs.
+    pub program: String,
+    /// Required for a new installation, absent for an update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<BotDevice>,
+}
+
+/// Take over an installed bot: its new device and the adopter's delegation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotAdoption {
+    /// The installed bot.
+    pub installation: InstallationId,
+    /// The adopter's new device for it and their delegation naming it.
+    pub device: BotDevice,
+}
+
+/// A fresh delegation for an installed bot, on its device or a new one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotRenewal {
+    /// The installed bot.
+    pub installation: InstallationId,
+    /// Its device, the same or a new one, and the fresh delegation.
+    pub device: BotDevice,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceMembershipCommand {
     AddAgent {
@@ -41,6 +86,29 @@ pub enum WorkspaceMembershipCommand {
     Revoke {
         grant: GrantId,
     },
+    /// Install a bot or update its program ([`BotInstall`]).
+    InstallBot(Box<BotInstall>),
+    /// Renew an installed bot's delegation, or move it to a new device key.
+    RenewBot(Box<BotRenewal>),
+    /// Withdraw a bot and revoke its grants; its row stays.
+    UninstallBot {
+        installation: InstallationId,
+    },
+    /// Stop a bot from starting runs.
+    PauseBot {
+        installation: InstallationId,
+    },
+    /// Let a paused bot start runs again.
+    ResumeBot {
+        installation: InstallationId,
+    },
+    /// Change whether a bot may post under other names.
+    SetBotAppearance {
+        installation: InstallationId,
+        appearance: crate::installation::AppearancePolicy,
+    },
+    /// Become a bot's installer ([`BotAdoption`]).
+    AdoptBot(Box<BotAdoption>),
 }
 
 /// The id of the grant task `task`'s grant set holds for `node`.
@@ -58,7 +126,14 @@ impl WorkspaceMembershipCommand {
             | Self::GrantForTask { .. }
             | Self::RevokeForTask { .. }
             | Self::Grant { .. }
-            | Self::Revoke { .. } => None,
+            | Self::Revoke { .. }
+            | Self::InstallBot(_)
+            | Self::RenewBot(_)
+            | Self::UninstallBot { .. }
+            | Self::PauseBot { .. }
+            | Self::ResumeBot { .. }
+            | Self::SetBotAppearance { .. }
+            | Self::AdoptBot(_) => None,
         }
     }
 
@@ -67,6 +142,26 @@ impl WorkspaceMembershipCommand {
     /// # Errors
     /// Refuses empty, unbounded, unnormalised or control-containing identifiers.
     pub fn validate(&self) -> Result<(), String> {
+        if let Self::InstallBot(install) = self {
+            install.installation.validate()?;
+            if install.program.len() > tilo_automation::program::MAX_PROGRAM_BYTES {
+                return Err("the bot program is too large".into());
+            }
+            return Ok(());
+        }
+        // Installation ids are checked when they are read; a bot command
+        // carries nothing else free-form.
+        if matches!(
+            self,
+            Self::RenewBot(_)
+                | Self::UninstallBot { .. }
+                | Self::PauseBot { .. }
+                | Self::ResumeBot { .. }
+                | Self::SetBotAppearance { .. }
+                | Self::AdoptBot(_)
+        ) {
+            return Ok(());
+        }
         if let Self::GrantForTask { task, .. } | Self::RevokeForTask { task, .. } = self
             && (!task.starts_with("task:")
                 || task.len() > 128
