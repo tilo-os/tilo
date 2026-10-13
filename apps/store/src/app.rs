@@ -105,6 +105,7 @@ fn action_code(action: ActionKind) -> &'static str {
         ActionKind::FlatpakOpen => "flatpak-open",
         ActionKind::FlatpakRemove => "flatpak-remove",
         ActionKind::NeedsFlatpakHost => "flatpak-setup",
+        ActionKind::AddBot => "add-bot",
     }
 }
 
@@ -1782,7 +1783,8 @@ impl StoreApp {
             | StoreEffect::FlatpakUpdate { .. }
             | StoreEffect::FlatpakOpen { .. }
             | StoreEffect::FlatpakRemove { .. }
-            | StoreEffect::FlatpakSetup { .. } => {}
+            | StoreEffect::FlatpakSetup { .. }
+            | StoreEffect::AddBot { .. } => {}
         }
         Ok(Admitted::Done)
     }
@@ -2413,6 +2415,8 @@ fn package_action_label(action: ActionKind, error: Option<&str>) -> String {
         ui::i18n!("store-runtime-install")
     } else if action == ActionKind::NeedsFlatpakHost && error.is_some() {
         ui::i18n!("store-flatpak-unavailable")
+    } else if action == ActionKind::AddBot {
+        ui::i18n!("store-bot-add-to-room")
     } else {
         action.label().to_owned()
     }
@@ -2711,6 +2715,54 @@ mod tests {
             assert_eq!(store.pending_search.as_deref(), Some(""));
         })
         .unwrap();
+    }
+
+    #[test]
+    fn a_bot_detail_names_triggers_connectors_and_the_bot_label() {
+        let bot = crate::sources::tilo_bot_to_store_item(&app_cli::bots::CatalogueBot {
+            package_id: "so.tilo.bots.bridge".into(),
+            name: "Discord bridge".into(),
+            tagline: "Mirror a Discord server".into(),
+            description: "Bridges channels".into(),
+            icon_url: None,
+            publisher_pubkey_hex: "aa".repeat(32),
+            registry_name: "Tilo".into(),
+            version: "1.0.0".into(),
+            artifact: registry_types::BotArtifact {
+                program_url: format!("https://apps.tilo.so/blobs/{}", "ab".repeat(32)),
+                program_blake3_hex: "ab".repeat(32),
+                program_size_bytes: 10,
+                requires: registry_types::BotRequirements {
+                    connectors: vec![registry_types::PackageRequirement {
+                        package_id: "so.tilo.discord".into(),
+                        min_version: "0.1.0".into(),
+                    }],
+                    apps: vec!["so.tilo.chat".into()],
+                    appearance: true,
+                    triggers: vec!["connector".into(), "record_changed".into()],
+                },
+            },
+        });
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.set_items(vec![bot]);
+            store.focus_detail("so.tilo.bots.bridge");
+        })
+        .unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(
+            visible.contains("When its connector reports an event"),
+            "{visible}"
+        );
+        assert!(visible.contains("When a record changes"));
+        assert!(visible.contains("so.tilo.discord"));
+        assert!(visible.contains("May post under other names and avatars. Always labelled BOT."));
+        assert!(visible.contains("Add to a room"));
+        assert!(
+            !visible.contains("\"Open\""),
+            "a bot is never opened as an app"
+        );
     }
 
     #[test]
@@ -3391,6 +3443,7 @@ mod tests {
             StoreSource::FlatpakRemote { .. } => StoreTrust::ConfiguredRemote,
         };
         StoreItem {
+            bot: None,
             id: format!("id.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: format!("{name} description"),

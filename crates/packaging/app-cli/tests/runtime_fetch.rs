@@ -212,6 +212,7 @@ fn entry(package_id: &str, version: &str, url: &str, tapp: &[u8], runtime: &str)
     let root = app_registry::tapp::load(tapp).unwrap().package_id;
     let mut entry = RegistryEntry {
         package_id: package_id.into(),
+        kind: registry_types::EntryKind::App,
         name: package_id.into(),
         description: "end to end".into(),
         tagline: "end to end".into(),
@@ -223,18 +224,20 @@ fn entry(package_id: &str, version: &str, url: &str, tapp: &[u8], runtime: &str)
         publisher_pubkey_hex: hex::encode(publisher().verifying_key().to_bytes()),
         versions: vec![RegistryVersion {
             version: version.into(),
-            tapp_url: url.into(),
-            tapp_root_hash_hex: root.to_hex(),
-            tapp_size_bytes: tapp.len() as u64,
             released_at_unix: 1,
-            tapp_blake3_hex: blake3::hash(tapp).to_hex().to_string(),
-            target: registry_types::RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: native_target().0.into(),
-                isa: native_target().2.into(),
-                runtime: Some(runtime.into()),
-                interfaces: Vec::new(),
-            },
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: url.into(),
+                tapp_root_hash_hex: root.to_hex(),
+                tapp_size_bytes: tapp.len() as u64,
+                tapp_blake3_hex: blake3::hash(tapp).to_hex().to_string(),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: native_target().0.into(),
+                    isa: native_target().2.into(),
+                    runtime: Some(runtime.into()),
+                    interfaces: Vec::new(),
+                },
+            }),
         }],
         updated_at_unix: 2,
         signature_hex: String::new(),
@@ -265,6 +268,7 @@ fn snapshot(
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
+        bots_signature_hex: String::new(),
     };
     sign_snapshot(&mut snapshot, owner).unwrap();
     snapshot

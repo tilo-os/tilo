@@ -44,6 +44,7 @@ fn main() {
         InstalledState::Not
     };
     let item = StoreItem {
+        bot: None,
         id: id.clone(),
         name,
         description: "driven by verify-open-flow.sh".into(),

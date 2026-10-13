@@ -850,8 +850,12 @@ mod tests {
             .entry
             .versions
             .iter()
-            .find(|v| v.version.starts_with("0.1.70738+") && v.target.architecture == "x86_64")
+            .find(|v| {
+                v.version.starts_with("0.1.70738+")
+                    && v.target().is_some_and(|t| t.architecture == "x86_64")
+            })
             .unwrap();
+        let offered = offered.tapp().unwrap();
         let bytes = published_bytes(include_str!(
             "../../../../../apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64"
         ));
