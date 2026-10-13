@@ -1726,3 +1726,168 @@ fn opening_history_lays_the_shell_out_at_its_narrower_width() {
         assert!(rect.x1 <= 1280.0, "{id} stays in the window: {rect:?}");
     }
 }
+
+#[test]
+fn managed_browse_filters_use_the_canonical_door_without_changing_live_content() {
+    for viewport in [(390, 650), (900, 650)] {
+        let (mut driver, target, _) = versioned_driver(viewport);
+        let bytes = driver.state_mut().doc.clone().save();
+        driver.open_history().unwrap();
+        for id in [
+            "history-filter-resource",
+            "history-filter-actor",
+            "history-filter-group",
+        ] {
+            assert!(driver.targets().contains_key(id));
+        }
+        driver
+            .perform_semantic_named(
+                "activity_timeline",
+                Some(&target),
+                &crate::a11y::Action::Activate,
+            )
+            .unwrap();
+        if viewport.0 < 600 {
+            driver.click_named("history-activity").unwrap();
+        }
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Compare pinned versions")
+        );
+        driver.click_named("history-before").unwrap();
+        assert!(driver.a11y_node_named("Historical: Before").is_some());
+        driver.click_named("history-after").unwrap();
+        assert!(driver.a11y_node_named("Historical: After").is_some());
+        let address = tilo_actions::ActionAddress::new(
+            crate::standalone_history_host::HISTORY_RESOURCE,
+            "filter",
+        );
+        for lens in ["resource", "actor", "group"] {
+            driver
+                .invoke_local_history_action(
+                    &address,
+                    Some(&format!(
+                        "{}{}",
+                        tilo_actions::ARGUMENTS_JSON_PREFIX,
+                        serde_json::json!({lens: "does not exist"})
+                    )),
+                )
+                .unwrap();
+            let inspection = driver.inspection_json().unwrap();
+            assert!(
+                inspection.contains("No activity matches these filters"),
+                "{lens}: {inspection}"
+            );
+            assert!(!driver.targets().contains_key("history-preview"));
+            assert!(!driver.targets().contains_key("history-restore"));
+            driver.click_named("history-filter-clear").unwrap();
+            assert!(
+                !driver
+                    .inspection_json()
+                    .unwrap()
+                    .contains("No activity matches these filters")
+            );
+        }
+        driver
+            .invoke_local_history_action(
+                &address,
+                Some(&format!("{}{{}}", tilo_actions::ARGUMENTS_JSON_PREFIX)),
+            )
+            .unwrap();
+        assert_eq!(driver.state_mut().doc.clone().save(), bytes);
+    }
+}
+
+#[test]
+fn managed_resource_lens_uses_published_labels_but_previews_its_captured_owner() {
+    let (mut driver, _, _) = versioned_driver((900, 650));
+    let context =
+        tilo_actions::ActionContext::for_resource("opaque-resource-438", "note", "Launch brief")
+            .with_purpose("Prepare the brief")
+            .with_group("opaque-task-931", "Launch work", "task");
+    driver
+        .state_mut()
+        .doc
+        .put(ROOT, "body", "captured owner content")
+        .unwrap();
+    let hash = driver
+        .state_mut()
+        .doc
+        .commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(context.change_message().unwrap()),
+        )
+        .unwrap();
+    let bytes = driver.state_mut().doc.clone().save();
+    let address = tilo_actions::ActionAddress::new(
+        crate::standalone_history_host::HISTORY_RESOURCE,
+        "filter",
+    );
+    driver
+        .invoke_local_history_action(
+            &address,
+            Some(&format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({"resource": "opaque-resource-438", "group": "opaque-task-931"})
+            )),
+        )
+        .unwrap();
+    let inspection = driver.inspection_json().unwrap();
+    assert!(inspection.contains("Launch brief"));
+    assert!(inspection.contains("Launch work"));
+    for (_, node) in driver.a11y_nodes() {
+        for text in [node.label(), node.value(), node.description()]
+            .into_iter()
+            .flatten()
+        {
+            assert!(!text.contains("opaque-resource-438"));
+            assert!(!text.contains("opaque-task-931"));
+        }
+    }
+    let id = crate::history_source::entry_id_from_hash(&hash.to_string());
+    let target = format!(
+        "timeline-entry:{}",
+        crate::widget::history_group::hex16(&id)
+    );
+    driver
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &crate::a11y::Action::Activate,
+        )
+        .unwrap();
+    assert!(
+        driver
+            .inspection_json()
+            .unwrap()
+            .contains("Notebook: captured owner content")
+    );
+    driver.click_named("history-before").unwrap();
+    assert!(
+        driver
+            .inspection_json()
+            .unwrap()
+            .contains("Notebook: second")
+    );
+    driver
+        .state_mut()
+        .doc
+        .put(ROOT, "body", "new live content")
+        .unwrap();
+    driver.state_mut().commit_action(None, None);
+    driver.relayout();
+    driver.click_named("history-after").unwrap();
+    assert!(
+        driver
+            .inspection_json()
+            .unwrap()
+            .contains("Notebook: captured owner content")
+    );
+    assert_ne!(driver.state_mut().doc.clone().save(), bytes);
+    let live = driver.state_mut().doc.clone().save();
+    driver.click_named("history-back-live").unwrap();
+    assert_eq!(driver.state_mut().doc.clone().save(), live);
+}

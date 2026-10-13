@@ -103,6 +103,8 @@ pub struct HistoryHost {
     file_target_resolved: bool,
     toolbar: Column,
     timeline: ActivityTimeline,
+    browse_filter: browse::BrowseFilter,
+    browse_request: Rc<RefCell<Option<browse::BrowseFilter>>>,
     unavailable: crate::widget::EmptyState,
     unavailable_node: Option<NodeId>,
     open_requested: Rc<Cell<bool>>,
@@ -193,7 +195,10 @@ impl HistoryHost {
     /// The window's History door as this History serves it: the same
     /// Open, Open at and Hide as the standalone door, without session rows.
     pub(crate) fn door_resource(&self) -> tilo_actions::Resource {
-        crate::standalone_history_host::history_resource(!self.invalid_owner, self.is_open())
+        self.browse_resource(crate::standalone_history_host::history_resource(
+            !self.invalid_owner,
+            self.is_open(),
+        ))
     }
 
     /// Run one History door operation resolved against [`Self::door_resource`]
@@ -203,6 +208,9 @@ impl HistoryHost {
         &mut self,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
+        if let Some(result) = self.invoke_browse(encoded) {
+            return result;
+        }
         use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, decode_entry};
         if encoded.type_id != HISTORY_OPERATION {
             return Err("Unsupported History operation".into());
@@ -277,6 +285,8 @@ impl HistoryHost {
             _ => "history-mode-content-unavailable",
         });
         let request = Rc::new(Cell::new(false));
+        let browse_request = Rc::new(RefCell::new(None));
+        let clear_browse = browse_request.clone();
         let toolbar = Column::new()
             .with_no_padding()
             .with_gap(4.0)
@@ -303,7 +313,13 @@ impl HistoryHost {
             toolbar,
             unavailable,
             unavailable_node: None,
-            timeline: ActivityTimeline::new().with_preview_selection(),
+            timeline: ActivityTimeline::new()
+                .with_preview_selection()
+                .on_clear_filters(move || {
+                    *clear_browse.borrow_mut() = Some(browse::BrowseFilter::default());
+                }),
+            browse_filter: browse::BrowseFilter::default(),
+            browse_request,
             open_requested: request,
             requested_entry: None,
             open: false,
@@ -1145,6 +1161,7 @@ impl HistoryHost {
             || !self.pending_controls.commands().borrow().is_empty()
             || self.open_requested.get()
             || self.requested_entry.is_some()
+            || self.browse_request.borrow().is_some()
             || !self.commands.borrow().is_empty()
             || (self.width < 600.0) != (width < 600.0)
         {
@@ -1196,6 +1213,7 @@ impl HistoryHost {
             .is_some_and(HistoryController::has_live_updates);
         let target_changed = self.reconcile_file_target();
         let mut changed = target_changed || std::mem::take(&mut self.toolbar_dirty);
+        changed |= self.apply_browse_request();
         let started = crate::time::now();
         let mut opening = false;
         if self.open_requested.replace(false) {
@@ -1310,6 +1328,8 @@ impl HistoryHost {
                         self.review = None;
                         self.review_request = None;
                         self.active_scope = index;
+                        self.browse_filter = browse::BrowseFilter::default();
+                        self.timeline.reset_filters();
                         self.assets.cancel();
                         self.selected.clear();
                         self.timeline.set_selection(None);
@@ -1384,6 +1404,12 @@ impl HistoryHost {
                 self.assets.snapshots = [before, after];
                 changed = true;
             }
+            changed |= self
+                .timeline
+                .entries()
+                .iter()
+                .map(|entry| entry.id)
+                .ne(controller.entries().iter().map(|entry| entry.id));
             self.timeline.set_entries(controller.entries().to_vec());
             if opening {
                 // One line per opening, for gates and logs that keep History
@@ -1675,6 +1701,9 @@ impl HistoryHost {
                     Row::new().push(Box::new(header)).push(Box::new(compare)),
                 ));
             }
+            if self.width >= 600.0 || self.activity_page {
+                toolbar = toolbar.push(Box::new(Text::new(&self.compare_description())));
+            }
             toolbar = self.preview_page_toolbar(toolbar);
         }
         if self
@@ -1701,6 +1730,7 @@ impl HistoryHost {
             }
             toolbar = toolbar.push(Box::new(scopes));
         }
+        toolbar = self.browse_toolbar(toolbar);
         toolbar = self.files_toolbar(toolbar);
         if let Some(status) = &self.sync_status {
             toolbar = toolbar.push(Box::new(
@@ -1744,6 +1774,7 @@ impl HistoryHost {
     }
 }
 
+mod browse;
 mod surface;
 
 mod review;

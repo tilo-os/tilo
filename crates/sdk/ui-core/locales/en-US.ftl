@@ -494,3 +494,12 @@ search-apps-group-media = Media
 search-apps-group-system-tools = System tools
 search-apps-group-more-apps = More apps
 search-apps-group-developer-tools = Developer tools
+
+history-browse-filter = Filter changes
+history-browse-resource = Resource
+history-browse-actor = Person or agent
+history-browse-group = Task group
+history-browse-all = All
+history-browse-clear = Clear filters
+history-browse-owner = Filters narrow changes, not the captured document. Preview shows the owning document.
+history-compare-pinned = Compare pinned versions · { $changes }. Before shows the causal parents; After includes the selected changes. These are read-only views, not a pixel diff. Media is shown only when historical content is available.

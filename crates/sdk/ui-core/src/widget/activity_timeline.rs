@@ -570,20 +570,24 @@ impl ActivityTimeline {
     }
 
     pub fn clear_filters(&mut self) {
-        self.active_chip = ChipKind::All;
-        self.author_query.clear();
-        self.rebuild();
+        self.reset_filters();
         if let Some(cb) = self.on_clear_filters.as_mut() {
             cb();
         }
     }
 
+    /// Reset all entry lenses without producing another host request.
+    pub(crate) fn reset_filters(&mut self) {
+        self.active_chip = ChipKind::All;
+        self.author_query.clear();
+        self.filter = HistoryFilter::default();
+        self.rebuild();
+    }
+
     pub fn is_filtered(&self) -> bool {
         self.active_chip != ChipKind::All
             || !self.author_query.trim().is_empty()
-            || !self.filter.authors.is_empty()
-            || !self.filter.entry_kinds.is_empty()
-            || self.filter.time_range.is_some()
+            || self.filter != HistoryFilter::default()
     }
 
     /// Empty string when nothing narrows.
@@ -617,6 +621,17 @@ impl ActivityTimeline {
                     .clone()
                     .unwrap_or_else(|| "a date range".to_string()),
             );
+        }
+        if !self.filter.resources.is_empty()
+            || !self.filter.work_groups.is_empty()
+            || !self.filter.resource_kinds.is_empty()
+            || !self.filter.apps.is_empty()
+            || !self.filter.facets.is_empty()
+            || self.filter.classification != crate::widget::HistoryClassification::Any
+        {
+            parts.push(crate::i18n::I18nManager::lookup_plain(
+                "history-browse-filter",
+            ));
         }
         parts.join(" \u{00b7} ")
     }
@@ -3056,7 +3071,10 @@ impl Widget for ActivityTimeline {
             .iter()
             .filter(|r| matches!(r, VisualRow::Group(_)))
             .count();
-        let description = if groups == 0 {
+        let description = if self.visible.is_empty() {
+            let (title, detail) = self.empty_state_lines();
+            detail.map_or_else(|| title.clone(), |detail| format!("{title} · {detail}"))
+        } else if groups == 0 {
             format!("{} entries", self.visible.len())
         } else {
             format!("{} entries in {} groups", self.visible.len(), groups)
