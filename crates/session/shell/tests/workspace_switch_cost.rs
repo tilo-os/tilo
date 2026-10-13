@@ -33,7 +33,7 @@ use crate::idle_wakeups::{Desktop, notes_desktop};
 /// of the median animation tick of the same switches back (a tick painted
 /// for the transition's animation alone, the frame loop's steady cost).
 ///
-/// Measured on the rcargo builder (headless, llvmpipe, debug build). Putting
+/// Measured on a shared x86-64 build host (headless, llvmpipe, debug build). Putting
 /// the kept content back: a costliest tick of 6.3–9 animation ticks.
 /// Rebuilding the workspace, as every switch back did before its content was
 /// kept: 22.6–22.8 animation ticks. On CI's shared x86-64 runner the kept
