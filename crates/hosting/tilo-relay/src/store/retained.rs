@@ -615,6 +615,8 @@ pub(crate) struct GenerationGc {
     /// written CURRENT with [`durable_write`], which synced it and the
     /// lineage after the rename.
     barrier_held: bool,
+    /// This collection removed something, which its last quantum syncs.
+    removed: bool,
 }
 impl GenerationGc {
     pub(crate) fn new(lineage: PathBuf) -> Result<Self, StoreError> {
@@ -623,6 +625,7 @@ impl GenerationGc {
             lineage,
             child: None,
             barrier_held: false,
+            removed: false,
         })
     }
     /// Collect after this process just wrote the lineage's CURRENT with
@@ -668,11 +671,12 @@ impl GenerationGc {
                         && entry.file_type()?.is_file()
                     {
                         fs::remove_file(entry.path())?;
+                        self.removed = true;
                     }
                     entries.advance();
                 } else {
                     match fs::remove_dir(&*path) {
-                        Ok(()) => {}
+                        Ok(()) => self.removed = true,
                         Err(e) if e.kind() == io::ErrorKind::DirectoryNotEmpty => {}
                         Err(e) => return Err(e.into()),
                     }
@@ -690,7 +694,11 @@ impl GenerationGc {
                 }
                 self.entries.advance();
             } else {
-                sync_dir_once(&self.lineage)?;
+                // A collection that removed nothing left the lineage as its
+                // barrier found it.
+                if self.removed {
+                    sync_dir_once(&self.lineage)?;
+                }
                 return Ok(Step::Done(()));
             }
         }
@@ -727,6 +735,10 @@ enum RetainPhase {
 pub(crate) struct RetainBuild {
     lineage: PathBuf,
     active: PathBuf,
+    /// The lineage has no generation yet. `active` names the one an
+    /// append selects and writes into; a staged checkpoint becomes the
+    /// first instead.
+    fresh: bool,
     scratch: PathBuf,
     bytes: Vec<u8>,
     /// Digest of `bytes`, which a prior record must share to be read.
@@ -1004,6 +1016,16 @@ impl RetainBuild {
             if self.indexed && exists(&path)? {
                 // Written behind the index's back: never overwrite it; list.
                 return self.rescan();
+            }
+            if std::mem::take(&mut self.fresh) {
+                // An append goes into the selected generation, where a
+                // continuity marker reserves its slot: select it first.
+                create_dir(&self.active)?;
+                let name = self
+                    .active
+                    .file_name()
+                    .invariant("active generation name")?;
+                durable_write(&self.lineage.join("CURRENT"), name.as_encoded_bytes())?;
             }
             if let Some(receipt) = &self.continuity {
                 super::continuity::account_validation(&mut self.sorter.stats, self.bytes.len());
@@ -1446,9 +1468,14 @@ impl WorkspaceStore {
         create_dir(&v2)?;
         let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
         create_dir(&lineage)?;
-        let active = match current(&lineage)? {
-            Some(active) => active,
-            None => commit_generation(&lineage, &[], None)?,
+        let (active, fresh) = match current(&lineage)? {
+            Some(active) => (active, false),
+            // A checkpoint stages a generation of its own, so a new lineage
+            // takes it as its first rather than committing an empty one
+            // before it: a newcomer's first changes cost a selector write and
+            // a collection less each.
+            None if checkpoint => (lineage.join(hex::encode(rand::random::<[u8; 16]>())), true),
+            None => (commit_generation(&lineage, &[], None)?, false),
         };
         let scratch_root = self.root.join("store-work-v1");
         let scratch = scratch.unwrap_or_else(|| {
@@ -1479,7 +1506,10 @@ impl WorkspaceStore {
         let indexed = stamp
             .as_ref()
             .and_then(|stamp| tail_index::last(&lineage, stamp, &digest));
-        let phase = if indexed.is_some() {
+        let phase = if fresh {
+            // Nothing to list: an empty ordered pass.
+            RetainPhase::Sort
+        } else if indexed.is_some() {
             RetainPhase::Indexed
         } else {
             RetainPhase::Scan(fs::read_dir(&active)?)
@@ -1488,6 +1518,7 @@ impl WorkspaceStore {
         Ok(RetainBuild {
             lineage,
             active,
+            fresh,
             scratch,
             digest,
             bytes,
