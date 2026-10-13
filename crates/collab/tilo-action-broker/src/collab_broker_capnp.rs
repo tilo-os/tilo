@@ -4833,19 +4833,23 @@ impl CapnpBrokerState {
             .membership
             .as_ref()
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
-        // Retained offers are inert routes, not publisher identities. A live
-        // route always wins over its retained copy.
-        let live = self.published_surfaces_for_scope(scope);
+        // Ordinary directed invocation needs a live publisher. Only native
+        // task custody can activate an inert retained route; its catalogue
+        // keeps stable providers discoverable without inventing a publisher.
+        let live = self
+            .published_surfaces_for_scope(scope)
+            .into_iter()
+            .filter(|surface| surface.live)
+            .collect::<Vec<_>>();
         let routes = live
             .iter()
-            .filter(|surface| surface.live)
             .map(|surface| surface.route.clone())
             .collect::<Vec<_>>();
-        let retained = self
-            .launchable
-            .surfaces()
-            .into_iter()
-            .filter(|surface| scope.is_none() && !routes.contains(&surface.route));
+        let retained = self.launchable.surfaces().into_iter().filter(|surface| {
+            scope.is_none()
+                && self.native_tasks(cluster_id).is_some()
+                && !routes.contains(&surface.route)
+        });
         let published = live
             .into_iter()
             .chain(retained)

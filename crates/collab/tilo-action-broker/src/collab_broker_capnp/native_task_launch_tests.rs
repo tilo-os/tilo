@@ -328,6 +328,38 @@ fn assert_closed_writer(f: &Fixture) {
     let retained = f.state.published_surfaces();
     assert_eq!(retained.len(), 1, "the closed Writer remains discoverable");
     assert_eq!(retained[0].app_id, WRITER);
+    let catalogue: serde_json::Value = serde_json::from_str(
+        &f.state
+            .action_catalogue_json(
+                &room().to_string(),
+                &hex::encode(f.native.certificate.user_public_key),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    let closed = catalogue["surfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|surface| surface["record_id"] == "main")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        closed.len(),
+        1,
+        "retained discovery must not duplicate a route"
+    );
+    assert_eq!(closed[0]["live"], false);
+    assert_eq!(
+        closed[0]["provider"],
+        launchable::launchable_provider(&retained[0])
+    );
+    assert_eq!(closed[0]["actions"][0]["action"], "append-paragraph");
+    assert!(
+        f.state
+            .invoke(209, Document::KIND, "append-paragraph", None, "scribe")
+            .is_err(),
+        "stable catalogue discovery cannot revive ordinary publisher invocation"
+    );
     assert_eq!(
         retained[0].route,
         CrdtRoute::record(WRITER, room().to_string(), "main")
