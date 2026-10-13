@@ -285,11 +285,11 @@ impl Harness {
             .send(&mut self.host, &event);
     }
 
-    /// A horizontally-dominant wheel event over the strip, the way a
-    /// two-finger sideways swipe arrives.
-    fn scroll_horizontally(&mut self, dx: f32) {
+    /// A horizontally-dominant wheel event over the strip, `rightward`
+    /// lines to the right. winit reports a rightward wheel with negative x.
+    fn scroll_horizontally(&mut self, rightward: f32) {
         self.event(&ui::synthetic_input::cursor_moved(600.0, 500.0));
-        self.event(&ui::synthetic_input::mouse_wheel(dx, 0.0));
+        self.event(&ui::synthetic_input::mouse_wheel(-rightward, 0.0));
     }
 
     fn scroll_x(&self) -> f64 {
@@ -853,7 +853,7 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
         let by_swipe = {
             let mut h = Harness::new();
             for _ in 0..3 {
-                // Positive dx steps forward, matching the chord's direction.
+                // A rightward wheel steps forward, matching the chord's direction.
                 h.scroll_horizontally(4.0);
                 h.tick();
             }
@@ -1381,6 +1381,18 @@ fn magnifier_shortcuts_step_the_zoom_show_it_and_save_it() {
         Some(OsdKind::Magnifier { zoom: 2 }),
         "the toggle comes back at the zoom it left"
     );
+}
+
+#[test]
+fn a_rightward_wheel_steps_forward_like_super_right() {
+    let mut h = Harness::new();
+    let start = h.active_window();
+    // Winit reports a wheel turned rightward with a negative x, as the
+    // libinput backend maps a tilt to the right.
+    assert!(h.event(&ui::synthetic_input::mouse_wheel(-1.0, 0.0)));
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
+    assert!(h.event(&ui::synthetic_input::mouse_wheel(1.0, 0.0)));
+    assert_eq!(h.active_window(), start, "and leftward steps back");
 }
 
 #[test]

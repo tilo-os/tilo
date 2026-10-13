@@ -1022,9 +1022,10 @@ fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
     driver.relayout();
     let entries = handle.snapshot("g", vec![]).entries;
     driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
-    // A mouse tilt wheel held sideways: one run of line-delta clicks.
-    for dx in [0.3, 1.0, 2.0, 1.0, 0.5] {
-        driver.send(&ui::synthetic_input::mouse_wheel(dx, 0.0));
+    // A mouse tilt wheel held to the right: one run of line-delta clicks,
+    // which winit reports with negative x.
+    for rightward in [0.3, 1.0, 2.0, 1.0, 0.5] {
+        driver.send(&ui::synthetic_input::mouse_wheel(-rightward, 0.0));
     }
     driver.relayout();
     assert_eq!(
@@ -1034,7 +1035,7 @@ fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
     );
     for _ in 0..3 {
         std::thread::sleep(std::time::Duration::from_millis(250));
-        driver.send(&ui::synthetic_input::mouse_wheel(1.0, 0.0));
+        driver.send(&ui::synthetic_input::mouse_wheel(-1.0, 0.0));
         driver.relayout();
     }
     assert_eq!(

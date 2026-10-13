@@ -3106,13 +3106,14 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("00-before"),
                 // A sideways swipe steps focus one window along the strip —
                 // the same operation Super+ArrowRight performs — and the
-                // focus-follow pan brings it into view. Positive dx travels
-                // forward, matching the chord's direction.
-                Action::MouseWheel { dx: 10.0, dy: 0.0 },
+                // focus-follow pan brings it into view. A rightward wheel
+                // (negative dx, winit's sign) travels forward, matching the
+                // chord's direction.
+                Action::MouseWheel { dx: -10.0, dy: 0.0 },
                 Action::Wait(24),
                 Action::Snapshot("01-after-pan"),
                 // And back the way it came.
-                Action::MouseWheel { dx: -10.0, dy: 0.0 },
+                Action::MouseWheel { dx: 10.0, dy: 0.0 },
                 Action::Wait(24),
                 Action::Snapshot("02-back-to-start"),
             ],

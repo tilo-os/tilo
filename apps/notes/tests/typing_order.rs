@@ -108,9 +108,20 @@ fn physical_observer_matches_real_note_dispatch_to_the_drawn_body_without_text_l
     // This test uses an IME event, not a fabricated physical key serial:
     // display-latency qualification must still reject its absent physical start.
     assert!(effect["wayland_serial"].is_null());
+    // Discarded buffers retain the same witness on bounded subsequent draws.
+    for id in 72..103 {
+        let retry = trace
+            .drawn(Some(id), app.harness().native_input_snapshot())
+            .expect("bounded retry witness");
+        assert_eq!(retry["cpu_frame_id"], id);
+        assert_eq!(retry["input_ids"], frame["input_ids"]);
+        assert_eq!(retry["state"], frame["state"]);
+        assert_eq!(retry["observer_session"], frame["observer_session"]);
+        assert!(!retry.to_string().contains("é"));
+    }
     assert!(
         trace
-            .drawn(Some(72), app.harness().native_input_snapshot())
+            .drawn(Some(103), app.harness().native_input_snapshot())
             .is_none()
     );
     for row in [effect, frame] {
@@ -168,8 +179,12 @@ fn semantic_new_page_open_adopts_focused_line_and_types_without_pointer_focus() 
     .unwrap();
     app.settle();
     let page = app.read_document(read::list_pages)[0].id;
-    app.call("open-note", serde_json::json!({"page": page}))
-        .unwrap();
+    app.call_on(
+        &notes::actions::page_resource_id(page),
+        "open",
+        serde_json::json!({}),
+    )
+    .unwrap();
     app.settle();
     let before = app
         .harness()
