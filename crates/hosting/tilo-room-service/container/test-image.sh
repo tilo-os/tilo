@@ -13,7 +13,7 @@ source_revision=${2:?$usage}
   || { echo 'the image is not labelled with its source revision' >&2; exit 1; }
 for file in /usr/local/bin/tilo-relay /usr/local/bin/tilo-room-service /usr/local/bin/fonts/manifest.toml \
   /usr/local/share/tilo/bots/discord-bridge.json \
-  /srv/tilo-room-assets/index.html /srv/tilo-room-assets/resource.html /srv/tilo-room-assets/root-identity.mjs; do
+  /srv/tilo-room-assets/index.html /srv/tilo-room-assets/app/index.html /srv/tilo-room-assets/workspaces.mjs /srv/tilo-room-assets/root-identity.mjs /srv/tilo-room-assets/identity-actions.mjs; do
   docker run --rm --entrypoint /bin/sh "$image" -c "test -s $file" || { echo "missing $file" >&2; exit 1; }
 done
 # Captured first: under pipefail, grep -q closing the pipe early fails the run.
@@ -21,14 +21,14 @@ help=$(docker run --rm --entrypoint /usr/local/bin/tilo-relay "$image" room --he
 grep -q -- '--persistent' <<<"$help" || { echo 'tilo-relay room has no --persistent mode' >&2; exit 1; }
 persistent=(--read-only --tmpfs /run/tilo-rooms:mode=1777
   -e TILO_ROOMS_PERSISTENT=plaza -e TILO_ROOMS_RELAY_ORIGIN=https://rooms.example
-  -e TILO_ROOMS_CHAT_CHANNELS=general,show-and-tell)
+  -e TILO_ROOMS_WEB_ENTRY=https://app.example/ -e TILO_ROOMS_CHAT_CHANNELS=general,show-and-tell)
 output=$(docker run --rm "${persistent[@]}" -e TILO_ROOMS_ROOT_FILE=/run/secrets/absent "$image" 2>&1 || true)
 grep -q 'refuses to start without its room root' <<<"$output" \
   || { printf 'persistent mode started without its root:\n%s\n' "$output" >&2; exit 1; }
 
 # The persistent room end to end: a watching page gets a spectator
-# certificate, a visitor is pre-admitted as a member and presence answers.
-# HTTP is spoken from inside the
+# certificate, a visitor is pre-admitted as a member, presence answers and
+# the front door leads to the web entry. HTTP is spoken from inside the
 # container with bash's /dev/tcp, so this works when the Docker daemon is
 # remote too.
 hex32() { od -An -tx1 -v -N32 /dev/urandom | tr -d ' \n'; }
@@ -52,6 +52,8 @@ answer=$(request POST /join "{\"userPublicKey\":\"$(hex32)\",\"displayName\":\"S
 grep -q '"admissionToken"' <<<"$answer" || { printf 'the guest was not pre-admitted:\n%s\n' "$answer" >&2; exit 1; }
 answer=$(request GET /presence)
 grep -q '"online"' <<<"$answer" || { printf 'no presence:\n%s\n' "$answer" >&2; exit 1; }
+answer=$(request GET /)
+grep -qi 'location: https://app.example/' <<<"$answer" || { printf '/ does not lead to the web entry:\n%s\n' "$answer" >&2; exit 1; }
 trap - EXIT
 docker rm -f "$container" >/dev/null
 echo "room-service image ok"

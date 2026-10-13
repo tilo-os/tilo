@@ -35,3 +35,43 @@ export function webgpuRefusal(env = globalThis) {
   const guarded = override === '1' ? false : override === '0' ? true : WEBKIT_GUARD_DEFAULT;
   return guarded ? WEBKIT_WEBGPU_REFUSAL : undefined;
 }
+
+/** Which browser's settings a visitor without WebGPU would change. */
+export function browserFamily({userAgent = '', vendor = '', maxTouchPoints = 0} = {}) {
+  if (/\bLibreWolf\//.test(userAgent)) return 'librewolf';
+  if (/\bFirefox\//.test(userAgent)) return 'firefox';
+  if (isWebKit({userAgent, vendor, maxTouchPoints})) return 'safari';
+  if (/\b(Chrome|Chromium|Edg|OPR)\//.test(userAgent)) return 'chromium';
+  return 'other';
+}
+
+// What turns WebGPU on, per browser. Firefox and its forks have no per-site
+// WebGPU prompt (LibreWolf's site prompt is for WebGL, which this renderer
+// cannot use): with `dom.webgpu.enabled` off the page has no `navigator.gpu`
+// to ask through, so the page names the setting instead.
+const ENABLE = Object.freeze({
+  librewolf: ['Open about:config in a new tab and accept the warning.', 'Set dom.webgpu.enabled to true.'],
+  firefox: ['Update to Firefox 141 or later.', 'If it is still off, open about:config and set dom.webgpu.enabled to true.'],
+  safari: ['Update to Safari 26 or later, where WebGPU is on.', 'On an older Safari, turn on Develop › Feature Flags › WebGPU.'],
+  chromium: ['Check that hardware acceleration is on, in the browser’s system settings.', 'On Linux, if it stays off: open chrome://flags, enable “Unsafe WebGPU Support”, and relaunch.'],
+  other: ['Open this page in a current Chrome, Edge, Firefox or Safari.'],
+});
+
+/**
+ * Why this browser cannot draw Tilo, or `undefined` when it can:
+ * `{reason, steps}`, the steps saying how to turn WebGPU on here. The desktop
+ * renders with Vello's WebGPU compute pipeline and has no CPU or WebGL
+ * fallback, so this asks for an adapter as the renderer will, before the page
+ * downloads the runtime or takes a seat. Never throws.
+ */
+export async function rendererUnavailable(env = globalThis) {
+  const refusal = webgpuRefusal(env);
+  if (refusal) return {reason: refusal, steps: []};
+  const navigator = env.navigator ?? {};
+  const steps = ENABLE[browserFamily(navigator)];
+  if (!navigator.gpu) return {reason: 'Tilo draws with WebGPU, which is turned off in this browser.', steps};
+  let adapter = null;
+  try { adapter = await navigator.gpu.requestAdapter(); } catch { /* Same as no adapter. */ }
+  if (!adapter) return {reason: 'Tilo draws with WebGPU. This browser has it, but offered this page no graphics adapter.', steps};
+  return undefined;
+}

@@ -12,7 +12,7 @@ import {mountChat} from './mount-chat.mjs';
 
 assert.notEqual(process.getuid?.(), 0, 'compiled voice requires an unprivileged sandboxed browser');
 const bundle = resolve(process.argv[2]);
-assert.ok(existsSync(join(bundle, 'resource.html')), 'compiled resource entry required');
+assert.ok(existsSync(join(bundle, 'app/index.html')), 'compiled full-tab entry page required');
 const input = createInterface({input:process.stdin});
 const lines = input[Symbol.asyncIterator]();
 const credentials = JSON.parse((await lines.next()).value);
@@ -21,7 +21,7 @@ const types = {'.html':'text/html', '.mjs':'text/javascript', '.js':'text/javasc
 const server = createServer(credentials, (request, response) => {
   const path = new URL(request.url, 'https://localhost').pathname;
   if (path === '/fixture.html') {
-    response.writeHead(200, {'content-type':'text/html'}).end('<!doctype html><link rel="stylesheet" href="/resource.css"><div id="surface"></div>');
+    response.writeHead(200, {'content-type':'text/html'}).end('<!doctype html><style>html,body{margin:0;height:100%}#surface{position:fixed;inset:0}</style><div id="surface"></div>');
     return;
   }
   const file = resolve(bundle, '.' + path);

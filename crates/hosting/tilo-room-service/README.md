@@ -153,8 +153,10 @@ Chat starts with while the room's workspace has none, each with the id
 channels on every start. Without it no channels are made, and a chat that
 has channels keeps exactly those.
 
-The service is the room's API and relay, never a page. Admission runs in
-the app: each visitor is their own
+The service is the room's API and relay, never a page: the Tilo app lives
+at its web entry (`TILO_ROOMS_WEB_ENTRY`, e.g. `https://app.example/`), which
+opens the room as a workspace. `GET /` redirects there, or answers 404
+without a web entry. Admission runs in the app: each visitor is their own
 person with their own identity, `POST /join` pre-admits it (per-IP join
 windows, an online cap, a cooldown for addresses of removed members) and
 the browser redeems the bound invitation. A read-only embed joins as the
@@ -183,6 +185,7 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_CHAT_CHANNELS` | unset: none | channels Chat starts with while it has none, comma-separated names of lowercase letters, digits and `-` |
 | `TILO_ROOMS_RELAY_ORIGIN` | required | the relay's public origin, e.g. `https://rooms.example` |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the relay's plain listener the ingress forwards `/peer/` to |
+| `TILO_ROOMS_WEB_ENTRY` | none | the Tilo app's web entry (e.g. `https://app.example/`), announced by the relay so `share-link` and bots mint links that open the room there; without it the room's resources cannot be shared as links |
 | `TILO_ROOMS_LIVE_ORIGIN` | unset | an `https://` origin (port allowed), e.g. `https://live.rooms.example` with UDP 443 forwarded to the listener, that reaches the relay's QUIC listener directly, for an ingress that passes HTTP only (a CDN): browsers try WebTransport there first and fall back within 2 s, silently, to the HTTPS stream through the ingress |
 | `TILO_ROOMS_LIVE_LISTEN` | `0.0.0.0:9781` | that listener: WebTransport on UDP (HTTPS on TCP too, unused) |
 | `TILO_ROOMS_LIVE_TLS_CERT`, `TILO_ROOMS_LIVE_TLS_KEY` | `/run/live-tls/tls.crt`, `/run/live-tls/tls.key` | its PEM certificate and key for the live origin's name; re-read within 30 s of a renewal, no restart |

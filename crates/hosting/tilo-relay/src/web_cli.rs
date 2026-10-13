@@ -75,6 +75,12 @@ pub struct WebArgs {
     /// `--web-plain` bind a non-loopback address.
     #[arg(long = "public-origin", value_name = "ORIGIN", requires = "web_plain")]
     pub public_origin: Option<String>,
+    /// The web entry (ending in `/`, e.g. `https://app.example/`) where the
+    /// Tilo app opens this host's links: announced in catalogue locators,
+    /// so `share-link` and bots mint links under it. Overrides the config's
+    /// `web_entry`.
+    #[arg(long = "web-entry", value_name = "URL")]
+    pub web_entry: Option<String>,
     /// The `https://` origin browsers dial WebTransport at, when the page
     /// origin is behind a proxy that passes HTTP only: `--web` is reached
     /// directly under this name (its certificate from `--tls files:…`),
@@ -188,6 +194,13 @@ impl HostedRelay {
     }
 }
 
+/// `--web-entry`, when given, is the entry the relay's catalogue announces.
+fn announce_web_entry(cfg: &mut tilo_relay::RelayConfig, args: &WebArgs) {
+    if let Some(entry) = &args.web_entry {
+        cfg.web_entry = Some(entry.clone());
+    }
+}
+
 /// Start the relay; with `--agents`, with its agent supervisor as the
 /// app-serving plane and the agents kept under `state_root/agents`.
 ///
@@ -206,6 +219,7 @@ pub async fn start_relay(
     if let Some(max) = env_count("TILO_RELAY_MAX_ROOM_GRANTS") {
         cfg.max_room_grants = Some(max);
     }
+    announce_web_entry(&mut cfg, args);
     #[cfg(feature = "agents")]
     let options = args.agents.options(state_root.join("agents"))?;
     #[cfg(feature = "agents")]
@@ -1042,6 +1056,33 @@ mod tests {
 
     fn key() -> SigningKey {
         SigningKey::from_bytes(&rand::random())
+    }
+
+    #[test]
+    fn a_web_entry_flag_is_what_the_catalogue_announces() {
+        #[derive(clap::Parser)]
+        struct Command {
+            #[command(flatten)]
+            web: WebArgs,
+        }
+        let parse = |args: &[&str]| {
+            <Command as clap::Parser>::try_parse_from(
+                std::iter::once("room").chain(args.iter().copied()),
+            )
+            .unwrap()
+            .web
+        };
+        let mut cfg = tilo_relay::RelayConfig {
+            web_entry: Some("https://configured.example/".into()),
+            ..Default::default()
+        };
+        announce_web_entry(&mut cfg, &parse(&[]));
+        assert_eq!(
+            cfg.web_entry.as_deref(),
+            Some("https://configured.example/")
+        );
+        announce_web_entry(&mut cfg, &parse(&["--web-entry", "https://app.example/"]));
+        assert_eq!(cfg.web_entry.as_deref(), Some("https://app.example/"));
     }
 
     async fn endpoint() -> iroh::endpoint::Endpoint {

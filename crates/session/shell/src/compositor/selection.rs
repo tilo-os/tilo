@@ -1396,11 +1396,17 @@ fn ui_target(target: ui::clipboard::ClipboardTarget) -> Target {
 }
 
 /// Install the host services hosted widgets use: the native desktop's, with
-/// the clipboard pointed at the compositor's mirror. Called once at startup;
-/// without it hosted widgets fall back to `ui`'s in-process buffer, invisible
-/// to every client.
-pub fn install_host_services(store: SharedSelection) {
-    ui::host::install_default(host_services(store));
+/// the clipboard pointed at the compositor's mirror and Tilo links to the
+/// session's workspaces opened in place. Called once at startup; without it
+/// hosted widgets fall back to `ui`'s in-process buffer, invisible to every
+/// client.
+pub fn install_host_services(
+    store: SharedSelection,
+    tree: crate::shell::state::WorkspaceTreeHandle,
+) {
+    let mut services = host_services(store);
+    services.opener = crate::shell::link_open::session_opener(tree, services.opener);
+    ui::host::install_default(services);
 }
 
 /// The services in-process widgets see: native, except that the clipboard is

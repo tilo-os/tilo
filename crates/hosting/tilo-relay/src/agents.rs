@@ -316,7 +316,7 @@ struct RelayRecordsLink {
     member: RoomMember,
     rooms: Option<crate::rooms::Rooms>,
     browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
-    browser_page: Option<String>,
+    web_entry: Option<String>,
 }
 
 impl RoomRecordsLink for RelayRecordsLink {
@@ -377,7 +377,7 @@ impl RoomRecordsLink for RelayRecordsLink {
             room: room.to_owned(),
             host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
             provider: provider.to_owned(),
-            browser_page: self.browser_page.clone(),
+            web_entry: self.web_entry.clone(),
         })
     }
 
@@ -443,7 +443,7 @@ async fn start_inner(
         supervisor: SupervisorHost(agents.supervisor().clone()),
         rooms: RoomActions::new(catalogue),
     }));
-    let browser_page = cfg.resource_browser_page.clone();
+    let web_entry = cfg.web_entry.clone();
     let relay = match relay_mode {
         Some(mode) => {
             Relay::start_with_app_serving_and_relay_mode(cfg, identity, Some(plane.clone()), mode)
@@ -458,7 +458,7 @@ async fn start_inner(
             user_public_key: relay.room_records().user_public_key(),
             rooms: relay.rooms().cloned(),
             browser_origin: Arc::clone(&relay.browser_origin),
-            browser_page,
+            web_entry,
             member: RoomMember {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
                 key: relay.room_records().signing_key().clone(),

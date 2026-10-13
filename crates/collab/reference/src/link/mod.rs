@@ -427,12 +427,18 @@ pub struct LinkSecrets {
     pub invite: Option<Secret>,
     pub ticket: Option<Secret>,
     pub token: Option<Secret>,
+    /// The person (their user root, hex) whose new device this browser asks
+    /// to become: one of their devices that holds the root approves it.
+    pub pair: Option<Secret>,
 }
 
 impl LinkSecrets {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.invite.is_none() && self.ticket.is_none() && self.token.is_none()
+        self.invite.is_none()
+            && self.ticket.is_none()
+            && self.token.is_none()
+            && self.pair.is_none()
     }
 }
 
@@ -569,6 +575,7 @@ impl LinkTarget {
             ("invite", &secrets.invite),
             ("ticket", &secrets.ticket),
             ("token", &secrets.token),
+            ("pair", &secrets.pair),
         ] {
             if let Some(secret) = secret {
                 params.push(format!("{name}={}", secret.expose()));
@@ -842,6 +849,7 @@ mod tests {
                 invite: Some(Secret::new("SECRETinvite").unwrap()),
                 ticket: None,
                 token: Some(Secret::new("SECRETtoken").unwrap()),
+                pair: None,
             },
         };
         let printed = format!(
