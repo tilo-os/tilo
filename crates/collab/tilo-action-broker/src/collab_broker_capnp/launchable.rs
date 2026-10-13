@@ -782,6 +782,7 @@ mod tests {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         };
         let receipt = state
             .action_invoke(owner, None, None, &request)

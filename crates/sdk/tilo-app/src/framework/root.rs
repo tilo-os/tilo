@@ -1761,17 +1761,7 @@ impl RootModel for ResourceRoot {
                 ),
             ));
         }
-        if let Some(request) = op.unscoped()
-            && matches!(
-                request.type_id,
-                super::history::VIEW_TYPE | super::history::compare::TYPE
-            )
-        {
-            let output = if request.type_id == super::history::compare::TYPE {
-                super::history::compare::answer(self.typed.as_ref(), doc, request.payload)?
-            } else {
-                super::history::answer(doc, request.payload)?
-            };
+        if let Some(output) = self.history_output(op, doc)? {
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
@@ -1902,6 +1892,23 @@ impl ResourceRoot {
 }
 
 impl ResourceRoot {
+    fn history_output(
+        &self,
+        op: &ui_core::host_operation::ResourceOperation<'_>,
+        doc: &AutoCommit,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        match request.type_id {
+            super::history::VIEW_TYPE => super::history::answer(doc, request.payload).map(Some),
+            super::history::compare::TYPE => {
+                super::history::compare::answer(self.typed.as_ref(), doc, request.payload).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Start minting a link to one of the resources this root publishes.
     fn start_share(
         &mut self,
