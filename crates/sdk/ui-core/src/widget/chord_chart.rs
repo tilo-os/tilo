@@ -592,10 +592,7 @@ impl Widget for ChordChart {
                     .with_action_target(format!("node:{}", n.id))
                     .with_name(&n.label)
                     .with_description(&n.detail)
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .chain(
                 self.links
@@ -610,10 +607,7 @@ impl Widget for ChordChart {
                             } else {
                                 l.detail.clone()
                             })
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true))
                     }),
             )
             .collect();

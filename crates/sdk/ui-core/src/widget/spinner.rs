@@ -165,10 +165,7 @@ impl Widget for Spinner {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        Some(AccessNode::new(Role::Spinner).with_state(AccessState {
-            busy: true,
-            ..Default::default()
-        }))
+        Some(AccessNode::new(Role::Spinner).with_state(AccessState::new().busy(true)))
     }
 
     /// In the normal presentation the default would freeze the orbit at the

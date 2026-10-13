@@ -887,12 +887,12 @@ impl Widget for Slider {
             .with_semantic_key(&self.semantic_id)
             .with_optional_name(name)
             .with_value(self.spoken_value())
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.is_enabled(),
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.is_enabled()),
+            );
         if self.action.is_none() && self.on_change.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("slider"));
         }

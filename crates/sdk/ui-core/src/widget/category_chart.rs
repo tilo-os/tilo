@@ -838,10 +838,7 @@ impl Widget for CategoryChart {
                                     } else {
                                         value.detail.clone()
                                     })
-                                    .with_state(AccessState {
-                                        focusable: true,
-                                        ..Default::default()
-                                    })
+                                    .with_state(AccessState::new().focusable(true))
                             })
                         },
                     )

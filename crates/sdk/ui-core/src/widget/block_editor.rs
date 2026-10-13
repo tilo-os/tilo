@@ -9185,20 +9185,14 @@ impl Widget for BlockEditor {
                         .with_children(vec![
                             AccessNode::new(Role::ToggleButton)
                                 .with_name("Source editor")
-                                .with_state(AccessState {
-                                    checked: Some(
-                                        chrome.descriptor.mode == crate::math::FormulaMode::Source,
-                                    ),
-                                    ..Default::default()
-                                }),
+                                .with_state(AccessState::new().checked(
+                                    chrome.descriptor.mode == crate::math::FormulaMode::Source,
+                                )),
                             AccessNode::new(Role::ToggleButton)
                                 .with_name("Visual editor")
-                                .with_state(AccessState {
-                                    checked: Some(
-                                        chrome.descriptor.mode == crate::math::FormulaMode::Visual,
-                                    ),
-                                    ..Default::default()
-                                }),
+                                .with_state(AccessState::new().checked(
+                                    chrome.descriptor.mode == crate::math::FormulaMode::Visual,
+                                )),
                         ]),
                 )
             })
@@ -9564,12 +9558,7 @@ impl Widget for BlockEditor {
                 .with_description(
                     "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
                 )
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    multiline: true,
-                    ..Default::default()
-                })
+                .with_state(AccessState::new().focusable(self.is_focusable()).focused(self.is_focused()).multiline(true))
                 .with_children(children),
         )
     }
