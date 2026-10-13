@@ -452,10 +452,7 @@ impl TimelineInteraction {
             let is_today = *day == model.today;
             let weekend = day.weekday().num_days_from_monday() >= 5;
             let text_x = x0 + s2;
-            let weekday = date::WEEKDAY_SHORT
-                .get(day.weekday().num_days_from_monday() as usize)
-                .copied()
-                .unwrap_or("");
+            let weekday = date::weekday_short(*day);
             ctx.text(
                 weekday,
                 &ty.weekday,
