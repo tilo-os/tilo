@@ -533,9 +533,6 @@ impl AppWidget for Probe {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("P")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
 fn factory(

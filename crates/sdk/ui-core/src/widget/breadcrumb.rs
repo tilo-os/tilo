@@ -401,8 +401,7 @@ impl Widget for Breadcrumb {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let logical = ctx.logical(position);
                 self.last_cursor = Some(logical);
                 let mut new_hover: Option<usize> = None;
                 let active_origin = self.segments.len().saturating_sub(1);

@@ -378,7 +378,7 @@ impl Widget for IconGrid {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 self.last_cursor = pt;
                 let new_hover = self.item_at(pt);
                 if new_hover != self.hover {

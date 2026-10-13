@@ -363,7 +363,7 @@ impl Widget for ConflictBanner {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 let new_review = self.review_chip_rect().is_some_and(|r| r.contains(p));
                 let new_dismiss = self.dismiss_chip_rect().is_some_and(|r| r.contains(p));

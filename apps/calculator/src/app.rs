@@ -1403,7 +1403,7 @@ impl Widget for CalculatorApp {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.mouse = p;
                 let hover_changed = self.track_pointer(p);
                 if self.field_dragging {
@@ -1841,10 +1841,6 @@ impl ui::widget::AppWidget for CalculatorApp {
 
     fn app_icon(&self) -> ui::widget::IconDescriptor {
         ui::widget::IconDescriptor::Named("calculator".into())
-    }
-
-    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-        None
     }
 }
 

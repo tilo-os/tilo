@@ -3065,9 +3065,6 @@ mod legacy_owner_routing_tests {
         fn app_icon(&self) -> crate::widget::IconDescriptor {
             crate::widget::IconDescriptor::Glyph("T")
         }
-        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-            None
-        }
     }
 
     fn tile(

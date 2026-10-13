@@ -491,9 +491,6 @@ impl ui::widget::AppWidget for Hosted {
     fn app_icon(&self) -> ui::widget::IconDescriptor {
         ui::widget::IconDescriptor::Glyph("H")
     }
-    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-        None
-    }
 }
 
 struct Apps(Rc<std::cell::RefCell<Option<ui::widget::RouteHandle>>>);

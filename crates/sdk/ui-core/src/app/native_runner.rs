@@ -183,9 +183,6 @@ mod floating_source_focus_tests {
         fn app_icon(&self) -> crate::widget::IconDescriptor {
             crate::widget::IconDescriptor::Named("chat".into())
         }
-        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-            None
-        }
     }
 
     impl crate::widget::FloatingSurfaceProvider for FocusProbe {

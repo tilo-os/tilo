@@ -357,8 +357,7 @@ impl Widget for AddressSuggestions {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 self.hovered = self.row_at(self.last_cursor);
             }
             WindowEvent::MouseInput {

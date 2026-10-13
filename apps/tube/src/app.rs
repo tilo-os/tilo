@@ -2157,8 +2157,7 @@ impl Widget for TubeApp {
         // the toolkit layer with no app-specific gesture code.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_pointer = ctx.logical(position);
                 if self.back_gesture.pointer_move(self.last_pointer) == Some(ui::NavAction::Back)
                     && self.nav.can_go_back()
                 {
