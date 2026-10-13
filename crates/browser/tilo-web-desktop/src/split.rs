@@ -10,8 +10,9 @@
 //! `load` import from `__wasm_split.js` fetches and instantiates the module
 //! and reports back through [`loaded`].
 //!
-//! `build.sh` always splits the desktop bundle: unsplit, nothing provides
-//! the module's imports from `__wasm_split.js`.
+//! `build.sh` splits every release desktop bundle. A quick development
+//! bundle may be left whole (`build.sh --no-split`), with a
+//! `__wasm_split.js` that answers each split point from the module itself.
 
 use std::ffi::c_void;
 use std::future::Future;
@@ -64,6 +65,15 @@ unsafe extern "C" fn loaded(data: *const c_void, loaded: bool) {
     if let Some(waker) = waker {
         waker.wake();
     }
+}
+
+/// [`loaded`] for a module left whole (`wasm-split --unsplit`, the quick
+/// development bundle): its loaders cannot reach the function table, so
+/// they report every app loaded through this export.
+#[unsafe(export_name = "tilo_split_loaded_in_place")]
+unsafe extern "C" fn loaded_in_place(data: *const c_void) {
+    // SAFETY: as for `loaded`, which the loader would have called.
+    unsafe { loaded(data, true) }
 }
 
 struct Load {
