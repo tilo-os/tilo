@@ -612,7 +612,7 @@ impl PdfApp {
             }
             WindowEvent::DroppedFile(path) if self.page_sidebar.is_drop_target_armed() => {
                 self.page_sidebar.set_drop_target_armed(false);
-                self.import_file(path, state);
+                self.import_file(path);
                 *handled = true;
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -2573,6 +2573,11 @@ mod event_tests {
             app.apply_toolbar(&ToolbarHit::Open);
         });
         app.sync_settled(&mut st.doc, &st.root);
+        assert!(
+            app.pending_open.is_some(),
+            "the frame drain hands the portal-chosen PDF to the worker"
+        );
+        super::tests::settle_until(&mut app, &mut st, |app| app.pending_open.is_none());
         assert!(
             app.has_document,
             "a portal-chosen PDF loads through the frame drain"
