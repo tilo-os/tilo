@@ -165,7 +165,6 @@ fn newly_appended_room_rebuilds_owner_and_revokes_default_grant() {
     let mut expected = Workspace::new(id, "Research");
     expected.set_room(room);
     expected.set_owner("ada");
-    expected.policy.grants.sort_by(|a, b| a.id.cmp(&b.id));
     assert_eq!(actual.room, room);
     assert_eq!(actual.policy, expected.policy);
 

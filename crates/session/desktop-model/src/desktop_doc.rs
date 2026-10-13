@@ -447,7 +447,26 @@ type StoredPolicy = (Option<UserId>, Vec<(String, Role)>, Option<Vec<Grant>>);
 fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
     let owner = doc.str_at(entry, "owner");
     let members = read_keyed_blob_map(doc, entry, MEMBERS_KEY).unwrap_or_default();
-    let grants = read_blob_map(doc, entry, GRANTS_KEY);
+    let grants = read_blob_map(doc, entry, GRANTS_KEY).map(|mut grants: Vec<Grant>| {
+        // Map keys are lexical, but the default role grants have a deliberate
+        // Viewer → Commenter → Editor → Owner order in `room_role_grants`.
+        // Rebuild that order before exposing the policy to the live tree.
+        fn role_order(grant: &Grant) -> u8 {
+            match grant.subject {
+                Subject::Role(Role::Viewer) => 0,
+                Subject::Role(Role::Commenter) => 1,
+                Subject::Role(Role::Editor) => 2,
+                Subject::Role(Role::Owner) => 3,
+                _ => 4,
+            }
+        }
+        grants.sort_by(|left, right| {
+            role_order(left)
+                .cmp(&role_order(right))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        grants
+    });
     (owner, members, grants)
 }
 
