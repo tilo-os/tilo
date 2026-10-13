@@ -88,19 +88,14 @@ impl HistoryView {
     }
 
     pub(crate) fn status(&self) -> Vec<EffectStatus> {
-        let mut status = vec![EffectStatus::unavailable(
-            MessagesEffect::CONFIRM_RECIPIENT,
-            "identity-evidence-required",
-            CATALOG.t("messages-identity-unavailable"),
-        )];
-        if self.client.is_none() {
-            status.push(EffectStatus::unavailable(
-                MessagesEffect::READ_HISTORY,
-                "connection-unavailable",
-                CATALOG.t("messages-history-unavailable"),
-            ));
+        if self.client.is_some() {
+            return Vec::new();
         }
-        status
+        vec![EffectStatus::unavailable(
+            MessagesEffect::READ_HISTORY,
+            "connection-unavailable",
+            CATALOG.t("messages-history-unavailable"),
+        )]
     }
 
     pub(crate) fn read(
