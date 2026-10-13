@@ -342,11 +342,6 @@ LC_ALL=C sort -t $'\t' -k1,1 -k4,4 -o "$publication_plan" "$publication_plan"
 # has to synthesize or re-sign publisher data. This also upgrades an
 # already-published single-architecture entry append-only.
 # One snapshot serves every id; only a refused attempt re-reads it.
-fetch_snapshot() {
-  curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
-    --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
-  jq -e '.entries | type == "array"' "$snapshot" >/dev/null
-}
 source tools/apps/registry-runtime-readiness.sh
 fetch_snapshot
 runtime_readiness_deadline=$((SECONDS + 1200))
