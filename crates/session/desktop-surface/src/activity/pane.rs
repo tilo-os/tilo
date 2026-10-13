@@ -861,6 +861,8 @@ pub struct RoomActivityPane {
     /// Each replayed entry's desktop, kept across rebuilds; see
     /// [`Self::rebuild_replay_frames`].
     pub(super) replay_checkpoints: HashMap<HistoryEntryId, super::replay::ReplayCheckpoint>,
+    /// Exact selection survives filtering and eviction independently of the slider ordinal.
+    pub(super) replay_selected: Option<super::view_actions::ReplayAddress>,
     pub(super) replay_index: usize,
     pub(super) replay_selection_missing: bool,
     pub(super) replay_playing: bool,
@@ -1090,6 +1092,7 @@ impl RoomActivityPane {
             history_log: ui::history_source::HistoryLog::default(),
             room_changes: HashMap::new(),
             replay_checkpoints: HashMap::new(),
+            replay_selected: None,
             replay_index: 0,
             replay_selection_missing: false,
             replay_playing: false,
@@ -1536,6 +1539,9 @@ impl RoomActivityPane {
                 ReplayRequest::Next,
             ),
         ] {
+            if id == "play" && self.replay_selection_missing {
+                continue;
+            }
             actions.push(ReplayActionDescriptor {
                 id: format!("room.activity.replay.{id}"),
                 label: t(key),
@@ -1559,9 +1565,10 @@ impl RoomActivityPane {
                         ),
                     ],
                 ),
-                request: ReplayRequest::SeekEntry {
+                // Published callbacks pin causal identity, not a reusable entry label.
+                request: ReplayRequest::SeekFrontier {
                     source: frame.address.source.clone(),
-                    entry: frame.address.entry.clone(),
+                    frontier: frame.address.frontier.clone(),
                 },
             });
         }
@@ -1570,13 +1577,11 @@ impl RoomActivityPane {
 
     pub fn replay_position(&self) -> ReplayPosition {
         ReplayPosition {
-            position: (!self.replay_frames.is_empty()).then_some(self.replay_index),
+            position: (!self.replay_frames.is_empty() && !self.replay_selection_missing)
+                .then_some(self.replay_index),
             total: self.replay_frames.len(),
             playing: self.replay_playing,
-            selected: self
-                .replay_frames
-                .get(self.replay_index)
-                .map(|frame| frame.address.clone()),
+            selected: self.replay_selected.clone(),
             first: self
                 .replay_frames
                 .first()
@@ -1622,10 +1627,17 @@ impl RoomActivityPane {
                 })
             }
             ReplayRequest::TogglePlayback => {
+                if self.replay_selection_missing {
+                    return Err(t("activity-replay-selection-missing"));
+                }
                 if !self.replay_playing
                     && self.replay_index.saturating_add(1) == self.replay_frames.len()
                 {
                     self.replay_index = 0;
+                    self.replay_selected = self
+                        .replay_frames
+                        .first()
+                        .map(|frame| frame.address.clone());
                 }
                 self.replay_playing = !self.replay_playing;
                 self.replay_selection_missing = false;
@@ -1639,6 +1651,10 @@ impl RoomActivityPane {
             .filter(|index| *index < self.replay_frames.len())
             .ok_or_else(|| t("activity-replay-seek-unavailable"))?;
         self.replay_index = position;
+        self.replay_selected = self
+            .replay_frames
+            .get(position)
+            .map(|frame| frame.address.clone());
         self.replay_selection_missing = false;
         self.replay_playing = false;
         self.replay_last_advance = Instant::now();
@@ -2426,6 +2442,7 @@ impl RoomActivityPane {
         self.timeline.set_named_ranges(Vec::new());
         self.replay_frames.clear();
         self.replay_checkpoints.clear();
+        self.replay_selection_missing = self.replay_selected.is_some();
         self.replay_playing = false;
         self.tasks.clear();
         self.task_source = None;
@@ -4696,7 +4713,7 @@ impl RoomActivityPane {
                 self.replay_play_rect,
                 play_label.as_str(),
                 self.replay_playing,
-                false,
+                self.replay_selection_missing,
             ),
             (
                 self.replay_forward_rect,
@@ -4765,6 +4782,10 @@ impl RoomActivityPane {
             Some(text_width(controls.width())),
             &theme.text(TextRole::Caption),
         );
+        if self.replay_selection_missing {
+            // The slider's fallback ordinal is not the selected checkpoint.
+            return;
+        }
         let info_h = 94.0;
         let canvas = Rect::new(
             self.sheet.x0 + 12.0,
@@ -7319,7 +7340,8 @@ impl RoomActivityPane {
         let control = self.access_control(focus)?;
         let mut state = AccessState::new()
             .focusable(true)
-            .focused(self.keyboard_focus.as_ref() == Some(focus));
+            .focused(self.keyboard_focus.as_ref() == Some(focus))
+            .disabled(*focus == ActivityFocus::ReplayPlay && self.replay_selection_missing);
         state = if control.role == Role::RadioButton {
             state.checked(control.selected)
         } else {
@@ -7449,22 +7471,32 @@ impl RoomActivityPane {
     /// What an agent run reads as to assistive technology: the instruction,
     /// who issued it, which agent ran it, why, and every step it took.
     fn replay_accessibility_detail(&self) -> ui::a11y::AccessNode {
-        let description = self.replay_frames.get(self.replay_index).map_or_else(
-            || t("activity-replay-empty"),
-            |frame| {
-                t_args(
-                    "activity-replay-seek-label",
-                    &[
-                        ("who", frame.author.name.as_str().into()),
-                        ("action", frame.summary.as_str().into()),
-                        (
-                            "when",
-                            format_relative_time(frame.timestamp, self.now()).into(),
-                        ),
-                    ],
-                )
-            },
-        );
+        let description = self
+            .replay_frames
+            .get(self.replay_index)
+            .filter(|_| !self.replay_selection_missing)
+            .map_or_else(
+                || {
+                    t(if self.replay_selection_missing {
+                        "activity-replay-selection-missing"
+                    } else {
+                        "activity-replay-empty"
+                    })
+                },
+                |frame| {
+                    t_args(
+                        "activity-replay-seek-label",
+                        &[
+                            ("who", frame.author.name.as_str().into()),
+                            ("action", frame.summary.as_str().into()),
+                            (
+                                "when",
+                                format_relative_time(frame.timestamp, self.now()).into(),
+                            ),
+                        ],
+                    )
+                },
+            );
         ui::a11y::AccessNode::new(ui::a11y::Role::StaticText)
             .with_name(description)
             .with_description(t(if self.replay_selection_missing {

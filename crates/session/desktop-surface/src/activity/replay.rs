@@ -63,10 +63,6 @@ impl RoomActivityPane {
         ordered.sort_by_key(|entry| (entry.timestamp, *entry.id.as_bytes()));
         let skip = ordered.len().saturating_sub(REPLAY_FRAMES);
         let mut baseline: Option<_> = None;
-        let selected = self
-            .replay_frames
-            .get(self.replay_index)
-            .map(|frame| frame.address.clone());
         let mut checkpoints = std::mem::take(&mut self.replay_checkpoints);
         let mut frames = Vec::with_capacity(ordered.len().min(REPLAY_FRAMES));
         for entry in ordered.into_iter().skip(skip) {
@@ -113,8 +109,14 @@ impl RoomActivityPane {
         checkpoints.retain(|id, _| history.contains(id));
         self.replay_checkpoints = checkpoints;
         self.replay_frames = frames;
+        if self.replay_selected.is_none() {
+            self.replay_selected = self
+                .replay_frames
+                .first()
+                .map(|frame| frame.address.clone());
+        }
+        let selected = self.replay_selected.as_ref();
         self.replay_index = selected
-            .as_ref()
             .and_then(|address| {
                 self.replay_frames
                     .iter()
@@ -124,14 +126,13 @@ impl RoomActivityPane {
                 self.replay_index
                     .min(self.replay_frames.len().saturating_sub(1))
             });
-        if selected.is_some()
+        self.replay_selection_missing = selected.is_some()
             && !self
                 .replay_frames
                 .iter()
-                .any(|frame| Some(&frame.address) == selected.as_ref())
-        {
+                .any(|frame| Some(&frame.address) == selected);
+        if self.replay_selection_missing {
             self.replay_playing = false;
-            self.replay_selection_missing = true;
         }
         self.sync_replay_slider();
         if self.replay_frames.is_empty() {

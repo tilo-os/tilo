@@ -861,6 +861,8 @@ pub struct ShellOverlayHost {
     /// Room-activity sheet. Held as a `Widget` with its own hover, scroll, and
     /// filter state, placed by hand like the notification stack.
     room_activity: crate::shell::room_activity::RoomActivityPane,
+    /// Identity of this retained pane; published callbacks hold only a weak reference.
+    replay_owner: std::rc::Rc<()>,
     /// Background, local-only prose renderer. Deterministic summaries remain
     /// installed until a cited model result passes validation.
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
@@ -1688,7 +1690,8 @@ impl ShellOverlayHost {
                 power_menu: self.layers.power_menu.is_animating(now),
                 room_activity: self.room_activity.needs_animation_frame(now),
                 follow: self.follow_transition.is_animating(now),
-                room_replay: self.room_activity.replay_is_playing(),
+                room_replay: self.activity_window_rect().is_some()
+                    && self.room_activity.replay_is_playing(),
                 projection: self.projection_overlay.needs_animation_frame(now),
                 content: self.content.needs_animation_frame(),
                 sidebar: self
@@ -2468,6 +2471,7 @@ impl ShellOverlayHost {
             status_bridge: None,
             session_audio_policy: None,
             room_activity: inputs.room_activity,
+            replay_owner: std::rc::Rc::new(()),
             history_narrator: inputs.history_narrator,
             status_narrator: inputs.status_narrator,
             status_narrative_request: None,
@@ -10796,9 +10800,22 @@ impl ShellOverlayHost {
             tree.active_workspace()
                 .map(|workspace| (workspace.id, workspace.room))
         };
+        let visible = self.activity_window_rect().is_some();
+        if !visible && self.room_activity.replay_is_playing() {
+            let _ = self.room_activity.apply_replay_request(
+                tilo_desktop::activity::view_actions::ReplayRequest::TogglePlayback,
+            );
+        }
+        let same_owner = chrome
+            .borrow()
+            .replay_host
+            .owner
+            .upgrade()
+            .is_some_and(|owner| std::rc::Rc::ptr_eq(&owner, &self.replay_owner));
         let calls = std::mem::take(&mut chrome.borrow_mut().replay_host.pending);
         for call in calls {
-            let outcome = if Some(call.scope) != scope
+            let outcome = if !same_owner
+                || Some(call.scope) != scope
                 || chrome.borrow().replay_host.scope != scope
                 || chrome.borrow().replay_host.generation != call.generation
             {
@@ -10818,6 +10835,9 @@ impl ShellOverlayHost {
                         source,
                     })
                     .and_then(|request| {
+                        if !visible && request == tilo_desktop::activity::view_actions::ReplayRequest::TogglePlayback {
+                            return Err(tilo_actions::ActionError::Refused("Activity window is hidden".into()));
+                        }
                         self.room_activity
                             .apply_replay_request(request)
                             .map_err(tilo_actions::ActionError::Refused)
@@ -10832,9 +10852,11 @@ impl ShellOverlayHost {
             }));
         }
         let mut state = chrome.borrow_mut();
-        if state.replay_host.scope != scope {
+        if !same_owner || state.replay_host.scope != scope {
             state.replay_host.generation = state.replay_host.generation.wrapping_add(1);
         }
+        state.replay_host.owner = std::rc::Rc::downgrade(&self.replay_owner);
+        state.replay_host.chrome = std::rc::Rc::downgrade(&chrome);
         state.replay_host.scope = scope;
         state.replay_host.descriptors = self.room_activity.replay_action_descriptors();
     }
@@ -20197,7 +20219,8 @@ impl ShellOverlayHost {
         let layers_in_flight = self.layers.is_animating(now);
         let room_activity_in_flight = self.room_activity.needs_animation_frame(now);
         let follow_in_flight = self.follow_transition.is_animating(now);
-        let room_replay_in_flight = self.room_activity.replay_is_playing();
+        let room_replay_in_flight =
+            self.activity_window_rect().is_some() && self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
             || self.display_identify.needs_frame(now);

@@ -192,3 +192,90 @@ fn replay_admission_refuses_a_retained_action_after_workspace_change() {
     );
     assert!(!h.host.room_activity().replay_is_playing());
 }
+
+fn begin_retained(
+    row: &crate::shell::search::SearchResult,
+    chrome: &Chrome,
+) -> Result<InvocationDisposition, crate::shell::search::action_api::ActionError> {
+    let args = ActionArgs::bind(&row.params, std::iter::empty()).unwrap();
+    let mut document = AutoCommit::new();
+    row.on_begin_invoke.as_ref().unwrap()(
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+        chrome,
+        &args,
+    )
+}
+
+#[test]
+fn retained_replay_callbacks_reject_replacement_chrome_and_native_pane() {
+    let h = replay_harness();
+    let row = replay_rows(&h)
+        .into_iter()
+        .find(|row| row.id == "room.activity.replay.play")
+        .unwrap();
+    let tree = h.chrome.borrow().tree_mut().clone_without_documents();
+    let replacement = ChromeState::new(tree);
+    // Even identical room and generation values cannot authorize a different Chrome.
+    {
+        let original = h.chrome.borrow();
+        let mut state = replacement.borrow_mut();
+        state.replay_host.scope = original.replay_host.scope;
+        state.replay_host.generation = original.replay_host.generation;
+    }
+    assert!(begin_retained(&row, &replacement).is_err());
+    let InvocationDisposition::Pending(ticket) = begin_retained(&row, &h.chrome).unwrap() else {
+        panic!("expected pending replay")
+    };
+    let chrome = h.chrome.clone();
+    drop(h);
+    assert!(ticket().is_err());
+    let workspace = chrome.borrow().tree().desktop.active.raw();
+    let host = ShellOverlayHost::new(Box::new(StubContent::new()))
+        .with_chrome(chrome.clone())
+        .with_content_workspace(workspace);
+    let mut replacement = build_harness_with_host(host, chrome);
+    replacement.host.tick_workspace_content_for_tests();
+    paint(&mut replacement);
+    assert!(begin_retained(&row, &replacement.chrome).is_err());
+    assert!(!replacement.host.room_activity().replay_is_playing());
+}
+
+#[test]
+fn closed_activity_refuses_play_and_stops_continuous_replay_frames() {
+    let mut h = replay_harness();
+    let play = replay_rows(&h)
+        .into_iter()
+        .find(|row| row.id == "room.activity.replay.play")
+        .unwrap();
+    assert_eq!(invoke(&mut h, &play)["playing"], true);
+    let tab = {
+        let state = h.chrome.borrow();
+        crate::shell::tab_binding::active_workspace_activity_tab(&state.tree())
+            .unwrap()
+            .2
+    };
+    h.chrome
+        .borrow()
+        .tree_mut()
+        .desktop
+        .remove_tab(tab)
+        .unwrap();
+    h.host.tick_workspace_content_for_tests();
+    assert!(h.host.activity_window_rect().is_none());
+    let InvocationDisposition::Pending(ticket) = begin_retained(&play, &h.chrome).unwrap() else {
+        panic!("expected pending replay")
+    };
+    paint(&mut h);
+    assert!(ticket().is_err(), "hidden playback must not report success");
+    assert!(!h.host.room_activity().replay_position().playing);
+    h.host.force_room_activity_settled();
+    for _ in 0..4 {
+        paint(&mut h);
+        assert!(
+            !h.host
+                .needs_animation_frame_at(Instant::now() + Duration::from_secs(60)),
+            "hidden replay must let the headless renderer idle"
+        );
+    }
+}

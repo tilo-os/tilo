@@ -2292,10 +2292,120 @@ mod tests {
         rows.retain(|entry| entry.id != selected_id);
         pane.rebuild_replay_frames(&tree, &rows, tree.active.raw());
         assert!(pane.replay_position().selection_missing);
+        assert_eq!(pane.replay_position().selected, selected);
+        assert_eq!(pane.replay_position().position, None);
         assert!(!pane.replay_position().playing);
+        let missing = pane.replay_position();
+        paint(&mut pane);
+        let play = pane
+            .focus_order()
+            .iter()
+            .position(|focus| *focus == ActivityFocus::ReplayPlay)
+            .unwrap();
+        let node = pane
+            .accessibility_control_node(&ActivityFocus::ReplayPlay, play, pane.focus_order().len())
+            .unwrap();
+        assert!(node.state.disabled);
+        assert!(
+            pane.apply_replay_request(ReplayRequest::TogglePlayback)
+                .is_err()
+        );
+        assert_eq!(pane.replay_position(), missing);
+        assert!(
+            !pane
+                .replay_action_descriptors()
+                .iter()
+                .any(|action| { action.request == ReplayRequest::TogglePlayback })
+        );
+        // Repeated refreshes must never adopt the ordinal's replacement.
+        pane.rebuild_replay_frames(&tree, &rows, tree.active.raw());
+        assert_eq!(pane.replay_position(), missing);
+        pane.rebuild_replay_frames(&tree, &[], tree.active.raw());
+        assert_eq!(pane.replay_position().selected, selected);
+        assert!(pane.replay_position().selection_missing);
+        assert_eq!(pane.replay_position().position, None);
+        let all_rows = pane.scoped_tree_rows.clone();
+        pane.rebuild_replay_frames(&tree, &all_rows, tree.active.raw());
+        assert_eq!(pane.replay_position().selected, selected);
+        assert!(!pane.replay_position().selection_missing);
+        assert!(!pane.replay_position().playing);
+        pane.rebuild_replay_frames(&tree, &rows, tree.active.raw());
         pane.apply_replay_request(ReplayRequest::Seek { position: 0 })
             .unwrap();
         assert!(!pane.replay_position().selection_missing);
+    }
+
+    #[test]
+    fn replay_missing_selection_next_explicitly_replaces_pin() {
+        let (tree, mut pane) = replay_fixture();
+        pane.apply_replay_request(ReplayRequest::Seek { position: 0 })
+            .unwrap();
+        let original = pane.replay_position().selected.unwrap();
+        let original_id = pane.replay_frames[0].entry_id;
+        let all_rows = pane.scoped_tree_rows.clone();
+        let rows: Vec<_> = all_rows
+            .iter()
+            .filter(|row| row.id != original_id)
+            .cloned()
+            .collect();
+        pane.apply_replay_request(ReplayRequest::TogglePlayback)
+            .unwrap();
+        pane.rebuild_replay_frames(&tree, &rows, tree.active.raw());
+        assert!(pane.replay_position().selection_missing);
+        assert!(!pane.replay_position().playing);
+        let next = pane.apply_replay_request(ReplayRequest::Next).unwrap();
+        assert!(!next.selection_missing);
+        assert_ne!(next.selected, Some(original));
+        pane.rebuild_replay_frames(&tree, &all_rows, tree.active.raw());
+        assert_eq!(pane.replay_position().selected, next.selected);
+        assert!(!pane.replay_position().selection_missing);
+    }
+
+    #[test]
+    fn replay_same_entry_with_different_frontier_does_not_replace_pin() {
+        let (tree, mut pane) = replay_fixture();
+        pane.apply_replay_request(ReplayRequest::Seek { position: 1 })
+            .unwrap();
+        let original = pane.replay_position().selected.unwrap();
+        assert!(!original.frontier.is_empty());
+        let retained = pane
+            .replay_action_descriptors()
+            .into_iter()
+            .find(|descriptor| {
+                matches!(&descriptor.request, ReplayRequest::SeekFrontier { source, frontier }
+                if source == &original.source && frontier == &original.frontier)
+            })
+            .expect("published seeks must pin exact causal heads")
+            .request;
+        let rows = pane.scoped_tree_rows.clone();
+        // Cached topology is still readable, but the causal log is temporarily absent.
+        let history_log = std::mem::take(&mut pane.history_log);
+        pane.rebuild_replay_frames(&tree, &rows, tree.active.raw());
+        assert!(pane.replay_frames.iter().any(|frame| {
+            frame.address.entry == original.entry && frame.address.frontier.is_empty()
+        }));
+        for _ in 0..2 {
+            assert_eq!(pane.replay_position().selected, Some(original.clone()));
+            assert!(pane.replay_position().selection_missing);
+            assert!(
+                pane.apply_replay_request(ReplayRequest::TogglePlayback)
+                    .is_err()
+            );
+            pane.rebuild_replay_frames(&tree, &rows, tree.active.raw());
+        }
+        assert!(
+            pane.apply_replay_request(retained.clone()).is_err(),
+            "retained callback must not select a replacement with the same entry label"
+        );
+        pane.history_log = history_log;
+        pane.rebuild_replay_frames(&tree, &rows, tree.active.raw());
+        assert_eq!(
+            pane.apply_replay_request(retained).unwrap().selected,
+            Some(original.clone())
+        );
+        assert_eq!(pane.replay_position().selected, Some(original));
+        assert!(!pane.replay_position().selection_missing);
+        assert!(!pane.replay_position().playing);
     }
 
     #[test]

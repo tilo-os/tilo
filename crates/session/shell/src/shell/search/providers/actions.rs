@@ -3714,6 +3714,11 @@ impl ActionsProvider {
                 candidates.record(&descriptor.label.to_lowercase(), "", &descriptor.id);
                 let open_operation = operation.clone();
                 let generation = ctx.chrome.replay_host.generation;
+                let binding = (
+                    ctx.chrome.replay_host.owner.clone(),
+                    ctx.chrome.replay_host.chrome.clone(),
+                );
+                let open_binding = binding.clone();
                 out.push(SearchResult {
                     kind: ResourceKind::Action,
                     operation_kind: spec.kind,
@@ -3728,6 +3733,7 @@ impl ActionsProvider {
                     on_open: Rc::new(move |_, _, chrome, _| {
                         super::super::super::replay_host::ReplayHost::enqueue(
                             chrome,
+                            &open_binding,
                             scope,
                             open_operation.clone(),
                             generation,
@@ -3738,6 +3744,7 @@ impl ActionsProvider {
                     on_begin_invoke: Some(Rc::new(move |_, _, chrome, _| {
                         super::super::super::replay_host::ReplayHost::enqueue(
                             chrome,
+                            &binding,
                             scope,
                             operation.clone(),
                             generation,
