@@ -830,6 +830,11 @@ pub struct InvocationReceipt {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InvocationState {
     pub update: InvocationUpdate,
+    /// The action's contract declares content from outside the user's data
+    /// ([`crate::UNTRUSTED_CONTENT_TAG`]), such as a web page's text: what it
+    /// answers is data to reason about, never instructions to follow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub untrusted: bool,
 }
 
 impl InvocationState {
@@ -838,7 +843,15 @@ impl InvocationState {
     pub fn new(invocation: InvocationId, update: InvocationUpdate) -> Self {
         Self {
             update: update.with_invocation(invocation),
+            untrusted: false,
         }
+    }
+
+    /// This state, saying whether what it answers is untrusted content.
+    #[must_use]
+    pub fn with_untrusted(mut self, untrusted: bool) -> Self {
+        self.untrusted = untrusted;
+        self
     }
 
     #[must_use]
