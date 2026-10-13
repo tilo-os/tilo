@@ -383,6 +383,11 @@ pub struct DesktopSurface {
     activity: Option<history::HistoryOverlay>,
     /// The banners and centre, when the host installed notifications.
     notices: Option<notices::NotificationLayer>,
+    /// Where the host collects what controls emit, once it has bound this
+    /// surface. A tab built after that (a launch, a record that arrived, a
+    /// rebuilt row) is bound to it as it is built, or its registered
+    /// buttons would emit into a queue nobody drains.
+    controls: Option<ui::ControlDomain>,
 }
 
 /// Time the update pass may spend building deferred tabs in one frame. At
@@ -462,6 +467,7 @@ impl DesktopSurface {
             history: None,
             activity: None,
             notices: None,
+            controls: None,
         };
         surface.show_active_strip();
         (surface, DesktopHandle { shared })
@@ -682,7 +688,13 @@ impl DesktopSurface {
             && let Some(strip) = workspace.strips.iter().find(|s| s.id == strip_id)
         {
             let focused = tree.active_group_for(strip_id);
-            let (row, deferred) = build_row_lazily(self.tiles.as_mut(), workspace, strip, focused);
+            let (row, deferred) = build_row_lazily(
+                self.tiles.as_mut(),
+                self.controls.as_ref(),
+                workspace,
+                strip,
+                focused,
+            );
             // The focused window, built first, is also the one in view.
             if self.reveal.is_none() {
                 self.reveal = focused.map(|group| (strip_id, group));
@@ -736,7 +748,12 @@ impl DesktopSurface {
             }) else {
                 continue;
             };
-            *host = build_tile(self.tiles.as_mut(), workspace, model);
+            *host = build_tile(
+                self.tiles.as_mut(),
+                self.controls.as_ref(),
+                workspace,
+                model,
+            );
             built = true;
             if ui::time::now().duration_since(started) >= BUILD_BUDGET {
                 break;
@@ -784,7 +801,13 @@ impl DesktopSurface {
                         .flat_map(|group| &group.tabs)
                         .any(|tab| live.contains_key(&tab.id));
                     if survives {
-                        let row = build_row(self.tiles.as_mut(), workspace, strip, &mut live);
+                        let row = build_row(
+                            self.tiles.as_mut(),
+                            self.controls.as_ref(),
+                            workspace,
+                            strip,
+                            &mut live,
+                        );
                         self.rows.insert(strip.id, row);
                     }
                 }
@@ -1182,7 +1205,7 @@ impl DesktopSurface {
                 WindowWidth::Normal,
             );
             if let Some(host) = built.host_for_tab_mut(tab.id) {
-                *host = build_tile(self.tiles.as_mut(), workspace, tab);
+                *host = build_tile(self.tiles.as_mut(), self.controls.as_ref(), workspace, tab);
             }
             row.insert_group(built, index);
         }
@@ -1388,7 +1411,7 @@ impl DesktopSurface {
         let Some(tab) = self.tiles.launch(workspace, id, app) else {
             return false;
         };
-        let host = build_tile(self.tiles.as_mut(), workspace, &tab);
+        let host = build_tile(self.tiles.as_mut(), self.controls.as_ref(), workspace, &tab);
         let Some(model) = find_group(&mut shared.tree, strip, group) else {
             return false;
         };
@@ -1457,6 +1480,7 @@ fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
 /// inactive tabs.
 fn build_row_lazily(
     tiles: &mut dyn TileSource,
+    controls: Option<&ui::ControlDomain>,
     workspace: &Workspace,
     strip: &tilo_desktop_model::Strip,
     focused: Option<GroupId>,
@@ -1481,7 +1505,7 @@ fn build_row_lazily(
                 let active = tab.id == group.active_tab;
                 if active && index == focus {
                     if let Some(host) = built.host_for_tab_mut(tab.id) {
-                        *host = build_tile(tiles, workspace, tab);
+                        *host = build_tile(tiles, controls, workspace, tab);
                     }
                 } else {
                     deferred.push((!active, index.abs_diff(focus), tab.id));
@@ -1511,6 +1535,7 @@ fn find_tab(tree: &DesktopTree, strip: StripId, tab: TabId) -> Option<(&Workspac
 /// `live` when present there, else from `tiles`.
 fn build_row(
     tiles: &mut dyn TileSource,
+    controls: Option<&ui::ControlDomain>,
     workspace: &Workspace,
     strip: &tilo_desktop_model::Strip,
     live: &mut HashMap<TabId, TileHost>,
@@ -1530,7 +1555,7 @@ fn build_row(
                 if let Some(host) = built.host_for_tab_mut(tab.id) {
                     *host = live
                         .remove(&tab.id)
-                        .unwrap_or_else(|| build_tile(tiles, workspace, tab));
+                        .unwrap_or_else(|| build_tile(tiles, controls, workspace, tab));
                 }
             }
             built
@@ -1540,11 +1565,24 @@ fn build_row(
 }
 
 /// `tab`'s content from `tiles`, its application named to a panic hook
-/// while it is built and whenever it runs.
-fn build_tile(tiles: &mut dyn TileSource, workspace: &Workspace, tab: &Tab) -> TileHost {
+/// while it is built and whenever it runs, and bound to the host's
+/// `controls` when the host already bound the surface.
+fn build_tile(
+    tiles: &mut dyn TileSource,
+    controls: Option<&ui::ControlDomain>,
+    workspace: &Workspace,
+    tab: &Tab,
+) -> TileHost {
     let _running = ui::widget::panic_scope::enter(Some(tab.id));
-    let host = tiles.tile(workspace, tab);
+    let mut host = tiles.tile(workspace, tab);
     host.set_panic_scope(tab.id);
+    if let Some(domain) = controls {
+        ui::widget::controls::install_control_custody(
+            &mut host,
+            domain,
+            ui::control_custody::CustodyAttachment::Dynamic,
+        );
+    }
     host
 }
 
@@ -1913,6 +1951,29 @@ impl ui::component_lifecycle::ComponentLifecycle for DesktopSurface {
 }
 
 impl ui::widget::controls::ActionControls for DesktopSurface {
+    /// Bind every tab, shown or not, and keep `domain` for the tabs built
+    /// later; then the overlays the surface currently shows.
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        self.controls = Some(domain.clone());
+        for row in self.rows.values_mut() {
+            for group in &mut row.groups {
+                let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
+                for tab in tabs {
+                    if let Some(host) = group.host_for_tab_mut(tab) {
+                        ui::widget::controls::install_control_custody(host, domain, attachment);
+                    }
+                }
+            }
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+
     /// An action row the palette queued outlives the palette closing on it.
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         ui::widget::controls::take_control_invocation(self.search.palette_mut())
