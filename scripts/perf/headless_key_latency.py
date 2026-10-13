@@ -174,7 +174,8 @@ def measure(args: argparse.Namespace) -> dict:
                     sys.exit(f"{app} did not open: {why}")
             else:
                 client_proc = subprocess.Popen(
-                    [str(client), app, "--damage", args.damage], env={**env, "WAYLAND_DISPLAY": wayland},
+                    [str(client), app, "--damage", args.damage, "--buffers", args.buffers],
+                    env={**env, "WAYLAND_DISPLAY": wayland},
                     stdout=subprocess.PIPE, text=True)
                 ready = client_proc.stdout.readline()
                 if not ready.startswith("READY"):
@@ -221,7 +222,8 @@ def measure(args: argparse.Namespace) -> dict:
     if uploads:
         paint["shm_upload_bytes"] = pixel_distribution(uploads)
     result = {"label": args.label, "app": app, "size": f"{args.width}x{args.height}",
-              "hz": args.hz, "keys_sent": args.keys, "damage": args.damage, "input": args.input, **paint,
+              "hz": args.hz, "keys_sent": args.keys, "damage": args.damage, "input": args.input,
+              "buffers": args.buffers, **paint,
               # Rendered frames per key sent: a key answered by one commit should cost one.
               "frames_per_key": round(len(gpu) / (args.keys + args.warmup), 2),
               "typing_frames_per_key": round(typing_frames / max(1, len(key_lines) - 1), 2),
@@ -279,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input", choices=("seat", "direct"), default="seat",
                         help="seat: keys enter the compositor's input funnel as a physical "
                              "keyboard's do; direct: straight to the focused client")
+    parser.add_argument("--buffers", choices=("shm", "dmabuf"), default="shm",
+                        help="the synthetic client's buffers: wl_shm, or LINEAR dma-bufs")
     parser.add_argument("--damage", choices=("full", "line"), default="full",
                         help="what the synthetic client damages per key")
     parser.add_argument("--app", help="type into this installed app instead of the synthetic client")
