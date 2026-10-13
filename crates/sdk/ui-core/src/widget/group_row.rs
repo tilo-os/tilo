@@ -3400,7 +3400,9 @@ impl Widget for GroupRow {
             g.set_strip_usable_px(usable);
         }
         for group in &mut self.groups {
-            group.set_fullscreen_presentation(self.fullscreen_group == Some(group.id));
+            group.set_fullscreen_presentation(
+                self.fullscreen_group == Some(group.id) && !self.promotion_keeps_gutter,
+            );
         }
         let group_nodes: Vec<NodeId> = self
             .groups
