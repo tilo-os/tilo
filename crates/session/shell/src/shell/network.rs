@@ -1026,14 +1026,60 @@ fn personal_continuity_backup_path(path: &Path) -> PathBuf {
     path.with_extension("postcard.backup")
 }
 
-fn purge_personal_continuity_store(path: &Path) {
+/// Remove the continuity store and its backup. Returns whether both are gone.
+fn purge_personal_continuity_store(path: &Path) -> bool {
+    let mut purged = true;
     for candidate in [path.to_path_buf(), personal_continuity_backup_path(path)] {
         match std::fs::remove_file(&candidate) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 tracing::warn!(%error, path = %candidate.display(), "personal continuity purge failed");
+                purged = false;
             }
+        }
+    }
+    purged
+}
+
+/// What this process last asked a state file that only it writes to hold,
+/// or nothing while that is unknown.
+///
+/// The network's upkeep runs on whatever wakes the compositor's loop, at
+/// most every couple of seconds, and asks for the same files each time: the
+/// exported room list, the continuity store or its purge. Asked for what
+/// the file already holds, it must touch nothing. Queueing the write wakes
+/// the state writer, and the write's own check (opening the file to compare)
+/// wakes every inotify watcher on its directory, the shell's among them. An
+/// idle desktop whose clock turned a minute did all of that on each turn.
+#[derive(Clone, Default)]
+struct KnownContents(Arc<Mutex<Option<FileContents>>>);
+
+/// A file and its bytes, `None` for no file.
+type FileContents = (PathBuf, Option<Vec<u8>>);
+
+impl KnownContents {
+    /// Record that `path` is to hold `contents` (`None`: no file), and return
+    /// whether that changes what it was known to hold.
+    fn changes(&self, path: &Path, contents: Option<&[u8]>) -> bool {
+        let Ok(mut known) = self.0.lock() else {
+            return true;
+        };
+        if known
+            .as_ref()
+            .is_some_and(|(at, held)| at == path && held.as_deref() == contents)
+        {
+            return false;
+        }
+        *known = Some((path.to_path_buf(), contents.map(<[u8]>::to_vec)));
+        true
+    }
+
+    /// A write did not land: what the file holds is unknown again, so the
+    /// next request writes it.
+    fn forget(&self) {
+        if let Ok(mut known) = self.0.lock() {
+            *known = None;
         }
     }
 }
@@ -1062,6 +1108,9 @@ fn load_personal_continuity(path: &Path) -> PersistedPersonalContinuity {
     }
 }
 
+/// Encode and write `value`; the network writes through
+/// [`write_personal_continuity`] with the bytes it keeps.
+#[cfg(test)]
 fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity) -> bool {
     let Ok(bytes) = postcard::to_allocvec(value) else {
         return false;
@@ -1238,6 +1287,11 @@ pub struct ShellNetwork {
     personal_continuity_counter: Mutex<u64>,
     personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
     personal_continuity_path: Option<PathBuf>,
+    /// What `personal_continuity_path` was last asked to hold.
+    personal_continuity_store: KnownContents,
+    /// What the exported room list (`personal-rooms.json`) was last asked to
+    /// hold.
+    personal_rooms_export: KnownContents,
     /// The person's workspace list, shared by all of their devices. `None`
     /// on a device the identity layer has not certified for a person.
     personal_workspaces: Option<Mutex<crate::shell::personal_workspaces::PersonalWorkspaces>>,
@@ -1769,10 +1823,13 @@ impl ShellNetwork {
         let app_continuations_permitted =
             crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
                 .permits(crate::shell::continuity_policy::ContinuityCapability::AppContinuations);
+        let personal_continuity_store = KnownContents::default();
         let persisted_continuity = if app_continuations_permitted {
             load_personal_continuity(&personal_continuity_path)
         } else {
-            purge_personal_continuity_store(&personal_continuity_path);
+            if purge_personal_continuity_store(&personal_continuity_path) {
+                personal_continuity_store.changes(&personal_continuity_path, None);
+            }
             PersistedPersonalContinuity {
                 counter: 0,
                 continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
@@ -1842,6 +1899,8 @@ impl ShellNetwork {
             personal_continuity_counter: Mutex::new(persisted_continuity.counter),
             personal_continuity_fingerprint: Mutex::new(None),
             personal_continuity_path: Some(personal_continuity_path),
+            personal_continuity_store,
+            personal_rooms_export: KnownContents::default(),
             personal_workspaces,
             last_personal_workspaces_snapshot: Mutex::new(None),
             #[cfg(test)]
@@ -3667,10 +3726,17 @@ impl ShellNetwork {
             return;
         };
         // Runs on every home-peer refresh, on the compositor's loop; the room
-        // list rarely changes, and an unchanged rewrite still costs a file and
-        // a directory fsync. The comparison and the write belong to the state
-        // writer, which keeps the newest per file.
+        // list rarely changes. A list this session already exported is left
+        // alone without waking the state writer or opening the file.
+        if !self.personal_rooms_export.changes(&path, Some(&bytes)) {
+            return;
+        }
+        // The first export of a session may find the list a previous one
+        // left; an unchanged rewrite would still cost a file and a directory
+        // fsync. The comparison and the write belong to the state writer,
+        // which keeps the newest per file.
         let target = path.clone();
+        let known = self.personal_rooms_export.clone();
         crate::shell::durable_writer::global().submit(path, move || {
             if std::fs::read(&target).is_ok_and(|current| current == bytes) {
                 return;
@@ -3678,7 +3744,9 @@ impl ShellNetwork {
             if let Some(parent) = target.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let _ = tilo_files::native::atomic::write(&target, &bytes);
+            if tilo_files::native::atomic::write(&target, &bytes).is_err() {
+                known.forget();
+            }
         });
     }
 
@@ -4462,12 +4530,19 @@ impl ShellNetwork {
         {
             registry.clear_remote();
         }
-        if let Some(path) = self.personal_continuity_path.as_deref() {
+        // Every upkeep round asks again while the switch is off; the store is
+        // purged once, when it goes off (or a purge failed).
+        if let Some(path) = self.personal_continuity_path.as_deref()
+            && self.personal_continuity_store.changes(path, None)
+        {
             // Behind any write queued for the store, so a write the policy
             // change overtook cannot bring the file back.
             let target = path.to_path_buf();
+            let known = self.personal_continuity_store.clone();
             crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
-                purge_personal_continuity_store(&target);
+                if !purge_personal_continuity_store(&target) {
+                    known.forget();
+                }
             });
         }
         if let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) {
@@ -4614,21 +4689,33 @@ impl ShellNetwork {
             counter: *counter,
             continuity: continuity.clone(),
         };
+        let Ok(bytes) = postcard::to_allocvec(&value) else {
+            return false;
+        };
         let durable = if claims.is_some() {
             // The acknowledgement below says this exact value is on disk.
-            persist_personal_continuity(path, &value)
+            let written = write_personal_continuity(path, &bytes);
+            if written {
+                self.personal_continuity_store.changes(path, Some(&bytes));
+            } else {
+                self.personal_continuity_store.forget();
+            }
+            written
         } else {
             // Every sync round asks for this, from the compositor's loop; the
             // write (a backup and a primary, four fsyncs) goes to the state
-            // writer, which keeps the newest per file. Nothing here reads the
-            // result as proof of durability.
-            let Ok(bytes) = postcard::to_allocvec(&value) else {
-                return false;
-            };
-            let target = path.to_path_buf();
-            crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
-                write_personal_continuity(&target, &bytes);
-            });
+            // writer, which keeps the newest per file. A quiet round asks for
+            // what the store already holds and queues nothing. Nothing here
+            // reads the result as proof of durability.
+            if self.personal_continuity_store.changes(path, Some(&bytes)) {
+                let target = path.to_path_buf();
+                let known = self.personal_continuity_store.clone();
+                crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
+                    if !write_personal_continuity(&target, &bytes) {
+                        known.forget();
+                    }
+                });
+            }
             true
         };
         // The acknowledgement refers to the exact value durably written
@@ -7766,6 +7853,8 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_counter: Mutex::new(0),
         personal_continuity_fingerprint: Mutex::new(None),
         personal_continuity_path: None,
+        personal_continuity_store: KnownContents::default(),
+        personal_rooms_export: KnownContents::default(),
         personal_workspaces: None,
         last_personal_workspaces_snapshot: Mutex::new(None),
         personal_focus_recency: Mutex::default(),
@@ -8523,6 +8612,64 @@ mod tests {
             owner.as_deref(),
             Some(crate::shell::state::local_user_id().as_str())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_quiet_upkeep_round_queues_no_state_write() {
+        // The upkeep runs on whatever wakes the compositor's loop, a clock
+        // minute on an idle desktop. Asked for what the files already hold,
+        // it must not wake the state writer, whose check opens the file and
+        // wakes every inotify watcher on the directory.
+        fn submits() -> usize {
+            crate::shell::durable_writer::SUBMITS_ON_THIS_THREAD.with(std::cell::Cell::get)
+        }
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let state = dir.path().join("state");
+        let export = state.join("tilo/personal-rooms.json");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", &state);
+        let (mut net, _commands) = personal_continuity_network_for_test([0x44; 32]);
+        let store = dir.path().join("personal-continuity.postcard");
+        net.personal_continuity_path = Some(store.clone());
+        assert!(net.join_default_workspace());
+        assert!(net.persist_personal_continuity());
+        crate::shell::persist::wait_for_saves();
+        assert!(export.exists(), "the room list is exported");
+        assert!(store.exists(), "the continuity store is written");
+
+        let before = submits();
+        let _ = net.refresh_home_peer_hosts();
+        assert!(net.persist_personal_continuity());
+        assert_eq!(
+            submits(),
+            before,
+            "an unchanged room list and continuity store must not be queued again"
+        );
+
+        // Turning app continuations off purges the store once, not on every
+        // round that finds it off.
+        net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
+        assert!(!net.enforce_app_continuations_policy());
+        crate::shell::persist::wait_for_saves();
+        assert!(
+            !store.exists(),
+            "revoking app continuations purges the store"
+        );
+        let before = submits();
+        assert!(!net.enforce_app_continuations_policy());
+        assert!(!net.enforce_app_continuations_policy());
+        assert_eq!(submits(), before, "a purged store is not purged again");
+
+        // Allowed again, the next round writes it back.
+        net.continuity_policy_override = Some(test_continuity_policy(true, true, true));
+        assert!(net.persist_personal_continuity());
+        crate::shell::persist::wait_for_saves();
+        assert!(store.exists(), "the store is written once allowed again");
     }
 
     #[test]
