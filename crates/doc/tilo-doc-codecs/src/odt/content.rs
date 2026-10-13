@@ -790,12 +790,9 @@ impl BodyState {
                 // overrides the style start, and `text:continue-numbering="true"` means it continues rather than restarting its count.
                 let numbering = style.as_deref().and_then(|s| reg.list_numbering.get(s));
                 let mut num_format = numbering.and_then(|n| n.num_format);
-                let mut num_start = numbering.and_then(|n| n.num_start);
-                if let Some(s) =
-                    attr_val(e, b"text:start-value").and_then(|v| v.parse::<i64>().ok())
-                {
-                    num_start = Some(s);
-                }
+                let num_start = attr_val(e, b"text:start-value")
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .or_else(|| numbering.and_then(|n| n.num_start));
                 let continuing = attr_val(e, b"text:continue-numbering")
                     .is_some_and(|v| v == "true" || v == "1");
                 // A list that doesn't continue restarts; an explicit start-value also implies a restart at that value.

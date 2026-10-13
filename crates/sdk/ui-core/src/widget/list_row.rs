@@ -3371,7 +3371,7 @@ impl crate::widget::Decorator for ControlRow {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
             let hovered = Widget::get_rect(&self.content).contains(self.cursor);
             self.dirty |= hovered != self.hovered;
             self.hovered = hovered;
@@ -3410,10 +3410,7 @@ impl crate::widget::Decorator for ControlRow {
         Some(
             AccessNode::new(Role::ListItem)
                 .with_optional_name(self.name.clone())
-                .with_state(AccessState {
-                    selected: self.selected,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().selected(self.selected)),
         )
     }
 

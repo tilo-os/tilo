@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::TextKind;
 use ui::a11y::Politeness;
 use ui::icons::Icon;
@@ -1844,15 +1844,17 @@ impl ImportApp {
     }
 
     fn poll_background(&mut self) -> bool {
-        let mut changed = self.poll_continued_review();
-        if let Some(outcome) = self.navigation.poll() {
+        let reviewed = self.poll_continued_review();
+        let mut changed = if let Some(outcome) = self.navigation.poll() {
             self.status_is_error = outcome.is_err();
             self.status = outcome
                 .err()
                 .unwrap_or_else(|| super::strings::t("imager-journey-navigation-opened"));
             self.composed.invalidate();
-            changed = true;
-        }
+            true
+        } else {
+            reviewed
+        };
         self.poll_identity_gate(&mut changed);
         let mut terminal = false;
         // At most one latest progress update and one terminal event per frame.
@@ -2742,10 +2744,7 @@ impl Widget for ImportApp {
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &[child], node_map, self)

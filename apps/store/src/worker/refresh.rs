@@ -260,7 +260,8 @@ impl Refresh {
                 state.installed = installed_flatpaks(&status.installed);
                 state.installed_origins =
                     crate::flathub_client::installed_origins(&status.installed);
-                state.remotes = crate::flathub_client::list_remotes(&status.remotes);
+                state.remotes =
+                    crate::flathub_client::refreshed_remotes(&status.remotes, &state.remotes);
                 // Keep ready configured Flatpak sources independent of a
                 // queue of slow native registries, within the same four slots.
                 for remote in state.remotes.iter().rev().filter(|remote| !remote.disabled) {
@@ -278,17 +279,24 @@ impl Refresh {
                 .errors
                 .push((0, format!("Could not read apps on this device: {error}"))),
             Response::Native(registry, result) => self.native_response(registry, result),
-            Response::Flatpak(remote, result) => match result {
-                Ok(rows) => {
+            Response::Flatpak(remote, result) => {
+                if let Some(current) = state
+                    .remotes
+                    .iter_mut()
+                    .find(|item| item.resource_id() == remote.resource_id())
+                {
+                    current.catalogue_error = result
+                        .as_ref()
+                        .err()
+                        .map(|error| crate::flathub_client::remote_error(&remote, error));
+                }
+                if let Ok(rows) = result {
                     self.flatpak.insert(
                         remote.resource_id(),
                         crate::sources::remote_catalogue_items(&rows, &remote, &state.installed),
                     );
                 }
-                Err(error) => self
-                    .errors
-                    .push((2, crate::flathub_client::remote_error(&remote, &error))),
-            },
+            }
             Response::Popular(Ok(records)) => self.popular = Some(records),
             Response::Popular(Err(error)) => self
                 .errors

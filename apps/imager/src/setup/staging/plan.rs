@@ -836,10 +836,6 @@ pub(crate) mod tests {
 
     /// Size rounding, minimums, reserve, bounds and full disks.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn plan_sizes_reserves_and_bounds_are_exact() {
         // Phase `staging_sizes_round_up_to_whole_mib`.
         {
@@ -919,10 +915,6 @@ pub(crate) mod tests {
 
     /// Partition map consistency, system volume, digest and loader path.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn plans_require_consistent_maps_and_bind_digest_and_loader() {
         // Phase `inconsistent_partition_maps_are_unsupported`.
         {
@@ -1106,10 +1098,6 @@ pub(crate) mod tests {
 
     /// Windows shrink planning.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn windows_plan_shrinks_c_only_by_the_safe_shortfall() {
         // Phase `windows_shrinks_c_by_exactly_the_shortfall_before_winre`.
         {

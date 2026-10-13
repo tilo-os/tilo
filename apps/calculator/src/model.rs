@@ -260,16 +260,6 @@ impl CalcModel {
         }
     }
 
-    /// Live preview of the current expression (grey under the input).
-    pub fn preview(&self) -> Option<String> {
-        if self.expr.trim().is_empty() {
-            return None;
-        }
-        engine::evaluate(&self.expr, &self.ctx())
-            .ok()
-            .map(engine::format_number)
-    }
-
     /// Commit `=`: evaluate, push history, update Ans. Returns the committed
     /// [`HistoryEntry`] (a clone) so the caller can submit the matching
     /// `commit-history` verb — the shared, replayable, undoable path the
@@ -414,14 +404,6 @@ pub enum KeyRole {
     Function,
     Equals,
     Clear,
-}
-
-/// The full 6-column scientific keypad. Kept for back-compat and used by the
-/// [`KeypadLayout::Scientific`] variant. Row-major; cells are dense.
-pub const KEYPAD_COLS: usize = 6;
-
-pub fn keypad() -> Vec<Key> {
-    KeypadLayout::Scientific.keys()
 }
 
 /// How dense the on-screen keypad is, chosen from the available body area so
@@ -819,11 +801,6 @@ mod tests {
     /// and every layout keeps the quick-calc essentials.
     #[test]
     fn keypad_layouts_are_dense_grids_chosen_by_width_with_essentials() {
-        // phase keypad_is_full_grid
-        {
-            assert_eq!(keypad().len() % KEYPAD_COLS, 0);
-        }
-
         // phase every_keypad_layout_is_a_dense_grid
         {
             for layout in [

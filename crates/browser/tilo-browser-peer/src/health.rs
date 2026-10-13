@@ -310,10 +310,6 @@ fn failure_scope(code: &str) -> (&'static str, &'static str, Vec<RecoveryRequest
 
 impl PeerSnapshot {
     /// Derive the snapshot from a session status.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one projection of the status onto the SessionHealth v1 shape"
-    )]
     pub fn from_status(status: &PeerStatus) -> Self {
         let waiting_rooms = status.rooms.values().filter(|ready| !**ready).count();
         let connected = status.phase == TransportPhase::Connected;

@@ -133,6 +133,7 @@ impl Door {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         ))
         .map(|receipt| receipt.status)
@@ -154,7 +155,7 @@ fn press(
     modifiers: winit::keyboard::ModifiersState,
 ) -> bool {
     use std::collections::HashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
     use ui::widget::Widget as _;
 
     let theme = ui::theme::Theme::dark();
@@ -164,10 +165,7 @@ fn press(
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(1280.0),
-                    height: Dimension::length(800.0),
-                },
+                size: Size::from_lengths(1280.0, 800.0),
                 ..Default::default()
             },
             &[child],
@@ -190,11 +188,7 @@ fn press(
     host.apply_layout(&taffy, child, vello::kurbo::Point::ORIGIN);
 
     let event = ui::synthetic_input::key_event(key, None, winit::event::ElementState::Pressed);
-    let event = winit::event::WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    };
+    let event = ui::synthetic_input::keyboard_input(event);
     ui::testing::Dispatch::new()
         .modifiers(modifiers)
         .layout(&taffy, child)
@@ -424,6 +418,7 @@ fn a_helper_asked_first_rebinds_on_the_persons_confirmation() {
         confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
         revision: None,
         wait_ms: None,
+        appearance: None,
     };
     assert_eq!(
         answer(door.host.invoke(&agent, request())).err(),

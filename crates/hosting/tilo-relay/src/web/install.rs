@@ -464,12 +464,6 @@ async fn install(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in tests these are assertions"
-)]
 mod tests {
     use super::*;
     use crate::web::TlsSource;
@@ -530,6 +524,9 @@ mod tests {
             },
             allowed_origins: vec!["https://console.example".into()],
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
+            public_origin: None,
+            live_origin: None,
+            limits: crate::web::WebLimits::default(),
         }
     }
 

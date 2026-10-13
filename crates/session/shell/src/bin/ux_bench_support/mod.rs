@@ -149,10 +149,7 @@ fn apply(driver: &mut FrameHarness, command: &Command, scale: f64, counts: &mut 
             counts.keys += u32::try_from(text.chars().count()).unwrap_or(4096);
         }
         Command::Wheel { x, y, dx, dy } => {
-            driver.send(&WindowEvent::CursorMoved {
-                device_id: DeviceId::dummy(),
-                position: PhysicalPosition::new(x * scale, y * scale),
-            });
+            driver.send(&ui::synthetic_input::cursor_moved(x * scale, y * scale));
             driver.send(&WindowEvent::MouseWheel {
                 device_id: DeviceId::dummy(),
                 delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(

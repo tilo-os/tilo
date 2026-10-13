@@ -104,6 +104,7 @@ pub fn review_local(
     let expected = app_host::local_package::local_expectation(&checked, bytes.len() as u64)
         .map_err(|_| ui::i18n!("store-package-invalid"))?;
     let item = StoreItem {
+        bot: None,
         id: package.id.clone(),
         name: package.name.clone().unwrap_or_else(|| package.id.clone()),
         description: ui::i18n!("store-package-local-description"),
@@ -226,8 +227,10 @@ pub(crate) mod tests {
             .versions
             .iter()
             .find(|version| {
-                version.version.starts_with("0.1.70738+") && version.target.architecture == "x86_64"
+                version.version.starts_with("0.1.70738+")
+                    && version.target().unwrap().architecture == "x86_64"
             })
+            .and_then(registry_types::RegistryVersion::tapp)
             .unwrap();
         assert_eq!(bytes.len() as u64, offered.tapp_size_bytes);
         assert_eq!(
@@ -297,6 +300,7 @@ type = "gui"
         let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
         let thin = tilo_app_package::tapp::to_bytes(&packed.meta, None).unwrap();
         let item = StoreItem {
+            bot: None,
             id: manifest.package.id,
             name: "Import fixture".into(),
             description: "A signed test app".into(),

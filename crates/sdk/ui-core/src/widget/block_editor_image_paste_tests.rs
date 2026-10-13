@@ -12,14 +12,7 @@ fn ctrl_v(editor: &mut BlockEditor, doc: &mut AutoCommit) -> bool {
     let handled = Dispatch::new()
         .modifiers(ModifiersState::CONTROL)
         .doc(doc)
-        .send(
-            editor,
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event,
-                is_synthetic: false,
-            },
-        )
+        .send(editor, &crate::synthetic_input::keyboard_input(event))
         .handled;
     editor.sync(doc, &ROOT);
     handled

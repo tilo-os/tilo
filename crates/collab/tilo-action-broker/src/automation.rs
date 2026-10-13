@@ -843,13 +843,23 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
                 "`{mode}` is not a focus mode; `{FOCUS_DO_NOT_DISTURB}` and `{FOCUS_SCHEDULE}` are"
             ))
         }
+        TriggerSpec::RecordChanged { kind, .. } if kind.trim().is_empty() => {
+            Err("a record trigger names the record kind it watches".into())
+        }
+        TriggerSpec::Connector { .. } => Err(
+            "connector triggers run only bots, on the room's host; a Shortcut cannot watch one"
+                .into(),
+        ),
         TriggerSpec::AppOpened { .. }
         | TriggerSpec::WorkspaceJoined { .. }
         | TriggerSpec::FileChanged { .. }
-        | TriggerSpec::FocusMode { .. } => Ok(()),
+        | TriggerSpec::FocusMode { .. }
+        | TriggerSpec::RecordChanged { .. }
+        | TriggerSpec::IncomingMessage { .. } => Ok(()),
         other => Err(format!(
             "`{}` triggers cannot be saved yet; keyboard, schedule, app-opened, \
-             workspace-joined, file-changed and focus-mode triggers can",
+             workspace-joined, file-changed, focus-mode, record-changed and \
+             incoming-message triggers can",
             other.kind()
         )),
     }
@@ -968,5 +978,43 @@ mod tests {
         assert_eq!(run.params, workspace.shortcuts[0].inputs);
         assert!(matches!(run.contract.result, ResultSpec::Json { .. }));
         assert_eq!(run_target(&run.address), Some("tidy"));
+    }
+
+    #[test]
+    fn a_persons_shortcut_may_watch_records_and_messages_but_not_connectors() {
+        use tilo_automation::ActorFilter;
+        assert!(
+            validate_trigger(&TriggerSpec::RecordChanged {
+                kind: "chat.workspace".into(),
+                actions: vec![],
+                fields: vec![],
+                by: ActorFilter::Anyone,
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_trigger(&TriggerSpec::IncomingMessage {
+                app_id: None,
+                from: None
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_trigger(&TriggerSpec::RecordChanged {
+                kind: " ".into(),
+                actions: vec![],
+                fields: vec![],
+                by: ActorFilter::Anyone,
+            })
+            .unwrap_err()
+            .contains("names the record kind")
+        );
+        let refused = validate_trigger(&TriggerSpec::Connector {
+            app_id: "so.tilo.discord".into(),
+            source: "message-created".into(),
+            filter: serde_json::Map::new(),
+        })
+        .unwrap_err();
+        assert!(refused.contains("only bots"), "{refused}");
     }
 }

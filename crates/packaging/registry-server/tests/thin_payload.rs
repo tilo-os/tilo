@@ -5,11 +5,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -114,6 +110,7 @@ fn publish(
     std::fs::write(objects.join("package.tapp"), &thin).unwrap();
     let entry = RegistryEntry {
         package_id: manifest.package.id.clone(),
+        kind: registry_types::EntryKind::App,
         name: "Runtime".into(),
         description: "Shared runtime".into(),
         tagline: "Shared".into(),
@@ -128,18 +125,20 @@ fn publish(
         publisher_pubkey_hex: hex::encode(identity.public_key_bytes()),
         versions: vec![RegistryVersion {
             version: manifest.package.version.clone(),
-            tapp_url: format!("{base_url}/package.tapp"),
-            tapp_root_hash_hex: split.meta.id.to_hex(),
-            tapp_size_bytes: thin.len() as u64,
             released_at_unix: 1,
-            tapp_blake3_hex: blake3::hash(&thin).to_hex().to_string(),
-            target: RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: manifest.package.native_runtime_binding().map(str::to_owned),
-                interfaces: Vec::new(),
-            },
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: format!("{base_url}/package.tapp"),
+                tapp_root_hash_hex: split.meta.id.to_hex(),
+                tapp_size_bytes: thin.len() as u64,
+                tapp_blake3_hex: blake3::hash(&thin).to_hex().to_string(),
+                target: RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: manifest.package.native_runtime_binding().map(str::to_owned),
+                    interfaces: Vec::new(),
+                },
+            }),
         }],
         updated_at_unix: 1,
         signature_hex: String::new(),
@@ -469,6 +468,13 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
 
 fn list_root(published: &Published) -> [u8; 32] {
     let mut root = [0u8; 32];
-    hex::decode_to_slice(&published.entry.versions[0].tapp_root_hash_hex, &mut root).unwrap();
+    hex::decode_to_slice(
+        &published.entry.versions[0]
+            .tapp()
+            .unwrap()
+            .tapp_root_hash_hex,
+        &mut root,
+    )
+    .unwrap();
     root
 }

@@ -12,7 +12,7 @@ use crate::BrowserWidget;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::style_helpers::{auto, length};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -357,10 +357,7 @@ impl Widget for BrowserWindow {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let full = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Style::default()
         };
         if self.immersive() {
@@ -400,10 +397,7 @@ impl Widget for BrowserWindow {
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            min_size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::length(0.0),
-            },
+            min_size: Size::from_lengths(0.0, 0.0),
             ..full
         };
         taffy.widget_node(

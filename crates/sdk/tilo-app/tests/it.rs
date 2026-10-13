@@ -39,6 +39,8 @@ pub mod incremental;
 pub mod item_actions;
 #[path = "item_effects.rs"]
 pub mod item_effects;
+#[path = "item_navigation.rs"]
+pub mod item_navigation;
 #[path = "item_offers.rs"]
 pub mod item_offers;
 #[path = "kinds.rs"]
@@ -76,6 +78,8 @@ pub mod scenarios;
 pub mod scroll_copy;
 #[path = "settings.rs"]
 pub mod settings;
+#[path = "share_links.rs"]
+pub mod share_links;
 #[path = "surface_report.rs"]
 pub mod surface_report;
 #[path = "surface_semantics.rs"]

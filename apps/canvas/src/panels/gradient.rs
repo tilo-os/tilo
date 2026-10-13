@@ -235,9 +235,7 @@ impl Widget for GradientBar {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -315,8 +313,7 @@ impl Widget for GradientBar {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if let Some((index, _, _)) = self.dragging {
                     let at = self.at(self.cursor.x);
                     self.dragging = Some((index, at, true));
@@ -386,10 +383,6 @@ impl Widget for GradientBar {
 
     fn name(&self) -> &'static str {
         "GradientBar"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

@@ -189,6 +189,9 @@ unic-langid.workspace = true
 # cosmic-text uses the same crate internally; naming it directly lets toolkit
 # code that must mirror shaped rows avoid ASCII-space heuristics.
 unicode-linebreak = "0.1.5"
+# Confusable skeletons: a bot's shown name that looks like a room member's
+# is labelled with its service.
+unicode-normalization = "0.1.25"
 # ICU grapheme clusters, plus dictionary/LSTM segmentation for scripts whose
 # word boundaries cannot be inferred from whitespace (Thai, Lao, Khmer,
 # Myanmar, CJK); natively only, see text_break.rs.

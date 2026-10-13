@@ -221,10 +221,6 @@ async fn checked_restore_appends_exact_results_once_and_noops_preserve_bytes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
 async fn checked_restore_refuses_changed_reviews_and_same_byte_ambiguity() {
     // Phase `checked_restore_same_byte_edit_invalidates_review_before_any_restore_write`.
     {
@@ -1027,10 +1023,6 @@ async fn checked_restore_durable_phases_reopen_exactly_and_frontiers_parent_all_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
 async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() {
     // Phase `checked_restore_scope_codecs_and_transport_fail_closed`.
     {

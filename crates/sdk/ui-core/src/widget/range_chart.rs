@@ -21,7 +21,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
+    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_index,
 };
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -111,12 +111,9 @@ pub struct RangeChart {
     axis_title: String,
     formatter: Option<Box<dyn Fn(f64) -> String>>,
     rect: Rect,
-    pointer: Point,
+    inspection: ChartInspection<String>,
     hits: Vec<(String, Rect)>,
-    hovered: Option<String>,
     activated: Option<String>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
 }
 
 impl RangeChart {
@@ -128,12 +125,9 @@ impl RangeChart {
             axis_title: String::new(),
             formatter: None,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
+            inspection: ChartInspection::default(),
             hits: Vec::new(),
-            hovered: None,
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
         }
     }
     #[must_use]
@@ -155,25 +149,24 @@ impl RangeChart {
         self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.hovered = self
+        self.inspection.hovered = self
             .bars
             .iter()
             .any(|bar| bar.valid() && bar.id == id)
             .then(|| id.to_owned());
-        self.keyboard_inspection = self.hovered.is_some();
+        self.inspection.keyboard = self.inspection.hovered.is_some();
         if let Some(rect) = self
             .hits
             .iter()
-            .find(|(candidate, _)| Some(candidate) == self.hovered.as_ref())
+            .find(|(candidate, _)| Some(candidate) == self.inspection.hovered.as_ref())
             .map(|(_, rect)| *rect)
         {
-            self.pointer = rect.center();
+            self.inspection.pointer = rect.center();
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
 
     fn height(&self) -> f32 {
@@ -228,21 +221,15 @@ impl RangeChart {
 }
 
 impl InteractiveChart for RangeChart {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = String;
+    fn inspection(&mut self) -> &mut ChartInspection<String> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
-        self.hovered = self.hit(self.pointer).map(str::to_owned);
-    }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
+        self.inspection.hovered = self.hit(self.inspection.pointer).map(str::to_owned);
     }
     fn activate_hovered(&mut self) -> bool {
-        let Some(id) = &self.hovered else {
+        let Some(id) = &self.inspection.hovered else {
             return false;
         };
         self.activated = Some(id.clone());
@@ -256,21 +243,22 @@ impl InteractiveChart for RangeChart {
             .map(|bar| bar.id.as_str())
             .collect::<Vec<_>>();
         let current = self
+            .inspection
             .hovered
             .as_deref()
             .and_then(|id| candidates.iter().position(|candidate| *candidate == id));
-        self.hovered = moved_index(current, candidates.len(), action)
+        self.inspection.hovered = moved_index(current, candidates.len(), action)
             .and_then(|index| candidates.get(index))
             .map(|id| (*id).to_owned());
         if let Some(rect) = self
             .hits
             .iter()
-            .find(|(candidate, _)| Some(candidate) == self.hovered.as_ref())
+            .find(|(candidate, _)| Some(candidate) == self.inspection.hovered.as_ref())
             .map(|(_, rect)| *rect)
         {
-            self.pointer = rect.center();
+            self.inspection.pointer = rect.center();
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
@@ -290,9 +278,7 @@ impl Widget for RangeChart {
         };
         taffy.widget_leaf(style, map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
     #[allow(
         clippy::too_many_lines,
         reason = "axis, intervals, milestones, progress, and inspector share a projection"
@@ -420,7 +406,7 @@ impl Widget for RangeChart {
                         &RoundedRect::from_rect(fill, self.style.corner_radius),
                     );
                 }
-                if self.hovered.as_deref() == Some(&bar.id) {
+                if self.inspection.hovered.as_deref() == Some(&bar.id) {
                     scene.stroke(
                         &Stroke::new(2.0),
                         transform,
@@ -433,16 +419,17 @@ impl Widget for RangeChart {
             };
             self.hits.push((bar.id.clone(), rect));
         }
-        if self.keyboard_inspection
+        if self.inspection.keyboard
             && let Some(rect) = self
                 .hits
                 .iter()
-                .find(|(candidate, _)| Some(candidate) == self.hovered.as_ref())
+                .find(|(candidate, _)| Some(candidate) == self.inspection.hovered.as_ref())
                 .map(|(_, rect)| *rect)
         {
-            self.pointer = rect.center();
+            self.inspection.pointer = rect.center();
         }
         let hovered = self
+            .inspection
             .hovered
             .as_deref()
             .and_then(|id| self.bars.iter().find(|bar| bar.id == id));
@@ -462,7 +449,7 @@ impl Widget for RangeChart {
                 transform,
                 tr,
                 theme,
-                self.pointer,
+                self.inspection.pointer,
                 self.rect,
                 150.0,
                 (&bar.label, &detail),
@@ -491,10 +478,7 @@ impl Widget for RangeChart {
                     } else {
                         b.detail.clone()
                     })
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect();
         Some(root)
@@ -518,9 +502,6 @@ impl Widget for RangeChart {
     }
     fn name(&self) -> &'static str {
         "RangeChart"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
     fn is_focusable(&self) -> bool {
         true

@@ -29,10 +29,7 @@ use crate::effects::BrowserEffect;
 use crate::library::{Bookmark, MAX_BOOKMARKS};
 use crate::settings::Settings;
 
-/// The browser's Fluent catalog.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
 /// The browser's document: collaborative bookmarks, the preferences, and
 /// the origins tracker protection is off for.

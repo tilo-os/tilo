@@ -22,8 +22,60 @@ pub const MAX_TRUSTED_IDENTITY_PROJECTION_BYTES: u64 = 128 * 1024;
 pub const MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS: usize = 256;
 /// Maximum certified devices across all humans in one projection.
 pub const MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES: usize = 1024;
-/// Maximum UTF-8 byte length of a governance-controlled display name.
+/// Maximum UTF-8 byte length of a person's display name: the one bound
+/// every host, room and browser keeps a name to (see [`display_name`]).
 pub const MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES: usize = 128;
+
+/// Why a name a person gave themself is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayNameError {
+    /// Nothing but whitespace.
+    Empty,
+    /// Longer than [`MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES`] of UTF-8.
+    TooLong,
+    /// A control character (a line break, a bell, ...).
+    Control,
+}
+
+impl DisplayNameError {
+    /// The reason, as the person is told it.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Empty => "the name is empty",
+            Self::TooLong => "the name is longer than 128 bytes",
+            Self::Control => "the name contains control characters",
+        }
+    }
+}
+
+impl std::fmt::Display for DisplayNameError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.reason())
+    }
+}
+
+impl std::error::Error for DisplayNameError {}
+
+/// `name` trimmed, if it is a display name every host and room keeps: not
+/// empty, at most [`MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES`] of UTF-8, no
+/// control characters. Self-asserted text, never authority.
+///
+/// # Errors
+///
+/// Returns why the name is refused.
+pub fn display_name(name: &str) -> Result<&str, DisplayNameError> {
+    let name = name.trim();
+    if name.is_empty() {
+        Err(DisplayNameError::Empty)
+    } else if name.len() > MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES {
+        Err(DisplayNameError::TooLong)
+    } else if name.chars().any(char::is_control) {
+        Err(DisplayNameError::Control)
+    } else {
+        Ok(name)
+    }
+}
 
 /// Why a host identity projection is not safe to publish or consume.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -105,11 +157,7 @@ impl TrustedIdentityProjectionV1 {
             if !roots.insert(human.root_public_key) {
                 return Err(TrustedIdentityProjectionError::DuplicateRootKey);
             }
-            if human.display_name.is_empty()
-                || human.display_name.trim() != human.display_name
-                || human.display_name.len() > MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES
-                || human.display_name.chars().any(char::is_control)
-            {
+            if display_name(&human.display_name) != Ok(human.display_name.as_str()) {
                 return Err(TrustedIdentityProjectionError::InvalidDisplayName);
             }
         }
@@ -247,11 +295,7 @@ impl GovernedAgentIdentityV2 {
 }
 
 fn validate_name(name: &str) -> Result<(), TrustedIdentityProjectionError> {
-    if name.is_empty()
-        || name.trim() != name
-        || name.len() > MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES
-        || name.chars().any(char::is_control)
-    {
+    if display_name(name) != Ok(name) {
         return Err(TrustedIdentityProjectionError::InvalidDisplayName);
     }
     Ok(())
@@ -424,5 +468,29 @@ mod tests {
         };
         let text = serde_json::to_string(&unmarked).unwrap();
         assert!(!text.contains("agent\":"), "{text}");
+    }
+
+    #[test]
+    fn a_display_name_is_128_bytes_of_utf8_trimmed_and_printable() {
+        assert_eq!(display_name("  Ada Lovelace "), Ok("Ada Lovelace"));
+        // 100 bytes in 25 or 33 characters, and 100 characters of one byte.
+        for name in ["😀".repeat(25), "界".repeat(33), "a".repeat(100)] {
+            assert_eq!(display_name(&name), Ok(name.as_str()));
+        }
+        assert_eq!(display_name(&"a".repeat(128)).map(str::len), Ok(128));
+        assert_eq!(
+            display_name(&"界".repeat(43)),
+            Err(DisplayNameError::TooLong)
+        );
+        assert_eq!(display_name(" \t "), Err(DisplayNameError::Empty));
+        assert_eq!(
+            display_name("Ada\nLovelace"),
+            Err(DisplayNameError::Control)
+        );
+        assert!(
+            DisplayNameError::TooLong
+                .reason()
+                .contains(&MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES.to_string())
+        );
     }
 }

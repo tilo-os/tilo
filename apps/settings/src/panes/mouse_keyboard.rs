@@ -2852,13 +2852,10 @@ mod tests {
             if rect.y0 >= 0.0 && rect.y1 <= f64::from(viewport.1) {
                 return;
             }
-            app.harness().send(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(
-                    f64::from(viewport.0) - 60.0,
-                    f64::from(viewport.1) / 2.0,
-                ),
-            });
+            app.harness().send(&ui::synthetic_input::cursor_moved(
+                f64::from(viewport.0) - 60.0,
+                f64::from(viewport.1) / 2.0,
+            ));
             app.harness().scroll(0.0, -3.0);
         }
         panic!(
@@ -3403,10 +3400,8 @@ mod tests {
                 .iter()
                 .any(|symbol| symbol == "z")
         );
-        let key = |state| WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            is_synthetic: false,
-            event: winit::event::KeyEvent::synthetic(
+        let key = |state| {
+            ui::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
                 winit::event::RawKeyEvent {
                     physical_key: winit::keyboard::PhysicalKey::Code(
                         winit::keyboard::KeyCode::KeyY,
@@ -3419,7 +3414,7 @@ mod tests {
                 false,
                 Some("z".into()),
                 winit::keyboard::Key::Character("z".into()),
-            ),
+            ))
         };
         app.harness()
             .dispatch_to_root(&key(winit::event::ElementState::Pressed));

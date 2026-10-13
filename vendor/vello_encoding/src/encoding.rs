@@ -158,7 +158,19 @@ impl Encoding {
         self.n_path_segments += other.n_path_segments;
         self.n_clips += other.n_clips;
         self.n_open_clips += other.n_open_clips;
-        self.flags = other.flags;
+        // A force flag says "the stream's last transform/style is not what
+        // `transforms.last()` claims" (a glyph run wrote its own). An appended
+        // encoding that encodes no transform (or style) of its own leaves that
+        // true, so it must keep ours; overwriting it would let the next draw
+        // skip its transform and inherit the glyph run's.
+        let mut flags = other.flags;
+        if other.transforms.is_empty() {
+            flags |= self.flags & Self::FORCE_NEXT_TRANSFORM;
+        }
+        if other.styles.is_empty() {
+            flags |= self.flags & Self::FORCE_NEXT_STYLE;
+        }
+        self.flags = flags;
         if let Some(transform) = *transform {
             self.transforms
                 .extend(other.transforms.iter().map(|x| transform * *x));
@@ -608,6 +620,20 @@ impl StreamOffsets {
 #[cfg(test)]
 mod tests {
     use peniko::{Extend, ImageQuality};
+
+    use super::{Encoding, Transform};
+
+    #[test]
+    fn appending_an_encoding_without_transforms_keeps_a_forced_transform() {
+        let mut encoding = Encoding::new();
+        assert!(encoding.encode_transform(Transform::IDENTITY));
+        encoding.force_next_transform_and_style();
+        encoding.append(&Encoding::new(), &None);
+        assert!(
+            encoding.encode_transform(Transform::IDENTITY),
+            "the forced transform must still be encoded after an empty append"
+        );
+    }
 
     #[test]
     fn ensure_image_quality_values() {

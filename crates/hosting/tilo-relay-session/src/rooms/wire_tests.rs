@@ -1,6 +1,6 @@
 //! Room-admin and workspace-join wire bytes, captured by encoding the same
 //! values with the types as they were in `tilo-relay` before this crate was
-//! split out (TIL-240). These are postcard formats between separately updated
+//! split out. These are postcard formats between separately updated
 //! hosts and desktops: a changed byte here is a wire break, not a vector to
 //! recapture.
 

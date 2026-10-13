@@ -573,8 +573,7 @@ impl<R: Resource> Each<R> {
     /// Route an event to the row menu. Returns whether it was consumed.
     fn menu_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.menu.cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.menu.cursor = ctx.logical(position);
         }
         if self.menu.menu.is_open() {
             self.menu.menu.handle_event(event, ctx);
@@ -766,8 +765,8 @@ impl<R: Resource> Widget for Each<R> {
         let width = taffy
             .layout(node)
             .map_or(0.0, |layout| f64::from(layout.size.width));
-        let mut measured = false;
-        if (width - self.width).abs() > 0.5 {
+        let mut measured = (width - self.width).abs() > 0.5;
+        if measured {
             // Heights measured at another width no longer hold.
             self.width = width;
             for row in &mut self.rows {
@@ -776,7 +775,6 @@ impl<R: Resource> Widget for Each<R> {
                 }
             }
             self.recount();
-            measured = true;
         }
         // The first row whose height moved: the rows before it stay put.
         let mut moved = None;

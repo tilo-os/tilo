@@ -20,13 +20,6 @@ pub enum Screen {
 }
 
 impl Screen {
-    pub const ALL: [Screen; 4] = [
-        Screen::Camera,
-        Screen::Scanner,
-        Screen::Document,
-        Screen::Settings,
-    ];
-
     pub fn label(self) -> &'static str {
         match self {
             Screen::Camera => "Camera",
@@ -42,16 +35,6 @@ impl Screen {
             Screen::Scanner => "scanner",
             Screen::Document => "document",
             Screen::Settings => "settings",
-        }
-    }
-
-    pub fn parse_str(s: &str) -> Option<Screen> {
-        match s {
-            "camera" => Some(Screen::Camera),
-            "scanner" => Some(Screen::Scanner),
-            "document" | "documents" => Some(Screen::Document),
-            "settings" => Some(Screen::Settings),
-            _ => None,
         }
     }
 }
@@ -530,18 +513,7 @@ pub struct ScannedCode {
     pub corners: [(f32, f32); 4],
 }
 
-impl ScannedCode {
-    /// Bounding-box center in frame pixel coordinates.
-    pub fn center(&self) -> (f32, f32) {
-        let mut cx = 0.0;
-        let mut cy = 0.0;
-        for (x, y) in self.corners {
-            cx += x;
-            cy += y;
-        }
-        (cx / 4.0, cy / 4.0)
-    }
-}
+impl ScannedCode {}
 
 /// Classify a raw decoded string into a [`CodeKind`].
 pub fn classify(raw: &str) -> CodeKind {
@@ -661,13 +633,6 @@ mod tests {
 
     #[test]
     fn screen_and_facing_round_trip_and_cycle() {
-        // Phase `screen_round_trips`.
-        {
-            for s in Screen::ALL {
-                assert_eq!(Screen::parse_str(s.as_str()), Some(s));
-            }
-            assert_eq!(Screen::parse_str("nope"), None);
-        }
         // Phase `facing_cycles_through_all`.
         {
             let mut f = Facing::Back;

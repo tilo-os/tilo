@@ -73,7 +73,7 @@ fn approve_agents(
                     approver
                         .decide(
                             pending.request_digest,
-                            ApproverDecision::IssueAgent { cert, delegation }
+                            ApproverDecision::IssueDelegate { cert, delegation }
                         )
                         .await
                         .unwrap(),
@@ -133,7 +133,7 @@ fn opened_sheets(member: &Browser, route: &DocumentRoute) -> Option<Vec<String>>
         &route.app_id,
         &route.cluster_id,
         "bob",
-        false,
+        tilo_agent_participant::ReplicaActor::Owner,
         tilo_agent_participant::Seed::Existing {
             record,
             changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),

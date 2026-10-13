@@ -116,6 +116,15 @@ pub trait WorkspaceAuthority: Send + Sync {
     fn announces_policy_changes(&self) -> bool {
         false
     }
+
+    /// The delegated agents on `room`'s roster whose person's root signed
+    /// the delegation for exactly that device, as this host verified them:
+    /// who an app's history names for the changes an agent's own key
+    /// signed. Presentation only; nothing is admitted by it. The default
+    /// knows none, so every such change stays an unknown participant.
+    fn history_agents(&self, _room: &str) -> Vec<ui::history_source::RosterAgent> {
+        Vec::new()
+    }
 }
 
 const UNANSWERED: &str = "workspace authority did not answer";
@@ -201,6 +210,28 @@ pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 /// Native room membership owner. Public callers choose only a closed typed
 /// command; this host service supplies the private governor signing custody.
 pub trait WorkspaceMemberships: Send + Sync {
+    /// Recheck custody, retained integrity and all current source rights before
+    /// disclosing a completed checkpoint invocation, including journal retries.
+    /// # Errors
+    /// Refuses stale or damaged results and current permission denial.
+    fn checkpoint_result_access(
+        &self,
+        _room: &str,
+        _caller: &tilo_user_identity::DeviceCert,
+        _id: uuid::Uuid,
+        _mutation: bool,
+    ) -> Result<(), String> {
+        Err("native checkpoint result access unavailable".into())
+    }
+
+    /// Execute an authenticated native checkpoint request with host-owned custody.
+    fn checkpoint(
+        &self,
+        _request: tilo_peer_state::workspace_checkpoint::CheckpointRequest,
+    ) -> tilo_peer_state::workspace_checkpoint::CheckpointFuture {
+        Box::pin(async { Err("native checkpoint service unavailable".into()) })
+    }
+
     fn requires_room(&self, room: &str) -> bool;
 
     /// Confirm that the canonical owner's durable store is still usable.
@@ -224,55 +255,6 @@ pub trait WorkspaceMemberships: Send + Sync {
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
     ) -> tilo_peer_state::owner_commit::CommitFuture;
-}
-
-pub type DesktopCommandFuture = std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = Result<
-                    tilo_peer_state::owner_commit::OwnerCommitReceipt,
-                    tilo_peer_state::desktop_command::DesktopCommandError,
-                >,
-            > + Send,
-    >,
->;
-/// An explicitly installed native semantic owner, never a compositor session.
-/// The broker constructs requests from authenticated durable invocations.
-pub trait DesktopCommands: Send + Sync {
-    fn room(&self) -> &str;
-    fn execute(
-        &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        direct_delivery: bool,
-    ) -> DesktopCommandFuture;
-    /// Applications this owner can open. Each is published as an ordinary
-    /// `desktop:app:<id>#open` action, the same for people (command palette)
-    /// and agents.
-    fn catalogue(&self) -> &dyn tilo_desktop_model::apps::AppCatalogue {
-        &()
-    }
-    /// The owner's kept receipt of a committed desktop command (its command
-    /// id and the windows it opened), when the owner keeps one. Read after
-    /// a successful execute; the default keeps none.
-    fn receipt(
-        &self,
-        request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> Option<tilo_peer_state::desktop_command::DesktopCommandReceipt> {
-        let _ = request;
-        None
-    }
-}
-
-/// The room's owner for documents proposed into the room
-/// ([`tilo_peer_state::document_import`]). The broker constructs each
-/// request from an authenticated durable invocation; the owner decides it
-/// in its serialized turn.
-pub trait DocumentImports: Send + Sync {
-    fn room(&self) -> &str;
-    fn execute(
-        &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> DesktopCommandFuture;
 }
 
 /// Where the view of a launched app opens: next to where the actor that
@@ -346,7 +328,20 @@ impl ApplicationCreationEvidence {
 /// never sufficient to produce this receipt.
 pub struct LaunchReadiness {
     receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
+    adoption: Option<tokio::sync::oneshot::Receiver<Option<LaunchAdoption>>>,
     retire: Option<Box<dyn FnOnce() + Send>>,
+}
+
+/// Host-observed public window identity, never an application-claimed PID.
+/// Kernel process attribution is available only through device-owner control.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchAdoption {
+    /// Host-issued identity of this exact Wayland resource lifetime; not a grant.
+    pub adoption_id: uuid::Uuid,
+    pub surface_id: u64,
+    pub package_id: String,
+    pub room: String,
 }
 
 impl LaunchReadiness {
@@ -356,18 +351,43 @@ impl LaunchReadiness {
     ) -> Self {
         Self {
             receiver,
+            adoption: None,
             retire: Some(Box::new(retire)),
         }
+    }
+
+    #[must_use]
+    pub fn with_adoption(
+        mut self,
+        receiver: tokio::sync::oneshot::Receiver<Option<LaunchAdoption>>,
+    ) -> Self {
+        self.adoption = Some(receiver);
+        self
     }
 
     /// Wait for an adopted window or a terminal startup failure.
     ///
     /// # Errors
     /// Returns the launcher failure, or that its observer disappeared.
-    pub async fn wait(mut self) -> Result<(), String> {
+    pub async fn wait(self) -> Result<(), String> {
+        self.wait_with_adoption().await.map(|_| ())
+    }
+
+    /// Observe the adopted window association when the native host supplies custody.
+    /// Legacy hosts still settle readiness without inventing an association.
+    ///
+    /// # Errors
+    /// Returns the actual startup failure or a disconnected observation.
+    pub async fn wait_with_adoption(mut self) -> Result<Option<LaunchAdoption>, String> {
         (&mut self.receiver)
             .await
-            .map_err(|_| "the application startup observer stopped".to_string())?
+            .map_err(|_| "the application startup observer stopped".to_string())??;
+        match self.adoption.take() {
+            Some(receiver) => receiver
+                .await
+                .map_err(|_| "the adopted window observer stopped".into()),
+            None => Ok(None),
+        }
     }
 }
 
@@ -1245,12 +1265,8 @@ pub struct HostServices {
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
-    pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
     pub task_execution: Option<Arc<dyn WorkspaceTaskExecution>>,
-    /// Documents proposed into the room and the owner's answers. Without it
-    /// nothing can be proposed.
-    pub document_imports: Option<Arc<dyn DocumentImports>>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
@@ -1282,7 +1298,6 @@ pub struct HostServices {
     /// Records grants people give applications for other apps' actions.
     /// Without it an app is never offered a grant question.
     pub app_action_grants: Option<Arc<dyn AppActionGrants>>,
-    pub collaboration_admin: Option<Arc<dyn crate::collaboration_admin::CollaborationAdmin>>,
     /// Where the launchable action catalogue survives a restart. Without it
     /// closed apps' actions are retained for this broker's lifetime only.
     pub launchable_catalogue: Option<std::path::PathBuf>,

@@ -256,7 +256,6 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "test assertions")]
 
     use super::*;
     use crate::FilePicker;

@@ -51,12 +51,7 @@ pub use app::CameraApp;
 pub use record::Record;
 pub use resource::CameraShell;
 
-/// Camera's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-/// Camera's messages, in every host that mounts it.
-pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

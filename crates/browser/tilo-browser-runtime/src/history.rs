@@ -69,7 +69,7 @@ impl ActivityHost for PageActivityHost {
         self.save("activity-departures", departures);
     }
     fn app_display_name(&self, app: &str) -> Option<String> {
-        crate::desktop::application(app).map(|definition| definition.title.into())
+        crate::desktop::known_application(app).map(Into::into)
     }
 }
 

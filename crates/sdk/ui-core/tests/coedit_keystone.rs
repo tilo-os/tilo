@@ -16,11 +16,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -175,10 +171,7 @@ fn render_widget(mut input: TextInput, doc: &AutoCommit, presence: &PresenceCtx)
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(W as f32),
-                    height: Dimension::length(H as f32),
-                },
+                size: Size::from_lengths(W as f32, H as f32),
                 ..Default::default()
             },
             &[child],

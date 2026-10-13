@@ -9,10 +9,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -366,10 +362,6 @@ fn topbar_avatars_cap_at_three_and_never_leak_into_an_empty_workspace() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn tab_presence_seeds_per_tab_peers_and_colours_without_phantom_carets() {
     // Phase `sync_tab_presence_seeds_per_tab_peer_registrations`.
     {
@@ -510,8 +502,6 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
     {
         use automerge::AutoCommit;
         use taffy::NodeId;
-        use winit::dpi::PhysicalPosition;
-        use winit::event::{ElementState, MouseButton, WindowEvent};
 
         let (mut bar, chrome, taffy, node, hit) = topbar_with_overview_btn_hit();
 
@@ -523,10 +513,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let mut focus: Option<NodeId> = None;
         let modifiers = winit::event::Modifiers::default();
 
-        let cm = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(hit.x, hit.y),
-        };
+        let cm = ui::synthetic_input::cursor_moved(hit.x, hit.y);
         bar.handle_event(
             &cm,
             &mut ui::widget::EventCtx {
@@ -540,11 +527,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
                 taffy: &taffy,
             },
         );
-        let mi = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        let mi = ui::synthetic_input::mouse_press();
         bar.handle_event(
             &mi,
             &mut ui::widget::EventCtx {
@@ -595,8 +578,6 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
     {
         use automerge::AutoCommit;
         use taffy::NodeId;
-        use winit::dpi::PhysicalPosition;
-        use winit::event::{ElementState, MouseButton, WindowEvent};
 
         let (mut bar, chrome, taffy, node, _) = topbar_with_overview_btn_hit();
         let mut state = AutoCommit::new();
@@ -605,10 +586,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let modifiers = winit::event::Modifiers::default();
         let mut handled = false;
         bar.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: PhysicalPosition::new(1599.0, 1.0),
-            },
+            &ui::synthetic_input::cursor_moved(1599.0, 1.0),
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
@@ -621,11 +599,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             },
         );
         bar.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
+            &ui::synthetic_input::mouse_press(),
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
@@ -661,7 +635,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         }
         use automerge::AutoCommit;
         use std::collections::HashMap;
-        use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+        use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
         use ui::theme::Theme;
@@ -683,10 +657,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let vp = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
+                    size: Size::from_lengths(W, H),
                     ..Default::default()
                 },
                 &[root_node],
@@ -752,7 +723,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
     {
         use automerge::AutoCommit;
         use std::collections::HashMap;
-        use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+        use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
         use ui::theme::Theme;
@@ -782,10 +753,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let vp = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
+                    size: Size::from_lengths(W, H),
                     ..Default::default()
                 },
                 &[node],
@@ -847,7 +815,7 @@ fn topbar_with_overview_btn_hit() -> (
     vello::kurbo::Point,
 ) {
     use std::collections::HashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
@@ -871,10 +839,7 @@ fn topbar_with_overview_btn_hit() -> (
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
+                size: Size::from_lengths(1600.0, 900.0),
                 ..Default::default()
             },
             &[node],
@@ -922,13 +887,7 @@ fn click_full_root(
     modifiers: winit::event::Modifiers,
     hit: vello::kurbo::Point,
 ) {
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{ElementState, MouseButton, WindowEvent};
-
-    let cm = WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: PhysicalPosition::new(hit.x, hit.y),
-    };
+    let cm = ui::synthetic_input::cursor_moved(hit.x, hit.y);
     let mut handled = false;
     root.handle_event(
         &cm,
@@ -944,11 +903,7 @@ fn click_full_root(
         },
     );
 
-    let mi = WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    };
+    let mi = ui::synthetic_input::mouse_press();
     let mut handled = false;
     root.handle_event(
         &mi,

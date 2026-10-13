@@ -93,8 +93,7 @@ impl SecretStore {
         if let Some(existing) = state.values.get(app_id) {
             return decode(existing);
         }
-        let mut secret = [0_u8; SECRET_BYTES];
-        UnwrapErr(SysRng).fill_bytes(&mut secret);
+        let mut secret = crate::random::bytes::<SECRET_BYTES>();
         state.values.insert(app_id.into(), hex::encode(secret));
         if let Err(error) = self.commit(&state) {
             state.values.remove(app_id);

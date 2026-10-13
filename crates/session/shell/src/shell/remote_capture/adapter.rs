@@ -12,8 +12,6 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use thiserror::Error;
 
 use crate::portal::{
@@ -425,10 +423,7 @@ fn local_source_id(session_id: [u8; 16]) -> String {
 }
 
 fn mint_approval() -> RemoteCaptureApproval {
-    let mut value = [0; 32];
-    while value == [0; 32] {
-        UnwrapErr(SysRng).fill_bytes(&mut value);
-    }
+    let value = crate::random::nonzero::<32>();
     RemoteCaptureApproval(value)
 }
 

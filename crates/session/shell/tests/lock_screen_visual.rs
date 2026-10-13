@@ -12,16 +12,6 @@
 //! Set `TILO_LOCK_SHOT_QUICK=1` for the portrait accessibility matrix,
 //! secondary-output composition, and animation phases only.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a visual review harness these are assertions, not recoverable failures"
-)]
-
 use crate::support::offscreen::OffscreenRenderer;
 use shell::compositor::lock_screen::{
     LockOutput, LockView, draw_lock_scene, draw_lock_scene_at_time,

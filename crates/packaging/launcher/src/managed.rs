@@ -433,6 +433,7 @@ pub struct ManagedRuntimeFacts {
 pub struct ManagedRuntime {
     pub bundle_root: PathBuf,
     pub runtime_publisher: String,
+    pub runtime_identity: runtime_bundle::component_pins::RetainedBundleTrust,
     pub sandbox_shim: PathBuf,
     pub bwrap: PathBuf,
 }
@@ -444,6 +445,7 @@ impl ManagedRuntime {
     ///
     /// # Errors
     /// Refuses missing trust, policy bypasses, or an untrusted/missing runtime.
+    #[cfg(target_os = "linux")]
     pub fn from_launch_options(
         manifest: &ManifestView,
         options: &crate::run::RunOptions,
@@ -453,15 +455,14 @@ impl ManagedRuntime {
         if options.allow_unsigned_runtime || options.allow_missing_runtime {
             return Err("managed runtime cannot bypass signature or availability policy".into());
         }
-        let publishers = crate::run::load_trusted_publisher_list()
-            .map_err(|error| error.to_string())?
-            .unwrap_or_default();
-        if options.require_runtime_publisher.is_none() && publishers.is_empty() {
-            return Err("managed runtime requires independently configured publisher trust".into());
-        }
         let (bundle_root, _) = crate::run::resolve_runtime(manifest, options)
             .map_err(|error| error.to_string())?
             .ok_or("managed agent requires a declared runtime")?;
+        let publishers = crate::run::load_trusted_publishers_for_bundle(&bundle_root)
+            .map_err(|error| error.to_string())?;
+        if options.require_runtime_publisher.is_none() && !publishers.is_configured() {
+            return Err("managed runtime requires independently configured publisher trust".into());
+        }
         let bundle = runtime_bundle::verify_bundle_with(
             &bundle_root,
             &runtime_bundle::VerifyOptions {
@@ -471,17 +472,19 @@ impl ManagedRuntime {
             },
         )
         .map_err(|error| error.to_string())?;
-        let runtime_publisher = bundle.publisher_hex.ok_or("managed runtime is unsigned")?;
-        if options.require_runtime_publisher.is_none()
-            && !publishers
-                .iter()
-                .any(|publisher| publisher.eq_ignore_ascii_case(&runtime_publisher))
-        {
-            return Err("managed runtime publisher is not in host trust configuration".into());
+        if options.require_runtime_publisher.is_none() {
+            publishers
+                .check(&bundle)
+                .map_err(|error| error.to_string())?;
         }
+        let runtime_identity =
+            runtime_bundle::component_pins::RetainedBundleTrust::from_verified(&bundle)
+                .ok_or("managed runtime is unsigned")?;
+        let runtime_publisher = bundle.publisher_hex.ok_or("managed runtime is unsigned")?;
         let runtime = Self {
             bundle_root,
             runtime_publisher,
+            runtime_identity,
             sandbox_shim,
             bwrap,
         };
@@ -639,6 +642,9 @@ fn verify_bundle(
         },
     )
     .map_err(|e| format!("runtime verification: {e}"))?;
+    if !runtime.runtime_identity.matches(&bundle) {
+        return Err("runtime identity differs from admitted manifest".into());
+    }
     if bundle.version != version {
         return Err("runtime version differs from package".into());
     }

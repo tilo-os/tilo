@@ -1192,11 +1192,10 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o777))
                     .unwrap();
-                assert!(parent_open.load("op-user").is_err());
             } else {
                 assert!(store.load("op-user").is_err());
-                assert!(parent_open.load("op-user").is_err());
             }
+            assert!(parent_open.load("op-user").is_err());
         }
     }
 }

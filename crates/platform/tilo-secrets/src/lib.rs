@@ -67,7 +67,7 @@ pub mod web;
 #[cfg(target_os = "windows")]
 mod windows;
 
-pub use caps::{Availability, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 
 /// Secret bytes: wiped from memory on drop and never printed by `Debug`.
 #[derive(Clone, PartialEq, Eq)]

@@ -17,12 +17,14 @@
 //! every path mutation against them so the user can't `..` out of the
 //! sandbox boundary.
 
+pub mod semantic;
+
 use crate::widget::ModelPath;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
@@ -1227,10 +1229,7 @@ impl Widget for FilePicker {
     ) -> NodeId {
         self.adopt_theme(theme);
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             ..Default::default()
         };
@@ -1295,7 +1294,7 @@ impl Widget for FilePicker {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.on_cursor_moved(p, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -1361,11 +1360,11 @@ impl Widget for FilePicker {
                         .with_name("Up")
                         .with_key(control.id())
                         .with_bounds(self.up_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.has_keyboard_focus && self.focus == Some(control),
-                            ..Default::default()
-                        }),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.has_keyboard_focus && self.focus == Some(control)),
+                        ),
                     PickerFocus::List => {
                         let total = self.entries.len();
                         let rows = self
@@ -1401,11 +1400,11 @@ impl Widget for FilePicker {
                             })
                             .with_key(control.id())
                             .with_bounds(self.list_rect())
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: self.has_keyboard_focus && self.focus == Some(control),
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new().focusable(true).focused(
+                                    self.has_keyboard_focus && self.focus == Some(control),
+                                ),
+                            )
                             .with_children(rows)
                     }
                     PickerFocus::Filter => AccessNode::new(Role::ComboBox)
@@ -1413,23 +1412,23 @@ impl Widget for FilePicker {
                         .with_value(self.active_filter_label())
                         .with_key(control.id())
                         .with_bounds(self.filter_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.has_keyboard_focus && self.focus == Some(control),
-                            expanded: Some(false),
-                            ..Default::default()
-                        }),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.has_keyboard_focus && self.focus == Some(control))
+                                .expanded(false),
+                        ),
                     PickerFocus::Filename => AccessNode::new(Role::TextInput)
                         .with_name("Filename")
                         .with_value(self.filename().to_owned())
                         .with_text_selection(filename_anchor, filename_cursor)
                         .with_key(control.id())
                         .with_bounds(self.filename_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.has_keyboard_focus && self.focus == Some(control),
-                            ..Default::default()
-                        }),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.has_keyboard_focus && self.focus == Some(control)),
+                        ),
                     PickerFocus::Cancel | PickerFocus::Confirm => {
                         let (label, rect, enabled) = if control == PickerFocus::Cancel {
                             ("Cancel", self.cancel_rect, true)
@@ -1440,14 +1439,16 @@ impl Widget for FilePicker {
                             .with_name(label)
                             .with_key(control.id())
                             .with_bounds(rect)
-                            .with_state(AccessState {
-                                focusable: enabled,
-                                focused: enabled
-                                    && self.has_keyboard_focus
-                                    && self.focus == Some(control),
-                                disabled: !enabled,
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(enabled)
+                                    .focused(
+                                        enabled
+                                            && self.has_keyboard_focus
+                                            && self.focus == Some(control),
+                                    )
+                                    .disabled(!enabled),
+                            )
                     }
                     // Only on the replace prompt, which replaces this list.
                     PickerFocus::KeepExisting | PickerFocus::Replace => return None,
@@ -1463,12 +1464,12 @@ impl Widget for FilePicker {
         Some(
             AccessNode::new(Role::Dialog)
                 .with_name(self.title.clone())
-                .with_state(AccessState {
-                    modal: true,
-                    focusable: true,
-                    focused: self.has_keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .modal(true)
+                        .focusable(true)
+                        .focused(self.has_keyboard_focus),
+                )
                 .with_children(controls),
         )
     }
@@ -1666,11 +1667,11 @@ impl FilePicker {
                 .with_name(label)
                 .with_key(control.id())
                 .with_bounds(rect)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.has_keyboard_focus && self.focus == Some(control),
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.has_keyboard_focus && self.focus == Some(control)),
+                )
         };
         Some(
             AccessNode::new(Role::Dialog)
@@ -1680,12 +1681,12 @@ impl FilePicker {
                 .with_description(REPLACE_PROMPT_DETAIL)
                 .with_key(REPLACE_PROMPT_KEY)
                 .with_bounds(self.replace_card_rect)
-                .with_state(AccessState {
-                    modal: true,
-                    focusable: true,
-                    focused: self.has_keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .modal(true)
+                        .focusable(true)
+                        .focused(self.has_keyboard_focus),
+                )
                 .with_children(vec![
                     button(PickerFocus::KeepExisting, "Cancel", self.keep_existing_rect),
                     button(PickerFocus::Replace, "Replace", self.replace_rect),
@@ -2300,7 +2301,7 @@ impl FilePicker {
         use winit::keyboard::{Key, NamedKey};
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 let hover = if self.keep_existing_rect.contains(p) {
                     Some(PickerFocus::KeepExisting)
@@ -2391,10 +2392,7 @@ mod tests {
     use winit::event::ElementState;
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
 
     use crate::synthetic_input::mouse_press;
@@ -3387,14 +3385,7 @@ mod tests {
             // Short dialog: only a handful of rows fit.
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 240.0));
             assert!(picker.entry_rect(0).is_some());
-            dispatch(
-                &mut picker,
-                &WindowEvent::MouseWheel {
-                    device_id: winit::event::DeviceId::dummy(),
-                    delta: winit::event::MouseScrollDelta::LineDelta(0.0, -5.0),
-                    phase: winit::event::TouchPhase::Moved,
-                },
-            );
+            dispatch(&mut picker, &crate::synthetic_input::mouse_wheel(0.0, -5.0));
             assert!(picker.entry_rect(0).is_none(), "row 0 scrolled out of view");
             assert!(picker.entry_rect(6).is_some(), "a later row is now visible");
         }

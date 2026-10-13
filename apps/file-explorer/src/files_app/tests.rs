@@ -47,7 +47,6 @@ mod open_with_tests {
     #[test]
     fn files_are_classified_for_open_and_merge_by_extension() {
         merge_is_never_offered_for_binary_or_unsupported_names();
-        document_extensions_are_recognised_as_documents();
     }
 
     fn merge_is_never_offered_for_binary_or_unsupported_names() {
@@ -55,14 +54,6 @@ mod open_with_tests {
         assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
         assert!(!merge_supported_path(std::path::Path::new("photo.png")));
         assert!(!merge_supported_path(std::path::Path::new("unknown")));
-    }
-
-    fn document_extensions_are_recognised_as_documents() {
-        for f in ["report.odt", "memo.docx", "notes.md", "readme.markdown"] {
-            assert!(is_document(Path::new(f)), "{f}");
-        }
-        assert!(!is_document(Path::new("photo.png")));
-        assert!(!is_document(Path::new("main.rs")));
     }
 
     /// Each phase installs (or clears) its own thread-local opener and clears it
@@ -4264,7 +4255,6 @@ mod command_path_tests {
         let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(43));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Review merge".into(),
             summary: "Checking".into(),
             lines: Vec::new(),
@@ -4324,7 +4314,6 @@ mod command_path_tests {
         let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(52));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Delete permanently?".into(),
             summary: "This cannot be undone".into(),
             lines: Vec::new(),
@@ -4538,10 +4527,7 @@ mod responsive_body_tests {
             let frame = taffy
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(width),
-                            height: Dimension::length(height),
-                        },
+                        size: Size::from_lengths(width, height),
                         ..Default::default()
                     },
                     &[node],
@@ -4579,34 +4565,22 @@ mod responsive_body_tests {
         }
 
         fn cursor(&mut self, x: f64, y: f64) {
-            self.dispatch(&winit::event::WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(x, y),
-            });
+            self.dispatch(&ui::synthetic_input::cursor_moved(x, y));
         }
 
         fn right_press(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Right,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_input(
+                winit::event::ElementState::Pressed,
+                winit::event::MouseButton::Right,
+            ));
         }
 
         fn left_release(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_release());
         }
 
         fn left_press(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_press());
         }
 
         /// The labels of the currently-open context/favourite menu, if any.
@@ -4662,11 +4636,7 @@ mod responsive_body_tests {
                 None,
                 winit::event::ElementState::Pressed,
             );
-            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            });
+            self.dispatch(&ui::synthetic_input::keyboard_input(ev));
         }
 
         fn type_char(&mut self, s: &str) {
@@ -4675,11 +4645,7 @@ mod responsive_body_tests {
                 Some(winit::keyboard::SmolStr::new(s)),
                 winit::event::ElementState::Pressed,
             );
-            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            });
+            self.dispatch(&ui::synthetic_input::keyboard_input(ev));
         }
     }
 
@@ -5575,7 +5541,6 @@ mod accessibility_tests {
     fn collaboration_sheet_is_a_focused_modal_semantic_subtree() {
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Sharing — report.pdf".into(),
             summary: "Shared with 2 people".into(),
             lines: vec!["Alice can view".into(), "Bob can edit".into()],
@@ -5608,7 +5573,6 @@ mod accessibility_tests {
         std::fs::write(&file, b"only local copy").unwrap();
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: t("files-destructive-eviction-title"),
             summary: t_args("files-destructive-eviction-summary", &[arg("count", 1_i64)]),
             lines: vec![t("files-destructive-eviction-loss")],

@@ -4,7 +4,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -147,7 +146,7 @@ async fn an_outside_publisher_applies_is_approved_and_publishes() {
             .entry
             .versions
             .iter()
-            .map(|version| version.target.architecture.as_str())
+            .map(|version| version.tapp().unwrap().target.architecture.as_str())
             .collect();
         architectures.sort_unstable();
         assert_eq!(
@@ -201,7 +200,7 @@ fn a_release_before_review_extends_the_waiting_request(
         .map(|version| {
             (
                 version.version.as_str(),
-                version.target.architecture.as_str(),
+                version.tapp().unwrap().target.architecture.as_str(),
             )
         })
         .collect();

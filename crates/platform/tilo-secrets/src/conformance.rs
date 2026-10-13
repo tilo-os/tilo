@@ -2,7 +2,6 @@
 //! a host's own backend's tests) run. They write, overwrite and delete one
 //! key, `tilo-conformance`, of the store they are given.
 #![allow(
-    clippy::panic,
     clippy::expect_used,
     clippy::missing_panics_doc,
     reason = "a conformance check fails by panicking with the violated rule"

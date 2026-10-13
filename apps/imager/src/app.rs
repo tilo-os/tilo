@@ -4643,6 +4643,38 @@ mod tests {
             assert!(app.customizable());
         }
 
+        // Phase `official_installable_write_stages_handoff_instead_of_refusing`.
+        // Catalog-authenticated images used to refuse Wi-Fi / enrollment on
+        // Confirm. They must stage the same handoff local images do; tests
+        // then stop at the disabled write backend, never at an installer-stick
+        // refusal.
+        {
+            let (mut app, _doc) = seeded_app();
+            assert!(app.customizable(), "seeded source is official");
+            assert!(
+                app.offers_write_setup(),
+                "official Confirm must collect Wi-Fi and enrollment"
+            );
+            app.select_target(0);
+            app.goto(Step::Confirm);
+            app.confirm_text = String::from("sdb");
+            app.profile.wifi_ssid = "studio".into();
+            app.wifi_psk = "correct-horse".into();
+            let err = app
+                .begin_write(&app.target().unwrap().dev_path(), "sdb")
+                .expect_err("privileged writer is off in unit tests");
+            assert!(
+                !err.to_lowercase().contains("installer stick"),
+                "official installable write must not refuse handoff: {err}"
+            );
+            assert!(
+                err.to_lowercase().contains("disabled") || err.to_lowercase().contains("backend"),
+                "expected write-disabled after staging handoff, got: {err}"
+            );
+            assert!(app.job_control.is_none());
+            assert_eq!(app.step, Step::Confirm);
+        }
+
         // Phase `write_refused_without_matching_confirmation`.
         {
             let (mut app, _doc) = seeded_app();
@@ -4691,7 +4723,7 @@ mod tests {
         app.ssh_public_key = key.into();
         assert!(!app.profile.enroll_local_identity);
         let error = app
-            .begin_write("/dev/sdb", "sdb")
+            .begin_write(&app.target().unwrap().dev_path(), "sdb")
             .expect_err("access staging reaches the disabled writer without enrollment");
         assert!(
             error.to_lowercase().contains("disabled") || error.to_lowercase().contains("backend"),
@@ -4730,7 +4762,7 @@ mod tests {
             .unwrap();
         present(&mut app, &doc);
         let error = app
-            .begin_write("/dev/sdb", "sdb")
+            .begin_write(&app.target().unwrap().dev_path(), "sdb")
             .expect_err("Wi-Fi without a password must be refused before enrollment");
         assert!(error.contains("Wi-Fi password is required"), "{error}");
         assert!(app.job_control.is_none());
@@ -4760,7 +4792,7 @@ mod tests {
         // layout, draw, animation tick or test-only profile assignment intervenes.
         app.present_state(&Imager::read(&doc).expect("the updated resource"));
         let error = app
-            .begin_write("/dev/sdb", "sdb")
+            .begin_write(&app.target().unwrap().dev_path(), "sdb")
             .expect_err("the newly published network requires its password");
         assert!(error.contains("Wi-Fi password is required"), "{error}");
         assert_eq!(app.profile.wifi_ssid, "studio");
@@ -4929,7 +4961,7 @@ mod tests {
         );
         host.with_widget::<ImagerApp, _>(|app| {
             let error = app
-                .begin_write("/dev/sdb", "sdb")
+                .begin_write(&app.target().unwrap().dev_path(), "sdb")
                 .expect_err("an incomplete key must refuse the write");
             assert!(error.contains("public key"), "unexpected refusal: {error}");
             assert!(app.job_control.is_none());
