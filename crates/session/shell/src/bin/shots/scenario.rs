@@ -185,6 +185,13 @@ pub enum Action {
     CorrectAutomaticWorkSession,
     /// Switch the seeded causal history into workspace replay.
     ShowRoomActivityReplay,
+    /// Validated, explicitly synthetic prose; never a live-model claim.
+    QualifyActivityNarrative {
+        generated: bool,
+    },
+    QualifyActivityCitation,
+    QualifyActivityCompare,
+    QualifyActivitySlider,
     /// Narrow the open activity surface to Ada's real authored changes so a
     /// collaboration proof cannot accidentally show only the local author.
     FilterRoomActivityToAda,
@@ -687,6 +694,26 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             "scenario: automatic work-session seam correction must succeed"
         ),
         Action::ShowRoomActivityReplay => driver.show_room_activity_replay_for_shots(),
+        Action::QualifyActivityNarrative { generated } => {
+            assert!(
+                driver
+                    .qualify_activity_narrative_for_shots(*generated)
+                    .is_some(),
+                "scenario: narrative requires current recorded evidence with resource provenance"
+            );
+        }
+        Action::QualifyActivityCitation => assert!(
+            driver.qualify_activity_citation_for_shots().is_some(),
+            "scenario: citation must resolve to the current recorded work session"
+        ),
+        Action::QualifyActivityCompare => assert!(
+            driver.qualify_activity_compare_for_shots().is_some(),
+            "scenario: Explorer must expose the selected resource comparison"
+        ),
+        Action::QualifyActivitySlider => assert!(
+            driver.qualify_activity_slider_for_shots().is_some(),
+            "scenario: replay must export an actionable shared slider"
+        ),
         Action::FilterRoomActivityToAda => assert!(
             driver.filter_room_activity_to_ada_for_shots(),
             "scenario: attributed history requires a real change authored by Ada"
@@ -3187,6 +3214,27 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "history_visual_qualification",
+            description: "Paint pending and validated fixture prose, follow exact evidence, compare read-only, and seek through the shared accessible replay slider.",
+            actions: vec![
+                Action::SeedRoomActivity { explore: false },
+                Action::SeedAutomaticWorkSessions,
+                Action::Relayout,
+                Action::Wait(20),
+                Action::QualifyActivityNarrative { generated: false },
+                Action::Snapshot("01-summary-pending"),
+                Action::QualifyActivityNarrative { generated: true },
+                Action::Snapshot("02-validated-fixture-summary"),
+                Action::QualifyActivityCitation,
+                Action::Snapshot("03-citation-provenance"),
+                Action::QualifyActivityCompare,
+                Action::Snapshot("04-exact-comparison"),
+                Action::ShowRoomActivityReplay,
+                Action::QualifyActivitySlider,
+                Action::Snapshot("05-accessible-slider-seek"),
+            ],
+        },
+        Scenario {
             name: "automatic_work_session_correction",
             description: "Expand two automatically grouped work sessions, then move their seam and persist the human correction.",
             actions: vec![
@@ -3941,6 +3989,46 @@ mod tests {
         fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
             self.seen
                 .push((name.to_string(), driver.palette_query().to_string()));
+        }
+    }
+
+    struct HistoryPaintSink {
+        names: Vec<String>,
+    }
+
+    impl SnapshotSink for HistoryPaintSink {
+        fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
+            // Match the offscreen sink's production paint pass; a state-only
+            // sink cannot observe the controls and evidence it renders.
+            let _ = driver.paint();
+            self.names.push(name.into());
+        }
+    }
+
+    #[test]
+    fn history_qualification_preserves_evidence_and_heads_at_both_sizes() {
+        let scenario = lookup("history_visual_qualification").expect("qualification scenario");
+        for viewport in [(1600, 900), (800, 600)] {
+            let mut driver = ShellDriver::new(viewport);
+            let mut sink = HistoryPaintSink { names: Vec::new() };
+            // The production driver asserts citation identity and context,
+            // comparison materialization, slider routing and unchanged heads
+            // before allowing any of the corresponding frames to be captured.
+            run(&mut driver, &scenario, &mut sink);
+            assert_eq!(
+                sink.names,
+                vec![
+                    "01-summary-pending",
+                    "02-validated-fixture-summary",
+                    "03-citation-provenance",
+                    "04-exact-comparison",
+                    "05-accessible-slider-seek",
+                ]
+            );
+            let position = driver.host().room_activity().replay_position();
+            assert_eq!(position.position, Some(0));
+            assert_eq!(position.selected, position.first);
+            assert!(!position.playing);
         }
     }
 

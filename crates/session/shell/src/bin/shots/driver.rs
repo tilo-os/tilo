@@ -2134,6 +2134,7 @@ impl ShellDriver {
             let state = handle.borrow();
             let mut tree = state.tree_mut();
             let workspace = tree.desktop.active;
+            let reader = tree.doc.get_actor().clone();
             for (actor, group_id, group_label, action) in [
                 (
                     "Xaver",
@@ -2162,6 +2163,8 @@ impl ShellDriver {
                 ("Sarah", "onboarding", "Onboard Sarah", "Open welcome notes"),
                 ("Ada", "onboarding", "Onboard Sarah", "Assign mentor"),
             ] {
+                tree.doc
+                    .set_actor(automerge::ActorId::from(actor.as_bytes()));
                 let context = tilo_actions::ActionContext::for_resource(
                     format!("shots:{group_id}"),
                     "document",
@@ -2185,6 +2188,7 @@ impl ShellDriver {
                     tilo_actions::EffectReceiptStatus::Succeeded,
                 );
             }
+            tree.doc.set_actor(reader);
         }
         self.with_chrome(|state| state.open_room_activity(None));
         self.fb
@@ -2226,6 +2230,210 @@ impl ShellDriver {
         self.fb.host_mut().force_room_activity_settled();
         let _ = self.fb.paint();
         corrected
+    }
+
+    /// Shots-only wording, validated against the real projected evidence.
+    /// This exercises presentation, not a live model or its availability.
+    pub fn qualify_activity_narrative_for_shots(&mut self, generated: bool) -> Option<()> {
+        let handle = self.chrome_handle();
+        let state = handle.borrow();
+        let heads = state.tree_mut().doc.get_heads();
+        {
+            let pane = self.fb.host_mut().room_activity_mut();
+            pane.set_view(shell::shell::room_activity::ActivityView::CatchUp);
+            pane.refresh_narrative_locale();
+            if generated {
+                let request = pane.narrative_request()?;
+                let supplied = request.supplied_ids();
+                let id = pane
+                    .entries()
+                    .iter()
+                    .find(|entry| {
+                        supplied.contains(&entry.id)
+                            && entry
+                                .context
+                                .as_ref()
+                                .and_then(|context| context.resource.as_ref())
+                                .is_some()
+                    })?
+                    .id;
+                assert!(pane.apply_generated_narrative(ui::GroundedNarrative {
+                text: "The team reviewed the financial report and prepared Sarah’s onboarding. Open the recorded actions to verify the details.".into(),
+                source_ids: vec![id],
+                generator: "shots fixture (not a live model)".into(),
+                request: Some(Box::new(request)),
+            }));
+            } else {
+                pane.set_narrative_feedback("activity-summary-pending");
+            }
+        }
+        assert_eq!(state.tree_mut().doc.get_heads(), heads);
+        drop(state);
+        let _ = self.fb.paint();
+        Some(())
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the borrowed history pane must stay live through its final production assertions"
+    )]
+    pub fn qualify_activity_citation_for_shots(&mut self) -> Option<()> {
+        let handle = self.chrome_handle();
+        let state = handle.borrow();
+        let heads = state.tree_mut().doc.get_heads();
+        {
+            let pane = self.fb.host_mut().room_activity_mut();
+            let narrative = pane.narrative()?;
+            let id = *narrative.source_ids.first()?;
+            let expected = narrative
+                .request
+                .as_ref()?
+                .sources
+                .iter()
+                .find(|source| source.ids.contains(&id))?
+                .ids
+                .clone();
+            // Work-session evidence opens its inclusive timeline span, including
+            // intervening actions by the viewer. Pin that span, not just a count.
+            let positions: Vec<_> = pane
+                .timeline()
+                .entries()
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| expected.contains(&entry.id))
+                .map(|(index, _)| index)
+                .collect();
+            let start = *positions.first()?;
+            let end = *positions.last()?;
+            let expected_span: Vec<_> = pane
+                .timeline()
+                .entries()
+                .iter()
+                .skip(start)
+                .take(end.saturating_sub(start).saturating_add(1))
+                .map(|entry| entry.id)
+                .collect();
+            assert!(pane.reveal_narrative_source(id));
+            assert_eq!(pane.selected_ids(), expected_span);
+            let selected = pane.entries().iter().find(|entry| entry.id == id)?;
+            assert!(
+                selected
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.resource.as_ref())
+                    .is_some(),
+                "the citation must retain its resource provenance"
+            );
+        }
+        assert_eq!(state.tree_mut().doc.get_heads(), heads);
+        drop(state);
+        let _ = self.fb.paint();
+        Some(())
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the borrowed history pane must stay live through its final production assertions"
+    )]
+    pub fn qualify_activity_compare_for_shots(&mut self) -> Option<()> {
+        let snapshot = self.fb.host().room_activity().accessibility_snapshot();
+        let details = tilo_desktop::i18n::t("activity-pane-details");
+        let index = snapshot
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some(&details))
+            .and_then(|node| node.pos_in_set)
+            .and_then(|position| position.checked_sub(1))?;
+        assert!(
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .focus_accessibility_path(&[0, index])
+        );
+        self.press_key(&Key::Named(NamedKey::Enter));
+        let handle = self.chrome_handle();
+        let state = handle.borrow();
+        let mut tree = state.tree_mut();
+        let heads = tree.doc.get_heads();
+        {
+            let pane = self.fb.host_mut().room_activity_mut();
+            let ids = pane.selected_ids();
+            assert!(!ids.is_empty(), "comparison must have an exact selection");
+            let outcome = pane.apply_selection_history_action(
+                tilo_desktop::activity::HISTORY_COMPARE,
+                &mut *tree,
+                None,
+            );
+            assert!(outcome.compared && pane.has_comparison());
+            assert_eq!(pane.selected_ids(), ids);
+        }
+        assert_eq!(tree.doc.get_heads(), heads, "comparison is read-only");
+        drop(tree);
+        drop(state);
+        let _ = self.fb.paint();
+        Some(())
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the borrowed history pane must stay live through its final production assertions"
+    )]
+    pub fn qualify_activity_slider_for_shots(&mut self) -> Option<()> {
+        let handle = self.chrome_handle();
+        let state = handle.borrow();
+        let heads = state.tree_mut().doc.get_heads();
+        {
+            let pane = self.fb.host_mut().room_activity_mut();
+            let snapshot = pane.accessibility_snapshot();
+            let index = snapshot
+                .children
+                .iter()
+                .position(|node| node.role == ui::a11y::Role::Slider)?;
+            // Other synthetic controls expose their original focus-order position;
+            // the retained slider itself does not. Hidden controls can be omitted
+            // from the snapshot, so its ordinal is not the routing index.
+            let routing_index = snapshot
+                .children
+                .get(index.saturating_sub(1))
+                .and_then(|node| node.pos_in_set)?;
+            assert!(pane.perform_replay_accessibility_action(
+                &[0, routing_index],
+                &ui::a11y::Action::SetValue("100%".into())
+            ));
+            let last = pane.replay_position();
+            assert_eq!(last.position, last.total.checked_sub(1));
+            assert_eq!(last.selected, last.last);
+            assert!(pane.perform_replay_accessibility_action(
+                &[0, routing_index],
+                &ui::a11y::Action::SetValue("0".into())
+            ));
+            let position = pane.replay_position();
+            assert_eq!(position.position, Some(0));
+            assert_eq!(position.selected, position.first);
+            assert!(!position.playing);
+            assert!(
+                pane.apply_replay_request(
+                    tilo_desktop::activity::view_actions::ReplayRequest::Seek {
+                        position: position.total,
+                    }
+                )
+                .is_err(),
+                "an unavailable checkpoint must fail"
+            );
+            assert_eq!(
+                pane.replay_position(),
+                position,
+                "failed seeks retain selection"
+            );
+        }
+        assert_eq!(
+            state.tree_mut().doc.get_heads(),
+            heads,
+            "scrubbing is read-only"
+        );
+        drop(state);
+        let _ = self.fb.paint();
+        Some(())
     }
 
     pub fn show_room_activity_replay_for_shots(&mut self) {
