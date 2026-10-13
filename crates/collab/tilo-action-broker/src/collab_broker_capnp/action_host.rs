@@ -62,10 +62,10 @@ fn check_execution(caller: &Caller) -> Result<(), ActionHostError> {
     Ok(())
 }
 
-struct LaunchDestination {
-    workspace: Workspace,
-    app_id: String,
-    record: Option<String>,
+pub(super) struct LaunchDestination {
+    pub(super) workspace: Workspace,
+    pub(super) app_id: String,
+    pub(super) record: Option<String>,
 }
 
 impl BrokerActor {
@@ -86,6 +86,12 @@ impl BrokerActor {
                 }
             }
             CallerPrincipal::App(id) => Self::agent(format!("app:{id}")),
+            CallerPrincipal::Bot(id) => match caller.user_public_key() {
+                Some(root) => Self::bot(id, super::principal_id_for_root(*root)),
+                // A bot nobody installed has no authority to borrow: acting
+                // for nobody, it gets nothing.
+                None => Self::bot(id, String::new()),
+            },
         }
     }
 }
@@ -556,13 +562,14 @@ impl CapnpBrokerState {
                         }
                         CallerPrincipal::Agent(_)
                         | CallerPrincipal::Person(_)
-                        | CallerPrincipal::App(_) => true,
+                        | CallerPrincipal::App(_)
+                        | CallerPrincipal::Bot(_) => true,
                     }
             }
             None => match caller.principal() {
-                // An application is always admitted into one room;
+                // An application or a bot is always admitted into one room;
                 // unconfined, it takes part in none.
-                CallerPrincipal::App(_) => false,
+                CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => false,
                 // Anyone else takes part in a room they may read; a foreign
                 // device reads wherever its person does.
                 CallerPrincipal::Person(_) | CallerPrincipal::Agent(_) => {
@@ -1243,6 +1250,9 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Err(refused) = tilo_actions::appearance::refuse_here(request) {
+            return Pending::ready(Err(refused));
+        }
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
@@ -1349,7 +1359,14 @@ impl CapnpBrokerState {
         // there, and neither runs on the broker's local set.
         runtime.spawn(async move {
             let started = state
-                .relaunch_and_deliver(&completer, &caller, &destination, origin.as_ref(), &request)
+                .relaunch_and_deliver(
+                    &completer,
+                    &caller,
+                    &destination,
+                    origin.as_ref(),
+                    &request,
+                    None,
+                )
                 .await;
             let result = match state.remote_invocations.lock() {
                 Ok(mut ledger) => match started {
@@ -1480,13 +1497,14 @@ impl CapnpBrokerState {
     /// The wait wakes on what readiness depends on — a surface published or
     /// withdrawn, an invocation stream opened or closed, in either order —
     /// on the delivery deadline, and on the caller dropping its answer.
-    async fn relaunch_and_deliver(
+    pub(super) async fn relaunch_and_deliver<T: Send>(
         self: &Arc<Self>,
-        completer: &Completer<Result<InvocationReceipt, ActionHostError>>,
+        completer: &Completer<T>,
         caller: &Caller,
         destination: &LaunchDestination,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
+        native: Option<&super::native_task_execution::NativeLaunch>,
     ) -> Result<u64, ActionHostError> {
         let stopped_waiting = || ActionHostError::Unavailable {
             reason: "the caller stopped waiting for admission".into(),
@@ -1511,72 +1529,68 @@ impl CapnpBrokerState {
         let mut launched = false;
         loop {
             self.check_launch_origin(caller, origin, &room)?;
+            if let Some(native) = native {
+                native.check(self).map_err(refusal)?;
+            }
             if completer.is_abandoned() {
                 return Err(stopped_waiting());
             }
             if tokio::time::Instant::now() >= deadline.deadline() {
                 return Err(expired());
             }
-            if let Some(peer_id) =
-                self.ready_publisher(app_id, &room, destination.record.as_deref(), address)
-            {
+            let ready = match native {
+                Some(native) => native.ready(self),
+                None => self.ready_publisher(app_id, &room, destination.record.as_deref(), address),
+            };
+            if let Some(peer_id) = ready {
                 let mut delivered = request.clone();
                 delivered.target.provider = peer_id.to_string();
+                if let Some(native) = native {
+                    return native.deliver(self, peer_id).map_err(refusal);
+                }
                 return self.start_for(caller, None, None, origin, &delivered, request);
             }
             if !launched {
-                let permit = tokio::select! {
-                    biased;
-                    () = &mut abandoned => return Err(stopped_waiting()),
-                    () = &mut deadline => return Err(expired()),
-                    seen = changes.changed() => {
-                        if seen.is_err() {
-                            return Err(ActionHostError::Unavailable { reason: "the broker stopped".into() });
-                        }
-                        continue;
-                    }
-                    permit = super::launchable::launch_permits().acquire_owned() => {
-                        permit.map_err(|_| ActionHostError::Unavailable { reason: "the launch queue stopped".into() })?
-                    }
-                };
-                // Re-read custody and launch policy after the queue wait.
-                self.check_launch_origin(caller, origin, &room)?;
-                let current = self.admit_launchable(caller, request)?;
-                if current.workspace.room != destination.workspace.room
-                    || current.app_id != *app_id
-                    || current.record != destination.record
                 {
-                    return Err(ActionHostError::NotPermitted);
+                    let mut permit = Some(tokio::select! {
+                        biased;
+                        () = &mut abandoned => return Err(stopped_waiting()),
+                        () = &mut deadline => return Err(expired()),
+                        seen = changes.changed() => {
+                            if seen.is_err() {
+                                return Err(ActionHostError::Unavailable { reason: "the broker stopped".into() });
+                            }
+                            continue;
+                        }
+                        () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => continue,
+                        permit = super::launchable::launch_permits().acquire_owned() => {
+                            permit.map_err(|_| ActionHostError::Unavailable { reason: "the launch queue stopped".into() })?
+                        }
+                    });
+                    // Re-read custody and launch policy after the queue wait.
+                    self.check_launch_origin(caller, origin, &room)?;
+                    let current = match native {
+                        Some(native) => native.destination(self).map_err(refusal)?,
+                        None => self.admit_launchable(caller, request)?,
+                    };
+                    if current.workspace.room != destination.workspace.room
+                        || current.app_id != *app_id
+                        || current.record != destination.record
+                    {
+                        return Err(ActionHostError::NotPermitted);
+                    }
+                    let launch = self.finish_retained_launch(
+                        completer,
+                        caller,
+                        destination,
+                        current,
+                        native,
+                        permit.take().ok_or(ActionHostError::NotPermitted)?,
+                        (deadline.deadline(), &address.action),
+                    );
+                    drop(permit);
+                    launch.await?;
                 }
-                let state = Arc::clone(self);
-                let app = app_id.clone();
-                let place = self.launch_place(caller, &room, None);
-                // The package's room record is what a plain launch opens.
-                let record = destination
-                    .record
-                    .clone()
-                    .filter(|record| !record.is_empty());
-                let mut launch = tokio::task::spawn_blocking(move || {
-                    let _permit = permit;
-                    state.launch_retained(&app, &current.workspace, record.as_deref(), &place)
-                });
-                let launched_result = tokio::select! {
-                    biased;
-                    () = &mut abandoned => {
-                        launch.abort();
-                        return Err(stopped_waiting());
-                    }
-                    () = &mut deadline => {
-                        launch.abort();
-                        return Err(expired());
-                    }
-                    result = &mut launch => result,
-                };
-                launched_result
-                    .unwrap_or_else(|error| Err(error.to_string()))
-                    .map_err(|reason| ActionHostError::Refused {
-                        reason: format!("{app_id} could not be launched: {reason}"),
-                    })?;
                 launched = true;
                 continue;
             }
@@ -1588,8 +1602,71 @@ impl CapnpBrokerState {
                 },
                 () = &mut deadline => return Err(expired()),
                 () = &mut abandoned => return Err(stopped_waiting()),
+                () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => {},
             }
         }
+    }
+
+    async fn finish_retained_launch<T: Send>(
+        self: &Arc<Self>,
+        completer: &Completer<T>,
+        caller: &Caller,
+        destination: &LaunchDestination,
+        current: LaunchDestination,
+        native: Option<&super::native_task_execution::NativeLaunch>,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        deadline: (tokio::time::Instant, &str),
+    ) -> Result<(), ActionHostError> {
+        let app_id = &destination.app_id;
+        let room = destination.workspace.room.to_string();
+        let timeout = self.launchable.delivery_timeout();
+        let stopped_waiting = || ActionHostError::Unavailable {
+            reason: "the caller stopped waiting for admission".into(),
+        };
+        let expired = || ActionHostError::Unavailable {
+            reason: format!(
+                "{app_id} was launched but did not offer \"{}\" within {:.1} s",
+                deadline.1,
+                timeout.as_secs_f32()
+            ),
+        };
+        let deadline = tokio::time::sleep_until(deadline.0);
+        let abandoned = completer.abandoned();
+        tokio::pin!(deadline, abandoned);
+        let state = Arc::clone(self);
+        let app = app_id.clone();
+        let place = self.launch_place(caller, &room, None);
+        // The package's room record is what a plain launch opens.
+        let record = destination
+            .record
+            .clone()
+            .filter(|record| !record.is_empty());
+        let native = native.cloned();
+        let mut launch = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            match native {
+                Some(native) => native.launch(&state, &current, &place),
+                None => state.launch_retained(&app, &current.workspace, record.as_deref(), &place),
+            }
+        });
+        let launched_result = tokio::select! {
+            biased;
+            () = &mut abandoned => {
+                launch.abort();
+                return Err(stopped_waiting());
+            }
+            () = &mut deadline => {
+                launch.abort();
+                return Err(expired());
+            }
+            result = &mut launch => result,
+        };
+        launched_result
+            .unwrap_or_else(|error| Err(error.to_string()))
+            .map_err(|reason| ActionHostError::Refused {
+                reason: format!("{app_id} could not be launched: {reason}"),
+            })?;
+        Ok(())
     }
 
     /// Recheck the original signed custody while an asynchronous launch waits.
@@ -1654,7 +1731,7 @@ impl CapnpBrokerState {
 
     /// Start `app_id` in `workspace` on `record` at `place` through the
     /// host's launcher, or the one a test installed in its place.
-    fn launch_retained(
+    pub(super) fn launch_retained(
         &self,
         app_id: &str,
         workspace: &Workspace,
@@ -1675,7 +1752,7 @@ impl CapnpBrokerState {
     /// asking app's own view; where a person is looking, for the person's
     /// own invocation; else beside the view the actor last worked in, so an
     /// agent or a Shortcut keeps working next to where it already is.
-    fn launch_place(
+    pub(super) fn launch_place(
         &self,
         caller: &Caller,
         room: &str,
@@ -1691,7 +1768,7 @@ impl CapnpBrokerState {
             CallerPrincipal::App(app_id) => LaunchPlace::Beside {
                 app_id: app_id.clone(),
             },
-            CallerPrincipal::Agent(_) => self
+            CallerPrincipal::Agent(_) | CallerPrincipal::Bot(_) => self
                 .launchable
                 .view_of(room, &BrokerActor::for_caller(caller).id)
                 .map_or(LaunchPlace::Focus, |app_id| LaunchPlace::Beside { app_id }),

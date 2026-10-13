@@ -298,26 +298,17 @@ impl EmojiPicker {
         action: ui::widget::PrimaryScrollAction,
     ) -> ui::widget::PrimaryScrollResult {
         use ui::widget::PrimaryScrollResult;
-        let Some(region) = self.primary_vertical_scroll() else {
+        if !self.open {
             return PrimaryScrollResult::Unsupported;
-        };
+        }
         let result = if self.tones.is_some() {
             self.tone_scroll.apply_primary_vertical_scroll(action)
         } else if self.body_scroll.overflows_vertically() {
             self.body_scroll.apply_primary_vertical_scroll(action)
         } else {
-            let Some(next) = action.offset(region.metrics) else {
-                return PrimaryScrollResult::Unsupported;
-            };
-            if (next - self.scroll).abs() < f64::EPSILON {
-                PrimaryScrollResult::Unchanged(region)
-            } else {
-                self.scroll = next;
-                self.primary_vertical_scroll().map_or(
-                    PrimaryScrollResult::Unsupported,
-                    PrimaryScrollResult::Changed,
-                )
-            }
+            action.apply_to(self, Self::primary_vertical_scroll, |picker, _, next| {
+                picker.scroll = next;
+            })
         };
         if matches!(result, PrimaryScrollResult::Changed(_)) {
             self.press = None;

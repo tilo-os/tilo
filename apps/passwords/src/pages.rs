@@ -380,16 +380,6 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
 
 // --- password review ----------------------------------------------------
 
-fn kind_icon(kind: SecretItemKind) -> Icon {
-    match kind {
-        SecretItemKind::Login => Icon::Globe,
-        SecretItemKind::ApiKey => Icon::Code,
-        SecretItemKind::SecureNote => Icon::FileText,
-        SecretItemKind::Wifi => Icon::Wifi,
-        SecretItemKind::Other => Icon::Shield,
-    }
-}
-
 fn count_tone(count: usize) -> Tone {
     if count == 0 {
         Tone::Success
@@ -420,7 +410,7 @@ fn review(core: &Core, requests: &Requests) -> Element {
             let item = core.item(&finding.id)?;
             Some(Box::new(
                 ListRow::new(format!("review:{}", item.id.0), item.title.clone())
-                    .icon(kind_icon(item.kind))
+                    .icon(crate::search::icon(item.kind))
                     .secondary(finding.reasons())
                     .disclosure()
                     .on_activate(ask(requests, Request::Open(item.id.clone()))),

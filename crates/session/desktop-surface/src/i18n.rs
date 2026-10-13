@@ -9,40 +9,18 @@
 //! installed a manager keeps its locale. A message missing from a
 //! translation falls back to `en-US`.
 
-use ui::i18n::{ArgValue, EmbeddedCatalog};
-
+#[cfg(test)]
 const CATALOGS: &[(&str, &str)] = &[
     ("en-US", include_str!("../locales/en-US.ftl")),
     ("de-DE", include_str!("../locales/de-DE.ftl")),
 ];
 
-/// Loaded per thread on first use; a host's manager is joined, never replaced.
-/// The probe is a key every catalogue revision defines.
-static CATALOG: EmbeddedCatalog = catalog();
-
-const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new("en-US", CATALOGS).with_system_locale();
-    // Unit tests assert source copy throughout the desktop; keep them
-    // deterministic on any developer or CI host locale.
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
+ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 /// Load the desktop's catalogue on this thread, so history entries the
 /// desktop records read in its words.
 pub fn ensure() {
     CATALOG.ensure();
-}
-
-/// Resolve a desktop string key.
-pub fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-/// Resolve a desktop string key that interpolates the given nouns.
-pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
 }
 
 #[cfg(test)]

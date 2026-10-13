@@ -25,6 +25,7 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
 use parking_lot::Mutex;
+use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_desktop_model::RoomId;
 use tilo_moq::client::{Client, ClientAuthority, Connection, ConnectionScope};
 use tilo_moq::relay::Direction;
@@ -32,6 +33,39 @@ use tilo_relay_protocol::voice::{CallOperation, Directions, PARTICIPATION_TTL, V
 use tilo_relay_session::coedit::{RelayCoeditSession, VoiceEvent};
 
 use crate::{NativeCommittedView, NativeFenceSubscription, NativeWorkspaceOwner};
+
+fn binding_refusal_class(error: &str) -> &'static str {
+    match error {
+        "exact admitted Chat missing" => "missing",
+        "exact admitted Chat is encrypted" => "encrypted",
+        "malformed media policy" => "malformed",
+        "conflicting media policy" => "conflict",
+        "unsupported media policy version" => "version",
+        "invalid media binding" => "invalid",
+        "invalid media policy counter" => "counter",
+        "media policy counter exhausted" => "exhausted",
+        "media policy capacity exceeded" => "capacity",
+        _ => "other",
+    }
+}
+
+fn active_call(
+    view: &NativeCommittedView,
+    binding: &tilo_peer_state::room::media::ChatCallBindingV1,
+) -> Result<Option<[u8; 32]>, String> {
+    let policy = view.peer().validated_media_policy()?;
+    let mut calls = policy.iter().flat_map(|policy| {
+        policy.calls.iter().filter(|(_, call)| {
+            &call.binding == binding
+                && call.phase == tilo_peer_state::room::media::CallPhaseV1::Active
+        })
+    });
+    let call = calls.next().map(|(id, _)| *id);
+    if calls.next().is_some() {
+        return Err("ambiguous governed call".into());
+    }
+    Ok(call)
+}
 
 /// The voice channel a call is bound to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +89,7 @@ enum Phase {
 
 struct State {
     phase: Phase,
+    retry_start: bool,
     call: Option<[u8; 32]>,
     grant: Option<VoiceGrant>,
     /// Advances with every grant.
@@ -78,6 +113,7 @@ pub struct Participation {
     room: RoomId,
     workspace: u64,
     device: [u8; 32],
+    binding: tilo_peer_state::room::media::ChatCallBindingV1,
     alive: AtomicBool,
     leaving: AtomicBool,
     base: Instant,
@@ -105,30 +141,35 @@ impl Participation {
         session: &RelayCoeditSession,
         check: impl Fn(&NativeCommittedView) -> Result<(), String>,
     ) -> Result<Arc<Self>, String> {
-        let (workspace, device, call) = owner.with_current(room, |view| {
+        let (workspace, device, call, binding) = owner.with_current(room, |view| {
             check(view)?;
             view.peer()
-                .permissions(view.device().device_public_key, SystemTime::now())?;
-            let binding = view.peer().resolve_media_binding(
-                &channel.app,
-                &channel.record,
-                &channel.channel,
-            )?;
-            let policy = view.peer().validated_media_policy()?;
-            let mut calls = policy.iter().flat_map(|policy| {
-                policy.calls.iter().filter(|(_, call)| {
-                    call.binding == binding
-                        && call.phase == tilo_peer_state::room::media::CallPhaseV1::Active
-                })
-            });
-            let call = calls.next().map(|(id, _)| *id);
-            if calls.next().is_some() {
-                return Err("ambiguous governed call".into());
-            }
+                .permissions(view.device().device_public_key, SystemTime::now())
+                .inspect_err(|_| {
+                    tracing::debug!(phase = "permissions", "native voice participation refusal");
+                })?;
+            let binding = view
+                .peer()
+                .resolve_media_binding(&channel.app, &channel.record, &channel.channel)
+                .inspect_err(|error| {
+                    tracing::debug!(
+                        phase = "binding",
+                        refusal_class = binding_refusal_class(error),
+                        "native voice participation refusal"
+                    );
+                })?;
+            let call = active_call(view, &binding).inspect_err(|_| {
+                tracing::debug!(phase = "policy", "native voice participation refusal");
+            })?;
             if call.is_none() && view.governor().user_public_key != view.device().user_public_key {
                 return Err("no call is active on this channel".into());
             }
-            Ok((view.workspace(), view.device().device_public_key, call))
+            Ok((
+                view.workspace(),
+                view.device().device_public_key,
+                call,
+                binding,
+            ))
         })?;
         if session.workspace_id() != workspace {
             return Err("the session belongs to another room".into());
@@ -145,12 +186,14 @@ impl Participation {
             room,
             workspace,
             device,
+            binding,
             alive: AtomicBool::new(true),
             leaving: AtomicBool::new(false),
             base: Instant::now(),
             authorized_until: AtomicU64::new(0),
             state: Mutex::new(State {
                 phase,
+                retry_start: false,
                 call,
                 grant: None,
                 revision: 0,
@@ -247,6 +290,13 @@ impl Participation {
                         drop(state);
                         self.refuse("the call did not start".into());
                     }
+                    Err(reason)
+                        if reason == tilo_relay_protocol::voice::CHANNEL_ADMISSION_PENDING =>
+                    {
+                        state.retry_start = true;
+                        drop(state);
+                        self.changed.notify_waiters();
+                    }
                     Err(reason) => {
                         drop(state);
                         self.refuse(reason.clone());
@@ -294,14 +344,58 @@ impl Participation {
         check: impl Fn(&NativeCommittedView) -> Result<(), String>,
     ) -> Result<(), String> {
         self.live()?;
+        if session.workspace_id() != self.workspace {
+            return Err("the session belongs to another room".into());
+        }
         if let Err(error) = self.owner.with_current(self.room, |view| {
             check(view)?;
+            view.peer().check_document_read(
+                self.device,
+                &self.binding.app_id,
+                &self.binding.record_id,
+                SystemTime::now(),
+            )?;
+            if view.peer().resolve_media_binding(
+                &self.binding.app_id,
+                &self.binding.record_id,
+                &self.binding.channel_id,
+            )? != self.binding
+            {
+                return Err("the call's channel changed".into());
+            }
             view.peer()
                 .permissions(self.device, SystemTime::now())
                 .map(|_| ())
         }) {
             self.stop();
             return Err(error);
+        }
+        let pending = {
+            let mut state = self.state.lock();
+            match state.phase {
+                Phase::Starting(request) if state.retry_start => {
+                    state.retry_start = false;
+                    drop(state);
+                    Some(request)
+                }
+                _ => None,
+            }
+        };
+        if let Some(request) = pending {
+            return session
+                .voice_call(
+                    request,
+                    CallOperation::Start {
+                        app_id: self.binding.app_id.clone(),
+                        record_id: self.binding.record_id.clone(),
+                        channel_id: self.binding.channel_id.clone(),
+                        allowed: Directions {
+                            publish: true,
+                            subscribe: true,
+                        },
+                    },
+                )
+                .map_err(|_| "the room's relay session is gone".into());
         }
         // Only a granted participation of this session has an id to repeat.
         let (call, id) = {
@@ -322,26 +416,54 @@ impl Participation {
     /// Join again over `session`, a new connection to the room's relay. The
     /// current grant stays until the governor grants the new participation;
     /// its carrier then no longer matches and is replaced.
+    /// A pending Start whose reply was lost can recover only the unique active
+    /// call already admitted for its original exact channel binding.
     ///
     /// # Errors
-    /// The participation ended or the session is gone.
+    /// The participation ended, current custody or binding no longer admits
+    /// the call, or the session is gone or belongs to another room.
     pub fn rejoin(&self, session: &RelayCoeditSession) -> Result<(), String> {
         self.live()?;
-        let call = {
-            let mut state = self.state.lock();
-            let call = state.call;
-            if call.is_some() {
-                state.phase = Phase::Joining;
+        let admitted_call = self.owner.with_current(self.room, |view| {
+            if view.device().device_public_key != self.device {
+                return Err("native selected device custody changed".into());
             }
-            call
-        };
-        let Some(call) = call else {
-            // The start went over the old connection; its answer is lost.
-            self.refuse("the room reconnected while the call was starting".into());
-            return Err("the room reconnected while the call was starting".into());
-        };
+            let (hint, _) =
+                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                    .map_err(|error| error.to_string())?;
+            if hint.workspace_id != session.workspace_id() || hint.room != self.room.to_string() {
+                return Err("the session belongs to another room".into());
+            }
+            let now = SystemTime::now();
+            view.peer().permissions(self.device, now)?;
+            view.peer().check_document_read(
+                self.device,
+                &self.binding.app_id,
+                &self.binding.record_id,
+                now,
+            )?;
+            if view.peer().resolve_media_binding(
+                &self.binding.app_id,
+                &self.binding.record_id,
+                &self.binding.channel_id,
+            )? != self.binding
+            {
+                return Err("the call's channel changed".into());
+            }
+            active_call(view, &self.binding)?
+                .ok_or_else(|| "no call is active on this channel".into())
+        })?;
+        let mut state = self.state.lock();
+        if state.call.is_some_and(|call| call != admitted_call) {
+            return Err("the call changed while reconnecting".into());
+        }
+        // Starting may have lost its result on the retired transport. The
+        // admitted policy names the same exact binding; never send Start again.
+        state.call = Some(admitted_call);
+        state.phase = Phase::Joining;
+        drop(state);
         session
-            .voice_join(call, None)
+            .voice_join(admitted_call, None)
             .map_err(|_| "the room's relay session is gone".into())
     }
 

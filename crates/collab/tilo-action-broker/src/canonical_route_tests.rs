@@ -88,6 +88,7 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                     revision: Some("directory-r1".into()),
                     on_behalf_of: None,
                     wait_ms: None,
+                    appearance: None,
                 };
                 let pending = host.invoke(&caller, request);
                 room.state.drain_action_directory_bridge(&room.directories);
@@ -173,6 +174,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
                 revision: Some("r1".into()),
                 on_behalf_of: None,
                 wait_ms: None,
+                appearance: None,
             };
             let receipt = canonical_pending(&room, host.invoke(&caller, request.clone()))
                 .await
