@@ -115,8 +115,11 @@ class PrewarmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             marker = root / "listing.pid"
+            pending_marker = root / "listing.pid.pending"
+            # The marker's existence means its PID is ready to read.
             body = ("import signal\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-                    f"open({str(marker)!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)")
+                    f"open({str(pending_marker)!r}, 'w').write(str(os.getpid()))\n"
+                    f"os.replace({str(pending_marker)!r}, {str(marker)!r})\ntime.sleep(60)")
             source, target, row = self.fixture(root, body=body)
             artifacts = root / "artifacts.jsonl"
             artifacts.write_text(json.dumps(row) + "\n")
