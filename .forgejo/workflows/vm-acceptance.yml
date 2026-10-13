@@ -202,9 +202,19 @@ jobs:
                 swap=shell
                 # tilo-vmd's input path runs in the VM (device profiles, uinput).
                 git diff --quiet "$from" "$target" -- crates/dev/tilo-vmd crates/dev/tilo-vm-protocol || swap+=",vmd"
+                apps=""
                 for app in $(git diff --name-only "$from" "$target" -- apps/ | cut -d/ -f2 | sort -u); do
-                  git cat-file -e "$target:apps/$app/Cargo.toml" 2>/dev/null && swap+=",app:$app"
+                  git cat-file -e "$target:apps/$app/Cargo.toml" 2>/dev/null && apps+=",app:$app"
                 done
+                # An app links the base's libruntime_dylib.so, whose symbols
+                # carry crate hashes: with a Cargo.lock the base does not
+                # have, the changed apps go in with their runtime as one
+                # cohort (tilo-vm refuses a lone app:<dir> then).
+                if [[ -n $apps ]] && ! git diff --quiet "$commit" "$target" -- Cargo.lock; then
+                  swap+=",apps+runtime"
+                else
+                  swap+=$apps
+                fi
               fi ;;
             all)
               swap=$(git show "$target:os/components.toml" | python3 -c '
