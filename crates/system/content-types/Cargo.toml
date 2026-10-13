@@ -1,0 +1,15 @@
+[package]
+name = "tilo-content-types"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Content descriptors and signature inspection without storage clients."
+
+[lints]
+workspace = true
+
+[dependencies]
+workspace-hack = { version = "0.1" }

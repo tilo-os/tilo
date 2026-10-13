@@ -38,7 +38,6 @@ mod dir;
 #[cfg(feature = "dir")]
 mod files;
 mod memory;
-mod sniff;
 
 #[cfg(all(unix, feature = "device"))]
 pub use device::DeviceBackend;
@@ -47,7 +46,9 @@ pub use dir::DirBackend;
 #[cfg(feature = "dir")]
 pub use files::FilesBackend;
 pub use memory::MemoryBackend;
-pub use sniff::{ImageFormat, image_format, image_size, sniff};
+pub use tilo_content_types::{
+    ContentMeta, ImageFormat, image_format, image_size, sniff, valid_hash,
+};
 
 /// The app-files owner of a page's content store (see [`ContentStore::for_app`]).
 #[cfg(feature = "dir")]
@@ -70,25 +71,6 @@ pub fn hash_bytes(bytes: &[u8]) -> String {
 /// True when `bytes` really are the content named by `hash`.
 pub fn verify(hash: &str, bytes: &[u8]) -> bool {
     hash_bytes(bytes) == hash
-}
-
-/// Whether `hash` has the shape of a content address (64 lower- or upper-case hex digits).
-/// Addresses arrive from documents and peers, so anything else is refused before it can name a path.
-pub fn valid_hash(hash: &str) -> bool {
-    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-/// What a document records about content *instead of* its bytes — enough to lay out a placeholder
-/// occupying exactly the space the content will, so nothing reflows when the bytes arrive.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ContentMeta {
-    /// Media type, sniffed from the content (`image/png`, …). Empty if unknown.
-    pub mime: String,
-    pub len: u64,
-    /// Intrinsic pixel width, 0 when not an image we can read a header from.
-    pub w: u32,
-    /// Intrinsic pixel height, 0 when unknown.
-    pub h: u32,
 }
 
 /// Where the content behind an address has got to.

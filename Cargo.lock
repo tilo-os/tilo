@@ -1426,6 +1426,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-files",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -16079,7 +16080,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
- "tilo-content",
+ "tilo-content-types",
  "tilo-test-env",
  "unicode-normalization",
  "uuid",
@@ -16683,9 +16684,17 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-advisory-lock",
  "tilo-clock",
+ "tilo-content-types",
  "tilo-files",
  "tilo-paths",
  "tracing",
+]
+
+[[package]]
+name = "tilo-content-types"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
 ]
 
 [[package]]
@@ -22459,6 +22468,7 @@ dependencies = [
  "futures",
  "futures-channel",
  "futures-core",
+ "futures-executor",
  "futures-io",
  "futures-lite",
  "futures-sink",
