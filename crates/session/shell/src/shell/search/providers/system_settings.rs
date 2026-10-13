@@ -736,7 +736,7 @@ impl SearchProvider for SystemSettingsProvider {
         let Some(Built { rows, fields, .. }) = built.as_ref() else {
             return Vec::new();
         };
-        crate::shell::search::rank_rows(&self.ranker, ctx.needle.trim(), rows.clone(), fields)
+        crate::shell::search::rank_kept_rows(&self.ranker, ctx.needle.trim(), rows, fields)
     }
 }
 
