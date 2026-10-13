@@ -392,13 +392,16 @@ fn validate(cache: &FrameCache, size: (u32, u32), limit: u32) -> Result<(), Stri
                 size.1
             ));
         }
+        // A strip's shadow may overlap the adjacent row. Each strip has its
+        // own canvas, and GLES draws those canvases in order. Only an exact
+        // duplicate destination indicates that a row was published twice.
         if cache.strips.iter().take(index).any(|other| {
-            strip.dest_x < other.dest_x.saturating_add(other.dest_w)
-                && other.dest_x < strip.dest_x.saturating_add(strip.dest_w)
-                && strip.dest_y < other.dest_y.saturating_add(other.dest_h)
-                && other.dest_y < strip.dest_y.saturating_add(strip.dest_h)
+            strip.dest_x == other.dest_x
+                && strip.dest_y == other.dest_y
+                && strip.dest_w == other.dest_w
+                && strip.dest_h == other.dest_h
         }) {
-            return Err("retained strips overlap".into());
+            return Err("retained strips duplicate a destination".into());
         }
     }
     Ok(())
@@ -861,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_bounds_overlap_and_backdrop_reads_refuse_layer_composition() {
+    fn invalid_bounds_duplicate_destinations_and_backdrop_reads_refuse_layer_composition() {
         let mut cached = cache(64);
         cached.strips[0].scroll_x = u32::MAX;
         assert!(validate(&cached, (64, 32), 128).is_err());
@@ -870,7 +873,15 @@ mod tests {
         cached.layers.strips.push(Scene::new());
         cached.layers.strip_parts.push(None);
         assert!(validate(&cached, (64, 32), 128).is_err());
+        cached.strips[0].dest_h = 20;
+        cached.strips[1].dest_y = 16;
+        cached.strips[1].dest_h = 16;
+        assert!(
+            validate(&cached, (64, 32), 128).is_ok(),
+            "adjacent shadow overlap composes from independent strip canvases"
+        );
         cached.strips.pop();
+        cached.strips[0].dest_h = 32;
         cached.layers.strips.pop();
         cached.layers.strip_parts.pop();
         cached.width = 129;
