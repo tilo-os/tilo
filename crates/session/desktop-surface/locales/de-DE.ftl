@@ -574,6 +574,7 @@ notification-dnd-held = { $status } · { $count } zurückgehalten
 notification-stack-a11y = Benachrichtigungen
 notification-group-system = System
 notification-center-undo = Rückgängig
+notification-not-now = Später
 notification-app-failed-title = Eine App konnte nicht geöffnet werden
 notification-service-unavailable = Das ist auf diesem Desktop noch nicht verfügbar
 

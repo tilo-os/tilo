@@ -38,8 +38,9 @@ impl NotificationSeverity {
     }
 }
 
-/// Icon-kind hint for a notification. There is no icon font on the banner
-/// path yet, so every kind renders the same severity-tinted dot.
+/// What a notification is about, when the desktop itself knows: plain
+/// information leads with its glyph. `Generic` has none, so a card leads
+/// with its sender instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NotificationIconKind {
     #[default]
@@ -47,6 +48,18 @@ pub enum NotificationIconKind {
     Workspace,
     Network,
     Permission,
+}
+
+impl NotificationIconKind {
+    /// The glyph this kind leads a card with.
+    pub fn icon(self) -> Option<ui::icons::Icon> {
+        match self {
+            Self::Generic => None,
+            Self::Workspace => Some(ui::icons::Icon::LayoutGrid),
+            Self::Network => Some(ui::icons::Icon::Wifi),
+            Self::Permission => Some(ui::icons::Icon::Fingerprint),
+        }
+    }
 }
 
 /// Restart-scoped identity of a notification mirrored from another
@@ -106,6 +119,10 @@ pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
 /// until the person acts. A long finite duration rather than
 /// `Option<Duration>` keeps the expiry arithmetic a single code path.
 pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(86400);
+
+/// Action key of an ask's "Not now": the banner leaves, the ask stays in
+/// the notification centre where the person can answer it later.
+pub const NOT_NOW_ACTION: &str = "not-now";
 
 /// Max notifications in the active stack; older entries retire to history
 /// from the front (same FIFO as `ui::widget::toast::ToastStack`).

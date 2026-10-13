@@ -818,8 +818,18 @@ impl Persistence {
     pub fn save(&self, handle: &DesktopHandle) -> Result<(), String> {
         let notifications_revision = self.notifications.revision();
         if notifications_revision != self.saved_notifications_revision.get() {
+            // Asks are the page's to make again: one kept past a reload
+            // could no longer be answered.
+            let history: Vec<_> = self
+                .notifications
+                .log()
+                .history()
+                .iter()
+                .filter(|notification| !tilo_desktop_surface::is_host_offer(notification))
+                .cloned()
+                .collect();
             let bytes = tilo_desktop_surface::notifications::encode_history(
-                self.notifications.log().history(),
+                &history,
                 ui::time::SystemTime::now(),
                 ui::time::now(),
             )
