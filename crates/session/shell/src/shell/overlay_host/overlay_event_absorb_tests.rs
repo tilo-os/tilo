@@ -2652,8 +2652,12 @@ fn compact_shortcut_help_fits_the_window_and_scrolls_its_body() {
         shortcut_action_summary(&h.host.shortcut_config).is_some(),
         h.host.desktop_controls.config().vim_mode,
     );
-    let content_h =
-        shortcut_guide_content_height(panel.width() - 48.0, SHORTCUT_GUIDE_ROWS.len(), note_lines);
+    let content_h = shortcut_guide_content_height(
+        panel.width() - 48.0,
+        SHORTCUT_GUIDE_ROWS.len(),
+        note_lines,
+        h.host.shortcut_navigation_step,
+    );
     assert!(
         (h.host.shortcut_guide_max_scroll - (content_h - body_h)).abs() < 1e-6,
         "scroll range {} must equal the overflow {}",

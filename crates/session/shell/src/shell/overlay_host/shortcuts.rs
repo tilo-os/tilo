@@ -283,17 +283,22 @@ pub(super) fn shortcut_navigation_columns(body_width: f64) -> usize {
 /// Height of the editable-navigation surface: heading plus one 44 px row per
 /// pair, derived from the row count so a surface can never be shorter than
 /// the rows it holds.
-pub(super) fn shortcut_navigation_height(pairs: usize, columns: usize) -> f64 {
+pub(super) fn shortcut_navigation_height(pairs: usize, columns: usize, step: f64) -> f64 {
     let rows = pairs.div_ceil(columns.max(1));
     #[allow(
         clippy::cast_precision_loss,
         reason = "a handful of rows converts exactly"
     )]
     let rows = rows as f64;
-    31.0 + rows * SHORTCUT_NAVIGATION_STEP + 4.0
+    31.0 + rows * step + 4.0
 }
 
-pub(super) const SHORTCUT_NAVIGATION_STEP: f64 = 44.0;
+/// Distance between navigation rows in `theme`: the action's caption line,
+/// its keycaps under it, and a tight gap before the next row.
+pub(super) fn shortcut_navigation_step(theme: &ui::theme::Theme) -> f64 {
+    18.0 + ui::widget::InputHint::keycap_height(theme)
+        + f64::from(theme.tokens.spacing.rhythm.tight)
+}
 
 /// Lines of pointer notes: the fixed pointer line, your action chords and the
 /// vim-mode hint when present.
@@ -321,8 +326,13 @@ pub(super) fn shortcut_guide_content_height(
     body_width: f64,
     pairs: usize,
     note_lines: usize,
+    navigation_step: f64,
 ) -> f64 {
-    let navigation = shortcut_navigation_height(pairs, shortcut_navigation_columns(body_width));
+    let navigation = shortcut_navigation_height(
+        pairs,
+        shortcut_navigation_columns(body_width),
+        navigation_step,
+    );
     let group_rows = SHORTCUT_REFERENCE_GROUPS.div_ceil(shortcut_reference_columns(body_width));
     #[allow(
         clippy::cast_precision_loss,
@@ -412,9 +422,10 @@ mod guide_layout_tests {
     fn navigation_surface_holds_every_row() {
         // Eight pairs in two columns are four rows of 44 px under a 31 px
         // heading: the surface must contain the last row's keycaps.
-        let height = shortcut_navigation_height(8, 2);
-        assert!(height >= 31.0 + 4.0 * SHORTCUT_NAVIGATION_STEP);
-        assert!(shortcut_navigation_height(8, 1) > height);
+        let step = shortcut_navigation_step(&ui::theme::Theme::dark());
+        let height = shortcut_navigation_height(8, 2, step);
+        assert!(height >= 31.0 + 4.0 * step);
+        assert!(shortcut_navigation_height(8, 1, step) > height);
     }
 
     #[test]
@@ -432,7 +443,8 @@ mod guide_layout_tests {
         assert_eq!(shortcut_reference_columns(560.0), 2);
         assert_eq!(shortcut_reference_columns(300.0), 1);
         assert!(
-            shortcut_guide_content_height(300.0, 8, 1) > shortcut_guide_content_height(912.0, 8, 1)
+            shortcut_guide_content_height(300.0, 8, 1, 44.0)
+                > shortcut_guide_content_height(912.0, 8, 1, 44.0)
         );
     }
 }
