@@ -21,6 +21,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from pathlib import Path
@@ -274,6 +275,43 @@ def component_scopes(source: Path) -> dict[str, str]:
     return {c["name"]: c.get("scope", "session") for c in manifest.get("component", [])}
 
 
+def engine_pins(source: Path) -> list[str]:
+    """The engine versions the source's apps pin (`optional-runtimes`), as the
+    apps+runtime assembly ships them (os/dev/assemble-app-runtime.py)."""
+    pins = set()
+    for manifest in sorted((source / "apps").glob("*/tilo-app.toml")):
+        package = tomllib.loads(manifest.read_text()).get("package", {})
+        pins.update(package.get("optional-runtimes", []))
+    return sorted(pin.split("/", 1)[1] for pin in pins if pin.startswith("tilo-runtime/"))
+
+
+def stage_base_engines(vm: TiloVm, source: Path, destination: Path) -> list[str]:
+    """Copy each engine the source's apps pin from the base disk into `destination`,
+    where the apps+runtime assembly takes it as one of the host's bundles.
+
+    The engine is built only in an image's browser stage and the registry may not
+    offer it, so a CI host has none; the base the cohort is installed on runs the
+    same pinned version whenever the pin did not move. The assembly still verifies
+    its signature, and still refuses the cohort when no host bundle has the pin."""
+    staged = []
+    for version in engine_pins(source):
+        if vm.root_exec(f"test -f /usr/lib/tilo-runtime/{shlex.quote(version)}/bundle.toml "
+                        "&& echo present || true").strip() != "present":
+            continue
+        destination.mkdir(parents=True, exist_ok=True)
+        tar = subprocess.Popen(
+            [vm.binary, "vm", "ssh", "--",
+             f"tar -C /usr/lib/tilo-runtime -cf - {shlex.quote(version)}"],
+            env=dict(os.environ, TILO_VM=vm.vm), stdout=subprocess.PIPE)
+        unpacked = subprocess.run(["tar", "-C", str(destination), "-xf", "-"],
+                                  stdin=tar.stdout, check=False)
+        if tar.stdout:
+            tar.stdout.close()
+        if tar.wait() == 0 and unpacked.returncode == 0:
+            staged.append(version)
+    return staged
+
+
 def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path,
                     artifact: dict | None = None) -> dict:
     """Build each component from `source` and swap it into the VM:
@@ -475,7 +513,23 @@ def main() -> int:
                 print(f"the slot's logs: {logs}", file=sys.stderr)
             raise
         if swaps:
-            swapped = swap_components(vm, swaps, swap_ref, swap_from, artifact)
+            # Outside the report: an engine is hundreds of megabytes.
+            engines = Path(tempfile.mkdtemp(prefix="tilo-base-engines-"))
+            bundles = os.environ.get("TILO_RUNTIME_BUNDLE_DIR")
+            try:
+                if "apps+runtime" in swaps and not artifact:
+                    staged = stage_base_engines(vm, swap_from, engines)
+                    if staged:
+                        print(f"engines from the base for apps+runtime: {', '.join(staged)}",
+                              flush=True)
+                        os.environ["TILO_RUNTIME_BUNDLE_DIR"] = str(engines)
+                swapped = swap_components(vm, swaps, swap_ref, swap_from, artifact)
+            finally:
+                if bundles is None:
+                    os.environ.pop("TILO_RUNTIME_BUNDLE_DIR", None)
+                else:
+                    os.environ["TILO_RUNTIME_BUNDLE_DIR"] = bundles
+                shutil.rmtree(engines, ignore_errors=True)
             if management:
                 if swapped["commit"] != management["commit"]:
                     raise VmError("management and session swaps have different source commits")
