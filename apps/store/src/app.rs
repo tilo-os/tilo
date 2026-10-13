@@ -1150,8 +1150,7 @@ impl Widget for StoreApp {
         // Track the pointer so the bubble stays open while it rests on it
         // (coords are window-space, unscaled).
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
         }
         if let (Some(root), Ok(children)) = (self.root.as_mut(), ctx.taffy.children(ctx.node_id))
             && let Some(&child_node) = children.first()
@@ -3004,10 +3003,7 @@ mod tests {
                 "persistent account control is visible without hover: {rect:?}"
             );
         }
-        let move_pointer = |x, y| winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        };
+        let move_pointer = |x, y| ui::synthetic_input::cursor_moved(x, y);
         if scenario == "detail-technical" {
             app.harness().send(&move_pointer(
                 f64::from(viewport.0) / 2.0,
@@ -4476,7 +4472,6 @@ mod tests {
     fn cards_and_detail_controls_keep_typed_local_bindings() {
         // Case `card_pointer_details_and_primary_activation_keep_typed_bindings`.
         {
-            use winit::event::WindowEvent;
             for width in [480.0, 1200.0] {
                 let app = seeded_app();
                 let item = &app.items[1];
@@ -4505,22 +4500,11 @@ mod tests {
                         .center();
                     let mut doc = AutoCommit::new();
                     let mut focus = None;
-                    let cursor = WindowEvent::CursorMoved {
-                        device_id: winit::event::DeviceId::dummy(),
-                        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-                    };
+                    let cursor = ui::synthetic_input::cursor_moved(center.x, center.y);
                     let events = [
                         cursor,
-                        WindowEvent::MouseInput {
-                            device_id: winit::event::DeviceId::dummy(),
-                            state: winit::event::ElementState::Pressed,
-                            button: winit::event::MouseButton::Left,
-                        },
-                        WindowEvent::MouseInput {
-                            device_id: winit::event::DeviceId::dummy(),
-                            state: winit::event::ElementState::Released,
-                            button: winit::event::MouseButton::Left,
-                        },
+                        ui::synthetic_input::mouse_press(),
+                        ui::synthetic_input::mouse_release(),
                     ];
                     for event in events {
                         focus = ui::testing::Dispatch::new()

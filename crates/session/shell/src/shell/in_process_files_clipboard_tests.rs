@@ -589,7 +589,7 @@ mod files_clipboard_tests {
             character: &str,
             modifiers: ui::winit::keyboard::ModifiersState,
         ) {
-            use ui::winit::event::{DeviceId, ElementState, KeyEvent, RawKeyEvent, WindowEvent};
+            use ui::winit::event::{ElementState, KeyEvent, RawKeyEvent, WindowEvent};
             use ui::winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
             let embedded = self.shown[index]
                 .tile
@@ -616,11 +616,7 @@ mod files_clipboard_tests {
                 );
                 app.surface_input(
                     &InputSurface,
-                    WindowEvent::KeyboardInput {
-                        device_id: DeviceId::dummy(),
-                        event,
-                        is_synthetic: false,
-                    },
+                    ui::synthetic_input::keyboard_input(event),
                     false,
                 );
             }

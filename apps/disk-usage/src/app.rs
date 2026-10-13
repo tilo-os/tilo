@@ -706,7 +706,6 @@ mod view_tests {
                 name: format!("folder-{i}"),
                 bytes: 1_000 - i,
                 files: 10,
-                unreadable: 0,
             })
             .collect();
         let rows = slice_rows(&entries);

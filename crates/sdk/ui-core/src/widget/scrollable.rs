@@ -1778,9 +1778,9 @@ impl Widget for Scrollable {
             .as_ref()
             .is_some_and(|child| child.wants_pointer_capture());
         let pointer_in_content = match event {
-            WindowEvent::CursorMoved { position, .. } => self.content_viewport_rect().contains(
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor),
-            ),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.content_viewport_rect().contains(ctx.logical(position))
+            }
             WindowEvent::MouseInput { .. } => {
                 self.content_viewport_rect().contains(self.last_cursor)
             }
@@ -2076,11 +2076,7 @@ mod tests {
 
     use crate::synthetic_input::cursor_moved;
     fn mouse(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        crate::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
     struct EventSpy {
@@ -2104,9 +2100,7 @@ mod tests {
             taffy.widget_leaf(style, node_map, self)
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn draw(
             &mut self,
@@ -2143,10 +2137,6 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "EventSpy"
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
         }
 
         fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
@@ -3017,11 +3007,7 @@ mod tests {
         {
             let mut s = vertical(1200.0);
             let before = s.offset_y();
-            let ev = WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let ev = crate::synthetic_input::mouse_wheel(0.0, -1.0);
             assert!(dispatch(&mut s, &ev), "wheel handled");
             assert!(s.offset_y() > before, "wheel down increases offset");
         }

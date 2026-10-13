@@ -274,8 +274,10 @@ pub trait AppWidget: Widget {
     fn app_kind(&self) -> AppKind;
     fn app_title(&self) -> &str;
     fn app_icon(&self) -> IconDescriptor;
-    /// Which role permission governs this app. `None` means "ungated".
-    fn permission_hint(&self) -> Option<AppKind>;
+    /// Which role permission governs this app. Default `None`: ungated.
+    fn permission_hint(&self) -> Option<AppKind> {
+        None
+    }
     /// Command-palette contributions. Default is none.
     fn commands(&self) -> Vec<AppCommand> {
         vec![]
@@ -322,10 +324,10 @@ mod component_adapter {
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
         AudiencePresentationWidgetExt, AutoCommit, CaptureMode, CompleteContentProvider,
-        CompleteContentWidgetExt, Continuable, ControlBindingMetadata, DragPayload,
-        FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt,
-        HashMap, HashSet, Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey,
-        ResourceOperationStart, Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
+        CompleteContentWidgetExt, Continuable, ControlBindingMetadata, FloatingSurfaceProvider,
+        FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt, HashMap, HashSet,
+        Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey, ResourceOperationStart,
+        Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
 
     pub(crate) struct BoundAppWidget {
@@ -1245,26 +1247,9 @@ mod component_adapter {
             }
             update
         }
-        fn accepts_drop(&self, payload: &DragPayload) -> bool {
-            self.in_root(|root| root.accepts_drop(payload))
-                .unwrap_or_default()
-        }
-        fn on_drop(
-            &mut self,
-            payload: DragPayload,
-            state: &mut crate::widget::Edits<'_>,
-            _path: &crate::widget::ModelPath,
-        ) {
-            self.with_root_edits(state, |root, edits, record_root| {
-                root.on_drop(payload, edits, record_root);
-            });
-        }
         fn wants_pointer_capture(&self) -> bool {
             self.in_root(|root| root.wants_pointer_capture())
                 .unwrap_or_default()
-        }
-        fn is_floating(&self) -> bool {
-            self.in_root(|root| root.is_floating()).unwrap_or_default()
         }
         fn needs_animation_frame(&self) -> bool {
             self.in_root(|root| root.needs_animation_frame())

@@ -463,7 +463,7 @@ mod tests {
         // --- phase: navigation_during_edit_keeps_completion_and_submission_on_the_same_location ---
         {
             use ui::a11y::Action;
-            use winit::event::{DeviceId, ElementState, KeyEvent, RawKeyEvent};
+            use winit::event::{ElementState, KeyEvent, RawKeyEvent};
             use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 
             let fixture = tempfile::tempdir().unwrap();
@@ -494,22 +494,18 @@ mod tests {
                 );
 
                 let key = Key::Named(NamedKey::Enter);
-                let event = WindowEvent::KeyboardInput {
-                    device_id: DeviceId::dummy(),
-                    event: KeyEvent::synthetic(
-                        RawKeyEvent {
-                            physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
-                            state: ElementState::Pressed,
-                        },
-                        key.clone(),
-                        None,
-                        KeyLocation::Standard,
-                        false,
-                        None,
-                        key,
-                    ),
-                    is_synthetic: false,
-                };
+                let event = ui::synthetic_input::keyboard_input(KeyEvent::synthetic(
+                    RawKeyEvent {
+                        physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+                        state: ElementState::Pressed,
+                    },
+                    key.clone(),
+                    None,
+                    KeyLocation::Standard,
+                    false,
+                    None,
+                    key,
+                ));
                 let handled = ui::testing::Dispatch::new()
                     .doc(&mut doc)
                     .send(&mut bar, &event)

@@ -38,7 +38,7 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2, zwp_input_method_v2,
 };
-use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::wayland::private_text_input_protocol::{
     tilo_text_input_manager_v1, tilo_text_input_v1,
@@ -1314,7 +1314,6 @@ fn route_picker_event(harness: &mut Harness, event: &WindowEvent) {
 
 #[test]
 fn interrupted_pointer_pick_stays_with_the_open_picker() {
-    use winit::event::{DeviceId, MouseButton};
     for focus_loss in [true, false] {
         let mut h = Harness::new();
         h.key(Key::Character(".".into()), ModifiersState::SUPER);
@@ -1325,21 +1324,8 @@ fn interrupted_pointer_pick_stays_with_the_open_picker() {
             .emoji_rect(0)
             .expect("visible pizza")
             .center();
-        route_picker_event(
-            &mut h,
-            &WindowEvent::CursorMoved {
-                device_id: DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(cell.x, cell.y),
-            },
-        );
-        route_picker_event(
-            &mut h,
-            &WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
+        route_picker_event(&mut h, &ui::synthetic_input::cursor_moved(cell.x, cell.y));
+        route_picker_event(&mut h, &ui::synthetic_input::mouse_press());
         if focus_loss {
             route_picker_event(&mut h, &WindowEvent::Focused(false));
         } else {
@@ -1347,14 +1333,7 @@ fn interrupted_pointer_pick_stays_with_the_open_picker() {
             h.type_text("thumbs up");
             assert_eq!(h.host.emoji_picker().selected(), Some("👍"));
         }
-        route_picker_event(
-            &mut h,
-            &WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-        );
+        route_picker_event(&mut h, &ui::synthetic_input::mouse_release());
         assert!(
             h.host.take_emoji_commits().is_empty(),
             "an interrupted native pick cannot insert"

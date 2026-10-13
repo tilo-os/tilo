@@ -24,10 +24,7 @@ fn opened() -> Popover {
 }
 
 fn cursor_at(pt: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(pt.x, pt.y),
-    }
+    crate::synthetic_input::cursor_moved(pt.x, pt.y)
 }
 
 use crate::synthetic_input::mouse_press;

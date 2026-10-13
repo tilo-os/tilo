@@ -36,16 +36,10 @@ impl Widget for DrawUpdatedDamage {
         self.damage
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
+    crate::redraw_flag!();
 
     fn collect_damage(&self, regions: &mut Vec<KurboRect>) {
         regions.push(self.damage);
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
     }
 }
 

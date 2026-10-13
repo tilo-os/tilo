@@ -134,7 +134,7 @@ impl Widget for PreviewCanvas {
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         if *ctx.handled {
             return;
@@ -171,10 +171,5 @@ impl Widget for PreviewCanvas {
             ),
         )
     }
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 }

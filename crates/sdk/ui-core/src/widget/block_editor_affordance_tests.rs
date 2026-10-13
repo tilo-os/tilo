@@ -100,14 +100,7 @@ fn type_text(editor: &mut BlockEditor, doc: &mut AutoCommit, text: &str) {
         );
         let handled = Dispatch::new()
             .doc(doc)
-            .send(
-                editor,
-                &WindowEvent::KeyboardInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    event: key,
-                    is_synthetic: false,
-                },
-            )
+            .send(editor, &crate::synthetic_input::keyboard_input(key))
             .handled;
         assert!(handled);
         editor.sync(doc, &ROOT);

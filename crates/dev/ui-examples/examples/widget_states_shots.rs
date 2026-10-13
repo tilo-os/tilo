@@ -1965,9 +1965,7 @@ impl Widget for Painted {
         };
         taffy.widget_leaf(style, node_map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = tilo_ui::widget::layout_rect(taffy, node, origin);
-    }
+    tilo_ui::rect_geometry!();
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1980,9 +1978,6 @@ impl Widget for Painted {
     }
     fn name(&self) -> &'static str {
         "Painted"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

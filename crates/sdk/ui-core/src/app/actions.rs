@@ -4386,11 +4386,7 @@ impl App {
             None,
             Key::Named(NamedKey::Enter),
         );
-        self.action_palette_handle_key(&winit::event::WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        });
+        self.action_palette_handle_key(&crate::synthetic_input::keyboard_input(event));
         self.dispatch_control_invocations();
         Some(address)
     }

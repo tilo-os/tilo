@@ -822,14 +822,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             "first",
             "preview must not mutate document order"
         );
-        block_event(
-            &mut editor,
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-        );
+        block_event(&mut editor, ui::synthetic_input::mouse_release());
         assert_eq!(
             editor
                 .blocks()
@@ -921,14 +914,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             block_event(&mut editor, cursor_moved(handle, last.center().y));
             block_scene(&mut editor);
             block_event(&mut editor, cancel);
-            block_event(
-                &mut editor,
-                WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-            );
+            block_event(&mut editor, ui::synthetic_input::mouse_release());
             assert_eq!(
                 editor
                     .blocks()
@@ -942,7 +928,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
 }
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{ModifiersState, NamedKey};
 
 use ui::synthetic_input::cursor_moved;

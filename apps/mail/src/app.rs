@@ -945,14 +945,12 @@ impl MailApp {
                 Intent::Forward(id) => self.open_forward(id),
                 Intent::EditDraft(id) => self.open_draft(id),
                 Intent::ContextMenu(id, at, row) => self.open_menu(id, at, Some(row)),
-                Intent::Settings(idx) => self.open_setup_edit(idx),
                 Intent::SaveAttachment(message_id, index) => {
                     self.request_attachment_save(message_id, index);
                 }
                 Intent::Engine(req) => {
                     self.post_engine(req);
                 }
-                Intent::Toast(msg) => self.shared.borrow_mut().status = Some(msg),
                 Intent::ConfirmBulkPurge => {
                     let count = self.shared.borrow().selected_bulk_ids().len();
                     if count == 0 {
@@ -3559,7 +3557,7 @@ impl Widget for MailApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let point = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            let point = ctx.logical(position);
             self.shared.borrow_mut().last_mouse = point;
             self.dirty = true;
         }

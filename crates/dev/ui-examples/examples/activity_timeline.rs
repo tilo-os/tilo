@@ -25,7 +25,7 @@ use automerge::{ActorId, AutoCommit, AutomergeError, ROOT};
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::text_render::TextRenderer;
-use tilo_ui::widget::{ActivityTimeline, Column, HistoryScrubber};
+use tilo_ui::widget::ActivityTimeline;
 use tilo_ui::{App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -168,17 +168,9 @@ pub fn run(args: &[String]) {
         );
     }
 
-    let timeline = ActivityTimeline::with_entries(entries.clone())
-        .on_revert(|id| eprintln!("revert clicked: {id:?}"));
-    let scrubber = HistoryScrubber::new(entries)
-        .on_preview(|id| eprintln!("preview tick: {id:?}"))
-        .on_restore(|id| eprintln!("restore tick: {id:?}"));
-
-    let root_widget: Box<dyn Widget> = Box::new(
-        Column::new()
-            .push(Box::new(scrubber))
-            .push(Box::new(timeline)),
-    );
+    let timeline =
+        ActivityTimeline::with_entries(entries).on_revert(|id| eprintln!("revert clicked: {id:?}"));
+    let root_widget: Box<dyn Widget> = Box::new(timeline);
 
     match (shot, wake_scope) {
         (Some(out), _) => render_shot(root_widget, (860, 660), Path::new(&out)),

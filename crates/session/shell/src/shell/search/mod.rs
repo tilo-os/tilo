@@ -1117,12 +1117,6 @@ impl SearchRegistry {
         self.query_inner(args, true, false).0
     }
 
-    /// Explicit machine enumeration includes programmatic actions within the
-    /// same bounded provider, continuation and visibility machinery.
-    pub fn query_with_programmatic(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
-        self.query_inner(args, true, true).0
-    }
-
     pub fn begin_catalogue_query(&self) {
         for provider in self.enabled_providers() {
             provider.begin_catalogue_query();

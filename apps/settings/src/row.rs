@@ -11,7 +11,6 @@ use crate::effects::SettingsEffect;
 use crate::host::{PaneCx, Section};
 use crate::widgets::{
     El, Item, choice_row_stacked, field_row_described, setting_row, setting_row_described,
-    value_row,
 };
 
 /// One labelled row of a settings card ([`PaneCx::row`]).
@@ -74,11 +73,6 @@ impl Row<'_> {
             (Some(description), false) => setting_row_described(&self.label, description, control),
             (None, false) => setting_row(&self.label, control),
         }
-    }
-
-    /// The row showing `value`, read only.
-    pub fn value(self, value: &str) -> Item {
-        value_row(&self.label, value)
     }
 
     /// A toggle showing `on`, setting the section's field `field`.

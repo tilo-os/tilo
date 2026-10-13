@@ -6911,7 +6911,7 @@ impl Widget for VideoEditorApp {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_mouse = p;
                 self.update_hover(&r);
                 if !bin_overlay_open {

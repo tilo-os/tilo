@@ -1130,10 +1130,7 @@ mod tests {
                     .flatten()
             })
             .expect("the real shared sidebar toggle is exposed");
-        let pointer = |x, y| winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        };
+        let pointer = |x, y| ui::synthetic_input::cursor_moved(x, y);
         harness.send(&pointer(1190.0, 690.0));
         let mut renderer =
             ui::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(1200, 700)
@@ -1226,32 +1223,30 @@ mod tests {
         }
         let config = crate::prefs::test_env::ScratchConfig::new();
         let mut app = layout_at(config.app(), 1200.0, 520.0);
+        let home = app.selected();
+        let home_row = row_rect(&app, home).expect("the selected row starts visible");
+        let harness = Framed::harness_mut(&mut app);
+        harness.send(&ui::synthetic_input::cursor_moved(100.0, 300.0));
+        harness.scroll(0.0, -3.0);
+        // A wheel step glides on after it lands; measure where it rests.
+        assert!(
+            harness.settle_for_capture(ui::time::Duration::from_secs(5)),
+            "the wheel's glide comes to rest"
+        );
+        assert!(
+            row_rect(&app, home).is_none_or(|row| row.y0 < home_row.y0),
+            "the real wheel route scrolled the sidebar"
+        );
         // Shared lists publish the actual visible rows, so choose a measured
         // destination near the viewport's bottom rather than an offscreen id.
-        let (category, original) = Category::ALL
+        let (category, scrolled) = Category::ALL
             .iter()
             .filter_map(|&category| {
                 let rect = row_rect(&app, category)?;
-                (category != app.selected() && rect.y0 >= 200.0 && rect.y1 <= 520.0)
-                    .then_some((category, rect))
+                (category != home && rect.y0 >= 0.0 && rect.y1 <= 520.0).then_some((category, rect))
             })
             .max_by(|a, b| a.1.y0.total_cmp(&b.1.y0))
             .expect("a real visible navigation row");
-        let harness = Framed::harness_mut(&mut app);
-        harness.send(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(100.0, 300.0),
-        });
-        harness.scroll(0.0, -3.0);
-        let scrolled = row_rect(&app, category).expect("scrolled navigation row");
-        assert!(
-            scrolled.y0 < original.y0,
-            "the real wheel route scrolled the sidebar"
-        );
-        assert!(
-            scrolled.y0 >= 0.0 && scrolled.y1 <= 520.0,
-            "the destination is visible before activation: {scrolled:?}"
-        );
         let center = scrolled.center();
         Framed::harness_mut(&mut app).click_at(center.x, center.y);
         assert_eq!(app.selected(), category, "the actual row selected its pane");

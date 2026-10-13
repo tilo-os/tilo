@@ -19,7 +19,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{AppModel, ModelPath, TaffyTreeExt as _, Widget};
+use ui::widget::{TaffyTreeExt as _, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -742,10 +742,6 @@ impl Widget for OverviewPanel {
         }
     }
 
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        false
-    }
-
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -768,8 +764,7 @@ impl Widget for OverviewPanel {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let before = self.hovered();
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 // Others still see the pointer move, so their hover ends.
                 self.dirty |= before != self.hovered();
             }
@@ -802,13 +797,7 @@ impl Widget for OverviewPanel {
         }
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    ui::redraw_flag!();
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         (self.open && self.rows.iter().any(|(_, rect)| rect.contains(point)))

@@ -44,7 +44,6 @@
 
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
 use ui::widget::TaffyTreeExt;
 
 use std::collections::HashMap;
@@ -4838,9 +4837,6 @@ impl AppWidget for ForeignSurfaceWidget {
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("󰖯")
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
     }
 }
 

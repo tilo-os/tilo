@@ -585,7 +585,6 @@ use std::collections::HashMap as StdHashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::Affine;
-use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
@@ -744,16 +743,10 @@ impl Widget for StubContent {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn name(&self) -> &'static str {
         "StubContent"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 
@@ -2012,18 +2005,11 @@ fn key_press(logical_key: Key) -> WindowEvent {
     ev.state = ElementState::Pressed;
     ev.repeat = false;
     ev.text = text;
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ev)
 }
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 use ui::synthetic_input::mouse_press;
@@ -3580,11 +3566,7 @@ fn people_viewport_wheel_and_semantic_scroll_share_bounds() {
         .expect("People scroll region");
     let center = h.host.collaborators_overlay.panel_rect().center();
     assert!(pump(&mut h, &cursor_moved_at(center), mods));
-    let wheel = WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
     assert!(pump(&mut h, &wheel, mods));
     let scrolled = h
         .host
@@ -3742,11 +3724,7 @@ fn people_viewport_reopen_scrolls_under_a_stationary_pointer() {
         .host
         .primary_vertical_scroll()
         .expect("People scroll region");
-    let wheel = WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
     assert!(pump(&mut h, &wheel, Modifiers::default()));
     assert_ne!(
         h.host.primary_vertical_scroll(),
@@ -3796,11 +3774,7 @@ fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
     let mods = Modifiers::default();
     let center = h.host.collaborators_overlay.panel_rect().center();
     assert!(pump(&mut h, &cursor_moved_at(center), mods));
-    let wheel = WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
     assert!(pump(&mut h, &wheel, mods));
     let deadline = h
         .host

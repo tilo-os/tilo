@@ -854,8 +854,7 @@ impl Widget for MessageReader {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.pointer = ctx.logical(position);
                 self.dirty = true;
             }
             WindowEvent::MouseInput {
