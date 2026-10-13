@@ -164,7 +164,7 @@ impl Canvases {
     }
 
     fn update(&mut self, cache: &FrameCache, size: (u32, u32)) -> CpuFrameStats {
-        let count = cache.layers.strips.len() + 4;
+        let count = cache.layers.strips.len().saturating_add(4);
         if self.layers.len() != count {
             self.layers = (0..count).map(|_| CpuRenderer::new()).collect();
             self.empty = vec![false; count];
@@ -203,7 +203,10 @@ impl Canvases {
             .zip(scenes)
             .enumerate()
         {
-            let layer_size = if (2..2 + cache.layers.strips.len()).contains(&index) {
+            let layer_size = if index
+                .checked_sub(2)
+                .is_some_and(|strip| strip < cache.layers.strips.len())
+            {
                 (cache.width, size.1)
             } else {
                 size
@@ -309,7 +312,9 @@ fn render(
     // Supply a full rectangle even when the allocation generation is unchanged.
     for (view, layer) in views.iter_mut().zip(&canvases.layers) {
         if layer.pending().is_none() {
-            view.written = if view.width == cache.width && view.width != size.0 {
+            let is_strip_canvas = view.width == cache.width;
+            let extends_past_output = cache.width != size.0;
+            view.written = if is_strip_canvas && extends_past_output {
                 &canvas_full
             } else {
                 &screen_full
@@ -614,9 +619,17 @@ mod tests {
                 {
                     continue;
                 }
-                let at = usize::try_from(y).unwrap() * view.stride
-                    + usize::try_from(x.saturating_add(*scroll_x)).unwrap() * 4;
-                let pixel = &view.pixels[at..at + 4];
+                let row = usize::try_from(y)
+                    .unwrap()
+                    .checked_mul(view.stride)
+                    .expect("sample row fits");
+                let column = usize::try_from(x.saturating_add(*scroll_x))
+                    .unwrap()
+                    .checked_mul(4)
+                    .expect("sample column fits");
+                let at = row.checked_add(column).expect("sample offset fits");
+                let end = at.checked_add(4).expect("sample pixel fits");
+                let pixel = &view.pixels[at..end];
                 let alpha = f32::from(pixel[3]) / 255.0;
                 for channel in 0..3 {
                     let source = f32::from(pixel[channel]) / 255.0;
@@ -638,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_translucent_layers_match_dense_source_over() {
+    fn retained_translucent_layers_match_exact_source_over() {
         let mut cache = cache(24);
         cache.layers.workspace = Scene::new();
         fill(
@@ -672,17 +685,6 @@ mod tests {
             Color::from_rgba8(255, 255, 255, 128),
         );
 
-        let dense = crate::shell::render::strip_layers::compose(&cache);
-        let mut oracle = CpuRenderer::new();
-        oracle.update(
-            CpuFrame {
-                scene: &dense,
-                revision: 0,
-                previous_revision: None,
-                regions: None,
-            },
-            (64, 32),
-        );
         let mut canvases = Canvases::new();
         canvases.update(&cache, (64, 32));
         let views = canvases.views(&cache, (64, 32));
@@ -701,11 +703,39 @@ mod tests {
                 .any(|pixel| pixel[3] > 0 && pixel[3] < 128),
             "the fractional strip edge must be antialiased"
         );
+        // The speed-optimized dense rasterizer rounds after each draw using
+        // ceil(n / 256), including mask modulation. At (56, 0) its opaque
+        // blue backdrop becomes alpha 254 after the fractional red shadow;
+        // the final pixel is [209, 214, 151, 254]. Exact source-over instead
+        // gives [210, 215, 151, 255]. Materializing layers changes where that
+        // quantization happens, so dense byte equality is not a valid oracle
+        // for this translucent fixture. Keep exact full-frame assertions
+        // against independent rectangle coverage and source-over math.
+        let reference_sample = |x: u32, y: u32| -> [u8; 4] {
+            let (x, y) = (f64::from(x), f64::from(y));
+            let mut rgba = [0.0_f64, 0.0, 1.0, 1.0];
+            for (rect, rgb) in [
+                (Rect::new(0.0, 0.0, 64.0, 32.0), [0.0, 1.0, 0.0]),
+                // The source rectangle above, translated by scroll_x = 24.
+                (Rect::new(56.25, 0.25, 88.75, 31.75), [1.0, 0.0, 0.0]),
+                (Rect::new(56.0, 0.0, 64.0, 16.0), [1.0, 1.0, 0.0]),
+                (Rect::new(56.0, 0.0, 64.0, 4.0), [1.0, 1.0, 1.0]),
+            ] {
+                let coverage = (rect.x1.min(x + 1.0) - rect.x0.max(x)).clamp(0.0, 1.0)
+                    * (rect.y1.min(y + 1.0) - rect.y0.max(y)).clamp(0.0, 1.0);
+                let alpha = (128.0 / 255.0) * coverage;
+                for channel in 0..3 {
+                    rgba[channel] = rgb[channel] * alpha + rgba[channel] * (1.0 - alpha);
+                }
+                rgba[3] = alpha + rgba[3] * (1.0 - alpha);
+            }
+            std::array::from_fn(|channel| ui::num::u8_of_f64((rgba[channel] * 255.0).round()))
+        };
+        assert_eq!(reference_sample(56, 0), [210, 215, 151, 255]);
         for (x, y) in (0..32_u32).flat_map(|y| (0..64_u32).map(move |x| (x, y))) {
-            let at = (usize::try_from(y).unwrap() * 64 + usize::try_from(x).unwrap()) * 4;
             assert_eq!(
                 source_over_sample(&views, x, y),
-                oracle.screen_rgba()[at..at + 4],
+                reference_sample(x, y),
                 "pixel {x},{y}"
             );
         }

@@ -7900,11 +7900,8 @@ mod tests {
         assert_ne!(created.room, original.room);
         assert_eq!(created.name, "Research");
         assert_eq!(created.owner().map(String::as_str), Some(FIXTURE_USER));
-        assert_eq!(
-            created.role_of(&FIXTURE_USER.to_string()),
-            Some(CapRole::Owner)
-        );
-        assert_eq!(created.role_of(&"bob".to_string()), None);
+        assert_eq!(created.role_of(FIXTURE_USER), Some(CapRole::Owner));
+        assert_eq!(created.role_of("bob"), None);
         assert!(created.collaborators.is_empty());
         assert!(
             created
