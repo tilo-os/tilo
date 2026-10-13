@@ -144,6 +144,7 @@ parking_lot = { version = "0.12" }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
+phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
@@ -379,6 +380,7 @@ parking_lot = { version = "0.12" }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
+phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
@@ -502,7 +504,6 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
-phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
@@ -539,7 +540,6 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
-phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
@@ -576,7 +576,6 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
-phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
@@ -613,7 +612,6 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
-phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
