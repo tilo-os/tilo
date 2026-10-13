@@ -23,24 +23,7 @@ on:
       - ".forgejo/actions/prepare-rust-build/**"
       - ".forgejo/workflows/ci-legacy-apps.yml"
       - ".forgejo/workflows/resolve-builder.yml"
-  # Capacity relief: main-push validation is covered by nightly/manual runs.
-  # push:
-  #   branches: ["main"]
-  #   paths:
-  #     - "crates/session/shell/src/compositor/**"
-  #     - "crates/session/shell/src/collab/**"
-  #     - "crates/session/shell/src/network/**"
-  #     - "crates/session/shell/src/shell/network.rs"
-  #     - "crates/session/shell/src/shell/overlay_host/**"
-  #     - "crates/session/shell/src/shell/peer_view.rs"
-  #     - "crates/session/desktop-model/src/shared_surfaces.rs"
-  #     - "crates/sdk/ui-core/src/input.rs"
-  #     - "crates/sdk/ui-core/src/interaction.rs"
-  #     - "crates/sdk/ui-core/src/widget/group_row.rs"
-  #     - "scripts/legacy-app-caret-e2e.py"
-  #     - ".forgejo/actions/restore-cargo-downloads/**"
-  #     - ".forgejo/actions/prepare-rust-build/**"
-  #     - ".forgejo/workflows/ci-legacy-apps.yml"
+  # Main pushes are not gated here: nightly and manual runs cover them.
   schedule:
     - cron: "30 3 * * *"
   workflow_dispatch:
