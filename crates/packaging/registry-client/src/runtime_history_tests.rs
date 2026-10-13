@@ -1,7 +1,7 @@
 use ed25519_dalek::SigningKey;
 use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion};
 
-use crate::runtime_history::reconcile;
+use crate::runtime_history::{MissingRuntime, reconcile};
 
 fn version(value: &str, architecture: &str, build: u8) -> RegistryVersion {
     RegistryVersion {
@@ -54,6 +54,32 @@ fn six_releases() -> Vec<RegistryVersion> {
     (2..=7)
         .map(|n| version(&format!("1.0.{n}"), "aarch64", n))
         .collect()
+}
+
+#[test]
+fn delayed_exact_provider_unblocks_without_changing_pending_history() {
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let pending = version("1.0.8", "aarch64", 8);
+    let mut entry = signed_entry("so.tilo.agent", vec![pending.clone()], &key);
+    let original = entry.clone();
+    let error = reconcile(&mut entry, &[], "", &key).unwrap_err();
+    let missing = error.downcast_ref::<MissingRuntime>().unwrap();
+    assert_eq!(missing.package_id, "so.tilo.agent");
+    assert_eq!(missing.version, pending.version);
+    assert_eq!(missing.architecture, "aarch64");
+    assert_eq!(
+        missing.runtime,
+        pending.target().unwrap().runtime.as_deref().unwrap()
+    );
+    assert_eq!(entry, original);
+
+    let provider = offered(&key, &[pending]);
+    assert_eq!(
+        reconcile(&mut entry, &[provider], "", &key).unwrap(),
+        Vec::<RegistryVersion>::new()
+    );
+    assert_eq!(entry, original);
+    assert!(registry_types::verify_entry_signature(&entry));
 }
 
 #[test]
