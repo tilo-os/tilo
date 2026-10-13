@@ -83,7 +83,6 @@ use super::{
     EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
     PrimaryScrollResult, ResourceOperationStart, Widget,
 };
-use crate::dnd::DragPayload;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -590,25 +589,8 @@ pub trait Decorator: Sized + 'static {
             .poll_resource_operation(invocation, cancellation_requested, doc, path)
     }
 
-    fn accepts_drop(&self, payload: &DragPayload) -> bool {
-        self.inner().accepts_drop(payload)
-    }
-
-    fn on_drop(
-        &mut self,
-        payload: DragPayload,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) {
-        self.inner_mut().on_drop(payload, state, path);
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         self.inner().wants_pointer_capture()
-    }
-
-    fn is_floating(&self) -> bool {
-        self.inner().is_floating()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1215,25 +1197,8 @@ impl<T: Decorator> Widget for T {
         Decorator::poll_resource_operation(self, invocation, cancellation_requested, doc, path)
     }
 
-    fn accepts_drop(&self, payload: &DragPayload) -> bool {
-        Decorator::accepts_drop(self, payload)
-    }
-
-    fn on_drop(
-        &mut self,
-        payload: DragPayload,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) {
-        Decorator::on_drop(self, payload, state, path);
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         Decorator::wants_pointer_capture(self)
-    }
-
-    fn is_floating(&self) -> bool {
-        Decorator::is_floating(self)
     }
 
     fn needs_animation_frame(&self) -> bool {
