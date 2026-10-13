@@ -10,7 +10,7 @@
 //! | Maya {#c3} | {#c4} |
 //! ```
 //!
-//! Headings carry their level, list items their numbering and depth (qdoc's
+//! Headings carry their level, list items their numbering and depth (tilo-doc's
 //! `level`, the block editor's `nesting`), and a run of cells becomes a
 //! Markdown table tagged with its table id (the id `EditTable` takes), each
 //! cell ending in its own block id, empty or not, so a caller can select
