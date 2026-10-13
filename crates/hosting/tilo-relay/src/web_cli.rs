@@ -699,6 +699,9 @@ pub struct RoomArgs {
     /// operator removes it when the room ends.
     #[arg(long, value_name = "DIR")]
     pub state: PathBuf,
+    #[cfg(feature = "agents")]
+    #[command(flatten)]
+    pub persistent: crate::persistent_room_cli::PersistentArgs,
 }
 
 /// One operator line from stdin, or why it could not be read.
@@ -875,6 +878,11 @@ async fn approve_admitted(
                     admissions.admit(pairing_code, tokio::time::Instant::now());
                 }
                 Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
+                Some(Ok(
+                    command @ (OperatorCommand::PreAdmit { .. } | OperatorCommand::Spectate { .. }),
+                )) => {
+                    anyhow::bail!("a short-lived room takes no {command:?}");
+                }
                 Some(Err(error)) => {
                     tracing::error!(%error, "unreadable room operator line");
                     anyhow::bail!("unreadable room operator line: {error}");
@@ -945,6 +953,10 @@ pub async fn room(
         &std::env::var("TILO_REGISTRY")
             .unwrap_or_else(|_| tilo_relay::surfaces::DEFAULT_REGISTRY.to_owned()),
     );
+    #[cfg(feature = "agents")]
+    if args.persistent.persistent.is_some() {
+        return crate::persistent_room_cli::run(args, shutdown).await;
+    }
     let state = args.state;
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
     let listen = args.web.web.context("a room needs --web")?;
@@ -989,6 +1001,7 @@ pub async fn room(
             user_public_key: hex::encode(user),
             certificate_sha256: web.certificate_sha256.clone(),
             allowed_origins: args.web.allowed_origins.clone(),
+            room: None,
         }
         .to_line()
     );

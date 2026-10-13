@@ -2,6 +2,8 @@
 
 Chat is the persistent Tilo room conversation. Messages and Contacts own person/group
 messaging and contact identity; Chat adds no external-person inbox or contact store.
+Bridges to outside services are bots installed into the room, not part of Chat (see
+"Bridges" below).
 
 ## Implemented journeys
 
@@ -32,7 +34,9 @@ The device-only `open-slack-channel(workspace, channel)` and
 link to the host URI opener on a worker. They use the existing optional `open-uri`
 capability. The service's browser app owns sign-in and channel permissions. These are
 browser adapters, not native clients, history importers or voice bridges. No tokens,
-OAuth installation, network socket or service account are added to Chat.
+OAuth installation, network socket or service account are added to Chat. A two-way
+mirror of a workspace is a bridge bot with its own connector (see "Bridges"); it holds
+the token and the socket, and Chat still holds neither.
 
 ## Live context
 
@@ -52,6 +56,41 @@ The shell's existing live-app selection remains responsible for cross-app naviga
 This increment adds Chat's semantic view contribution, not a new following transport or
 per-person permission model. Two physical devices and the complete cross-app shell
 journey still need manual validation before release.
+
+## Bridges
+
+A bridge mirrors a Chat workspace to an outside service. It is built from the bot
+framework ([bots.md](bots.md)): a connector app holds the service's credentials and
+socket, and a bot program maps Chat's changes to the connector's verbs and back. The
+Discord bridge ([discord-bridge.md](discord-bridge.md)) is the first. Chat stays
+service-agnostic: it learns nothing about Discord, and every change below applies to
+every workspace, bridged or not.
+
+- **Appearance.** A bot allowed `Personas` may post under another name and avatar.
+  `post`, `share-resource` and `react` read `ActionCx::appearance()` and store it:
+  `Message.appearance: Json<Option<Appearance>>` and `Reacted.persona: Option<String>`
+  (new), so two Discord users' identical reactions count as two. The author is still
+  the bot. Every message author is drawn through the shared `ui::author` helper, so a
+  mirrored message shows the outside name and avatar with the `BOT` label and "via
+  Discord Bridge (bot, added by …)" in its details.
+- **Avatars for people.** `Person.avatar: Option<BlobRef>` (new) is set through
+  `introduce(name, initials, color, avatar)`. The image is a content-store blob of at
+  most 1 MiB. People without one keep their initials.
+- **Author checks.** `edit-message` and `delete-message` refuse anyone but the
+  message's author (`cx.author()` against `Message.author`). Until now neither checked,
+  so any Editor could rewrite anyone's message. `delete_message` gains the `cx`
+  argument it needs for this.
+- **Moderation.** Three verbs carry `#[action(moderation)]`, which places them under
+  the room's `moderation` node ([permissions.md](permissions.md) §3): `remove-message`
+  (deletes any message, recording who removed it and an optional reason in history),
+  `lock-channel` and `unlock-channel`. `Channel.locked: bool` (new) makes `post` and
+  `share-resource` refuse in that channel for everyone, Moderators included, until it
+  is unlocked. Kicking and banning a member are room governance (`remove-member`,
+  `ban`), not Chat verbs, and Chat lists them on a member's card for those who may use
+  them.
+- **Incoming messages.** `post` and `share-resource` are marked
+  `#[action(incoming_message)]`, so a person's `IncomingMessage` Shortcut fires on
+  other people's chat messages ([bots.md](bots.md) §4).
 
 ## Remaining integration boundaries
 

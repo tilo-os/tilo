@@ -1586,9 +1586,9 @@ fn validate_issue_request(
         return Err(CollaborationError::new("invitation lifetime is invalid"));
     }
     if let Some(name) = request.invitee_name.as_deref()
-        && (name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control))
+        && let Err(error) = tilo_user_identity::display_name(name)
     {
-        return Err(CollaborationError::new("invitee name is invalid"));
+        return Err(CollaborationError::new(format!("invitee name: {error}")));
     }
     Ok(())
 }

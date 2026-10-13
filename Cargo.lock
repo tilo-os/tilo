@@ -3452,6 +3452,68 @@ dependencies = [
 ]
 
 [[package]]
+name = "discord"
+version = "0.1.0"
+dependencies = [
+ "chat",
+ "data-encoding",
+ "discord-wire",
+ "rand 0.10.1",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-automation",
+ "workspace-hack",
+]
+
+[[package]]
+name = "discord-wire"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "discord-worker"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chat",
+ "discord",
+ "discord-wire",
+ "ed25519-dalek 3.0.0",
+ "fake-discord",
+ "futures-util",
+ "hex",
+ "iroh",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-agent-participant",
+ "tilo-app",
+ "tilo-automation",
+ "tilo-automerge-fork",
+ "tilo-automerge-isolate",
+ "tilo-connector",
+ "tilo-net",
+ "tilo-relay",
+ "tilo-secrets",
+ "tilo-user-identity",
+ "tokio",
+ "tokio-rustls",
+ "tokio-websockets",
+ "url",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "disk-usage"
 version = "0.1.0"
 dependencies = [
@@ -4084,6 +4146,22 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "fake-discord"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "percent-encoding",
+ "serde_json",
+ "tokio",
+ "tokio-websockets",
  "workspace-hack",
 ]
 
@@ -15925,6 +16003,7 @@ dependencies = [
  "collab-types",
  "contacts",
  "diffmerge",
+ "discord",
  "ebook",
  "ed25519-dalek 3.0.0",
  "feeds",
@@ -17803,10 +17882,12 @@ dependencies = [
  "blake3",
  "bounded-command",
  "bytes",
+ "canvas",
  "channel-crypto",
  "chat",
  "clap",
  "collab-types",
+ "discord",
  "ed25519-dalek 3.0.0",
  "env-tools",
  "getrandom 0.3.4",
@@ -17824,6 +17905,7 @@ dependencies = [
  "moq-net",
  "n0-future",
  "neighbour-wire",
+ "notes",
  "package-store",
  "postcard",
  "rand 0.10.1",
@@ -18024,6 +18106,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-room-load"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bytes",
+ "clap",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tilo-automerge-isolate",
+ "tilo-browser-peer",
+ "tilo-clock",
+ "tilo-relay",
+ "tilo-relay-protocol",
+ "tilo-user-identity",
+ "tokio",
+ "tracing-subscriber",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-room-service"
 version = "0.1.0"
 dependencies = [
@@ -18031,6 +18144,7 @@ dependencies = [
  "bytes",
  "futures",
  "hex",
+ "hmac 0.13.0",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -18039,10 +18153,15 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
  "tilo-clock",
  "tilo-moq",
  "tilo-net",
+ "tilo-reference",
  "tilo-relay-protocol",
+ "tilo-secrets",
+ "tilo-user-identity",
  "tokio",
  "tokio-rustls",
  "workspace-hack",
@@ -22332,6 +22451,7 @@ dependencies = [
  "regex-syntax",
  "reqwest 0.13.4",
  "resvg",
+ "ring",
  "rqrr",
  "russh",
  "rustc-hash 1.1.0",

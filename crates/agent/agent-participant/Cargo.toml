@@ -103,6 +103,8 @@ tilo-sandbox = { path = "../../platform/tilo-sandbox" }
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
 seccompiler.workspace = true
 libc.workspace = true
+# A connector app, mounted only where a room's host runs its worker.
+discord = { path = "../../../apps/discord" }
 
 [dev-dependencies]
 tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
