@@ -28,16 +28,9 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # The sections' types as models, so an app edits them by path.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
 
-# Directory watch behind `watch_settings`; only long-lived readers opt in.
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-notify = { workspace = true, optional = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-# The change-only directory watch behind `watch_settings` on Linux.
-inotify = { version = "0.11", default-features = false, optional = true }
-
 [features]
-watch = ["dep:notify", "dep:inotify"]
+# Directory watch behind `watch_settings`; only long-lived readers opt in.
+watch = ["tilo-files/watch"]
 model = ["dep:tilo-resource"]
 
 [dev-dependencies]
