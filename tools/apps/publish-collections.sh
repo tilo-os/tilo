@@ -349,6 +349,7 @@ fetch_snapshot() {
 }
 source tools/apps/registry-runtime-readiness.sh
 fetch_snapshot
+runtime_readiness_deadline=$((SECONDS + 1200))
 while IFS= read -r id; do
   accepted=false
   architectures=$(awk -F $'\t' -v id="$id" '$1 == id {print $4}' \
@@ -391,7 +392,7 @@ while IFS= read -r id; do
         --registry-owner-pubkey "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"
         --missing-runtime-output "$missing_runtime")
       [[ -f $aggregate ]] && args+=(--previous-entry "$aggregate")
-      await_registry_runtime_ready "$request" "$missing_runtime" \
+      await_registry_runtime_ready "$runtime_readiness_deadline" "$request" "$missing_runtime" \
         "$registry_cli" "${args[@]}" "$tapp"
       jq -e --arg id "$id" '.entry | select(.package_id == $id)' \
         "$request" > "$aggregate.next"
