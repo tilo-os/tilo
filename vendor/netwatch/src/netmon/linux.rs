@@ -426,6 +426,17 @@ impl RouteMonitor {
                         let mut known = HashMap::new();
                         learn_addresses(&handle, &mut known).await;
                         filter.update(&known);
+                        // TILO PATCH: the actor took its interface snapshot
+                        // before this socket subscribed (and, on a reconnect,
+                        // before the old one was lost), and a change in that
+                        // gap reached no socket; one whose address the dump
+                        // above already lists is read below as a repeat. Have
+                        // the actor look again now that every later change
+                        // arrives here: an interface that came up meanwhile
+                        // would otherwise go unnoticed until the next event.
+                        if sender.send(NetworkMessage::Change).await.is_err() {
+                            break;
+                        }
                         let should_reconnect =
                             process_messages(&sender, &mut filter, &mut known, &mut messages)
                                 .await;
