@@ -54,6 +54,12 @@ script's own conventions. It is the headless adapter for CI and scenario
 tests: its VMs do not appear in virt-manager or Boxes, so it is never the
 default, and it runs only from a Tilo worktree.
 
+If a builder exposes no `/dev/kvm`, explicitly request `--emulated` with
+libvirt to use TCG even for the host's own architecture. Creation still
+requires a working user-session QEMU driver advertising that architecture's
+`qemu` domain. `doctor` continues to report the missing native KVM capability;
+software emulation is not a repair or a hardware-performance result.
+
 Its registered CPU count, memory, architecture and resolution are passed to
 the same harness. It uses the software 2D display unless `--gl` requests virgl;
 `--emulated` explicitly selects TCG. Without `--emulated`, the harness probes
@@ -61,6 +67,21 @@ KVM and warns if it must fall back to TCG. Record the actual accelerator and
 renderer with performance results: TCG timings cannot establish KVM or physical
 machine budgets. `--resolution` and `--gl` work with this adapter; multiple
 display heads require libvirt.
+
+Raw QEMU shutdown uses the monitor's ACPI power request, with the CLI's existing
+key-authenticated guest-poweroff escalation. It does not use the standalone
+script's password-based shutdown. The adapter reads the script's process status
+so `vm status` reports a stopped VM and shutdown waits for it to exit.
+
+Keep the same `TILO_RUN` for every command on a raw-QEMU VM: it selects the
+monitor and console sockets, not the evidence directory. `tilo-vm vm shot -o
+/path/to/checkpoint.png` captures through that monitor and moves the image to
+the requested path without changing the VM runtime. Use a private runtime
+per owned VM and a persistent disk/evidence directory on the builder. For a
+fresh baseline, stop and remove only the owned VM, then repeat `vm create
+--image <verified-base> --disk <owned-child>`; creation uses a fresh QCOW2
+child and leaves the base unchanged. This is a cold reset, not an installer
+or retained-other-OS proof.
 
 ## Windows ARM64 Home: QEMU with WHPX
 
@@ -267,7 +288,8 @@ at creation where the hypervisor has a channel for credentials:
 |---|---|
 | libvirt | at creation: an SMBIOS type 11 OEM string in the domain XML (`<sysinfo type='smbios'><oemStrings><entry>io.systemd.credential.binary:ssh.authorized_keys.root=<base64></entry>`, with `<smbios mode='sysinfo'/>`) |
 | whpx | at boot: direct-kernel ARM64 passes the public key with `systemd.set_credential_binary=` on the kernel command line; firmware boots use QEMU's SMBIOS type 11 OEM string |
-| UTM, Hyper-V, qemu | once, after the first boot (below). Apple Virtualization and Hyper-V offer no SMBIOS strings or fw_cfg, the image has no cloud-init, and `os/dev/vm.sh` takes no extra QEMU arguments |
+| qemu | at boot: `os/dev/vm.sh` reads the registered `.pub` file through `TILO_VM_ROOT_KEY_FILE` and passes the same SMBIOS type 11 credential as libvirt; missing or empty public keys fail before starting QEMU |
+| UTM, Hyper-V | once, after the first boot (below). Apple Virtualization and Hyper-V offer no SMBIOS strings or fw_cfg, and the image has no cloud-init |
 
 The one-time step logs in with the dev account's password (`tester`,
 password `tilo`, from `os/account.env`) and appends the key for root:

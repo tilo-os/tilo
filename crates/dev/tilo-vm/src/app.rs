@@ -1200,7 +1200,7 @@ impl App {
         };
         checks.extend(doctor::vm_adapter_checks(
             &vm.entry,
-            host::evaluate(&facts, &vm.entry.hypervisor),
+            host::evaluate_vm(&facts, &vm.entry.hypervisor, vm.entry.emulated),
             root.join("os/dev/vm.sh").is_file(),
         ));
         let caps = adapter.capabilities();
@@ -1764,7 +1764,10 @@ impl App {
         let choice = match args.hypervisor.as_deref() {
             Some(name) => {
                 hypervisor::adapter(name)?;
-                host::evaluate(facts, name)
+                host::evaluate_vm(facts, name, args.emulated)
+            }
+            None if args.emulated && facts.os == "linux" => {
+                host::evaluate_vm(facts, "libvirt", true)
             }
             None => host::auto(facts),
         }
@@ -7912,6 +7915,46 @@ mod tests {
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn preflight_checks_hypervisor_image_disks_and_worktree_rules() {
+        // Explicit TCG must work without KVM, whether libvirt is selected
+        // directly or by the Linux default. Native creation still fails.
+        {
+            use crate::host::HostKind;
+            use crate::host::tests::{LIBVIRT, linux};
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = app_with_empty_registry(dir.path());
+            std::fs::write(dir.path().join("vms.toml"), "min_free_gb = 0\n").unwrap();
+            let mut facts = linux(HostKind::Dnf, LIBVIRT);
+            facts.kvm = Some(false);
+            facts.session = Some(Ok(vec![crate::host::Guest {
+                arch: "x86_64".into(),
+                domains: vec!["qemu".into()],
+            }]));
+            let image = dir.path().join("base.qcow2");
+            std::fs::write(&image, b"QFI\xfb\0\0\0\x03").unwrap();
+            let mut args = create_args("dev");
+            args.image = Some(image.display().to_string());
+            args.disk = Some(dir.path().join("child.qcow2").display().to_string());
+            assert!(matches!(
+                app.preflight_create(&facts, &args, "x86_64"),
+                Err(CliError::NoHypervisor(_))
+            ));
+            args.emulated = true;
+            for adapter in [None, Some("libvirt".to_owned())] {
+                args.hypervisor = adapter;
+                let plan = app.preflight_create(&facts, &args, "x86_64").unwrap();
+                assert_eq!(plan.choice.adapter, "libvirt");
+            }
+            facts.session = Some(Ok(vec![crate::host::Guest {
+                arch: "x86_64".into(),
+                domains: vec!["kvm".into()],
+            }]));
+            assert!(matches!(
+                app.preflight_create(&facts, &args, "x86_64"),
+                Err(CliError::NoHypervisor(_))
+            ));
+            assert!(!dir.path().join("child.qcow2").exists());
+        }
+
         // Phase: preflight_names_the_missing_hypervisor_before_anything_else.
         {
             use crate::host::HostKind;

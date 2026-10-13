@@ -374,6 +374,25 @@ pub fn auto(facts: &HostFacts) -> Result<Choice, Missing> {
     evaluate(facts, default_adapter(&facts.os))
 }
 
+/// Evaluate a registered or requested VM, honoring explicit software emulation.
+/// Native libvirt VMs still require KVM; emulated ones require the same tools
+/// and user session but not a hardware virtualization device.
+///
+/// # Errors
+/// What is missing and how to install it.
+pub fn evaluate_vm(facts: &HostFacts, adapter: &str, emulated: bool) -> Result<Choice, Missing> {
+    if adapter == "libvirt" && emulated {
+        let tools = libvirt_tools(facts)?;
+        session_answers(facts)?;
+        Ok(Choice {
+            adapter: "libvirt",
+            tools,
+        })
+    } else {
+        evaluate(facts, adapter)
+    }
+}
+
 /// Can `adapter` work here?
 ///
 /// # Errors

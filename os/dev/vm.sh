@@ -156,6 +156,18 @@ cmd_boot() {
     msg "attaching the validation extension $validation (serial tilo-validation)"
   fi
 
+  # tilo-vm supplies only its registered public key, never a password or
+  # private key. Use the same systemd OEM credential as the libvirt adapter.
+  # Encode before composing shell arguments, so key comments remain data.
+  local credential_arg=""
+  if [ -n "${TILO_VM_ROOT_KEY_FILE:-}" ]; then
+    [ -r "$TILO_VM_ROOT_KEY_FILE" ] || die "root public key is not readable: $TILO_VM_ROOT_KEY_FILE"
+    local public encoded
+    IFS= read -r public < "$TILO_VM_ROOT_KEY_FILE" || [ -n "$public" ]
+    [ -n "$public" ] || die "root public key is empty"
+    encoded="$(printf "%s\n" "$public" | base64 -w0)"
+    credential_arg="-smbios type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root=$encoded"
+  fi
   local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
@@ -167,7 +179,7 @@ cmd_boot() {
     $(pflash_args "$varstore") \
     $(virtio_disk "$disk" tilo-disk "$disk_serial") $attach_arg \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22${TILO_VM_HOSTFWD:+,$TILO_VM_HOSTFWD} $(lan_qemu_args) $(input_qemu_args) \
-    $(console_qemu_args) \
+    $(console_qemu_args) $credential_arg \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo"
   swtpm_start

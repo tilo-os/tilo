@@ -43,9 +43,11 @@ it is on this network. `tilo-device-admin is not installed`: build it beside
 tilo-vm (`cargo build --release -p tilo-device-admin`).
 
 **The VM refuses its root SSH key.** SSH answers but says `Permission
-denied (publickey)`. On UTM, Hyper-V and qemu the key is installed once
+denied (publickey)`. On UTM and Hyper-V the key is installed once
 after the first boot; on libvirt it goes in at creation, so a VM created
-before that needs the same step. The error prints the exact command;
+before that needs the same step. The raw QEMU adapter supplies the registered
+public key as an SMBIOS credential on each boot, like libvirt; use a dev image
+that consumes that credential. The error prints the exact command;
 `tilo-vm guide platforms` explains it.
 
 **Protocol mismatch.** The VM's tilo-vmd and your `tilo-vm` disagree; both
