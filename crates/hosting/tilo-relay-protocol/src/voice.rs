@@ -26,10 +26,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// Start made no governance change because its exact channel is not admitted
-/// yet. Only this explicit response permits retrying that pending Start.
-pub const CHANNEL_ADMISSION_PENDING: &str = "voice channel awaits governor admission";
-
 /// How often a participant repeats [`Envelope::VoiceJoin`](crate::Envelope::VoiceJoin).
 pub const HEARTBEAT: Duration = Duration::from_secs(5);
 /// A participation ends when its device has not repeated its join for this

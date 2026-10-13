@@ -162,7 +162,7 @@ pub enum ChatEffect {
     #[effect(device_only)]
     OpenDiscordChannel { server: String, channel: String },
     /// Join call
-    #[effect(row, device_only, sensitive)]
+    #[effect(row, device_only)]
     JoinCall { channel: String },
     /// Leave call
     #[effect(row, idempotent, device_only)]
@@ -171,7 +171,7 @@ pub enum ChatEffect {
     #[effect(row, idempotent, device_only)]
     Mute { channel: String },
     /// Unmute
-    #[effect(row, device_only, sensitive)]
+    #[effect(row, device_only)]
     Unmute { channel: String },
     /// Call status
     ///
@@ -183,7 +183,7 @@ pub enum ChatEffect {
     ///
     /// Joins the open workspace's voice channel, making one when the
     /// workspace has none, or reveals the call already running.
-    #[effect(idempotent, device_only, sensitive)]
+    #[effect(idempotent, device_only)]
     StartCall,
     /// Start a video call
     ///

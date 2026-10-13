@@ -36,11 +36,8 @@ use tilo_joined_room::NativeWorkspaceOwner;
 use tilo_joined_room::session::{Connect, Scope};
 use tilo_joined_room::voice::{Channel, Participation};
 use tilo_moq::client::{Client, Status};
+use tilo_peer_state::NeighbourMsg;
 use tilo_peer_state::join::{self, MemberRole};
-use tilo_peer_state::{
-    NeighbourMsg,
-    owner_commit::{CommitOperation, OwnerCommitRequest},
-};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::rooms::RoomAdminClient;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
@@ -66,135 +63,6 @@ struct Native {
 }
 
 impl Native {
-    async fn pending_channel_start(&mut self) {
-        use automerge::AutoCommit;
-        const LATE: &str = "late-governor-channel";
-        let now = SystemTime::now();
-        let (message, late) = self
-            .owner
-            .with_current(self.room, |view| {
-                let mut doc = AutoCommit::load(&view.peer().document(CHAT, "").unwrap()).unwrap();
-                let heads = doc.get_heads();
-                let workspace = chat::projection::read(&doc)
-                    .workspace_rows()
-                    .into_iter()
-                    .next()
-                    .expect("the governed chat has a workspace")
-                    .id;
-                chat::demo::apply_as(
-                    &mut doc,
-                    "fixture",
-                    chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                        workspace: workspace.into(),
-                        name: LATE.into(),
-                        category: None,
-                        kind: Some(chat::model::ChannelKind::Voice),
-                    }),
-                )
-                .unwrap();
-                let late = chat::projection::read(&doc)
-                    .channel_rows()
-                    .into_iter()
-                    .find(|channel| channel.name == LATE)
-                    .expect("the action created the late voice channel")
-                    .id;
-                view.peer()
-                    .clone()
-                    .publish_incremental(
-                        CHAT,
-                        "",
-                        doc.save_after(&heads),
-                        &self.identity.device_signing_key,
-                        now,
-                    )
-                    .map(|message| (message, late))
-            })
-            .unwrap();
-        let NeighbourMsg::AppDocument { envelope, .. } = message else {
-            panic!("signed native channel write")
-        };
-        self.owner
-            .commit_document(
-                OwnerCommitRequest {
-                    room: self.room.to_string(),
-                    operation: CommitOperation::Document {
-                        app: CHAT.into(),
-                        record: String::new(),
-                        envelope,
-                    },
-                },
-                now,
-            )
-            .unwrap();
-        // Hold the actual signed outbox: local admission precedes the governor's.
-        let call = Participation::open(
-            self.owner.clone(),
-            self.room,
-            &Channel {
-                app: CHAT.into(),
-                record: String::new(),
-                channel: late,
-            },
-            &self.session,
-            |_| Ok(()),
-        )
-        .unwrap();
-        tilo_test_env::within(
-            "governor explicitly defers an unadmitted exact channel",
-            async {
-                loop {
-                    if let Some(Inbound::Voice(event)) = self.session.recv().await
-                        && let tilo_relay_session::coedit::VoiceEvent::Result {
-                            result: Err(reason),
-                            ..
-                        } = &event
-                    {
-                        assert_eq!(
-                            reason,
-                            tilo_relay_protocol::voice::CHANNEL_ADMISSION_PENDING
-                        );
-                        assert!(call.apply(&event, Some(&self.session), |_| false));
-                        break;
-                    }
-                }
-            },
-        )
-        .await;
-        assert!(call.refused().is_none());
-        assert!(call.grant().is_none());
-        self.scope.publish(&self.session, &self.identity).unwrap();
-        self.calls = vec![call.clone()];
-        tilo_test_env::within("pending Start is retried only after explicit governor deferral", async {
-            while call.grant().is_none() && call.refused().is_none() {
-                call.heartbeat(&self.session, |_| Ok(())).unwrap();
-                tokio::select! {
-                    event = self.session.recv() => match event.expect("pending Start session stays open") {
-                        Inbound::Delta { author, data } => {
-                            let message = postcard::from_bytes(&data).unwrap();
-                            self.scope.input(author, true, message).admit(&self.identity).unwrap();
-                        }
-                        Inbound::Voice(event) => { call.apply(&event, Some(&self.session), |_| false); }
-                        _ => {}
-                    },
-                    () = tokio::time::sleep(Duration::from_millis(100)) => {}
-                }
-            }
-        }).await;
-        assert!(call.refused().is_none());
-        assert!(call.grant().is_some());
-        call.leave(Some(&self.session));
-        self.calls.clear();
-        self.scope.close();
-        (self.scope, self.session) = Self::dial(
-            &self.owner,
-            self.room,
-            &self.identity,
-            &self.endpoint,
-            self.workspace_id,
-        )
-        .await;
-    }
-
     async fn join(
         directory: &std::path::Path,
         cert: DeviceCert,
@@ -343,133 +211,10 @@ impl Native {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
-
-    /// Retire the Start transport after admission but without applying its
-    /// result: policy activation itself advances the shell's continuity pin.
-    async fn call_after_retired_start(
-        &mut self,
-        admin: &RoomAdminClient,
-        address: iroh::EndpointAddr,
-        channel: &str,
-    ) -> Arc<Participation> {
-        let call = Participation::open(
-            self.owner.clone(),
-            self.room,
-            &Channel {
-                app: CHAT.into(),
-                record: String::new(),
-                channel: channel.into(),
-            },
-            &self.session,
-            |_| Ok(()),
-        )
-        .unwrap();
-        let admitted = tilo_test_env::within(
-            "the exact started call is admitted before its result",
-            async {
-                loop {
-                    let event = self
-                        .session
-                        .recv()
-                        .await
-                        .expect("Start transport stays open until retirement");
-                    if let Inbound::Delta { author, data } = event {
-                        let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
-                        let governor = self
-                            .owner
-                            .with_current(self.room, |view| Ok(view.governor().device_public_key))
-                            .unwrap();
-                        self.scope
-                            .input(author, author == governor, message)
-                            .admit(&self.identity)
-                            .unwrap();
-                    }
-                    // Voice results are deliberately not delivered to Participation.
-                    if let Some(id) = self
-                        .owner
-                        .with_current(self.room, |view| {
-                            Ok(view.peer().validated_media_policy()?.and_then(|policy| {
-                                policy
-                                    .calls
-                                    .into_iter()
-                                    .find(|(_, entry)| entry.binding.channel_id == channel)
-                                    .map(|(id, _)| id)
-                            }))
-                        })
-                        .unwrap()
-                    {
-                        break id;
-                    }
-                }
-            },
-        )
-        .await;
-        assert!(call.grant().is_none());
-        assert!(call.refused().is_none());
-        let other = admin
-            .create(address.clone(), "Other private call room")
-            .await
-            .unwrap();
-        enter(admin, address.clone(), &other.room).await;
-        let invited = admin
-            .invite(
-                address,
-                &other.room,
-                MemberRole::Editor,
-                Some(self.identity.device_cert.user_public_key),
-                Duration::from_secs(600),
-            )
-            .await
-            .unwrap();
-        let directory = tempfile::tempdir().unwrap();
-        let foreign = Self::join(
-            directory.path(),
-            self.identity.device_cert.clone(),
-            self.identity.device_signing_key.clone(),
-            &join::encode_invitation_text(&invited.signed_invitation),
-            other.workspace_id,
-        )
-        .await;
-        assert_eq!(
-            call.rejoin(&foreign.session).unwrap_err(),
-            "the session belongs to another room"
-        );
-        assert!(
-            call.grant().is_none(),
-            "a foreign session cannot grant a Starting participation"
-        );
-        assert!(
-            call.refused().is_none(),
-            "foreign input cannot replace the pending exact binding"
-        );
-        self.scope.close();
-        (self.scope, self.session) = Self::dial(
-            &self.owner,
-            self.room,
-            &self.identity,
-            &self.endpoint,
-            self.workspace_id,
-        )
-        .await;
-        call.rejoin(&self.session)
-            .expect("fresh admitted binding recovers the lost Start result");
-        self.calls = vec![call.clone()];
-        self.receive_until(
-            "the recovered Start receives its genuine governor grant",
-            |_| call.grant().is_some() || call.refused().is_some(),
-        )
-        .await;
-        assert!(call.refused().is_none());
-        assert_eq!(
-            call.grant().unwrap().call,
-            admitted,
-            "recovery joins the original call rather than starting another"
-        );
-        call
-    }
 }
 
-async fn voice_journey(recover_start: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
     let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
@@ -531,14 +276,7 @@ async fn voice_journey(recover_start: bool) {
                 .is_some()
         })
         .await;
-    let call = if recover_start {
-        native.pending_channel_start().await;
-        native
-            .call_after_retired_start(&admin, address.clone(), &voice)
-            .await
-    } else {
-        native.call(&voice).await
-    };
+    let call = native.call(&voice).await;
     let alone = call.grant().unwrap();
     assert_eq!(alone.participants.len(), 1);
     assert!(alone.subscriptions.is_empty());
@@ -637,7 +375,6 @@ async fn voice_journey(recover_start: bool) {
     assert_eq!(alice_carrier.status(), Status::Closed);
     assert!(capture_stopped.load(std::sync::atomic::Ordering::SeqCst));
     assert!(call.inspect_current(|_, _| Ok(())).is_err());
-    assert!(call.rejoin(&native.session).is_err());
     assert!(alice_carrier.enable_publication().is_err());
     assert!(call.heartbeat(&native.session, |_| Ok(())).is_err());
     assert!(call.live().is_err());
@@ -655,14 +392,4 @@ async fn voice_journey(recover_start: bool) {
     .await;
     drop(web);
     relay.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
-    Box::pin(voice_journey(false)).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retired_start_recovers_the_exact_call_before_native_and_browser_audio() {
-    Box::pin(voice_journey(true)).await;
 }

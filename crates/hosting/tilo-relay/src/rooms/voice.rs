@@ -390,9 +390,7 @@ fn transition(
             channel_id,
             allowed,
         } => {
-            let binding = candidate
-                .media_binding_if_admitted(app_id, record_id, channel_id)?
-                .ok_or(protocol::CHANNEL_ADMISSION_PENDING)?;
+            let binding = candidate.resolve_media_binding(app_id, record_id, channel_id)?;
             start(&mut policy, binding, *allowed)?
         }
         CallOperation::End { call, epoch }

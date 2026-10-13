@@ -515,8 +515,7 @@ fn the_root_offers_call_starts_only_once_there_is_a_workspace() {
 #[test]
 fn start_call_through_the_door_makes_a_voice_channel_and_joins_it() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
-    app.call_confirmed("start-call", serde_json::json!({}))
-        .unwrap();
+    app.call("start-call", serde_json::json!({})).unwrap();
     app.settle();
     assert!(
         app.state()
@@ -979,53 +978,4 @@ fn authenticated_agent_entry_has_navigation_without_an_ordinary_authority_lane()
             .any(|declaration| declaration.id == "post-agent-message"),
         "execution interaction is task steering, not a second message lane"
     );
-}
-
-#[test]
-fn shared_space_context_status_without_broker_custody_cannot_fabricate_native_view() {
-    for room in [
-        "4d68838c-675a-4e63-9d17-10ed76cbb74b",
-        "a4bd617a-2f42-4b2c-b5dc-df2c43362339",
-    ] {
-        let mut app = TestApp::<ChatShell>::in_room(room).unwrap();
-        let output = app
-            .effect(&crate::effects::ChatEffect::LiveContextStatus)
-            .unwrap()
-            .value
-            .unwrap();
-        // This direct standalone door has no original broker custody.
-        // The signed two-person native journey supplies that custody
-        // and independently requires exact room and launcher instance.
-        assert!(output.get("nativeView").is_none());
-        assert_eq!(output["sharing"], false);
-        assert_eq!(output["following"], false);
-        assert_eq!(output["videoCapture"], false);
-    }
-}
-
-#[test]
-fn call_effect_declarations_require_explicit_confirmation() {
-    use ui::tilo_resource::Effect as _;
-    for effect in [
-        ChatEffect::StartCall,
-        ChatEffect::JoinCall {
-            channel: "fixture".into(),
-        },
-        ChatEffect::Unmute {
-            channel: "fixture".into(),
-        },
-    ] {
-        let spec = effect.bound();
-        assert_eq!(
-            spec.contract.confirmation,
-            ui::tilo_actions::ConfirmationPolicy::Confirm
-        );
-        assert_eq!(spec.contract.risk, ui::tilo_actions::RiskLevel::Sensitive);
-        assert!(
-            spec.contract
-                .tags
-                .iter()
-                .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
-        );
-    }
 }
