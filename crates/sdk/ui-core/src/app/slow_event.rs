@@ -59,7 +59,7 @@ impl Span {
         Self {
             kind,
             name,
-            start: Instant::now(),
+            start: crate::time::now(),
             owner,
         }
     }
@@ -108,7 +108,7 @@ pub(crate) struct Phase {
 pub(crate) fn phase(name: &'static str) -> Phase {
     Phase {
         name,
-        start: Instant::now(),
+        start: crate::time::now(),
     }
 }
 

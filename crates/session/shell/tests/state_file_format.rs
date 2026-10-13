@@ -47,6 +47,10 @@ fn saved_shortcuts() -> (
 
 /// Every persisted field holding something, including the integer-keyed
 /// maps a JSON object can only carry as string keys.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the fixture sets every persisted field once, read top to bottom"
+)]
 fn populated_tree() -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     let mut ws = Workspace::new(WorkspaceId(1), "Studio");

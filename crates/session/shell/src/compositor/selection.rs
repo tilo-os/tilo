@@ -307,7 +307,7 @@ pub fn selection_snapshot(store: &SharedSelection, target: Target) -> SelectionS
     )
 }
 
-/// Password managers (1Password, KeePassXC) mark a copy with this format. The
+/// Password managers (`1Password`, `KeePassXC`) mark a copy with this format. The
 /// copy still has to paste, so it is persisted like any other, but it is kept
 /// out of history, never logged, and wiped when the next selection replaces it.
 pub const PASSWORD_MANAGER_HINT_MIME: &str = "x-kde-passwordManagerHint";
@@ -891,12 +891,11 @@ pub fn adopt_complete_client_selection(store: &SharedSelection, now_ms: u64) -> 
     {
         return false;
     }
-    let formats: Vec<String> = slot
+    let formats = slot
         .mime_types
         .iter()
         .filter(|mime| !is_x11_meta_target(mime))
-        .cloned()
-        .collect();
+        .cloned();
     // Keep the formats that returned bytes. Chromium and Electron also offer
     // internal formats (a source-frame token, an empty `text/html`) that read
     // back empty, and X11 sources offer meta targets; none of those may stop
@@ -904,7 +903,6 @@ pub fn adopt_complete_client_selection(store: &SharedSelection, now_ms: u64) -> 
     // is an aborted transfer: taking over would replace a working source with
     // nothing.
     let held: Vec<String> = formats
-        .into_iter()
         .filter(|mime| value_for(slot, mime).is_some_and(|bytes| !bytes.is_empty()))
         .collect();
     let has_content = held

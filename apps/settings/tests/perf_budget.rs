@@ -7,7 +7,14 @@
 //! apply to optimised builds; a debug build prints the numbers and skips the
 //! assertions. Run with:
 //! `cargo test -p settings --release --test it perf_budget -- --nocapture`.
-
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::manual_midpoint,
+    reason = "timing statistics over bounded sample counts: microsecond casts, percentile indices and medians of a few hundred samples"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -123,7 +130,10 @@ fn page_switch() {
             assert_eq!(app.selected(), c, "the click must switch the page");
         }
     }
-    passes("page switch", &Framed::harness_mut(&mut app).take_profile_samples());
+    passes(
+        "page switch",
+        &Framed::harness_mut(&mut app).take_profile_samples(),
+    );
     let (p50, _) = summary("settings page switch", &mut samples);
     budget("page switch", p50, 8_000);
 }
@@ -224,7 +234,12 @@ fn resize_step() {
 fn accessibility_tree_per_frame() {
     let config = crate::support::ScratchConfig::new();
     let mut app = mount(&config);
-    for category in [Category::Sound, Category::Displays, Category::Network, Category::Keyboard] {
+    for category in [
+        Category::Sound,
+        Category::Displays,
+        Category::Network,
+        Category::Keyboard,
+    ] {
         click_row(&mut app, category);
         let h = Framed::harness_mut(&mut app);
         let mut samples = Vec::new();
@@ -234,7 +249,11 @@ fn accessibility_tree_per_frame() {
             nodes = h.a11y_nodes().len();
             samples.push(t.elapsed().as_micros() as u64);
         }
-        let p50 = summary(&format!("settings a11y tree ({category:?}, {nodes} nodes)"), &mut samples).0;
+        let p50 = summary(
+            &format!("settings a11y tree ({category:?}, {nodes} nodes)"),
+            &mut samples,
+        )
+        .0;
         budget("accessibility tree per frame", p50, 2_000);
     }
 }
@@ -298,7 +317,7 @@ mod hosted {
                 let _ = nodes;
             }
         }
-        let p50 = summary("hosted settings page switch (click + settle)", &mut switch).0;
+        let _ = summary("hosted settings page switch (click + settle)", &mut switch);
         let p50 = summary("hosted settings accessibility tree export", &mut tree).0;
         budget("hosted accessibility export", p50, 2_000);
     }
@@ -318,8 +337,10 @@ mod hosted {
             app.settle();
             scroll.push(t.elapsed().as_micros() as u64);
         }
-        let p50 = summary("hosted settings scroll step", &mut scroll).0;
-        app.harness().click_named("settings.search").expect("search");
+        let _ = summary("hosted settings scroll step", &mut scroll);
+        app.harness()
+            .click_named("settings.search")
+            .expect("search");
         let mut keys = Vec::new();
         for ch in "displaysound".chars() {
             let t = Instant::now();
@@ -327,7 +348,7 @@ mod hosted {
             app.settle();
             keys.push(t.elapsed().as_micros() as u64);
         }
-        let p50 = summary("hosted settings keystroke", &mut keys).0;
+        let _ = summary("hosted settings keystroke", &mut keys);
     }
 
     /// The action surface Settings publishes on a page, measured the way the

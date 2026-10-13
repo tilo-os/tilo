@@ -100,6 +100,13 @@ fn deadline() -> Duration {
     tilo_test_env::hang_bound()
 }
 
+/// When an operation that started now has waited [`deadline`] long.
+fn deadline_end() -> Instant {
+    Instant::now()
+        .checked_add(deadline())
+        .expect("a representable deadline")
+}
+
 /// Spacing of the grid [`TestClient::pointer_target`] probes for a client.
 const POINTER_GRID_STEP: i32 = 40;
 
@@ -2311,7 +2318,7 @@ fn x11_focused_window(
     // settled, not mid-resize. The X server reports the window as the input
     // focus once satellite holds Wayland focus.
     let probe = x11_connect(compositor);
-    let end = Instant::now() + deadline();
+    let end = deadline_end();
     let mut last_paint = Instant::now();
     let mut focused_since: Option<Instant> = None;
     loop {
@@ -3407,7 +3414,7 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for ClientState {
                 state.control_pending_offer = Some(id);
             }
             zwlr_data_control_device_v1::Event::Selection { id } => {
-                state.control_selection_events += 1;
+                state.control_selection_events = state.control_selection_events.saturating_add(1);
                 state.control_pending_offer = None;
                 state.control_clipboard = id.map(|offer| {
                     let mimes = offer.data::<ControlMimes>().cloned().unwrap_or_default();
@@ -6287,7 +6294,7 @@ impl Compositor {
 
     /// Wait for a log line containing every fragment of `needles`.
     fn wait_for_log(&self, needles: &[&str], what: &str) {
-        let end = Instant::now() + deadline();
+        let end = deadline_end();
         loop {
             let log = self.full_log();
             if log

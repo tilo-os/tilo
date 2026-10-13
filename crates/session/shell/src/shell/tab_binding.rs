@@ -510,6 +510,19 @@ fn tab_insert_index(group: &WindowGroup, placement: Placement) -> usize {
     }
 }
 
+/// A new window group holding only `tab`, which is active in it.
+fn lone_group(tab: Tab) -> WindowGroup {
+    let active_tab = tab.id;
+    WindowGroup {
+        id: next_id(),
+        tabs: vec![tab],
+        active_tab,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    }
+}
+
 /// Splice an already-built [`Tab`] into the active workspace at `placement`, and focus it.
 /// Placement and tree decide where a window lands, not what's inside it, so both foreign and
 /// hosted-app opens route through here. Returns `new_tab`'s id even when it can't be spliced (no active workspace).
@@ -529,14 +542,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
 
     // No strips at all: synthesize one around the new tab. Mirrors `apply_workspace_drop`'s empty-strip path.
     if ws.strips.is_empty() {
-        let group = WindowGroup {
-            id: next_id(),
-            tabs: vec![new_tab],
-            active_tab: tab_id,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        };
+        let group = lone_group(new_tab);
         let group_id = group.id;
         let strip = Strip {
             id: StripId::from(next_id()),
@@ -606,14 +612,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         return tab_id;
     }
 
-    let group = WindowGroup {
-        id: next_id(),
-        tabs: vec![new_tab],
-        active_tab: tab_id,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    };
+    let group = lone_group(new_tab);
     let group_id = group.id;
     // Right of the group the placement named, falling back to the focused one when that group is gone, and to the end of the strip when nothing is focused either.
     let anchor = match placement {

@@ -407,8 +407,8 @@ fn floating_input_gutter_falls_through_to_the_workspace_tile() {
     let point = (tile.rect.center().x, tile.rect.center().y);
     let window = Rect::from_center_size(tile.rect.center(), (160.0, 120.0));
     let store = crate::compositor::foreign::store();
-    let width = tile.rect.width().round() as u32;
-    let height = tile.rect.height().round() as u32;
+    let width = ui::num::u32_of_f64(tile.rect.width().round());
+    let height = ui::num::u32_of_f64(tile.rect.height().round());
     store.publish_rgba(
         source,
         &vec![255; (width * height * 4) as usize],

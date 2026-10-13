@@ -417,6 +417,7 @@ mod tests {
             }],
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         w.strips.push(other);
 

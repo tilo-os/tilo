@@ -290,6 +290,7 @@ mod tests {
             active_tab: notes_group + 1,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         let agent_strip_id = agent_strip.id;
         tree.desktop.workspaces[0].strips.push(agent_strip);

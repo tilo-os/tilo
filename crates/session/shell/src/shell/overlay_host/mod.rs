@@ -12476,7 +12476,7 @@ impl ShellOverlayHost {
             if let Some(chrome) = self.chrome.as_ref() {
                 chrome.borrow_mut().bump();
             }
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         if is_absorbable_pointer
@@ -22602,7 +22602,7 @@ impl ShellOverlayHost {
                         text,
                         colors.text_primary,
                         transform.pre_translate((body.x0, note_y).into()),
-                        Some(f64_to_f32_lossy(body.width())),
+                        Some(f32_of_f64(body.width())),
                         &theme.text(TextRole::Caption),
                     );
                     note_y += 18.0;
