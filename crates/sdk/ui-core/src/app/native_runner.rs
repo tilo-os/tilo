@@ -2495,13 +2495,13 @@ impl AppHandler {
                 position,
             } => WindowEvent::CursorMoved {
                 device_id,
-                position: PhysicalPosition::new(
+                position: winit::dpi::PhysicalPosition::new(
                     position.x + desktop_rect.x0 * scale,
                     position.y + desktop_rect.y0 * scale,
                 ),
             },
             WindowEvent::Touch(mut touch) => {
-                touch.location = PhysicalPosition::new(
+                touch.location = winit::dpi::PhysicalPosition::new(
                     touch.location.x + desktop_rect.x0 * scale,
                     touch.location.y + desktop_rect.y0 * scale,
                 );
