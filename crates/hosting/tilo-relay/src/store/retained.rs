@@ -611,6 +611,31 @@ fn generation_name(name: &str) -> bool {
     name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The CURRENT that will select generation `name`, written beside the
+/// lineage's CURRENT before it is renamed over it.
+const SELECTION_PREFIX: &str = ".CURRENT.";
+
+/// The generation a selection [`SELECTION_PREFIX`] file names.
+fn selection_generation(name: &str) -> Option<&str> {
+    name.strip_prefix(SELECTION_PREFIX)
+        .filter(|generation| generation_name(generation))
+}
+
+/// Create `path` with `bytes` and sync it; its entry is the caller's to
+/// sync.
+fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+    use std::io::Write as _;
+    #[cfg(test)]
+    super::test_barrier::check(path, "sync-file")?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    crate::store::fsync(&file)?;
+    Ok(())
+}
+
 pub(crate) fn current(lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
     use std::io::Read;
     let mut name = String::new();
@@ -734,14 +759,17 @@ impl GenerationGc {
                     self.child = None;
                 }
             } else if let Some(entry) = self.entries.peek()? {
-                if entry.path() != active
-                    && entry.file_type()?.is_dir()
-                    && generation_name(&entry.file_name().to_string_lossy())
-                {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if entry.path() != active && entry.file_type()?.is_dir() && generation_name(&name) {
                     self.child = Some((
                         entry.path(),
                         super::bounded::DirectoryCursor::open(&entry.path())?,
                     ));
+                } else if selection_generation(&name).is_some() && entry.file_type()?.is_file() {
+                    // A build that failed before its commit left it.
+                    fs::remove_file(entry.path())?;
+                    self.removed = true;
                 }
                 self.entries.advance();
             } else {
@@ -794,6 +822,9 @@ pub(crate) struct RetainBuild {
     /// lineage and has not yet made its entry durable: a checkpoint does
     /// that beside its own barriers.
     unsynced_parent: Option<PathBuf>,
+    /// The CURRENT naming `staged`, durable beside the lineage's own: the
+    /// commit renames it over CURRENT.
+    pending_current: Option<PathBuf>,
     scratch: PathBuf,
     bytes: Vec<u8>,
     /// Digest of `bytes`, which a prior record must share to be read.
@@ -1045,19 +1076,24 @@ impl RetainBuild {
                 RetainPhase::Collect(Box::new(GenerationGc::new(self.lineage.clone())?))
             };
         } else if stage_checkpoint {
-            let staged = self.lineage.join(hex::encode(rand::random::<[u8; 16]>()));
+            let name = hex::encode(rand::random::<[u8; 16]>());
+            let staged = self.lineage.join(&name);
             fs::create_dir(&staged)?;
-            // The stage's entry, its checkpoint and a new lineage's own entry
-            // order nothing between them; all hold before CURRENT names the
-            // stage.
+            // The checkpoint, the CURRENT that will name its stage and a new
+            // lineage's own entry order nothing between them, nor do the
+            // entries of the first two after them; all hold before the
+            // commit renames the CURRENT into place.
             let checkpoint = staged.join("checkpoint.delta");
+            let selection = self.lineage.join(format!("{SELECTION_PREFIX}{name}"));
             let bytes = &self.bytes;
-            let lineage = &self.lineage;
             barriers(&mut [
-                &mut || durable_write(&checkpoint, bytes),
-                &mut || sync_dir_once(lineage),
+                &mut || write_synced(&checkpoint, bytes),
+                &mut || write_synced(&selection, name.as_bytes()),
                 &mut || unsynced_parent.as_deref().map_or(Ok(()), sync_dir_once),
             ])?;
+            let lineage = &self.lineage;
+            barriers(&mut [&mut || sync_dir(&staged), &mut || sync_dir(lineage)])?;
+            self.pending_current = Some(selection);
             self.staged = Some(staged);
             self.staged_synced = true;
             #[cfg(test)]
@@ -1367,13 +1403,20 @@ impl RetainBuild {
                 if !self.staged_synced {
                     sync_dir(staged)?;
                 }
-                durable_write(
-                    &self.lineage.join("CURRENT"),
-                    staged
-                        .file_name()
-                        .invariant("staged missing")?
-                        .as_encoded_bytes(),
-                )?;
+                if let Some(selection) = self.pending_current.take() {
+                    #[cfg(test)]
+                    super::test_barrier::check(&self.lineage, "current-publish")?;
+                    fs::rename(&selection, self.lineage.join("CURRENT"))?;
+                    sync_dir(&self.lineage)?;
+                } else {
+                    durable_write(
+                        &self.lineage.join("CURRENT"),
+                        staged
+                            .file_name()
+                            .invariant("staged missing")?
+                            .as_encoded_bytes(),
+                    )?;
+                }
                 self.written = self.bytes.len() as u64;
                 self.phase = RetainPhase::Collect(Box::new(GenerationGc::after_commit(
                     self.lineage.clone(),
@@ -1591,6 +1634,7 @@ impl WorkspaceStore {
             active,
             fresh,
             unsynced_parent,
+            pending_current: None,
             scratch,
             digest,
             bytes,
@@ -2453,7 +2497,8 @@ pub(super) mod tests {
         ));
         let active = current(&lineage).unwrap().unwrap();
         // Drive the real retention operation through staging so the injected
-        // failure can target only CURRENT publication, before its rename.
+        // failure can target only CURRENT publication, before its rename,
+        // and leaves the CURRENT the stage prepared beside it.
         let mut build = store.start_retain(&[9; 32], None, new.clone()).unwrap();
         for _ in 0..20_000 {
             if matches!(build.phase, RetainPhase::Commit) {
@@ -2465,11 +2510,9 @@ pub(super) mod tests {
             ));
         }
         assert!(matches!(build.phase, RetainPhase::Commit));
-        let failed = tilo_files::native::atomic::test_support::with_failure(
-            tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
-            || build.step(WorkLimit::default()),
-        );
-        assert!(failed.is_err());
+        let fault = crate::store::test_barrier::fail(&lineage, "current-publish");
+        assert!(build.step(WorkLimit::default()).is_err());
+        drop(fault);
         drop(build);
         drop(store);
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
@@ -2478,11 +2521,23 @@ pub(super) mod tests {
             vec![old, tail, uncovered.clone()]
         );
         assert_eq!(current(&lineage).unwrap().unwrap(), active);
+        let selections = || {
+            fs::read_dir(&lineage)
+                .unwrap()
+                .filter(|entry| {
+                    selection_generation(&entry.as_ref().unwrap().file_name().to_string_lossy())
+                        .is_some()
+                })
+                .count()
+        };
+        assert_eq!(selections(), 1);
         store.retain_checkpoint(&[9; 32], &new).unwrap();
         assert_eq!(
             store.load_retained().unwrap(),
             vec![new.clone(), uncovered.clone()]
         );
+        // The next commit's collection reclaims what the failed one left.
+        assert_eq!(selections(), 0);
         document.put(automerge::ROOT, "next", 4).unwrap();
         let next_tail = frame(false, document.save_incremental(), 4);
         store.retain_delta(&[9; 32], 2, &next_tail).unwrap();
