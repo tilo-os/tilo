@@ -2,6 +2,73 @@
 use super::ActivityView;
 use tilo_desktop_model::{DesktopTree, WorkspaceId};
 
+/// Exact checkpoint identity. Frontiers belong to their source, never to an
+/// arbitrary live document supplied by the caller.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReplayAddress {
+    pub source: String,
+    pub entry: String,
+    pub frontier: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "request", rename_all = "camelCase")]
+pub enum ReplayRequest {
+    Previous,
+    TogglePlayback,
+    Next,
+    Seek {
+        position: usize,
+    },
+    SeekEntry {
+        source: String,
+        entry: String,
+    },
+    SeekFrontier {
+        source: String,
+        frontier: Vec<String>,
+    },
+    Inspect,
+}
+
+/// Bounded, viewer-local inspection; no document bytes or app state.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReplayPosition {
+    pub position: Option<usize>,
+    pub total: usize,
+    pub playing: bool,
+    pub selected: Option<ReplayAddress>,
+    pub first: Option<ReplayAddress>,
+    pub last: Option<ReplayAddress>,
+    pub unavailable: usize,
+    pub selection_missing: bool,
+}
+
+pub const REPLAY_OPERATION_TYPE: &str = "tilo.desktop.replay";
+
+#[derive(Clone, Debug)]
+pub struct ReplayActionDescriptor {
+    pub id: String,
+    pub label: String,
+    pub request: ReplayRequest,
+}
+
+impl ReplayActionDescriptor {
+    /// Encode this viewer-local operation for the host action registry.
+    ///
+    /// # Errors
+    /// Returns an encoding error if the operation cannot be serialized.
+    pub fn action(&self) -> Result<tilo_actions::ActionSpec, tilo_actions::ActionError> {
+        tilo_actions::ActionSpec::operation(
+            &self.id,
+            &self.label,
+            tilo_actions::OperationKind::View,
+            REPLAY_OPERATION_TYPE,
+            &self.request,
+        )
+    }
+}
+
 pub const RESOURCE_ID: &str = "desktop:view";
 pub const OPERATION_TYPE: &str = "tilo.desktop.view";
 

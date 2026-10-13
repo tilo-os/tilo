@@ -1,6 +1,6 @@
 use super::ActivityTree;
 use super::pane::{RoomActivityPane, RoomScope};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use ui::time::SystemTime;
 use ui::widget::{HistoryEntry, HistoryEntryId};
 #[derive(Clone, Debug)]
@@ -23,18 +23,10 @@ pub(super) struct WorkspaceReplayFrame {
     pub(super) summary: String,
     pub(super) timestamp: SystemTime,
     pub(super) workspaces: Vec<ReplayWorkspace>,
-    pub(super) pointers: Vec<ReplayPointer>,
+    pub(super) address: super::view_actions::ReplayAddress,
 }
 
-#[derive(Clone, Debug)]
-pub(super) struct ReplayPointer {
-    pub(super) name: String,
-    pub(super) color: (u8, u8, u8),
-    pub(super) point: (f32, f32),
-    pub(super) desktop_space: bool,
-}
-
-/// What the desktop looked like at one history entry: every workspace's
+/// The workspace topology at one history entry: every workspace's
 /// strips, `None` when the entry's document state cannot be read back. A
 /// change's state is fixed by its hash, so a checkpoint is computed once.
 pub(super) type ReplayCheckpoint = Option<Vec<(u64, ReplayWorkspace)>>;
@@ -68,14 +60,13 @@ impl RoomActivityPane {
     ) {
         self.replay_unavailable = 0;
         let mut ordered = rows.to_vec();
-        ordered.sort_by_key(|entry| entry.timestamp);
+        ordered.sort_by_key(|entry| (entry.timestamp, *entry.id.as_bytes()));
         let skip = ordered.len().saturating_sub(REPLAY_FRAMES);
         let mut baseline: Option<_> = None;
-        let retained_pointers: HashMap<HistoryEntryId, Vec<ReplayPointer>> = self
+        let selected = self
             .replay_frames
-            .iter()
-            .map(|frame| (frame.entry_id, frame.pointers.clone()))
-            .collect();
+            .get(self.replay_index)
+            .map(|frame| frame.address.clone());
         let mut checkpoints = std::mem::take(&mut self.replay_checkpoints);
         let mut frames = Vec::with_capacity(ordered.len().min(REPLAY_FRAMES));
         for entry in ordered.into_iter().skip(skip) {
@@ -103,10 +94,17 @@ impl RoomActivityPane {
                 summary: entry.summary,
                 timestamp: entry.timestamp,
                 workspaces,
-                pointers: retained_pointers
-                    .get(&entry.id)
-                    .cloned()
-                    .unwrap_or_default(),
+                address: super::view_actions::ReplayAddress {
+                    source: super::index::HistoryOrigin::DesktopTree.key(),
+                    entry: uuid::Uuid::from_bytes(*entry.id.as_bytes()).to_string(),
+                    frontier: self
+                        .history_log
+                        .heads_for_entry(&entry.id)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                },
             });
         }
         // Another workspace's entries stay: switching back replays them
@@ -115,9 +113,27 @@ impl RoomActivityPane {
         checkpoints.retain(|id, _| history.contains(id));
         self.replay_checkpoints = checkpoints;
         self.replay_frames = frames;
-        self.replay_index = self
-            .replay_index
-            .min(self.replay_frames.len().saturating_sub(1));
+        self.replay_index = selected
+            .as_ref()
+            .and_then(|address| {
+                self.replay_frames
+                    .iter()
+                    .position(|frame| frame.address == *address)
+            })
+            .unwrap_or_else(|| {
+                self.replay_index
+                    .min(self.replay_frames.len().saturating_sub(1))
+            });
+        if selected.is_some()
+            && !self
+                .replay_frames
+                .iter()
+                .any(|frame| Some(&frame.address) == selected.as_ref())
+        {
+            self.replay_playing = false;
+            self.replay_selection_missing = true;
+        }
+        self.sync_replay_slider();
         if self.replay_frames.is_empty() {
             self.replay_playing = false;
         }

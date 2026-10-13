@@ -20,7 +20,8 @@ mod task_review_view;
 // ([`EntryKind::Access`]) are non-revertible — an owner counters a
 // governance act with another one rather than rewinding it.
 
-use super::replay::{ReplayPointer, WorkspaceReplayFrame};
+use super::replay::WorkspaceReplayFrame;
+use super::view_actions::{ReplayPosition, ReplayRequest};
 use super::{
     ActivityDeepLink, ActivityHost, ActivityTree, AgentLaunchEvent, AgentLaunchEventKind,
     UnavailableActivityHost,
@@ -222,6 +223,7 @@ enum ActivityFocus {
     ReplayBack,
     ReplayPlay,
     ReplayForward,
+    ReplayScrub,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -860,11 +862,15 @@ pub struct RoomActivityPane {
     /// [`Self::rebuild_replay_frames`].
     pub(super) replay_checkpoints: HashMap<HistoryEntryId, super::replay::ReplayCheckpoint>,
     pub(super) replay_index: usize,
+    pub(super) replay_selection_missing: bool,
     pub(super) replay_playing: bool,
     replay_last_advance: Instant,
     replay_back_rect: Rect,
     replay_play_rect: Rect,
     replay_forward_rect: Rect,
+    replay_slider: ui::widget::Slider,
+    replay_seek_intent: Rc<Cell<Option<f64>>>,
+    replay_slider_doc: automerge::AutoCommit,
     narrative: Option<ui::GroundedNarrative>,
     narrative_request: Option<NarrativeRequest>,
     /// Task receipts live beside the records they describe. They are indexed
@@ -954,6 +960,8 @@ impl RoomActivityPane {
         let ni = Rc::clone(&name_intent);
         let ui = Rc::clone(&undo_intent);
         let ci = Rc::clone(&clear_filters_intent);
+        let replay_seek_intent = Rc::new(Cell::new(None));
+        let seek = Rc::clone(&replay_seek_intent);
         Self {
             explicit_local_user,
             timeline: {
@@ -1083,11 +1091,18 @@ impl RoomActivityPane {
             room_changes: HashMap::new(),
             replay_checkpoints: HashMap::new(),
             replay_index: 0,
+            replay_selection_missing: false,
             replay_playing: false,
             replay_last_advance: Instant::now(),
             replay_back_rect: Rect::ZERO,
             replay_play_rect: Rect::ZERO,
             replay_forward_rect: Rect::ZERO,
+            replay_slider: ui::widget::Slider::new("activity-replay-timeline", "")
+                .with_id("activity-replay-timeline")
+                .with_accessible_name("activity-replay-timeline")
+                .on_change(move |value| seek.set(Some(value))),
+            replay_seek_intent,
+            replay_slider_doc: automerge::AutoCommit::new(),
             narrative: None,
             narrative_request: None,
             agent_runs: Vec::new(),
@@ -1455,26 +1470,180 @@ impl RoomActivityPane {
     }
 
     fn step_replay(&mut self, forward: bool) {
-        self.replay_playing = false;
-        self.replay_index = if forward {
-            self.replay_index
-                .saturating_add(1)
-                .min(self.replay_frames.len().saturating_sub(1))
+        let _ = self.apply_replay_request(if forward {
+            ReplayRequest::Next
         } else {
-            self.replay_index.saturating_sub(1)
-        };
-        self.replay_last_advance = Instant::now();
+            ReplayRequest::Previous
+        });
     }
 
     fn toggle_replay(&mut self) {
+        let _ = self.apply_replay_request(ReplayRequest::TogglePlayback);
+    }
+
+    pub(super) fn sync_replay_slider(&mut self) {
+        let max = u32::try_from(self.replay_frames.len().saturating_sub(1)).unwrap_or_default();
+        let index = u32::try_from(self.replay_index).unwrap_or_default();
+        let slider = std::mem::replace(
+            &mut self.replay_slider,
+            ui::widget::Slider::new("activity-replay-timeline", ""),
+        );
+        self.replay_slider = slider
+            .range(0.0, f64::from(max.max(1)))
+            .step(1.0)
+            .value_text(move |value| {
+                t_args(
+                    "activity-replay-slider-position",
+                    &[
+                        ("position", (value + 1.0).into()),
+                        ("total", (u64::from(max) + 1).into()),
+                    ],
+                )
+            });
+        self.replay_slider.set_enabled(max > 0);
+        self.replay_slider.set_value(f64::from(index));
+    }
+
+    /// Semantic transport and exact checkpoint operations for the host registry.
+    pub fn replay_action_descriptors(&self) -> Vec<super::view_actions::ReplayActionDescriptor> {
+        use super::view_actions::ReplayActionDescriptor;
+        let mut actions = vec![ReplayActionDescriptor {
+            id: "room.activity.replay.inspect".into(),
+            label: t("activity-replay-inspect"),
+            request: ReplayRequest::Inspect,
+        }];
         if self.replay_frames.is_empty() {
-            return;
+            return actions;
         }
-        if self.replay_index.saturating_add(1) >= self.replay_frames.len() {
-            self.replay_index = 0;
+        for (id, key, request) in [
+            (
+                "previous",
+                "a11y-shell-activity-previous-checkpoint",
+                ReplayRequest::Previous,
+            ),
+            (
+                "play",
+                if self.replay_playing {
+                    "activity-replay-pause"
+                } else {
+                    "activity-replay-play"
+                },
+                ReplayRequest::TogglePlayback,
+            ),
+            (
+                "next",
+                "a11y-shell-activity-next-checkpoint",
+                ReplayRequest::Next,
+            ),
+        ] {
+            actions.push(ReplayActionDescriptor {
+                id: format!("room.activity.replay.{id}"),
+                label: t(key),
+                request,
+            });
         }
-        self.replay_playing = !self.replay_playing;
+        for frame in &self.replay_frames {
+            actions.push(ReplayActionDescriptor {
+                id: format!(
+                    "room.activity.replay.seek.{}",
+                    uuid::Uuid::from_bytes(*frame.entry_id.as_bytes())
+                ),
+                label: t_args(
+                    "activity-replay-seek-label",
+                    &[
+                        ("who", frame.author.name.as_str().into()),
+                        ("action", frame.summary.as_str().into()),
+                        (
+                            "when",
+                            format_relative_time(frame.timestamp, self.now()).into(),
+                        ),
+                    ],
+                ),
+                request: ReplayRequest::SeekEntry {
+                    source: frame.address.source.clone(),
+                    entry: frame.address.entry.clone(),
+                },
+            });
+        }
+        actions
+    }
+
+    pub fn replay_position(&self) -> ReplayPosition {
+        ReplayPosition {
+            position: (!self.replay_frames.is_empty()).then_some(self.replay_index),
+            total: self.replay_frames.len(),
+            playing: self.replay_playing,
+            selected: self
+                .replay_frames
+                .get(self.replay_index)
+                .map(|frame| frame.address.clone()),
+            first: self
+                .replay_frames
+                .first()
+                .map(|frame| frame.address.clone()),
+            last: self.replay_frames.last().map(|frame| frame.address.clone()),
+            unavailable: self.replay_unavailable,
+            selection_missing: self.replay_selection_missing,
+        }
+    }
+
+    /// One viewer-local controller for pointer, keyboard and semantic seeking.
+    /// Invalid requests leave both the selection and playback unchanged.
+    ///
+    /// # Errors
+    /// Returns a localized refusal for unavailable checkpoints or invalid bounds.
+    pub fn apply_replay_request(
+        &mut self,
+        request: ReplayRequest,
+    ) -> Result<ReplayPosition, String> {
+        if request == ReplayRequest::Inspect {
+            return Ok(self.replay_position());
+        }
+        if self.replay_frames.is_empty() {
+            return Err(t("activity-replay-unavailable"));
+        }
+        let position = match request {
+            ReplayRequest::Previous => self.replay_index.checked_sub(1),
+            ReplayRequest::Next => self.replay_index.checked_add(1),
+            ReplayRequest::Seek { position } => Some(position),
+            ReplayRequest::SeekEntry { source, entry } => self
+                .replay_frames
+                .iter()
+                .position(|frame| frame.address.source == source && frame.address.entry == entry),
+            ReplayRequest::SeekFrontier {
+                source,
+                mut frontier,
+            } => {
+                frontier.sort();
+                self.replay_frames.iter().position(|frame| {
+                    let mut heads = frame.address.frontier.clone();
+                    heads.sort();
+                    frame.address.source == source && heads == frontier
+                })
+            }
+            ReplayRequest::TogglePlayback => {
+                if !self.replay_playing
+                    && self.replay_index.saturating_add(1) == self.replay_frames.len()
+                {
+                    self.replay_index = 0;
+                }
+                self.replay_playing = !self.replay_playing;
+                self.replay_selection_missing = false;
+                self.replay_last_advance = Instant::now();
+                self.sync_replay_slider();
+                return Ok(self.replay_position());
+            }
+            ReplayRequest::Inspect => return Ok(self.replay_position()),
+        };
+        let position = position
+            .filter(|index| *index < self.replay_frames.len())
+            .ok_or_else(|| t("activity-replay-seek-unavailable"))?;
+        self.replay_index = position;
+        self.replay_selection_missing = false;
+        self.replay_playing = false;
         self.replay_last_advance = Instant::now();
+        self.sync_replay_slider();
+        Ok(self.replay_position())
     }
 
     pub fn period(&self) -> Period {
@@ -3272,31 +3441,9 @@ impl RoomActivityPane {
         self.draw_keyboard_focus(scene, transform, theme);
     }
 
-    /// Presence is intentionally sampled only at durable action boundaries:
-    /// pointer motion remains ephemeral and cheap, while the latest exact
-    /// positions survive subsequent checkpoint rebuilds for this session.
-    pub fn observe_replay_presence(&mut self, presence: &PresenceCtx) {
-        let Some(frame) = self.replay_frames.last_mut() else {
-            return;
-        };
-        let mut pointers = Vec::new();
-        for (key, people) in &presence.pointers {
-            let desktop_space = key.scopes_a_desktop_pointer();
-            for (user, point) in people {
-                pointers.push(ReplayPointer {
-                    name: presence.display_name(user),
-                    color: presence.color_for(user),
-                    point: *point,
-                    desktop_space,
-                });
-            }
-        }
-        pointers.sort_by(|a, b| a.name.cmp(&b.name));
-        pointers.dedup_by(|a, b| a.name == b.name && a.desktop_space == b.desktop_space);
-        if !pointers.is_empty() {
-            frame.pointers = pointers;
-        }
-    }
+    /// Ephemeral live presence is not evidence of a historical pointer position.
+    /// Kept as a no-op for hosts still forwarding their live presence here.
+    pub fn observe_replay_presence(&mut self, _presence: &PresenceCtx) {}
 
     fn draw_explorer_panel_tabs(
         &mut self,
@@ -4510,8 +4657,8 @@ impl RoomActivityPane {
         }
         if self.replay_playing && self.replay_last_advance.elapsed() >= Duration::from_millis(850) {
             if self.replay_index.saturating_add(1) < self.replay_frames.len() {
-                self.replay_index = self.replay_index.saturating_add(1);
-                self.replay_last_advance = Instant::now();
+                let _ = self.apply_replay_request(ReplayRequest::Next);
+                self.replay_playing = true;
             } else {
                 self.replay_playing = false;
             }
@@ -4538,61 +4685,34 @@ impl RoomActivityPane {
             self.replay_play_rect.x1 + 42.0,
             controls.y1,
         );
-        // Control role: transport chips at the Control radius. Playing is
-        // live state (HIG §9.4), so the accent stays on the active Pause
-        // chip; idle chips derive their edge from the lift floor (§9.5).
-        let floor = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
-        let idle_edge = ui::surface::edge_on(floor);
         let play_label = t(if self.replay_playing {
             "activity-replay-pause"
         } else {
             "activity-replay-play"
         });
-        for (rect, label, active) in [
-            (self.replay_back_rect, "←", false),
+        for (rect, label, active, disabled) in [
+            (self.replay_back_rect, "←", false, self.replay_index == 0),
             (
                 self.replay_play_rect,
                 play_label.as_str(),
                 self.replay_playing,
+                false,
             ),
-            (self.replay_forward_rect, "→", false),
+            (
+                self.replay_forward_rect,
+                "→",
+                false,
+                self.replay_index.saturating_add(1) == self.replay_frames.len(),
+            ),
         ] {
-            let radius = ui::chrome::ChromeRole::Control.radius(theme, rect.height());
-            let shape = RoundedRect::from_rect(rect, radius);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if active {
-                    theme.tokens.colors.text_primary.with_alpha_factor(0.28)
-                } else {
-                    floor
-                },
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                if active {
-                    theme.tokens.colors.intent.inverted_hover
-                } else {
-                    idle_edge
-                },
-                None,
-                &ui::surface::edge_outline(rect, radius),
-            );
-            let (tw, th) = tr.measure_style(label, None, &theme.text(TextRole::Caption));
-            tr.draw_style(
+            ui::widget::Button::paint(
                 scene,
-                label,
-                theme.tokens.colors.text_primary,
-                at(
-                    transform,
-                    rect.center().x - f64::from(tw) / 2.0,
-                    rect.center().y - f64::from(th) / 2.0,
-                ),
-                None,
-                &theme.text(TextRole::Caption),
+                transform,
+                tr,
+                theme,
+                &ui::widget::ButtonFace::new(rect, label)
+                    .toggled(active)
+                    .disabled(disabled),
             );
         }
         tr.draw_style(
@@ -4618,10 +4738,37 @@ impl RoomActivityPane {
             &theme.text(TextRole::Caption),
         );
 
+        self.draw_replay_slider(
+            scene,
+            transform,
+            tr,
+            theme,
+            Rect::new(
+                controls.x0,
+                controls.y1 + 4.0,
+                controls.x1,
+                controls.y1 + 40.0,
+            ),
+        );
+        let Some(frame) = self.replay_frames.get(self.replay_index) else {
+            return;
+        };
+        tr.draw_style(
+            scene,
+            &t(if self.replay_selection_missing {
+                "activity-replay-selection-missing"
+            } else {
+                "activity-replay-topology-note"
+            }),
+            theme.tokens.colors.text_dim,
+            at(transform, controls.x0, controls.y1 + 44.0),
+            Some(text_width(controls.width())),
+            &theme.text(TextRole::Caption),
+        );
         let info_h = 94.0;
         let canvas = Rect::new(
             self.sheet.x0 + 12.0,
-            controls.y1 + 10.0,
+            controls.y1 + 76.0,
             self.sheet.x1 - 12.0,
             (self.sheet.y1 - info_h - 20.0).max(controls.y1 + 80.0),
         );
@@ -4635,7 +4782,6 @@ impl RoomActivityPane {
             theme.tokens.colors.surfaces.base,
         );
         draw_replay_layout(scene, transform, tr, theme, canvas, frame);
-        draw_replay_pointers(scene, transform, tr, theme, canvas, frame, self.sheet);
 
         let info = Rect::new(canvas.x0, canvas.y1 + 8.0, canvas.x1, self.sheet.y1 - 10.0);
         let (r, g, b) = frame.author.rgb();
@@ -4654,14 +4800,16 @@ impl RoomActivityPane {
             Some(text_width(info.width() - 24.0)),
             &theme.text(TextRole::Label),
         );
-        draw_presence_trail(
+        tr.draw_style(
             scene,
-            transform,
-            tr,
-            theme,
-            Rect::new(info.x0, info.y0 + 34.0, info.x1, info.y1),
-            &self.replay_frames,
-            self.replay_index,
+            &t_args(
+                "activity-replay-source",
+                &[("source", frame.address.source.as_str().into())],
+            ),
+            theme.tokens.colors.text_dim,
+            at(transform, info.x0, info.y0 + 34.0),
+            Some(text_width(info.width())),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -5978,6 +6126,178 @@ impl RoomActivityPane {
         None
     }
 
+    fn draw_replay_slider(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let mut layout = taffy::TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = self
+            .replay_slider
+            .build_layout(&mut layout, theme, &mut nodes);
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::length(text_width(rect.width())),
+                height: taffy::Dimension::length(text_width(rect.height())),
+            },
+            ..Default::default()
+        };
+        if layout.set_style(node, style).is_err()
+            || layout
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::MaxContent,
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                )
+                .is_err()
+        {
+            return;
+        }
+        self.replay_slider
+            .apply_layout(&layout, node, rect.origin());
+        self.replay_slider
+            .set_focus(self.keyboard_focus == Some(ActivityFocus::ReplayScrub));
+        self.replay_slider
+            .draw(scene, transform, tr, theme, &PresenceCtx::empty());
+    }
+
+    fn handle_replay_slider_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        cursor: Option<Point>,
+    ) -> bool {
+        if self.view != ActivityView::Replay || self.replay_frames.len() < 2 {
+            return false;
+        }
+        let chord = modifiers.state();
+        if self.keyboard_focus == Some(ActivityFocus::ReplayScrub)
+            && !chord.control_key()
+            && !chord.super_key()
+            && !chord.alt_key()
+            && let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(key),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+        {
+            let request = match key {
+                NamedKey::ArrowLeft | NamedKey::ArrowDown => Some(ReplayRequest::Previous),
+                NamedKey::ArrowRight | NamedKey::ArrowUp => Some(ReplayRequest::Next),
+                NamedKey::Home => Some(ReplayRequest::Seek { position: 0 }),
+                NamedKey::End => Some(ReplayRequest::Seek {
+                    position: self.replay_frames.len().saturating_sub(1),
+                }),
+                _ => None,
+            };
+            if let Some(request) = request {
+                let _ = self.apply_replay_request(request);
+                return true;
+            }
+        }
+        if matches!(event, WindowEvent::KeyboardInput { .. }) {
+            return false;
+        }
+        let captured = self.replay_slider.wants_pointer_capture();
+        let mut scratch = taffy::TaffyTree::new();
+        let Ok(node) = scratch.new_leaf(taffy::Style::default()) else {
+            return false;
+        };
+        let mut handled = false;
+        let mut focused = None;
+        self.replay_slider.handle_event(
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state: ui::widget::Edits::lend(&mut self.replay_slider_doc),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focused,
+                node_id: node,
+                taffy: &scratch,
+            },
+        );
+        if focused.is_some() {
+            self.keyboard_focus = Some(ActivityFocus::ReplayScrub);
+            self.replay_slider.set_focus(true);
+            self.replay_playing = false;
+        }
+        if let Some(value) = self.replay_seek_intent.take() {
+            self.seek_replay_slider_value(value);
+        }
+        handled
+            && (captured
+                || focused.is_some()
+                || self.replay_slider.wants_pointer_capture()
+                || cursor.is_some_and(|point| self.replay_slider.get_rect().contains(point)))
+    }
+
+    fn seek_replay_slider_value(&mut self, value: f64) {
+        let position = (0..self.replay_frames.len())
+            .min_by(|a, b| {
+                (small_count_to_f64(*a) - value)
+                    .abs()
+                    .total_cmp(&(small_count_to_f64(*b) - value).abs())
+            })
+            .unwrap_or_default();
+        let _ = self.apply_replay_request(ReplayRequest::Seek { position });
+    }
+
+    /// Dispatch the retained slider's accessibility value action without lending
+    /// the live document. Hosts should try this before synthesizing a click.
+    pub fn perform_replay_accessibility_action(
+        &mut self,
+        path: &[usize],
+        action: &ui::a11y::Action,
+    ) -> bool {
+        let [0, index] = path else {
+            return false;
+        };
+        if self.view != ActivityView::Replay
+            || self.focus_order().get(*index) != Some(&ActivityFocus::ReplayScrub)
+        {
+            return false;
+        }
+        if self.replay_frames.len() < 2 {
+            return false;
+        }
+        let handled = self.replay_slider.perform_action(
+            action,
+            &[],
+            &mut ui::widget::Edits::lend(&mut self.replay_slider_doc),
+            &automerge::ROOT,
+        );
+        if let Some(value) = self.replay_seek_intent.take() {
+            self.seek_replay_slider_value(value);
+        }
+        handled
+    }
+
+    /// Named retained controls for immediate-mode hosts' test target registries.
+    pub fn replay_control_targets(&self) -> Vec<(&'static str, Rect)> {
+        if self.view != ActivityView::Replay || self.replay_frames.is_empty() {
+            return Vec::new();
+        }
+        vec![
+            ("activity-replay-previous", self.replay_back_rect),
+            ("activity-replay-play", self.replay_play_rect),
+            ("activity-replay-next", self.replay_forward_rect),
+            ("activity-replay-timeline", self.replay_slider.get_rect()),
+        ]
+    }
+
     fn handle_replay_click(&mut self, point: Point) -> Option<RoomActivityOutcome> {
         if self.replay_back_rect.contains(point) {
             self.keyboard_focus = Some(ActivityFocus::ReplayBack);
@@ -6227,6 +6547,9 @@ impl RoomActivityPane {
             return handled_outcome();
         }
         let mut out = RoomActivityOutcome::default();
+        if self.handle_replay_slider_event(event, scale_factor, *modifiers, cursor) {
+            return handled_outcome();
+        }
         if cursor.is_some_and(|point| {
             self.direction
                 .as_ref()
@@ -6452,6 +6775,7 @@ impl RoomActivityPane {
                         ActivityFocus::ReplayBack,
                         ActivityFocus::ReplayPlay,
                         ActivityFocus::ReplayForward,
+                        ActivityFocus::ReplayScrub,
                     ]);
                 }
             }
@@ -6540,7 +6864,7 @@ impl RoomActivityPane {
                     (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
             }
             ActivityFocus::TaskRoute(route) => self.task_route = route,
-            ActivityFocus::DirectionField => {}
+            ActivityFocus::DirectionField | ActivityFocus::ReplayScrub => {}
             ActivityFocus::TaskCreate => return self.create_task_from_draft(tree),
             ActivityFocus::TaskCancelCompose => self.close_task_composer(),
             ActivityFocus::TaskAction(action) => return self.apply_task_action(action, tree),
@@ -6710,6 +7034,7 @@ impl RoomActivityPane {
             ActivityFocus::Detail(action) => Some(self.detail_action_label(*action)),
             ActivityFocus::ExplorerPane(pane) => Some(pane.label()),
             ActivityFocus::Timeline => Some(t("a11y-shell-activity-history-entries")),
+            ActivityFocus::ReplayScrub => Some(t("activity-replay-timeline")),
             ActivityFocus::ReplayBack => Some(t("a11y-shell-activity-previous-checkpoint")),
             ActivityFocus::ReplayPlay => Some(if self.replay_playing {
                 t("a11y-shell-activity-pause-replay")
@@ -6951,6 +7276,12 @@ impl RoomActivityPane {
                 None,
                 t("a11y-shell-activity-timeline-description"),
             ),
+            ActivityFocus::ReplayScrub => control(
+                Role::Slider,
+                false,
+                None,
+                t("activity-replay-topology-note"),
+            ),
             ActivityFocus::ReplayBack | ActivityFocus::ReplayForward => control(
                 Role::Button,
                 false,
@@ -6979,6 +7310,9 @@ impl RoomActivityPane {
         }
         if *focus == ActivityFocus::Timeline {
             return self.timeline.accessibility();
+        }
+        if *focus == ActivityFocus::ReplayScrub {
+            return self.replay_slider.accessibility();
         }
 
         let label = self.focus_label(focus)?;
@@ -7055,6 +7389,9 @@ impl RoomActivityPane {
                     )));
             }
         }
+        if self.view == ActivityView::Replay {
+            root.children.push(self.replay_accessibility_detail());
+        }
         if self.timeline_is_visible() {
             let mut history =
                 AccessNode::new(Role::List).with_name(t("a11y-shell-activity-history-entries"));
@@ -7111,6 +7448,32 @@ impl RoomActivityPane {
 
     /// What an agent run reads as to assistive technology: the instruction,
     /// who issued it, which agent ran it, why, and every step it took.
+    fn replay_accessibility_detail(&self) -> ui::a11y::AccessNode {
+        let description = self.replay_frames.get(self.replay_index).map_or_else(
+            || t("activity-replay-empty"),
+            |frame| {
+                t_args(
+                    "activity-replay-seek-label",
+                    &[
+                        ("who", frame.author.name.as_str().into()),
+                        ("action", frame.summary.as_str().into()),
+                        (
+                            "when",
+                            format_relative_time(frame.timestamp, self.now()).into(),
+                        ),
+                    ],
+                )
+            },
+        );
+        ui::a11y::AccessNode::new(ui::a11y::Role::StaticText)
+            .with_name(description)
+            .with_description(t(if self.replay_selection_missing {
+                "activity-replay-selection-missing"
+            } else {
+                "activity-replay-topology-note"
+            }))
+    }
+
     fn agent_run_accessibility_description(&self, run: &AgentRun) -> String {
         let mut description = t_args(
             "a11y-shell-activity-agent-run-description",
@@ -7175,6 +7538,8 @@ impl RoomActivityPane {
         self.keyboard_focus = Some(focus);
         self.timeline
             .set_focus(self.keyboard_focus == Some(ActivityFocus::Timeline));
+        self.replay_slider
+            .set_focus(self.keyboard_focus == Some(ActivityFocus::ReplayScrub));
         true
     }
 
@@ -7252,6 +7617,7 @@ impl RoomActivityPane {
             ActivityFocus::ReplayBack => Some(self.replay_back_rect),
             ActivityFocus::ReplayPlay => Some(self.replay_play_rect),
             ActivityFocus::ReplayForward => Some(self.replay_forward_rect),
+            ActivityFocus::ReplayScrub => Some(self.replay_slider.get_rect()),
         }
     }
 
@@ -7959,110 +8325,6 @@ fn draw_replay_layout(
             x = x1;
         }
         y += row_h + gap;
-    }
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "the bounded replay-frame and pointer counts only determine visual trail coordinates"
-)]
-fn draw_presence_trail(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    bounds: Rect,
-    frames: &[WorkspaceReplayFrame],
-    current: usize,
-) {
-    tr.draw_style(
-        scene,
-        &t("activity-presence-trail"),
-        theme.tokens.colors.text_dim,
-        at(transform, bounds.x0, bounds.y0 + 2.0),
-        None,
-        &theme.text(TextRole::Caption),
-    );
-    let start = current.saturating_sub(8);
-    let slice = frames.get(start..=current).unwrap_or(&[]);
-    let x0 = bounds.x0 + 92.0;
-    let available = (bounds.x1 - x0).max(1.0);
-    let step = available / slice.len().max(1) as f64;
-    for (index, frame) in slice.iter().enumerate() {
-        let x = x0 + step * (index as f64 + 0.5);
-        if frame.pointers.is_empty() {
-            let (r, g, b) = frame.author.rgb();
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                vello::peniko::Color::from_rgba8(r, g, b, 255),
-                None,
-                &vello::kurbo::Circle::new(Point::new(x, bounds.y0 + 9.0), 5.0),
-            );
-        } else {
-            for (person, pointer) in frame.pointers.iter().take(3).enumerate() {
-                let (r, g, b) = pointer.color;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    vello::peniko::Color::from_rgba8(r, g, b, 255),
-                    None,
-                    &vello::kurbo::Circle::new(
-                        Point::new(x, bounds.y0 + 5.0 + person as f64 * 5.0),
-                        3.5,
-                    ),
-                );
-            }
-        }
-    }
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "presence-trail painting receives the shared renderer context and uses bounded frame and pointer counts only for display geometry"
-)]
-fn draw_replay_pointers(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    canvas: Rect,
-    frame: &WorkspaceReplayFrame,
-    viewport: Rect,
-) {
-    let source_w = (viewport.x1 + SHEET_INSET).max(1.0);
-    let source_h = (viewport.y1 + SHEET_INSET).max(1.0);
-    for pointer in frame
-        .pointers
-        .iter()
-        .filter(|pointer| pointer.desktop_space)
-    {
-        let px = (f64::from(pointer.point.0) / source_w).clamp(0.0, 1.0);
-        let py = (f64::from(pointer.point.1) / source_h).clamp(0.0, 1.0);
-        let point = Point::new(
-            canvas.x0 + 10.0 + px * (canvas.width() - 20.0),
-            canvas.y0 + 10.0 + py * (canvas.height() - 20.0),
-        );
-        let (r, g, b) = pointer.color;
-        let color = vello::peniko::Color::from_rgba8(r, g, b, 255);
-        let cursor =
-            vello::kurbo::BezPath::from_svg("M0 0 L0 18 L5 13 L9 21 L13 19 L9 11 L17 11 Z")
-                .unwrap_or_default();
-        scene.fill(
-            Fill::NonZero,
-            transform.then_translate(point.to_vec2()),
-            color,
-            None,
-            &cursor,
-        );
-        tr.draw_style(
-            scene,
-            &pointer.name,
-            color,
-            at(transform, point.x + 14.0, point.y + 4.0),
-            Some(text_width(100.0)),
-            &theme.text(TextRole::Caption),
-        );
     }
 }
 

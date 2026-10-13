@@ -140,15 +140,13 @@ mod workspace_activity {
             ada,
             (420., 260.),
         );
+        let before = pane.replay_position();
         pane.observe_replay_presence(&presence);
-        let pointer = pane
-            .replay_frames
-            .last()
-            .and_then(|frame| frame.pointers.first())
-            .expect("session presence is retained against durable checkpoint");
-        assert_eq!(pointer.name, "Ada");
-        assert_eq!(pointer.point, (420., 260.));
-        assert!(pointer.desktop_space);
+        assert_eq!(
+            pane.replay_position(),
+            before,
+            "live presence must not alter historical evidence"
+        );
         pane.finish_view(tree.active.raw());
         assert!(!pane.replay_is_playing());
         assert_eq!(tree.doc.get_heads(), heads_before);

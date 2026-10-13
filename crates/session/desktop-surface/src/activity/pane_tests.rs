@@ -2124,6 +2124,198 @@ mod tests {
         assert!(pane.digest().briefs.is_empty());
     }
 
+    fn replay_fixture() -> (WorkspaceTree, RoomActivityPane) {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        for (id, title) in [(92_001, "Plan"), (92_002, "Review")] {
+            assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+                id,
+                title.into(),
+                b"{}".to_vec()
+            ));
+            tilo_resource::history::commit_stamped(&mut tree.doc);
+        }
+        let mut pane = pane_over(&mut tree);
+        pane.set_period(Period::AllTime);
+        pane.set_view(ActivityView::Replay);
+        paint(&mut pane);
+        (tree, pane)
+    }
+
+    #[test]
+    fn replay_semantic_seek_is_exact_bounded_and_read_only() {
+        let (mut tree, mut pane) = replay_fixture();
+        let before_heads = tree.doc.get_heads();
+        let original = pane.replay_position();
+        let last = original.last.unwrap();
+        assert_eq!(
+            pane.apply_replay_request(ReplayRequest::SeekEntry {
+                source: last.source.clone(),
+                entry: last.entry.clone()
+            })
+            .unwrap()
+            .selected,
+            Some(last.clone())
+        );
+        assert!(!pane.replay_is_playing());
+        pane.apply_replay_request(ReplayRequest::TogglePlayback)
+            .unwrap();
+        let before = pane.replay_position();
+        for request in [
+            ReplayRequest::Seek {
+                position: usize::MAX,
+            },
+            ReplayRequest::Seek {
+                position: before.total,
+            },
+            ReplayRequest::SeekEntry {
+                source: last.source.clone(),
+                entry: "missing".into(),
+            },
+            ReplayRequest::SeekEntry {
+                source: "record:unrelated".into(),
+                entry: last.entry.clone(),
+            },
+            ReplayRequest::SeekFrontier {
+                source: last.source.clone(),
+                frontier: vec!["missing".into()],
+            },
+        ] {
+            assert!(pane.apply_replay_request(request).is_err());
+            assert_eq!(
+                pane.replay_position(),
+                before,
+                "refusal must not move selection or stop playback"
+            );
+        }
+        let selected = pane
+            .apply_replay_request(ReplayRequest::SeekFrontier {
+                source: last.source.clone(),
+                frontier: last.frontier.clone(),
+            })
+            .unwrap();
+        assert_eq!(selected.selected, Some(last));
+        assert!(!selected.playing);
+        assert_eq!(tree.doc.get_heads(), before_heads);
+        for descriptor in pane.replay_action_descriptors() {
+            assert!(descriptor.action().is_ok());
+            let request = serde_json::to_value(&descriptor.request).unwrap();
+            assert!(request.get("document").is_none());
+        }
+    }
+
+    #[test]
+    fn replay_shared_slider_click_keys_and_accessibility_seek_same_checkpoint() {
+        let (mut tree, mut pane) = replay_fixture();
+        let before = tree.doc.get_heads();
+        let rect = pane
+            .replay_control_targets()
+            .into_iter()
+            .find(|(id, _)| *id == "activity-replay-timeline")
+            .unwrap()
+            .1;
+        let point = Point::new(rect.x1 - 2.0, rect.center().y);
+        assert!(click_at(&mut pane, &mut tree, point).handled);
+        assert_eq!(
+            pane.replay_position().position,
+            Some(pane.replay_position().total - 1)
+        );
+        let modifiers = Modifiers::default();
+        assert!(
+            pane.handle_event(
+                &ui::synthetic_input::mouse_release(),
+                1.0,
+                &modifiers,
+                Some(Point::new(-10.0, -10.0)),
+                &mut tree
+            )
+            .handled
+        );
+        assert!(!pane.replay_slider.wants_pointer_capture());
+        for (key, position) in [
+            (NamedKey::Home, 0),
+            (NamedKey::ArrowRight, 1),
+            (NamedKey::ArrowLeft, 0),
+            (NamedKey::End, pane.replay_frames.len() - 1),
+        ] {
+            assert!(
+                pane.handle_event(
+                    &key_press(Key::Named(key)),
+                    1.0,
+                    &modifiers,
+                    None,
+                    &mut tree
+                )
+                .handled
+            );
+            assert_eq!(pane.replay_position().position, Some(position));
+        }
+        let index = pane
+            .focus_order()
+            .iter()
+            .position(|focus| *focus == ActivityFocus::ReplayScrub)
+            .unwrap();
+        assert!(pane.perform_replay_accessibility_action(
+            &[0, index],
+            &ui::a11y::Action::SetValue("0".into())
+        ));
+        assert_eq!(pane.replay_position().position, Some(0));
+        let node = pane
+            .accessibility_control_node(
+                &ActivityFocus::ReplayScrub,
+                index,
+                pane.focus_order().len(),
+            )
+            .unwrap();
+        assert_eq!(node.role, ui::a11y::Role::Slider);
+        assert_eq!(tree.doc.get_heads(), before);
+    }
+
+    #[test]
+    fn replay_refresh_pins_source_entry_not_ordinal() {
+        let (mut tree, mut pane) = replay_fixture();
+        pane.apply_replay_request(ReplayRequest::Seek { position: 1 })
+            .unwrap();
+        let selected = pane.replay_position().selected;
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            92_003,
+            "Later".into(),
+            b"{}".to_vec()
+        ));
+        tilo_resource::history::commit_stamped(&mut tree.doc);
+        pane.refresh(&mut tree);
+        assert_eq!(pane.replay_position().selected, selected);
+        let mut rows = pane.scoped_tree_rows.clone();
+        rows.reverse();
+        pane.rebuild_replay_frames(&tree, &rows, tree.active.raw());
+        assert_eq!(pane.replay_position().selected, selected);
+        let selected_id = pane.replay_frames[pane.replay_index].entry_id;
+        rows.retain(|entry| entry.id != selected_id);
+        pane.rebuild_replay_frames(&tree, &rows, tree.active.raw());
+        assert!(pane.replay_position().selection_missing);
+        assert!(!pane.replay_position().playing);
+        pane.apply_replay_request(ReplayRequest::Seek { position: 0 })
+            .unwrap();
+        assert!(!pane.replay_position().selection_missing);
+    }
+
+    #[test]
+    fn replay_empty_inspection_has_no_fictitious_checkpoint() {
+        let mut pane = RoomActivityPane::new();
+        let inspected = pane.apply_replay_request(ReplayRequest::Inspect).unwrap();
+        assert_eq!(inspected.position, None);
+        assert_eq!(inspected.total, 0);
+        assert_eq!(inspected.selected, None);
+        assert!(
+            pane.apply_replay_request(ReplayRequest::Seek { position: 0 })
+                .is_err()
+        );
+        assert!(
+            pane.apply_replay_request(ReplayRequest::TogglePlayback)
+                .is_err()
+        );
+        assert_eq!(pane.replay_action_descriptors().len(), 1);
+    }
+
     #[test]
     fn replay_materializes_real_causal_layouts_and_exposes_controls() {
         let mut tree = WorkspaceTree::bootstrap_demo();
@@ -2172,15 +2364,13 @@ mod tests {
             ada,
             (420.0, 260.0),
         );
+        let before = pane.replay_position();
         pane.observe_replay_presence(&presence);
-        let pointer = pane
-            .replay_frames
-            .last()
-            .and_then(|frame| frame.pointers.first())
-            .expect("session presence is retained against the durable checkpoint");
-        assert_eq!(pointer.name, "Ada");
-        assert_eq!(pointer.point, (420.0, 260.0));
-        assert!(pointer.desktop_space);
+        assert_eq!(
+            pane.replay_position(),
+            before,
+            "live presence must not alter historical evidence"
+        );
     }
 
     #[test]
