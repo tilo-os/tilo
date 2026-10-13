@@ -135,6 +135,11 @@ crates.io release, which lacks it, the import keeps its linear-only path.
 It also enables `VK_EXT_queue_family_foreign`, and a texture made with
 `TextureMemory::ForeignExternal` (a client dma-buf import) makes its first
 barrier an acquire from `VK_QUEUE_FAMILY_FOREIGN_EXT`.
+It enables `VK_KHR_external_semaphore_fd` when the device has it, and
+`vulkan::Queue::add_wait_semaphore` makes the queue's next submission wait for
+a binary semaphore: `ui::dmabuf_import::wait_for_writes` imports a client
+dma-buf's pending write fence (a sync file) into one, so the GPU reads the
+buffer only after the client's writes, without a thread waiting.
 
 The `wgpu` patch is a `[patch]` too: `Device::poll` reports a lost device
 instead of panicking (vendor/wgpu/TILO-PATCH.md). The compositor needs it to

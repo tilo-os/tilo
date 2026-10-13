@@ -1315,6 +1315,13 @@ impl PhysicalDeviceProperties {
             if self.supports_extension(FOREIGN_QUEUE_FAMILY) {
                 extensions.push(FOREIGN_QUEUE_FAMILY);
             }
+
+            // Optional `VK_KHR_external_semaphore_fd` (Tilo patch): a client
+            // dma-buf's implicit write fence, exported as a sync file, is
+            // imported as a semaphore the submission sampling it waits for.
+            if self.supports_extension(khr::external_semaphore_fd::NAME) {
+                extensions.push(khr::external_semaphore_fd::NAME);
+            }
         }
 
         // Optional `VK_EXT_memory_budget`
@@ -2794,6 +2801,7 @@ impl super::Adapter {
             family_index,
             relay_semaphores: Mutex::new(relay_semaphores),
             signal_semaphores: Mutex::new(SemaphoreList::new(SemaphoreListMode::Signal)),
+            wait_semaphores: Mutex::new(SemaphoreList::new(SemaphoreListMode::Wait)),
         };
 
         let allocation_sizes = AllocationSizes::from_memory_hints(memory_hints).into();

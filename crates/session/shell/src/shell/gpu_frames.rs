@@ -273,6 +273,11 @@ pub struct GpuFrame {
     /// The client's buffer itself, for a display that can scan it out.
     #[cfg(target_os = "linux")]
     dmabuf: Option<smithay::backend::allocator::dmabuf::Dmabuf>,
+    /// The client's writes this commit's frame waits for on the GPU
+    /// ([`ui::dmabuf_import::wait_for_writes`]); kept until a submission made
+    /// after the frame went completed.
+    #[cfg(target_os = "linux")]
+    write_fence: Option<ui::dmabuf_import::WriteFence>,
 }
 
 impl std::fmt::Debug for GpuFrame {
@@ -292,17 +297,24 @@ impl Drop for GpuFrame {
                 .get_mut()
                 .unwrap_or_else(PoisonError::into_inner),
         );
-        if leases.is_empty() {
+        #[cfg(target_os = "linux")]
+        let write_fence = self.write_fence.take();
+        #[cfg(not(target_os = "linux"))]
+        let write_fence: Option<()> = None;
+        if leases.is_empty() && write_fence.is_none() {
             return;
         }
         // The queue runs in order: once this marker completes, so did every
-        // render and readback submitted while the frame could still be read.
+        // render and readback submitted while the frame could still be read,
+        // and every wait for the client's writes.
         let marker = self.queue.submit(std::iter::empty::<wgpu::CommandBuffer>());
         retire(Retiring {
             device: self.device.clone(),
             marker,
             leases,
             superseded: self.superseded.get().copied(),
+            #[cfg(target_os = "linux")]
+            write_fence,
         });
     }
 }
@@ -330,6 +342,8 @@ impl GpuFrame {
             superseded: OnceLock::new(),
             #[cfg(target_os = "linux")]
             dmabuf: None,
+            #[cfg(target_os = "linux")]
+            write_fence: None,
         }
     }
 
@@ -624,6 +638,9 @@ struct Retiring {
     marker: wgpu::SubmissionIndex,
     leases: Vec<BufferLease>,
     superseded: Option<Instant>,
+    /// Destroyed once the marker completed: no submission still waits on it.
+    #[cfg(target_os = "linux")]
+    write_fence: Option<ui::dmabuf_import::WriteFence>,
 }
 
 impl Retiring {
@@ -649,6 +666,8 @@ impl Retiring {
         for lease in self.leases {
             (lease.0)();
         }
+        #[cfg(target_os = "linux")]
+        drop(self.write_fence);
     }
 }
 
@@ -1350,6 +1369,12 @@ fn import_dmabuf_on(
         .texture(&present.device)
         .map_err(ImportFallback::Vulkan)?;
     let mut frame = GpuFrame::borrowing(present, source, opaque, surface);
+    // The client may hand the buffer over before its GPU finished writing it
+    // (implicit sync): every submission from here on waits for those writes
+    // on the GPU, so no frame samples what the buffer held before.
+    frame.write_fence =
+        ui::dmabuf_import::wait_for_writes(&present.device, &present.queue, fd.as_fd())
+            .map_err(ImportFallback::Vulkan)?;
     frame.dmabuf = Some(dmabuf.clone());
     Ok(Arc::new(frame))
 }
@@ -2068,6 +2093,7 @@ mod tests {
         let mut flipped: Option<bool> = None;
         let mut most_alive = 0;
         let (_, wraps_before, nanos_before) = ui::dmabuf_import::image_stats();
+        let waits_before = ui::dmabuf_import::write_fence_waits();
         for frame_number in 0..FRAMES {
             let slot = frame_number % 2;
             let buffer = &mut buffers[slot];
@@ -2166,6 +2192,11 @@ mod tests {
         eprintln!(
             "per-commit image: {} us each over {wrapped} commits; at most {most_alive} alive at once",
             (nanos - nanos_before) / wrapped / 1000
+        );
+        eprintln!(
+            "{} of {FRAMES} commits were imported before the client's GPU finished them; \
+             the frame waited for its writes on the GPU",
+            ui::dmabuf_import::write_fence_waits() - waits_before
         );
         assert!(
             most_alive <= 4,
