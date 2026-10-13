@@ -198,10 +198,7 @@ impl StreamWorker {
         let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<StreamRequest>(REQUEST_QUEUE_LIMIT);
         let (up_tx, up_rx) = std::sync::mpsc::channel::<StreamUpdate>();
 
-        if !matches!(
-            ui::rt::availability(ui::rt::Feature::Threads),
-            ui::rt::Availability::Available
-        ) {
+        if !ui::rt::available(ui::rt::Feature::Threads) {
             let backend: std::sync::Arc<dyn MusicBackend> =
                 std::sync::Arc::from(open_backend(&up_tx, force_offline));
             return Self {
