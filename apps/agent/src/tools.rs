@@ -1414,6 +1414,7 @@ mod tests {
         Offer {
             app: app.to_string(),
             broker_peer_id: None,
+            broker_provider: None,
             descriptor: ActionDescriptor {
                 semantic_identity: None,
                 address: ActionAddress::new(resource, action),
