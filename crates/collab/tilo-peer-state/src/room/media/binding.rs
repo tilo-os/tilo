@@ -155,24 +155,6 @@ pub(super) fn resolve_legacy(
     }
     resolve(app, record, channel, &LegacyRead(doc)).map_err(super::read::legacy_error)
 }
-pub(crate) fn channel_present(doc: &impl ReadDoc, channel: &str) -> Result<bool, MediaPolicyError> {
-    if !doc.get_missing_deps(&[]).is_empty() {
-        return Err(MediaPolicyError::Binding);
-    }
-    if doc
-        .get_all(automerge::ROOT, "channels")
-        .map_err(|_| MediaPolicyError::Malformed)?
-        .is_empty()
-    {
-        return Ok(false);
-    }
-    let channels = read::strict_map(&LegacyRead(doc), &automerge::ROOT, "channels")
-        .map_err(read::legacy_policy_error)?;
-    Ok(!doc
-        .get_all(channels, channel)
-        .map_err(|_| MediaPolicyError::Malformed)?
-        .is_empty())
-}
 pub(crate) fn resolve_native(
     app: &str,
     record: &str,

@@ -25,26 +25,7 @@ impl Registry {
         let result = match identity {
             None => Err("native device identity unavailable".into()),
             Some(identity) => match command.operation {
-                Operation::Open { owner, target } => self
-                    .open(owner, &target, identity, sessions)
-                    .inspect_err(|error| {
-                        // Only fixed classes: never log documents, certificates,
-                        // routes or an arbitrary lower layer's error text.
-                        let refusal_class = match error.as_str() {
-                            "exact admitted Chat missing" => "chat_missing",
-                            "exact admitted Chat is encrypted" => "chat_encrypted",
-                            "native selected device custody changed" => "identity_changed",
-                            "native selected device revoked" => "device_revoked",
-                            "no call is active on this channel" => "call_missing",
-                            "native owner continuity is fenced" => "owner_fenced",
-                            "room has no committed native enrollment" => "enrollment_missing",
-                            "invalid media binding" => "binding_invalid",
-                            "malformed media policy" => "binding_malformed",
-                            NOT_CONNECTED => "session_missing",
-                            _ => "other",
-                        };
-                        tracing::debug!(refusal_class, "native voice open refusal class");
-                    }),
+                Operation::Open { owner, target } => self.open(owner, &target, identity, sessions),
                 Operation::Heartbeat { ticket } => self
                     .known(&ticket)
                     .and_then(|()| {
@@ -76,21 +57,6 @@ impl Registry {
             .filter_map(Weak::upgrade)
             .filter(|ticket| ticket.workspace() == ws)
             .collect();
-        let event_class = match event {
-            VoiceEvent::Result { result: Ok(_), .. } => "start_result",
-            VoiceEvent::Result {
-                result: Err(reason),
-                ..
-            } if reason == "voice channel awaits governor admission" => "channel_pending",
-            VoiceEvent::Result { result: Err(_), .. } => "start_refused",
-            VoiceEvent::Granted(_) => "grant",
-            VoiceEvent::Refused { .. } => "join_refused",
-        };
-        tracing::debug!(
-            event_class,
-            live_tickets = tickets.len(),
-            "native voice governor event observed"
-        );
         for ticket in &tickets {
             let claimed = |id: [u8; 32]| {
                 tickets
@@ -98,7 +64,6 @@ impl Registry {
                     .any(|other| !Arc::ptr_eq(other, ticket) && other.id() == Some(id))
             };
             if ticket.apply(event, session, claimed) {
-                tracing::debug!(event_class, "native voice governor event consumed");
                 break;
             }
         }
@@ -142,37 +107,11 @@ impl Registry {
             return Err("native media capacity".into());
         }
         let room = RoomId::parse(&target.workspace).ok_or("invalid native room route")?;
-        let workspace = owner
-            .with_current(room, |view| {
-                check_identity(view, identity)?;
-                Ok(view.workspace())
-            })
-            .inspect_err(|_| {
-                tracing::debug!(
-                    phase = "workspace_identity",
-                    "native voice open refusal phase"
-                );
-            })?;
-        let session = sessions(workspace).ok_or(NOT_CONNECTED)?;
-        let admitted = owner.with_current(room, |view| {
+        let workspace = owner.with_current(room, |view| {
             check_identity(view, identity)?;
-            let now = std::time::SystemTime::now();
-            view.peer()
-                .permissions(view.device().device_public_key, now)?;
-            view.peer().check_document_read(
-                view.device().device_public_key,
-                &target.app,
-                &target.record,
-                now,
-            )?;
-            view.peer()
-                .media_binding_if_admitted(&target.app, &target.record, &target.channel)
-                .map(|binding| binding.is_some())
+            Ok(view.workspace())
         })?;
-        if !admitted {
-            tracing::debug!("native voice channel awaiting admitted state");
-            return Ok(Reply::BindingPending);
-        }
+        let session = sessions(workspace).ok_or(NOT_CONNECTED)?;
         let ticket = Ticket::open(
             owner,
             room,
@@ -183,10 +122,7 @@ impl Registry {
             },
             &session,
             |view| check_identity(view, identity),
-        )
-        .inspect_err(|_| {
-            tracing::debug!(phase = "participation", "native voice open refusal phase");
-        })?;
+        )?;
         self.tickets.push(Arc::downgrade(&ticket));
         Ok(Reply::Opened(ticket))
     }

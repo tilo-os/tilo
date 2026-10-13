@@ -421,34 +421,11 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
     }
 
     fn effect(&mut self, effect: ChatEffect, cx: &mut EffectCx<Chat, Self>) -> EffectAnswer {
-        if matches!(effect, ChatEffect::LiveContextStatus) {
-            let basis = cx.locus_basis()?;
-            let ui::framework::Effected::Done(mut output) = self.answer_effect(effect)? else {
-                return Err("Context observation did not finish".into());
-            };
-            if let Some(basis) = basis
-                && let Some(value) = output
-                    .value
-                    .as_mut()
-                    .and_then(serde_json::Value::as_object_mut)
-            {
-                value.insert(
-                    "nativeView".into(),
-                    serde_json::json!({
-                        "instance": basis.instance(),
-                        "room": basis.route().cluster_id.to_string(),
-                        "record": basis.route().record.as_deref().unwrap_or(""),
-                    }),
-                );
-            }
-            return Ok(ui::framework::Effected::Done(output));
-        }
         if matches!(
             effect,
             ChatEffect::CopyResourceLink { .. } | ChatEffect::OpenResourceLink { .. }
         ) {
-            let source = cx.live().clone();
-            return self.begin_resource_navigation(&effect, cx.reply(), source);
+            return self.begin_resource_navigation(&effect, cx.reply());
         }
         if let Some(url) = crate::external::browser_destination(&effect)? {
             return Ok(cx.thread(

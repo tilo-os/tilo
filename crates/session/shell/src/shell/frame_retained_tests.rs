@@ -1979,45 +1979,6 @@ fn assert_nothing_lost(
     let output = size.0 as usize * size.1 as usize;
     let edge_noise = lost_max <= OFFSET_STEPS && lost.len() <= output / 100;
     if !edge_noise {
-        if let Some(&(x, y, step)) = lost.first() {
-            let at = (y * size.0 as usize + x) * 4;
-            eprintln!(
-                "strip layers {label}: first differing pixel ({x}, {y}) step {step}: \
-                 retained {:?}, dense {:?}",
-                &shown[at..at + 4],
-                &unlayered[at..at + 4]
-            );
-        }
-        // Check the same two scene encodings with an independent rasterizer.
-        // A CPU difference points to the producer's composition; agreement
-        // confines the discrepancy to how the GPU rasterizes those scenes.
-        let cpu_layered = render_cpu(&painted.scene, size);
-        let cpu_dense = render_cpu(&screen, size);
-        let cpu_apart = pixels_apart(&cpu_layered, &cpu_dense, size.0);
-        eprintln!(
-            "strip layers {label}: independent CPU raster has {} different pixels, \
-             first {:?}, max channel step {}",
-            cpu_apart.len(),
-            cpu_apart.first(),
-            cpu_apart
-                .iter()
-                .map(|&(_, _, step)| step)
-                .max()
-                .unwrap_or(0)
-        );
-        // The dense draw can itself advance hosted widget presentation. A
-        // second retained draw distinguishes that state change from a stable
-        // discrepancy in the two scene compositions; this runs only after
-        // the strict pixel oracle has already found a structural mismatch.
-        let after = frame.paint_with_damage();
-        let after_pixels = render_whole(dense, &after.scene, after.revision, label);
-        eprintln!(
-            "strip layers {label}: second retained draw differs from dense \
-             at {} pixels and from first retained draw at {} pixels; cache {:?}",
-            pixels_apart(&after_pixels, &unlayered, size.0).len(),
-            pixels_apart(&after_pixels, shown, size.0).len(),
-            after.cache.as_ref().map(|cache| &cache.strips)
-        );
         eprintln!(
             "strip layers {label}: strips {:?}, wheel {:?}, pans {:?}\n{}",
             painted.cache.as_ref().map(|cache| &cache.strips),
@@ -2063,18 +2024,6 @@ fn render_strips_alone(
 /// rasterises only what it uncovered.
 #[cfg(target_os = "linux")]
 fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
-    // Notes' real save-status bubbles linger for 1.9 seconds after the
-    // fixture acknowledges startup writes. A GPU readback can cross that
-    // deadline between the retained and dense draws, comparing two distinct
-    // widget states. Pin the toolkit clock for this production-path oracle;
-    // the explicitly driven strip pans still advance on every frame.
-    ui::time::testing::with_monotonic_time(ui::time::now(), || {
-        assert_pan_composites_like_full_renders_at_fixed_time(desktop);
-    });
-}
-
-#[cfg(target_os = "linux")]
-fn assert_pan_composites_like_full_renders_at_fixed_time(desktop: PanDesktop) {
     let size = desktop.panel;
     let mut clock = tilo_test_env::ScopedEnv::new();
     let _ambient = DenyAmbientStarts::new();

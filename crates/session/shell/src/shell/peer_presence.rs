@@ -943,20 +943,9 @@ impl PeerPresence {
                 return Some((false, String::new(), generation));
             }
             let labels = tree.room_peer_labels(ws.room);
-            // A live admitted tab is participation even without a pointer.
-            // Only tabs in this room contribute; another room's presence
-            // cannot make one of this room's invitees appear to have arrived.
+            // Two ways to be present: moving cursor, or CRDT participation.
             let room = ws.room.to_string();
             let mut arrived = handles_seen_in(presence, &room);
-            for (key, users) in &presence.here {
-                if workspace_presence_tab(ws, key).is_some() {
-                    arrived.extend(
-                        users
-                            .iter()
-                            .filter_map(|user| user.0.strip_prefix("peer@")?.parse::<u64>().ok()),
-                    );
-                }
-            }
             // A pointer this device can't place (its tab isn't shown here)
             // is still someone pointing at the room's work.
             if let Ok(anchored) = self.anchored.lock() {
@@ -978,9 +967,12 @@ impl PeerPresence {
                     .cloned()
                     .unwrap_or_else(|| ui::permissions::UserId(row.id.clone()));
                 row.active_tab = presence.here.iter().find_map(|(key, users)| {
+                    let PresenceKey::Tab { id } = key else {
+                        return None;
+                    };
                     users
                         .contains(&presence_id)
-                        .then(|| workspace_presence_tab(ws, key))
+                        .then(|| u64::from_str_radix(id, 16).ok())
                         .flatten()
                 });
             }
@@ -1067,26 +1059,10 @@ fn roster_presence_print(
     print
 }
 
-/// Resolve a presence key only against the current room's admitted tabs.
-fn workspace_presence_tab(
-    workspace: &crate::shell::state::Workspace,
-    key: &PresenceKey,
-) -> Option<u64> {
-    let PresenceKey::Tab { id } = key else {
-        return None;
-    };
-    let id = u64::from_str_radix(id, 16).ok()?;
-    workspace
-        .strips
-        .iter()
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-        .any(|tab| tab.id == id)
-        .then_some(id)
-}
-
-/// The peer handles this session has had pointer presence from in `room`.
-/// Reads the same [`PresenceCtx`] the overlay paints cursors from.
+/// The peer handles this session has had presence from in `room`.
+///
+/// Reads the same [`PresenceCtx`] the overlay paints cursors from, so the
+/// roster and the desktop can never disagree about who is present.
 fn handles_seen_in(presence: &PresenceCtx, room: &str) -> std::collections::BTreeSet<u64> {
     let mut out = std::collections::BTreeSet::new();
     for (key, peers) in &presence.pointers {
@@ -3154,75 +3130,6 @@ mod two_sessions {
             .iter()
             .map(|c| (c.name.clone(), c.role_id.clone(), c.invited))
             .collect()
-    }
-
-    #[test]
-    fn admitted_tab_presence_is_arrival_without_a_pointer_and_stays_in_its_room() {
-        let guest_peer = peer_id(81);
-        let host_peer = peer_id(82);
-        let (mut tree, room) = host_naming(&[(&guest_peer, "Xaver")]);
-        looking_at_its_room(&mut tree);
-        tree.desktop.active_workspace_mut().unwrap().strips =
-            desk(room, &[]).desktop.workspaces[0].strips.clone();
-        let handle = tree.shared();
-        let directory = tempfile::tempdir().expect("private roster fixture directory");
-        let (host, _net, _commands) = session(directory.path(), "host.sock", &handle, &host_peer);
-        let mut presence = PresenceCtx::default();
-        let mut now = Instant::now();
-        assert!(host.refresh_roster_at(&presence, now));
-        assert_eq!(roster_of(&handle), vec![("Xaver".to_string(), None, true)]);
-        let user = ui::permissions::UserId(format!("peer@{}", handle_of(&guest_peer)));
-        let tab = desk_tab(DESK_GROUPS[0]);
-        presence.register_presence(
-            &PresenceKey::Tab {
-                id: format!("{tab:x}"),
-            },
-            user.clone(),
-        );
-        // This fixture writes the presence store directly, so use the same
-        // bounded periodic refresh that catches an input without a pump epoch.
-        now += ROSTER_RECHECK;
-        assert!(host.refresh_roster_at(&presence, now));
-        assert_eq!(
-            roster_of(&handle),
-            vec![("Xaver".to_string(), None, false)],
-            "a live admitted tab is participation even when its cursor is idle"
-        );
-        assert_eq!(
-            handle
-                .read()
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .collaborators[0]
-                .active_tab,
-            Some(tab)
-        );
-        assert!(presence.pointers.is_empty());
-        presence.here.clear();
-        presence.register_presence(
-            &PresenceKey::Tab {
-                id: "deadbeef".into(),
-            },
-            user,
-        );
-        now += ROSTER_RECHECK;
-        assert!(host.refresh_roster_at(&presence, now));
-        assert_eq!(
-            roster_of(&handle),
-            vec![("Xaver".to_string(), None, true)],
-            "a tab outside this room cannot turn an invitation into participation"
-        );
-        assert_eq!(
-            handle
-                .read()
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .collaborators[0]
-                .active_tab,
-            None
-        );
     }
 
     /// Stand a session up around `tree` with `peer` as its identity.
