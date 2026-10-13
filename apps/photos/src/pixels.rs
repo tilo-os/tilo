@@ -224,8 +224,8 @@ pub fn thumbnail(src: &Rgba, max_w: u32, max_h: u32) -> Rgba {
     // global pixel budget. Binary search uses saturated arithmetic so callers
     // may pass arbitrary `u32` bounds without overflowing capacity math.
     if u64::from(w).saturating_mul(u64::from(h)) > MAX_THUMBNAIL_PIXELS {
+        let mut low = 1_u32;
         if w >= h {
-            let mut low = 1_u32;
             let mut high = w;
             while low < high {
                 let mid = low + (high - low).div_ceil(2);
@@ -240,7 +240,6 @@ pub fn thumbnail(src: &Rgba, max_w: u32, max_h: u32) -> Rgba {
             w = low;
             h = ((u64::from(src.h) * u64::from(w) / u64::from(src.w)).max(1)) as u32;
         } else {
-            let mut low = 1_u32;
             let mut high = h;
             while low < high {
                 let mid = low + (high - low).div_ceil(2);

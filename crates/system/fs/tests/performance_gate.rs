@@ -104,7 +104,7 @@ const IDLE_SYNC_HOST: [u8; 32] = [1; 32];
 const IDLE_SYNC_DEVICE: [u8; 32] = [2; 32];
 
 fn require_enabled() -> bool {
-    if let Ok("1") = std::env::var(ENABLE_ENV).as_deref() {
+    if std::env::var(ENABLE_ENV).as_deref() == Ok("1") {
         true
     } else {
         eprintln!("collaborative FS performance gate disabled; set {ENABLE_ENV}=1 to enforce SLOs");

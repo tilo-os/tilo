@@ -436,14 +436,12 @@ impl VideoEditorApp {
             l.breaks.push(y);
             l.saturation = Some(track_at(y));
             l.keys.push((Param::Saturation, key_at(y)));
-            y += row;
-            l.breaks.push(y);
         } else {
             l.volume = Some(track_at(y));
             l.keys.push((Param::Volume, key_at(y)));
-            y += row;
-            l.breaks.push(y);
         }
+        y += row;
+        l.breaks.push(y);
         // Fade in / out share a row (two half-width tracks).
         let half = (x1 - x0) / 2.0 - 6.0;
         l.fade_in = Some(Rect::new(x0, y + 25.0, x0 + half, y + 33.0));
@@ -669,11 +667,10 @@ impl VideoEditorApp {
             {
                 l.mix_reset = Some(Rect::new(x0, y, x1, y + 26.0));
                 y += 34.0;
-                l.breaks.push(y);
             } else {
                 y += 4.0;
-                l.breaks.push(y);
             }
+            l.breaks.push(y);
         }
         // Colour key, video only — there is nothing to key out of audio.
         // The four sliders appear only once the key is switched on, so an

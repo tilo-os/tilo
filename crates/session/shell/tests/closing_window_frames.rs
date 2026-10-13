@@ -95,7 +95,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let xdg_toplevel::Event::Close = event {
+        if matches!(event, xdg_toplevel::Event::Close) {
             state.close_requested = true;
         }
     }

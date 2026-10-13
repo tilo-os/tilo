@@ -1513,13 +1513,12 @@ impl Widget for ContextMenu {
             } => {
                 if let Some(idx) = self.item_at([self.last_cursor.x, self.last_cursor.y]) {
                     self.click_item(idx);
-                    *ctx.handled = true;
                 } else {
                     // An open menu is modal-ish: swallow the dismiss click
                     // so it doesn't also activate whatever sits underneath.
                     self.close();
-                    *ctx.handled = true;
                 }
+                *ctx.handled = true;
             }
             WindowEvent::Touch(touch) => {
                 let point = Point::new(
