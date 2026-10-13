@@ -1223,27 +1223,44 @@ fn history_entries_render_as_the_apps_sentences() {
 
 #[test]
 fn upgrading_drops_origin_paths_and_photos_kept_only_by_path() {
-    use automerge::transaction::Transactable as _;
-    use automerge::{ObjType, ROOT, ReadDoc as _};
-    let mut doc = automerge::AutoCommit::new();
-    let photos = doc.put_object(ROOT, "photos", ObjType::Map).unwrap();
-    for (id, content) in [("kept", Some("a".repeat(64))), ("path-only", None)] {
-        let photo = doc.put_object(&photos, id, ObjType::Map).unwrap();
-        let image = doc.put_object(&photo, "image", ObjType::Map).unwrap();
-        doc.put(&image, "path", format!("/home/someone/{id}.jpg"))
-            .unwrap();
-        if let Some(content) = content {
-            doc.put(&image, "content", content).unwrap();
-        }
+    use ui::tilo_resource::{Collection, Fields as _, Model};
+
+    /// The library as version 1 stored it: a picture named its origin path
+    /// and had a content address only when one was known.
+    #[derive(Model, Clone, Debug, Default, PartialEq)]
+    struct V1Image {
+        name: String,
+        path: String,
+        content: Option<String>,
     }
+    #[derive(Model, Clone, Debug, Default, PartialEq)]
+    struct V1Photo {
+        image: V1Image,
+    }
+    #[derive(Model, Clone, Debug, Default, PartialEq)]
+    struct V1Library {
+        photos: Collection<V1Photo>,
+    }
+
+    let mut v1 = V1Library::default();
+    for (id, content) in [("kept", Some("a".repeat(64))), ("path-only", None)] {
+        let image = V1Image {
+            name: format!("{id}.jpg"),
+            path: format!("/home/someone/{id}.jpg"),
+            content,
+        };
+        v1.photos.push(Id::from(id), V1Photo { image });
+    }
+    let mut doc = automerge::AutoCommit::new();
+    v1.write_fields(&mut doc, &automerge::ROOT).unwrap();
 
     upgrade_library(&mut doc, 1).unwrap();
 
-    let ids: Vec<String> = doc.keys(&photos).collect();
+    let upgraded = V1Library::read_fields(&doc, &automerge::ROOT).unwrap();
+    let ids: Vec<&str> = upgraded.photos.iter().map(|(id, _)| id.as_str()).collect();
     assert_eq!(ids, ["kept"]);
-    let (_, photo) = doc.get(&photos, "kept").unwrap().unwrap();
-    let (_, image) = doc.get(&photo, "image").unwrap().unwrap();
-    assert!(doc.get(&image, "path").unwrap().is_none());
-    assert!(doc.get(&image, "content").unwrap().is_some());
+    let kept = &upgraded.photos.iter().next().unwrap().1.image;
+    assert_eq!(kept.path, "", "the origin path is gone");
+    assert_eq!(kept.content.as_deref(), Some("a".repeat(64).as_str()));
     assert!(upgrade_library(&mut doc, 2).is_err());
 }
