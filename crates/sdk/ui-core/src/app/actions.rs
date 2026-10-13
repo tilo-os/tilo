@@ -1112,8 +1112,8 @@ impl App {
                 let mut inspected = 0usize;
                 let mut exhausted = false;
                 let mut projected_offset = state.browse_offset;
-                let mut projected_done = true;
-                if let Some(snapshot) = &self.actions.action_directory_snapshot {
+                let projected_done = if let Some(snapshot) = &self.actions.action_directory_snapshot
+                {
                     while let Some(row) = snapshot.roots.get(projected_offset) {
                         if rows.len() >= max_results || inspected >= max_work {
                             break;
@@ -1128,8 +1128,10 @@ impl App {
                         projected_offset = projected_offset.saturating_add(1);
                         inspected = inspected.saturating_add(1);
                     }
-                    projected_done = projected_offset >= snapshot.roots.len();
-                }
+                    projected_offset >= snapshot.roots.len()
+                } else {
+                    true
+                };
                 while projected_done && rows.len() < max_results && inspected < max_work {
                     let Some(page) = crate::widget::action_directory_page_at(
                         self.root_widget.as_ref(),
@@ -4384,11 +4386,7 @@ impl App {
             None,
             Key::Named(NamedKey::Enter),
         );
-        self.action_palette_handle_key(&winit::event::WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        });
+        self.action_palette_handle_key(&crate::synthetic_input::keyboard_input(event));
         self.dispatch_control_invocations();
         Some(address)
     }

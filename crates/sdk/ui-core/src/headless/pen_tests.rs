@@ -67,11 +67,7 @@ fn sample(pressure: f64, eraser: bool) -> WindowEvent {
 use crate::synthetic_input::cursor_moved;
 
 fn button(state: ElementState) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state,
-        button: winit::event::MouseButton::Left,
-    }
+    crate::synthetic_input::mouse_input(state, winit::event::MouseButton::Left)
 }
 
 fn pen(pressure: f64, eraser: bool) -> Option<PenSample> {

@@ -9,7 +9,7 @@ use crate::shell::state::WorkspaceTree;
 use std::cell::RefCell;
 use std::collections::HashMap as StdHashMap;
 use std::rc::Rc;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use tilo_desktop::i18n::t as desktop_text;
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
@@ -48,18 +48,13 @@ impl Widget for RecordingContent {
         node_map: &mut StdHashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut ui::widget::EventCtx<'_>) {
         let label = match event {
@@ -80,10 +75,6 @@ impl Widget for RecordingContent {
 
     fn name(&self) -> &'static str {
         "RecordingContent"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 
@@ -229,10 +220,7 @@ pub(super) fn lay_out_host_with_theme(
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(ui::num::f32_of_f64(vw)),
-                    height: Dimension::length(ui::num::f32_of_f64(vh)),
-                },
+                size: Size::from_lengths(ui::num::f32_of_f64(vw), ui::num::f32_of_f64(vh)),
                 ..Default::default()
             },
             &[child],
@@ -399,10 +387,7 @@ fn directory_action_rows_paint_label_and_subtitle_at_normal_and_narrow_sizes() {
 }
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowEvent {
@@ -670,20 +655,12 @@ use ui::synthetic_input::mouse_press;
 
 fn key_pressed(key: Key) -> WindowEvent {
     let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }
 
 fn key_released(key: Key) -> WindowEvent {
     let event = ui::synthetic_input::key_event(key, None, ElementState::Released);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }
 
 /// One production paint, so the chip / scope rects a click router
@@ -2018,7 +1995,6 @@ fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f
 )]
 fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
     #[allow(
-        clippy::arithmetic_side_effects,
         clippy::unchecked_time_subtraction,
         reason = "the deterministic notification-age fixture subtracts known earlier test instants"
     )]
@@ -2052,11 +2028,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
             );
 
             assert!(pump(&mut h, &cursor_moved_at(panel.center())));
-            let wheel = WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -2.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let wheel = ui::synthetic_input::mouse_wheel(0.0, -2.0);
             assert!(pump(&mut h, &wheel), "notification wheel must be consumed");
             assert_eq!(
                 h.host.notification_center.first_visible_row(),
@@ -2306,10 +2278,6 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
 /// the normal event tests above.
 #[test]
 #[ignore = "visual review: needs an offscreen wgpu adapter and writes PNGs"]
-#[allow(
-    clippy::expect_used,
-    reason = "the opt-in visual harness must fail loudly for a missing GPU or output directory"
-)]
 fn render_notification_history_accessibility_matrix_at_1x() {
     use std::path::PathBuf;
     use ui::offscreen::OffscreenRenderer;
@@ -2389,10 +2357,6 @@ fn render_notification_history_accessibility_matrix_at_1x() {
 /// ground, so a row is a surface on the panel on both presets (HIG
 /// §9.5); the same holds for a notification-history row.
 #[test]
-#[allow(
-    clippy::expect_used,
-    reason = "a review fixture must fail loudly for a missing GPU or output directory"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "an end-to-end test scenario that reads top to bottom"
@@ -2797,10 +2761,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
         .1;
     assert!(pump(
         &mut h,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(read.center().x, read.center().y),
-        }
+        &ui::synthetic_input::cursor_moved(read.center().x, read.center().y)
     ));
     assert!(pump(&mut h, &mouse_press()));
     assert!(h.host.notification_center.is_reading());
@@ -2808,10 +2769,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
     let back = h.host.qs_notification_back_rect();
     assert!(pump(
         &mut h,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(back.center().x, back.center().y),
-        }
+        &ui::synthetic_input::cursor_moved(back.center().x, back.center().y)
     ));
     assert!(pump(&mut h, &mouse_press()));
     assert!(!h.host.notification_center.is_reading());

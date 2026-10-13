@@ -18,10 +18,7 @@ use ui::widget::Element;
 use crate::app::{MonitorApp, SortKey};
 use crate::model::MonitorModel;
 
-/// Monitor's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
 /// How the process table is laid out, shared with everyone who sees it.
 /// Each part is edited at its path (`Monitor::paths().flat.set(true)`); the

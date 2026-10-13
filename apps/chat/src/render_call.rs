@@ -36,10 +36,6 @@ use crate::paint::{elide, line_in, line_of, push_clip, text, width_of};
 
 /// One person to render in the call, derived from the shared CRDT voice
 /// membership (not hardcoded). The host (this peer) is listed first.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent presentation facets; only native service inventory supplies current remote streams"
-)]
 struct Participant {
     user: String,
     muted: bool,

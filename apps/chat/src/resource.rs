@@ -37,13 +37,17 @@ impl Chat {
         let workspaces = self.workspaces.iter().map(|(id, workspace)| {
             SearchEntry::new(&workspace.name, "Workspace").anchored(anchor("workspaces", id))
         });
-        let channels = self.channels.iter().map(|(id, channel)| {
-            SearchEntry::new(
-                channel.name.clone(),
-                format!("{} {}", channel.topic, workspace_name(&channel.workspace)),
-            )
-            .anchored(anchor("channels", id))
-        });
+        let channels = self
+            .channels
+            .iter()
+            .filter(|(_, channel)| channel.conversation_with.is_none())
+            .map(|(id, channel)| {
+                SearchEntry::new(
+                    channel.name.clone(),
+                    format!("{} {}", channel.topic, workspace_name(&channel.workspace)),
+                )
+                .anchored(anchor("channels", id))
+            });
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, workspace_name(&category.workspace))
                 .anchored(anchor("categories", id))
@@ -92,7 +96,11 @@ impl Chat {
                     "id": id,
                     "name": workspace.name,
                     "channels": self.channels.iter()
-                        .filter(|(_, channel)| channel.workspace == *id && !channel.archived)
+                        .filter(|(_, channel)| {
+                            channel.workspace == *id
+                                && !channel.archived
+                                && channel.conversation_with.is_none()
+                        })
                         .map(|(id, channel)| serde_json::json!({
                             "id": id,
                             "name": channel.name,
@@ -150,6 +158,10 @@ pub struct ChatShell;
 /// Every named scenario `--shots --scenario NAME` captures.
 pub(crate) const SCENARIOS: &[&str] = &[
     "agent-work",
+    "agent-task",
+    "agent-task-compact",
+    "agent-task-queued",
+    "agent-task-queued-compact",
     "narrow",
     "history",
     "compact",
@@ -217,6 +229,13 @@ impl ResourceApp for ChatShell {
 
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        match scenario {
+            Some("agent-task-compact" | "agent-task-queued-compact") => (420, 680),
+            _ => (1280, 800),
+        }
     }
 
     /// `agent-work` is the demo conversation and an agent's reply, each

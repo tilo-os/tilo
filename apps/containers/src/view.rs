@@ -1055,10 +1055,6 @@ pub(crate) fn pull_body(pull: &crate::app::PullProgress) -> Column {
 /// What the window shows, published by the app whenever the engine or the
 /// view changes. Each part of the window rebuilds only when the slice of
 /// this it shows changed.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent facts about the engine and the window, not a state machine"
-)]
 #[derive(Clone, Default)]
 pub(crate) struct Model {
     pub engine: Rc<Engine>,

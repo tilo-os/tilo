@@ -20,6 +20,11 @@ if merge_head=$(git rev-parse -q --verify MERGE_HEAD); then
   differs_from_merged=$(git diff --cached --name-only "$merge_head")
   taken_from_merged=$(git diff --cached --name-only HEAD \
     | grep -vxF -f <(printf '%s\n' "$differs_from_merged") || true)
+  # A combined lockfile needs the inherited manifest changes as context too.
+  # Otherwise filtering those manifests makes a valid merge look lock-only.
+  if grep -qx 'Cargo.lock' <<< "$differs_from_merged"; then
+    taken_from_merged=$(grep -vE '(^|/)Cargo\.toml$' <<< "$taken_from_merged" || true)
+  fi
   if [ -n "$taken_from_merged" ]; then
     printf '%s\n' "$taken_from_merged" \
       | GIT_INDEX_FILE="$merge_index" git reset -q HEAD --pathspec-from-file=- --

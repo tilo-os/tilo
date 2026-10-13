@@ -3564,10 +3564,6 @@ mod region_tests {
     use automerge::{AutoCommit, ROOT};
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn headers_and_footers_are_shared_and_hold_fields() {
         // Phase `header_footer_are_shared`.
         {
@@ -3674,10 +3670,6 @@ mod region_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn notes_anchor_their_content_and_never_remint_ids() {
         // Phase `notes_container_is_empty_on_fresh_doc`.
         {

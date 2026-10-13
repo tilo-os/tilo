@@ -270,9 +270,7 @@ impl Widget for PartitionMap {
         }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -330,8 +328,7 @@ impl Widget for PartitionMap {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 self.hover = self.hit(self.cursor);
             }
             WindowEvent::CursorLeft { .. } => self.hover = None,
@@ -422,10 +419,6 @@ impl Widget for PartitionMap {
 
     fn name(&self) -> &'static str {
         "PartitionMap"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

@@ -6,16 +6,6 @@
 //! Runs serially (no `--test-threads` requirement here — just one test)
 //! and is hermetic: it writes into the OS tempdir under a unique name.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::fs;
 use std::process::Command;
 

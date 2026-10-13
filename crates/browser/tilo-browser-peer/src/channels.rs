@@ -706,12 +706,6 @@ impl Changes {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 mod tests {
     use super::*;
     use channel_crypto::ChannelSteward;

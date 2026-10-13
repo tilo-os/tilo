@@ -1269,10 +1269,6 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
 
 /// Lost acks.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn lost_acks_stay_uncertain_until_fresh_recovery() {
     isolated(
         "lost_ack_is_uncertain_until_fresh_operation_recovers_surviving_record",

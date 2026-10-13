@@ -464,12 +464,6 @@ async fn install(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in tests these are assertions"
-)]
 mod tests {
     use super::*;
     use crate::web::TlsSource;

@@ -659,20 +659,16 @@ mod tests {
     }
 
     fn open_doc(name: &str) -> AutoCommit {
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         crate::test_doc::put_image(
             &mut doc,
-            &OpenImage::from_path(&format!("/pictures/{name}"), 800, 400),
+            &OpenImage::fixture(&format!("/pictures/{name}"), 800, 400),
         );
         doc
     }
 
     fn photo_of(name: &str, side: u32) -> LibraryPhoto {
-        LibraryPhoto::from_image(OpenImage::from_path(
-            &format!("/pictures/{name}"),
-            side,
-            side,
-        ))
+        LibraryPhoto::from_image(OpenImage::fixture(&format!("/pictures/{name}"), side, side))
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -787,7 +783,7 @@ mod tests {
             let mut doc = open_doc("receipt.png");
             let mut library = crate::test_doc::library(&doc);
             let (_, photo) = library.photos.iter_mut().next().unwrap();
-            let content = photo.image.content.clone().unwrap_or_default();
+            let content = photo.image.content.clone();
             photo.set_analysis(Some(ImageAnalysis {
                 ocr_text: "invoice 42 north harbour".into(),
                 description: "A dog beside a bicycle".into(),
@@ -883,7 +879,7 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn collection_and_late_search_hits_materialize_their_exact_resources() {
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let location = PhotoLocation {
             latitude: 48.8566,
             longitude: 2.3522,
@@ -917,7 +913,7 @@ mod tests {
         );
 
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let mut library = PhotoLibrary::default();
             for index in 0..80 {
                 library.add_album(Album {
@@ -953,7 +949,7 @@ mod tests {
         }
 
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let library = PhotoLibrary::of(
                 Vec::new(),
                 vec![Album::named("photos.album:journey", "Journey")],
@@ -982,7 +978,7 @@ mod tests {
         }
 
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let mut library = PhotoLibrary::default();
             for index in 0..3_000 {
                 let name = if index == 2_999 {
@@ -1036,7 +1032,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn stale_or_colliding_targets_fail_closed_and_rebuilds_publish_atomically() {
         let before = open_doc("before.png");

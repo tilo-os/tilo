@@ -472,7 +472,7 @@ But `register_channel_state` has no non-test caller, and no production path mint
 in `crates/session/shell/`, `crates/sdk/ui-core/`, or `apps/`. Roles are therefore advisory in practice.
 
 `Space` (`crates/collab/collab-types/src/space.rs`) has zero consumers outside its own crate and
-tests. `crates/sdk/ui-core/src/widget/channel_browser.rs` is a complete widget with no shell call site.
+tests. A channel-browser widget with no shell call site has since been removed.
 
 **Resolved.** Both production ingress paths now call
 `validate_admitted_inbound_op` before recording or fanning out an operation.

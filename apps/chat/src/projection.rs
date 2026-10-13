@@ -69,6 +69,7 @@ impl Chat {
     pub fn channel_rows(&self) -> Vec<Channel> {
         self.channels
             .iter()
+            .filter(|(_, channel)| channel.conversation_with.is_none())
             .enumerate()
             .map(|(order, (id, channel))| Channel {
                 id: id.to_string(),
@@ -84,6 +85,10 @@ impl Chat {
                 order: u32::try_from(order).unwrap_or(u32::MAX),
                 unread: 0,
                 archived: channel.archived,
+                conversation_with: channel
+                    .conversation_with
+                    .as_ref()
+                    .map(|agent| agent.0.clone()),
             })
             .collect()
     }
@@ -161,7 +166,7 @@ impl Chat {
 }
 
 /// `message` as the timeline draws it.
-fn message_row(id: &Id, message: &crate::record::Message) -> Message {
+pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message {
     let mut by_emoji: std::collections::BTreeMap<&str, Vec<String>> =
         std::collections::BTreeMap::new();
     for reacted in message.reactions.iter() {

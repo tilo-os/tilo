@@ -33,14 +33,11 @@ a11y-underline = Unterstrichen
 a11y-strikethrough = Durchgestrichen
 a11y-superscript = Hochgestellt
 a11y-subscript = Tiefgestellt
-a11y-heading1 = Überschrift 1
-a11y-heading2 = Überschrift 2
 a11y-body-text = Fließtext
 a11y-bulleted-list = Aufzählungsliste
 a11y-align-left = Linksbündig
 a11y-align-center = Zentriert
 a11y-align-right = Rechtsbündig
-a11y-justify = Blocksatz
 a11y-line-spacing = Zeilenabstand
 a11y-font = Schriftart
 a11y-size-up = Schrift vergrößern
@@ -67,13 +64,6 @@ a11y-highlight-clear = Hervorhebung entfernen
 
 ## Status bar
 status-untitled = Unbenannt
-format-odt = ODF-Text
-format-docx = Word-Dokument
-format-markdown = Markdown
-format-pdf = PDF
-format-html = HTML
-format-rtf = Rich Text
-format-epub = EPUB
 
 ## Header / footer edit-mode tabs
 band-header = Kopfzeile
@@ -86,12 +76,10 @@ review-accept-deletion = Löschung annehmen
 review-reject-deletion = Löschung ablehnen
 review-resolve-comment = Kommentar auflösen
 review-reply = Antworten
-review-thread = Kommentarthread
 review-thread-unavailable = Dieser Kommentar ist nicht mehr verfügbar
 review-reply-placeholder = Antwort schreiben
 review-send-reply = Senden
 review-cancel-reply = Abbrechen
-review-you = Du
 review-accept-all = Alle Änderungen annehmen
 review-reject-all = Alle Änderungen ablehnen
 
@@ -183,10 +171,8 @@ page-indicator = Seite { $n }
 canvas-image-missing = Bild
 canvas-embedded-content = Eingebetteter Inhalt
 canvas-empty-placeholder = Beginne zu schreiben…
-toolbar-history = Verlauf
 toolbar-text-color = Farbe
 toolbar-highlight = Hervorhebung
-toolbar-more = Mehr ▾
 picker-text-color = Textfarbe
 picker-highlight = Hervorhebung
 a11y-text-colour-name = Textfarbe { $colour }
