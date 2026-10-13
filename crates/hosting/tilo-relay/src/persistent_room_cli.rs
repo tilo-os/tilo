@@ -871,7 +871,7 @@ pub(crate) async fn run(
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     )?;
     let config = tilo_relay::RelayConfig {
-        state_root: state.join("relay"),
+        state_root: tilo_relay_protocol::metrics::room_relay_root(&state),
         identity_root: state.join("identity"),
         member_limits: persistent.member_limits.then(Default::default),
         ..Default::default()

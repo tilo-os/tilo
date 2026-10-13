@@ -903,7 +903,10 @@ pub async fn start_connectors(
             program: worker_path(app_id, named),
             args: Vec::new(),
             env: settings.get(app_id).cloned().unwrap_or_default(),
-            metrics_file: Some(state.join("metrics.d").join(format!("{short}.prom"))),
+            metrics_file: Some(
+                tilo_relay_protocol::metrics::room_textfile_dir(state)
+                    .join(format!("{short}.prom")),
+            ),
         };
         let process = ConnectorProcess::start(
             app_id,
