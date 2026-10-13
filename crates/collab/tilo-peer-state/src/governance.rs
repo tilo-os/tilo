@@ -151,7 +151,13 @@ pub fn admit_invited_member(
                 }
                 exact_redemption = true;
             }
-            legacy_receipts.push(existing.clone());
+            // A receipt kept only on its identity row moves into the
+            // per-invite ledger once. Every admission keeps its receipt on
+            // the row too, so writing them all again made each admission
+            // rewrite the whole roster's receipts.
+            if !invitation_receipts.contains_key(&hex::encode(existing.invite_id)) {
+                legacy_receipts.push(existing.clone());
+            }
         }
     }
     if exact_redemption {
@@ -279,17 +285,10 @@ pub fn admit_invited_member(
     Ok(AdmissionOutcome::Applied { changes })
 }
 
-/// Display bound for a governed member name: self-asserted text, never authority.
-const MAX_DISPLAY_NAME_CHARS: usize = 80;
-const MAX_DISPLAY_NAME_BYTES: usize = 128;
-
+/// A governed member name, bounded as every host keeps one
+/// ([`tilo_user_identity::display_name`]): self-asserted text, never authority.
 fn bounded_display_name(value: &str) -> Option<&str> {
-    let value = value.trim();
-    (!value.is_empty()
-        && value.len() <= MAX_DISPLAY_NAME_BYTES
-        && value.chars().count() <= MAX_DISPLAY_NAME_CHARS
-        && !value.chars().any(char::is_control))
-    .then_some(value)
+    tilo_user_identity::display_name(value).ok()
 }
 
 /// The name other members see. A bearer invitation is redeemed by a person the
@@ -585,7 +584,7 @@ mod display_name_tests {
         for label in [
             String::new(),
             "   ".to_owned(),
-            "x".repeat(81),
+            "x".repeat(129),
             "界".repeat(43),
             "Gina\nGuest".to_owned(),
             "Gina\u{7}Guest".to_owned(),
@@ -597,8 +596,16 @@ mod display_name_tests {
                 "{label:?}"
             );
         }
-        let longest = cert(&"x".repeat(80));
-        assert_eq!(member_display_name(&issued, &longest), "x".repeat(80));
+        let longest = cert(&"x".repeat(128));
+        assert_eq!(member_display_name(&issued, &longest), "x".repeat(128));
+        // 100 bytes of UTF-8 is a name, whatever it is written in.
+        for name in ["😀".repeat(25), "界".repeat(33), "x".repeat(100)] {
+            assert_eq!(member_display_name(&issued, &cert(&name)), name);
+            assert_eq!(
+                member_display_name(&grant(Some([1; 32]), Some(&name)), &cert("MacBook")),
+                name
+            );
+        }
         let unnamed = cert("");
         assert_eq!(
             member_display_name(&grant(None, Some(&"y".repeat(200))), &unnamed),

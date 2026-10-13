@@ -2887,6 +2887,55 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
     }
 }
 
+/// The framework is recognised from the parsed items, so a path-qualified
+/// `#[resource]` attribute and a `ResourceApp` kept outside `src/lib.rs`
+/// count, while the same words in a comment or a string do not.
+#[test]
+fn doctor_recognises_the_framework_by_its_parsed_items() {
+    let app = |files: &[(&str, &str)]| {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(temp.path().join("src")).expect("source directory");
+        for (name, text) in files {
+            std::fs::write(temp.path().join("src").join(name), text).expect("source file");
+        }
+        let mut checks = Vec::new();
+        check_app_root(temp.path(), &mut checks);
+        check_resource_action_surface(temp.path(), &mut checks);
+        checks
+            .into_iter()
+            .map(|check| (check.status, check.detail))
+            .collect::<Vec<_>>()
+    };
+
+    let qualified = app(&[
+        ("lib.rs", "pub mod record;\npub mod resource;\n"),
+        (
+            "record.rs",
+            "#[ui::tilo_resource::resource(kind = \"demo.thing\")]\nimpl Thing {}\n",
+        ),
+        (
+            "resource.rs",
+            "impl ui::framework::ResourceApp for App { type Resource = Thing; }\n",
+        ),
+    ]);
+    assert_eq!(qualified[0].0, DoctorStatus::Pass, "{qualified:#?}");
+    assert!(
+        qualified[0]
+            .1
+            .contains("resource.rs implements ResourceApp"),
+        "{qualified:#?}"
+    );
+    assert_eq!(qualified[1].0, DoctorStatus::Pass, "{qualified:#?}");
+
+    let mentioned = app(&[(
+        "lib.rs",
+        "// #[resource(kind = \"x\")] and impl ResourceApp for App\n\
+         const NOTE: &str = \"impl ResourceApp for App\";\n",
+    )]);
+    assert_eq!(mentioned[0].0, DoctorStatus::Warning, "{mentioned:#?}");
+    assert_eq!(mentioned[1].0, DoctorStatus::Fail, "{mentioned:#?}");
+}
+
 /// Doctor accumulates actionable failures, accepts registered document actions without widget
 /// glue, finds the SDK in target-specific dependencies, rejects one invalid target-specific UI
 /// dependency, and never asks for the Cap'n Proto compiler the SDK no longer needs.

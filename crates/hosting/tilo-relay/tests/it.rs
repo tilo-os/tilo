@@ -76,6 +76,9 @@ mod multi_host;
 #[cfg(unix)]
 #[path = "out_of_band_join_modes.rs"]
 mod out_of_band_join_modes;
+#[cfg(feature = "agents")]
+#[path = "persistent_room.rs"]
+mod persistent_room;
 #[path = "personal_device_process.rs"]
 mod personal_device_process;
 #[path = "presence_coalescing.rs"]
