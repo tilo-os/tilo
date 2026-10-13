@@ -8674,18 +8674,6 @@ impl FileExplorerWidget {
 mod native_observer;
 
 impl FileExplorerWidget {
-    fn has_action_control_bindings_impl(&self) -> bool {
-        // Own accessibility actions are semantic; preserve the same modal child
-        // exposure as the complete binding inventory.
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = ui::widget::controls::has_action_control_bindings(child);
-            }
-        });
-        found
-    }
-
     fn native_input_snapshot_impl(
         &self,
         _doc: &automerge::AutoCommit,
@@ -9419,7 +9407,8 @@ impl ui::widget::controls::ActionControls for FileExplorerWidget {
         })
     }
     fn has_action_control_bindings(&self) -> bool {
-        self.has_action_control_bindings_impl()
+        // Own accessibility actions are semantic; only children emit actions.
+        ui::widget::controls::children_have_action_control_bindings(self)
     }
     // A control a caller invoked through the door (a toolbar button) queued
     // its command; apply it now, as the click it stands for would.
