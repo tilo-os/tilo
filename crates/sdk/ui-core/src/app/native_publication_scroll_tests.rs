@@ -262,7 +262,10 @@ fn bound_scroll_app(
         .records
         .try_flush_record(&binding.checkout.id)
         .unwrap();
-    binding.records.await_submitted(&binding.checkout.id).unwrap();
+    binding
+        .records
+        .await_submitted(&binding.checkout.id)
+        .unwrap();
     assert_eq!(
         binding.records.save_status(&binding.checkout.id).unwrap(),
         crate::record::RecordSaveStatus::Saved,
