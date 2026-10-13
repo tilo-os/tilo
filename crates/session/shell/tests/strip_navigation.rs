@@ -1382,6 +1382,18 @@ fn magnifier_shortcuts_step_the_zoom_show_it_and_save_it() {
 }
 
 #[test]
+fn a_rightward_wheel_steps_forward_like_super_right() {
+    let mut h = Harness::new();
+    let start = h.active_window();
+    // Winit reports a wheel turned rightward with a negative x, as the
+    // libinput backend maps a tilt to the right.
+    assert!(h.event(&ui::synthetic_input::mouse_wheel(-1.0, 0.0)));
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
+    assert!(h.event(&ui::synthetic_input::mouse_wheel(1.0, 0.0)));
+    assert_eq!(h.active_window(), start, "and leftward steps back");
+}
+
+#[test]
 fn axis_navigation_is_opt_in_and_preserves_tab_selection() {
     let mut h = Harness::new();
     assert!(!h.chrome.borrow().axis_navigation_enabled());
