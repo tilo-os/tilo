@@ -6,6 +6,10 @@ trigger and job boundaries that caused the main-push build storm.
 """
 from pathlib import Path
 import re
+import os
+import subprocess
+import tempfile
+import textwrap
 import unittest
 
 
@@ -107,6 +111,42 @@ class QueueReliefTests(unittest.TestCase):
                          "if-no-files-found: error"):
             self.assertIn(contract, job)
         self.assertEqual(job.count("if: steps.lanes.outputs.both == 'true'"), 3)
+
+    def test_older_pinned_image_cannot_move_main_ci_backward(self):
+        job = section(workflow("build-image"), "promote-integration", 2)
+        block = job.split("      - name: Move tilo-vm:main-ci to this commit's dev images\n", 1)[1]
+        script = textwrap.dedent(block.split("        run: |\n", 1)[1].split("      - uses:", 1)[0])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repository.git"
+            repo.mkdir()
+            env = {**os.environ, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "commit.gpgsign",
+                   "GIT_CONFIG_VALUE_0": "false"}
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=repo, env=env, text=True,
+                                               stderr=subprocess.DEVNULL).strip()
+            git("init", "-q")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            (repo / "payload").write_text("old")
+            git("add", "payload")
+            git("commit", "-qm", "old")
+            old = git("rev-parse", "HEAD")
+            (repo / "payload").write_text("new")
+            git("commit", "-qam", "new")
+            new = git("rev-parse", "HEAD")
+            fake = root / "skopeo"
+            fake.write_text('#!/bin/sh\ncase "$*" in\n  *--raw*) printf \'%s\\n\' \'{"manifests":[{"platform":{"architecture":"amd64"}},{"platform":{"architecture":"arm64"}}]}\' ;;\n  inspect*) printf \'{"Labels":{"org.opencontainers.image.revision":"%s"}}\\n\' "$CURRENT_SOURCE" ;;\n  copy*) printf copied > "$COPY_LOG" ;;\n  *) exit 1 ;;\nesac\n')
+            fake.chmod(0o755)
+            copied = root / "copied"
+            env.update({"PATH": f"{root}:{os.environ['PATH']}", "CURRENT_SOURCE": new,
+                        "GITHUB_SHA": new, "TILO_IMAGE_SOURCE": old, "GIT_TOKEN": "fixture",
+                        "GITHUB_SERVER_URL": root.as_uri(), "GITHUB_REPOSITORY": repo.name,
+                        "RUNNER_TEMP": str(root), "COPY_LOG": str(copied)})
+            result = subprocess.run(["bash", "-c", script], env=env, cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("leaving it", result.stdout)
+            self.assertFalse(copied.exists(), "An older source moved main-ci backward")
 
     def test_queue_relief_cancels_only_superseded_heavy_pr_runs(self):
         with self.subTest(phase='fast checks replace only a superseded run of the same pull request'):
