@@ -401,6 +401,7 @@ pub const SCENARIOS: &[&str] = &[
     "installer-connect",
     "installer-desktop-connect",
     "installer-devices",
+    "installer-purpose",
     "installer-belongings",
     "installer-accounts",
     "installer-belongings-details",
@@ -3588,6 +3589,8 @@ impl InstallerPreview {
             t("installer-preview-computer-usb-body")
         } else if key == "migrate" && self.journey.destination == Some(Destination::Computer) {
             t("installer-preview-migrate-shared-body")
+        } else if key == "migrate" && self.journey.destination == Some(Destination::Another) {
+            t("installer-preview-migrate-portable-body")
         } else if key == "device" && self.live && !cfg!(target_os = "linux") {
             t("installer-pairing-helper-unavailable")
         } else {
@@ -3771,7 +3774,9 @@ impl InstallerPreview {
             && j.categories[0]
         {
             t("installer-preview-belongings-shared-intro")
-        } else if matches!(j.page, Page::Migration | Page::Identity | Page::Connect) {
+        } else if j.page == Page::Migration {
+            t("installer-preview-migration-intro")
+        } else if matches!(j.page, Page::Identity | Page::Connect) {
             String::new()
         } else {
             if j.page == Page::Password && j.destination == Some(Destination::Desktop) {
@@ -3890,6 +3895,12 @@ impl InstallerPreview {
                                 )
                                 .role(ButtonRole::Plain),
                             )),
+                    ))
+                    .push(Box::new(
+                        Text::new(&t("installer-preview-profile-avatar"))
+                            .with_id("installer.profile.avatar-help")
+                            .with_role(TextRole::Caption)
+                            .with_align(ParagraphAlign::Center),
                     ));
                 body = body
                     .with_rhythm(Rhythm::Section)
@@ -5299,6 +5310,7 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
                 Page::Connect
             }
             "installer-devices" => Page::Devices,
+            "installer-purpose" => Page::Purpose,
             "installer-belongings" => Page::Belongings,
             "installer-belongings-details" => {
                 self.journey.details = true;

@@ -1362,7 +1362,7 @@ impl Accounts {
             return t("installer-accounts-bulk-intro");
         }
         match &self.step {
-            Step::Overview => String::new(),
+            Step::Overview => t("installer-accounts-intro"),
             Step::ReviewSaved => t("installer-accounts-review-saved-intro"),
             Step::Providers => String::new(),
             Step::SpotifyPurpose(Some(_)) => t("installer-accounts-spotify-source-reconnect"),

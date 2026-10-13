@@ -268,6 +268,14 @@ fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
             ],
         ),
         (
+            "installer-purpose",
+            &[
+                "installer.choice.purpose-computer",
+                "installer.choice.purpose-server",
+                "installer.next",
+            ],
+        ),
+        (
             "installer-storage",
             &["installer.storage.size", "installer.next"],
         ),
@@ -276,8 +284,17 @@ fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
             &["installer.review.destination", "installer.next"],
         ),
     ];
-    for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
-        for (viewport, scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
+    for (name, theme) in [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high-contrast", Theme::high_contrast()),
+    ] {
+        for (viewport, scale) in [
+            ((480, 800), 1.0),
+            ((800, 600), 1.0),
+            ((1180, 820), 1.0),
+            ((2560, 1440), 2.0),
+        ] {
             for (scenario, ids) in screens {
                 paint_screen(
                     scenario,
@@ -1289,6 +1306,216 @@ fn destination_discloses_usb_route_before_personal_setup() {
             );
         })
         .unwrap();
+    }
+}
+
+#[test]
+fn profile_explains_optional_picture_and_keeps_name_before_data_access() {
+    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.stage(Some("installer-profile"));
+        preview.restart = restart_controller::Restart::default();
+    })
+    .unwrap();
+    app.settle();
+    let view = app.harness().inspection_json().unwrap();
+    assert!(view.contains(&t("installer-preview-profile-avatar")));
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        assert!(control(preview, "installer.profile.avatar-help").is_some());
+        assert!(control(preview, "installer.name").is_some());
+        assert!(control(preview, "installer.category.files").is_none());
+    })
+    .unwrap();
+    app.effect(&InstallerPreviewEffect::ContinuePreview)
+        .unwrap();
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        assert_eq!(preview.journey.page, Page::Password);
+    })
+    .unwrap();
+    app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        assert_eq!(preview.journey.page, Page::Profile);
+        assert_eq!(preview.journey.name, "Ada Lovelace");
+    })
+    .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn account_overview_explains_where_to_connect_after_setup() {
+    let mut app = account_motion_fixture();
+    let view = app.harness().inspection_json().unwrap();
+    assert!(view.contains(&t("installer-accounts-intro")));
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        assert_eq!(preview.accounts.navigation_step(), "overview");
+        assert!(control(preview, "installer.account.add").is_some());
+    })
+    .unwrap();
+    for (tag, theme) in [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high-contrast", Theme::high_contrast()),
+    ] {
+        app.harness().set_theme(theme.with_reduce_motion(true));
+        app.harness().resize((800, 600)).unwrap();
+        paint_app(
+            &mut app,
+            "installer-accounts-connect-later",
+            &["installer.account.add", "installer.next"],
+            (800, 600),
+            tag,
+        );
+    }
+}
+
+#[test]
+fn migration_route_consequences_are_present_in_the_semantic_choice() {
+    for (destination, key) in [
+        (
+            Destination::Computer,
+            "installer-preview-migrate-shared-body",
+        ),
+        (
+            Destination::Another,
+            "installer-preview-migrate-portable-body",
+        ),
+    ] {
+        let mut app =
+            TestApp::<GuidedInstallerShell>::capture(Some("installer-migration")).unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.journey.destination = Some(destination);
+            preview.dirty = true;
+        })
+        .unwrap();
+        app.settle();
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains(&t("installer-preview-migration-intro"))
+        );
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            let name = control(preview, "installer.choice.migrate")
+                .unwrap()
+                .accessibility()
+                .unwrap()
+                .name
+                .unwrap();
+            assert!(
+                name.contains(&t(key)),
+                "route consequences must be announced: {name}"
+            );
+        })
+        .unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation() {
+    let custody = tempfile::tempdir().unwrap();
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("XDG_STATE_HOME", custody.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    for (tag, theme) in [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high-contrast", Theme::high_contrast()),
+    ] {
+        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            // Explicit unavailable-host fixture through the production capability
+            // gate, not an installation receipt or a synthetic success route.
+            preview.live = true;
+            preview.capture = false;
+            preview.capabilities.prepared_installation = false;
+            preview.restart = restart_controller::Restart::default();
+            preview.journey = Journey::new(String::new());
+            preview.dirty = true;
+        })
+        .unwrap();
+        app.harness().set_theme(theme.with_reduce_motion(true));
+        app.harness().resize((800, 600)).unwrap();
+        app.settle();
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains(&t("installer-guided-host-unavailable"))
+        );
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert!(control(preview, "installer.choice.computer").is_none());
+            assert!(!preview.guided_host_available());
+        })
+        .unwrap();
+        assert!(
+            app.effect(&InstallerPreviewEffect::ChoosePreview {
+                choice: "computer".into()
+            })
+            .is_err()
+        );
+        assert!(
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .is_err()
+        );
+        paint_app(
+            &mut app,
+            "installer-guided-host-unavailable",
+            &[],
+            (800, 600),
+            tag,
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
+    let custody = tempfile::tempdir().unwrap();
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("XDG_STATE_HOME", custody.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+    for (tag, theme) in [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high-contrast", Theme::high_contrast()),
+    ] {
+        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            // Intentionally missing custody/host plan; no preparation success is
+            // injected. The real live admission must reject this review state.
+            preview.live = true;
+            preview.capture = false;
+            preview.restart = restart_controller::Restart::default();
+            preview.journey = Journey::new("Ada Lovelace".into());
+            preview.journey.destination = Some(Destination::Computer);
+            preview.journey.migrate = Some(false);
+            preview.journey.identity = Some(Identity::New);
+            preview.journey.page = Page::Review;
+            preview.dirty = true;
+        })
+        .unwrap();
+        app.harness().set_theme(theme.with_reduce_motion(true));
+        app.harness().resize((800, 600)).unwrap();
+        app.settle();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert!(!preview.direct_available());
+            let button = control(preview, "installer.prepare-direct").unwrap();
+            assert!(button.accessibility().unwrap().state.disabled);
+        })
+        .unwrap();
+        assert!(
+            app.effect(&InstallerPreviewEffect::PrepareDirectInstallation)
+                .is_err()
+        );
+        paint_app(
+            &mut app,
+            "installer-direct-preparation-missing",
+            &["installer.prepare-direct"],
+            (800, 600),
+            tag,
+        );
     }
 }
 
