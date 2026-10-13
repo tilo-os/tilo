@@ -610,9 +610,6 @@ impl Widget for NotificationLayer {
     fn name(&self) -> &'static str {
         "DesktopNotifications"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn needs_redraw(&self) -> bool {
         self.dirty || self.drawn_revision.get() != Some(self.notifications.revision())
     }
@@ -639,9 +636,7 @@ impl Widget for NotificationLayer {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(tree, node, origin);
-    }
+    ui::rect_geometry!();
     fn draw(
         &mut self,
         scene: &mut Scene,

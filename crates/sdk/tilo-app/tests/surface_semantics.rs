@@ -82,9 +82,7 @@ impl Widget for Booth {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = tilo_app::widget::layout_rect(taffy, node, origin);
-    }
+    tilo_app::rect_geometry!();
 
     fn name(&self) -> &'static str {
         "Booth"
@@ -92,10 +90,6 @@ impl Widget for Booth {
 
     fn test_id(&self) -> Option<&str> {
         Some("booth")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<AccessNode> {

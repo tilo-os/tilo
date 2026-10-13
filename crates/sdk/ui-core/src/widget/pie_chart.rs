@@ -751,9 +751,7 @@ impl Widget for PieChart {
             height: known.height.unwrap_or(height),
         }
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -933,9 +931,6 @@ impl Widget for PieChart {
     }
     fn name(&self) -> &'static str {
         "PieChart"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
     fn needs_animation_frame(&self) -> bool {
         self.is_animating()

@@ -94,9 +94,7 @@ impl Widget for ThemePreview {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -147,10 +145,6 @@ impl Widget for ThemePreview {
 
     fn test_id(&self) -> Option<&str> {
         self.id.as_deref()
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
