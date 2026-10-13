@@ -5110,7 +5110,7 @@ impl VideoEditorApp {
     /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
         self.import_notice = Some(Notice::ok("Choose media to import…"));
-        if crate::files::native_paths() {
+        if tilo_files::available(tilo_files::Feature::NativePaths) {
             self.import_rx = Some(portal::request_import());
         } else {
             self.import_contents_rx = Some(portal::request_import_contents());
