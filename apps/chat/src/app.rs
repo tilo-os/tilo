@@ -4071,10 +4071,7 @@ impl Widget for ChatApp {
                     right: LengthPercentageAuto::auto(),
                     bottom: LengthPercentageAuto::auto(),
                 },
-                size: Size {
-                    width: taffy::style_helpers::length(w),
-                    height: taffy::style_helpers::length(h),
-                },
+                size: Size::from_lengths(w, h),
                 ..Default::default()
             }
         } else {
@@ -4087,10 +4084,7 @@ impl Widget for ChatApp {
                     right: LengthPercentageAuto::auto(),
                     bottom: LengthPercentageAuto::auto(),
                 },
-                size: Size {
-                    width: percent(f.2 as f32),
-                    height: percent(f.3 as f32),
-                },
+                size: Size::from_percent(f.2 as f32, f.3 as f32),
                 ..Default::default()
             }
         };
@@ -4106,10 +4100,7 @@ impl Widget for ChatApp {
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
+                    size: Size::from_percent(1.0_f32, 1.0_f32),
                     ..Default::default()
                 },
                 &[video_node],

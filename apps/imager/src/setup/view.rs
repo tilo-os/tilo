@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::a11y::Politeness;
 use ui::icons::Icon;
 use ui::theme::Theme;
@@ -3091,10 +3091,7 @@ impl Widget for SetupApp {
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &[child], node_map, self)

@@ -58,10 +58,7 @@ impl Widget for Well {
         // As tall as a panel row: the rail's tools are that size too.
         let side = theme.tokens.metrics.panel_row_height;
         let style = Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(side),
-                height: taffy::Dimension::length(side),
-            },
+            size: taffy::Size::from_lengths(side, side),
             flex_shrink: 0.0,
             ..Default::default()
         };

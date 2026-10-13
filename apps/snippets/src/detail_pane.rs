@@ -467,10 +467,7 @@ impl Widget for BodyWell {
                 width: percent(1.0_f32),
                 height: taffy::Dimension::auto(),
             },
-            min_size: taffy::Size {
-                width: length(0.0_f32),
-                height: length(lines),
-            },
+            min_size: taffy::Size::from_lengths(0.0_f32, lines),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

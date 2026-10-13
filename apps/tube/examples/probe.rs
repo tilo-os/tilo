@@ -1357,10 +1357,7 @@ fn run_bench_scroll(
         let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
         let root = taffy.new_with_children(
             Style {
-                size: Size {
-                    width: length(w as f32),
-                    height: length(h as f32),
-                },
+                size: Size::from_lengths(w as f32, h as f32),
                 ..Default::default()
             },
             &[child],

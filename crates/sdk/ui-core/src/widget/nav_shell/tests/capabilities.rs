@@ -478,10 +478,7 @@ impl Widget for Capturing {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::length(32.0),
-                height: Dimension::length(32.0),
-            },
+            size: Size::from_lengths(32.0, 32.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

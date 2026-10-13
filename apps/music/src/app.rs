@@ -18,7 +18,7 @@ use ui::time::{Duration, Instant};
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use base64::Engine as _;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -2263,10 +2263,7 @@ impl MusicApp {
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(rect.width() as f32),
-                        height: Dimension::length(rect.height() as f32),
-                    },
+                    size: Size::from_lengths(rect.width() as f32, rect.height() as f32),
                     ..Default::default()
                 },
                 &[node],

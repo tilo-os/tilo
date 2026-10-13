@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use tilo_ui::ColorCompat;
 use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -47,10 +47,7 @@ impl Widget for Preview {
     ) -> NodeId {
         let n = t
             .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 ..Default::default()
             })
             .expect("fresh preview leaf");

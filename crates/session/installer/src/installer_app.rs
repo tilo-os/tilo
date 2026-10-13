@@ -3654,10 +3654,7 @@ impl Widget for InstallerApp {
             flex_direction: FlexDirection::Column,
             justify_content: Some(JustifyContent::Center),
             align_items: Some(AlignItems::Center),
-            size: Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
-            },
+            size: Size::from_percent(1.0_f32, 1.0_f32),
             ..Default::default()
         };
         taffy.widget_node(style, &[card_node], node_map, self)
@@ -4019,10 +4016,7 @@ mod tests {
         let viewport = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: length(width),
-                        height: length(height),
-                    },
+                    size: Size::from_lengths(width, height),
                     ..Default::default()
                 },
                 &[app_node],
