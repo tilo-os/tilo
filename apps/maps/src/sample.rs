@@ -19,7 +19,6 @@ pub enum RoadClass {
     Primary,
     Secondary,
     Residential,
-    Path,
 }
 
 #[derive(Clone, Debug)]
