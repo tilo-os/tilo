@@ -465,8 +465,7 @@ impl Widget for NativeView {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
         }
         let pointer_event = matches!(
             event,

@@ -1080,7 +1080,7 @@ impl Widget for ColorPicker {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 if self.drag_target.is_some() {
                     self.apply_drag(p);

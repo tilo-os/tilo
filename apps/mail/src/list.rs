@@ -540,8 +540,7 @@ impl Widget for MessageList {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let point = ctx.logical(position);
                 self.pointer = Some(point);
                 if let Some(press) = self.press.as_mut() {
                     press.offset = (press.at.x - point.x).max(0.0);

@@ -3695,7 +3695,7 @@ impl Widget for BrowserWidget {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.window_scale = ctx.scale_factor as f32;
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         if let Some((node, id)) = self.pending_chrome_focus.take() {
             self.focus_control_preserving_selection(id);

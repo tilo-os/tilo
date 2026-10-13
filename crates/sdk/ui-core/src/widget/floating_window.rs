@@ -1064,7 +1064,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 if let Some(drag) = self.drag {
                     self.update_pointer_presence(pt);
                     self.apply_drag(drag, pt);

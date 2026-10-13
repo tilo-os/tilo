@@ -4679,9 +4679,6 @@ impl AppWidget for ForeignSurfaceWidget {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("󰖯")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 
 // Tree mirroring: protocol-side adoptions → rendered chrome tree

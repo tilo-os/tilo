@@ -113,7 +113,7 @@ impl Widget for Well {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let at = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let at = ctx.logical(position);
                 self.hovered = self.rect.contains(at);
             }
             WindowEvent::CursorLeft { .. } => self.hovered = false,

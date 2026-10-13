@@ -678,8 +678,7 @@ impl Widget for CollaborationOverview {
     fn handle_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match e {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.pointer = ctx.logical(position);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,

@@ -971,7 +971,7 @@ impl Widget for ProcessesPane {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
             // Every part follows the pointer, whichever one is under it.
             let mut ignored = false;
             let nodes = [
@@ -1519,7 +1519,7 @@ impl Widget for ResourcesPane {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         if let (Some(page), Some(child)) = (&mut self.page, self.node) {
             page.handle_event(event, &mut ctx.reborrow(ctx.path, child));

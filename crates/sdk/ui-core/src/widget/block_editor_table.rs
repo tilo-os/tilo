@@ -468,10 +468,7 @@ impl Table {
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> Option<(usize, usize, String)> {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
+            self.last_cursor = Some(ctx.logical(position));
         }
         if matches!(
             event,
@@ -1256,8 +1253,7 @@ impl Widget for Table {
         if let Some(rz) = self.resize.as_ref() {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    let p =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    let p = ctx.logical(position);
                     let new_w = (rz.orig_w + (p.x - rz.start_x)).max(MIN_COL_W);
                     // The column follows the pointer here; the owner gets
                     // the width when the drag ends.
@@ -1290,7 +1286,7 @@ impl Widget for Table {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = Some(p);
                 let h = self.hit(p);
                 if h != self.hover {

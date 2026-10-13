@@ -4719,7 +4719,7 @@ impl Widget for BooksApp {
                 *ctx.handled = true;
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.handle_cursor_moved(p, &mut ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {

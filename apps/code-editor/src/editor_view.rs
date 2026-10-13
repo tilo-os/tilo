@@ -2771,7 +2771,7 @@ impl Widget for EditorView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let next = ctx.logical(position);
                 self.handle_cursor_moved(next, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(*delta, ctx.handled),

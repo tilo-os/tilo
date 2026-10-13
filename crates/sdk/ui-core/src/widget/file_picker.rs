@@ -1294,7 +1294,7 @@ impl Widget for FilePicker {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.on_cursor_moved(p, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -2301,7 +2301,7 @@ impl FilePicker {
         use winit::keyboard::{Key, NamedKey};
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 let hover = if self.keep_existing_rect.contains(p) {
                     Some(PickerFocus::KeepExisting)

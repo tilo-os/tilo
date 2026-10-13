@@ -5536,10 +5536,7 @@ impl Widget for TopBarChrome {
                 return;
             }
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.last_cursor = Some(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                self.last_cursor = Some(ctx.logical(position));
             }
             if self.responsive.toolbar.traps_focus()
                 || self.responsive.toolbar.wants_pointer_capture()
@@ -5557,10 +5554,7 @@ impl Widget for TopBarChrome {
 
         if self.is_compact() {
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.last_cursor = Some(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                self.last_cursor = Some(ctx.logical(position));
                 return;
             }
             if self.handle_left_release(event, ctx.handled) {

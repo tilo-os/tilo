@@ -3026,8 +3026,7 @@ impl Widget for CartesianPlot {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let point = ctx.logical(position);
                 if self.update_pointer(point) {
                     *ctx.handled = true;
                 }

@@ -3811,8 +3811,7 @@ impl NavShell {
     ) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 if let Some(resize) = self.resize {
                     self.drag_sidebar_to(resize, self.last_cursor.x);
                     return true;

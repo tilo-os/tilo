@@ -603,7 +603,7 @@ impl Widget for ConflictPicker {
         let alt_count = self.alternatives().len();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 let card_idx = self.card_at(p);
                 let new_alt = card_idx.filter(|&i| i < alt_count);

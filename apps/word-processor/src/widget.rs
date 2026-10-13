@@ -12810,9 +12810,7 @@ impl WordProcessorWidget {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let pointer = match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor)
-            }
+            WindowEvent::CursorMoved { position, .. } => ctx.logical(position),
             _ => self.pointer,
         };
         let mut took = false;
@@ -13350,10 +13348,7 @@ impl WordProcessorWidget {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let pointer = match event {
-            WindowEvent::CursorMoved { position, .. } => Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            )),
+            WindowEvent::CursorMoved { position, .. } => Some(ctx.logical(position)),
             _ => None,
         };
         // The window's History control and the drawers' toggles answer for
@@ -13536,8 +13531,7 @@ impl WordProcessorWidget {
             || self.style_menu.is_open()
         {
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.pointer = ctx.logical(position);
             }
             let menu = if self.template_picker.is_open() {
                 self.template_picker.menu_mut()

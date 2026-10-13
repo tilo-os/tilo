@@ -845,8 +845,7 @@ impl Widget for CollaborationLaunchpad {
         let before = (self.hover_target(), self.selected, self.focused);
         self.sync_targets();
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
         }
         if !self.navigate(event, ctx) {
             self.dirty |= self.targets.handle_event(event, ctx);

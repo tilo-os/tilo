@@ -315,8 +315,7 @@ impl Widget for GradientBar {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if let Some((index, _, _)) = self.dragging {
                     let at = self.at(self.cursor.x);
                     self.dragging = Some((index, at, true));

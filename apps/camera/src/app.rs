@@ -2964,8 +2964,7 @@ impl Widget for CameraApp {
         use winit::keyboard::{Key, NamedKey};
 
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse = ctx.logical(position);
             self.dirty = true;
         }
         let path = ctx.path;
@@ -3040,10 +3039,7 @@ impl Widget for CameraApp {
                 }
             }
             WindowEvent::Touch(touch) => {
-                let point = Point::new(
-                    touch.location.x / ctx.scale_factor,
-                    touch.location.y / ctx.scale_factor,
-                );
+                let point = ctx.logical(touch.location);
                 match touch.phase {
                     TouchPhase::Started if self.active_touch.is_none() => {
                         if let Some((rect, action)) = self

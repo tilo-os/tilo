@@ -1040,7 +1040,7 @@ impl Widget for FileView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 self.last_cursor = pt;
                 if self.mode == ViewMode::List {
                     self.list.handle_event(event, ctx);
