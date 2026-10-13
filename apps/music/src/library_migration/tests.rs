@@ -1,33 +1,14 @@
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc};
+use automerge::{AutoCommit, ROOT, ReadDoc};
 use tilo_automerge::ApplyIncoming;
-use ui::tilo_resource::{Fields, Resource, evolution};
+use ui::tilo_resource::{self, Atom, Fields, Model, Resource, evolution};
+
+mod fixtures;
+use fixtures::{LegacyLibrary, LegacyPlaylist, populated_fixture};
 
 use crate::model::Library;
 
 fn empty_legacy_library() -> AutoCommit {
-    let mut doc = AutoCommit::new();
-    let library = doc.put_object(ROOT, "library", ObjType::Map).unwrap();
-    for name in ["artists", "albums", "tracks"] {
-        doc.put_object(&library, name, ObjType::Map).unwrap();
-    }
-    doc.put_object(ROOT, "playlists", ObjType::List).unwrap();
-    for name in [
-        "liked",
-        "saved_albums",
-        "followed_artists",
-        "playlist_tombstones",
-    ] {
-        doc.put_object(ROOT, name, ObjType::Map).unwrap();
-    }
-    for name in ["likes", "saved-albums", "followed-artists"] {
-        doc.put(ROOT, format!("recommendations/input/{name}"), true)
-            .unwrap();
-    }
-    doc.put(ROOT, "unrelated-retained-value", "keep me")
-        .unwrap();
-    doc.commit();
-    doc
+    LegacyLibrary::empty().document()
 }
 
 #[test]
@@ -61,115 +42,8 @@ fn retained_legacy_library_reopens_with_collection_schema() {
     assert_eq!(doc.get_heads(), heads);
 }
 
-fn legacy_catalogue_item<T: ui::tilo_resource::Fields>(
-    doc: &mut AutoCommit,
-    collection: &automerge::ObjId,
-    id: &str,
-    item: &T,
-) {
-    let entry = doc.put_object(collection, id, ObjType::Map).unwrap();
-    item.write_fields(doc, &entry).unwrap();
-    // The former keyed catalogue carried the identity in its map key.
-    doc.delete(&entry, "id").unwrap();
-}
-
-fn legacy_playlist(
-    doc: &mut AutoCommit,
-    list: &automerge::ObjId,
-    id: &str,
-    entries: &[(&str, i64, bool)],
-) -> automerge::ObjId {
-    let at = doc.length(list);
-    let row = doc.insert_object(list, at, ObjType::Map).unwrap();
-    doc.put(&row, "id", id).unwrap();
-    doc.put(&row, "name", format!("{id} – retained 🎧"))
-        .unwrap();
-    doc.put(&row, "description", "First line\nSecond line")
-        .unwrap();
-    doc.put(&row, "cover", format!("https://example.com/{id}.png"))
-        .unwrap();
-    let membership = doc
-        .put_object(&row, "track_membership", ObjType::Map)
-        .unwrap();
-    let order = doc.put_object(&row, "track_order", ObjType::Map).unwrap();
-    for (track, rank, present) in entries {
-        doc.put(&membership, *track, *present).unwrap();
-        doc.put(&order, *track, *rank).unwrap();
-    }
-    row
-}
-
 fn populated_legacy_library() -> AutoCommit {
-    let mut doc = empty_legacy_library();
-    let sample = crate::seed::sample_library();
-    let root = doc.get(ROOT, "library").unwrap().unwrap().1;
-    let artists = doc.get(&root, "artists").unwrap().unwrap().1;
-    legacy_catalogue_item(
-        &mut doc,
-        &artists,
-        "ar_midnight",
-        sample.artist("ar_midnight").unwrap(),
-    );
-    let albums = doc.get(&root, "albums").unwrap().unwrap().1;
-    legacy_catalogue_item(
-        &mut doc,
-        &albums,
-        "al_afterhours",
-        sample.album("al_afterhours").unwrap(),
-    );
-    let tracks = doc.get(&root, "tracks").unwrap().unwrap().1;
-    for id in ["tk_a1", "tk_a2", "tk_a3"] {
-        legacy_catalogue_item(&mut doc, &tracks, id, sample.track(id).unwrap());
-    }
-    let playlists = doc.get(ROOT, "playlists").unwrap().unwrap().1;
-    legacy_playlist(
-        &mut doc,
-        &playlists,
-        "p-z",
-        &[
-            ("tk_a1", 1024, true),
-            ("tk_a2", -5, true),
-            ("tk_a3", 17, false),
-        ],
-    );
-    legacy_playlist(
-        &mut doc,
-        &playlists,
-        "p-a",
-        &[("tk_a3", 0, true), ("tk_a1", 0, true)],
-    );
-    legacy_playlist(
-        &mut doc,
-        &playlists,
-        "deleted",
-        &[("removed-track", 0, true)],
-    );
-    let tombstones = doc.get(ROOT, "playlist_tombstones").unwrap().unwrap().1;
-    doc.put(&tombstones, "deleted", true).unwrap();
-    let liked = doc.get(ROOT, "liked").unwrap().unwrap().1;
-    doc.put(&liked, "tk_a1", true).unwrap();
-    doc.put(&liked, "tk_a3", false).unwrap();
-    let saved = doc.get(ROOT, "saved_albums").unwrap().unwrap().1;
-    doc.put(&saved, "al_afterhours", true).unwrap();
-    let followed = doc.get(ROOT, "followed_artists").unwrap().unwrap().1;
-    doc.put(&followed, "ar_midnight", true).unwrap();
-    doc.put(ROOT, "recommendations/input/likes", false).unwrap();
-    doc.put(ROOT, "recommendations/input/saved-albums", false)
-        .unwrap();
-    doc.put(ROOT, "recommendations/preferred-artist/ar_midnight", true)
-        .unwrap();
-    doc.put(
-        ROOT,
-        "recommendations/preferred-artist/not-preferred",
-        false,
-    )
-    .unwrap();
-    doc.put(ROOT, "recommendations/dismissed/tk_a2", true)
-        .unwrap();
-    doc.put(ROOT, "recommendations/dismissed/tk_a3", false)
-        .unwrap();
-    doc.commit();
-    doc
+    populated_fixture().document()
 }
 
 #[test]
@@ -228,8 +102,10 @@ fn legacy_catalogue_playlists_and_feedback_keep_their_identity_and_order() {
 
 #[test]
 fn typed_version_one_records_keep_their_objects_and_values() {
-    let mut doc = crate::seed::sample_document();
-    doc.delete(ROOT, evolution::VERSION_KEY).unwrap();
+    let mut doc = AutoCommit::new();
+    crate::seed::sample_library()
+        .write_fields(&mut doc, &ROOT)
+        .unwrap();
     doc.commit();
     let before = Library::read_fields(&doc, &ROOT).unwrap();
     let objects = ["artists", "albums", "tracks", "playlists"]
@@ -249,21 +125,22 @@ fn typed_version_one_records_keep_their_objects_and_values() {
 #[test]
 fn duplicate_playlist_or_invalid_member_refuses_atomically() {
     for invalid in ["duplicate", "member", "cover"] {
-        let mut doc = populated_legacy_library();
-        let list = doc.get(ROOT, "playlists").unwrap().unwrap().1;
+        let mut fixture = populated_fixture();
         match invalid {
-            "duplicate" => {
-                legacy_playlist(&mut doc, &list, "p-z", &[]);
+            "duplicate" => fixture.playlists.push(LegacyPlaylist::new("p-z", &[])),
+            "cover" => fixture.playlists[0].cover = Atom("file:///private-cover.png".into()),
+            _ => {}
+        }
+        let mut doc = fixture.document();
+        if invalid == "member" {
+            let list = doc.get(ROOT, "playlists").unwrap().unwrap().1;
+            let row = doc.get(&list, 0).unwrap().unwrap().1;
+            // A typed patch deliberately represents the historical malformed scalar.
+            fixtures::InvalidMembership {
+                track_membership: [("tk_a1".into(), Atom("not a boolean".into()))].into(),
             }
-            "member" => {
-                let row = doc.get(&list, 0).unwrap().unwrap().1;
-                let membership = doc.get(&row, "track_membership").unwrap().unwrap().1;
-                doc.put(&membership, "tk_a1", "not a boolean").unwrap();
-            }
-            _ => {
-                let row = doc.get(&list, 0).unwrap().unwrap().1;
-                doc.put(&row, "cover", "file:///private-cover.png").unwrap();
-            }
+            .write_fields(&mut doc, &row)
+            .unwrap();
         }
         doc.commit();
         let bytes = doc.save();
@@ -282,8 +159,16 @@ fn duplicate_playlist_or_invalid_member_refuses_atomically() {
 fn conflicting_layouts_are_not_coerced_or_discarded() {
     let mut left = empty_legacy_library();
     let mut right = left.fork();
-    left.put(ROOT, "playlists", "not a collection").unwrap();
-    right.put_object(ROOT, "playlists", ObjType::Map).unwrap();
+    #[derive(Model)]
+    struct ScalarLayout {
+        playlists: Atom,
+    }
+    ScalarLayout {
+        playlists: Atom("not a collection".into()),
+    }
+    .write_fields(&mut left, &ROOT)
+    .unwrap();
+    Library::default().write_fields(&mut right, &ROOT).unwrap();
     left.commit();
     right.commit();
     left.merge_incoming(&mut right).unwrap();
