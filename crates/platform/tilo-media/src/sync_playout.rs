@@ -635,12 +635,12 @@ impl SyncPlayout {
                 let offset = usize::try_from(at.saturating_sub(start)).unwrap_or(0);
                 let take = usize::try_from(upto.min(end).saturating_sub(at)).unwrap_or(0);
                 for (index, sample) in frame.samples.iter().enumerate().skip(offset).take(take) {
-                    let mut gain = 1.0;
-                    if self.fade_in_remaining > 0 {
+                    let mut gain = if self.fade_in_remaining > 0 {
                         self.fade_in_remaining = self.fade_in_remaining.saturating_sub(1);
-                        gain = 1.0
-                            - usize_to_f32(self.fade_in_remaining) / usize_to_f32(self.fade_len);
-                    }
+                        1.0 - usize_to_f32(self.fade_in_remaining) / usize_to_f32(self.fade_len)
+                    } else {
+                        1.0
+                    };
                     let remaining = frame.samples.len().saturating_sub(index);
                     if !continues && remaining <= self.fade_len {
                         // The next frame is not here with its deadline a

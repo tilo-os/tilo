@@ -334,9 +334,7 @@ impl InputHint {
         let share_modifiers = first.modifiers == second.modifiers;
         let mut x = origin.x;
 
-        let first_rect;
-        let second_rect;
-        if share_modifiers {
+        let (first_labels, second_labels) = if share_modifiers {
             let modifier_count = first_labels
                 .len()
                 .saturating_sub(1)
@@ -352,50 +350,34 @@ impl InputHint {
                 );
                 x += paint_separator(ctx, Point::new(x + 7.0, origin.y), "+") + 14.0;
             }
-            let first_x = x;
-            x += Self::paint_keycap_labels_at(
-                ctx.scene,
-                ctx.transform,
-                Point::new(x, origin.y),
+            (
                 first_labels.get(modifier_count..).unwrap_or_default(),
-                ctx.text,
-                theme,
-            );
-            first_rect = Rect::new(first_x, origin.y, x, origin.y + token_height(theme));
-            x += paint_separator(ctx, Point::new(x + 10.0, origin.y), "or") + 20.0;
-            let second_x = x;
-            x += Self::paint_keycap_labels_at(
-                ctx.scene,
-                ctx.transform,
-                Point::new(x, origin.y),
                 second_labels.get(modifier_count..).unwrap_or_default(),
-                ctx.text,
-                theme,
-            );
-            second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
+            )
         } else {
-            let first_x = x;
-            x += Self::paint_keycap_labels_at(
-                ctx.scene,
-                ctx.transform,
-                Point::new(x, origin.y),
-                &first_labels,
-                ctx.text,
-                theme,
-            );
-            first_rect = Rect::new(first_x, origin.y, x, origin.y + token_height(theme));
-            x += paint_separator(ctx, Point::new(x + 10.0, origin.y), "or") + 20.0;
-            let second_x = x;
-            x += Self::paint_keycap_labels_at(
-                ctx.scene,
-                ctx.transform,
-                Point::new(x, origin.y),
-                &second_labels,
-                ctx.text,
-                theme,
-            );
-            second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
-        }
+            (first_labels.as_slice(), second_labels.as_slice())
+        };
+        let first_x = x;
+        x += Self::paint_keycap_labels_at(
+            ctx.scene,
+            ctx.transform,
+            Point::new(x, origin.y),
+            first_labels,
+            ctx.text,
+            theme,
+        );
+        let first_rect = Rect::new(first_x, origin.y, x, origin.y + token_height(theme));
+        x += paint_separator(ctx, Point::new(x + 10.0, origin.y), "or") + 20.0;
+        let second_x = x;
+        x += Self::paint_keycap_labels_at(
+            ctx.scene,
+            ctx.transform,
+            Point::new(x, origin.y),
+            second_labels,
+            ctx.text,
+            theme,
+        );
+        let second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
         [first_rect, second_rect]
     }
 

@@ -1793,7 +1793,6 @@ pub fn native_services(
         workspace_memberships,
         task_execution,
         resource_views,
-        desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
         local_person,
         legacy_workspace: membership.map(|tree| {

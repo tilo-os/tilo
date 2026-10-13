@@ -1786,12 +1786,13 @@ impl SetupApp {
         let mut content = page::related();
         if let Some(flow) = &self.internal_download_flow {
             let presentation = flow.presentation();
-            let mut summary = presentation.summary.clone();
-            if presentation.phase.is_none()
+            let summary = if presentation.phase.is_none()
                 && let Some(error) = flow.catalog_error()
             {
-                summary = error.to_string();
-            }
+                error.to_string()
+            } else {
+                presentation.summary.clone()
+            };
             content = content.push(Box::new(
                 Text::new(&summary)
                     .with_id("setup.internal.status")
@@ -2326,21 +2327,7 @@ impl SetupApp {
     /// Follow helper runs and stepper commits; announce finished runs.
     fn poll_internal_install(&mut self) -> bool {
         let mut changed = self.internal_install.poll();
-        if matches!(
-            self.internal_install.run_state(),
-            RunState::Running {
-                action: HelperAction::Stage,
-                ..
-            }
-        ) && let Some(detail) = self
-            .internal_download_flow
-            .as_ref()
-            .and_then(InternalDownloadFlow::consume_failure)
-            .map(str::to_string)
-        {
-            self.internal_install.abort_stage("download", detail);
-            changed = true;
-        }
+        changed |= self.abort_stage_on_download_failure();
         if self.internal_install_revision != self.internal_install.revision() {
             self.internal_install_revision = self.internal_install.revision();
             let host = self.internal_install.host();
@@ -2377,6 +2364,27 @@ impl SetupApp {
             changed = true;
         }
         changed
+    }
+
+    /// End a running stage whose download failed; returns whether it did.
+    fn abort_stage_on_download_failure(&mut self) -> bool {
+        if matches!(
+            self.internal_install.run_state(),
+            RunState::Running {
+                action: HelperAction::Stage,
+                ..
+            }
+        ) && let Some(detail) = self
+            .internal_download_flow
+            .as_ref()
+            .and_then(InternalDownloadFlow::consume_failure)
+            .map(str::to_string)
+        {
+            self.internal_install.abort_stage("download", detail);
+            true
+        } else {
+            false
+        }
     }
 
     fn internal_projection(&self) -> super::actions::InternalProjection {

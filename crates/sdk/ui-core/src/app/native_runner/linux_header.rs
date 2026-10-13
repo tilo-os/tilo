@@ -54,7 +54,7 @@ impl Decorations {
     /// Settle who decorates, then keep the bar current. Call every frame
     /// before layout: the bar's height is the app's top inset.
     pub(super) fn refresh(&mut self, app: &mut App, window: &Window) {
-        if let Self::Unsettled = self {
+        if matches!(self, Self::Unsettled) {
             let chrome = HostChrome::current(app.input.platform);
             *self = match app_draws_frame(chrome, window.server_side_decorations()) {
                 None => return,

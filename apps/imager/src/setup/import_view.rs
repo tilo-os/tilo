@@ -1844,15 +1844,17 @@ impl ImportApp {
     }
 
     fn poll_background(&mut self) -> bool {
-        let mut changed = self.poll_continued_review();
-        if let Some(outcome) = self.navigation.poll() {
+        let reviewed = self.poll_continued_review();
+        let mut changed = if let Some(outcome) = self.navigation.poll() {
             self.status_is_error = outcome.is_err();
             self.status = outcome
                 .err()
                 .unwrap_or_else(|| super::strings::t("imager-journey-navigation-opened"));
             self.composed.invalidate();
-            changed = true;
-        }
+            true
+        } else {
+            reviewed
+        };
         self.poll_identity_gate(&mut changed);
         let mut terminal = false;
         // At most one latest progress update and one terminal event per frame.
