@@ -350,6 +350,7 @@ mod tests {
                 active_tab: TAB_A,
                 width: StateWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         };
         let mut ws = Workspace::new(ws_id, "Home");

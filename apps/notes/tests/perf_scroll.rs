@@ -4,7 +4,13 @@
 //! build prints the numbers.
 //!
 //! `cargo test -p notes --test it perf_scroll -- --nocapture`
-
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "timing statistics over bounded sample counts: microsecond casts, percentile indices and medians of a few hundred samples"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

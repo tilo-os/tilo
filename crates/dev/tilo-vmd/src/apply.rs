@@ -1096,6 +1096,7 @@ impl Apply for RecordingApply {
                 .join(",")
         ));
         self.install_cohort_app(session, tapp)
+    }
     fn user_packages(
         &mut self,
         _session: &Session,

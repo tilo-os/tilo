@@ -32,6 +32,7 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
             active_tab: tab_id,
             width: StateWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     };
     let ws = Workspace {
@@ -291,6 +292,7 @@ fn make_stub_group(id: GroupId, label: &str) -> StateGroup {
         active_tab: tab_id,
         width: StateWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 
@@ -972,6 +974,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                     active_tab: remote_id(10),
                     width: StateWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
                 make_stub_group(remote_id(3), "Remote-B"),
                 make_stub_group(remote_id(4), "Remote-C"),

@@ -16,12 +16,20 @@
 //!   /usr/libexec/at-spi-bus-launcher --launch-immediately & sleep 2
 //!   TILO_A11Y_BUS=1 cargo test -p settings --test it a11y_bus -- --ignored --nocapture'
 //! ```
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::indexing_slicing,
+    clippy::manual_midpoint,
+    reason = "timing statistics over bounded sample counts: microsecond casts, percentile indices and medians of a few hundred samples"
+)]
 
 use std::time::{Duration, Instant};
 
-use ui::accesskit::{ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, TreeUpdate};
 use settings::SettingsShell;
 use ui::accesskit::Role;
+use ui::accesskit::{
+    ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, TreeUpdate,
+};
 use ui::framework::testing::TestApp;
 
 struct Idle;
@@ -92,7 +100,10 @@ fn accesskit_adapter_on_a_live_bus() {
         .a11y_nodes()
         .into_iter()
         .filter(|(_, node)| node.role() == Role::TreeItem)
-        .filter_map(|(_, node)| node.bounds().map(|b| ((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0)))
+        .filter_map(|(_, node)| {
+            node.bounds()
+                .map(|b| ((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0))
+        })
         .collect();
     let (mut switch, mut update, mut nodes) = (Vec::new(), Vec::new(), 0);
     for round in 0..3 {

@@ -55,6 +55,7 @@ fn smoke_tree() -> WorkspaceTree {
         tabs,
         width: WindowWidth::Fraction(300),
         maximized: false,
+        focus_history: Vec::new(),
     };
     let (first, second, third) = (910_001, 910_002, 910_003);
     strip.window_groups = vec![

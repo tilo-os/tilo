@@ -3638,6 +3638,7 @@ mod active_tab_tests {
                 active_tab: active_tab_id,
                 width: StateWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         };
         let mut ws = Workspace::new(ws_id, "Home");
@@ -3798,6 +3799,7 @@ mod active_tab_tests {
                     active_tab: 300,
                     width: StateWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             });
             tree.persist_path = Some(path.clone());
@@ -3908,6 +3910,7 @@ mod active_tab_tests {
                 active_tab: tab_id,
                 width: StateWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         };
         let mut ws = Workspace::new(ws_id, "Home");

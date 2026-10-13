@@ -2238,7 +2238,7 @@ impl CollaboratorsOverlay {
         };
         let lines =
             1_usize.saturating_add(usize::from(subtitle.is_some() || status_line.is_some()));
-        let block_h = line_h * row_count_as_f64(lines);
+        let block_h = line_h * f64_of_usize(lines);
         let top = row_y + (self.row_h() - block_h) / 2.0;
         let right = label_x1;
         let role_shown = role.map(|role| {

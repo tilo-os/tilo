@@ -3,7 +3,14 @@
 //! opening a page. Budgets apply to optimised builds only.
 //!
 //! `cargo test --profile thin-app -p tube --test perf_budget -- --nocapture`
-
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names,
+    reason = "timing statistics over bounded sample counts: microsecond casts, percentile indices and medians of a few hundred samples"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -78,7 +85,10 @@ fn feed() -> (Framed<TubeApp>, ui::ImageStore) {
 fn feed_with_thumbnails() {
     let t = Instant::now();
     let (mut app, store) = feed();
-    eprintln!("perf tube cold start (build + first frame): {:?}", t.elapsed());
+    eprintln!(
+        "perf tube cold start (build + first frame): {:?}",
+        t.elapsed()
+    );
     // Frames while thumbnails decode off-thread and fold in.
     let mut loading = Vec::new();
     for _ in 0..400 {
@@ -111,7 +121,8 @@ fn feed_with_thumbnails() {
     let mut resize = Vec::new();
     for i in 0..60u32 {
         let t = Instant::now();
-        h.resize((1300 + (i * 7) % 170, 800 + (i * 5) % 110)).unwrap();
+        h.resize((1300 + (i * 7) % 170, 800 + (i * 5) % 110))
+            .unwrap();
         resize.push(t.elapsed().as_micros() as u64);
     }
     let p50 = stat("tube resize step (feed)", &mut resize);
