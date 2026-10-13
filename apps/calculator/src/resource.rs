@@ -16,10 +16,7 @@ use crate::actions::{CalculatorEffect, GraphKind, HISTORY_CAP};
 use crate::app::CalculatorApp;
 use crate::model::{CalcModel, HistoryEntry, PlotFn};
 
-/// Calculator's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
 /// The calculator's record: its evaluated history, newest first, and its
 /// saved graphs, each row with its stable id. A formula merges per
