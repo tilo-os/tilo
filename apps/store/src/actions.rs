@@ -375,6 +375,7 @@ mod tests {
 
     fn tilo_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
+            bot: None,
             id: format!("so.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: String::new(),
@@ -405,6 +406,7 @@ mod tests {
 
     fn flatpak_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
+            bot: None,
             id: format!("org.example.{name}"),
             name: name.into(),
             description: String::new(),

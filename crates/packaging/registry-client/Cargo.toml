@@ -12,6 +12,7 @@ license.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-app-package = { path = "../tilo-app-package" }
 registry-types = { path = "../registry-types" }
+tilo-automation = { path = "../../collab/automation" }
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 reqwest = { workspace = true, features = ["blocking", "json"] }

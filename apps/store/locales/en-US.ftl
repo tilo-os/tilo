@@ -93,3 +93,16 @@ store-draft-report = Started a report about { $app_id }
 store-record-moderation-case = The registry opened case { $case_id }: { $status }
 store-report-note = Described the concern of a report
 store-reports-reports = Edited a report
+
+store-bot-label = BOT
+store-bot-what-it-does = What it does
+store-bot-needs-apps = Needs apps: { $apps }
+store-bot-needs-connectors = Needs connectors: { $connectors }
+store-bot-appearance = May post under other names and avatars. Always labelled BOT.
+store-bot-add-to-room = Add to a room…
+store-bot-add-unavailable = Bots run in rooms. Room admins add them from the room's settings.
+store-bot-trigger-connector = When its connector reports an event
+store-bot-trigger-record-changed = When a record changes
+store-bot-trigger-schedule = On a schedule
+store-bot-trigger-manual = When someone runs it
+store-bot-trigger-incoming-message = When a message arrives
