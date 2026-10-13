@@ -2,7 +2,6 @@
 #![allow(
     clippy::missing_panics_doc,
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
     reason = "test fixtures: a failed step is the test failing"
 )]

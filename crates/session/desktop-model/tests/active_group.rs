@@ -1,13 +1,5 @@
 //! The per-strip active-group pointer and the persisted shape of groups.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
-
 use std::collections::HashMap;
 
 use tilo_desktop_model::{

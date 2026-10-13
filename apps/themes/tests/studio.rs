@@ -2,12 +2,6 @@
 //! preset, the editor follows every edit with live contrast findings, and a
 //! theme that misses a floor cannot be applied.
 
-#![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "a test that cannot open the app fails"
-)]
-
 use themes::studio::Rung;
 use themes::{App, SCENARIO_THEME, Studio};
 use ui::headless::SemanticExpectation;

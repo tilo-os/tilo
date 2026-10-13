@@ -465,8 +465,7 @@ impl Widget for NativeView {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
         }
         let pointer_event = matches!(
             event,
@@ -771,16 +770,9 @@ mod tests {
             let mut taffy = TaffyTree::new();
             let node = taffy.leaf_node(Style::default());
             let mut at_node = Dispatch::new().layout(&taffy, node);
-            let cursor = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(40.0, 70.0),
-            };
+            let cursor = crate::synthetic_input::cursor_moved(40.0, 70.0);
             at_node.send(&mut view, &cursor);
-            let press = WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            };
+            let press = crate::synthetic_input::mouse_press();
             let pressed = at_node.send(&mut view, &press);
             assert!(pressed.handled);
             assert_eq!(pressed.focus_target, Some(node));

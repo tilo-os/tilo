@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The one allowlist of app collection members, and the two readers that use it (TIL-734)."""
+"""The one allowlist of app collection members, and the two readers that use it."""
 from pathlib import Path
 import subprocess
 import unittest

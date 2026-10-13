@@ -21,7 +21,7 @@ use crate::theme::Theme;
 use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
+    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_index,
 };
 
 const ARC_STEPS: u32 = 64;
@@ -136,11 +136,8 @@ pub struct SunburstChart {
     center_subtitle: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
-    hovered: Option<String>,
+    inspection: ChartInspection<String>,
     activated: Option<String>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
 }
 
 impl SunburstChart {
@@ -152,11 +149,8 @@ impl SunburstChart {
             center_subtitle: String::new(),
             height: 440.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
+            inspection: ChartInspection::default(),
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
         }
     }
     #[must_use]
@@ -177,28 +171,27 @@ impl SunburstChart {
     }
     pub fn set_root(&mut self, root: SunburstNode) {
         self.root = root;
-        self.hovered = None;
+        self.inspection.hovered = None;
     }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.hovered = self
+        self.inspection.hovered = self
             .segments()
             .iter()
             .any(|segment| segment.id == id)
             .then(|| id.to_owned());
-        self.keyboard_inspection = self.hovered.is_some();
+        self.inspection.keyboard = self.inspection.hovered.is_some();
         self.update_inspection_anchor();
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
 
     fn update_inspection_anchor(&mut self) {
-        let Some(id) = self.hovered.as_deref() else {
+        let Some(id) = self.inspection.hovered.as_deref() else {
             return;
         };
         let Some(segment) = self.segments().into_iter().find(|segment| segment.id == id) else {
@@ -208,7 +201,7 @@ impl SunburstChart {
         let angle = segment.start.midpoint(segment.end);
         let depth = f64::from(u32::try_from(segment.depth).unwrap_or(u32::MAX));
         let radius = inner + (depth - 0.5) * band;
-        self.pointer = Point::new(
+        self.inspection.pointer = Point::new(
             center.x + radius * angle.cos(),
             center.y + radius * angle.sin(),
         );
@@ -378,21 +371,15 @@ impl SunburstChart {
 }
 
 impl InteractiveChart for SunburstChart {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = String;
+    fn inspection(&mut self) -> &mut ChartInspection<String> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
-        self.hovered = self.hit_test(self.pointer);
-    }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
+        self.inspection.hovered = self.hit_test(self.inspection.pointer);
     }
     fn activate_hovered(&mut self) -> bool {
-        let Some(id) = &self.hovered else {
+        let Some(id) = &self.inspection.hovered else {
             return false;
         };
         self.activated = Some(id.clone());
@@ -401,24 +388,21 @@ impl InteractiveChart for SunburstChart {
     fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
         let candidates = self.segments();
         let current = self
+            .inspection
             .hovered
             .as_deref()
             .and_then(|id| candidates.iter().position(|segment| segment.id == id));
-        self.hovered = moved_index(current, candidates.len(), action)
+        self.inspection.hovered = moved_index(current, candidates.len(), action)
             .and_then(|index| candidates.get(index))
             .map(|segment| segment.id.clone());
         self.update_inspection_anchor();
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
 impl Widget for SunburstChart {
     crate::widget::chart_navigation::chart_leaf!();
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the retained draw pass keeps segment, center-label, and tooltip painting together"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -427,14 +411,14 @@ impl Widget for SunburstChart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.keyboard_inspection {
+        if self.inspection.keyboard {
             self.update_inspection_anchor();
         }
         let (base_center, inner, _, band) = self.geometry();
         for segment in self.segments() {
             let half_gap = (self.style.angular_gap / 2.0).min((segment.end - segment.start) * 0.2);
             let mid = segment.start.midpoint(segment.end);
-            let lift = if self.hovered.as_deref() == Some(segment.id.as_str()) {
+            let lift = if self.inspection.hovered.as_deref() == Some(segment.id.as_str()) {
                 self.style.hover_offset
             } else {
                 0.0
@@ -461,7 +445,7 @@ impl Widget for SunburstChart {
                 segment.end - half_gap,
             );
             scene.fill(Fill::NonZero, transform, color, None, &path);
-            if self.hovered.as_deref() == Some(segment.id.as_str()) {
+            if self.inspection.hovered.as_deref() == Some(segment.id.as_str()) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -490,7 +474,11 @@ impl Widget for SunburstChart {
             &self.center_title,
             &self.center_subtitle,
         );
-        if let Some(id) = self.hovered.as_deref().filter(|_| self.style.tooltip)
+        if let Some(id) = self
+            .inspection
+            .hovered
+            .as_deref()
+            .filter(|_| self.style.tooltip)
             && let Some(segment) = self.segments().into_iter().find(|segment| segment.id == id)
         {
             let detail = if segment.detail.is_empty() {
@@ -503,7 +491,7 @@ impl Widget for SunburstChart {
                 transform,
                 tr,
                 theme,
-                self.pointer,
+                self.inspection.pointer,
                 self.rect,
                 170.0,
                 (&segment.path, &detail),
@@ -526,10 +514,7 @@ impl Widget for SunburstChart {
                     } else {
                         segment.detail
                     })
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect();
         Some(

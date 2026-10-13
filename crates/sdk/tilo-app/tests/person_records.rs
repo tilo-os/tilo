@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! A resource of the person's own, kept beside the record an app shows:
 //! edited through its actions with attribution, history and undo, the same
 //! record on each of the person's devices, and never part of the room a

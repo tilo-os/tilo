@@ -421,10 +421,7 @@ mod tests {
     use crate::synthetic_input::char_key;
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
 
     use crate::synthetic_input::mouse_press;
@@ -524,14 +521,7 @@ mod tests {
             );
             // The dialog itself does not intercept Enter (only Escape), so it
             // forwards to the multiline field, which inserts a newline.
-            dispatch(
-                &mut d,
-                &WindowEvent::KeyboardInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    event: ev,
-                    is_synthetic: false,
-                },
-            );
+            dispatch(&mut d, &crate::synthetic_input::keyboard_input(ev));
             dispatch(&mut d, &char_key("b"));
             assert_eq!(
                 d.content().value(),

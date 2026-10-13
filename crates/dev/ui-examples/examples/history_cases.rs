@@ -33,11 +33,7 @@ use automerge::AutoCommit;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
-use tilo_ui::widget::history_scrubber::ScrubberGroup;
-use tilo_ui::{
-    ActivityTimeline, AuthorDirectory, GroupingConfig, HistoryEntry, HistoryScrubber,
-    HistorySource, Theme, Widget,
-};
+use tilo_ui::{ActivityTimeline, AuthorDirectory, HistoryEntry, HistorySource, Theme, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -291,42 +287,6 @@ fn timeline(
     t
 }
 
-fn scrubber(w: f64, entries: Vec<HistoryEntry>, groups: Vec<ScrubberGroup>) -> HistoryScrubber {
-    let mut s = HistoryScrubber::new(entries);
-    s.set_groups(groups);
-    s.set_rect(Rect::new(0.0, 0.0, w, s.natural_height()));
-    s.set_now_for_test(now());
-    s
-}
-
-/// Turn the model's groups into the strip's segments, exactly as the word
-/// processor's panel does.
-fn segments(entries: &[HistoryEntry], named: &[tilo_ui::NamedRange]) -> Vec<ScrubberGroup> {
-    tilo_ui::group_entries(entries, named, &GroupingConfig::default())
-        .iter()
-        .map(|g| ScrubberGroup {
-            start: g.start,
-            end: g.end.saturating_sub(1),
-            label: g.name.clone(),
-            derived: g.title(entries),
-            record_id: g.record_id.clone(),
-            open: g.open,
-        })
-        .collect()
-}
-
-/// Rounds a rendered pixel measurement (always non-negative, far under
-/// `u32::MAX`) to a `u32` for `Shot::paint`'s `w`/`h` parameters.
-fn px_u32(v: f64) -> u32 {
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "v is a rendered pixel measurement, always non-negative and far below u32::MAX"
-    )]
-    let out = v.max(0.0).round() as u32;
-    out
-}
-
 pub fn run(args: &[String]) {
     let (theme_name, theme) = shot_theme();
     let dir = PathBuf::from(
@@ -348,17 +308,9 @@ pub fn run(args: &[String]) {
     let mut doc = three_session_doc();
     let (entries, named) = shoot_main_bands(&mut shot, &mut doc);
     shoot_long_and_nested(&mut shot, &doc, &entries);
-    let (open_entries, open_named) = shoot_open_band(&mut shot, &doc, &entries);
-    let single_entries = shoot_singleton_and_empty(&mut shot);
+    shoot_open_band(&mut shot, &doc, &entries);
+    shoot_singleton_and_empty(&mut shot);
     shoot_narrow_and_thousand(&mut shot, &entries, &named);
-    shoot_version_strip(
-        &mut shot,
-        &entries,
-        &named,
-        &open_entries,
-        &open_named,
-        &single_entries,
-    );
 
     println!("done: {} shots", shot.n);
     let _ = Point::ZERO;
@@ -601,67 +553,6 @@ fn shoot_narrow_and_thousand(
         t.row_count()
     );
     shot.paint("thousand-bands-synthetic", 520, 640, &mut t);
-}
-
-/// The version strip: default, parked-inside-a-version, naming, a still-open
-/// version, narrow widths, no versions at all, and no history at all. Split
-/// out of `run` to keep that under the line cap.
-fn shoot_version_strip(
-    shot: &mut Shot,
-    entries: &[HistoryEntry],
-    named: &[tilo_ui::NamedRange],
-    open_entries: &[HistoryEntry],
-    open_named: &[tilo_ui::NamedRange],
-    single_entries: &[HistoryEntry],
-) {
-    let last_tick = entries.len().saturating_sub(1);
-    let segs = segments(entries, named);
-    let mut s = scrubber(1000.0, entries.to_vec(), segs.clone());
-    let h = px_u32(s.natural_height());
-    s.set_current_tick(last_tick);
-    shot.paint("strip-versions", 1000, h, &mut s);
-
-    // Parked inside a named version.
-    let mut s = scrubber(1000.0, entries.to_vec(), segs.clone());
-    if let Some(g) = segs.iter().find(|g| g.label.is_some()) {
-        s.set_current_tick(g.end);
-    }
-    shot.paint("strip-inside-a-version", 1000, h, &mut s);
-
-    // Naming from the strip.
-    let mut s = scrubber(1000.0, entries.to_vec(), segs.clone());
-    s.set_current_tick(last_tick);
-    s.begin_naming_current_group();
-    shot.paint("strip-naming", 1000, h, &mut s);
-
-    // A version still open.
-    let open_segs = segments(open_entries, open_named);
-    let mut s = scrubber(1000.0, open_entries.to_vec(), open_segs);
-    s.set_current_tick(open_entries.len().saturating_sub(1));
-    shot.paint("strip-open-version", 1000, h, &mut s);
-
-    // Narrow strips: the button row has to shed buttons rather than overlap.
-    for w in [620u32, 460, 360] {
-        let mut s = scrubber(f64::from(w), entries.to_vec(), segs.clone());
-        s.set_current_tick(last_tick);
-        shot.paint(&format!("strip-narrow-{w}"), w, h, &mut s);
-    }
-
-    // The degenerate case: a strip that was never handed versions. One tick per
-    // change, nothing snapping — exactly what it was before.
-    let mut s = scrubber(1000.0, entries.to_vec(), Vec::new());
-    s.set_current_tick(last_tick);
-    let plain_h = px_u32(s.natural_height());
-    shot.paint("strip-no-versions", 1000, plain_h, &mut s);
-
-    // One change, and none at all.
-    let single_segs = segments(single_entries, &[]);
-    let mut s = scrubber(1000.0, single_entries.to_vec(), single_segs);
-    let single_h = px_u32(s.natural_height());
-    shot.paint("strip-bands-of-one", 1000, single_h, &mut s);
-    let mut s = scrubber(1000.0, Vec::new(), Vec::new());
-    let empty_h = px_u32(s.natural_height());
-    shot.paint("strip-no-history", 1000, empty_h, &mut s);
 }
 
 fn author_dir() -> AuthorDirectory {

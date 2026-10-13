@@ -3,7 +3,7 @@
 //! The collaboration broker re-checks what it already admitted (native
 //! context subscribers, membership surfaces, the devices a channel steward
 //! lets read) when something those decisions read may have changed, instead
-//! of on a fixed clock (TIL-707): the workspace tree, the device fleet and
+//! of on a fixed clock: the workspace tree, the device fleet and
 //! identity registry, the native owner's task store, the devices the network
 //! authenticated. Every writer of those calls [`announce`]. A consumer holds a
 //! [`Watch`], which wakes it once on the next announcement after it armed it,
@@ -31,7 +31,7 @@
 //! keeps its one-second re-check for the inputs concerned while they exist.
 //!
 //! The epoch is process-wide rather than per broker, like the relay's
-//! `authority_epoch` (TIL-312): writers announce without a handle threaded to
+//! `authority_epoch`: writers announce without a handle threaded to
 //! them. Two hosts in one process (only tests do that) wake each other; a
 //! spurious announcement costs one re-check and never grants anything.
 
@@ -427,6 +427,7 @@ mod platform {
                         return;
                     }
                     entry.revents = 0;
+                    drain(entry.fd);
                     if self
                         .timer
                         .as_ref()
@@ -434,10 +435,8 @@ mod platform {
                     {
                         // Expired, or cancelled by a clock change: either
                         // way the clock moved past what was armed.
-                        drain(entry.fd);
                         clock.fire();
                     } else {
-                        drain(entry.fd);
                         // A directory created meanwhile is watched from now.
                         self.changed.store(true, Ordering::SeqCst);
                         let _ = self.sync_watches();

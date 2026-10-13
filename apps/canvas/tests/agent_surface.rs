@@ -6,7 +6,6 @@
 //! `TILO_UPDATE_GOLDEN=1 cargo test -p canvas --test agent_surface`.
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
@@ -17,8 +16,10 @@ use ui::prelude::TestApp;
 /// reads before it can act. Growing past it is a design decision, not drift.
 /// `apply` and `group` name the actions they repeat; the field-edit listing
 /// names each editable path once with its operations; a parameter's schema
-/// does not repeat its description, nor a description its label.
-const BUDGET: usize = 64 * 1024;
+/// does not repeat its description, nor a description its label. Raised
+/// from 64 KiB when every document resource gained `review-restore` and
+/// `restore-reviewed` (exact-item restore, #4581).
+const BUDGET: usize = 68 * 1024;
 
 #[test]
 fn the_agent_surface_matches_its_golden_file_and_budget() {

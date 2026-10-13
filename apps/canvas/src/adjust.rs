@@ -176,10 +176,7 @@ impl Grade {
                     .collect()
             })
         });
-        let mut matrix: Option<[[f32; 3]; 3]> = None;
-        if let Some(hue) = adjust.hue {
-            matrix = Some(hue_matrix(hue as f32));
-        }
+        let mut matrix: Option<[[f32; 3]; 3]> = adjust.hue.map(|hue| hue_matrix(hue as f32));
         if let Some(saturation) = adjust.saturation {
             let saturate = saturate_matrix(1.0 + saturation as f32);
             matrix = Some(matrix.map_or(saturate, |before| multiply(&saturate, &before)));

@@ -1,4 +1,4 @@
-//! Re-reading a file when it changes, instead of on a timer (TIL-774).
+//! Re-reading a file when it changes, instead of on a timer.
 //!
 //! The capability list a mount enforces is re-read while the mount runs, so
 //! a revocation takes effect without a remount. Polling it once a second

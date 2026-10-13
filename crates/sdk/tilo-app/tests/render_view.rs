@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! `render` answers with what the window shows, however much it draws: a
 //! fresh renderer's first frame of a dense view is not handed back blank.

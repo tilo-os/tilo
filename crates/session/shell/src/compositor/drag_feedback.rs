@@ -24,7 +24,7 @@
 use std::sync::Arc;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
-use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+use vello::peniko::{Blob, Extend, Fill, ImageBrush};
 
 use ui::TextRole;
 use ui::color_compat::ColorCompat;
@@ -223,13 +223,7 @@ fn draw_preview(
             width,
             height,
         } if *width > 0 && *height > 0 => {
-            let image = ImageData {
-                data: Blob::new(rgba.clone()),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: *width,
-                height: *height,
-            };
+            let image = ui::raster::rgba8(Blob::new(rgba.clone()), *width, *height);
             let sx = rect.width() / f64::from(*width);
             let sy = rect.height() / f64::from(*height);
             let brush = ImageBrush::new(image).with_extend(Extend::Pad);

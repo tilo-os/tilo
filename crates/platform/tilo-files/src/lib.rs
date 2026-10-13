@@ -103,7 +103,7 @@ mod watch;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod web;
 
-pub use caps::{Availability, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use error::FsError;
 pub use native::lock::LockMode;
 pub use tilo_paths::{InvalidVPath, Location, VPath, VirtualRoot};

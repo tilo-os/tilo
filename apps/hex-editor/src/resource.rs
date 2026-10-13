@@ -17,13 +17,7 @@ use crate::buffer::{ByteBuffer, Hex};
 use crate::model::BufferEdit;
 use crate::view::HexView;
 
-/// The hex editor's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[
-    ("en-US", include_str!("../locales/en-US.ftl")),
-    ("de-DE", include_str!("../locales/de-DE.ftl")),
-];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// The open buffer.
 #[derive(Model, Clone, Debug, Default, PartialEq)]

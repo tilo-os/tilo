@@ -355,9 +355,7 @@ impl ThumbnailService {
     pub fn open_default(workers: usize) -> std::io::Result<Self> {
         // No cache directory and no file system (the page): previews live
         // in memory. `temp_dir` panics there rather than failing.
-        if tilo_paths::availability(tilo_paths::Feature::NativePaths)
-            != tilo_paths::Availability::Available
-        {
+        if !tilo_paths::available(tilo_paths::Feature::NativePaths) {
             return Ok(Self::ephemeral(workers));
         }
         let dir = tilo_paths::cache_dir().map_or_else(

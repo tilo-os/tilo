@@ -8,10 +8,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
@@ -34,10 +30,7 @@ use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 fn cursor_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 use ui::synthetic_input::mouse_press;
@@ -241,10 +234,6 @@ fn prompt_pump_drains_one_grant_per_choice_and_never_latches() {
     clippy::significant_drop_tightening,
     reason = "the pending_grants assert and tree() both need st held; there is nothing \
 to narrow between them"
-)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn prompt_pump_persists_only_what_each_choice_allows() {
     // Phase `pump_keeps_session_choice_out_of_the_shared_workspace`.

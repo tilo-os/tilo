@@ -524,15 +524,7 @@ mod owner_view_tests {
         let first = view(&app, 1, 5);
         deliver(&mut app, first);
         app.init_layout();
-        app.surface_input(
-            &Surface,
-            winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            },
-            false,
-        );
+        app.surface_input(&Surface, crate::synthetic_input::mouse_press(), false);
         assert!(app.continuation.owner_view.awaiting_claim);
         assert!(!app.continuation.owner_view.following);
         let old = view(&app, 2, 5);

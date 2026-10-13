@@ -5,16 +5,6 @@
 //! back, and reopened — proving the model is the source of truth, not
 //! an opaque blob.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::fmt::Write as _;
 use tilo_doc::diff::{BlockOp, RunOp, diff_snapshots};
 use tilo_doc::{BlockView, DocSnapshot, Document, MarkSpan};

@@ -365,11 +365,6 @@ async fn settle(cell: Weak<Mutex<Option<Held>>>, applied: Arc<tokio::sync::Mutex
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "in a test these are the assertion, not a hazard"
-    )]
 
     use std::time::{Duration, Instant};
 

@@ -1013,24 +1013,15 @@ impl AccountsPane {
                         .unwrap_or_default()
                         .into(),
                 );
-                self.form_user.set(
-                    stored
-                        .config
-                        .get("username")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .into(),
-                );
-            } else {
-                self.form_user.set(
-                    stored
-                        .config
-                        .get("username")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .into(),
-                );
             }
+            self.form_user.set(
+                stored
+                    .config
+                    .get("username")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .into(),
+            );
             let server = stored
                 .config
                 .get(if kind == AccountKind::WebDav {
@@ -2268,14 +2259,7 @@ impl PaneModel for AccountsPane {
 }
 
 fn relative_sync_time(unix: i64) -> String {
-    let now = ui::time::unix_now_i64();
-    let age = now.saturating_sub(unix).max(0);
-    match age {
-        0..=59 => t("accounts-just-now"),
-        60..=3_599 => t_args("accounts-min-ago", &[("count", (age / 60).into())]),
-        3_600..=86_399 => t_args("accounts-h-ago", &[("count", (age / 3_600).into())]),
-        _ => t_args("accounts-d-ago", &[("count", (age / 86_400).into())]),
-    }
+    ui::format::relative(ui::time::unix_now_i64().saturating_sub(unix))
 }
 
 #[allow(
