@@ -266,15 +266,16 @@ def host_runtime_roots():
     return roots
 
 
-def fetch_runtime(reference, destination):
-    """Fetch `reference` through the host's own verified install into
-    `destination`, never into this person's runtime directory."""
+def fetch_runtime(reference, destination, app_cli):
+    """Fetch `reference` through the workspace's own verified install (the
+    `app` CLI built with the other tools) into `destination`, never into this
+    person's runtime directory."""
     destination.mkdir(parents=True, exist_ok=True)
-    run(['app', 'runtime', 'install', reference],
+    run([str(app_cli), 'runtime', 'install', reference],
         env=dict(os.environ, TILO_RUNTIME_BUNDLE_DIR=str(destination)))
 
 
-def stage_engine_runtimes(repo, stage, bundle, roots=None, fetch=fetch_runtime):
+def stage_engine_runtimes(repo, stage, bundle, roots=None, fetch=None):
     """Ship every engine the cohort's apps pin inside the layer, at the exact
     version, and trust the publisher that signed it. A userspace swap that
     replaced the Browser without its engine would leave it saying "not
@@ -284,11 +285,14 @@ def stage_engine_runtimes(repo, stage, bundle, roots=None, fetch=fetch_runtime):
     runtime_root = stage / 'tree/usr/lib/tilo-runtime'
     for reference in engine_pins(repo):
         version = reference.split('/', 1)[1]
-        source = next((root / version for root in (roots or host_runtime_roots())
+        source = next((root / version for root in (host_runtime_roots() if roots is None else roots)
                        if (root / version / 'bundle.toml').is_file()), None)
         if source is None:
             fetched = stage / 'work/engine-fetch'
-            fetch(reference, fetched)
+            if fetch is None:
+                fetch_runtime(reference, fetched, bundle.parent / 'app')
+            else:
+                fetch(reference, fetched)
             source = fetched / version
         if not (source / 'bundle.toml').is_file():
             raise ValueError(f'the engine {reference} the apps pin is neither on this host nor in the registry')
@@ -331,7 +335,9 @@ def prepare(args):
     tools_env = dict(os.environ, CARGO_PROFILE_RELEASE_LTO='off',
                      CARGO_PROFILE_RELEASE_CODEGEN_UNITS='16')
     tools = [cargo, 'build', '--locked', '--release', '-p', 'runtime-bundle',
-             '-p', 'tilo-app-package-cli', '-p', 'install', '-p', 'cli-shim']
+             '-p', 'tilo-app-package-cli', '-p', 'install', '-p', 'cli-shim',
+             # `app runtime install`: the registry fallback for a pinned engine.
+             '-p', 'app-cli']
     if args.compiler_interface_out is not None:
         tools += ['-p', 'tilo-app-cli']
     run(tools, env=tools_env)
