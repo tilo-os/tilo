@@ -3983,7 +3983,8 @@ impl ActionsProvider {
         // One-step switches for the radios: "wifi" finds "Wi-Fi: turn off", not a
         // form asking for `enabled`, and the row says what it is now. They run
         // the same set-enabled action with the opposite of the live state.
-        for &(set_enabled_id, toggle_id, name) in QS_TOGGLES {
+        for toggle in QS_TOGGLES {
+            let (set_enabled_id, toggle_id) = (toggle.set_enabled, toggle.id);
             let Some(base) = out.iter().find(|row| row.id == set_enabled_id).cloned() else {
                 continue;
             };
@@ -3991,11 +3992,8 @@ impl ActionsProvider {
                 continue;
             }
             let on = radio_is_on(ctx.chrome, set_enabled_id);
-            let title = t(&format!(
-                "search-toggle-{name}-{}",
-                if on { "off" } else { "on" }
-            ));
-            let subtitle = t(&format!("search-toggle-{name}-subtitle"));
+            let title = t(if on { toggle.turn_off } else { toggle.turn_on });
+            let subtitle = t(toggle.subtitle);
             let params = base.params.clone();
             let opposite = move |chrome: &Chrome| -> Result<ActionArgs, ActionError> {
                 let enabled = !radio_is_on(&chrome.borrow(), set_enabled_id);
@@ -4342,7 +4340,7 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
             | "appearance.high-contrast"
             | "navigation.axis.enable"
             | "navigation.axis.disable"
-    ) || QS_TOGGLES.iter().any(|(_, toggle, _)| *toggle == id)
+    ) || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
 }
 
 /// The shortcut that does what an action does, as the active keyboard
@@ -4413,20 +4411,40 @@ pub(crate) fn action_shortcut(
         .and_then(|(_, shortcut)| shortcut_text(config, shortcut))
 }
 
-/// The Quick Settings radios offered as one-step toggles: the set-enabled
-/// action they drive, their own id and the catalogue name of their copy.
-const QS_TOGGLES: &[(&str, &str, &str)] = &[
-    (QS_WIFI_ID, "quick-settings.wifi.toggle", "wifi"),
-    (
-        QS_BLUETOOTH_ID,
-        "quick-settings.bluetooth.toggle",
-        "bluetooth",
-    ),
-    (
-        QS_AIRPLANE_ID,
-        "quick-settings.airplane-mode.toggle",
-        "airplane-mode",
-    ),
+/// A Quick Settings radio offered as a one-step toggle: the set-enabled
+/// action it drives, its own id, and the catalogue keys of its row's title
+/// (to turn the radio on, or off) and subtitle.
+struct QsToggle {
+    set_enabled: &'static str,
+    id: &'static str,
+    turn_on: &'static str,
+    turn_off: &'static str,
+    subtitle: &'static str,
+}
+
+/// The Quick Settings radios offered as one-step toggles.
+const QS_TOGGLES: &[QsToggle] = &[
+    QsToggle {
+        set_enabled: QS_WIFI_ID,
+        id: "quick-settings.wifi.toggle",
+        turn_on: "search-toggle-wifi-on",
+        turn_off: "search-toggle-wifi-off",
+        subtitle: "search-toggle-wifi-subtitle",
+    },
+    QsToggle {
+        set_enabled: QS_BLUETOOTH_ID,
+        id: "quick-settings.bluetooth.toggle",
+        turn_on: "search-toggle-bluetooth-on",
+        turn_off: "search-toggle-bluetooth-off",
+        subtitle: "search-toggle-bluetooth-subtitle",
+    },
+    QsToggle {
+        set_enabled: QS_AIRPLANE_ID,
+        id: "quick-settings.airplane-mode.toggle",
+        turn_on: "search-toggle-airplane-mode-on",
+        turn_off: "search-toggle-airplane-mode-off",
+        subtitle: "search-toggle-airplane-mode-subtitle",
+    },
 ];
 
 /// Whether the radio `set_enabled_id` drives is on now.
