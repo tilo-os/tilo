@@ -2170,6 +2170,9 @@ impl ShellOverlayHost {
             crate::shell::search::providers::SystemSettingsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::SettingsPagesProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::tray_items::TrayItemsProvider::global(),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -8432,8 +8435,8 @@ impl ShellOverlayHost {
                 if let Some(badge) = &r.badge {
                     e = e.badge(badge.clone());
                 }
-                if r.id == "room.activity.open" {
-                    e = e.keybinding("Super+H");
+                if let Some(shortcut) = &r.shortcut {
+                    e = e.keybinding(shortcut.clone());
                 }
                 entries.push(e);
                 results.push(r.clone());
@@ -9191,6 +9194,16 @@ impl ShellOverlayHost {
                     self.palette_visible = true;
                     return;
                 }
+            }
+            crate::shell::search::usage::record(&result.provider_id, &result.id);
+            // A switch flips where the person can see it: keep the palette
+            // open on the row's new state instead of closing it.
+            if result.provider_id == crate::shell::search::providers::actions::PROVIDER_ID
+                && crate::shell::search::providers::actions::toggles_in_place(&result.id)
+            {
+                self.last_search_query = "\0toggled\0".into();
+                self.palette_layout_dirty = true;
+                return;
             }
             self.palette_visible = false;
             self.palette.close();
