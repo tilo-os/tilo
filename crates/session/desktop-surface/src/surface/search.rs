@@ -4,13 +4,15 @@
 //! Search opens from the same chords as the native shell's (Super+K and
 //! Super+Space; Ctrl+K where the platform's command key is Ctrl), from a
 //! `global-search`/`commands` navigation command, or from
-//! [`DesktopHandle::toggle_search`]. While open it takes every input event.
+//! [`DesktopHandle::toggle_search`]. A window's new-tab control opens it
+//! over the applications only, and the one chosen opens as a tab of that
+//! window, as the native shell's does. While open it takes every input event.
 //! Choosing an application launches it, a window focuses it, and an
 //! application's action or content runs through the palette's control
 //! invocation, which the frame host resolves against the live resource
 //! tree like any bound control.
 
-use tilo_desktop_model::{DesktopTree, TileContent};
+use tilo_desktop_model::{DesktopTree, GroupId, StripId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
 use tilo_desktop_search::{SearchData, Target};
 use ui::automerge::AutoCommit;
@@ -28,6 +30,8 @@ use crate::navigation::{self, Admitted};
 pub(super) enum SearchRequest {
     Open(Option<String>),
     Toggle,
+    /// Window `GroupId`'s new-tab control: which application to open there.
+    NewTab(StripId, GroupId),
 }
 
 const CLOSE_WINDOW: &str = "desktop.close-window";
@@ -224,6 +228,7 @@ impl DesktopSurface {
         self.search
             .palette_mut()
             .set_platform_conventions(self.platform);
+        self.new_tab_into = None;
         if let Some(query) = query {
             self.search.set_query(&query);
         }
@@ -235,6 +240,23 @@ impl DesktopSurface {
         self.structure_dirty = true;
     }
 
+    /// Open search over the applications only, with nothing typed, aimed at
+    /// window `group`: what is chosen opens as its tab. Opens even while
+    /// search is already open, as another press of the control re-aims it.
+    fn open_new_tab_search(&mut self, strip: StripId, group: GroupId) {
+        let data = SearchData {
+            applications: self.tiles.search_applications(),
+            ..SearchData::default()
+        };
+        self.search.open(data);
+        self.search
+            .palette_mut()
+            .set_platform_conventions(self.platform);
+        self.search.set_query("");
+        self.new_tab_into = Some((strip, group));
+        self.structure_dirty = true;
+    }
+
     /// Take a host's search request, follow the palette, and perform what
     /// was chosen. Runs every update pass, before queued commands apply.
     pub(super) fn step_search(&mut self, doc: &AutoCommit) {
@@ -243,6 +265,7 @@ impl DesktopSurface {
             Some(SearchRequest::Toggle) if self.search.is_open() => self.close_search(),
             Some(SearchRequest::Toggle) => self.open_search(doc, None),
             Some(SearchRequest::Open(query)) => self.open_search(doc, query),
+            Some(SearchRequest::NewTab(strip, group)) => self.open_new_tab_search(strip, group),
             None => {}
         }
         self.follow_search();
@@ -256,10 +279,19 @@ impl DesktopSurface {
             let refreshed = self.search.refresh();
             self.structure_dirty |= closed || refreshed;
         }
-        if let Some(target) = self.search.take_choice() {
-            self.perform(target);
+        match (self.search.take_choice(), self.new_tab_into.take()) {
+            (Some(Target::Launch { app }), Some((strip, group))) => {
+                self.open_tab_in_group(strip, group, &app);
+            }
+            (Some(target), _) => self.perform(target),
+            (None, into) => self.new_tab_into = into,
         }
         let open = self.search.is_open();
+        if !open {
+            // The aim is for one choice; search opened otherwise opens
+            // applications as their own windows again.
+            self.new_tab_into = None;
+        }
         self.shared.borrow_mut().search_open = open;
     }
 
