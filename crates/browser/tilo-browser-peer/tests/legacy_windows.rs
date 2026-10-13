@@ -1,11 +1,6 @@
 //! Native surface presence reaches the portable browser session over the
 //! production HTTPS/WebTransport carriers, and browser input returns privately.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are assertions"
-)]
+#![allow(clippy::unwrap_used, reason = "in a test these are assertions")]
 
 mod support;
 

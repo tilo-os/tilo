@@ -5001,12 +5001,12 @@ impl PhotosApp {
                                 AccessNode::new(Role::Button)
                                     .with_name(tr(name))
                                     .with_bounds(bounds)
-                                    .with_state(AccessState {
-                                        focusable: button.is_focusable(),
-                                        focused: button.is_focused(),
-                                        disabled: !button.is_enabled(),
-                                        ..Default::default()
-                                    })
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(button.is_focusable())
+                                            .focused(button.is_focused())
+                                            .disabled(!button.is_enabled()),
+                                    )
                                     .with_action_target(target),
                             )
                         }),
@@ -5031,10 +5031,7 @@ impl PhotosApp {
                                     |failure| failure.message.clone(),
                                 ))
                                 .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                                 .with_action_target(format!("photos:analysis:failure:{id}"))
                                 .with_hashed_key(format!("photos:analysis-failure:{id}"))
                         }),
@@ -5064,10 +5061,7 @@ impl PhotosApp {
                             ))
                             .with_description(tr("photos-a11y-open-album"))
                             .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true))
                             .with_hashed_key(format!("photos:album-card:{id}"))
                             .with_action_target(format!("photos:library-album:{id}")),
                     )
@@ -5076,10 +5070,7 @@ impl PhotosApp {
                     AccessNode::new(Role::Button)
                         .with_name(tr("photos-edit-album"))
                         .with_bounds(*bounds)
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                         .with_hashed_key(format!("photos:album-edit:{id}"))
                         .with_action_target(format!("photos:album-edit:{id}"))
                 }));
@@ -5096,11 +5087,11 @@ impl PhotosApp {
                             .with_name(tr("photos-a11y-person-name"))
                             .with_value(self.people_name_input.value())
                             .with_bounds(self.people_name_input.get_rect())
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: self.people_name_input.is_focused(),
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.people_name_input.is_focused()),
+                            )
                             .with_hashed_key("photos:people:name")
                             .with_action_target("photos:people:name"),
                     );
@@ -5117,12 +5108,12 @@ impl PhotosApp {
                                 } else {
                                     control.button.get_rect()
                                 })
-                                .with_state(AccessState {
-                                    focusable: control.button.is_focusable(),
-                                    focused: control.button.is_focused(),
-                                    disabled: !control.button.is_enabled(),
-                                    ..Default::default()
-                                })
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(control.button.is_focusable())
+                                        .focused(control.button.is_focused())
+                                        .disabled(!control.button.is_enabled()),
+                                )
                                 .with_action_target(format!("photos:people:control:{index}"))
                         }),
                 );
@@ -5147,10 +5138,7 @@ impl PhotosApp {
                     AccessNode::new(Role::Button)
                         .with_name(tr(name))
                         .with_bounds(*bounds)
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                         .with_action_target(target)
                 }));
                 // These semantic controls intentionally share the same pure
@@ -5168,10 +5156,7 @@ impl PhotosApp {
                             .with_name(tr(name))
                             .with_description(tr("photos-a11y-pan-description"))
                             .with_bounds(self.places_map_bounds)
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true))
                             .with_action_target(target),
                     );
                 }
@@ -5201,32 +5186,29 @@ impl PhotosApp {
                                     .with_name(name.clone())
                                     .with_description(tr("photos-a11y-selected-description"))
                                     .with_bounds(*bounds)
-                                    .with_state(AccessState {
-                                        focusable: true,
-                                        checked: Some(self.selected_photo_ids.contains(id)),
-                                        ..Default::default()
-                                    })
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .checked(self.selected_photo_ids.contains(id)),
+                                    )
                                     .with_action_target(open_target)
                             } else if self.album_editor {
                                 AccessNode::new(Role::ToggleButton)
                                     .with_name(name.clone())
                                     .with_description(tr("photos-a11y-in-album"))
                                     .with_bounds(*bounds)
-                                    .with_state(AccessState {
-                                        focusable: true,
-                                        checked: Some(self.album_editor_members.contains(id)),
-                                        ..Default::default()
-                                    })
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .checked(self.album_editor_members.contains(id)),
+                                    )
                                     .with_action_target(open_target)
                             } else {
                                 AccessNode::new(Role::Button)
                                     .with_name(name.clone())
                                     .with_description(tr("photos-open"))
                                     .with_bounds(*bounds)
-                                    .with_state(AccessState {
-                                        focusable: true,
-                                        ..Default::default()
-                                    })
+                                    .with_state(AccessState::new().focusable(true))
                                     .with_action_target(open_target)
                             }];
                             if !self.album_editor && !self.selection_mode {
@@ -5236,11 +5218,9 @@ impl PhotosApp {
                                     AccessNode::new(Role::ToggleButton)
                                         .with_name(tr("photos-favorite"))
                                         .with_bounds(actions.favorite)
-                                        .with_state(AccessState {
-                                            focusable: true,
-                                            checked: Some(*favorite),
-                                            ..Default::default()
-                                        })
+                                        .with_state(
+                                            AccessState::new().focusable(true).checked(*favorite),
+                                        )
                                         .with_action_target(favorite_target),
                                 );
                                 let confirmed = self.library_remove_confirm.as_deref() == Some(id);
@@ -5257,10 +5237,7 @@ impl PhotosApp {
                                         })
                                         .with_description(tr("photos-a11y-remove-description"))
                                         .with_bounds(actions.remove)
-                                        .with_state(AccessState {
-                                            focusable: true,
-                                            ..Default::default()
-                                        })
+                                        .with_state(AccessState::new().focusable(true))
                                         .with_action_target(format!("photos:library-remove:{id}")),
                                 );
                                 children.push(
@@ -5272,10 +5249,7 @@ impl PhotosApp {
                                         ))
                                         .with_description(tr("photos-a11y-details-description"))
                                         .with_bounds(actions.details)
-                                        .with_state(AccessState {
-                                            focusable: true,
-                                            ..Default::default()
-                                        })
+                                        .with_state(AccessState::new().focusable(true))
                                         .with_action_target(format!("photos:library-details:{id}")),
                                 );
                             }
@@ -5312,11 +5286,11 @@ impl PhotosApp {
                     AccessNode::new(Role::ToggleButton)
                         .with_name(label)
                         .with_bounds(*bounds)
-                        .with_state(AccessState {
-                            focusable: true,
-                            checked: Some(id.as_ref() == self.active_album.as_ref()),
-                            ..Default::default()
-                        })
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .checked(id.as_ref() == self.active_album.as_ref()),
+                        )
                         .with_action_target(target)
                 }));
                 cards.extend(self.metadata_filter_cards.iter().map(|card| {
@@ -5339,17 +5313,13 @@ impl PhotosApp {
                     AccessNode::new(Role::ToggleButton)
                         .with_name(label)
                         .with_bounds(card.bounds)
-                        .with_state(AccessState {
-                            focusable: true,
-                            checked: Some(
-                                card.folder.as_ref() == self.active_folder.as_ref()
-                                    && card.person.as_ref() == self.active_person.as_ref()
-                                    && card.tag.as_ref() == self.active_tag.as_ref()
-                                    && card.favorites == self.active_favorites
-                                    && self.active_album.is_none(),
-                            ),
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true).checked(
+                            card.folder.as_ref() == self.active_folder.as_ref()
+                                && card.person.as_ref() == self.active_person.as_ref()
+                                && card.tag.as_ref() == self.active_tag.as_ref()
+                                && card.favorites == self.active_favorites
+                                && self.active_album.is_none(),
+                        ))
                         .with_action_target(if card.favorites {
                             "photos:library-favorites".to_owned()
                         } else {
@@ -5380,11 +5350,7 @@ impl PhotosApp {
                             })
                             .with_description(self.library_page_label())
                             .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: *enabled,
-                                disabled: !*enabled,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(*enabled).disabled(!*enabled))
                             .with_action_target(if *forward {
                                 "photos:library-page:next"
                             } else {
@@ -5472,11 +5438,7 @@ impl PhotosApp {
                         AccessNode::new(Role::Button)
                             .with_name(tr(name))
                             .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: !disabled,
-                                disabled,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(!disabled).disabled(disabled))
                             .with_action_target(target),
                     );
                 }
@@ -5493,14 +5455,10 @@ impl PhotosApp {
                         AccessNode::new(Role::ToggleButton)
                             .with_name(name)
                             .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: true,
-                                checked: Some(
-                                    self.selection_destination_album.as_deref()
-                                        == Some(album_id.as_str()),
-                                ),
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true).checked(
+                                self.selection_destination_album.as_deref()
+                                    == Some(album_id.as_str()),
+                            ))
                             .with_action_target(format!("photos:selection:destination:{album_id}")),
                     );
                 }
@@ -5562,11 +5520,11 @@ impl PhotosApp {
                                 .with_name(tr(name))
                                 .with_value(input.value())
                                 .with_bounds(input.get_rect())
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: input.is_focused(),
-                                    ..Default::default()
-                                })
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(input.is_focused()),
+                                )
                                 .with_hashed_key(format!("photos:metadata:{target}"))
                                 .with_action_target(format!("photos:metadata:field:{target}"))
                                 .with_children(toggles),
@@ -5610,10 +5568,7 @@ impl PhotosApp {
                             AccessNode::new(Role::Button)
                                 .with_name(tr(name))
                                 .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                                 .with_action_target(target),
                         );
                     }
@@ -5657,10 +5612,7 @@ impl PhotosApp {
                             AccessNode::new(Role::Button)
                                 .with_name(tr(name))
                                 .with_bounds(bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                                 .with_action_target(target),
                         );
                     }
@@ -5670,11 +5622,11 @@ impl PhotosApp {
                             .with_name(tr("photos-a11y-album-name"))
                             .with_value(self.album_name_input.value())
                             .with_bounds(self.album_name_input.get_rect())
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: self.album_name_input.is_focused(),
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.album_name_input.is_focused()),
+                            )
                             .with_hashed_key("photos:album-editor:name"),
                     );
                     for (hit, bounds) in &self.album_editor_hits {
@@ -5708,10 +5660,7 @@ impl PhotosApp {
                             AccessNode::new(Role::Button)
                                 .with_name(tr(name))
                                 .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                                 .with_action_target(target),
                         );
                     }
@@ -5725,10 +5674,7 @@ impl PhotosApp {
                             AccessNode::new(Role::Button)
                                 .with_name(tr(name))
                                 .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                                 .with_action_target(target),
                         );
                     }
@@ -5828,10 +5774,7 @@ impl PhotosApp {
             children.push(
                 AccessNode::new(Role::Group)
                     .with_name(tr("photos-a11y-import-progress"))
-                    .with_state(AccessState {
-                        busy: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().busy(true))
                     .with_children(status_children)
                     .with_hashed_key("photos:directory-import-status"),
             );
@@ -5917,10 +5860,7 @@ impl PhotosApp {
             detail_children.push(
                 AccessNode::new(Role::Button)
                     .with_name(tr("photos-close"))
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
                     .with_action_target("photos:directory-import:details-close")
                     .with_hashed_key("photos:directory-import:details-close"),
             );
@@ -5934,10 +5874,7 @@ impl PhotosApp {
                             ("count", ArgValue::Number(total as f64)),
                         ],
                     ))
-                    .with_state(AccessState {
-                        modal: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().modal(true))
                     .with_children(detail_children)
                     .with_hashed_key("photos:directory-import-dialog"),
             );
@@ -7397,10 +7334,7 @@ impl PhotosApp {
                             right: LengthPercentageAuto::auto(),
                             bottom: LengthPercentageAuto::auto(),
                         },
-                        size: Size {
-                            width: Dimension::length(rect.width() as f32),
-                            height: Dimension::length(rect.height() as f32),
-                        },
+                        size: Size::from_lengths(rect.width() as f32, rect.height() as f32),
                         ..Default::default()
                     },
                 );
@@ -7454,10 +7388,7 @@ impl PhotosApp {
                 .new_with_children(
                     Style {
                         position: Position::Relative,
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::percent(1.0),
-                        },
+                        size: Size::from_percent(1.0, 1.0),
                         ..Default::default()
                     },
                     &children,
@@ -7487,14 +7418,8 @@ impl PhotosApp {
             .set_style(
                 canvas,
                 Style {
-                    size: Size {
-                        width: Dimension::auto(),
-                        height: Dimension::auto(),
-                    },
-                    min_size: Size {
-                        width: Dimension::length(0.0),
-                        height: Dimension::length(0.0),
-                    },
+                    size: Size::auto(),
+                    min_size: Size::from_lengths(0.0, 0.0),
                     flex_grow: 1.0,
                     flex_shrink: 1.0,
                     flex_basis: Dimension::length(0.0),
@@ -10545,11 +10470,7 @@ fn collection_page_access_node(hit: CollectionPageHit, bounds: Rect, enabled: bo
         .with_name(tr(name))
         .with_description(tr("photos-a11y-page-hint"))
         .with_bounds(bounds)
-        .with_state(AccessState {
-            focusable: enabled,
-            disabled: !enabled,
-            ..Default::default()
-        })
+        .with_state(AccessState::new().focusable(enabled).disabled(!enabled))
         .with_action_target(format!("photos:collection-page:{target}"))
 }
 
@@ -11444,10 +11365,7 @@ impl Widget for PhotosApp {
 
         let style = Style {
             flex_direction: FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
                 left: LengthPercentage::length(sidebar_inset as f32),
                 right: LengthPercentage::length(inspector_inset as f32),
@@ -13454,10 +13372,7 @@ mod history_reconcile_tests {
                 .set_style(
                     node,
                     Style {
-                        size: Size {
-                            width: Dimension::length(800.),
-                            height: Dimension::length(600.),
-                        },
+                        size: Size::from_lengths(800., 600.),
                         ..Default::default()
                     },
                 )

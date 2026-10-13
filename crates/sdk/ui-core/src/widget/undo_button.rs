@@ -200,10 +200,6 @@ impl Widget for UndoButton {
         } else {
             Dimension::auto()
         };
-        #[allow(
-            clippy::expect_used,
-            reason = "a fixed-size leaf style is valid and Widget cannot return a layout error"
-        )]
         let style = Style {
             flex_shrink: 0.0,
             size: Size {
@@ -395,12 +391,12 @@ impl Widget for UndoButton {
                 // or, when there is nothing, why it is unavailable. Never a
                 // description of an action that is not on the stack.
                 .with_description(self.access.status().description(self.kind))
-                .with_state(AccessState {
-                    focused: self.is_focused && available,
-                    focusable: available,
-                    disabled: !available,
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focused(self.is_focused && available)
+                        .focusable(available)
+                        .disabled(!available),
+                ),
         )
     }
 

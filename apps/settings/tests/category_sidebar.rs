@@ -5,16 +5,6 @@
 //! reads the navigation list's rows. Each category is a row named by its
 //! display label, so the count is exact.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use settings::categories::Category;
 
 #[test]

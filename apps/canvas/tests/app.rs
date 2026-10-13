@@ -1,10 +1,5 @@
 //! The app as it runs: the host door, undo, permissions, and the views an
 //! agent sees with.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test assertions over exact, hand-written fixtures"
-)]
 
 use canvas::actions::NewStroke;
 use canvas::{App, Artwork};

@@ -687,10 +687,7 @@ impl Widget for PageJumpPalette {
                             || item.title.clone(),
                             |subtitle| format!("{} — {subtitle}", item.title),
                         ))
-                        .with_state(AccessState {
-                            selected: position == self.cursor,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().selected(position == self.cursor))
                         .with_position(position.saturating_add(1), count)
                 })
             })
@@ -707,10 +704,7 @@ impl Widget for PageJumpPalette {
             AccessNode::new(Role::Dialog)
                 .with_name("Jump to note")
                 .with_optional_value((!self.query.is_empty()).then(|| self.query.clone()))
-                .with_state(AccessState {
-                    modal: true,
-                    ..Default::default()
-                })
+                .with_state(AccessState::new().modal(true))
                 .with_children(children),
         )
     }

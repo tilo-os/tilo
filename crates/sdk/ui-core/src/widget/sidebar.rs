@@ -608,11 +608,7 @@ impl SidebarDrawer {
             .with_name(self.toggle_name())
             .with_action_target(self.toggle_target())
             .with_bounds(self.toggle.rect)
-            .with_state(AccessState {
-                focusable: true,
-                expanded: Some(self.is_open()),
-                ..Default::default()
-            });
+            .with_state(AccessState::new().focusable(true).expanded(self.is_open()));
         if self.side == SidebarSide::Left {
             let shortcut = crate::platform::HostShortcut::Sidebar
                 .shortcut(self.toggle.conventions)

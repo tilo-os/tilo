@@ -550,10 +550,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn stream_worker_is_bounded_honest_and_non_blocking() {
         // Phase `worker_announces_backend_and_offline_resolve_fails_gracefully`.
         {

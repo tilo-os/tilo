@@ -3,7 +3,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
     clippy::too_many_lines,
     reason = "test assertions and fixture setup fail loudly"

@@ -9,16 +9,6 @@
 //! both replicas export must be byte-identical (the codec is a pure function of
 //! the converged model, so any non-deterministic materialization would surface).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use proptest::prelude::*;
 use tilo_doc::Document;
 use tilo_doc_codecs::odt::container::OdtContainer;

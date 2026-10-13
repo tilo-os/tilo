@@ -2476,10 +2476,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn composer_metrics_follow_the_theme_and_grow_with_the_text() {
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
@@ -2518,10 +2514,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn composer_formats_and_drafts_round_trip_content() {
         // Phase `format_toggle_round_trips_content`.
         {
@@ -2640,10 +2632,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn composer_window_moves_resizes_docks_and_owns_its_input() {
         // Phase `move_keeps_window_in_bounds`.
         {

@@ -71,10 +71,7 @@ impl Widget for Fixed {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::length(self.w),
-                height: Dimension::length(self.h),
-            },
+            size: Size::from_lengths(self.w, self.h),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

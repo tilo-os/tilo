@@ -612,10 +612,7 @@ impl Widget for ProbeRoot {
             }
         });
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(80.0),
-                height: taffy::Dimension::length(30.0),
-            },
+            size: taffy::Size::from_lengths(80.0, 30.0),
             ..Default::default()
         };
         let node = tree.new_leaf(style).unwrap();

@@ -915,10 +915,6 @@ mod tests {
     /// The sample world: populated basemap, default route and transit, monotonic route
     /// length, grid-following axis-aligned transit legs, and demo-base clocks.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn sample_world_is_populated_and_geometrically_sound() {
         // Phase `basemap_is_populated`.
         {

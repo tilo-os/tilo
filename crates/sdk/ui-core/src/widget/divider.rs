@@ -172,10 +172,7 @@ mod tests {
         let child = d.build_layout(&mut taffy, &theme, &mut node_map);
         let parent = taffy.parent_node(
             Style {
-                size: taffy::Size {
-                    width: length(400.0_f32),
-                    height: length(200.0_f32),
-                },
+                size: taffy::Size::from_lengths(400.0_f32, 200.0_f32),
                 ..Default::default()
             },
             &[child],

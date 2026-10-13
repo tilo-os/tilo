@@ -4,7 +4,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
 

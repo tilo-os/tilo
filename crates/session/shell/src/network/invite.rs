@@ -349,10 +349,6 @@ pub fn make_invite_token_with_recipient(
 /// Returns an error describing which check failed: base64/JSON decoding,
 /// expiry, an invalid or unminted room id, a device-certificate/endpoint
 /// mismatch, or a signature that does not cover the token.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one linear sequence of token checks, each failing with its own message"
-)]
 pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String> {
     let json = B64
         .decode(token_str)
@@ -489,10 +485,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn invitations_round_trip_their_room_hosts_and_roster() {
         // Phase `round_trip_binds_room_key_and_dialing_address`.
         {

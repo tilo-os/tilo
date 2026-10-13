@@ -602,13 +602,7 @@ fn art() -> &'static vello::peniko::ImageData {
     ART.get_or_init(|| {
         let (w, h) = (240_u32, 160_u32);
         let rgba = photo_rgba(w, h);
-        vello::peniko::ImageData {
-            data: vello::peniko::Blob::new(Arc::new(rgba)),
-            format: vello::peniko::ImageFormat::Rgba8,
-            alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: w,
-            height: h,
-        }
+        tilo_ui::raster::rgba8(rgba, w, h)
     })
 }
 

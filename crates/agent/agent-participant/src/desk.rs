@@ -131,7 +131,6 @@ fn salt_of(author: &str) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
     use super::*;
     use tilo_automerge::ApplyIncoming as _;
