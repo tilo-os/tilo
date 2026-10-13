@@ -1114,3 +1114,6 @@ activity-morning-command-refused = Anfrage abgelehnt
 activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
 
 activity-morning-next = Nächste ausgewählte Quelle
+
+activity-replay-previous = Vorheriger Kontrollpunkt
+activity-replay-next = Nächster Kontrollpunkt

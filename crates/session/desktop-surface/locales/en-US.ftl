@@ -1095,3 +1095,6 @@ activity-morning-command-refused = Request refused
 activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
 
 activity-morning-next = Next chosen source
+
+activity-replay-previous = Previous checkpoint
+activity-replay-next = Next checkpoint
