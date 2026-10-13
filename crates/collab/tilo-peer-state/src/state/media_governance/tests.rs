@@ -3,91 +3,10 @@ use crate::SeedState;
 use crate::seed_room;
 use automerge::AutoCommit;
 use collab_types::CommitNamed as _;
-use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
 use web_time::Duration;
-
-#[test]
-fn voice_binding_waits_only_for_exact_channel_admission() {
-    let (mut peer, _, key, now) = fixture(0);
-    let mut chat = AutoCommit::new();
-    peer.publish_document("so.tilo.chat", "", chat.save(), &key, now)
-        .unwrap();
-    assert_eq!(
-        peer.media_binding_if_admitted("so.tilo.chat", "", "voice")
-            .unwrap(),
-        None
-    );
-    let channels = chat
-        .put_object(ROOT, "channels", automerge::ObjType::Map)
-        .unwrap();
-    peer.publish_document("so.tilo.chat", "", chat.save(), &key, now)
-        .unwrap();
-    let entry = chat
-        .put_object(&channels, "voice", automerge::ObjType::Map)
-        .unwrap();
-    let channel = chat
-        .put_object(&entry, "v", automerge::ObjType::Map)
-        .unwrap();
-    chat.put(&channel, "kind", "voice").unwrap();
-    chat.put(&channel, "workspace", "home").unwrap();
-    assert_eq!(
-        peer.media_binding_if_admitted("so.tilo.chat", "", "voice")
-            .unwrap(),
-        None,
-        "locally authored channel data cannot open admitted media"
-    );
-    assert!(
-        peer.resolve_media_binding("so.tilo.chat", "", "voice")
-            .is_err()
-    );
-    peer.publish_document("so.tilo.chat", "", chat.save(), &key, now)
-        .unwrap();
-    let binding = peer
-        .media_binding_if_admitted("so.tilo.chat", "", "voice")
-        .unwrap()
-        .unwrap();
-    assert_eq!(binding.channel_id, "voice");
-    assert_eq!(binding.chat_workspace_id, "home");
-    assert_eq!(
-        peer.resolve_media_binding("so.tilo.chat", "", "voice")
-            .unwrap(),
-        binding
-    );
-    chat.put(&channel, "kind", "text").unwrap();
-    peer.publish_document("so.tilo.chat", "", chat.save(), &key, now)
-        .unwrap();
-    assert!(
-        peer.media_binding_if_admitted("so.tilo.chat", "", "voice")
-            .is_err()
-    );
-}
-
-#[test]
-fn voice_binding_conflicting_containers_are_refused_instead_of_pending() {
-    let (mut peer, _, key, now) = fixture(0);
-    let mut chat = AutoCommit::new();
-    let mut concurrent = chat.fork();
-    chat.put_object(ROOT, "channels", automerge::ObjType::Map)
-        .unwrap();
-    concurrent
-        .put_object(ROOT, "channels", automerge::ObjType::Map)
-        .unwrap();
-    chat.merge_incoming(&mut concurrent).unwrap();
-    assert_eq!(chat.get_all(ROOT, "channels").unwrap().len(), 2);
-    peer.publish_document("so.tilo.chat", "", chat.save(), &key, now)
-        .unwrap();
-    assert!(
-        peer.media_binding_if_admitted("so.tilo.chat", "", "voice")
-            .is_err()
-    );
-    assert!(
-        peer.media_binding_if_admitted("so.tilo.chat", "unknown", "voice")
-            .is_err()
-    );
-}
 #[expect(
     clippy::similar_names,
     reason = "`root` and `room` are the domain's own names"

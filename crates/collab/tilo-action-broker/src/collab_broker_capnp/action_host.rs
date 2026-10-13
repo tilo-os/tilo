@@ -2692,6 +2692,7 @@ impl CapnpBrokerState {
                     mode: start.mode,
                     trigger: start.trigger,
                     inputs: start.inputs,
+                    caused_by: None,
                 },
             )
             .await;

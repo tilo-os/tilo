@@ -381,19 +381,6 @@ impl DocStore {
         ))
     }
 
-    /// Share a system-admitted CRDT cache. Full saves append to the journal;
-    /// no live view may replace or repair another view's history.
-    ///
-    /// # Errors
-    /// Refuses exclusive ownership and unavailable storage.
-    pub fn shared_cache(store: Rc<dyn DurableStore>, key: StorageKey) -> Result<Self, StoreError> {
-        let package_id = key.package_id().unwrap_or_default().to_owned();
-        Ok(Self::from_owner(
-            package_id,
-            DocOwner::acquire_shared_cache(store, key)?,
-        ))
-    }
-
     /// Become `key`'s exclusive owner on `store`.
     ///
     /// # Errors
@@ -524,8 +511,7 @@ impl DocStore {
 
     /// Load the persisted document, or `Ok(None)` on a first launch. A trailing
     /// partially-written chunk (crash during append) is dropped rather than
-    /// failing the load, losing only the last unflushed edit. Append-only
-    /// shared caches always require a complete journal and never repair it.
+    /// failing the load, losing only the last unflushed edit.
     ///
     /// # Errors
     ///
@@ -537,7 +523,6 @@ impl DocStore {
     }
 
     fn load_with_completeness(&mut self, complete: bool) -> Result<Option<AutoCommit>, StoreError> {
-        let complete = complete || self.owner.is_append_only();
         let Some(stored) = self.owner.stored()? else {
             self.has_base = Some(false);
             return Ok(None);
@@ -708,8 +693,7 @@ impl DocStore {
     /// without one leaves the previous hint, which names other bytes and is
     /// ignored.
     fn keep_load_hint(&self, hint: Option<&[u8]>) {
-        let Some(hint) = hint.filter(|_| self.owner.is_primary() && !self.owner.is_append_only())
-        else {
+        let Some(hint) = hint.filter(|_| self.owner.is_primary()) else {
             return;
         };
         if let Err(error) = self.owner.store().write_hint(self.owner.key(), hint) {
@@ -784,7 +768,7 @@ impl DocStore {
         let store = self.owner.store();
         let key = self.owner.key();
         let writer = self.owner.unstored_writer();
-        let revision = store.write(key, self.owner.write_operation(op), writer.as_deref())?;
+        let revision = store.write(key, op, writer.as_deref())?;
         match store.flush(Some(key)) {
             Ok(()) | Err(durable_store::StoreError::Pending(_)) => {}
             Err(error) => return Err(error.into()),

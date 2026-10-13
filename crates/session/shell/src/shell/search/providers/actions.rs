@@ -19,14 +19,17 @@ use ui::search::{FieldWeight, ListIndex};
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
-use crate::shell::search::{
-    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
+use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 mod native_identity;
 
 use crate::shell::shared_display_actions;
+
+const WORKSPACE_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
+    "name",
+    ParamType::Text,
+    "1 to 120 characters without control characters. Omit to use the localized default name.",
+)];
 
 fn workspace_create_context(
     state: &ChromeState,
@@ -117,12 +120,6 @@ const LANGUAGE_PARAMS: &[ActionParam] = &[ActionParam::required(
     "language",
     ParamType::Text,
     "BCP 47 tag or name: en-US, de-DE, English, or German.",
-)];
-
-const WORKSPACE_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
-    "name",
-    ParamType::Text,
-    "Name of the new empty workspace. Omitted or blank uses the localized default.",
 )];
 
 const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[
@@ -3110,7 +3107,6 @@ impl SearchProvider for ActionsProvider {
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.catalogue_state(ctx).hash(&mut hasher);
-        ctx.chrome.active_local_user().hash(&mut hasher);
         format!("{:016x}", hasher.finish())
     }
 
@@ -3169,56 +3165,6 @@ impl SearchProvider for ActionsProvider {
             }
         }
         out
-    }
-
-    fn query_page(
-        &self,
-        ctx: SearchContext<'_>,
-        cursor: Option<&SearchCursor>,
-        budget: SearchBudget,
-    ) -> SearchPage {
-        let revision = self.search_revision(&ctx);
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor.token.strip_prefix("actions:").and_then(|token| {
-                token
-                    .split_once('\u{1f}')
-                    .filter(|(_, query)| *query == ctx.needle)
-                    .and_then(|(offset, _)| offset.parse::<usize>().ok())
-            }) {
-                Some(offset) => offset,
-                None => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
-        let rows = self.query(ctx);
-        if offset > rows.len() {
-            return SearchPage::stale(revision);
-        }
-        let mut results = Vec::new();
-        let mut bytes = 0usize;
-        for row in rows.iter().skip(offset).take(budget.max_work) {
-            let size = crate::shell::search::estimated_result_bytes(row);
-            if results.len() == budget.max_results || bytes.saturating_add(size) > budget.max_bytes
-            {
-                break;
-            }
-            bytes = bytes.saturating_add(size);
-            results.push(row.clone());
-        }
-        let next = offset.saturating_add(results.len());
-        let exhausted = next == rows.len();
-        SearchPage {
-            revision: revision.clone(),
-            results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("actions:{next}\u{1f}{}", ctx.needle),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
     }
 }
 
@@ -7789,168 +7735,6 @@ mod tests {
             .map(|ws| (ws.policy.clone(), ws.sandbox.clone()));
         drop(tree);
         caps
-    }
-
-    #[test]
-    fn exhaustive_action_catalogue_reaches_workspace_creation_after_first_page() {
-        let chrome = chrome_with_member("bob");
-        let state = chrome.borrow();
-        let doc = AutoCommit::new();
-        let provider = Rc::new(ActionsProvider::new());
-        let ctx = SearchContext {
-            query_scope: None,
-            include_programmatic: true,
-            needle: "",
-            wanted: &[ResourceKind::Action],
-            chrome: &state,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        };
-        let all = provider.query(ctx);
-        let creation = all
-            .iter()
-            .position(|row| row.id == "workspace.create")
-            .unwrap();
-        assert!(creation >= SearchBudget::PALETTE.max_results);
-        let first = provider.query_page(ctx, None, SearchBudget::PALETTE);
-        assert!(!first.exhausted);
-        assert!(first.results.len() <= SearchBudget::PALETTE.max_results);
-        assert!(
-            first
-                .results
-                .iter()
-                .map(crate::shell::search::estimated_result_bytes)
-                .sum::<usize>()
-                <= SearchBudget::PALETTE.max_bytes
-        );
-        let cursor = first.next_cursor.as_ref().unwrap();
-        let byte_limit = crate::shell::search::estimated_result_bytes(&all[0]);
-        let small = provider.query_page(
-            ctx,
-            None,
-            SearchBudget {
-                max_results: 2,
-                max_bytes: byte_limit,
-                max_work: 1,
-            },
-        );
-        assert_eq!(small.results.len(), 1);
-        assert!(!small.exhausted);
-        let second = provider.query_page(ctx, Some(cursor), SearchBudget::PALETTE);
-        assert!(!second.stale_cursor);
-        assert!(!second.results.is_empty());
-        let expired_cursor = SearchCursor {
-            revision: "old".into(),
-            token: cursor.token.clone(),
-        };
-        assert!(
-            provider
-                .query_page(ctx, Some(&expired_cursor), SearchBudget::PALETTE)
-                .stale_cursor
-        );
-        let malformed = SearchCursor {
-            revision: cursor.revision.clone(),
-            token: "actions:bad".into(),
-        };
-        assert!(
-            provider
-                .query_page(ctx, Some(&malformed), SearchBudget::PALETTE)
-                .stale_cursor
-        );
-        let mut registry = crate::shell::search::SearchRegistry::new();
-        registry.register(provider);
-        let (rows, completion) = registry.query_catalogue(
-            &crate::shell::search::QueryArgs {
-                needle: "",
-                scope: crate::shell::search::SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[ResourceKind::Action],
-                chrome: &state,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            },
-            true,
-        );
-        assert!(
-            completion.complete,
-            "workspace actions must be fully listed"
-        );
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row.id == "workspace.create")
-                .count(),
-            1
-        );
-        let expected: std::collections::BTreeSet<_> = all.iter().map(|row| &row.id).collect();
-        let actual: std::collections::BTreeSet<_> = rows.iter().map(|row| &row.id).collect();
-        assert_eq!(actual, expected);
-        assert_eq!(rows.len(), expected.len());
-    }
-
-    #[test]
-    fn workspace_create_action_persists_an_independent_empty_room() {
-        use crate::shell::state::CapRole;
-        let chrome = chrome_with_member("bob");
-        let original = chrome
-            .borrow()
-            .tree()
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .clone();
-        invoke_shell_action(
-            &chrome,
-            "workspace.create",
-            &serde_json::json!({"name": "Research"}),
-        )
-        .expect("the existing workspace creation path is published");
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let created = tree.desktop.active_workspace().unwrap().clone();
-        assert_ne!(created.id, original.id);
-        assert_ne!(created.room, original.room);
-        assert_eq!(created.name, "Research");
-        assert_eq!(created.owner().map(String::as_str), Some(FIXTURE_USER));
-        assert_eq!(created.role_of(FIXTURE_USER), Some(CapRole::Owner));
-        assert_eq!(created.role_of("bob"), None);
-        assert!(created.collaborators.is_empty());
-        assert!(
-            created
-                .strips
-                .iter()
-                .all(|strip| strip.window_groups.is_empty())
-        );
-        assert!(created.tasks.is_empty());
-        let created_room = created.room.to_string();
-        assert_eq!(created.policy.room, created_room);
-        assert!(!created.policy.grants.is_empty());
-        assert!(
-            created
-                .policy
-                .grants
-                .iter()
-                .all(|grant| grant.node.room_id() == Some(created_room.as_str()))
-        );
-        let preserved = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|ws| ws.id == original.id)
-            .unwrap();
-        assert_eq!(preserved.room, original.room);
-        assert_eq!(preserved.policy, original.policy);
-        let mut restored = tilo_desktop_model::DesktopTree::default();
-        tilo_desktop_model::desktop_doc::rebuild(&tree.doc, &mut restored);
-        drop(tree);
-        drop(state);
-        let restored = restored
-            .workspaces
-            .iter()
-            .find(|ws| ws.id == created.id)
-            .unwrap();
-        assert_eq!(restored.room, created.room);
-        assert_eq!(restored.name, created.name);
-        assert_eq!(restored.policy, created.policy);
     }
 
     #[test]

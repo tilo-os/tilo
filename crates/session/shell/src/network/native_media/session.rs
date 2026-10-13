@@ -69,19 +69,17 @@ impl MediaFactory for Factory {
                 // VoiceAudio retains its own descriptor for this exact socket.
                 // The observer has already relinquished every protocol reader.
                 drop(observed);
-                let started = Instant::now();
-                let ticket =
-                    tokio::time::timeout(OPEN_DEADLINE, open_ticket(&commands, &owner, &target))
-                        .await
-                        .map_err(|_| Issue::Denied)?
-                        .map_err(|_| {
-                            tracing::debug!("native voice open command refused");
-                            Issue::Denied
-                        })?;
-                let remaining = OPEN_DEADLINE.saturating_sub(started.elapsed());
-                if let Err(error) = first_grant(&commands, &ticket, remaining).await {
-                    let category = grant_refusal_class(&error);
-                    tracing::debug!(category, "native voice first grant unavailable");
+                let opened = command(&commands, Operation::Open { owner, target })
+                    .await
+                    .map_err(|_| {
+                        tracing::debug!("native voice open command refused");
+                        Issue::Denied
+                    })?;
+                let Reply::Opened(ticket) = opened else {
+                    return Err(Issue::Unavailable);
+                };
+                if ticket.granted(OPEN_DEADLINE).await.is_err() {
+                    tracing::debug!("native voice first grant unavailable");
                     ticket.stop();
                     return Err(Issue::Denied);
                 }
@@ -175,75 +173,6 @@ async fn command(commands: &mpsc::Sender<NetCmd>, operation: Operation) -> Resul
     .await
     .map_err(|_| "native actor deadline".to_string())?
 }
-
-pub(super) async fn open_ticket(
-    commands: &mpsc::Sender<NetCmd>,
-    owner: &NativeWorkspaceOwner,
-    target: &CallTarget,
-) -> Result<Arc<Ticket>, String> {
-    loop {
-        match command(
-            commands,
-            Operation::Open {
-                owner: owner.clone(),
-                target: target.clone(),
-            },
-        )
-        .await?
-        {
-            Reply::Opened(ticket) => return Ok(ticket),
-            // The actor has checked current identity and membership and found
-            // only an absent channel. Every attempt rechecks admitted state;
-            // errors are final, and no ticket or capture exists while pending.
-            Reply::BindingPending => tokio::time::sleep(Duration::from_millis(100)).await,
-            Reply::Sent | Reply::Left => return Err("invalid native open reply".into()),
-        }
-    }
-}
-fn grant_refusal_class(error: &str) -> &'static str {
-    match error {
-        "the governor did not grant the call in time" => "grant_deadline",
-        "the participation ended" => "participation_ended",
-        "the room reconnected while the call was starting" => "start_reconnected",
-        "the room's relay session is gone" => "session_gone",
-        "the call did not start" => "call_not_started",
-        "conflicting media policy" => "binding_conflict",
-        "voice channel awaits governor admission" => "governor_channel_pending",
-        "invalid media binding" => "binding_invalid",
-        "malformed media policy" => "binding_malformed",
-        "exact admitted Chat missing" => "chat_missing",
-        "calls require a subscription to a room this host governs" => {
-            "governor_subscription_missing"
-        }
-        "this relay serves no voice carrier" => "carrier_unavailable",
-        "that channel already has a call; restart it" => "call_exists",
-        "the room has no such call" => "call_missing",
-        "not a member of the room" => "membership_missing",
-        _ => "governor_refused",
-    }
-}
-
-async fn first_grant(
-    commands: &mpsc::Sender<NetCmd>,
-    ticket: &Arc<Ticket>,
-    budget: Duration,
-) -> Result<(), String> {
-    tokio::time::timeout(budget, async {
-        let grant = ticket.granted(budget);
-        tokio::pin!(grant);
-        loop {
-            tokio::select! {
-                result = &mut grant => return result,
-                () = tokio::time::sleep(Duration::from_millis(100)) => {
-                    command(commands, Operation::Heartbeat { ticket: ticket.clone() }).await?;
-                }
-            }
-        }
-    })
-    .await
-    .map_err(|_| "the governor did not grant the call in time".to_owned())?
-}
-
 /// Start a carrier for the current grant; `false` when it admits no route.
 fn install_carrier(running: &Arc<Running>) -> Result<bool, String> {
     let ticket = &running.ticket;

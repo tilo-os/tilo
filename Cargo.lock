@@ -12458,6 +12458,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app-package",
+ "tilo-automation",
  "tilo-clock",
  "tilo-net",
  "tilo-secrets",
@@ -12504,8 +12505,11 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-action-policy",
  "tilo-advisory-lock",
  "tilo-app-package",
+ "tilo-automation",
+ "tilo-bot-directory",
  "tilo-clock",
  "tilo-files",
  "tilo-net",
@@ -12544,10 +12548,8 @@ checksum = "4b967ec6489a42067a20724f11987bb96178ea796873cbe1afd25fb93ee6f85f"
 dependencies = [
  "calloop",
  "enumflags2",
- "futures-util",
  "log",
  "rustix 1.1.4",
- "tokio",
 ]
 
 [[package]]
@@ -14209,7 +14211,6 @@ dependencies = [
  "agent-provider-config",
  "app-cli",
  "ash",
- "ashpd",
  "base64",
  "blake3",
  "bounded-command",
@@ -16086,6 +16087,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app-package",
+ "tilo-automation",
+ "tilo-clock",
  "tilo-rt",
  "tokio",
  "workspace-hack",
@@ -16139,6 +16142,7 @@ dependencies = [
 name = "tilo-automation"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -16206,6 +16210,19 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-bot-directory"
+version = "0.1.0"
+dependencies = [
+ "app-cli",
+ "registry-types",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-action-policy",
+ "tilo-automation",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -16424,6 +16441,22 @@ name = "tilo-clock"
 version = "0.1.0"
 dependencies = [
  "web-time",
+]
+
+[[package]]
+name = "tilo-connector"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "blake3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-secrets",
+ "tokio",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

@@ -287,7 +287,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
     registry_types::verify_change_request(&x86_request, &[publisher]).unwrap();
     assert_eq!(x86_request.action, registry_types::EntryAction::Add);
     assert_eq!(x86_request.entry.versions.len(), 1);
-    let version = &x86_request.entry.versions[0];
+    let version = x86_request.entry.versions[0].tapp().unwrap();
     assert_eq!(version.tapp_blake3_hex.len(), 64);
     assert_eq!(version.target.platform, registry_types::TILO_OS_PLATFORM);
     assert_eq!(version.target.architecture, "x86_64");
@@ -333,7 +333,10 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
     let aarch_request: registry_types::EntryChangeRequest =
         serde_json::from_slice(&emitted.stdout).unwrap();
     assert_eq!(
-        aarch_request.entry.versions[0].target.architecture,
+        aarch_request.entry.versions[0]
+            .target()
+            .unwrap()
+            .architecture,
         "aarch64"
     );
 
@@ -529,7 +532,7 @@ fn cli_packs_a_macos_build_and_emits_its_registry_request() {
         serde_json::from_slice(&emitted.stdout).unwrap();
     let key = hex::decode(&request.entry.publisher_pubkey_hex).unwrap();
     registry_types::verify_change_request(&request, &[key.try_into().unwrap()]).unwrap();
-    let target = &request.entry.versions[0].target;
+    let target = request.entry.versions[0].target().unwrap();
     assert_eq!(target.platform, registry_types::MACOS_PLATFORM);
     assert_eq!(target.architecture, "aarch64");
     assert_eq!(target.isa, "aarch64");
@@ -620,7 +623,7 @@ mode = "off"
     let emitted = entry_args(true);
     assert!(emitted.status.success(), "entry: {emitted:?}");
     let entry: registry_types::RegistryEntry = serde_json::from_slice(&emitted.stdout).unwrap();
-    let version = &entry.versions[0];
+    let version = entry.versions[0].tapp().unwrap();
     assert_eq!(version.tapp_size_bytes, thin.len() as u64);
     assert_eq!(
         version.target.runtime.as_deref(),
@@ -937,4 +940,49 @@ fn cli_compress_writes_a_twin_that_decompresses_to_the_package() {
         .unwrap();
     assert!(!out.status.success());
     assert!(!workdir.path().join("notes.txt.zst").exists());
+}
+
+#[test]
+fn bot_entry_signs_the_canonical_program() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = dir.path().join("publisher.json");
+    run(&["keygen", "--out", identity.to_str().unwrap()]);
+    let program = serde_json::json!({
+        "id": "echo", "name": "Echo",
+        "steps": [{"id": "post", "step": "invoke",
+            "action": {"app": "so.tilo.chat", "kind": "chat.workspace", "action": "post"},
+            "resource": {"first_of_kind": "chat.workspace"},
+            "args": {"text": {"literal": "echo"}}}],
+        "triggers": [{"trigger": "incoming_message", "app_id": "so.tilo.chat"}]
+    });
+    let file = dir.path().join("echo.json");
+    std::fs::write(&file, serde_json::to_vec_pretty(&program).unwrap()).unwrap();
+    let output = run(&[
+        "bot-entry",
+        "--identity",
+        identity.to_str().unwrap(),
+        "--package-id",
+        "so.tilo.bots.echo",
+        "--version",
+        "1.0.0",
+        file.to_str().unwrap(),
+    ]);
+    let entry: registry_types::RegistryEntry = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(entry.kind, registry_types::EntryKind::Bot);
+    assert!(registry_types::verify_entry_signature(&entry));
+    let shortcut: tilo_automation::Shortcut = serde_json::from_value(program).unwrap();
+    let canonical = tilo_automation::program::canonical_bytes(&shortcut).unwrap();
+    assert_eq!(
+        entry.versions[0].bot().unwrap().program_blake3_hex,
+        tilo_automation::program::program_hash(&canonical)
+    );
+    let bad = Command::new(bin_path())
+        .args(["bot-entry", "--identity", identity.to_str().unwrap()])
+        .args(["--package-id", "so.tilo.bots.echo", "--version", "1.0.0"])
+        .args(["--connector", "so.tilo.discord"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("<package id>@<min version>"));
 }
