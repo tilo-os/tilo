@@ -56,22 +56,46 @@ fn validate_app_metadata_for(
     semantic_metadata_valid(app_id, schema, bytes, uninstalled)
 }
 
-/// A tagged payload says which schema it follows, so it needs no knowledge
-/// of the app beyond agreement with an installed manifest. An untagged one
-/// is read as the schema this device knows the app by.
+/// A payload says which schema it follows, so it needs no knowledge of the
+/// app beyond agreement with an installed manifest.
 fn semantic_metadata_valid(
     app_id: &str,
     schema: u16,
     bytes: &[u8],
     uninstalled: Uninstalled,
 ) -> bool {
-    if let Some(declared) = ContinuitySemanticSchema::from_wire_tag(schema) {
-        return schema_payload_valid(declared, bytes)
-            && installed_schema_agrees(app_id, declared, uninstalled);
+    ContinuitySemanticSchema::from_wire_tag(schema).is_some_and(|declared| {
+        schema_payload_valid(declared, bytes)
+            && installed_schema_agrees(app_id, declared, uninstalled)
+    })
+}
+
+/// Whether `app_id` checkpoints text positions, the one projection a live
+/// owner view follows: its signed manifest says so, or for an app not
+/// installed here, its checkpoint is tagged as one.
+fn follows_text_position(app_id: &str, schema: u16, bytes: &[u8]) -> bool {
+    match crate::shell::launcher::installed_continuity_contract(app_id) {
+        crate::shell::launcher::InstalledContinuityRequirements::Required(contract) => {
+            contract.semantic_schema == Some(ContinuitySemanticSchema::TextPositionV1)
+        }
+        crate::shell::launcher::InstalledContinuityRequirements::NotInstalled => {
+            carries_text_position(schema, bytes)
+        }
+        crate::shell::launcher::InstalledContinuityRequirements::Invalid => false,
     }
-    schema == ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG
-        && semantic_schema_for_app(app_id)
-            .is_some_and(|portable_schema| schema_payload_valid(portable_schema, bytes))
+}
+
+fn carries_text_position(schema: u16, bytes: &[u8]) -> bool {
+    let text = ContinuitySemanticSchema::TextPositionV1.wire_tag();
+    if schema != ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
+        return schema == text;
+    }
+    let mut inner = None;
+    ui::app::sanitize_structural_continuation_metadata(bytes, |schema, _| {
+        inner = Some(schema);
+        true
+    });
+    inner == Some(text)
 }
 
 fn installed_schema_agrees(
@@ -115,47 +139,15 @@ pub(crate) fn resume_for_installed_launch(
         .then(|| (schema, resume.bytes().to_vec()))
 }
 
-/// The schema this device knows `app_id` by: its signed manifest, or for an
-/// app not installed here, the transition table below.
-fn semantic_schema_for_app(app_id: &str) -> Option<ContinuitySemanticSchema> {
-    match crate::shell::launcher::installed_continuity_contract(app_id) {
-        crate::shell::launcher::InstalledContinuityRequirements::Required(contract) => {
-            contract.semantic_schema
-        }
-        crate::shell::launcher::InstalledContinuityRequirements::NotInstalled => {
-            legacy_untagged_builtin_schema(app_id)
-        }
-        crate::shell::launcher::InstalledContinuityRequirements::Invalid => None,
-    }
-}
-
-/// TRANSITION ONLY: senders still write semantic payloads untagged
-/// (`ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG`), and an untagged payload
-/// from an app this device has not installed can only be read by package id.
-/// Delete this table once senders stamp `ContinuitySemanticSchema::wire_tag`
-/// and every paired device runs a shell that accepts tags; tagged payloads
-/// never consult it.
-fn legacy_untagged_builtin_schema(app_id: &str) -> Option<ContinuitySemanticSchema> {
-    match app_id {
-        "so.tilo.browser" => Some(ContinuitySemanticSchema::WebLocationV1),
-        "so.tilo.ebook" => Some(ContinuitySemanticSchema::PublicationPositionV1),
-        "so.tilo.music" => Some(ContinuitySemanticSchema::MediaPositionV1),
-        "so.tilo.chat" => Some(ContinuitySemanticSchema::RealtimeSessionV1),
-        "so.tilo.code-editor" => Some(ContinuitySemanticSchema::TextPositionV1),
-        _ => None,
-    }
-}
-
-/// A local app's report against its own signed contract: untagged, or
-/// tagged with exactly the schema the contract declares.
+/// A local app's report against its own signed contract: tagged with
+/// exactly the schema the contract declares.
 fn reported_semantic_valid(
     contract_schema: Option<ContinuitySemanticSchema>,
     schema: u16,
     bytes: &[u8],
 ) -> bool {
     contract_schema.is_some_and(|declared| {
-        (schema == ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG
-            || ContinuitySemanticSchema::from_wire_tag(schema) == Some(declared))
+        ContinuitySemanticSchema::from_wire_tag(schema) == Some(declared)
             && schema_payload_valid(declared, bytes)
     })
 }
@@ -214,7 +206,8 @@ impl ContinuationRegistry {
         let LaunchIntent::App { app_id } = &app.launch else {
             return None;
         };
-        if semantic_schema_for_app(app_id) != Some(ContinuitySemanticSchema::TextPositionV1) {
+        let resume = app.resume.as_ref()?;
+        if !follows_text_position(app_id, resume.schema_version(), resume.bytes()) {
             return None;
         }
         let instance = app.record_instance.unwrap_or(app.id);
@@ -222,7 +215,6 @@ impl ContinuationRegistry {
         if self.tab_instances.get(&app.id) != Some(&instance) || !self.reports.contains_key(&key) {
             return None;
         }
-        let resume = app.resume.as_ref()?;
         validate_app_metadata(app_id, resume.schema_version(), resume.bytes()).then_some(key)
     }
 
@@ -303,7 +295,7 @@ impl ContinuationRegistry {
         token: u64,
         metadata: ui::collaboration::ContinuationMetadata,
     ) -> Result<(), String> {
-        if semantic_schema_for_app(&app) != Some(ContinuitySemanticSchema::TextPositionV1) {
+        if !follows_text_position(&app, metadata.schema_version, &metadata.bytes) {
             return Err("this app has no supported live owner view".into());
         }
         if !self.tab_instances.values().any(|bound| *bound == instance) {
@@ -366,24 +358,22 @@ impl ContinuationRegistry {
     }
 
     #[cfg(test)]
-    fn report_with_required_facets(
+    fn report_browser_requiring(
         &mut self,
         room: RoomId,
-        app_id: String,
         instance_id: AppInstanceId,
         schema_version: u16,
         bytes: Vec<u8>,
         required: &[ContinuityFacet],
     ) -> Result<bool, ContinuityError> {
-        let semantic_schema = legacy_untagged_builtin_schema(&app_id);
         self.report_with_validator(
             room,
-            app_id,
+            "so.tilo.browser".into(),
             instance_id,
             schema_version,
             bytes,
             required,
-            semantic_schema,
+            Some(ContinuitySemanticSchema::WebLocationV1),
         )
     }
 
@@ -664,11 +654,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn toolkit_semantic_tags_match_the_manifest_vocabulary() {
+        use ui::app::semantic_schema as tag;
+        assert_eq!(
+            ContinuitySemanticSchema::ALL.map(ContinuitySemanticSchema::wire_tag),
+            [
+                tag::WEB_LOCATION_V1,
+                tag::PUBLICATION_POSITION_V1,
+                tag::MEDIA_POSITION_V1,
+                tag::REALTIME_SESSION_V1,
+                tag::TEXT_POSITION_V1,
+            ]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
     fn owner_takeover_reserves_bounded_acknowledgement_capacity() {
         use crate::shell::personal_continuity::{
             AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot, DeviceId, TabPlacement,
             WorkspaceContinuation,
         };
+        let (_store, _env) = app_store(
+            "so.tilo.code-editor",
+            Some("text-position-v1"),
+            r#"["presentation"]"#,
+        );
         let room = RoomId::new();
         let device = DeviceId::new("owner-capacity").unwrap();
         let metadata =
@@ -778,18 +789,22 @@ mod tests {
         )
         .unwrap();
         let safe = serde_json::to_vec(&position).unwrap();
-        assert!(validate_app_metadata("so.tilo.code-editor", 1, &safe));
+        assert!(validate_app_metadata(
+            "so.tilo.code-editor",
+            ContinuitySemanticSchema::TextPositionV1.wire_tag(),
+            &safe
+        ));
         assert!(!validate_app_metadata("so.tilo.code-editor", 2, &safe));
         assert!(!String::from_utf8(safe).unwrap().contains("private buffer"));
         position.carets[0].cursor = vec![255];
         assert!(!validate_app_metadata(
             "so.tilo.code-editor",
-            1,
+            ContinuitySemanticSchema::TextPositionV1.wire_tag(),
             &serde_json::to_vec(&position).unwrap()
         ));
         assert!(!validate_app_metadata(
             "so.tilo.code-editor",
-            1,
+            ContinuitySemanticSchema::TextPositionV1.wire_tag(),
             br#"{"resource_id":"/home/alice/private","carets":[],"password":"secret"}"#
         ));
         let empty =
@@ -817,7 +832,7 @@ mod tests {
         ui::app::compose_structural_continuation_metadata(
             ui::view::View::default(),
             Some(ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
+                schema_version: ContinuitySemanticSchema::WebLocationV1.wire_tag(),
                 bytes: url.to_vec(),
             }),
         )
@@ -881,7 +896,7 @@ mod tests {
                     RoomId::new(),
                     "so.tilo.browser",
                     AppInstanceId(11),
-                    1,
+                    ContinuitySemanticSchema::WebLocationV1.wire_tag(),
                     b"file:///home/alice/private".to_vec(),
                 )
                 .unwrap_err();
@@ -906,7 +921,7 @@ mod tests {
                     room,
                     "so.tilo.browser",
                     AppInstanceId(2),
-                    1,
+                    ContinuitySemanticSchema::WebLocationV1.wire_tag(),
                     br#"{"url":"https://alice:secret@example.test"}"#.to_vec(),
                 ),
                 Err(ContinuityError::InvalidResumePayload)
@@ -921,10 +936,14 @@ mod tests {
                 "media":{"microphone":true,"camera":true,"screen_share":false,"share_audio":false},
                 "controls":{"microphone_muted":true,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":true}
             }"#;
-            assert!(validate_app_metadata("so.tilo.chat", 1, safe));
+            assert!(validate_app_metadata(
+                "so.tilo.chat",
+                ContinuitySemanticSchema::RealtimeSessionV1.wire_tag(),
+                safe
+            ));
             assert!(!validate_app_metadata(
                 "so.tilo.chat",
-                1,
+                ContinuitySemanticSchema::RealtimeSessionV1.wire_tag(),
                 br#"{
                     "workspace_id":"ws_acme","channel_id":"https://join.invalid/secret",
                     "media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},
@@ -933,7 +952,7 @@ mod tests {
             ));
             assert!(!validate_app_metadata(
                 "so.tilo.chat",
-                1,
+                ContinuitySemanticSchema::RealtimeSessionV1.wire_tag(),
                 br#"{
                     "workspace_id":"ws_acme","channel_id":"c_huddle","members":["alice"],
                     "media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},
@@ -1006,9 +1025,8 @@ mod tests {
             let required = [ContinuityFacet::Presentation, ContinuityFacet::Semantic];
             let mut reports = ContinuationRegistry::default();
             assert_eq!(
-                reports.report_with_required_facets(
+                reports.report_browser_requiring(
                     room,
-                    "so.tilo.browser".into(),
                     instance,
                     presentation_only.schema_version,
                     presentation_only.bytes,
@@ -1020,9 +1038,8 @@ mod tests {
             let complete = browser_checkpoint(br#"{"url":"https://tilo.so"}"#);
             assert!(
                 reports
-                    .report_with_required_facets(
+                    .report_browser_requiring(
                         room,
-                        "so.tilo.browser".into(),
                         instance,
                         complete.schema_version,
                         complete.bytes,
@@ -1042,7 +1059,7 @@ mod tests {
             let safe = ui::app::compose_structural_continuation_metadata(
                 ui::view::View::default(),
                 Some(ui::collaboration::ContinuationMetadata {
-                    schema_version: 1,
+                    schema_version: ContinuitySemanticSchema::WebLocationV1.wire_tag(),
                     bytes: br#"{"url":"https://docs.example/guide"}"#.to_vec(),
                 }),
             )
@@ -1064,7 +1081,7 @@ mod tests {
             let unsafe_payload = ui::app::compose_structural_continuation_metadata(
                 ui::view::View::default(),
                 Some(ui::collaboration::ContinuationMetadata {
-                    schema_version: 1,
+                    schema_version: ContinuitySemanticSchema::WebLocationV1.wire_tag(),
                     bytes: br#"{"url":"file:///home/alice/private"}"#.to_vec(),
                 }),
             )
@@ -1085,11 +1102,10 @@ mod tests {
         fn empty_manifest_contract_cannot_opt_out_of_framework_presentation() {
             let mut reports = ContinuationRegistry::default();
             assert_eq!(
-                reports.report_with_required_facets(
+                reports.report_browser_requiring(
                     RoomId::new(),
-                    "so.tilo.browser".into(),
                     AppInstanceId(73),
-                    1,
+                    ContinuitySemanticSchema::WebLocationV1.wire_tag(),
                     br#"{"url":"https://tilo.so"}"#.to_vec(),
                     &[],
                 ),
@@ -1177,7 +1193,7 @@ mod tests {
                 AppInstanceId(10),
                 "so.tilo.browser".into(),
                 ResumeMetadata::new(
-                    1,
+                    ContinuitySemanticSchema::WebLocationV1.wire_tag(),
                     ResumeSensitivity::Syncable,
                     br#"{"url":"https://remote.test"}"#.to_vec(),
                 )
@@ -1242,15 +1258,25 @@ mod tests {
         schema: Option<&str>,
         required: &str,
     ) -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
+        app_store(READER, schema, required)
+    }
+
+    /// An app store holding at most `app`, declaring `schema` when given.
+    /// Callers hold `process_env`.
+    fn app_store(
+        app: &str,
+        schema: Option<&str>,
+        required: &str,
+    ) -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
         let dir = tempfile::tempdir().unwrap();
         if let Some(schema) = schema {
-            let payload = dir.path().join("payloads").join(READER);
+            let payload = dir.path().join("payloads").join(app);
             std::fs::create_dir_all(payload.join("bin")).unwrap();
             let manifest = payload.join("manifest.toml");
             std::fs::write(
                 &manifest,
                 crate::shell::test_support::canonical_manifest(
-                    &format!("id = \"{READER}\"\nversion = \"1.0.0\"\nkind = \"app\""),
+                    &format!("id = \"{app}\"\nversion = \"1.0.0\"\nkind = \"app\""),
                     &format!(
                         "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
                          [continuity]\nrequired = {required}\n\
@@ -1262,7 +1288,7 @@ mod tests {
             std::fs::write(
                 dir.path().join("registry.toml"),
                 format!(
-                    "[[entry]]\nid = '{READER}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                    "[[entry]]\nid = '{app}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
                     payload.display().to_string(),
                     manifest.display().to_string()
                 ),
@@ -1295,11 +1321,7 @@ mod tests {
             br#"{"book_id":"../x","chapter":3,"page":42}"#,
         ));
         // Untagged, nothing says what the payload means.
-        assert!(!validate_app_metadata(
-            READER,
-            ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG,
-            PAGE_42,
-        ));
+        assert!(!validate_app_metadata(READER, 1, PAGE_42));
     }
 
     #[test]
@@ -1315,22 +1337,6 @@ mod tests {
             READER,
             ContinuitySemanticSchema::WebLocationV1.wire_tag(),
             br#"{"url":"https://docs.example/guide"}"#,
-        ));
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn legacy_untagged_first_party_payload_still_accepted() {
-        let (_store, _env) = reader_store(None);
-        assert!(validate_app_metadata(
-            "so.tilo.ebook",
-            ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG,
-            PAGE_42,
-        ));
-        assert!(validate_app_metadata(
-            "so.tilo.ebook",
-            ContinuitySemanticSchema::PublicationPositionV1.wire_tag(),
-            PAGE_42,
         ));
     }
 

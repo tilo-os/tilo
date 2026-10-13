@@ -17,7 +17,7 @@ impl Continuable for CodeApp {
             .editor
             .continuation_position(doc, &self.buffer_key(node))?;
         Some(ContinuationMetadata {
-            schema_version: 1,
+            schema_version: ui::app::semantic_schema::TEXT_POSITION_V1,
             bytes: serde_json::to_vec(&position).ok()?,
         })
     }
@@ -28,7 +28,7 @@ impl Continuable for CodeApp {
         doc: &mut Edits<'_>,
         _path: &ObjId,
     ) -> bool {
-        if metadata.schema_version != 1 {
+        if metadata.schema_version != ui::app::semantic_schema::TEXT_POSITION_V1 {
             return false;
         }
         let Ok(position) = serde_json::from_slice::<TextPosition>(&metadata.bytes) else {
@@ -48,7 +48,7 @@ impl Continuable for CodeApp {
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> bool {
-        if metadata.schema_version != 1 {
+        if metadata.schema_version != ui::app::semantic_schema::TEXT_POSITION_V1 {
             return false;
         }
         let Ok(position) = serde_json::from_slice::<TextPosition>(&metadata.bytes) else {
