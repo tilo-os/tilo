@@ -8,7 +8,9 @@ vblank grid at the panel's rate, as the DRM presenter does. A synthetic
 `wl_shm` client (`crates/session/shell/examples/latency_client.rs`) redraws its
 whole window on every key and damages either all of it (`--damage full`) or
 only the text line the key typed on (`--damage line`). Keys are injected through the control socket at
-random phases of the refresh interval. The compositor's own `KEY-LATENCY`
+random phases of the refresh interval, through the compositor's input funnel as
+a physical keyboard's keys arrive (`--input seat`) or straight to the focused
+client (`--input direct`). The compositor's own `KEY-LATENCY`
 lines give each key's journey:
 
     key -> client commit -> compositor submit -> vblank that shows it
@@ -181,7 +183,8 @@ def measure(args: argparse.Namespace) -> dict:
             rng = random.Random(args.seed)
             keys = "abcdefghijklmnopqrstuvwxyz"
             for index in range(args.warmup + args.keys):
-                reply = control.send({"op": "key", "key": keys[index % len(keys)]})
+                op = "seat_key" if args.input == "seat" else "key"
+                reply = control.send({"op": op, "key": keys[index % len(keys)]})
                 if "err" in reply:
                     sys.exit(f"key refused: {reply}")
                 # Random phase against the display so no refresh position is favoured.
@@ -199,6 +202,11 @@ def measure(args: argparse.Namespace) -> dict:
     if len(rows) < args.keys * 0.8:
         sys.exit(f"only {len(rows)} of {args.keys} keys were answered and timed; see {log}")
     gpu = [int(m[1]) for m in GPU_LINE.finditer(text)]
+    # Frames rendered while typing: between the first and the last answered key, so the
+    # window's opening animation does not count against the keys.
+    key_lines = [m.start() for m in KEY_LINE.finditer(text) if m["app"] == app]
+    typing_frames = sum(1 for m in GPU_LINE.finditer(text)
+                        if key_lines and key_lines[0] < m.start() < key_lines[-1])
     painted = [(int(m[1]), int(m[2]), m[3] == "1") for m in PAINT_LINE.finditer(text)]
     paint = {}
     if painted:
@@ -206,9 +214,10 @@ def measure(args: argparse.Namespace) -> dict:
                  "damage_px": pixel_distribution([d for d, _, _ in painted]),
                  "raster_px": pixel_distribution([r for _, r, _ in painted])}
     result = {"label": args.label, "app": app, "size": f"{args.width}x{args.height}",
-              "hz": args.hz, "keys_sent": args.keys, "damage": args.damage, **paint,
+              "hz": args.hz, "keys_sent": args.keys, "damage": args.damage, "input": args.input, **paint,
               # Rendered frames per key sent: a key answered by one commit should cost one.
               "frames_per_key": round(len(gpu) / (args.keys + args.warmup), 2),
+              "typing_frames_per_key": round(typing_frames / max(1, len(key_lines) - 1), 2),
               **summarize(rows, gpu)}
     (args.out / f"{args.label}.json").write_text(json.dumps(result, indent=2))
     return result
@@ -227,7 +236,8 @@ def table(results: list[dict]) -> str:
                 lines.append(f"| {r['label']} | {name} | {d['n']} | {d['p50_ms']:.1f} "
                              f"| {d['p90_ms']:.1f} | {d['p99_ms']:.1f} |")
     lines.append("")
-    lines.extend(f"{r['label']}: {r['frames_per_key']} rendered frames per key"
+    lines.extend(f"{r['label']}: {r['frames_per_key']} rendered frames per key sent, "
+                 f"{r.get('typing_frames_per_key', '?')} per key while typing"
                  for r in results if "frames_per_key" in r)
     for r in results:
         if "raster_px" in r:
@@ -254,6 +264,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval-ms", type=float, default=100.0)
     parser.add_argument("--settle", type=float, default=2.0)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--input", choices=("seat", "direct"), default="seat",
+                        help="seat: keys enter the compositor's input funnel as a physical "
+                             "keyboard's do; direct: straight to the focused client")
     parser.add_argument("--damage", choices=("full", "line"), default="full",
                         help="what the synthetic client damages per key")
     parser.add_argument("--app", help="type into this installed app instead of the synthetic client")

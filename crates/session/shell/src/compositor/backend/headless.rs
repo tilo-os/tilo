@@ -637,10 +637,16 @@ struct SimulatedVblankPresenter {
 
 /// The pixels a damage-limited frame was asked to repaint and the pixels the
 /// renderer rasterised for it.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct PaintedArea {
     damage: u64,
     raster: u64,
+    /// Encoding, upload and submission on the CPU, the wait for the GPU to
+    /// finish, and the GPU's own time between its first and last pass (zero
+    /// where the device takes no timestamps).
+    submit_us: u128,
+    settle_us: u128,
+    gpu_span_us: u128,
 }
 
 impl SimulatedVblankPresenter {
@@ -701,13 +707,17 @@ impl SimulatedVblankPresenter {
                     )
                 })
                 .collect();
+            let (raster, timing) = self.renderer.render_damage_regions_gpu_wait_profiled(
+                &frame.scene,
+                FALLBACK_BG,
+                &rects,
+            );
             self.last_painted = Some(PaintedArea {
                 damage: crate::shell::render::paint::damage_area(regions),
-                raster: self.renderer.render_damage_regions_gpu_wait(
-                    &frame.scene,
-                    FALLBACK_BG,
-                    &rects,
-                ),
+                raster,
+                submit_us: timing.vello_submit_us,
+                settle_us: timing.settle_wait_us,
+                gpu_span_us: timing.gpu_timestamp_span_ns / 1_000,
             });
         } else {
             self.renderer.set_backdrop(frame.backdrop.clone());
@@ -751,14 +761,18 @@ impl Presenter for SimulatedVblankPresenter {
         let full = PaintedArea {
             damage: self.target_pixels,
             raster: self.target_pixels,
+            ..PaintedArea::default()
         };
         let painted = self.last_painted.unwrap_or(full);
         Some(format!(
-            "gpu_us={} damage_px={} raster_px={} dense={}",
+            "gpu_us={} damage_px={} raster_px={} dense={} submit_us={} settle_us={} gpu_span_us={}",
             self.last_render.as_micros(),
             painted.damage,
             painted.raster,
             u8::from(self.last_painted.is_none()),
+            painted.submit_us,
+            painted.settle_us,
+            painted.gpu_span_us,
         ))
     }
 

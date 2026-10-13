@@ -3909,6 +3909,10 @@ struct TestControlCtx {
     /// commit is the frame it asks for, so the loop does not repaint for it,
     /// as it does not for a physical key.
     client_input_only: bool,
+    /// Keys a control client asked to arrive as a physical keyboard's do
+    /// ([`PlannedAction::SeatKey`]); the loop takes them with the backend's
+    /// own events on its next iteration.
+    seat_events: Vec<BackendEvent>,
     /// Touch the chrome or a touch-less client receives as pointer input;
     /// shared by physical and injected touch.
     touch_pointer: crate::compositor::touch_pointer::TouchPointer,
@@ -3961,6 +3965,7 @@ impl TestControlCtx {
             direct_touch: DirectTouchOwnership::default(),
             client_routed_actions: 0,
             client_input_only: false,
+            seat_events: Vec::new(),
             touch_pointer: crate::compositor::touch_pointer::TouchPointer::default(),
             gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
             input: InputEnvironment::default(),
@@ -4785,6 +4790,13 @@ fn execute_planned_action(
             }
             dispatch_synth_event(&event, fb, ctx, &mut state);
         }
+        PlannedAction::SeatKey { key, pressed } => {
+            ctx.seat_events
+                .push(BackendEvent::Input(keyboard_input_event(
+                    &keytag_into_winit_key(*key),
+                    *pressed,
+                )));
+        }
         PlannedAction::MouseWheel { dx, dy } => {
             let event = WindowEvent::MouseWheel {
                 device_id: winit::event::DeviceId::dummy(),
@@ -4929,6 +4941,15 @@ fn execute_locked_action(
             }
             client_input::consume_keyboard_while_captured(state, &event);
             lock.handle_key(winit_event_to_lock_key(&event));
+            None
+        }
+        // The loop routes it to the lock as it does a physical key.
+        PlannedAction::SeatKey { key, pressed } => {
+            ctx.seat_events
+                .push(BackendEvent::Input(keyboard_input_event(
+                    &keytag_into_winit_key(*key),
+                    *pressed,
+                )));
             None
         }
         // Action invocations and snapshots are refused while locked, and say
@@ -6117,9 +6138,16 @@ fn pump_test_control_conn(
                     // client's commit will ask for the frame that shows it.
                     // Repainting here as well put a full-screen frame ahead of
                     // it that a physical key never causes.
-                    if ctx.client_routed_actions.saturating_sub(routed_before) < actions.len() {
+                    // Keys queued for the input funnel ask for a frame
+                    // there, as a physical key would, or not.
+                    let seat_keys = actions
+                        .iter()
+                        .filter(|action| matches!(action, PlannedAction::SeatKey { .. }))
+                        .count();
+                    let handled_here = actions.len().saturating_sub(seat_keys);
+                    if ctx.client_routed_actions.saturating_sub(routed_before) < handled_here {
                         injected_input = true;
-                    } else {
+                    } else if handled_here > 0 {
                         ctx.client_input_only = true;
                     }
                     frame_builder.relayout();
@@ -10352,6 +10380,9 @@ pub fn run() {
                 event,
             ));
         });
+        // Keys a control client queued as a physical keyboard's arrive here, with the
+        // backend's own events.
+        pending_events.extend(test_control_ctx.seat_events.drain(..));
         input_steps.step("backend-poll");
         let t_backend_poll_done = iter_t0.elapsed();
         if slow_prepaint_phase(t_backend_poll_done) {
@@ -14045,6 +14076,10 @@ pub fn run() {
                     control_invocation_deadline(&test_control_conns, park_now),
                 ),
                 ("control-followup", control_followup.then_some(park_now)),
+                (
+                    "seat-input",
+                    (!test_control_ctx.seat_events.is_empty()).then_some(park_now),
+                ),
             ],
         );
         // Work (startup, a burst of input, windows closing) leaves freed heap glibc keeps. A
