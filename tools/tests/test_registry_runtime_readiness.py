@@ -10,9 +10,16 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / 'tools/apps/registry-runtime-readiness.sh'
+PUBLISHER = ROOT / 'tools/apps/publish-collections.sh'
 
 
 class RegistryRuntimeReadinessTest(unittest.TestCase):
+    def test_publisher_sources_the_tested_fetch_and_wait(self):
+        publisher = PUBLISHER.read_text()
+        self.assertIn('source tools/apps/registry-runtime-readiness.sh\nfetch_snapshot', publisher)
+        self.assertNotIn('fetch_snapshot() {', publisher)
+        self.assertIn('await_registry_runtime_ready "$runtime_readiness_deadline"', publisher)
+
     def run_case(self, body):
         with tempfile.TemporaryDirectory() as directory:
             script = (
@@ -58,7 +65,46 @@ class RegistryRuntimeReadinessTest(unittest.TestCase):
             sleep() { :; }
             fetch_snapshot() { fetches=$((fetches + 1)); SECONDS=1201; }
             if await_registry_runtime_ready "$readiness_deadline" request refusal cli; then exit 1; fi
-            [[ $attempts == 2 && $fetches == 1 ]]
+            [[ $attempts == 1 && $fetches == 1 ]]
+            [[ ! -s request ]]
+        ''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('still absent from the signed catalogue after 20 minutes', result.stderr)
+
+    def test_failed_curl_cannot_reuse_stale_snapshot(self):
+        result = self.run_case('''
+            printf '%s\\n' '{"entries":[]}' > snapshot
+            snapshot=$PWD/snapshot
+            registry_url=https://registry.example.invalid
+            attempts=0; fetches=0
+            cli() {
+              attempts=$((attempts + 1))
+              printf '%s\\n' '{"package_id":"so.tilo.agent","version":"1.0.8","architecture":"aarch64","runtime":"tilo-runtime/exact"}' > refusal
+              return 1
+            }
+            sleep() { :; }
+            curl() { fetches=$((fetches + 1)); return 22; }
+            if await_registry_runtime_ready "$readiness_deadline" request refusal cli; then exit 1; else status=$?; fi
+            [[ $status == 22 && $attempts == 1 && $fetches == 1 ]]
+            [[ ! -s request ]]
+        ''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('waiting for signed-catalogue promotion', result.stderr)
+
+    def test_provider_after_deadline_is_not_accepted(self):
+        result = self.run_case('''
+            SECONDS=$((readiness_deadline - 2))
+            attempts=0; fetches=0; promoted=false
+            cli() {
+              attempts=$((attempts + 1))
+              if [[ $promoted == true ]]; then printf 'late signed entry\\n'; return 0; fi
+              printf '%s\\n' '{"package_id":"so.tilo.agent","version":"1.0.8","architecture":"aarch64","runtime":"tilo-runtime/exact"}' > refusal
+              return 1
+            }
+            sleep() { [[ $1 == 2 ]] || return 9; SECONDS=$((readiness_deadline + 1)); }
+            fetch_snapshot() { fetches=$((fetches + 1)); promoted=true; }
+            if await_registry_runtime_ready "$readiness_deadline" request refusal cli; then exit 1; fi
+            [[ $attempts == 1 && $fetches == 1 ]]
             [[ ! -s request ]]
         ''')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -93,7 +139,22 @@ class RegistryRuntimeReadinessTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('invalid signature', result.stderr)
 
-    def test_cancelled_wait_stops_before_refetch_or_publication(self):
+    def test_cancelled_wait_returns_before_refetch_in_conditional(self):
+        result = self.run_case('''
+            fetches=0
+            cli() {
+              printf '%s\\n' '{"package_id":"so.tilo.agent","version":"1.0.8","architecture":"aarch64","runtime":"tilo-runtime/exact"}' > refusal
+              return 1
+            }
+            sleep() { return 130; }
+            fetch_snapshot() { fetches=$((fetches + 1)); return 99; }
+            if await_registry_runtime_ready "$readiness_deadline" request refusal cli; then exit 1; else status=$?; fi
+            [[ $status == 130 && $fetches == 0 ]]
+        ''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('waiting for signed-catalogue promotion', result.stderr)
+
+    def test_cancelled_wait_aborts_publisher_command(self):
         result = self.run_case('''
             cli() {
               printf '%s\\n' '{"package_id":"so.tilo.agent","version":"1.0.8","architecture":"aarch64","runtime":"tilo-runtime/exact"}' > refusal
@@ -106,7 +167,6 @@ class RegistryRuntimeReadinessTest(unittest.TestCase):
         ''')
         self.assertEqual(result.returncode, 130, result.stderr)
         self.assertNotIn('unexpected', result.stdout)
-        self.assertIn('waiting for signed-catalogue promotion', result.stderr)
 
     def test_already_ready_entry_does_not_wait_or_refetch(self):
         result = self.run_case('''
