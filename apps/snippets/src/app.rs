@@ -1342,10 +1342,7 @@ impl ui::widget::Decorator for SnippetsApp {
                         .with_name(action.accessible_label(&core))
                         .with_action_target(format!("snippets.menu:{index}"))
                         .with_bounds(open.menu.item_rect(index).unwrap_or(Rect::ZERO))
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                 })
                 .collect();
             children.push(

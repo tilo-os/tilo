@@ -3129,10 +3129,7 @@ impl Widget for CartesianPlot {
                             } else {
                                 datum.detail.clone()
                             })
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true))
                     })
             })
             .collect();
@@ -3160,10 +3157,7 @@ impl Widget for CartesianPlot {
                         } else {
                             annotation.detail.clone()
                         })
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                 }),
         );
         Some(

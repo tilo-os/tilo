@@ -1890,13 +1890,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 let mut item = AccessNode::new(Role::ListItem)
                     .with_optional_name(name)
                     .with_position(row.index.saturating_add(1), count)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
-                        selected: self.selection.is_selected(&row.key),
-                        disabled: !self.is_enabled(),
-                        ..Default::default()
-                    });
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.is_focused && self.focused_key.as_ref() == Some(&row.key))
+                            .selected(self.selection.is_selected(&row.key))
+                            .disabled(!self.is_enabled()),
+                    );
                 match &row.state {
                     MountedRowState::Ready => {}
                     MountedRowState::Loading => item.state.busy = true,
@@ -1934,12 +1934,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                         .as_deref()
                         .map(crate::i18n::I18nManager::lookup_plain),
                 )
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.is_focused,
-                    disabled: !self.is_enabled(),
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.is_focused)
+                        .disabled(!self.is_enabled()),
+                )
                 .with_children(children),
         )
     }

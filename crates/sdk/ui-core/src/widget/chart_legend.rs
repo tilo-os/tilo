@@ -183,11 +183,11 @@ impl SeriesToggles {
         AccessNode::new(Role::ToggleButton)
             .with_action_target(target(id))
             .with_name(format!("{name} series"))
-            .with_state(AccessState {
-                focusable: true,
-                checked: Some(!self.is_hidden(id)),
-                ..Default::default()
-            })
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .checked(!self.is_hidden(id)),
+            )
     }
 
     /// The series among `ids` whose [`Self::access_node`] has action `key`.

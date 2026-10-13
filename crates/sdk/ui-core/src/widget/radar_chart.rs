@@ -621,10 +621,7 @@ impl Widget for RadarChart {
                                     "{value} of {}. {}",
                                     axis.max, series.detail
                                 ))
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                         })
                 })
             })
