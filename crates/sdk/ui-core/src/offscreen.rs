@@ -1242,10 +1242,6 @@ impl OffscreenRenderer {
     /// an environment failure this headless test/screenshot harness has no
     /// meaningful fallback for — it fails loudly rather than handing back a
     /// silently-empty buffer a comparison could misread as a real frame.
-    #[allow(
-        clippy::expect_used,
-        reason = "render() is the harness's core primitive, called only from tests/shots; every expect() here guards an environment failure (poisoned lock, missing device, GPU/readback error) with no recoverable fallback — matching render_png's existing panic-on-failure contract below"
-    )]
     fn render_with_overflow(&mut self, scene: &Scene, bg: Color) -> (Vec<u8>, bool) {
         // The lock only guards host-side DeviceHandle bookkeeping, not
         // rendering — vello's kernels run GPU-side. Clone the cheap,
@@ -1297,10 +1293,6 @@ impl OffscreenRenderer {
     /// # Panics
     ///
     /// Panics if the shared GPU context or target readback fails.
-    #[allow(
-        clippy::expect_used,
-        reason = "pixel-test readback cannot recover from unavailable shared GPU state"
-    )]
     pub fn readback_current(&mut self) -> Vec<u8> {
         let (device, queue) = self.device_queue();
         self.read_target(&device, &queue)
@@ -1315,10 +1307,6 @@ impl OffscreenRenderer {
     ///
     /// # Panics
     /// If shared GPU state is poisoned/missing or Vello rejects the render.
-    #[allow(
-        clippy::expect_used,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_gpu_wait(&mut self, scene: &Scene, bg: Color) {
         let mut timing = None;
         let _ = self.render_gpu_wait_count(scene, bg, &mut timing);
@@ -1373,10 +1361,6 @@ impl OffscreenRenderer {
 
     /// The same completed full render as [`Self::render_gpu_wait`], returning
     /// every full-target pass issued while Vello grows a bump allocation.
-    #[allow(
-        clippy::expect_used,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     fn render_gpu_wait_count(
         &mut self,
         scene: &Scene,
@@ -1460,10 +1444,6 @@ impl OffscreenRenderer {
     /// Panics if the shared GPU context is unavailable or Vello rejects the
     /// render. This is a benchmark/test primitive and cannot produce a valid
     /// timing sample after either failure.
-    #[allow(
-        clippy::expect_used,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_damage_gpu_wait(&mut self, scene: &Scene, bg: Color, damage: Rect) -> u64 {
         self.render_damage_regions_gpu_wait(scene, bg, std::slice::from_ref(&damage))
     }
@@ -1504,10 +1484,6 @@ impl OffscreenRenderer {
     /// # Panics
     ///
     /// Panics under the same conditions as [`Self::render_damage_gpu_wait`].
-    #[allow(
-        clippy::expect_used,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_copies_and_damage_gpu_wait(
         &mut self,
         scene: &Scene,
@@ -2105,7 +2081,6 @@ impl OffscreenRenderer {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use super::{
         AreaPpt8AttemptAccounting, CanonicalSegmentOrderAttemptAccounting,
@@ -2118,9 +2093,7 @@ mod tests {
     };
     use vello::Scene;
     use vello::kurbo::{Affine, BezPath, Rect};
-    use vello::peniko::{
-        BlendMode, Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
-    };
+    use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 
     #[test]
     fn offscreen_publication_is_send_resilient_and_decodable() {
@@ -2692,17 +2665,15 @@ mod tests {
         {
             const W: u32 = 256;
             const H: u32 = 192;
-            let image = |rgba: [u8; 4]| ImageData {
-                data: Blob::new(Arc::new(
+            let image = |rgba: [u8; 4]| {
+                crate::raster::rgba8(
                     rgba.into_iter()
                         .cycle()
                         .take(4 * 4 * 4)
                         .collect::<Vec<u8>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
+                    4,
+                    4,
+                )
             };
             let blue = image([20, 120, 255, 190]);
             let orange = image([255, 100, 30, 170]);
@@ -3092,19 +3063,15 @@ mod tests {
             oracle.set_defer_bump_readback_enabled(false);
             oracle.set_sparse_fine_enabled(false);
 
-            let image = ImageData {
-                data: Blob::new(Arc::new(
-                    [30_u8, 180, 250, 180]
-                        .into_iter()
-                        .cycle()
-                        .take(4 * 4 * 4)
-                        .collect::<Vec<_>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
-            };
+            let image = crate::raster::rgba8(
+                [30_u8, 180, 250, 180]
+                    .into_iter()
+                    .cycle()
+                    .take(4 * 4 * 4)
+                    .collect::<Vec<_>>(),
+                4,
+                4,
+            );
             let scene_for = |accent: Rect, image_rect: Rect| {
                 let mut scene = Scene::new();
                 let full = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
@@ -3948,19 +3915,15 @@ mod tests {
             oracle.set_cpu_metadata_enabled(false);
             oracle.set_cpu_pathtag_enabled(false);
             oracle.set_cpu_draw_prefix_enabled(false);
-            let image = ImageData {
-                data: Blob::new(Arc::new(
-                    [30_u8, 170, 240, 180]
-                        .into_iter()
-                        .cycle()
-                        .take(64)
-                        .collect::<Vec<_>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
-            };
+            let image = crate::raster::rgba8(
+                [30_u8, 170, 240, 180]
+                    .into_iter()
+                    .cycle()
+                    .take(64)
+                    .collect::<Vec<_>>(),
+                4,
+                4,
+            );
             let scene_for = |offset: f64, add_tag: bool| {
                 let mut scene = Scene::new();
                 let clip = Rect::new(12.0, 10.0, 180.0, 150.0);

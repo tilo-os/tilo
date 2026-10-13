@@ -2461,10 +2461,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn live_start_workspace_switch_and_inbox_navigate_real_conversations() {
         // Phase: live_starter_selects_first_real_workspace_and_channel.
         {
@@ -4881,10 +4877,6 @@ mod tests {
     // --- sidebar mute/deafen (were dead outside a call) -----------------
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
         // Phase: start_call_creates_a_voice_channel_when_the_workspace_has_none.
         {

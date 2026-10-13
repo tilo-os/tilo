@@ -2585,6 +2585,32 @@ qs-bluetooth-details = Bluetooth-Geräte
 search-action-quick-settings-network-subtitle = Verfügbare WLAN-Netzwerke durchsuchen
 search-action-quick-settings-bluetooth-subtitle = Gekoppelte Bluetooth-Geräte durchsuchen
 
+search-provider-file-picker = Dateiauswahl
+file-picker-inspect = Dateiauswahl prüfen
+file-picker-select = Aufgeführte Datei auswählen
+file-picker-navigate = Aufgeführten Ordner öffnen
+file-picker-up = Zum übergeordneten Ordner gehen
+file-picker-confirm = Dateiauswahl bestätigen
+file-picker-cancel = Dateiauswahl abbrechen
+file-picker-filename = Dateinamen zum Speichern festlegen
+file-picker-replace = Vorhandene Datei ersetzen
+file-picker-keep-existing = Vorhandene Datei behalten
+file-picker-next-filter = Dateifilter ändern
+file-picker-page-param = Seite der Dateiliste, beginnend bei null.
+file-picker-state-param = Genauer Zustandsschlüssel aus der aktuellen Dateiauswahlprüfung.
+file-picker-entry-param = Genaue Eintragskennung aus der aktuellen Dateiauswahlprüfung.
+file-picker-filename-param = Ein Dateiname innerhalb des aktuell erlaubten Ordners.
+file-picker-confirm-param = Diese Dateiübergabe oder Ersetzung bestätigen.
+file-picker-expired = Die Dateiauswahl oder ihre Auswahl hat sich geändert. Prüfe sie erneut.
+file-picker-busy = In der Dateiauswahl warten zu viele Vorgänge.
+file-picker-entry-unavailable = Dieser Eintrag ist nicht in der aktuellen Dateiauswahl.
+file-picker-page-unavailable = Diese Seite der Dateiauswahl ist nicht verfügbar.
+file-picker-owner-required = Nur der aktuelle Arbeitsbereichseigentümer darf diese Dateiauswahl bedienen.
+file-picker-outside-scope = Dieser Ordner liegt außerhalb der erlaubten Ordner der Dateiauswahl.
+file-picker-operation-unavailable = Dieser Vorgang ist im aktuellen Zustand der Dateiauswahl nicht verfügbar.
+file-picker-declared-operation = Verwende einen veröffentlichten Dateiauswahlvorgang.
+
+portal-chooser-file-grant-unavailable = Die ausgewählte Datei ist nicht mehr verfügbar. Wähle sie erneut aus.
 
 ## Private marker-adjacent Agent composer
 agent-quick-title = { $agent }

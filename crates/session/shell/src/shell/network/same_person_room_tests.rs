@@ -3,13 +3,6 @@
 //! room list and receives that workspace over the direct connection: its
 //! name and the apps opened in it, and later edits.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;

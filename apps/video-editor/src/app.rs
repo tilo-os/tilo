@@ -17,7 +17,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -6464,10 +6464,7 @@ impl Widget for VideoEditorApp {
         self.text_scale = f64::from(theme.text_scale);
         taffy.widget_leaf(
             Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             node_map,
@@ -7386,11 +7383,11 @@ impl Widget for VideoEditorApp {
                     crate::timecode::timecode(self.playhead, self.project.fps),
                     self.focus.pane.label()
                 ))
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.presentation.keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.presentation.keyboard_focus),
+                )
                 .with_children(kids)
                 .with_keyed_action_routes("video-editor"),
         )

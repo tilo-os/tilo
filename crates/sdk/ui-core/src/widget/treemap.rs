@@ -283,10 +283,6 @@ impl InteractiveChart for Treemap {
 impl Widget for Treemap {
     crate::widget::chart_navigation::chart_leaf!();
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "tiles, responsive labels and inspector share one paint pass"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -402,10 +398,7 @@ impl Widget for Treemap {
                     } else {
                         item.detail.clone()
                     })
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect();
         Some(

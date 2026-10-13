@@ -22,7 +22,7 @@ use std::path::Path;
 use tilo_automerge::ApplyIncoming;
 
 use automerge::{ActorId, AutoCommit, AutomergeError, ROOT};
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::widget::{ActivityTimeline, Column, HistoryScrubber};
@@ -205,10 +205,7 @@ fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = match taffy.new_with_children(
         Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
+            size: Size::from_lengths(w as f32, h as f32),
             ..Default::default()
         },
         &[child],

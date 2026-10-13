@@ -535,10 +535,6 @@ mod tests {
     use crate::seed;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn sample_library_orders_albums_searches_and_cycles_repeat() {
         // Phase `sample_library_is_populated`.
         {

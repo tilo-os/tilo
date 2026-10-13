@@ -15,7 +15,7 @@ use crate::time::SystemTime;
 use std::collections::HashMap;
 use tilo_search::FieldWeight;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
@@ -1018,10 +1018,7 @@ impl Widget for ChannelBrowser {
             + FOOTER_HEIGHT
             + SPACE_HEADER_HEIGHT;
         let style = Style {
-            size: Size {
-                width: Dimension::length(640.0),
-                height: Dimension::length(f32_of_f64(height)),
-            },
+            size: Size::from_lengths(640.0, f32_of_f64(height)),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -1184,11 +1181,7 @@ impl Widget for ChannelBrowser {
             AccessNode::new(Role::List)
                 .with_name("Channels")
                 .with_description(format!("{} channels", self.visible.len()))
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.is_focused,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().focusable(true).focused(self.is_focused)),
         )
     }
 

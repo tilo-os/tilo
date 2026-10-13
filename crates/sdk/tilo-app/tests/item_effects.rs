@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! Effects offered on the items they act on, `open` on every item a view
 //! can show, and labelled items published with no item verb, and a verb
 //! that answers its caller with what it made.

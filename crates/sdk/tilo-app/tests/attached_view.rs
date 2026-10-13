@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! A host without a screen acts through the app's own view: mounted over the
 //! record, never drawn, every operation through the door a click takes, and

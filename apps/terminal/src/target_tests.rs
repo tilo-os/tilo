@@ -973,11 +973,19 @@ fn owner_fixture_sessions(gate: Rc<std::cell::Cell<bool>>) -> Sessions {
                 "fixture owner consent required".into(),
             ));
         }
-        let mut command = portable_pty::CommandBuilder::new("/usr/bin/bash");
-        command.args(["--noprofile", "--norc", "-i"]);
+        let command = interactive_bash();
         crate::inner::TerminalBackend::with_command(command)
             .map_err(|error| OpenError::Failed(error.to_string()))
     })
+}
+
+/// An interactive bash without user startup files. Resolved through `PATH`:
+/// bash lives at `/usr/bin/bash` on merged-`/usr` Linux but only at
+/// `/bin/bash` on macOS.
+fn interactive_bash() -> portable_pty::CommandBuilder {
+    let mut command = portable_pty::CommandBuilder::new("bash");
+    command.args(["--noprofile", "--norc", "-i"]);
+    command
 }
 
 #[test]
@@ -985,8 +993,7 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
     use crate::resource::TerminalEffect;
     let sessions = Sessions::scripted(RecentTarget::none(), |target, _, _| {
         assert_eq!(target, &SessionTarget::default_environment());
-        let mut command = portable_pty::CommandBuilder::new("/usr/bin/bash");
-        command.args(["--noprofile", "--norc", "-i"]);
+        let mut command = interactive_bash();
         command.env("PS1", "[Default fixture]$ ");
         crate::inner::TerminalBackend::with_command(command)
             .map_err(|error| OpenError::Failed(error.to_string()))

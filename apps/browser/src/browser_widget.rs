@@ -18,7 +18,7 @@
 //!    displays.
 
 use automerge::{AutoCommit, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -109,13 +109,11 @@ fn decode_favicon_png(
     if decoded.width != expected_width || decoded.height != expected_height {
         return None;
     }
-    Some(vello::peniko::ImageData {
-        data: vello::peniko::Blob::new(std::sync::Arc::new(decoded.rgba)),
-        format: vello::peniko::ImageFormat::Rgba8,
-        alpha_type: vello::peniko::ImageAlphaType::Alpha,
-        width: expected_width,
-        height: expected_height,
-    })
+    Some(ui::raster::rgba8(
+        decoded.rgba,
+        expected_width,
+        expected_height,
+    ))
 }
 
 /// Browser's public navigation boundary. Keep this separate from the generic
@@ -3853,10 +3851,7 @@ impl Widget for BrowserWidget {
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         // `new_with_children` only fails when a child belongs to a different
@@ -4289,11 +4284,11 @@ impl Widget for BrowserWidget {
                         direction.as_str(),
                         entry.id
                     ))
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.back_menu.hovered() == Some(index),
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.back_menu.hovered() == Some(index)),
+                    )
             })
             .collect();
         let name = match direction {
@@ -6978,10 +6973,7 @@ mod tests {
         let layout_root = tree
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(width),
-                        height: Dimension::length(height),
-                    },
+                    size: Size::from_lengths(width, height),
                     ..Default::default()
                 },
                 &[child],
@@ -7956,10 +7948,7 @@ mod tests {
             let layout_root = tree
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(390.0),
-                            height: Dimension::length(844.0),
-                        },
+                        size: Size::from_lengths(390.0, 844.0),
                         ..Default::default()
                     },
                     &[child],
@@ -8065,10 +8054,7 @@ mod tests {
             let layout_root = tree
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(900.0),
-                            height: Dimension::length(620.0),
-                        },
+                        size: Size::from_lengths(900.0, 620.0),
                         ..Default::default()
                     },
                     &[child],

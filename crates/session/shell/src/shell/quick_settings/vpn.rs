@@ -481,10 +481,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn vpn_keyboard_and_semantics_follow_the_visible_profiles() {
         // Phase `keyboard_wraps_to_a_profile_and_uses_the_same_action_path`.
         {

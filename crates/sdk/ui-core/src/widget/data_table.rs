@@ -3721,11 +3721,11 @@ impl<Row: 'static> Widget for DataTable<Row> {
         let selected_pos = self.primary_index();
         // Human header, not the internal key, so the announcement reads naturally.
         let description = accessible_sort_description(&self.columns, self.sort_state());
-        let mut node = AccessNode::new(Role::Table).with_state(AccessState {
-            focusable: self.is_focusable(),
-            focused: self.is_focused(),
-            ..Default::default()
-        });
+        let mut node = AccessNode::new(Role::Table).with_state(
+            AccessState::new()
+                .focusable(self.is_focusable())
+                .focused(self.is_focused()),
+        );
         if let Some(name) = &self.accessible_name {
             node = node.with_name(crate::i18n::I18nManager::lookup_plain(name));
         }
@@ -5831,10 +5831,7 @@ mod tests {
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
-                size: Size {
-                    width: Dimension::length(300.0),
-                    height: Dimension::length(400.0),
-                },
+                size: Size::from_lengths(300.0, 400.0),
                 ..Default::default()
             },
             &[tnode],
@@ -6794,10 +6791,7 @@ mod content_edge_tests {
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::length(width),
-                        height: Dimension::length(height),
-                    },
+                    size: Size::from_lengths(width, height),
                     ..Default::default()
                 },
                 &[tnode],

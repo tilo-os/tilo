@@ -2054,6 +2054,12 @@ fn read_apply(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built
     {
         return Err(format!("{id}: {error}"));
     }
+    // Group members refer to this schema instead of copying it into the
+    // group's parameter. Validate here as well as at the direct apply door,
+    // including constraints stricter than the action's serde representation.
+    if let Some(schema) = apply_param(vocabulary).schema {
+        tilo_actions::validate_json_schema(&value, &schema)?;
+    }
     (vocabulary.read)(value)
 }
 

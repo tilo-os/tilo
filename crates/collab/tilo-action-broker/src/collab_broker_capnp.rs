@@ -46,6 +46,8 @@ mod policy_turn_tests;
 mod process_binding;
 mod published_invocation;
 mod resolved_invocation;
+#[path = "workspace_checkpoints.rs"]
+mod workspace_checkpoints;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
 #[path = "workspace_tasks.rs"]
@@ -2219,7 +2221,9 @@ impl CapnpBrokerState {
             &contract.need(),
             &current.broker_actor(),
             now,
-        )
+        )?;
+        self.authorize_checkpoint_result(&caller.room, current.certificate.as_ref(), record)?;
+        Ok(())
     }
 
     pub(crate) fn verified_invocation_status(
@@ -2306,6 +2310,7 @@ impl CapnpBrokerState {
             request.peer_id,
             offered,
             InvocationInputs {
+                original_request: None,
                 requested: None,
                 caller: None,
                 execution: None,
@@ -3177,6 +3182,8 @@ struct PendingWorker {
 /// as, the one-use confirmation token it presents and its ambient context.
 /// Admission checks every field; none of them grants authority by itself.
 struct InvocationInputs<'a> {
+    /// Exact remote request before resolving a provider alias for delivery.
+    original_request: Option<&'a tilo_actions::remote::InvokeRequest>,
     /// The caller's lifecycle identity, independent of execution authority.
     requested: Option<tilo_actions::InvocationId>,
     /// Who the invocation is admitted for, when the door knows them as a
@@ -3291,6 +3298,9 @@ pub struct CapnpBrokerState {
     /// Broker-owned governed membership surface per native room.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
+    // Retain result authorization even when the host has no durable journal.
+    // Entries share the completed invocation cache's bounded lifetime.
+    checkpoint_jobs: Mutex<HashMap<u64, (String, String, tilo_actions::ActionContract)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     /// Confirmations people gave on their own device for an invocation
     /// someone acting for them makes; see [`Self::witness_confirmation`].
@@ -3764,6 +3774,9 @@ impl CapnpBrokerState {
                     break;
                 };
                 completed.remove(&oldest);
+                if let Ok(mut checkpoints) = self.checkpoint_jobs.lock() {
+                    checkpoints.remove(&oldest);
+                }
             }
         }
     }
@@ -4074,6 +4087,7 @@ impl CapnpBrokerState {
                 desktop_command_peer: Mutex::new(None),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
+                checkpoint_jobs: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 witnessed_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
@@ -4745,6 +4759,7 @@ impl CapnpBrokerState {
                 peer_id,
                 (surface, published),
                 InvocationInputs {
+                    original_request: None,
                     requested: None,
                     caller: None,
                     execution: None,
@@ -5204,6 +5219,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                original_request: None,
                 requested: None,
                 caller: None,
                 execution: None,
@@ -5336,6 +5352,7 @@ impl CapnpBrokerState {
         provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
         let InvocationInputs {
+            original_request,
             requested,
             caller,
             execution,
@@ -5575,12 +5592,48 @@ impl CapnpBrokerState {
                 invocation,
                 owner: owner.clone(),
             };
-            let request = match durable {
-                Some(context) => context.intent(),
-                None => serde_json::json!({
-                    "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
-                    "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
-                }),
+            let request = if offered.0.app_id == "so.tilo.desktop"
+                && offered.1.resource == workspace_checkpoints::RESOURCE
+            {
+                let certificate = match origin.as_ref() {
+                    Some(InvocationCaller::Certified { caller, .. }) => self
+                        .current_action_caller(caller)?
+                        .certificate
+                        .ok_or("checkpoint caller certificate absent")?,
+                    Some(InvocationCaller::NativePerson { certificate, .. }) => certificate.clone(),
+                    _ => return Err("checkpoint requires original certified caller custody".into()),
+                };
+                let mut intent = workspace_checkpoints::intent(
+                    &offered.0.route.cluster_id,
+                    &certificate,
+                    &InvocationEnvelope {
+                        id,
+                        invocation,
+                        resource: offered.1.resource.clone(),
+                        action: offered.1.action.clone(),
+                        argument: argument.map(str::to_owned),
+                        actor: actor.id.clone(),
+                        context: None,
+                    },
+                )?;
+                if let Some(request) = original_request {
+                    intent
+                        .as_object_mut()
+                        .ok_or("checkpoint intent invalid")?
+                        .insert(
+                            "remote_request".into(),
+                            workspace_checkpoints::remote_request(request)?,
+                        );
+                }
+                intent
+            } else {
+                match durable {
+                    Some(context) => context.intent(),
+                    None => serde_json::json!({
+                        "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
+                        "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
+                    }),
+                }
             };
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
@@ -5598,6 +5651,21 @@ impl CapnpBrokerState {
             None
         };
         drop(journal_guard);
+        if offered.0.app_id == "so.tilo.desktop"
+            && offered.1.resource == workspace_checkpoints::RESOURCE
+        {
+            self.checkpoint_jobs
+                .lock()
+                .map_err(|_| "checkpoint registry unavailable")?
+                .insert(
+                    id,
+                    (
+                        offered.0.route.cluster_id.clone(),
+                        offered.1.action.clone(),
+                        offered.1.contract.clone(),
+                    ),
+                );
+        }
         self.spend_once_grants(&offered.0.route.cluster_id, &spent);
         // Keep acceptance before an immediately completing application's first
         // update. Sending to the unbounded app queue and bounded observation
@@ -6425,6 +6493,7 @@ impl CapnpBrokerState {
                 resource,
                 action,
                 InvocationInputs {
+                    original_request: None,
                     requested: None,
                     caller: None,
                     execution: None,
@@ -10455,6 +10524,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            original_request: None,
                             requested: None,
                             caller: None,
                             execution: None,
@@ -10493,6 +10563,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            original_request: None,
                             requested: None,
                             caller: None,
                             execution: None,
@@ -10523,6 +10594,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            original_request: None,
                             requested: None,
                             caller: None,
                             execution: None,

@@ -378,10 +378,6 @@ impl InteractiveChart for FunnelChart {
 impl Widget for FunnelChart {
     crate::widget::chart_navigation::chart_leaf!();
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the retained draw pass keeps stages, labels, conversions, and tooltip painting together"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -477,10 +473,7 @@ impl Widget for FunnelChart {
                     } else {
                         stage.detail.clone()
                     })
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect();
         Some(

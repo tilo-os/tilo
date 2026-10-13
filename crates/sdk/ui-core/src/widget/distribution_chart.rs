@@ -617,10 +617,7 @@ impl Widget for DistributionChart {
                             summary.sorted.len(),
                             series.detail
                         ))
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                 })
             })
             .collect();

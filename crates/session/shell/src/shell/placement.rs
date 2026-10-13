@@ -340,10 +340,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn launches_land_where_placement_says_until_they_map() {
         fn a_launch_with_no_selection_lands_at_the_seam_the_user_can_see() {
             crate::shell::launcher::clear_pending_placements();

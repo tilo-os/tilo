@@ -1,16 +1,6 @@
 //! Interaction tests for shell chrome widgets (`OverviewView`, the search
 //! palette, `QuickSettings`, `WorkspaceSettings`, `SidebarWheelDisc`, `TopBar`, …).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use shell::shell::state::FreshId as _;
 use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
@@ -93,10 +83,6 @@ fn super_space_opens_and_escape_closes_search() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
     // Phase `workspace_settings_general_edits_name_and_removes_collaborator`.
     {
@@ -195,10 +181,6 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
     // Phase `topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues`.
     {

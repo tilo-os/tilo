@@ -7,13 +7,6 @@
 //! nothing needs saying: every application message either device receives
 //! in that minute, and every repaint a peer's pointer causes, is waste.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Arc;

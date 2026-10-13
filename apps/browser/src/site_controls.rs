@@ -555,10 +555,6 @@ mod tests {
     }
     /// Origin canonicalisation, exceptions, private sharing and certificate text.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn site_origins_exceptions_and_certificates_are_canonical() {
         // Phase `canonical_origin_rejects_nonweb_and_preserves_ports`.
         {

@@ -497,11 +497,11 @@ impl Widget for IconGrid {
             .map(|item| item.label.clone());
         let mut node = AccessNode::new(Role::List)
             .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused()),
+            );
         // So the reader can say "2 of 9".
         if let Some(i) = primary
             && i < self.items.len()

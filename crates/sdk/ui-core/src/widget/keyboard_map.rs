@@ -783,11 +783,7 @@ impl Widget for KeyboardMap {
     fn accessibility(&self) -> Option<AccessNode> {
         Some(
             AccessNode::new(Role::Group)
-                .with_state(AccessState {
-                    focused: self.focused,
-                    read_only: true,
-                    ..Default::default()
-                })
+                .with_state(AccessState::new().focused(self.focused).read_only(true))
                 .with_name(self.label.clone())
                 .with_value(
                     self.keys
@@ -899,11 +895,11 @@ impl crate::widget::Decorator for KeyboardMapSelection {
                     ))
                     .with_action_target(Self::key_target(&key.name))
                     .with_bounds(self.inspection_rect(key))
-                    .with_state(AccessState {
-                        selected: self.map.inspected_key.as_ref() == Some(&key.name),
-                        disabled: !self.inspection_enabled(),
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .selected(self.map.inspected_key.as_ref() == Some(&key.name))
+                            .disabled(!self.inspection_enabled()),
+                    )
             })
             .collect();
         Some(root)

@@ -371,14 +371,7 @@ pub fn unrotate_rect(rect: Rect01, quarters: u8) -> Rect01 {
 
 /// Wrap prepared pixels for the shared live/history painters.
 pub fn to_peniko(img: &Rgba) -> vello::peniko::ImageData {
-    use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
-    ImageData {
-        data: Blob::new(std::sync::Arc::new(img.bytes.clone())),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: img.w,
-        height: img.h,
-    }
+    ui::raster::rgba8(img.bytes.clone(), img.w, img.h)
 }
 
 #[cfg(test)]

@@ -376,10 +376,7 @@ impl Widget for DatePicker {
         }
         let height = self.intrinsic_height(width);
         let style = Style {
-            size: Size {
-                width: Dimension::length(px(width)),
-                height: Dimension::length(px(height)),
-            },
+            size: Size::from_lengths(px(width), px(height)),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
@@ -578,11 +575,11 @@ impl Widget for DatePicker {
             AccessNode::new(Role::ComboBox)
                 .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(self.selected.format("%Y-%m-%d").to_string())
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused()),
+                ),
         )
     }
 
