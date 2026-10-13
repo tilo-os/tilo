@@ -209,10 +209,13 @@ def measure(args: argparse.Namespace) -> dict:
                         if key_lines and key_lines[0] < m.start() < key_lines[-1])
     painted = [(int(m[1]), int(m[2]), m[3] == "1") for m in PAINT_LINE.finditer(text)]
     paint = {}
-    if painted:
-        paint = {"dense_frames": sum(dense for _, _, dense in painted),
-                 "damage_px": pixel_distribution([d for d, _, _ in painted]),
-                 "raster_px": pixel_distribution([r for _, r, _ in painted])}
+    # A frame proven unchanged keeps the image and repaints nothing.
+    rendered = [frame for frame in painted if frame[0] > 0]
+    if rendered:
+        paint = {"dense_frames": sum(dense for _, _, dense in rendered),
+                 "kept_frames": len(painted) - len(rendered),
+                 "damage_px": pixel_distribution([d for d, _, _ in rendered]),
+                 "raster_px": pixel_distribution([r for _, r, _ in rendered])}
     result = {"label": args.label, "app": app, "size": f"{args.width}x{args.height}",
               "hz": args.hz, "keys_sent": args.keys, "damage": args.damage, "input": args.input, **paint,
               # Rendered frames per key sent: a key answered by one commit should cost one.
@@ -243,7 +246,8 @@ def table(results: list[dict]) -> str:
         if "raster_px" in r:
             frames = r["raster_px"]["n"]
             lines.append(
-                f"{r['label']}: {r['dense_frames']}/{frames} frames rendered the whole output; "
+                f"{r['label']}: {r['dense_frames']}/{frames} rendered frames drew the whole "
+                f"output, {r.get('kept_frames', 0)} more kept the image unchanged; "
                 f"damage p50 {r['damage_px']['p50']} px, "
                 f"rasterised p50 {r['raster_px']['p50']} px p90 {r['raster_px']['p90']} px")
     return "\n".join(lines)

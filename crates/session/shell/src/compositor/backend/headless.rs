@@ -628,8 +628,9 @@ struct SimulatedVblankPresenter {
     queued_last: bool,
     /// How long the last frame took to render, GPU wait included.
     last_render: Duration,
-    /// What the last frame repainted when it was damage-limited; `None`
-    /// when it rendered the whole target.
+    /// What the last frame repainted when it was damage-limited (nothing
+    /// when it kept the image it had); `None` when it rendered the whole
+    /// target.
     last_painted: Option<PaintedArea>,
     /// Pixels of the whole target.
     target_pixels: u64,
@@ -693,6 +694,7 @@ impl SimulatedVblankPresenter {
         if let Some(regions) = damage {
             if regions.is_empty() {
                 self.rendered_revision = Some(frame.revision);
+                self.last_painted = Some(PaintedArea::default());
                 return false;
             }
 
@@ -753,8 +755,25 @@ impl Presenter for SimulatedVblankPresenter {
         self.owed.push_back(QueuedFlip { queued_at, vblank });
     }
 
+    /// Only for a frame that queued no flip (an unchanged frame): its flip
+    /// timing is [`Self::retire_owed`]'s otherwise. Vblank-paced with no
+    /// vblank of its own, as the DRM presenter reports such a frame, so the
+    /// frame clock keeps its vblank grid instead of dropping it and pacing by
+    /// retirement time.
     fn display_timing(&self) -> DisplayTiming {
-        DisplayTiming::default()
+        DisplayTiming {
+            vblank_paced: true,
+            vblank: None,
+            flip_queued_at: None,
+        }
+    }
+
+    /// As the DRM presenter on a vblank-paced output: no frame waits behind
+    /// the one rendering. The loop builds the next frame once this one's
+    /// render returned, from the newest state, instead of queueing one that
+    /// would start only after this render and show input that much older.
+    fn queue_depth(&self) -> usize {
+        0
     }
 
     fn frame_detail(&mut self) -> Option<String> {
