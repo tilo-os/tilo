@@ -4,7 +4,8 @@
 
 pub mod columns;
 pub mod comments;
-pub mod container;
+#[cfg(test)]
+mod container;
 pub mod content;
 pub mod export;
 pub mod headers;
@@ -32,7 +33,7 @@ impl FormatProvider for DocxCodec {
         inputs: &mut ContentInputs,
     ) -> Result<(), CodecError> {
         doc.bulk(|doc| {
-            let container = container::DocxContainer::read(bytes)?;
+            let container = crate::package::ZipPackage::read(bytes)?;
             let document = container
                 .get("word/document.xml")
                 .ok_or_else(|| CodecError::Parse("docx: missing word/document.xml".into()))?

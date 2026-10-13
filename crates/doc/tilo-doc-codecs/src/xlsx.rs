@@ -2,12 +2,11 @@
 //! worksheet parts into the CRDT [`Workbook`] model — sheets, cells, cell types,
 //! and **formulas** (preserved, never flattened to their cached result) — and
 //! serializes a complete valid package back. Untrusted bytes enter only through
-//! the bounded/hardened `SheetPackage` reader (zip-bomb + XXE defence).
+//! the bounded/hardened `ZipPackage` reader (zip-bomb + XXE defence).
 
 use crate::format::CodecError;
 use crate::sheet_common::{
-    ParsedSheet, ParsedWorkbook, SheetPackage, SheetProvider, attr_local, end_local_name,
-    local_name,
+    ParsedSheet, ParsedWorkbook, SheetProvider, attr_local, end_local_name, local_name,
 };
 use crate::xml_escape::escape_attr_quotes;
 use quick_xml::events::Event;
@@ -46,7 +45,7 @@ impl XlsxCodec {
     /// # Errors
     /// [`CodecError::Parse`] for a malformed or over-limit package.
     pub fn parse(bytes: &[u8]) -> Result<ParsedWorkbook, CodecError> {
-        let pkg = SheetPackage::read(bytes)?;
+        let pkg = crate::package::ZipPackage::read(bytes)?;
         let workbook_xml = pkg
             .get("xl/workbook.xml")
             .ok_or_else(|| CodecError::Parse("xlsx: missing xl/workbook.xml".into()))?;
@@ -107,7 +106,7 @@ fn serialize(
     snap: &WorkbookSnapshot,
     preserved: &dyn Fn(&str) -> Option<Vec<u8>>,
 ) -> Result<Vec<u8>, CodecError> {
-    let mut pkg = SheetPackage { parts: Vec::new() };
+    let mut pkg = crate::package::ZipPackage { parts: Vec::new() };
 
     let styles_xml = preserved("xl/styles.xml");
     // Styles routinely refer to `theme/theme1.xml` (notably for font and
