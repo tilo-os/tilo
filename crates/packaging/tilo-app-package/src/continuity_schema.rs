@@ -35,7 +35,7 @@ impl ContinuitySemanticSchema {
     /// device which has not installed the app can still tell what the
     /// payload means. Disjoint from the toolkit's structural and generic
     /// envelope numbers (`u16::MAX - 1` and `u16::MAX`); apps write it
-    /// through `ui::app::semantic_schema`.
+    /// through `ui::collaboration::semantic_schema`.
     #[must_use]
     pub const fn wire_tag(self) -> u16 {
         match self {

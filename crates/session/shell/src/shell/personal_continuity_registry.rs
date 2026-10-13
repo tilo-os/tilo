@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn toolkit_semantic_tags_match_the_manifest_vocabulary() {
-        use ui::app::semantic_schema as tag;
+        use ui::collaboration::semantic_schema as tag;
         assert_eq!(
             ContinuitySemanticSchema::ALL.map(ContinuitySemanticSchema::wire_tag),
             [

@@ -10817,19 +10817,19 @@ mod tests {
                 (
                     browser_tab,
                     "so.tilo.browser",
-                    ui::app::semantic_schema::WEB_LOCATION_V1,
+                    ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                     br#"{"url":"https://example.test/reading"}"#.to_vec(),
                 ),
                 (
                     ebook_tab,
                     "so.tilo.ebook",
-                    ui::app::semantic_schema::PUBLICATION_POSITION_V1,
+                    ui::collaboration::semantic_schema::PUBLICATION_POSITION_V1,
                     br#"{"book_id":"book-42","chapter":4,"page":9}"#.to_vec(),
                 ),
                 (
                     music_tab,
                     "so.tilo.music",
-                    ui::app::semantic_schema::MEDIA_POSITION_V1,
+                    ui::collaboration::semantic_schema::MEDIA_POSITION_V1,
                     br#"{"track_id":"track-42","position_ms":12345,"paused":true}"#.to_vec(),
                 ),
             ] {
