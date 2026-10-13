@@ -20,7 +20,7 @@ pub(crate) const FRAMING: Framing = Framing::little_endian(64 * 1024 * 1024);
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 1;
+pub(crate) const PROTOCOL_VERSION: u32 = 2;
 
 /// What a worker is started to do. It decides what the worker prepares
 /// before it confines itself: a reader loads the fonts a component lays its
@@ -63,7 +63,9 @@ pub(crate) enum Request {
         app_id: String,
         room: String,
         participant: String,
-        agent: bool,
+        /// JSON `ReplicaActor`: a bot's standing nests maps postcard
+        /// cannot describe.
+        actor: String,
         seed: Option<(String, Vec<Vec<u8>>)>,
     },
     /// Every operation the held record publishes now.
@@ -75,6 +77,13 @@ pub(crate) enum Request {
         /// JSON object of arguments.
         arguments: String,
         confirm: bool,
+        /// JSON `ActionInvoker` admitted for this invocation, when not the
+        /// participant itself.
+        invoker: Option<String>,
+        /// JSON `ActionContext` of this invocation.
+        context: Option<String>,
+        /// JSON `Appearance` the door admitted, if any.
+        appearance: Option<String>,
     },
     /// The holder's own changes since the last call.
     TakeMutation,

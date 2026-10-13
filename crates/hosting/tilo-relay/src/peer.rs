@@ -203,6 +203,8 @@ pub struct PeerContext {
     /// Keeps retained document channels short; `None` never compacts and
     /// refuses compaction volunteers.
     pub compactor: Option<crate::compaction::Compactor>,
+    /// Per-person limits of a public host; `None` limits nobody.
+    pub member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
 }
 
 /// The host's browser plane, as the relay's sessions feed it.
@@ -222,7 +224,7 @@ pub type LiveBridge = Arc<dyn BrowserBridge>;
 /// refused like a revoked device.
 pub type AgentRegistry = Arc<
     std::sync::RwLock<
-        std::collections::HashMap<[u8; 32], Option<tilo_relay_protocol::agents::AgentDelegation>>,
+        std::collections::HashMap<[u8; 32], Option<tilo_relay_protocol::delegation::Delegation>>,
     >,
 >;
 
@@ -254,6 +256,7 @@ struct SessionCtx<'a> {
     agents: &'a AgentRegistry,
     positions: Option<crate::position::PositionIssuer>,
     compactor: Option<&'a crate::compaction::Compactor>,
+    member_limits: Option<&'a crate::member_limits::MemberLimits>,
     /// This connection's resume log per resumed workspace.
     resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
     /// Rooms whose live deliveries this connection could not take.
@@ -521,6 +524,7 @@ where
         agents,
         positions,
         compactor,
+        member_limits,
     } = ctx;
     let resumes = std::sync::Mutex::new(HashMap::new());
     let lag = Arc::new(Lag::default());
@@ -566,6 +570,7 @@ where
         agents: &agents,
         positions,
         compactor: compactor.as_ref(),
+        member_limits: member_limits.as_deref(),
         resumes: &resumes,
         lag: &lag,
         presence: Some(&presence),
@@ -2103,7 +2108,8 @@ async fn handle_subscribe(
         .cloned()
         .unwrap_or_else(|| mpsc::channel(1).0);
     let completion_workspace = ws.clone();
-    let ticket = ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned())?;
+    let ticket =
+        ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned()).await?;
     let capture = ticket.authority.clone();
     let bind = ticket.authority.clone();
     let catchup = Arc::new(ReplayCatchup::new());
@@ -2409,6 +2415,25 @@ enum LiveEnvelope {
 // Return only channels subject to the ordinary once-per-request live gate.
 // This is delivery policy, not authority: callers must first revalidate the
 // current authenticated source and retain all recipient/session fences.
+/// The devices a retained message goes to live when only they can use it
+/// ([`tilo_peer_state::transport::audience`]); `None` for everyone.
+fn live_audience(envelope: &LiveEnvelope) -> Option<std::collections::BTreeSet<[u8; 32]>> {
+    let LiveEnvelope::Original(original) = envelope else {
+        return None;
+    };
+    let Envelope::Delta { delta, .. } = &**original else {
+        return None;
+    };
+    let (crate::coedit::CoeditPayload::Checkpoint { body, .. }, _) =
+        postcard::take_from_bytes::<crate::coedit::CoeditPayload>(delta).ok()?
+    else {
+        return None;
+    };
+    let msg = postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&body).ok()?;
+    let audience = tilo_peer_state::transport::audience(&msg)?;
+    Some(audience.iter().map(|device| *device.as_bytes()).collect())
+}
+
 fn gated_checkpoint_channel(
     envelope: &LiveEnvelope,
     source: Option<&StateSource>,
@@ -2426,20 +2451,32 @@ fn gated_checkpoint_channel(
     };
     // Unknown wrapper suffixes retain the generic checkpoint gate.
     if outer_trailing.is_empty()
-        && let Some(source) = source
         && let Ok((msg, trailing)) =
             postcard::take_from_bytes::<tilo_peer_state::NeighbourMsg>(&body)
         && trailing.is_empty()
-        && matches!(
-            &msg,
-            tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
-                user_public_key, ..
-            } if *user_public_key == source.peer.user_public_key
-        )
         && tilo_peer_state::transport::retention(&msg, false)
             == Some((channel, tilo_peer_state::transport::Retention::Checkpoint))
     {
-        return None;
+        // Channel governance is a sequence of steps that each replace the
+        // last on one route, not a baseline of content a live device already
+        // holds: every one must reach it.
+        let governance = matches!(
+            &msg,
+            tilo_peer_state::NeighbourMsg::MlsGovernance { .. }
+                | tilo_peer_state::NeighbourMsg::MlsAccessRequest { .. }
+                | tilo_peer_state::NeighbourMsg::MlsGovernanceAck { .. }
+        );
+        let continuity = source.is_some_and(|source| {
+            matches!(
+                &msg,
+                tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+                    user_public_key, ..
+                } if *user_public_key == source.peer.user_public_key
+            )
+        });
+        if governance || continuity {
+            return None;
+        }
     }
     Some(channel)
 }
@@ -3885,6 +3922,7 @@ async fn publish_checkpoint_commit(
             break;
         }
         let checkpoint_channel = gated_checkpoint_channel(&envelope, Some(source));
+        let audience = live_audience(&envelope);
         for (recipient, original) in &commit.sessions {
             if recovering
                 && !captured_live_current(&commit.session_lives, &runtime, recipient, original)
@@ -3901,6 +3939,12 @@ async fn publish_checkpoint_commit(
                 continue;
             };
             if !source.admits(&runtime, &target.peer) {
+                continue;
+            }
+            if audience
+                .as_ref()
+                .is_some_and(|audience| !audience.contains(&target.peer.device_public_key))
+            {
                 continue;
             }
             let replay_phase = target
@@ -4514,15 +4558,34 @@ impl Drop for AdmissionWaitTrace {
     }
 }
 
+/// A host commit holding its place in its workspace's order, not yet
+/// durable.
+pub(crate) struct HostAdmission(AdmittedState);
+
+impl HostAdmission {
+    /// Wait until the commit is durable and published; returns its host
+    /// order.
+    pub(crate) async fn durable(self) -> Result<u64, String> {
+        self.0
+            .completion
+            .await
+            .map_err(|_| "the workspace owner stopped before the commit was durable".to_owned())?
+            .map_err(|error| error.to_string())?;
+        Ok(self.0.sequence.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
 /// Admit `envelope`, authored by this host's own device, through the
-/// workspace's ordered persistence owner, as a device's commit is admitted.
-/// Resolves with its host order once it is durable and published.
-pub(crate) async fn admit_host_state(
+/// workspace's ordered persistence owner, as a device's commit is admitted,
+/// without waiting for it to be durable: commits queued one after another
+/// keep that order, so a caller can queue under a lock and wait after
+/// releasing it.
+pub(crate) async fn enqueue_host_state(
     workspace: &SharedWorkspace,
     envelope: Envelope,
     metrics: Arc<crate::metrics::Metrics>,
-) -> Result<u64, String> {
-    let admitted = Box::pin(enqueue_state_inner(
+) -> Result<HostAdmission, String> {
+    Box::pin(enqueue_state_inner(
         workspace,
         envelope,
         None,
@@ -4531,13 +4594,8 @@ pub(crate) async fn admit_host_state(
         false,
     ))
     .await
-    .map_err(|error| error.to_string())?;
-    admitted
-        .completion
-        .await
-        .map_err(|_| "the workspace owner stopped before the commit was durable".to_owned())?
-        .map_err(|error| error.to_string())?;
-    Ok(admitted.sequence.load(std::sync::atomic::Ordering::SeqCst))
+    .map(HostAdmission)
+    .map_err(|error| error.to_string())
 }
 pub(crate) async fn enqueue_federated(
     workspace: &SharedWorkspace,
@@ -4955,6 +5013,7 @@ async fn enqueue_state_inner(
                         break;
                     }
                     let checkpoint_channel = gated_checkpoint_channel(&envelope, source.as_ref());
+                    let audience = live_audience(&envelope);
                     // Presence the author sent after this delta was held for
                     // it and goes out with it; from here on nothing waits.
                     if let Envelope::Delta { author_device_public_key, .. } = &*envelope {
@@ -4972,6 +5031,7 @@ async fn enqueue_state_inner(
                             None => room_access::listed(room_access::Room::current(&runtime), &target.peer, RoomOperation::State),
                         };
                         if !admitted { continue; }
+                        if audience.as_ref().is_some_and(|audience| !audience.contains(&target.peer.device_public_key)) { continue; }
                         let replay_phase = target.replay.as_ref().map(|replay| {
                             replay.phase.load(std::sync::atomic::Ordering::SeqCst)
                         });
@@ -5391,6 +5451,12 @@ async fn handle_delta(
             "author does not match authenticated device".into(),
         ));
     }
+    if let Some(limited) = over_change_limit(peer, session) {
+        // Neither kept nor forwarded, and the session stays, as for a
+        // refused change below.
+        tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "refused a change over the member limit");
+        return Ok(None);
+    }
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
         trace_native_publication("server_source_refused", &env, None);
         // A live revoke already pushed NotAuthorised and dropped this
@@ -5507,6 +5573,22 @@ async fn handle_compaction(
 /// the session. A resent commit the host already admitted is answered with
 /// its original order from the workspace's commit ledger and neither
 /// persisted nor fanned out again.
+/// Spends `peer`'s budget for one change, unless the relay's own user sent
+/// it: the host device and the bots a host-held root delegated must never
+/// turn a burst into refusals.
+fn over_change_limit(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Option<crate::member_limits::Limited> {
+    let limits = session.member_limits?;
+    if peer.user_public_key == *session.own_user_public_key {
+        return None;
+    }
+    limits
+        .admit_change(&peer.user_public_key, std::time::Instant::now())
+        .err()
+}
+
 async fn handle_commit(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -5541,6 +5623,9 @@ async fn handle_commit(
         peer.role == crate::auth::PeerRole::Device || &peer.cert == session.own_device_cert;
     if !device || author_device_public_key != peer.device_public_key {
         return refused("author does not match authenticated device");
+    }
+    if let Some(limited) = over_change_limit(peer, session) {
+        return refused(&limited.to_string());
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return refused("workspace not bound on this relay");
@@ -5968,6 +6053,8 @@ async fn handle_presence(
     mut env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
     let mut slot = None;
+    // A presence that is no toolkit presence may ask the room for content.
+    let mut asks = None;
     let Envelope::Presence { workspace_id, .. } = &env else {
         return Err(PeerError::Protocol(
             "handle_presence called with a non-Presence envelope".into(),
@@ -5988,6 +6075,9 @@ async fn handle_presence(
         // device has a valid certificate in the same workspace.
         attributed.author = peer.device_public_key;
         slot = crate::coedit::presence_slot(&attributed.body);
+        if slot.is_none() {
+            asks = Some(attributed.body.clone());
+        }
         *payload = attributed
             .encode()
             .map_err(|error| PeerError::Protocol(error.to_string()))?;
@@ -6027,6 +6117,17 @@ async fn handle_presence(
             wr.request_checkpoint(&peer.device_public_key);
         }
         wr.fanout_presence(&peer.device_public_key, peer.role, &env, slot);
+        let authority = wr.room_authority.clone();
+        drop(wr);
+        if let (Some(body), Some(authority)) = (asks, authority) {
+            answer_content(
+                &ws,
+                &authority,
+                workspace_id,
+                (*session.own_device_public_key, peer.device_public_key),
+                body,
+            );
+        }
     }
     if legacy_writer
         && let (Some(bridge), crate::auth::PeerRole::Device, Envelope::Presence { payload, .. }) =
@@ -6040,6 +6141,45 @@ async fn handle_presence(
         );
     }
     Ok(None)
+}
+
+/// Answer a member's request for content its room's records reference
+/// from what this host keeps ([`crate::rooms::RoomContent`]), to the
+/// member's device alone, off the connection's task: reading the content
+/// may touch the disk.
+fn answer_content(
+    ws: &Arc<tokio::sync::Mutex<crate::workspace::WorkspaceRuntime>>,
+    authority: &crate::rooms::RoomAuthority,
+    workspace_id: u64,
+    (host, member): ([u8; 32], [u8; 32]),
+    body: Vec<u8>,
+) {
+    let Some(rooms) = authority.rooms() else {
+        return;
+    };
+    let (ws, room) = (Arc::clone(ws), authority.room().to_owned());
+    tokio::spawn(async move {
+        let Ok(frames) =
+            tokio::task::spawn_blocking(move || rooms.content_answer(&room, &body)).await
+        else {
+            return;
+        };
+        if frames.is_empty() {
+            return;
+        }
+        let runtime = ws.lock().await;
+        for frame in frames {
+            runtime.route_lossy(
+                &member,
+                Envelope::RecordContent {
+                    workspace_id,
+                    to_device_public_key: member,
+                    from_device_public_key: host,
+                    frame,
+                },
+            );
+        }
+    });
 }
 
 /// Where an inbound [`Envelope::RemoteAction`] asked to go.
@@ -6176,6 +6316,17 @@ async fn route_record_content(
     {
         return;
     }
+    if let Some(limits) = session.member_limits
+        && peer.user_public_key != *session.own_user_public_key
+        && let Err(limited) = limits.admit_content(
+            &peer.user_public_key,
+            u64::try_from(frame.len()).unwrap_or(u64::MAX),
+            std::time::Instant::now(),
+        )
+    {
+        tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "dropped record content over the member limit");
+        return;
+    }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return;
     };
@@ -6215,11 +6366,14 @@ fn serve_locally(
         .get(&peer.device_public_key)
         .cloned();
     let caller = match agent {
-        Some(Some(delegation)) => Caller::delegated_agent(
-            delegation.agent_id,
-            peer.user_public_key,
-            peer.device_public_key,
-        ),
+        Some(Some(delegation)) => match delegation.delegate {
+            tilo_relay_protocol::delegation::Delegate::Agent { agent_id } => {
+                Caller::delegated_agent(agent_id, peer.user_public_key, peer.device_public_key)
+            }
+            tilo_relay_protocol::delegation::Delegate::Bot { installation } => {
+                Caller::bot(installation, peer.user_public_key, peer.device_public_key)
+            }
+        },
         Some(None) => {
             return Err((UnavailableReason::NotAuthorised, "the agent was withdrawn"));
         }
@@ -8050,6 +8204,7 @@ mod private_transport_tests {
                 agents: crate::peer::AgentRegistry::default(),
                 positions: None,
                 compactor: None,
+                member_limits: None,
             },
             SessionProtocol::V2,
             std::future::pending::<()>(),
@@ -8944,6 +9099,7 @@ mod private_transport_tests {
             agents: crate::peer::AgentRegistry::default(),
             positions: None,
             compactor: None,
+            member_limits: None,
         };
         // Requests flow through a roomy pipe; replies through a small one, so
         // the relay's writer blocks until the client reads.
@@ -9086,6 +9242,7 @@ mod private_transport_tests {
                 agents: crate::peer::AgentRegistry::default(),
                 positions: None,
                 compactor: None,
+                member_limits: None,
             };
             tasks.push(tokio::spawn(run_peer_stream(
                 peer.clone(),
@@ -9590,6 +9747,7 @@ mod private_transport_tests {
                     agents: crate::peer::AgentRegistry::default(),
                     positions: None,
                     compactor: None,
+                    member_limits: None,
                 },
                 SessionProtocol::V2,
                 std::future::pending::<()>(),
@@ -10014,6 +10172,7 @@ mod private_transport_tests {
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -10236,6 +10395,7 @@ mod private_transport_tests {
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -10363,6 +10523,7 @@ mod private_transport_tests {
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -10515,6 +10676,7 @@ mod private_transport_tests {
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -10645,6 +10807,7 @@ mod private_transport_tests {
             agents: &agents,
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -10658,13 +10821,15 @@ mod private_transport_tests {
         // Signed for this room, already past its expiry: what a delegation
         // looks like once its window closed under a live session.
         let expired = |device: [u8; 32]| {
-            tilo_relay_protocol::agents::AgentDelegation::sign(
+            tilo_relay_protocol::delegation::Delegation::sign(
                 &root,
                 device,
-                "helper",
+                tilo_relay_protocol::delegation::Delegate::Agent {
+                    agent_id: "helper".into(),
+                },
                 "Helper",
                 [1, 2, 3],
-                tilo_relay_protocol::agents::AgentScope {
+                tilo_relay_protocol::delegation::DelegateScope {
                     rooms: vec![room.to_string()],
                     apps: Vec::new(),
                 },
@@ -10755,6 +10920,7 @@ mod private_transport_tests {
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -10970,6 +11136,7 @@ mod private_transport_tests {
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -11344,6 +11511,7 @@ mod private_transport_tests {
             agents: Box::leak(Box::default()),
             positions: None,
             compactor: None,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };

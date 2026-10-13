@@ -262,7 +262,11 @@ async fn admit(
                 let steward = channels.steward(request.channel);
                 steward.reconcile(&allowed, pending, &vault()).unwrap();
                 for outgoing in steward.outbox() {
-                    for frame in outgoing.frames {
+                    for frame in outgoing
+                        .frames
+                        .into_iter()
+                        .flat_map(|frame| frame.into_deliveries().unwrap())
+                    {
                         delivery = delivery.checked_add(1).unwrap();
                         publish(
                             &session,

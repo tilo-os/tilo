@@ -6,7 +6,7 @@
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
-use tilo_relay_protocol::agents::{AgentDelegation, AgentScope};
+use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
@@ -57,14 +57,16 @@ fn delegation(
     room: &str,
     issued: SystemTime,
     expires: SystemTime,
-) -> AgentDelegation {
-    AgentDelegation::sign(
+) -> Delegation {
+    Delegation::sign(
         person,
         device,
-        "scribe",
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "scribe".into(),
+        },
         "Scribe",
         [10, 20, 30],
-        AgentScope {
+        DelegateScope {
             rooms: vec![room.into()],
             apps: Vec::new(),
         },
@@ -279,6 +281,34 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
 }
 
 #[test]
+fn admit_agent_refuses_a_bot_delegation() {
+    let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();
+    let room = governor.room().to_owned();
+    let person = SigningKey::from_bytes(&ROOT_SEED);
+    let (_, cert) = agent(&person, 8);
+    let bot = Delegation::sign(
+        &person,
+        cert.device_public_key,
+        tilo_relay_protocol::delegation::Delegate::Bot {
+            installation: "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into(),
+        },
+        "Bridge",
+        [0; 3],
+        DelegateScope {
+            rooms: vec![room],
+            apps: vec![],
+        },
+        ns(now - Duration::from_secs(1)),
+        ns(now + Duration::from_secs(10)),
+    )
+    .unwrap();
+    assert_eq!(
+        governor.admit_agent(cert, bot, &authority, now),
+        Err("the delegation is not an agent's".into())
+    );
+}
+
+#[test]
 fn a_withdrawn_agent_is_dead_at_once_and_never_readmitted() {
     let (mut governor, authority, other_device, _, now) = crate::admission_tests::seeded();
     let room = governor.room().to_owned();
@@ -440,13 +470,13 @@ fn identities_without_an_agent_keep_their_bytes() {
         admission: None,
         admissions: vec![],
         workspace_delegations: vec![],
-        agent: None,
+        delegate: None,
     };
     let bytes = serde_json::to_string(&identity).unwrap();
     assert!(
-        !bytes.contains("agent\""),
+        !bytes.contains("delegate\""),
         "an ordinary identity's governed bytes are unchanged: {bytes}"
     );
     let back: crate::state::GovernedIdentity = serde_json::from_str(&bytes).unwrap();
-    assert!(back.agent.is_none());
+    assert!(back.delegate.is_none());
 }

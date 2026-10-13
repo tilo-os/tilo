@@ -66,10 +66,11 @@ use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
-    AGENTS_PROVIDER, AgentDelegation, AgentScope, AgentStatus, AgentsStatus, CANCEL_TASK_ACTION,
-    MESSAGE_ACTION, PAUSE_ACTION, RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION,
-    SUPERVISOR_RESOURCE, TaskState, agent_resource,
+    AGENTS_PROVIDER, AgentStatus, AgentsStatus, CANCEL_TASK_ACTION, MESSAGE_ACTION, PAUSE_ACTION,
+    RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState,
+    agent_resource,
 };
+use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::live::{LiveFrame, LiveParticipant, LiveRecord, ParticipantKind};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
@@ -150,6 +151,9 @@ async fn start_host(
             },
             allowed_origins: Vec::new(),
             plain_listen: None,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
         .await
         .unwrap();
@@ -388,13 +392,15 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         CertificationPolicy::agent().ceiling
     );
     let now = tilo_clock::unix_now_ns();
-    let delegation = AgentDelegation::sign(
+    let delegation = Delegation::sign(
         &root,
         agent_cert.device_public_key,
-        "writer",
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "writer".into(),
+        },
         "Writer helper",
         [0x7c, 0x3a, 0xed],
-        AgentScope {
+        DelegateScope {
             rooms: vec![ROOM.into()],
             apps: vec![SCRATCHPAD.into()],
         },
@@ -422,7 +428,15 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     browser.join(workspace()).unwrap();
     ready(&[&browser]).await;
     let catalogue = catalogue();
-    let mut page = Replica::open(&catalogue, SCRATCHPAD, ROOM, "ada", false, Seed::New).unwrap();
+    let mut page = Replica::open(
+        &catalogue,
+        SCRATCHPAD,
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let route = DocumentRoute {
         app_id: SCRATCHPAD.into(),
         cluster_id: ROOM.into(),
@@ -497,7 +511,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     assert_eq!(info.tasks[0].state, TaskState::Completed);
     assert_eq!(info.tasks[0].steps[0].action, note.action);
     assert_eq!(info.device, hex::encode(agent_cert.device_public_key));
-    let carried = AgentDelegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
+    let carried = Delegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
     assert_eq!(carried.verify(&user, tilo_clock::unix_now_ns()), Ok(()));
 
     // 5. The browser's live session over WebTransport sees the agent:

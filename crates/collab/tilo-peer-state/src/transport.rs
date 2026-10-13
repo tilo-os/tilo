@@ -4,4 +4,4 @@
 //! identically, or a host's retained history would depend on which client
 //! wrote it. This module keeps existing `tilo_peer_state::transport` paths
 //! compiling; it holds no policy of its own.
-pub use neighbour_wire::{Retention, app_document_channel, retention};
+pub use neighbour_wire::{Retention, app_document_channel, audience, retention, standalone};

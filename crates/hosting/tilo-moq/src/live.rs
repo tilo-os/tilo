@@ -69,8 +69,10 @@ pub const MAX_OPEN_RECORDS: usize = 16;
 pub const MAX_DATAGRAM_FRAME_BYTES: usize = 1100;
 /// Ordered frame ceiling.
 pub const MAX_STREAM_FRAME_BYTES: usize = 64 * 1024;
-/// Concurrently admitted live sessions.
-pub const MAX_LIVE_SESSIONS: usize = 32;
+/// Concurrently admitted live sessions: every guest and spectator of a
+/// public room holds one (behind an HTTP ingress, all of them on the
+/// HTTPS fallback).
+pub const MAX_LIVE_SESSIONS: usize = 2048;
 /// Egress ops tracks one namespace may carry (subscriber demand bound).
 pub const MAX_EGRESS_OPS_TRACKS: usize = 64;
 /// Upstream groups copied concurrently per ops track.

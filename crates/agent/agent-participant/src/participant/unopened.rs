@@ -328,7 +328,7 @@ impl SharedDesktop {
 }
 
 /// Every record of one room the agent has seen but not opened.
-pub(super) struct Unopened {
+pub(crate) struct Unopened {
     desktop_route: DocumentRoute,
     desktop: Option<SharedDesktop>,
     held: BTreeMap<DocumentRoute, Packed>,
@@ -338,7 +338,7 @@ pub(super) struct Unopened {
 }
 
 impl Unopened {
-    pub(super) fn new(room: &str) -> Self {
+    pub(crate) fn new(room: &str) -> Self {
         Self {
             desktop_route: desktop_route(room),
             desktop: None,
@@ -349,7 +349,7 @@ impl Unopened {
     }
 
     /// Take one durable change (or snapshot) of `route`, in host order.
-    pub(super) fn receive(&mut self, route: DocumentRoute, bytes: Vec<u8>) {
+    pub(crate) fn receive(&mut self, route: DocumentRoute, bytes: Vec<u8>) {
         self.changes_seen = self.changes_seen.wrapping_add(1);
         self.arrived.insert(route.clone(), self.changes_seen);
         if route == self.desktop_route {
@@ -364,7 +364,7 @@ impl Unopened {
     /// Admit the shared desktop's changes taken since the last call, in one
     /// batch. Called once the session's events are taken in, so a plan
     /// finds them admitted.
-    pub(super) fn settle(&mut self) {
+    pub(crate) fn settle(&mut self) {
         if let Some(desktop) = &mut self.desktop {
             desktop.admit();
         }
@@ -373,7 +373,7 @@ impl Unopened {
     /// The records, those people have open on the desktop first, then the
     /// most recently changed. Reads the desktop only when it changed since
     /// the last call.
-    pub(super) fn people_first(&mut self) -> Vec<DocumentRoute> {
+    pub(crate) fn people_first(&mut self) -> Vec<DocumentRoute> {
         let known = self.routes();
         let none = HashSet::new();
         let on_desktop = self.desktop.as_mut().map_or(&none, SharedDesktop::tabs);
@@ -381,12 +381,12 @@ impl Unopened {
     }
 
     /// The shared desktop as merged, while no replica holds it.
-    pub(super) fn desktop(&self) -> Option<&AutoCommit> {
+    pub(crate) fn desktop(&self) -> Option<&AutoCommit> {
         self.desktop.as_ref().map(|live| &live.doc)
     }
 
     /// The records.
-    pub(super) fn routes(&self) -> Vec<DocumentRoute> {
+    pub(crate) fn routes(&self) -> Vec<DocumentRoute> {
         let mut routes: Vec<DocumentRoute> = self.held.keys().cloned().collect();
         if self.desktop.is_some() {
             routes.push(self.desktop_route.clone());
@@ -397,7 +397,7 @@ impl Unopened {
     /// What a replica of `route` is seeded from: its document, saved.
     /// `None` when the room has no such record; `Err` when the isolate
     /// could not be asked to admit its changes.
-    pub(super) fn seed(&mut self, route: &DocumentRoute) -> Option<Result<Vec<u8>, String>> {
+    pub(crate) fn seed(&mut self, route: &DocumentRoute) -> Option<Result<Vec<u8>, String>> {
         if *route == self.desktop_route {
             return self.desktop.as_mut().map(SharedDesktop::seed);
         }
@@ -405,7 +405,7 @@ impl Unopened {
     }
 
     /// Stop holding `route`: its replica holds it now.
-    pub(super) fn forget(&mut self, route: &DocumentRoute) {
+    pub(crate) fn forget(&mut self, route: &DocumentRoute) {
         if *route == self.desktop_route {
             self.desktop = None;
         } else {
