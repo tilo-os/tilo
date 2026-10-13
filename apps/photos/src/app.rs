@@ -4415,7 +4415,7 @@ impl PhotosApp {
                     .mimetype("image/png")
                     .mimetype("image/jpeg")
                     .mimetype("image/webp");
-                if crate::files::native_paths() {
+                if tilo_files::available(tilo_files::Feature::NativePaths) {
                     self.picker = Some(
                         ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
                             .thread_name("photos-portal-open")

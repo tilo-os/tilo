@@ -271,10 +271,7 @@ impl CameraWorker {
     pub fn new(content: ContentStore) -> Self {
         // Every ingress and result queue is bounded. One sleeping event loop
         // replaces the former eager per-feature worker set.
-        let threads = matches!(
-            ui::rt::availability(ui::rt::Feature::Threads),
-            ui::rt::Availability::Available
-        );
+        let threads = ui::rt::available(ui::rt::Feature::Threads);
         let results = if threads { 1 } else { INLINE_RESULTS };
         let (tx, jobs) = std::sync::mpsc::sync_channel::<WorkerJob>(1);
         let (photo_results, rx) = std::sync::mpsc::sync_channel::<PhotoResult>(results);

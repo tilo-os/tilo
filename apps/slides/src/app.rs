@@ -2664,9 +2664,7 @@ impl Widget for SlidesApp {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -3141,10 +3139,6 @@ impl Widget for SlidesApp {
         } else {
             false
         }
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

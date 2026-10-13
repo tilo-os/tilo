@@ -905,7 +905,7 @@ impl ResourceApp for EbookShell {
 /// Whether the host has no native files, so the one book there is to read is
 /// the one compiled into the app: the browser.
 pub(crate) fn bundled_library() -> bool {
-    !crate::content::native_paths()
+    !tilo_files::available(tilo_files::Feature::NativePaths)
 }
 
 /// What a new library starts with: the bundled book where the library is
