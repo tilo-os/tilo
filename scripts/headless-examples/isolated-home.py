@@ -1,35 +1,35 @@
 #!/usr/bin/env python3
-"""Build a self-contained HOME for the collaboration demo.
+"""Build a self-contained HOME for a headless shell run.
 
 The shell's search providers read the ambient environment: the file
 provider indexes `dirs::home_dir()` (i.e. `$HOME`), and the host-app
 provider walks `$XDG_DATA_HOME` then each `$XDG_DATA_DIRS` entry looking
-for `.desktop` files. Run the demo against a real login session and the
+for `.desktop` files. Run the shell headless against a real login session and the
 command palette fills with whatever happens to be on the machine —
 `~/Downloads`, game directories, every installed Flatpak. That adds noise
-and puts the operator's own filesystem on the recording.
+and puts the operator's own filesystem into captures.
 
-So the demo gets its own HOME. Nothing here is wired into the shell; it
-is purely the environment the demo processes are launched with, which is
+So a headless run gets its own HOME. Nothing here is wired into the shell; it
+is purely the environment the test processes are launched with, which is
 why it cannot regress a normal session.
 
-    env $(scripts/demo/home.py --print-env) ./target/debug/shell ...
+    env $(scripts/headless-examples/isolated-home.py --print-env) ./target/debug/shell ...
 
 Note the environment has to go to the *compositor*, not to cargo: staging
 cargo's HOME breaks the build shim. Build first, then run the binary.
 
 From Python there is no plain import to reach for - the filename is
-hyphenated, so `import demo_home` cannot resolve it. Load it by path:
+hyphenated, so `import isolated_home` cannot resolve it. Load it by path:
 
     import importlib.util, pathlib
     spec = importlib.util.spec_from_file_location(
-        "demo_home", pathlib.Path(__file__).parent / "home.py")
-    demo_home = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(demo_home)
-    env = demo_home.stage()             # -> dict of environment overrides
+        "isolated_home", pathlib.Path(__file__).parent / "isolated-home.py")
+    isolated_home = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(isolated_home)
+    env = isolated_home.stage()             # -> dict of environment overrides
 
 The staged tree holds a small corpus so the palette has something to find.
-It is demo data behind a demo entrypoint, not content shipped inside an app:
+It is fixture data behind a test entrypoint, not content shipped inside an app:
 the apps themselves still start empty.
 """
 from __future__ import annotations
@@ -67,10 +67,10 @@ SHARED_DOC = "Documents/Roadmap.md"
 def stage(root: Path | None = None, *, fresh: bool = True) -> dict[str, str]:
     """Create the staged HOME and return the environment overrides for it.
 
-    `fresh=True` removes any previous stage so a re-run of the demo starts
-    from a known state rather than accumulating edits from the last take.
+    `fresh=True` removes any previous stage so a re-run starts
+    from a known state rather than accumulating edits from the last one.
     """
-    root = Path(root) if root else Path(__file__).resolve().parents[2] / "target" / "demo-home"
+    root = Path(root) if root else Path(__file__).resolve().parents[2] / "target" / "isolated-home"
 
     if fresh and root.exists():
         shutil.rmtree(root)
@@ -91,7 +91,7 @@ def stage(root: Path | None = None, *, fresh: bool = True) -> dict[str, str]:
         "XDG_CONFIG_HOME": str(root / ".config"),
         "XDG_CACHE_HOME": str(root / ".cache"),
         # Only the word processor currently translates its UI, so pin the
-        # locale to avoid mixed-language output in the demo.
+        # locale to avoid mixed-language output in captures.
         "LANG": "en_US.UTF-8",
         "LC_ALL": "en_US.UTF-8",
         "LANGUAGE": "en",
@@ -112,15 +112,15 @@ def stage(root: Path | None = None, *, fresh: bool = True) -> dict[str, str]:
     #
     # Net: staging fixes the file leak completely - a "~" search drops from
     # the operator's whole home directory to this corpus - and does not
-    # hide installed host applications. Choose demo queries that do not
-    # match host app names, or film on a machine without them.
+    # hide installed host applications. Choose queries that do not
+    # match host app names, or run on a machine without them.
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Build a self-contained HOME for the collaboration demo."
+        description="Build a self-contained HOME for a headless shell run."
     )
-    ap.add_argument("--root", help="where to stage (default: target/demo-home)")
+    ap.add_argument("--root", help="where to stage (default: target/isolated-home)")
     ap.add_argument("--keep", action="store_true",
                     help="reuse an existing stage instead of recreating it")
     ap.add_argument("--print-env", action="store_true",
