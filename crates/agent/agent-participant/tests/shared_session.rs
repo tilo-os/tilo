@@ -219,6 +219,7 @@ async fn call(
         confirmation: None,
         revision: None,
         wait_ms: None,
+        appearance: None,
     }))
     .encode()
     .unwrap();

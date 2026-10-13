@@ -685,7 +685,7 @@ of five or six saves after a warm-up:
 | first frame + present | | 12 ms |
 | **save → first frame** | **4322 ms** | **2138 ms** |
 
-`apps/hot-reload-demo`, inside the workspace, same container:
+A small app inside the workspace, same container:
 
 | Path | Before | After |
 |---|---:|---:|

@@ -86,6 +86,12 @@ impl BrokerActor {
                 }
             }
             CallerPrincipal::App(id) => Self::agent(format!("app:{id}")),
+            CallerPrincipal::Bot(id) => match caller.user_public_key() {
+                Some(root) => Self::bot(id, super::principal_id_for_root(*root)),
+                // A bot nobody installed has no authority to borrow: acting
+                // for nobody, it gets nothing.
+                None => Self::bot(id, String::new()),
+            },
         }
     }
 }
@@ -544,9 +550,9 @@ impl CapnpBrokerState {
         match caller.room() {
             Some(confined) => confined == workspace.room.to_string(),
             None => match caller.principal() {
-                // An application is always admitted into one room;
+                // An application or a bot is always admitted into one room;
                 // unconfined, it takes part in none.
-                CallerPrincipal::App(_) => false,
+                CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => false,
                 // Anyone else takes part in a room they may read; a foreign
                 // device reads wherever its person does.
                 CallerPrincipal::Person(_) | CallerPrincipal::Agent(_) => {
@@ -1227,6 +1233,9 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Err(refused) = tilo_actions::appearance::refuse_here(request) {
+            return Pending::ready(Err(refused));
+        }
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
@@ -1742,7 +1751,7 @@ impl CapnpBrokerState {
             CallerPrincipal::App(app_id) => LaunchPlace::Beside {
                 app_id: app_id.clone(),
             },
-            CallerPrincipal::Agent(_) => self
+            CallerPrincipal::Agent(_) | CallerPrincipal::Bot(_) => self
                 .launchable
                 .view_of(room, &BrokerActor::for_caller(caller).id)
                 .map_or(LaunchPlace::Focus, |app_id| LaunchPlace::Beside { app_id }),

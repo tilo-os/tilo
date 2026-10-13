@@ -375,11 +375,7 @@ impl NativeWorkspaceOwner {
             if enrollment.local_device().user_public_key == bootstrap.authority.user_public_key {
                 collab_types::Role::Owner
             } else {
-                match enrollment.verified_join().grant().role {
-                    tilo_peer_state::join::MemberRole::Editor => collab_types::Role::Editor,
-                    tilo_peer_state::join::MemberRole::Commenter => collab_types::Role::Commenter,
-                    tilo_peer_state::join::MemberRole::Viewer => collab_types::Role::Viewer,
-                }
+                enrollment.verified_join().grant().role.into()
             };
         if role != expected {
             return Err("actual admitted role differs from signed enrollment role".into());
