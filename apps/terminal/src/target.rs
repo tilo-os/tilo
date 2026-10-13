@@ -38,9 +38,6 @@ impl Default for SessionTarget {
     }
 }
 
-/// The record key under which `terminal.session` stores its target.
-pub const TARGET_KEY: &str = "terminal_target";
-
 /// The most a stored target may weigh; anything larger is not a target.
 const MAX_TARGET_BYTES: usize = 1024;
 
@@ -163,10 +160,6 @@ pub struct RelaySummary {
     pub relay: String,
     pub label: String,
 }
-
-/// The key under which `terminal.session` keeps a relay session's id, which
-/// re-attaches to it.
-pub const RELAY_SESSION_KEY: &str = "terminal_relay_session";
 
 /// Every target the picker offers, in order: each environment, then the
 /// device's own shell, then legacy VMs (only when the legacy VM service

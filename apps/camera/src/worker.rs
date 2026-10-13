@@ -24,7 +24,6 @@ pub struct ScanJob {
 pub enum ScanSource {
     /// The bytes of an image the person chose.
     Bytes(Vec<u8>),
-    Media(String),
     Frame(FrameBuf),
 }
 
@@ -244,8 +243,6 @@ impl WorkerLoop {
             WorkerJob::Scan(job) => {
                 let luma = match job.source {
                     ScanSource::Bytes(bytes) => crate::library::load_luma_bytes(&bytes, 1024),
-                    ScanSource::Media(id) => crate::media::read(&self.content, &id)
-                        .and_then(|bytes| crate::library::load_luma_bytes(&bytes, 1024)),
                     ScanSource::Frame(frame) => Some((
                         crate::frame::luma(&frame),
                         frame.w as usize,
