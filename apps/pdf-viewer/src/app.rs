@@ -4349,23 +4349,7 @@ impl PdfApp {
                     self.finish_portal_action(false, Some(refusal));
                     return;
                 }
-                match self
-                    .raster_handle
-                    .as_ref()
-                    .map(|h| h.open_contents(&file.name, file.bytes))
-                {
-                    Some(Ok(request)) => {
-                        self.pending_open = Some(request);
-                        self.status_note = Some("Opening PDF…".to_string());
-                    }
-                    Some(Err(error)) => {
-                        self.record_open_failure(std::path::Path::new(&name), &error.to_string());
-                    }
-                    None => self.record_open_failure(
-                        std::path::Path::new(&name),
-                        "the PDF worker could not be started",
-                    ),
-                }
+                self.queue_worker_open_contents(&name, file.bytes);
                 if self.pending_open.is_none() {
                     self.finish_portal_action(self.has_document, self.load_error.clone());
                 }
@@ -4499,24 +4483,7 @@ impl PdfApp {
             self.dirty = true;
             return;
         };
-        match self
-            .raster_handle
-            .as_ref()
-            .map(|handle| handle.open_contents(&name, bytes))
-        {
-            Some(Ok(request)) => {
-                self.pending_open = Some(request);
-                self.status_note = Some("Opening PDF…".to_string());
-            }
-            Some(Err(error)) => {
-                self.record_open_failure(std::path::Path::new(&name), &error.to_string());
-            }
-            None => self.record_open_failure(
-                std::path::Path::new(&name),
-                "the PDF worker could not be started",
-            ),
-        }
-        self.dirty = true;
+        self.queue_worker_open_contents(&name, bytes);
     }
 
     /// Load a real PDF from `path` into the running reader, replacing whatever
@@ -4544,13 +4511,28 @@ impl PdfApp {
             return;
         };
         match handle.open_path(path) {
-            Ok(request) => {
-                self.pending_open = Some(request);
-                self.status_note = Some("Opening PDF…".to_string());
-                self.dirty = true;
-            }
+            Ok(request) => self.begin_open(request),
             Err(error) => self.record_open_failure(path, &error.to_string()),
         }
+    }
+
+    /// Submit a file chosen or stored by its contents, named `name`.
+    fn queue_worker_open_contents(&mut self, name: &str, bytes: Vec<u8>) {
+        let path = std::path::Path::new(name);
+        let Some(handle) = self.raster_handle.as_ref() else {
+            self.record_open_failure(path, "the PDF worker could not be started");
+            return;
+        };
+        match handle.open_contents(name, bytes) {
+            Ok(request) => self.begin_open(request),
+            Err(error) => self.record_open_failure(path, &error.to_string()),
+        }
+    }
+
+    fn begin_open(&mut self, request: OpenRequest) {
+        self.pending_open = Some(request);
+        self.status_note = Some("Opening PDF…".to_string());
+        self.dirty = true;
     }
 
     fn record_open_failure(&mut self, path: &std::path::Path, error: &str) {
