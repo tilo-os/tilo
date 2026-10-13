@@ -6,7 +6,7 @@
 
 [apps.agent]
 D1 = 3
-D2 = 9
+D2 = 8
 
 [apps.backups]
 D1 = 1
