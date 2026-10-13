@@ -91,7 +91,7 @@ pub(crate) const UNTRUSTED_NOTE: &str = "this answer carries content from outsid
 /// reads the label before what it labels.
 fn mark_untrusted(value: &mut Value) {
     if let Value::Object(fields) = value {
-        let mut labelled = serde_json::Map::with_capacity(fields.len() + 1);
+        let mut labelled = serde_json::Map::with_capacity(fields.len().saturating_add(1));
         labelled.insert(UNTRUSTED.into(), UNTRUSTED_NOTE.into());
         labelled.extend(std::mem::take(fields));
         *fields = labelled;
