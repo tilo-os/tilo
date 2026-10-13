@@ -1563,10 +1563,6 @@ fn print_gpu_dispatch_timestamp_profile(totals: &GpuDispatchTimingTotals, buffer
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "each profile-only action line keeps the wall sample, CPU phases, returned sparse facts, and exact timestamp-match state together"
-)]
 fn write_action_correlation_profile(
     writer: &mut impl Write,
     profile: &ActionCorrelationProfile,

@@ -1,8 +1,5 @@
 #![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
-    clippy::unwrap_used,
     reason = "headless geometry fixture asserts setup failures directly"
 )]
 
@@ -152,10 +149,6 @@ fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
 
 /// Find bar and download status alignment.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
     // Phase `the_find_bar_controls_share_the_find_fields_centre_line`.
     {

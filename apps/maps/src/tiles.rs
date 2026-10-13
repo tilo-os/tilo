@@ -1365,10 +1365,6 @@ mod tests {
     /// Non-blocking guarantees: requests return at once and arrive via drain,
     /// duplicates are no-ops, the offline layer never requests, and LRU bounds memory.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn tile_requests_never_block_and_the_resident_set_is_bounded() {
         // Phase `request_returns_immediately_results_arrive_via_channel`.
         // `request()` must return *immediately* (no blocking on I/O or decode) and
@@ -1657,10 +1653,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn failed_tiles_are_negative_cached_with_capped_exponential_backoff() {
         // Phase `failed_fetch_is_negative_cached_and_suppresses_refetch`.
         // The core of the fix: a tile whose *real* fetch fails must be

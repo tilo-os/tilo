@@ -314,10 +314,6 @@ fn tab_action_label(act: TabAction) -> &'static str {
     }
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent retained interaction, worker and presentation flags; they are not mutually exclusive states"
-)]
 pub struct SheetsApp {
     grid: Grid,
     /// The custom chrome has no toolkit layout primitives to inherit type
@@ -4144,10 +4140,6 @@ impl SheetsApp {
     }
 
     /// Execute a tab context-menu action against sheet `idx`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "tab menu actions stay together to preserve their shared active-sheet update rules"
-    )]
     fn run_tab_action(&mut self, doc: &mut Edits<'_>, idx: usize, act: TabAction) {
         let Some(id) = self.sheet_ids.get(idx).cloned() else {
             return;

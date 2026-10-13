@@ -2017,10 +2017,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each case keeps its original fixture and assertions"
-    )]
     fn discovery_answers_list_and_describe_only_what_the_room_offers() {
         // Case `a_kind_is_asked_about_across_the_room_and_not_within_one_app`.
         {
@@ -2124,10 +2120,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each case keeps its original fixture and assertions"
-    )]
     fn a_plan_is_read_only_from_revealed_operations_within_the_step_cap() {
         // Case `only_what_a_listing_returned_can_be_planned`.
         {

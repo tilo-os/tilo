@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! A host that knows a resource only by the kind its record names reads,
 //! publishes and replays it exactly as the typed resource does.
 

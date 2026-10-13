@@ -1488,10 +1488,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each case keeps its original fixture and assertions"
-    )]
     fn a_steps_arguments_bind_exactly_one_preceding_content_result_and_key_its_dispatch() {
         // Case `a_content_step_uses_only_the_immediately_preceding_application_result`.
         {

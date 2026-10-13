@@ -5,7 +5,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::panic,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard; the PNG and zip \

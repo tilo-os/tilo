@@ -2645,10 +2645,6 @@ impl InstallerApp {
         children.push(self.nav_row(Step::Keyboard, self.next_control(), "Next", false));
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one linear list of the Options step's choices, each with its explanation"
-    )]
     fn compose_options_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let completion = self.profile_completion.unwrap_or_default();

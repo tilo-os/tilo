@@ -4,14 +4,6 @@
 //! act for you", Allow once or Deny) and the relay hands the agent the
 //! witnessed answer for that one invocation.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::too_many_lines,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 

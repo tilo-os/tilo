@@ -188,10 +188,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "wire fixtures assert the authenticated production RPC loop"
-)]
 mod binary_tests {
     use super::*;
     fn input() -> Vec<u8> {

@@ -3683,7 +3683,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn pointer_and_toolbar_taps_route_to_their_targets() {
         eprintln!("phase pointer_tap_routes_to_key_under_cursor");
@@ -3923,7 +3922,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "one scenario of named phases")]
     fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
         eprintln!("phase numeric_layout_renders_offscreen");
         {

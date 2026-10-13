@@ -1161,10 +1161,6 @@ mod tests {
     /// Selected text exposes a typed hyperlink action that replays; targets are limited to safe authored
     /// schemes; validation is enforced by both resource and executor.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
     fn hyperlinks_are_typed_safe_and_validated_on_both_sides() {
         // Phase: selected_text_exposes_a_typed_hyperlink_action_that_replays.
         {

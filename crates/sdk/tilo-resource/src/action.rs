@@ -1018,10 +1018,6 @@ impl<O: Operation> Performs for O {
 /// back. Either way the action writes exactly the operations a whole read
 /// and write would, so a replica replaying it, warm or cold, makes the
 /// identical change.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one apply: an edit, an item verb or a record verb, each written and checked"
-)]
 fn apply_operation(
     record: &'static RecordOps,
     operation: &dyn Performs,

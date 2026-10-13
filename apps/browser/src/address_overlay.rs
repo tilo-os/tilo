@@ -582,10 +582,6 @@ mod tests {
 
     /// Rendering, sizing and accessibility of suggestion rows.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn suggestion_rows_render_and_expose_stable_accessible_targets() {
         // Phase `accessibility_target_uses_the_stable_row_identity`.
         {
@@ -681,10 +677,6 @@ mod tests {
 
     /// Keyboard, Escape and pointer input on the overlay.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn keyboard_escape_and_mouse_choose_or_dismiss_suggestions() {
         // Phase `keyboard_moves_selection_and_enter_chooses`.
         {
