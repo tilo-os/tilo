@@ -50,6 +50,14 @@ and record throughout the test.
   and production view. Allow a bounded wait for cold resource publication;
   an empty first listing does not establish that the record is empty. Resolve
   the returned resource identity rather than guessing one from a title.
+- **Missing actions:** when an opted-in native startup checkpoint is available,
+  inspect `native_admission`: `manager_connected`, `custody_reconciled`,
+  `action_history_ready`, `directory_enqueued` and the directory RPC counters
+  distinguish connection, applied history and publication. A painted window
+  does not prove action readiness. A missing snapshot is inconclusive; ordinary
+  development slots need not serve the device-owner diagnostic socket. Use
+  the session's existing authorized diagnostics and retain its publication
+  checks. These observations do not establish durable-owner ACK.
 - **Reopening:** close the view, restart the owned test session if that is the
   subject, and open the application normally with the original caller and
   workspace. Verify the original record and changed content without replaying
