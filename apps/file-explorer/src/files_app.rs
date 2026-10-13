@@ -459,8 +459,6 @@ pub struct StartupInputs {
 pub enum DocumentOpenRoute {
     /// This embedding deliberately provides no document owner.
     Unavailable,
-    /// Legacy synchronous host route, retained for standalone embeddings.
-    Immediate(Rc<RefCell<DocumentOpener>>),
     /// The shell drains a capability-bound request after the tile releases its
     /// record loan. A different app cannot construct the shell's matching
     /// capability.
@@ -5812,7 +5810,6 @@ impl FileExplorerWidget {
             Some(DocumentOpenRoute::Unavailable) => {
                 Some(Err("Document opening is unavailable".into()))
             }
-            Some(DocumentOpenRoute::Immediate(open)) => Some(open.borrow_mut()(&path)),
             Some(DocumentOpenRoute::Deferred(capability)) => {
                 Some(self.request_deferred_document_open(path.clone(), capability))
             }

@@ -1916,7 +1916,6 @@ pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, St
     };
     let profile_id = field("profile_id")?;
     Ok(ProviderSelection {
-        profile_label: profile_id.clone(),
         profile_id,
         endpoint: String::new(),
         protocol,
