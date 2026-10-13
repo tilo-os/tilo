@@ -212,7 +212,7 @@ struct ThumbnailResult {
 struct AnalysisResult {
     invocation: tilo_actions::InvocationId,
     photo_id: String,
-    content: Option<String>,
+    content: String,
     result: AnalysisOutcome,
 }
 
@@ -314,7 +314,6 @@ enum AnalysisOutcome {
 struct AnalysisJob {
     invocation: tilo_actions::InvocationId,
     photo_id: String,
-    content: Option<String>,
     image: OpenImage,
     kind: AnalysisJobKind,
 }
@@ -369,7 +368,7 @@ fn analysis_worker(
             .send(AnalysisResult {
                 invocation: job.invocation,
                 photo_id: job.photo_id,
-                content: job.content,
+                content: job.image.content.clone(),
                 result: match job.kind {
                     AnalysisJobKind::Ocr { language } => AnalysisOutcome::Image {
                         component: ImageAnalysisComponent::Ocr,
@@ -399,15 +398,12 @@ fn with_thumbnail_wake(service: thumbnail::ThumbnailService) -> thumbnail::Thumb
     service
 }
 
-/// The shared-pipeline request for one library photograph. A content
+/// The shared-pipeline request for one library photograph. Its content
 /// reference is the preview's content address and persists in the preview
-/// cache; a legacy path-only photograph has no stable content identity, so its
-/// preview is generated for this session only.
+/// cache; a malformed address has no stable identity, so its preview is
+/// generated for this session only.
 fn thumbnail_request(image: &OpenImage, content: &ContentStore) -> thumbnail::ThumbRequest {
-    let persistent = image
-        .content
-        .as_deref()
-        .and_then(|address| thumbnail::ThumbKey::of_address(address, THUMBNAIL_SIZE));
+    let persistent = thumbnail::ThumbKey::of_address(&image.content, THUMBNAIL_SIZE);
     let key = persistent.unwrap_or_else(|| {
         thumbnail::ThumbKey::of_bytes(decode_key(image).as_bytes(), THUMBNAIL_SIZE)
     });
@@ -1004,8 +1000,7 @@ pub struct PhotosApp {
     /// shared metadata changes so a fresh content reference gets a retry.
     thumbnail_unavailable: HashSet<String>,
     /// A bad peer-provided image must not be decoded once per frame. Content
-    /// hashes are immutable, and a user reopening a changed legacy path makes
-    /// a new attempt through `open_path`, so retaining this failure is safe.
+    /// hashes are immutable, so retaining this failure is safe.
     original_decode_failed: Option<String>,
     /// The shared preview pipeline; its one worker serializes disk and
     /// content-store access. Results are stamped with a visible-library
@@ -1161,16 +1156,11 @@ impl PhotosApp {
                 .values()
                 .filter(|photo| {
                     !photo.analysis().is_some_and(|analysis| {
-                        analysis.has_vision_component(
-                            photo.image.content.as_deref(),
-                            &capability.revision,
-                        )
+                        analysis.has_vision_component(&photo.image.content, &capability.revision)
                     })
                 })
                 .filter_map(|photo| {
-                    if photo.image.content.is_some()
-                        && crate::model::bytes_of(&photo.image, &self.content).is_some()
-                    {
+                    if crate::model::bytes_of(&photo.image, &self.content).is_some() {
                         Some(photo.id.clone())
                     } else {
                         unavailable += 1;
@@ -1243,6 +1233,23 @@ impl PhotosApp {
         true
     }
 
+    /// Settle a completed library analysis with its counts.
+    fn finish_library_analysis(&mut self, invocation: tilo_actions::InvocationId) {
+        self.active_analysis.remove(&invocation);
+        self.settle(tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({
+                    "analyzed": self.library_analysis.succeeded,
+                    "failed": self.library_analysis.failed,
+                    "unavailable": self.library_analysis.unavailable,
+                })),
+                resources: vec!["photos.library-analysis".to_owned()],
+            },
+        });
+        self.notice = Some(self.analysis_finished_notice());
+    }
+
     fn schedule_next_library_analysis(
         &mut self,
         library: &crate::model::PhotoLibrary,
@@ -1255,19 +1262,7 @@ impl PhotosApp {
                 if self.library_analysis.finish_if_empty()
                     && let Some(invocation) = self.library_analysis.invocation
                 {
-                    self.active_analysis.remove(&invocation);
-                    self.settle(tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::json!({
-                                "analyzed": self.library_analysis.succeeded,
-                                "failed": self.library_analysis.failed,
-                                "unavailable": self.library_analysis.unavailable,
-                            })),
-                            resources: vec!["photos.library-analysis".to_owned()],
-                        },
-                    });
-                    self.notice = Some(self.analysis_finished_notice());
+                    self.finish_library_analysis(invocation);
                 }
                 return Ok(());
             };
@@ -1296,7 +1291,6 @@ impl PhotosApp {
                 .try_send(AnalysisJob {
                     invocation,
                     photo_id,
-                    content: photo.image.content.clone(),
                     image: photo.image,
                     kind: AnalysisJobKind::Vision { capability },
                 })
@@ -1305,10 +1299,6 @@ impl PhotosApp {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "each analysis outcome variant is reconciled against the presented library and library-analysis progress in one exhaustive match"
-    )]
     fn drain_library_analysis_result(&mut self, completed: AnalysisResult) {
         let photo_name = self
             .library_analysis
@@ -1362,19 +1352,7 @@ impl PhotosApp {
             if self.library_analysis.phase
                 == crate::library_analysis::LibraryAnalysisPhase::Complete
             {
-                self.active_analysis.remove(&invocation);
-                self.settle(tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput {
-                        value: Some(serde_json::json!({
-                            "analyzed": self.library_analysis.succeeded,
-                            "failed": self.library_analysis.failed,
-                            "unavailable": self.library_analysis.unavailable,
-                        })),
-                        resources: vec!["photos.library-analysis".to_owned()],
-                    },
-                });
-                self.notice = Some(self.analysis_finished_notice());
+                self.finish_library_analysis(invocation);
             } else {
                 self.settle(tilo_actions::InvocationUpdate::Progress {
                     invocation,
@@ -1825,8 +1803,12 @@ impl PhotosApp {
             self.show_library();
             self.begin_directory_import(path, None, DirectoryImportMode::Import, true);
         } else if let Some(bytes) = bounded_file_bytes(&path.to_string_lossy()) {
-            let image = OpenImage::from_path(&path.to_string_lossy(), 1, 1)
-                .with_content(tilo_content::hash_bytes(&bytes));
+            let image = OpenImage::new(
+                &path.to_string_lossy(),
+                1,
+                1,
+                tilo_content::hash_bytes(&bytes),
+            );
             self.show_photo(&LibraryPhoto::from_image(image).id);
         }
     }
@@ -1902,9 +1884,9 @@ impl PhotosApp {
                         return;
                     }
                 };
-                let open = OpenImage::from_path(path, img.w, img.h).with_content(content);
+                let open = OpenImage::new(path, img.w, img.h, content);
                 self.original = Some((path.to_string(), img));
-                self.original_identity = Some(decode_key(&open.clone().portable()));
+                self.original_identity = Some(decode_key(&open));
                 self.rendered = None;
                 self.close_viewer();
                 self.original_decode_failed = None;
@@ -3169,7 +3151,7 @@ impl PhotosApp {
     /// Default save destination: the source file with `-edited` before the
     /// extension, so Save never silently overwrites the original.
     pub fn suggested_save_path(open: &OpenImage) -> String {
-        let p = std::path::Path::new(&open.path);
+        let p = std::path::Path::new(&open.name);
         let stem = p
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -3244,6 +3226,42 @@ impl PhotosApp {
         self.dispatch = Some(dispatcher);
         self.actions = Some(actions);
         self.bind_controls();
+    }
+
+    /// Ask for the open photograph's link: the framework mints it from the
+    /// photograph's view and copies it, as for an agent asking for
+    /// `share-link`, so every path shares the same URL.
+    fn share_open_photo(&mut self) {
+        match (&self.open_photo, &self.dispatch) {
+            (Some(photo), Some(dispatch)) => {
+                dispatch.share_link(&crate::resource::photo_resource_id(photo.as_str()));
+            }
+            _ => self.notice = Some(tr("photos-share-failed")),
+        }
+    }
+
+    /// Say what asking for a photograph's link came to, once.
+    fn drain_share_outcome(&mut self) {
+        let Some(dispatch) = &self.dispatch else {
+            return;
+        };
+        let share = ui::tilo_resource::share::SHARE_LINK;
+        let landed = dispatch.landed();
+        if landed.with(|landed| landed.as_ref().is_some_and(|landed| landed.action == share)) {
+            landed.set(None);
+            self.notice = Some(tr("photos-share-copied"));
+        }
+        let refused = dispatch.refused();
+        let reason = refused.with(|refused| {
+            refused
+                .as_ref()
+                .filter(|refused| refused.action == share)
+                .map(|refused| refused.reason.clone())
+        });
+        if let Some(reason) = reason {
+            refused.set(None);
+            self.notice = Some(reason);
+        }
     }
 
     /// Build the retained controls again, bound to their effects.
@@ -4415,7 +4433,7 @@ impl PhotosApp {
                     .mimetype("image/png")
                     .mimetype("image/jpeg")
                     .mimetype("image/webp");
-                if crate::files::native_paths() {
+                if tilo_files::available(tilo_files::Feature::NativePaths) {
                     self.picker = Some(
                         ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
                             .thread_name("photos-portal-open")
@@ -4486,21 +4504,6 @@ impl PhotosApp {
             }
             PhotosEffect::Copy => {
                 self.copy_to_clipboard();
-            }
-            PhotosEffect::ShareReference { resource_id } => {
-                let exists = library.photo(&resource_id).cloned().is_some();
-                if exists {
-                    // This is deliberately a local clipboard handoff, not an
-                    // invented upload or recipient-delivery success. The
-                    // address identifies either the open editor image or an
-                    // unselected, addressable library card.
-                    ui::clipboard_copy(&format!("tilo://resource/{resource_id}"));
-                    self.notice = Some(tr("photos-share-copied"));
-                } else {
-                    let error = tr("photos-share-failed");
-                    self.notice = Some(error.clone());
-                    return Err(error);
-                }
             }
             PhotosEffect::Save { path } => {
                 if let Some(open) = self.shown_photo_in(library) {
@@ -4702,8 +4705,7 @@ impl PhotosApp {
     }
 
     /// Project the open photograph's portable library record into the small
-    /// viewer card. Content identity wins; old path-only records retain their
-    /// legacy match so opening one still has useful context.
+    /// viewer card, found by its content identity.
     fn viewer_details_for(
         library: &crate::model::PhotoLibrary,
         open: &OpenImage,
@@ -4712,11 +4714,7 @@ impl PhotosApp {
         let photo = library
             .photos
             .values()
-            .find(|photo| match (&open.content, &photo.image.content) {
-                (Some(open_content), Some(photo_content)) => open_content == photo_content,
-                (None, None) => open.path == photo.image.path,
-                _ => false,
-            })
+            .find(|photo| photo.image.content == open.content)
             .cloned();
         let _ = edits;
         ViewerDetails {
@@ -4771,7 +4769,7 @@ impl PhotosApp {
             }
             let bytes = crate::model::bytes_of(&open, &self.content);
             if let Some(img) = bytes.as_deref().and_then(pixels::decode) {
-                self.original = Some((open.path, img));
+                self.original = Some((open.name, img));
                 self.original_identity = Some(identity.clone());
                 self.original_decode_failed = None;
             } else {
@@ -4859,18 +4857,7 @@ impl PhotosApp {
             Hit::Copy => {
                 let _ = self.perform_effect(PhotosEffect::Copy, &self.presented());
             }
-            Hit::Share => {
-                if let Some(photo_id) = self.open_photo.clone() {
-                    let _ = self.perform_effect(
-                        PhotosEffect::ShareReference {
-                            resource_id: photo_id,
-                        },
-                        &self.presented(),
-                    );
-                } else {
-                    self.notice = Some(tr("photos-share-failed"));
-                }
-            }
+            Hit::Share => self.share_open_photo(),
             Hit::Save => {
                 let _ = self.perform_effect(PhotosEffect::Save { path: None }, &self.presented());
             }
@@ -5001,12 +4988,12 @@ impl PhotosApp {
                                 AccessNode::new(Role::Button)
                                     .with_name(tr(name))
                                     .with_bounds(bounds)
-                                    .with_state(AccessState {
-                                        focusable: button.is_focusable(),
-                                        focused: button.is_focused(),
-                                        disabled: !button.is_enabled(),
-                                        ..Default::default()
-                                    })
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(button.is_focusable())
+                                            .focused(button.is_focused())
+                                            .disabled(!button.is_enabled()),
+                                    )
                                     .with_action_target(target),
                             )
                         }),
@@ -5031,10 +5018,7 @@ impl PhotosApp {
                                     |failure| failure.message.clone(),
                                 ))
                                 .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                                 .with_action_target(format!("photos:analysis:failure:{id}"))
                                 .with_hashed_key(format!("photos:analysis-failure:{id}"))
                         }),
@@ -5064,10 +5048,7 @@ impl PhotosApp {
                             ))
                             .with_description(tr("photos-a11y-open-album"))
                             .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true))
                             .with_hashed_key(format!("photos:album-card:{id}"))
                             .with_action_target(format!("photos:library-album:{id}")),
                     )
@@ -5076,10 +5057,7 @@ impl PhotosApp {
                     AccessNode::new(Role::Button)
                         .with_name(tr("photos-edit-album"))
                         .with_bounds(*bounds)
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                         .with_hashed_key(format!("photos:album-edit:{id}"))
                         .with_action_target(format!("photos:album-edit:{id}"))
                 }));
@@ -5096,11 +5074,11 @@ impl PhotosApp {
                             .with_name(tr("photos-a11y-person-name"))
                             .with_value(self.people_name_input.value())
                             .with_bounds(self.people_name_input.get_rect())
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: self.people_name_input.is_focused(),
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.people_name_input.is_focused()),
+                            )
                             .with_hashed_key("photos:people:name")
                             .with_action_target("photos:people:name"),
                     );
@@ -5117,12 +5095,12 @@ impl PhotosApp {
                                 } else {
                                     control.button.get_rect()
                                 })
-                                .with_state(AccessState {
-                                    focusable: control.button.is_focusable(),
-                                    focused: control.button.is_focused(),
-                                    disabled: !control.button.is_enabled(),
-                                    ..Default::default()
-                                })
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(control.button.is_focusable())
+                                        .focused(control.button.is_focused())
+                                        .disabled(!control.button.is_enabled()),
+                                )
                                 .with_action_target(format!("photos:people:control:{index}"))
                         }),
                 );
@@ -5147,10 +5125,7 @@ impl PhotosApp {
                     AccessNode::new(Role::Button)
                         .with_name(tr(name))
                         .with_bounds(*bounds)
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                         .with_action_target(target)
                 }));
                 // These semantic controls intentionally share the same pure
@@ -5168,10 +5143,7 @@ impl PhotosApp {
                             .with_name(tr(name))
                             .with_description(tr("photos-a11y-pan-description"))
                             .with_bounds(self.places_map_bounds)
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true))
                             .with_action_target(target),
                     );
                 }
@@ -5201,32 +5173,29 @@ impl PhotosApp {
                                     .with_name(name.clone())
                                     .with_description(tr("photos-a11y-selected-description"))
                                     .with_bounds(*bounds)
-                                    .with_state(AccessState {
-                                        focusable: true,
-                                        checked: Some(self.selected_photo_ids.contains(id)),
-                                        ..Default::default()
-                                    })
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .checked(self.selected_photo_ids.contains(id)),
+                                    )
                                     .with_action_target(open_target)
                             } else if self.album_editor {
                                 AccessNode::new(Role::ToggleButton)
                                     .with_name(name.clone())
                                     .with_description(tr("photos-a11y-in-album"))
                                     .with_bounds(*bounds)
-                                    .with_state(AccessState {
-                                        focusable: true,
-                                        checked: Some(self.album_editor_members.contains(id)),
-                                        ..Default::default()
-                                    })
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .checked(self.album_editor_members.contains(id)),
+                                    )
                                     .with_action_target(open_target)
                             } else {
                                 AccessNode::new(Role::Button)
                                     .with_name(name.clone())
                                     .with_description(tr("photos-open"))
                                     .with_bounds(*bounds)
-                                    .with_state(AccessState {
-                                        focusable: true,
-                                        ..Default::default()
-                                    })
+                                    .with_state(AccessState::new().focusable(true))
                                     .with_action_target(open_target)
                             }];
                             if !self.album_editor && !self.selection_mode {
@@ -5236,11 +5205,9 @@ impl PhotosApp {
                                     AccessNode::new(Role::ToggleButton)
                                         .with_name(tr("photos-favorite"))
                                         .with_bounds(actions.favorite)
-                                        .with_state(AccessState {
-                                            focusable: true,
-                                            checked: Some(*favorite),
-                                            ..Default::default()
-                                        })
+                                        .with_state(
+                                            AccessState::new().focusable(true).checked(*favorite),
+                                        )
                                         .with_action_target(favorite_target),
                                 );
                                 let confirmed = self.library_remove_confirm.as_deref() == Some(id);
@@ -5257,10 +5224,7 @@ impl PhotosApp {
                                         })
                                         .with_description(tr("photos-a11y-remove-description"))
                                         .with_bounds(actions.remove)
-                                        .with_state(AccessState {
-                                            focusable: true,
-                                            ..Default::default()
-                                        })
+                                        .with_state(AccessState::new().focusable(true))
                                         .with_action_target(format!("photos:library-remove:{id}")),
                                 );
                                 children.push(
@@ -5272,10 +5236,7 @@ impl PhotosApp {
                                         ))
                                         .with_description(tr("photos-a11y-details-description"))
                                         .with_bounds(actions.details)
-                                        .with_state(AccessState {
-                                            focusable: true,
-                                            ..Default::default()
-                                        })
+                                        .with_state(AccessState::new().focusable(true))
                                         .with_action_target(format!("photos:library-details:{id}")),
                                 );
                             }
@@ -5312,11 +5273,11 @@ impl PhotosApp {
                     AccessNode::new(Role::ToggleButton)
                         .with_name(label)
                         .with_bounds(*bounds)
-                        .with_state(AccessState {
-                            focusable: true,
-                            checked: Some(id.as_ref() == self.active_album.as_ref()),
-                            ..Default::default()
-                        })
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .checked(id.as_ref() == self.active_album.as_ref()),
+                        )
                         .with_action_target(target)
                 }));
                 cards.extend(self.metadata_filter_cards.iter().map(|card| {
@@ -5339,17 +5300,13 @@ impl PhotosApp {
                     AccessNode::new(Role::ToggleButton)
                         .with_name(label)
                         .with_bounds(card.bounds)
-                        .with_state(AccessState {
-                            focusable: true,
-                            checked: Some(
-                                card.folder.as_ref() == self.active_folder.as_ref()
-                                    && card.person.as_ref() == self.active_person.as_ref()
-                                    && card.tag.as_ref() == self.active_tag.as_ref()
-                                    && card.favorites == self.active_favorites
-                                    && self.active_album.is_none(),
-                            ),
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true).checked(
+                            card.folder.as_ref() == self.active_folder.as_ref()
+                                && card.person.as_ref() == self.active_person.as_ref()
+                                && card.tag.as_ref() == self.active_tag.as_ref()
+                                && card.favorites == self.active_favorites
+                                && self.active_album.is_none(),
+                        ))
                         .with_action_target(if card.favorites {
                             "photos:library-favorites".to_owned()
                         } else {
@@ -5380,11 +5337,7 @@ impl PhotosApp {
                             })
                             .with_description(self.library_page_label())
                             .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: *enabled,
-                                disabled: !*enabled,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(*enabled).disabled(!*enabled))
                             .with_action_target(if *forward {
                                 "photos:library-page:next"
                             } else {
@@ -5472,11 +5425,7 @@ impl PhotosApp {
                         AccessNode::new(Role::Button)
                             .with_name(tr(name))
                             .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: !disabled,
-                                disabled,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(!disabled).disabled(disabled))
                             .with_action_target(target),
                     );
                 }
@@ -5493,14 +5442,10 @@ impl PhotosApp {
                         AccessNode::new(Role::ToggleButton)
                             .with_name(name)
                             .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: true,
-                                checked: Some(
-                                    self.selection_destination_album.as_deref()
-                                        == Some(album_id.as_str()),
-                                ),
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true).checked(
+                                self.selection_destination_album.as_deref()
+                                    == Some(album_id.as_str()),
+                            ))
                             .with_action_target(format!("photos:selection:destination:{album_id}")),
                     );
                 }
@@ -5562,11 +5507,11 @@ impl PhotosApp {
                                 .with_name(tr(name))
                                 .with_value(input.value())
                                 .with_bounds(input.get_rect())
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: input.is_focused(),
-                                    ..Default::default()
-                                })
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(input.is_focused()),
+                                )
                                 .with_hashed_key(format!("photos:metadata:{target}"))
                                 .with_action_target(format!("photos:metadata:field:{target}"))
                                 .with_children(toggles),
@@ -5610,10 +5555,7 @@ impl PhotosApp {
                             AccessNode::new(Role::Button)
                                 .with_name(tr(name))
                                 .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                                 .with_action_target(target),
                         );
                     }
@@ -5657,10 +5599,7 @@ impl PhotosApp {
                             AccessNode::new(Role::Button)
                                 .with_name(tr(name))
                                 .with_bounds(bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                                 .with_action_target(target),
                         );
                     }
@@ -5670,11 +5609,11 @@ impl PhotosApp {
                             .with_name(tr("photos-a11y-album-name"))
                             .with_value(self.album_name_input.value())
                             .with_bounds(self.album_name_input.get_rect())
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: self.album_name_input.is_focused(),
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.album_name_input.is_focused()),
+                            )
                             .with_hashed_key("photos:album-editor:name"),
                     );
                     for (hit, bounds) in &self.album_editor_hits {
@@ -5708,10 +5647,7 @@ impl PhotosApp {
                             AccessNode::new(Role::Button)
                                 .with_name(tr(name))
                                 .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                                 .with_action_target(target),
                         );
                     }
@@ -5725,10 +5661,7 @@ impl PhotosApp {
                             AccessNode::new(Role::Button)
                                 .with_name(tr(name))
                                 .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                                 .with_action_target(target),
                         );
                     }
@@ -5828,10 +5761,7 @@ impl PhotosApp {
             children.push(
                 AccessNode::new(Role::Group)
                     .with_name(tr("photos-a11y-import-progress"))
-                    .with_state(AccessState {
-                        busy: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().busy(true))
                     .with_children(status_children)
                     .with_hashed_key("photos:directory-import-status"),
             );
@@ -5917,10 +5847,7 @@ impl PhotosApp {
             detail_children.push(
                 AccessNode::new(Role::Button)
                     .with_name(tr("photos-close"))
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
                     .with_action_target("photos:directory-import:details-close")
                     .with_hashed_key("photos:directory-import:details-close"),
             );
@@ -5934,10 +5861,7 @@ impl PhotosApp {
                             ("count", ArgValue::Number(total as f64)),
                         ],
                     ))
-                    .with_state(AccessState {
-                        modal: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().modal(true))
                     .with_children(detail_children)
                     .with_hashed_key("photos:directory-import-dialog"),
             );
@@ -7179,8 +7103,8 @@ impl PhotosApp {
             control.bounds = Rect::ZERO;
         }
 
+        let mut y = frame.y0;
         if self.people_selection.is_none() {
-            let mut y = frame.y0;
             layout.recognition_heading = Some(Point::new(frame.x0, y));
             y += heading + related;
             layout.recognition_text = Rect::new(frame.x0, y, frame.x1, y + body);
@@ -7294,7 +7218,6 @@ impl PhotosApp {
             layout.lanes = viewport;
             layout.lanes_content = content_h;
         } else {
-            let mut y = frame.y0;
             let gap = f64::from(rhythm.related);
             let side = ((frame.width() - 3.0 * gap) / 4.0)
                 .min(ui::widget::MediaSize::Small.extent(theme))
@@ -7397,10 +7320,7 @@ impl PhotosApp {
                             right: LengthPercentageAuto::auto(),
                             bottom: LengthPercentageAuto::auto(),
                         },
-                        size: Size {
-                            width: Dimension::length(rect.width() as f32),
-                            height: Dimension::length(rect.height() as f32),
-                        },
+                        size: Size::from_lengths(rect.width() as f32, rect.height() as f32),
                         ..Default::default()
                     },
                 );
@@ -7454,10 +7374,7 @@ impl PhotosApp {
                 .new_with_children(
                     Style {
                         position: Position::Relative,
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::percent(1.0),
-                        },
+                        size: Size::from_percent(1.0, 1.0),
                         ..Default::default()
                     },
                     &children,
@@ -7487,14 +7404,8 @@ impl PhotosApp {
             .set_style(
                 canvas,
                 Style {
-                    size: Size {
-                        width: Dimension::auto(),
-                        height: Dimension::auto(),
-                    },
-                    min_size: Size {
-                        width: Dimension::length(0.0),
-                        height: Dimension::length(0.0),
-                    },
+                    size: Size::auto(),
+                    min_size: Size::from_lengths(0.0, 0.0),
                     flex_grow: 1.0,
                     flex_shrink: 1.0,
                     flex_basis: Dimension::length(0.0),
@@ -10483,14 +10394,9 @@ fn to_peniko(img: &Rgba) -> ImageData {
     pixels::to_peniko(img)
 }
 
-/// A local decode-cache key. The content hash, when present, is immutable;
-/// include the legacy path too so older documents remain distinguishable.
+/// A local decode-cache key: the content hash, which is immutable.
 fn decode_key(open: &OpenImage) -> String {
-    format!(
-        "{}\0{}",
-        open.path,
-        open.content.as_deref().unwrap_or_default()
-    )
+    open.content.clone()
 }
 
 fn thumbnail_key(open: &OpenImage) -> String {
@@ -10545,11 +10451,7 @@ fn collection_page_access_node(hit: CollectionPageHit, bounds: Rect, enabled: bo
         .with_name(tr(name))
         .with_description(tr("photos-a11y-page-hint"))
         .with_bounds(bounds)
-        .with_state(AccessState {
-            focusable: enabled,
-            disabled: !enabled,
-            ..Default::default()
-        })
+        .with_state(AccessState::new().focusable(enabled).disabled(!enabled))
         .with_action_target(format!("photos:collection-page:{target}"))
 }
 
@@ -10880,8 +10782,8 @@ impl PhotosApp {
             self.thumbnail_queued.clear();
             if document_changed {
                 self.library_thumbnails.clear();
-                // Bytes behind an unchanged address may have arrived, and a
-                // legacy path may name new pixels: ask the pipeline afresh.
+                // Bytes behind an unchanged address may have arrived: ask the
+                // pipeline afresh.
                 for photo in &sources {
                     self.thumbnail_service
                         .forget(&thumbnail_request(&photo.image, &self.content).key());
@@ -11044,6 +10946,7 @@ impl Widget for PhotosApp {
         self.drain_action_control_pending();
         self.drain_opens();
         self.drain_analysis_results();
+        self.drain_share_outcome();
         if let Some((invocation, path)) = self.pending_resource_open.take() {
             self.import_content = None;
             self.open_path(&path);
@@ -11083,7 +10986,7 @@ impl Widget for PhotosApp {
             |(analyzed, available, awaiting), photo| {
                 if photo.analysis().is_some_and(|analysis| {
                     analysis
-                        .vision_provenance_for_content(photo.image.content.as_deref())
+                        .vision_provenance_for_content(&photo.image.content)
                         .is_some()
                 }) {
                     (analyzed + 1, available, awaiting)
@@ -11444,10 +11347,7 @@ impl Widget for PhotosApp {
 
         let style = Style {
             flex_direction: FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
                 left: LengthPercentage::length(sidebar_inset as f32),
                 right: LengthPercentage::length(inspector_inset as f32),
@@ -11626,7 +11526,7 @@ impl Widget for PhotosApp {
     ) {
         self.reconcile_content();
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            let next = ctx.logical(position);
             if self.library_mode
                 && self.library_destination == LibraryDestination::Places
                 && let Some(previous) = self.places_drag_origin.replace(next)
@@ -12657,9 +12557,6 @@ impl PhotosApp {
                 let photo = library
                     .photo(&resource_id)
                     .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
-                if photo.image.content.is_none() {
-                    return Err("This photograph needs a verified content identity before text recognition can be shared".to_owned());
-                }
                 let sender = self.analysis_sender().ok_or_else(|| {
                     "local text recognition is unavailable on this device".to_owned()
                 })?;
@@ -12667,7 +12564,6 @@ impl PhotosApp {
                     .try_send(AnalysisJob {
                         invocation,
                         photo_id: resource_id,
-                        content: photo.image.content.clone(),
                         image: photo.image.clone(),
                         kind: AnalysisJobKind::Ocr { language },
                     })
@@ -12681,9 +12577,6 @@ impl PhotosApp {
                 let photo = library
                     .photo(&resource_id)
                     .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
-                if photo.image.content.is_none() {
-                    return Err("This photograph needs a verified content identity before image analysis can be shared".to_owned());
-                }
                 let capability = tilo_vision::discover_local_capability(
                     &agent_provider_config::ProviderConfig::load(),
                 )
@@ -12698,7 +12591,6 @@ impl PhotosApp {
                     .try_send(AnalysisJob {
                         invocation,
                         photo_id: resource_id,
-                        content: photo.image.content.clone(),
                         image: photo.image.clone(),
                         kind: AnalysisJobKind::Vision { capability },
                     })
@@ -12971,7 +12863,6 @@ impl PhotosApp {
             .try_send(AnalysisJob {
                 invocation,
                 photo_id: "photos.people".to_owned(),
-                content: None,
                 image: first.clone(),
                 kind: AnalysisJobKind::People {
                     capability,
@@ -13087,8 +12978,8 @@ mod history_reconcile_tests {
         crate::test_doc::set_library(doc, &library);
     }
     fn setup() -> (PhotosApp, AutoCommit, String) {
-        let mut doc = AutoCommit::new();
-        let image = OpenImage::from_path("historical-missing.png", 4, 3);
+        let mut doc = crate::test_doc::new_doc();
+        let image = OpenImage::fixture("historical-missing.png", 4, 3);
         let id = crate::test_doc::put_image(&mut doc, &image);
         let mut app = test_app();
         app.show_photo(&id);
@@ -13101,13 +12992,15 @@ mod history_reconcile_tests {
             "phase newly_visible_timeline_photo_uses_immutable_thumbnail_outside_queued_window"
         );
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let mut library = crate::model::PhotoLibrary::default();
             for index in 0..80 {
-                let mut photo = crate::model::LibraryPhoto::from_image(
-                    OpenImage::from_path(&format!("missing-timeline-{index}.png"), 30, 20)
-                        .with_content(format!("{index:064x}")),
-                );
+                let mut photo = crate::model::LibraryPhoto::from_image(OpenImage::new(
+                    &format!("missing-timeline-{index}.png"),
+                    30,
+                    20,
+                    format!("{index:064x}"),
+                ));
                 photo.captured_at =
                     Some(format!("2026-{:02}-{:02}", 1 + index / 28, 1 + index % 28));
                 library.add_photo(photo);
@@ -13161,7 +13054,7 @@ mod history_reconcile_tests {
             app.library_thumbnails
                 .insert(id.clone(), to_peniko(&crate::shots_pattern(4, 3)));
             let mut lib = crate::test_doc::library(&doc);
-            lib.photos.iter_mut().next().unwrap().1.image.content = Some("a".repeat(64));
+            lib.photos.iter_mut().next().unwrap().1.image.content = "a".repeat(64);
             crate::test_doc::set_library(&mut doc, &lib);
             sync(&mut app, &mut doc);
             assert!(!app.library_thumbnails.contains_key(&id));
@@ -13243,7 +13136,7 @@ mod history_reconcile_tests {
         eprintln!("phase changed_second_batch_photo_invalidates_the_whole_metadata_draft");
         {
             let (mut app, mut doc, first) = setup();
-            let second = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
+            let second = crate::model::LibraryPhoto::from_image(OpenImage::fixture(
                 "second-missing.png",
                 4,
                 3,
@@ -13403,11 +13296,10 @@ mod history_reconcile_tests {
 
         eprintln!("phase failed_import_reports_failure_even_when_previous_photo_is_still_decoded");
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let store = ContentStore::memory();
             let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
-            let open =
-                OpenImage::from_path("existing.png", 6, 4).with_content(store.put(&bytes).unwrap());
+            let open = OpenImage::new("existing.png", 6, 4, store.put(&bytes).unwrap());
             let id = crate::test_doc::put_image(&mut doc, &open);
             let mut app = test_app_on(store);
             app.show_photo(&id);
@@ -13434,11 +13326,10 @@ mod history_reconcile_tests {
 
         eprintln!("phase content_restore_drops_active_viewer_drag_before_next_pointer_move");
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let store = ContentStore::memory();
             let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
-            let open =
-                OpenImage::from_path("same.png", 6, 4).with_content(store.put(&bytes).unwrap());
+            let open = OpenImage::new("same.png", 6, 4, store.put(&bytes).unwrap());
             let id = crate::test_doc::put_image(&mut doc, &open);
             crate::test_doc::set_photo_edits(&mut doc, &id, Edits::default().rotated_right());
             let selected = doc.get_heads();
@@ -13454,10 +13345,7 @@ mod history_reconcile_tests {
                 .set_style(
                     node,
                     Style {
-                        size: Size {
-                            width: Dimension::length(800.),
-                            height: Dimension::length(600.),
-                        },
+                        size: Size::from_lengths(800., 600.),
                         ..Default::default()
                     },
                 )
@@ -13528,15 +13416,17 @@ mod history_reconcile_tests {
     }
 
     fn album_membership_fixture() -> (PhotosApp, AutoCommit, [String; 4]) {
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         // Browse order deliberately differs from lexical identity order.
         let photos: Vec<_> = ["c", "a", "d", "b"]
             .into_iter()
             .map(|label| {
-                LibraryPhoto::from_image(
-                    OpenImage::from_path(&format!("{label}.png"), 4, 3)
-                        .with_content(label.repeat(64)),
-                )
+                LibraryPhoto::from_image(OpenImage::new(
+                    &format!("{label}.png"),
+                    4,
+                    3,
+                    label.repeat(64),
+                ))
             })
             .collect();
         let ids = std::array::from_fn(|i| photos[i].id.clone());

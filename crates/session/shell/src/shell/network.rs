@@ -3,8 +3,6 @@
 //! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
 //! Started by default in normal sessions; recovery sessions may disable it.
 
-use crate::shell::state::WorkspaceAuthority as _;
-
 mod boot_join;
 #[cfg(test)]
 mod display_input_tests;
@@ -910,11 +908,6 @@ impl PendingInvitation {
     pub fn is_expired(&self, now_unix_seconds: u64) -> bool {
         self.expiry_unix_seconds < now_unix_seconds
     }
-
-    #[must_use]
-    pub fn id_hex(&self) -> String {
-        hex::encode(self.id)
-    }
 }
 
 /// Nanoseconds since the Unix epoch, failing closed to `u64::MAX` (every
@@ -1141,17 +1134,6 @@ fn persist_pending_invitations(
     if let Err(error) = tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600) {
         tracing::warn!(%error, path = %path.display(), "could not persist pending invitations");
     }
-}
-
-/// Non-secret metadata shown in collaboration settings for a pending invite.
-/// `invite_id` is a one-way BLAKE3 digest, never the redeemable bearer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PendingInviteSummary {
-    pub invite_id: String,
-    pub invitee: String,
-    pub role: crate::network::invite::InviteRole,
-    pub recipient_bound: bool,
-    pub expiry_unix_seconds: u64,
 }
 
 /// Shell-side handle for the peer-sync subsystem. Owns the tokio
@@ -1665,7 +1647,7 @@ impl ShellNetwork {
             &endpoint,
             &deferred_relays,
             runtime.handle().clone(),
-            rest_after,
+            Some(rest_after),
         );
         let mdns = if internet {
             init_lan_discovery(&endpoint)
@@ -3298,6 +3280,7 @@ impl ShellNetwork {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         );
         if self.send_remote_action(topic, endpoint, message) {
@@ -4290,54 +4273,6 @@ impl ShellNetwork {
         drop(pending);
         self.note_session_reachability(true);
         Ok(token)
-    }
-
-    /// List live invitations for a locally governed workspace. Only
-    /// non-secret metadata is returned through this API; the private bearer
-    /// remains available through the explicit resend action.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the workspace is unknown, replica state is
-    /// unavailable, or the local user may not administer the workspace.
-    pub fn pending_invites(
-        &self,
-        local: crate::shell::state::WorkspaceId,
-    ) -> Result<Vec<PendingInviteSummary>, String> {
-        let room = {
-            let replica = self
-                .replica
-                .lock()
-                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-            let tree = replica.tree.read();
-            let workspace = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id == local)
-                .ok_or_else(|| format!("no workspace {}", local.raw()))?;
-            let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
-            if !tree.governs_room(workspace.room) || !workspace.may_administer(&actor) {
-                return Err(
-                    "only the governing workspace administrator can inspect invites".into(),
-                );
-            }
-            let room = workspace.room;
-            drop(tree);
-            drop(replica);
-            room
-        };
-        Ok(self
-            .pending_invitations(room)
-            .into_iter()
-            .map(|invite| PendingInviteSummary {
-                invite_id: invite.id_hex(),
-                invitee: invite.name,
-                role: invite.role,
-                recipient_bound: invite.recipient_user_public_key.is_some(),
-                expiry_unix_seconds: invite.expiry_unix_seconds,
-            })
-            .collect())
     }
 
     /// Promote a transport-authenticated identity announcement through room
@@ -7919,6 +7854,7 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
 )]
 mod tests {
     use super::*;
+    use crate::shell::state::WorkspaceAuthority as _;
 
     #[test]
     fn a_local_tab_is_pushed_on_the_next_tick_and_an_idle_tick_sends_nothing() {
@@ -8684,6 +8620,7 @@ mod tests {
                     confirmation: None,
                     revision: None,
                     wait_ms: None,
+                    appearance: None,
                 },
             ),
         )
@@ -8794,6 +8731,7 @@ mod tests {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             });
 
             let mut round_trip = |request: RemoteActionMessage| {
@@ -9038,16 +8976,20 @@ mod tests {
             "neither a direct path nor a relay"
         );
 
-        // A relay for another workspace, or one that is the target itself,
-        // offers no path to this target.
+        // A relay for another workspace, or one that is either end of the
+        // session, offers no path to this target.
         net.workspace_control_relays
             .lock()
             .expect("relay routes")
-            .extend([(DEFAULT_WS_TOPIC ^ 1, relay), (DEFAULT_WS_TOPIC, target)]);
+            .extend([
+                (DEFAULT_WS_TOPIC ^ 1, relay),
+                (DEFAULT_WS_TOPIC, target),
+                (DEFAULT_WS_TOPIC, net.local_peer_id),
+            ]);
         assert_eq!(
             open().as_deref(),
             Some("no authenticated direct workspace-control path is online"),
-            "only foreign-workspace and target relays"
+            "only foreign-workspace, target and client relays"
         );
 
         net.workspace_control_relays
@@ -10874,27 +10816,30 @@ mod tests {
         let registry = crate::shell::personal_continuity_registry::global_registry();
         {
             let mut reports = registry.lock().expect("continuation registry");
-            for (tab, app_id, metadata) in [
+            for (tab, app_id, schema_version, metadata) in [
                 (
                     browser_tab,
                     "so.tilo.browser",
+                    ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                     br#"{"url":"https://example.test/reading"}"#.to_vec(),
                 ),
                 (
                     ebook_tab,
                     "so.tilo.ebook",
+                    ui::collaboration::semantic_schema::PUBLICATION_POSITION_V1,
                     br#"{"book_id":"book-42","chapter":4,"page":9}"#.to_vec(),
                 ),
                 (
                     music_tab,
                     "so.tilo.music",
+                    ui::collaboration::semantic_schema::MEDIA_POSITION_V1,
                     br#"{"track_id":"track-42","position_ms":12345,"paused":true}"#.to_vec(),
                 ),
             ] {
                 let metadata = ui::app::compose_structural_continuation_metadata(
                     ui::view::View::default(),
                     Some(ui::collaboration::ContinuationMetadata {
-                        schema_version: 1,
+                        schema_version,
                         bytes: metadata,
                     }),
                 )

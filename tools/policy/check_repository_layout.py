@@ -21,15 +21,6 @@ GENERATED_DIRECTORIES = frozenset(
 
 RETIRED_SOURCE_ROOTS = {
     "apps/imager/profile-tool/": "tools/imager-profile/",
-    "scripts/demo-apps-live.sh": "scripts/demo/apps-live.sh",
-    "scripts/demo-assemble.py": "scripts/demo/assemble.py",
-    "scripts/demo-home.py": "scripts/demo/home.py",
-    "scripts/demo-record.sh": "scripts/demo/record.sh",
-    "scripts/demo-registry.sh": "scripts/demo/registry.sh",
-    "scripts/demo-verify.py": "scripts/demo/verify.py",
-    "scripts/install-on-open-demo.py": "scripts/demo/install-on-open.py",
-    "scripts/yc-demo-insert.py": "scripts/demo/insert.py",
-    "scripts/yc-demo.py": "scripts/demo/run.py",
     "crates/app/": "crates/sdk/",
     "crates/format/": "crates/doc/",
     "crates/identity/": "crates/collab/",

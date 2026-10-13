@@ -486,10 +486,7 @@ impl ExpandModal {
                     .with_name(label)
                     .with_action_target(target)
                     .with_bounds(bounds)
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    }),
+                    .with_state(AccessState::new().focusable(true)),
             );
         }
         Some(
@@ -541,11 +538,7 @@ mod tests {
         // `KeyEvent`'s platform field is private; initialize the same minimal
         // synthetic event used by the shared TextInput's own tests.
         let event = ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     fn drive(modal: &mut ExpandModal, event: &WindowEvent, doc: &mut AutoCommit) -> ExpandOutcome {

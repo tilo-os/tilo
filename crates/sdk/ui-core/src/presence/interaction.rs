@@ -68,6 +68,8 @@ pub struct AgentActionMarker {
     pub invocation: InvocationId,
     pub tip: Point,
     pub target: Point,
+    /// Actual cursor and agent-tile paint bounds, clipped to this viewport.
+    pub bounds: Rect,
     /// Zero at first observation and one when the marker has reached its
     /// action locus. Reduced motion always reports one.
     pub approach: f64,
@@ -382,6 +384,7 @@ impl PresenceCtx {
             invocation: interaction.invocation,
             tip,
             target,
+            bounds: agent_marker_bounds(tip, viewport),
             approach,
             pulse,
         };
@@ -427,7 +430,7 @@ impl PresenceCtx {
 
     /// An exact-locus label keeps the lifecycle visible when the generic rail
     /// is suppressed. Failure must not look like a successful pointer action.
-    pub(crate) fn interaction_status_label(&self, interaction: &SemanticInteraction) -> String {
+    pub fn interaction_status_label(&self, interaction: &SemanticInteraction) -> String {
         let user = UserId(interaction.actor.id.clone());
         // The adjacent shared identity mark already distinguishes an Agent.
         // Do not append another role to names such as "Release Notes Agent".
@@ -799,6 +802,22 @@ fn point_lerp(from: Point, to: Point, progress: f64) -> Point {
         from.x + (to.x - from.x) * progress,
         from.y + (to.y - from.y) * progress,
     )
+}
+
+fn agent_marker_bounds(tip: Point, viewport: Rect) -> Rect {
+    let x = if tip.x + 22.0 > viewport.x1 {
+        -1.0
+    } else {
+        1.0
+    };
+    let y = if tip.y + 20.0 > viewport.y1 {
+        -1.0
+    } else {
+        1.0
+    };
+    (Affine::translate((tip.x, tip.y)) * Affine::scale_non_uniform(x, y))
+        .transform_rect_bbox(Rect::new(-0.625, -0.625, 21.625, 19.625))
+        .intersect(viewport)
 }
 
 fn draw_agent_marker_geometry(

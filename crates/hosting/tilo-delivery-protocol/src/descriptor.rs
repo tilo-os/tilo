@@ -92,7 +92,7 @@ struct DescriptorPayload {
     host_root: [u8; 32],
     host_device: [u8; 32],
     host_certificate_digest: [u8; 32],
-    #[serde(deserialize_with = "bounded_origin")]
+    #[serde(deserialize_with = "crate::origin::deserialize")]
     origin: String,
     #[serde(deserialize_with = "bounded_route")]
     webtransport_path: String,
@@ -139,7 +139,9 @@ pub fn issue_transport_hint_with_media(
     if host_key.verifying_key().to_bytes() != current.pinned_host.device_public_key {
         return Err(DescriptorError::Host);
     }
-    validate_origin(&settings.origin)?;
+    if !crate::origin::is_https_origin(&settings.origin) {
+        return Err(DescriptorError::Endpoint);
+    }
     let payload = DescriptorPayload {
         protocol: VERSION,
         workspace: current.workspace,
@@ -264,7 +266,9 @@ fn inspect_pinned_payload(
     {
         return Err(DescriptorError::Scope);
     }
-    validate_origin(&payload.origin)?;
+    if !crate::origin::is_https_origin(&payload.origin) {
+        return Err(DescriptorError::Endpoint);
+    }
     if payload.webtransport_path != WEBTRANSPORT_PATH
         || payload.https_base_path != HTTPS_BASE_PATH
         || payload.native_endpoint != format!("{}{WEBTRANSPORT_PATH}", payload.origin)
@@ -544,7 +548,9 @@ fn validate_payload(
     {
         return Err(DescriptorError::Scope);
     }
-    validate_origin(&payload.origin)?;
+    if !crate::origin::is_https_origin(&payload.origin) {
+        return Err(DescriptorError::Endpoint);
+    }
     if payload.webtransport_path != WEBTRANSPORT_PATH
         || payload.https_base_path != HTTPS_BASE_PATH
         || payload.native_endpoint.len() > 2112
@@ -656,11 +662,6 @@ fn hint_digest(hint: &TransportHint) -> Result<[u8; 32], DescriptorError> {
     hash.update(&bytes);
     Ok(*hash.finalize().as_bytes())
 }
-fn bounded_origin<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    let value = <&str>::deserialize(d)?;
-    validate_origin(value).map_err(serde::de::Error::custom)?;
-    Ok(value.to_owned())
-}
 fn bounded_route<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     let value = <&str>::deserialize(d)?;
     if value.len() > 16 {
@@ -675,62 +676,6 @@ fn bounded_endpoint<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D:
     }
     Ok(value.to_owned())
 }
-pub(crate) fn validate_origin(origin: &str) -> Result<(), DescriptorError> {
-    if origin.len() > 2048 || !origin.is_ascii() {
-        return Err(DescriptorError::Endpoint);
-    }
-    let authority = origin
-        .strip_prefix("https://")
-        .ok_or(DescriptorError::Endpoint)?;
-    if authority.is_empty()
-        || authority.bytes().any(|b| {
-            b.is_ascii_whitespace()
-                || b.is_ascii_control()
-                || matches!(b, b'/' | b'\\' | b'?' | b'#' | b'@')
-        })
-    {
-        return Err(DescriptorError::Endpoint);
-    }
-    let (host, port) = if let Some(ipv6) = authority.strip_prefix('[') {
-        let (host, suffix) = ipv6.split_once(']').ok_or(DescriptorError::Endpoint)?;
-        host.parse::<std::net::Ipv6Addr>()
-            .map_err(|_| DescriptorError::Endpoint)?;
-        let port = if suffix.is_empty() {
-            None
-        } else {
-            Some(suffix.strip_prefix(':').ok_or(DescriptorError::Endpoint)?)
-        };
-        (None, port)
-    } else {
-        let (host, port) = authority
-            .rsplit_once(':')
-            .map_or((authority, None), |(h, p)| (h, Some(p)));
-        (Some(host), port)
-    };
-    if let Some(host) = host
-        && (host.len() > 253
-            || host.split('.').any(|part| {
-                part.is_empty()
-                    || part.len() > 63
-                    || part.starts_with('-')
-                    || part.ends_with('-')
-                    || !part
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            }))
-    {
-        return Err(DescriptorError::Endpoint);
-    }
-    if let Some(port) = port
-        && (port.is_empty()
-            || !port.bytes().all(|b| b.is_ascii_digit())
-            || port.parse::<u16>().ok().as_ref().is_none_or(|p| *p == 0))
-    {
-        return Err(DescriptorError::Endpoint);
-    }
-    Ok(())
-}
-
 /// Closed bootstrap failures; callers cannot downgrade them to legacy trust.
 #[derive(Debug, thiserror::Error)]
 pub enum DescriptorError {

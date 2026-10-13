@@ -12,8 +12,6 @@ use ui::tilo_resource::{self, Effect};
 
 use crate::resource::OskPreferences;
 
-pub const KEYBOARD_RESOURCE_ID: &str = "osk.keyboard";
-
 /// The letter layouts every keyboard carries; a preference names one of them.
 pub const LETTER_LAYOUTS: [(&str, &str); 2] = [
     ("qwerty", "English (QWERTY)"),

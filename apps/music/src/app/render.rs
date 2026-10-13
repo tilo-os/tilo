@@ -11,11 +11,10 @@
 
 use super::page_part::PagePart;
 use super::{
-    Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Dimension, Drag,
-    Fill, HashMap, HomeItem, HomeItemKind, HomeSection, Instant, MusicApp, NodeId, ObjId,
-    PlaylistPage, Point, PresenceCtx, Rect, RepeatMode, Scene, Size, Style, TaffyTree,
-    TextRenderer, TextStyle, Theme, View, Widget, elide, is_live_album_id, is_live_id,
-    is_live_playlist_id, live_track_id, lyrics,
+    Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Drag, Fill, HashMap,
+    HomeItem, HomeItemKind, HomeSection, Instant, MusicApp, NodeId, ObjId, PlaylistPage, Point,
+    PresenceCtx, Rect, RepeatMode, Scene, Size, Style, TaffyTree, TextRenderer, TextStyle, Theme,
+    View, Widget, elide, is_live_album_id, is_live_id, is_live_playlist_id, live_track_id, lyrics,
 };
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
@@ -693,7 +692,7 @@ impl Continuable for MusicApp {
         }))
         .ok()?;
         Some(ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
+            schema_version: ui::collaboration::semantic_schema::MEDIA_POSITION_V1,
             bytes,
         })
     }
@@ -703,7 +702,7 @@ impl Continuable for MusicApp {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ObjId,
     ) -> bool {
-        if metadata.schema_version != 1 {
+        if metadata.schema_version != ui::collaboration::semantic_schema::MEDIA_POSITION_V1 {
             return false;
         }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&metadata.bytes) else {
@@ -950,23 +949,14 @@ impl Widget for MusicApp {
             ),
             _ => {}
         }
-        #[allow(
-            clippy::expect_used,
-            reason = "the child belongs to this same tree; Widget::build_layout has no error return"
-        )]
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &children, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1026,7 +1016,7 @@ impl Widget for MusicApp {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            let p = ctx.logical(position);
             self.dirty |= toggle_hovered != self.drawer.toggle_rect().contains(p);
         }
 
@@ -1706,10 +1696,6 @@ impl Widget for MusicApp {
         };
         self.dispatch(action, state);
         true
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn tooltip(&self) -> Option<&str> {
@@ -2669,10 +2655,6 @@ impl MusicApp {
         2.0 * look.sibling + top + look.tight + scrub
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the frame pipeline deliberately keeps its ordered worker, layout, overlay, and chrome passes together"
-    )]
     pub(super) fn render_frame(
         &mut self,
         scene: &mut Scene,
@@ -3855,9 +3837,7 @@ impl MusicApp {
             return false;
         }
         let mouse = match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor)
-            }
+            WindowEvent::CursorMoved { position, .. } => ctx.logical(position),
             _ => self.mouse,
         };
         let covered = !self.body_rect.contains(mouse)

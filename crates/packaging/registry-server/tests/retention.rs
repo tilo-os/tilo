@@ -95,18 +95,20 @@ fn stage(storage: &Storage, scratch: &Path, version: &str) -> (RegistryVersion, 
     storage.save_staged_artifact(&digest, &bytes).unwrap();
     let version = RegistryVersion {
         version: version.into(),
-        tapp_url: format!("https://apps.tilo.so/artifacts/{digest}.tapp"),
-        tapp_root_hash_hex: packed.meta.id.to_hex(),
-        tapp_size_bytes: bytes.len() as u64,
         released_at_unix: 1,
-        tapp_blake3_hex: digest,
-        target: RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: "x86_64".into(),
-            isa: "x86_64-v3".into(),
-            runtime: None,
-            interfaces: Vec::new(),
-        },
+        artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+            tapp_url: format!("https://apps.tilo.so/artifacts/{digest}.tapp"),
+            tapp_root_hash_hex: packed.meta.id.to_hex(),
+            tapp_size_bytes: bytes.len() as u64,
+            tapp_blake3_hex: digest,
+            target: RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: None,
+                interfaces: Vec::new(),
+            },
+        }),
     };
     let blob = tilo_app_package::BlobHash::of(unique.as_bytes()).to_hex();
     (version, blob)
@@ -116,6 +118,7 @@ impl Registry {
     fn save(&self, versions: Vec<RegistryVersion>, updated_at_unix: u64) {
         let mut entry = RegistryEntry {
             package_id: "so.tilo.retained".into(),
+            kind: registry_types::EntryKind::App,
             name: "Retained".into(),
             description: "An app whose old versions retention drops".into(),
             tagline: "Retained on Tilo OS".into(),
@@ -167,11 +170,11 @@ impl Registry {
         for version in current.entries.iter().flat_map(|entry| &entry.versions) {
             let bytes = self
                 .storage
-                .load_staged_artifact(&version.tapp_blake3_hex)
+                .load_staged_artifact(&version.tapp().unwrap().tapp_blake3_hex)
                 .unwrap();
             assert_eq!(
                 blake3::hash(&bytes).to_hex().as_str(),
-                version.tapp_blake3_hex
+                version.tapp().unwrap().tapp_blake3_hex
             );
         }
     }
@@ -248,7 +251,7 @@ fn retention_prunes_only_versions_nothing_references() {
         assert!(registry.blob_exists(blob));
         registry
             .storage
-            .load_staged_artifact(&version.tapp_blake3_hex)
+            .load_staged_artifact(&version.tapp().unwrap().tapp_blake3_hex)
             .unwrap();
     }
 
@@ -277,7 +280,7 @@ fn retention_prunes_only_versions_nothing_references() {
         assert_eq!(
             registry
                 .storage
-                .find_staged_artifact(&version.tapp_blake3_hex)
+                .find_staged_artifact(&version.tapp().unwrap().tapp_blake3_hex)
                 .unwrap(),
             None
         );

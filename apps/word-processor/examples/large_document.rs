@@ -140,10 +140,7 @@ fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
         .blocks
         .into_iter()
         .map(|block| ClipBlock {
-            level: match block.attrs.get("level") {
-                Some(tilo_doc::AttrVal::Int(level)) => Some(*level),
-                _ => None,
-            },
+            level: block.int_attr("level"),
             kind: block.kind,
             text: block.text,
             marks: block.marks,

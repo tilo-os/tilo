@@ -50,6 +50,8 @@ use crate::widgets::{
 
 mod cloud_control;
 mod cloud_signin;
+mod import_review;
+mod thunderbird_import;
 pub(crate) use cloud_control::CloudMounts;
 pub use cloud_signin::{BrowserOpener, PortalOpener};
 use runtime_fs::cloud::CloudRequest;
@@ -60,6 +62,29 @@ mod signin_tests;
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AccountsEffect {
+    /// Discover only ordinary account metadata from a granted prefs.js path.
+    #[effect(job, returns, device_only, kind = "read")]
+    DiscoverThunderbirdAccounts { prefs: String },
+    /// Choose ordinary Thunderbird prefs through the existing file portal.
+    #[effect(job, returns, device_only, kind = "read")]
+    ChooseThunderbirdMetadata,
+    /// Read the current metadata review and its exact revision; no secrets.
+    #[effect(returns, kind = "read")]
+    InspectThunderbirdImport,
+    /// Select a reviewed identity and an explicit supported sign-in method.
+    #[effect(view)]
+    SelectThunderbirdAccount {
+        source: String,
+        authentication: String,
+        selected: bool,
+        revision: u64,
+    },
+    /// Import only selected configuration as pending sign-in metadata.
+    #[effect(returns, device_only, idempotent)]
+    CommitThunderbirdImport { revision: u64 },
+    /// Discard the metadata review and fence unfinished discovery callbacks.
+    #[effect(view)]
+    CancelThunderbirdImport,
     /// Show or hide public metadata in the browser identity picker.
     #[effect(row, device_only, idempotent)]
     SetBrowserIdentityEnabled { account: String, enabled: bool },
@@ -144,6 +169,10 @@ pub(crate) fn answer(
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     match effect {
+        AccountsEffect::DiscoverThunderbirdAccounts { prefs } => {
+            return thunderbird_import::discover(app, prefs, cx);
+        }
+        AccountsEffect::ChooseThunderbirdMetadata => return thunderbird_import::choose(app, cx),
         AccountsEffect::PublishBrowserIdentity { origin } => {
             app.publish_browser_identity(origin)?;
             return Ok(Effected::done());
@@ -161,6 +190,35 @@ pub(crate) fn answer(
     let shared = app.accounts().model();
     let mut model = shared.borrow_mut();
     match effect {
+        AccountsEffect::DiscoverThunderbirdAccounts { .. }
+        | AccountsEffect::ChooseThunderbirdMetadata => {
+            return Err(t("accounts-import-read-failed"));
+        }
+        AccountsEffect::InspectThunderbirdImport => {
+            return model.import_review.inspect().map(Effected::value);
+        }
+        AccountsEffect::SelectThunderbirdAccount {
+            source,
+            authentication,
+            selected,
+            revision,
+        } => {
+            model
+                .import_review
+                .select(&source, &authentication, selected, revision)?;
+            model.changed = true;
+        }
+        AccountsEffect::CommitThunderbirdImport { revision } => {
+            let root = model.account_root.clone();
+            let result = model.import_review.commit(&root, revision)?;
+            model.reload();
+            model.changed = true;
+            return Ok(Effected::value(result));
+        }
+        AccountsEffect::CancelThunderbirdImport => {
+            model.import_review.cancel()?;
+            model.changed = true;
+        }
         AccountsEffect::PublishBrowserIdentity { .. }
         | AccountsEffect::SetBrowserIdentityEnabled { .. }
         | AccountsEffect::RemoveBrowserIdentity { .. } => {
@@ -337,7 +395,11 @@ impl AccountsArea {
     /// Take in finished checks and sign-in steps, if the model exists.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
-            let _ = model.borrow_mut().poll();
+            let mut pane = model.borrow_mut();
+            // Background completion must leave the visible PaneView's rebuild
+            // demand intact; that view consumes it during its own sync.
+            let changed = pane.poll();
+            pane.changed |= changed;
         }
     }
 
@@ -393,6 +455,7 @@ impl AccountsArea {
                 .operation(offer(AccountsEffect::RemoveAccount { account: id }))
             })
             .collect();
+        published.extend(model.thunderbird_import_rows());
         for account in model
             .account_root
             .store()
@@ -557,6 +620,7 @@ pub struct AccountsPane {
     opener: std::sync::Arc<dyn BrowserOpener>,
     /// The file accounts the cloud service has mounted.
     cloud: CloudMounts,
+    import_review: import_review::ImportReview,
     changed: bool,
 }
 
@@ -605,6 +669,7 @@ impl AccountsPane {
             form_candidate: None,
             reauth_probe: None,
             reauth_candidate: None,
+            import_review: import_review::ImportReview::default(),
             sign_in: None,
             custodian: read.custodian,
             opener: std::sync::Arc::new(PortalOpener),
@@ -646,6 +711,7 @@ impl AccountsPane {
             form_candidate: None,
             reauth_probe: None,
             reauth_candidate: None,
+            import_review: import_review::ImportReview::default(),
             sign_in: None,
             custodian: account_root.custodian(),
             opener: std::sync::Arc::new(PortalOpener),
@@ -947,24 +1013,15 @@ impl AccountsPane {
                         .unwrap_or_default()
                         .into(),
                 );
-                self.form_user.set(
-                    stored
-                        .config
-                        .get("username")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .into(),
-                );
-            } else {
-                self.form_user.set(
-                    stored
-                        .config
-                        .get("username")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .into(),
-                );
             }
+            self.form_user.set(
+                stored
+                    .config
+                    .get("username")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .into(),
+            );
             let server = stored
                 .config
                 .get(if kind == AccountKind::WebDav {
@@ -975,6 +1032,19 @@ impl AccountsPane {
                 .and_then(|value| value.as_str())
                 .unwrap_or_default();
             self.form_server.set(server.into());
+        }
+        if shared
+            .get(&accounts::AccountId::from(view.id.clone()))
+            .is_some_and(|account| {
+                account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
+                    && account
+                        .config_as::<AccountConfig>()
+                        .is_some_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
+            })
+        {
+            self.import_review.status = Some(t("accounts-import-oauth-step"));
+            self.changed = true;
+            return;
         }
         self.form_kind = Some(kind);
         self.form_account_id = Some(view.id);
@@ -1023,6 +1093,20 @@ impl AccountsPane {
             .store()
             .get(&accounts::AccountId::from(id.clone()))
             .cloned();
+        if let Some(account) = stored.as_ref()
+            && account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
+        {
+            if account
+                .config_as::<AccountConfig>()
+                .is_some_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
+            {
+                self.import_review.status = Some(t("accounts-import-oauth-step"));
+                self.changed = true;
+            } else {
+                self.open_edit(&id);
+            }
+            return;
+        }
         if let Some(account) = stored
             && let Some(kind) = AccountKind::from_type_id(account.type_id.as_str())
             && kind.signs_in()
@@ -1082,6 +1166,7 @@ impl AccountsPane {
         }
         panel.push(self.browser_identity_card());
         panel.push(self.mail_card());
+        panel.push(self.thunderbird_import_card());
         panel.push(self.kind_card(AccountKind::CalDav));
         panel.push(self.kind_card(AccountKind::WebDav));
         panel.push(self.kind_card(AccountKind::Nextcloud));
@@ -1199,7 +1284,15 @@ impl AccountsPane {
         let id = accounts::AccountId::from(view.id.clone());
         let runtime = self.sync_statuses.get(&id);
         let mount = self.cloud.mount(&view.id);
-        let (status, status_tone) = if mount.is_some_and(|mount| mount.paused) {
+        let pending = self
+            .dir
+            .mail
+            .accounts
+            .iter()
+            .any(|account| account.id == view.id && account.config.import_pending);
+        let (status, status_tone) = if pending {
+            (t("accounts-status-reauth"), StatusTone::Warning)
+        } else if mount.is_some_and(|mount| mount.paused) {
             (t("accounts-status-paused"), StatusTone::Neutral)
         } else {
             account_status(
@@ -1591,7 +1684,13 @@ impl AccountsPane {
         );
         let expected_type = Self::account_type(kind);
         let mut stored = match (existing_id, shared.get(&id)) {
-            (Some(_), Some(stored)) if stored.type_id.as_str() == expected_type => stored.clone(),
+            (Some(_), Some(stored))
+                if stored.type_id.as_str() == expected_type
+                    || (kind == AccountKind::Mail
+                        && stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE) =>
+            {
+                stored.clone()
+            }
             (Some(_), Some(_)) => {
                 return Err("account type changed; refresh Settings and try again".into());
             }
@@ -1599,6 +1698,22 @@ impl AccountsPane {
             (None, Some(_)) => return Err("this account is already configured".into()),
             (None, None) => accounts::Account::new(id.clone(), expected_type),
         };
+        if stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE {
+            let config = stored
+                .config_as::<AccountConfig>()
+                .ok_or_else(|| t("accounts-import-malformed"))?;
+            if config.auth == accounts::email::AuthMethod::OAuth {
+                return Err(t("accounts-import-oauth-step"));
+            }
+            if password.trim().is_empty() {
+                return Err(t("accounts-import-password-step"));
+            }
+            stored.type_id = "email".into();
+            merge_config(
+                &mut stored.config,
+                serde_json::json!({"import_pending": false}),
+            );
+        }
         stored.display_name = name.trim().to_string();
         match kind {
             AccountKind::Mail if existing_id.is_none() => {
@@ -1774,6 +1889,8 @@ impl AccountsPane {
         let original_store = account_root.store();
         if let Some(account) = original_store.get(&account_id)
             && account.type_id.as_str() != expected_type
+            && !(kind == AccountKind::Mail
+                && account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE)
         {
             return Err(
                 "account type changed before removal; refresh Settings and try again".into(),
@@ -2142,14 +2259,7 @@ impl PaneModel for AccountsPane {
 }
 
 fn relative_sync_time(unix: i64) -> String {
-    let now = ui::time::unix_now_i64();
-    let age = now.saturating_sub(unix).max(0);
-    match age {
-        0..=59 => t("accounts-just-now"),
-        60..=3_599 => t_args("accounts-min-ago", &[("count", (age / 60).into())]),
-        3_600..=86_399 => t_args("accounts-h-ago", &[("count", (age / 3_600).into())]),
-        _ => t_args("accounts-d-ago", &[("count", (age / 86_400).into())]),
-    }
+    ui::format::relative(ui::time::unix_now_i64().saturating_sub(unix))
 }
 
 #[allow(
@@ -2337,15 +2447,37 @@ mod tests {
         // Case `sample_directory_renders_read_only_without_remove_buttons`.
         {
             // The sample is illustration: one live Add button per provider kind,
-            // and no Remove buttons. A scratch root keeps whatever the runner's
+            // metadata import, and no Remove buttons. A scratch root keeps whatever the runner's
             // own account stores hold (a browser identity, say) out of the count.
             let (_scratch, root) = scratch_root();
             let pane = AccountsPane::from_dir_in(root, sample_directory(), true);
             let composed = lay_out(&pane);
             assert_eq!(
                 count_named(composed.as_ref(), "Button"),
+                AccountKind::ALL.len() + 1,
+                "every provider kind can be added and metadata imported over the sample"
+            );
+            let mut labels = Vec::new();
+            labels_of(composed.as_ref(), "Button", &mut labels);
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| **label == t("accounts-add"))
+                    .count(),
                 AccountKind::ALL.len(),
-                "every provider kind can be added over the sample"
+                "one Add action per provider kind"
+            );
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| **label == t("accounts-import-choose"))
+                    .count(),
+                1,
+                "one metadata import action"
+            );
+            assert!(
+                labels.iter().all(|label| *label != t("accounts-remove")),
+                "sample accounts cannot be removed"
             );
         }
 
@@ -2357,10 +2489,11 @@ mod tests {
             let (_scratch, root) = scratch_root();
             let pane = AccountsPane::from_dir_in(root, dir, false);
             let composed = lay_out(&pane);
-            // One Add per kind + four maintenance actions on each of four accounts.
+            // One Add per kind, metadata import, and four maintenance actions
+            // on each of four accounts.
             assert_eq!(
                 count_named(composed.as_ref(), "Button"),
-                AccountKind::ALL.len() + 16
+                AccountKind::ALL.len() + 1 + 16
             );
         }
 

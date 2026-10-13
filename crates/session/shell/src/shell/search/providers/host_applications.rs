@@ -21,7 +21,7 @@ use std::collections::HashSet;
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use tilo_desktop::notifications::{Notification, NotificationSeverity};
-use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
+use tilo_search::{Document, FieldWeight, Matching, SearchIndex};
 
 /// Chip label / group header, mirroring [`ResourceKind::HostApplication`].
 pub const HOST_APPLICATIONS_KIND: &str = "Host Apps";
@@ -175,7 +175,7 @@ impl HostApplicationsProvider {
             .collect();
         let index = index_apps(apps, &installed_ids);
         index
-            .search(needle, Page::first(apps.len()))
+            .search(needle, tilo_search::Page::first(apps.len()))
             .hits
             .iter()
             .filter_map(|hit| {
@@ -345,9 +345,22 @@ impl SearchProvider for HostApplicationsProvider {
         self.query_page(ctx, None, SearchBudget::PALETTE).results
     }
 
+    fn query_incomplete_reason(
+        &self,
+        _ctx: &SearchContext<'_>,
+    ) -> Option<crate::shell::search::QueryIncompleteReason> {
+        if self.index.building() {
+            Some(crate::shell::search::QueryIncompleteReason::Pending)
+        } else if self.snapshot().is_none() {
+            Some(crate::shell::search::QueryIncompleteReason::Unavailable)
+        } else {
+            None
+        }
+    }
+
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         self.index
-            .refresh(&self.source_generation(), self.builder());
+            .refresh(|| self.source_generation(), self.builder());
     }
 
     /// An address is looked up in the whole snapshot. An empty query's first
@@ -403,54 +416,18 @@ impl SearchProvider for HostApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor.token.strip_prefix("host:").and_then(|token| {
-                token
-                    .split_once('\u{1f}')
-                    .filter(|(_, query)| *query == ctx.needle)
-                    .and_then(|(offset, _)| offset.parse::<usize>().ok())
-            }) {
-                Some(offset) => offset,
-                None => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
-        let found = snapshot.index.search(
-            ctx.needle,
-            Page {
-                offset,
-                limit: budget.max_work.min(budget.max_results),
-            },
-        );
-        let mut shown = 0usize;
-        let mut bytes = 0usize;
-        let mut results = Vec::new();
-        for hit in &found.hits {
-            let Some(app) = usize::try_from(hit.key)
-                .ok()
-                .and_then(|at| snapshot.apps.get(at))
-            else {
-                continue;
-            };
-            let row = self.row(app, score_for(ctx.needle, hit.rank));
-            let row_bytes = row
-                .title
-                .len()
-                .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
-            if bytes.saturating_add(row_bytes) > budget.max_bytes {
-                break;
-            }
-            bytes = bytes.saturating_add(row_bytes);
-            shown = shown.saturating_add(1);
-            results.push(row);
-        }
-        let exhausted = !found.more && shown == found.hits.len();
-        let next = offset.saturating_add(shown);
-        SearchPage::continuing(
+        crate::shell::search::index_page(
             revision,
-            results,
-            (!exhausted).then(|| format!("host:{next}\u{1f}{}", ctx.needle)),
+            cursor,
+            ctx.needle,
+            budget,
+            |page| snapshot.index.search(ctx.needle, page),
+            |hit| {
+                let app = usize::try_from(hit.key)
+                    .ok()
+                    .and_then(|at| snapshot.apps.get(at))?;
+                Some(self.row(app, score_for(ctx.needle, hit.rank)))
+            },
         )
     }
 }
@@ -482,6 +459,62 @@ mod tests {
             terminal: false,
             icon: None,
             window_identities: vec![desktop_id.to_string()],
+        }
+    }
+
+    #[test]
+    fn catalogue_completion_waits_for_actual_worker() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        use crate::shell::search::{QueryArgs, QueryIncompleteReason, SearchRegistry};
+        let source = HostAppsTestSource::new(Vec::new(), Vec::new());
+        let gate = source.state.lock().expect("hold source materialization");
+        let (woken, wake) = std::sync::mpsc::channel();
+        let _installed = crate::shell::search::invocation_wake::install(Arc::new(move || {
+            woken.send(()).expect("waiting catalogue caller");
+        }));
+        let mut registry = SearchRegistry::new();
+        registry.register(std::rc::Rc::new(
+            HostApplicationsProvider::with_test_source(source.clone()),
+        ));
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let pending = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(pending.enumerate().is_empty());
+        assert!(!pending.completion().complete);
+        assert_eq!(
+            pending
+                .completion()
+                .incomplete
+                .first()
+                .expect("pending source")
+                .reason,
+            QueryIncompleteReason::Pending
+        );
+        drop(gate);
+        wake.recv_timeout(tilo_test_env::hang_bound())
+            .expect("the actual index worker must wake a held listing");
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let ready = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+            assert!(ready.enumerate().is_empty());
+            if ready.completion().complete {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actual empty index did not become ready"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 

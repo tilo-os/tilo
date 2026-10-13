@@ -94,6 +94,7 @@ workspace-members = [
     "tilo-automation",
     "tilo-automerge",
     "tilo-clock",
+    "tilo-content",
     "tilo-desktop-model",
     "wire-frame",
     # standalone registry-only build

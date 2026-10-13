@@ -10,16 +10,6 @@
 //! The event reaches the app through the typed action subscription, drained by the same
 //! `App::pump_collab_presence` a running window calls every frame.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc};
 use tilo_ui::widget::{AppModel, ModelPath};

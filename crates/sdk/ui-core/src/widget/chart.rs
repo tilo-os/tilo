@@ -16,7 +16,7 @@
 
 use crate::num::f64_of_usize;
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Brush, Color, Fill, Gradient};
@@ -522,14 +522,6 @@ impl Chart {
         self
     }
 
-    pub fn style(&self) -> &ChartStyle {
-        &self.style
-    }
-
-    pub fn style_mut(&mut self) -> &mut ChartStyle {
-        &mut self.style
-    }
-
     /// Immediate-mode draw: render a full chart into `scene` at `rect`,
     /// reading colours from `theme`. Lets a host that lays out its own
     /// dashboard cards paint a chart at a known rect without a widget.
@@ -867,14 +859,6 @@ impl Sparkline {
         self
     }
 
-    pub fn style(&self) -> &TrendStyle {
-        &self.style
-    }
-
-    pub fn style_mut(&mut self) -> &mut TrendStyle {
-        &mut self.style
-    }
-
     /// Immediate-mode draw of a sparkline into `scene` at `rect`.
     pub fn draw_at(
         scene: &mut Scene,
@@ -930,19 +914,14 @@ impl Widget for Sparkline {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::length(self.width),
-                height: Dimension::length(self.height),
-            },
+            size: Size::from_lengths(self.width, self.height),
             flex_shrink: 0.0,
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -965,10 +944,6 @@ impl Widget for Sparkline {
 
     fn name(&self) -> &'static str {
         "Sparkline"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_layout_dirty(&self) -> bool {

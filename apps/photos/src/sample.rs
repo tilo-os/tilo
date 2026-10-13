@@ -265,9 +265,7 @@ fn gallery() -> &'static [Sample] {
 fn sample(name: &str, pattern: &pixels::Rgba) -> Option<Sample> {
     let bytes = pixels::encode_png(pattern)?;
     let hash = tilo_content::hash_bytes(&bytes);
-    let image = OpenImage::from_path(name, pattern.w, pattern.h)
-        .with_content(hash)
-        .portable();
+    let image = OpenImage::new(name, pattern.w, pattern.h, hash);
     Some(Sample {
         bytes,
         photo: LibraryPhoto::from_image(image),
@@ -296,11 +294,7 @@ pub(crate) fn opened(scenario: &str) -> Option<String> {
 /// image (`error`): what a collaborator's import looks like before or
 /// without its content.
 fn placeholder(name: &str, content: String) -> LibraryPhoto {
-    LibraryPhoto::from_image(
-        OpenImage::from_path(name, 1200, 800)
-            .with_content(content)
-            .portable(),
-    )
+    LibraryPhoto::from_image(OpenImage::new(name, 1200, 800, content))
 }
 
 /// The library edits that stage `scenario` (`None` for a plain `--shots`,
@@ -487,7 +481,7 @@ mod tests {
             }
             let library = staged.state().unwrap();
             for photo in library.all_photos() {
-                let content = photo.image.content.as_deref().unwrap();
+                let content = &photo.image.content;
                 if !matches!(name, "loading") {
                     assert!(
                         store.read(content).is_some(),

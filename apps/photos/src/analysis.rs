@@ -44,7 +44,7 @@ pub fn recognize_text(
         model_id: String::new(),
         model_revision: String::new(),
         language: language.to_owned(),
-        content: open.content.clone().unwrap_or_default(),
+        content: open.content.clone(),
         // This return value is intentionally local. `SetImageAnalysis`
         // changes it to shared only at the collaborative consent boundary.
         scope: "local".to_owned(),
@@ -159,7 +159,7 @@ fn image_analysis_from_vision_result(
         model_id: capability.model_id.clone(),
         model_revision: capability.revision.clone(),
         language: String::new(),
-        content: open.content.clone().unwrap_or_default(),
+        content: open.content.clone(),
         scope: "local".to_owned(),
     };
     let has_ocr = !result.ocr.is_empty();
@@ -202,7 +202,7 @@ mod tests {
     fn local_analysis_refuses_bad_language_truncates_safely_and_pins_vision_models() {
         eprintln!("phase invalid_language_is_refused_before_reading_pixels");
         {
-            let open = OpenImage::from_path("/not/read.png", 1, 1);
+            let open = OpenImage::fixture("/not/read.png", 1, 1);
             assert!(recognize_text(&open, "eng; rm -rf", &ContentStore::memory()).is_err());
         }
 
@@ -215,7 +215,7 @@ mod tests {
 
         eprintln!("phase vision_output_stays_generic_and_records_the_pinned_model");
         {
-            let open = OpenImage::from_path("vision.png", 3, 2).with_content("b".repeat(64));
+            let open = OpenImage::new("vision.png", 3, 2, "b".repeat(64));
             let capability = tilo_vision::LocalVisionCapability {
                 profile_id: "local".to_owned(),
                 model_id: "vision-model".to_owned(),

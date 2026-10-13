@@ -487,7 +487,8 @@ impl NotificationLayer {
         let r = self.rect;
         let width = PANEL_WIDTH.min(r.width() - 2.0 * PANEL_INSET).max(0.0);
         let y0 = r.y0 + PANEL_INSET;
-        let wanted = center.preferred_height(&self.notifications.log(), self.type_lines);
+        let wanted =
+            center.preferred_height_for_width(&self.notifications.log(), self.type_lines, width);
         let height = wanted.min(r.y1 - PANEL_INSET - y0).max(0.0);
         let x1 = r.x1 - PANEL_INSET;
         Some(CenterLayout::new(
@@ -609,9 +610,6 @@ impl Widget for NotificationLayer {
     fn name(&self) -> &'static str {
         "DesktopNotifications"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn needs_redraw(&self) -> bool {
         self.dirty || self.drawn_revision.get() != Some(self.notifications.revision())
     }
@@ -638,9 +636,7 @@ impl Widget for NotificationLayer {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(tree, node, origin);
-    }
+    ui::rect_geometry!();
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -707,7 +703,10 @@ impl Widget for NotificationLayer {
         }
         let mut node = self.stack.accessibility(host)?;
         if let (Some(center), Some(layout)) = (self.center.as_ref(), self.layout()) {
-            node = node.with_children(vec![center.accessibility(host, &layout, ui::time::now())]);
+            // The dialog stays the first child: its synthetic rects are
+            // looked up by that path.
+            node.children
+                .insert(0, center.accessibility(host, &layout, ui::time::now()));
         }
         Some(node)
     }
@@ -765,14 +764,7 @@ mod tests {
 
     fn press(layer: &mut NotificationLayer, p: Point) -> bool {
         layer.cursor = Some(p);
-        layer.route(
-            &WindowEvent::MouseInput {
-                device_id: ui::winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            1.0,
-        )
+        layer.route(&ui::synthetic_input::mouse_press(), 1.0)
     }
 
     #[test]
@@ -814,13 +806,7 @@ mod tests {
                 &ui::presence::PresenceCtx::default(),
             );
             let point = layer.stack.rect().center();
-            layer.route(
-                &WindowEvent::CursorMoved {
-                    device_id: ui::winit::event::DeviceId::dummy(),
-                    position: ui::winit::dpi::PhysicalPosition::new(point.x, point.y),
-                },
-                1.0,
-            );
+            layer.route(&ui::synthetic_input::cursor_moved(point.x, point.y), 1.0);
             assert!(press(&mut layer, point));
             assert!(
                 notifications.take_outcomes().is_empty(),
@@ -829,14 +815,7 @@ mod tests {
             if interrupted {
                 layer.set_center_open(true);
             }
-            assert!(layer.route(
-                &WindowEvent::MouseInput {
-                    device_id: ui::winit::event::DeviceId::dummy(),
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-                1.0
-            ));
+            assert!(layer.route(&ui::synthetic_input::mouse_release(), 1.0));
             let outcomes = notifications.take_outcomes();
             if interrupted {
                 assert!(

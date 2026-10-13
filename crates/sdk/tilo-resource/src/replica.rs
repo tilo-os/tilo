@@ -33,9 +33,15 @@ pub struct Replica<R: Resource> {
     author: Option<String>,
     /// The person the author acts for, when the author is an agent.
     acting_for: Option<String>,
+    /// What kind of actor the author is while it acts for someone.
+    acting_kind: tilo_actions::ActorKind,
     /// Who invokes from this replica when it acts as its own device
     /// ([`Self::as_invoker`]).
     invoker: Option<String>,
+    /// The app later actions are in (id, label), as a host names it.
+    app: Option<(String, String)>,
+    /// What a bot shows for later actions instead of its own name.
+    appearance: Option<tilo_actions::Appearance>,
     now_ms: i64,
     /// The incrementally maintained state views would see, once asked for.
     reader: Option<Reader<R>>,
@@ -80,7 +86,10 @@ impl<R: Resource> Replica<R> {
             log: Vec::new(),
             author: None,
             acting_for: None,
+            acting_kind: tilo_actions::ActorKind::Agent,
             invoker: None,
+            app: None,
+            appearance: None,
             now_ms: 1_700_000_000_000,
             reader: None,
             marker: std::marker::PhantomData,
@@ -126,6 +135,34 @@ impl<R: Resource> Replica<R> {
     pub fn as_agent_for(mut self, agent: &str, person: &str) -> Self {
         self.author = Some(agent.to_owned());
         self.acting_for = Some(person.to_owned());
+        self.acting_kind = tilo_actions::ActorKind::Agent;
+        self
+    }
+
+    /// Attribute later actions to the bot installation `installation`
+    /// acting for `installer`, as a bot host does for a bot's calls.
+    #[must_use]
+    pub fn as_bot_for(mut self, installation: &str, installer: &str) -> Self {
+        self.author = Some(format!("bot:{installation}"));
+        self.acting_for = Some(installer.to_owned());
+        self.acting_kind = tilo_actions::ActorKind::Bot;
+        self
+    }
+
+    /// Show `appearance` for the bot's later actions, as a bot host admits
+    /// a bridge's post under another name.
+    #[must_use]
+    pub fn showing(mut self, appearance: tilo_actions::Appearance) -> Self {
+        self.appearance = Some(appearance);
+        self
+    }
+
+    /// Name `id` (labelled `label`) as the app later actions are in, as the
+    /// host running the app does: every member decides them against that
+    /// app's surface.
+    #[must_use]
+    pub fn in_app(mut self, id: &str, label: &str) -> Self {
+        self.app = Some((id.to_owned(), label.to_owned()));
         self
     }
 
@@ -208,12 +245,17 @@ impl<R: Resource> Replica<R> {
                 let invoker = tilo_actions::ActionInvoker::actor(author.clone());
                 let invoker = match &self.acting_for {
                     Some(person) => invoker
-                        .with_kind(tilo_actions::ActorKind::Agent)
+                        .with_kind(self.acting_kind)
                         .acting_for(person.clone()),
                     None => invoker,
                 };
+                let invoker = invoker.with_appearance(self.appearance.clone());
                 tilo_actions::ActionContext::default().with_invoker(invoker)
             });
+        let ambient = match &self.app {
+            Some((id, label)) => Some(ambient.unwrap_or_default().with_app(id, label)),
+            None => ambient,
+        };
         let mut transport = LocalTransport::new();
         let (doc, registry) = (&mut self.doc, &self.registry);
         let dispatched = resource::with_origin_clock(self.now_ms, || {

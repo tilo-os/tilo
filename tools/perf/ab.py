@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Same-job A/B: prove a performance change despite runner noise (TIL-738).
+"""Same-job A/B: prove a performance change despite runner noise.
 
 The scheduled lane compares a run with earlier nights on other hosts, and on
 the shared `runner` class that spread is larger than most changes (the same

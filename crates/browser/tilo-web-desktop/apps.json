@@ -252,6 +252,14 @@
       ]
     },
     {
+      "id": "so.tilo.discord",
+      "name": "Discord",
+      "category": "Network",
+      "platforms": [
+        "linux"
+      ]
+    },
+    {
       "id": "so.tilo.disk-usage",
       "name": "Disk Usage Analyzer",
       "category": "System",
@@ -289,15 +297,6 @@
       "id": "so.tilo.git-client",
       "name": "Git",
       "category": "Development",
-      "platforms": [
-        "linux",
-        "macos"
-      ]
-    },
-    {
-      "id": "so.tilo.hot-reload-demo",
-      "name": "Hot reload",
-      "category": "Utility",
       "platforms": [
         "linux",
         "macos"

@@ -38,7 +38,7 @@ fn private_queue_metadata_restores_unsaved_songs_before_resume() {
     crate::storage::save_device_profile_to(&path, &profile).unwrap();
     let restored = crate::storage::load_device_profile_from(&path);
     let mut app = MusicApp::from_device_profile(restored, false, String::new(), None);
-    let mut doc = AutoCommit::new();
+    let mut doc = seed::empty_document();
     app.reload(&doc);
     let before = doc.get_heads();
     assert!(!app.pb.playing, "restoration never starts audio");
@@ -2933,7 +2933,6 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             label: "Track one".into(),
             album_id: String::new(),
             artist_id: String::new(),
-            artist: String::new(),
             offline: false,
             liked: false,
         })
@@ -4625,7 +4624,12 @@ fn artist_and_album_pages_navigate_and_play() {
     {
         let (mut app, mut doc) = app_with_live_results();
         // Activating the artist's search hit opens the artist page.
-        let rows = crate::live_search::rows_of(&sample_bundle());
+        let provider = ui::framework::testing::search_source::<crate::model::Library>(
+            app.live_search_entries(),
+        );
+        let query = ui::search::SearchQuery::new("daft punk");
+        let rows =
+            ui::search::SearchProvider::search_page(&provider, &query, None, 100, 100).results;
 
         let artist = rows
             .iter()

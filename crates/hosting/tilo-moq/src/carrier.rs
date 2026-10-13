@@ -567,10 +567,12 @@ pub fn listener(
     key: rustls::pki_types::PrivateKeyDer<'static>,
 ) -> Result<quinn::Endpoint, String> {
     let socket = std::net::UdpSocket::bind(address).map_err(|error| error.to_string())?;
-    listener_on(socket, chain, key)
+    listener_on(socket, crate::tls::fixed_certificate(chain, key)?)
 }
 
-/// [`listener`] on an already bound UDP socket.
+/// [`listener`] on an already bound UDP socket, presenting `certificate`:
+/// [`crate::tls::fixed_certificate`], or a [`crate::tls::FileCertificate`]
+/// that follows renewals on disk.
 ///
 /// # Errors
 ///
@@ -578,17 +580,13 @@ pub fn listener(
 /// be used.
 pub fn listener_on(
     socket: std::net::UdpSocket,
-    chain: Vec<CertificateDer<'static>>,
-    key: rustls::pki_types::PrivateKeyDer<'static>,
+    certificate: std::sync::Arc<dyn rustls::server::ResolvesServerCert>,
 ) -> Result<quinn::Endpoint, String> {
-    let mut tls = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_protocol_versions(&[&rustls::version::TLS13])
-    .map_err(|error| error.to_string())?
-    .with_no_client_auth()
-    .with_single_cert(chain, key)
-    .map_err(|error| error.to_string())?;
+    let mut tls = rustls::ServerConfig::builder_with_provider(crate::tls::provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|error| error.to_string())?
+        .with_no_client_auth()
+        .with_cert_resolver(certificate);
     tls.alpn_protocols = vec![web_transport_quinn::ALPN.as_bytes().to_vec()];
     tls.max_early_data_size = 0;
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)

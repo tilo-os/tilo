@@ -18,7 +18,7 @@ use ui::time::{Duration, Instant};
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use base64::Engine as _;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -1261,7 +1261,6 @@ impl MusicApp {
                 .map(|track| crate::actions::CatalogTrackResource {
                     id: track.id.clone(),
                     label: self.track_title(&track.id),
-                    artist: self.track_artist(&track.id),
                     album_id: track.album_id.clone(),
                     artist_id: track.artist_id.clone(),
                     offline: matches!(self.cache_state(&track.id), CacheState::Cached),
@@ -1274,7 +1273,6 @@ impl MusicApp {
                 .map(|album| crate::actions::CatalogAlbumResource {
                     id: album.id.clone(),
                     label: album.title.clone(),
-                    saved: self.lib.is_album_saved(&album.id),
                 })
                 .collect(),
             artists: artists
@@ -1329,7 +1327,7 @@ impl MusicApp {
             .into_iter()
             .chain(crate::recommendations::resources(&self.lib))
             .chain(crate::actions::live_device_resources(&ctx))
-            .map(live_row)
+            .map(ui::framework::LiveRow::from_resource)
             .collect();
         rows.push(self.source_row());
         rows.extend(self.spotify_device_rows());
@@ -1396,10 +1394,11 @@ impl MusicApp {
             .into_iter()
             .find(|row| row.id.as_str() == id)
         {
-            return Some(live_row(resource));
+            return Some(ui::framework::LiveRow::from_resource(resource));
         }
         if id.starts_with("music.recommendation") {
-            return crate::recommendations::resource_by_id(&self.lib, id).map(live_row);
+            return crate::recommendations::resource_by_id(&self.lib, id)
+                .map(ui::framework::LiveRow::from_resource);
         }
         if let Some(track) = id.strip_prefix("music.track:")
             && !self.stored_library.tracks.contains_key(track)
@@ -1410,12 +1409,16 @@ impl MusicApp {
                 .live_hits
                 .iter()
                 .any(|hit| hit.track.id == track)
-                .then(|| self.publish_resource(id).map(live_row))
+                .then(|| {
+                    self.publish_resource(id)
+                        .map(ui::framework::LiveRow::from_resource)
+                })
                 .flatten();
         }
         // The player, the queue and its entries, the open file, and the
         // library's tracks, albums, artists, playlists, memberships and views.
-        self.publish_resource(id).map(live_row)
+        self.publish_resource(id)
+            .map(ui::framework::LiveRow::from_resource)
     }
 
     fn source_status(&self) -> String {
@@ -2258,10 +2261,7 @@ impl MusicApp {
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(rect.width() as f32),
-                        height: Dimension::length(rect.height() as f32),
-                    },
+                    size: Size::from_lengths(rect.width() as f32, rect.height() as f32),
                     ..Default::default()
                 },
                 &[node],
@@ -3694,11 +3694,8 @@ impl MusicApp {
                         self.apply_resolve_failure(&track_id, request_id, &error);
                     }
                 }
-                // Per-kind "more" pages are never requested (the platform
-                // search pages the live catalogue itself); notes are logs.
-                StreamUpdate::SearchMore { .. }
-                | StreamUpdate::SearchMoreUnavailable { .. }
-                | StreamUpdate::Note(_) => {}
+                // Notes are logs.
+                StreamUpdate::Note(_) => {}
             }
         }
     }
@@ -5324,18 +5321,6 @@ mod track_table;
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests;
-
-/// `resource`, one of the rows this device shows, as the surface publishes it.
-fn live_row(resource: tilo_actions::Resource) -> ui::framework::LiveRow {
-    let mut row = ui::framework::LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
-    for action in resource.actions {
-        row = row.operation(action);
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
-}
 
 #[cfg(test)]
 impl MusicApp {

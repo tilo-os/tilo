@@ -609,10 +609,10 @@ pub fn run_with_state(
                     at.ok_or("missing wheel position")?
                 };
                 report.counts.wheel_events = report.counts.wheel_events.saturating_add(1);
-                driver.send(&WindowEvent::CursorMoved {
-                    device_id: DeviceId::dummy(),
-                    position: PhysicalPosition::new(at[0] * scenario.scale, at[1] * scenario.scale),
-                });
+                driver.send(&crate::synthetic_input::cursor_moved(
+                    at[0] * scenario.scale,
+                    at[1] * scenario.scale,
+                ));
                 let delta = match unit {
                     WheelUnit::Lines => {
                         MouseScrollDelta::LineDelta(delta[0] as f32, delta[1] as f32)

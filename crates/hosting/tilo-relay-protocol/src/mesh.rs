@@ -487,4 +487,19 @@ mod tests {
         assert!(authorized.workspace_replication);
         assert!(!authorized.full_content_replication);
     }
+
+    #[test]
+    fn only_a_battery_at_or_below_fifteen_percent_is_critically_constrained() {
+        use PowerAvailability::{Battery, Charging, External, Unknown};
+        for (power, constrained) in [
+            (Battery(0), true),
+            (Battery(15), true),
+            (Battery(16), false),
+            (Charging(5), false),
+            (External, false),
+            (Unknown, false),
+        ] {
+            assert_eq!(power.is_critically_constrained(), constrained, "{power:?}");
+        }
+    }
 }

@@ -30,12 +30,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "decode")]
-use std::time::Duration;
-
 #[cfg(any(feature = "decode", test))]
 use thumbnail::ThumbSize;
 use thumbnail::{ThumbKey, ThumbState, ThumbnailService};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::{Blob, ImageData};
 
 use crate::media::MediaSource;
 use crate::model::MediaId;
@@ -65,11 +63,6 @@ const MAX_FRAMES_PER_SOURCE: usize = 96;
 /// Decode workers the editor's pipeline runs — and therefore the cap on live
 /// `GStreamer` pipelines.
 const MAX_WORKERS: usize = 2;
-
-/// How long [`ThumbnailCache::warm_blocking`] waits for the pipeline to settle
-/// every frame it asked for.
-#[cfg(feature = "decode")]
-const WARM_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How far [`ThumbnailCache::frame_at`] will reach for an already-decoded
 /// neighbour while the exact bucket is still in flight. Two seconds of source
@@ -127,13 +120,7 @@ impl Thumb {
     /// Wrap owned pixels, building the render handle once.
     pub fn new(width: u32, height: u32, rgba: Arc<Vec<u8>>, real: bool) -> Self {
         let data: Arc<dyn AsRef<[u8]> + Send + Sync> = rgba.clone();
-        let image = ImageData {
-            data: Blob::new(data),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width,
-            height,
-        };
+        let image = ui::raster::rgba8(Blob::new(data), width, height);
         Self {
             width,
             height,
@@ -554,37 +541,6 @@ impl ThumbnailCache {
         }
     }
 
-    /// Decode `id`'s frames **synchronously**: the bin swatch at `at`, and —
-    /// when `cells` is non-zero — the filmstrip across `[in_point, out_point]`.
-    ///
-    /// The live app never blocks on a decoder; this exists for the
-    /// deterministic `--shots` capture and for tests, mirroring
-    /// [`crate::waveform::WaveformCache::warm_blocking`]. A one-shot render
-    /// has no frames to spare for the pipeline to finish in, and racing it
-    /// means the capture shows whichever of the two won — which is how a shot
-    /// ends up with the representative gradient where the real frame belongs.
-    ///
-    /// Failure is recorded exactly as the live path records it, so a source
-    /// that cannot be decoded is written off here too rather than retried.
-    pub fn warm_blocking(
-        &mut self,
-        id: MediaId,
-        palette: u8,
-        source: &MediaSource,
-        at: f64,
-        in_point: f64,
-        out_point: f64,
-        cells: usize,
-    ) {
-        self.ensure(id, palette, source, at);
-        self.ensure_strip(id, palette, source, in_point, out_point, cells);
-        #[cfg(feature = "decode")]
-        if self.has_pending() {
-            self.service.block_until_idle(WARM_TIMEOUT);
-            self.drain();
-        }
-    }
-
     /// The bin swatch for `id`, if one has been generated.
     pub fn get(&self, id: MediaId) -> Option<&Arc<Thumb>> {
         self.swatch.get(&id)
@@ -842,27 +798,6 @@ mod tests {
                 "a source that never answers is given up on"
             );
             assert!(!cache.has_pending());
-        }
-        // Case `a_blocking_warm_on_an_unhydrated_source_leaves_the_representative`.
-        {
-            // The synchronous path must be as honest as the live one: no bytes
-            // means the representative frame stays and nothing is left outstanding.
-            let mut cache = ThumbnailCache::new();
-            let id = uuid::Uuid::new_v4();
-            cache.warm_blocking(id, 2, &projected("/nope.mp4"), 1.0, 0.0, 4.0, 6);
-            let t = cache.get(id).expect("a representative frame");
-            assert!(
-                !t.real,
-                "nothing was decoded, and it does not pretend otherwise"
-            );
-            assert!(
-                !cache.has_pending(),
-                "a blocking warm leaves nothing in flight"
-            );
-            assert!(
-                !cache.is_undecodable(id),
-                "un-hydrated is not the same as undecodable — the bytes may arrive"
-            );
         }
         // Case `one_bad_seek_does_not_condemn_a_source`.
         {

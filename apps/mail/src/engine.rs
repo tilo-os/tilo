@@ -750,6 +750,9 @@ pub mod live {
     /// when it is due).
     fn resolve_auth(custodian: &Custodian, account: &AccountConfig) -> Result<AuthCreds, String> {
         let user = login_user(account);
+        if account.import_pending {
+            return Err(crate::i18n::t("mail-import-sign-in-required"));
+        }
         match account.auth {
             AuthMethod::Password => {
                 if account.password.is_empty() {

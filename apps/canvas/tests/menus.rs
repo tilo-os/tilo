@@ -1,28 +1,16 @@
 //! What a right-click offers, used as a person uses it: the menu over a
 //! layer's row renames it, the one over the canvas acts on what it lands on.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test assertions over exact, hand-written fixtures"
-)]
 
 use canvas::App;
 use serde_json::json;
 use ui::prelude::TestApp;
-use ui::winit::event::{ElementState, MouseButton, WindowEvent};
+use ui::winit::event::{ElementState, MouseButton};
 
 fn right_click(app: &mut TestApp<App>, (x, y): (f64, f64)) {
     let harness = app.harness();
-    harness.send(&WindowEvent::CursorMoved {
-        device_id: ui::winit::event::DeviceId::dummy(),
-        position: ui::winit::dpi::PhysicalPosition::new(x, y),
-    });
+    harness.send(&ui::synthetic_input::cursor_moved(x, y));
     for state in [ElementState::Pressed, ElementState::Released] {
-        harness.send(&WindowEvent::MouseInput {
-            device_id: ui::winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Right,
-        });
+        harness.send(&ui::synthetic_input::mouse_input(state, MouseButton::Right));
     }
 }
 

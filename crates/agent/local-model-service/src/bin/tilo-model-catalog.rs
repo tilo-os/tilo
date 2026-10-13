@@ -13,18 +13,8 @@
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(target_os = "linux")]
-use std::ffi::CString;
-#[cfg(not(target_os = "linux"))]
-use std::fs::OpenOptions;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Read as _;
-#[cfg(target_os = "linux")]
-use std::os::fd::FromRawFd as _;
-#[cfg(target_os = "linux")]
-use std::os::unix::ffi::OsStrExt as _;
-#[cfg(all(unix, not(target_os = "linux")))]
-use std::os::unix::fs::OpenOptionsExt as _;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
@@ -48,61 +38,6 @@ use system_extension::{
 use zeroize::Zeroizing;
 
 const CATALOG_SCHEMA: u16 = 1;
-
-#[cfg(target_os = "linux")]
-fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<File> {
-    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-
-    #[repr(C)]
-    struct OpenHow {
-        flags: u64,
-        mode: u64,
-        resolve: u64,
-    }
-
-    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "path contains an embedded NUL byte",
-        )
-    })?;
-    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .map_err(|_| std::io::Error::other("open flags are outside the Linux u64 ABI"))?;
-    let how = OpenHow {
-        flags,
-        mode: 0,
-        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
-    };
-    // SAFETY: path is a live NUL-terminated string and `how` is the exact
-    // three-u64 ABI accepted by openat2. The returned descriptor is uniquely
-    // transferred into File on success.
-    let descriptor = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            libc::AT_FDCWD,
-            path.as_ptr(),
-            &raw const how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if descriptor < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let descriptor = i32::try_from(descriptor)
-        .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
-    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
-    Ok(unsafe { File::from_raw_fd(descriptor) })
-}
-
-#[cfg(not(target_os = "linux"))]
-fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    options.open(path)
-}
 
 #[derive(Parser)]
 #[command(
@@ -481,7 +416,7 @@ fn resolve_artifact_mode(
     } else {
         source_dir.join(&source.file)
     };
-    let mut file = open_readonly_without_symlinks(&path)
+    let mut file = tilo_files::native::nofollow::open_read(&path)
         .map_err(|error| format!("could not securely open {}: {error}", path.display()))?;
     let metadata = file
         .metadata()
@@ -625,7 +560,7 @@ fn read_signing_key(path: &Path) -> Result<SigningKey, String> {
         ));
     }
 
-    let file = open_readonly_without_symlinks(path).map_err(|error| {
+    let file = tilo_files::native::nofollow::open_read(path).map_err(|error| {
         format!(
             "could not securely open signing key {}: {error}",
             path.display()
@@ -736,7 +671,7 @@ mod tests {
 
     fn artifact(dir: &Path, name: &str, bytes: &[u8]) -> ArtifactSource {
         let path = dir.join(name);
-        let mut file = File::create(&path).unwrap();
+        let mut file = fs::File::create(&path).unwrap();
         file.write_all(bytes).unwrap();
         ArtifactSource {
             file: PathBuf::from(name),

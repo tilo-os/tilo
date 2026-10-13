@@ -2444,6 +2444,7 @@ fn publish_own(
     for view in own.views {
         resource = resource.with_view(view);
     }
+    crate::share::offer(&mut resource);
     for spec in own.local_operations {
         if spec.kind == OperationKind::Document {
             continue;

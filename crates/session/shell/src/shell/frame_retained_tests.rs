@@ -100,13 +100,10 @@ fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::Sc
     let mut document = automerge::AutoCommit::new();
     let mut focus = None;
     let _ = frame.dispatch_event(
-        &winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(
-                f64::from(NATIVE_WIDTH) - 50.0,
-                f64::from(NATIVE_HEIGHT) - 50.0,
-            ),
-        },
+        &ui::synthetic_input::cursor_moved(
+            f64::from(NATIVE_WIDTH) - 50.0,
+            f64::from(NATIVE_HEIGHT) - 50.0,
+        ),
         &winit::event::Modifiers::default(),
         &mut ui::widget::Edits::lend(&mut document),
         &automerge::ROOT,
@@ -444,7 +441,7 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(fixture.viewport(), (3840.0, 2160.0));
     assert_eq!(
         fixture.host().fixture_provider_ids(),
-        vec!["actions", "records"]
+        vec!["actions", "records", "file-picker"]
     );
 
     let chrome = fixture.chrome();
@@ -1621,20 +1618,93 @@ fn apart_map(apart: &[(usize, usize, u8)], size: (u32, u32)) -> String {
 /// `width` wide, are more than one step apart.
 #[cfg(target_os = "linux")]
 fn pixels_apart(a: &[u8], b: &[u8], width: u32) -> Vec<(usize, usize, u8)> {
+    const BLOCK_BYTES: usize = 1024;
     assert_eq!(a.len(), b.len(), "both targets have one size");
-    a.chunks_exact(4)
-        .zip(b.chunks_exact(4))
-        .enumerate()
-        .filter_map(|(index, (a, b))| {
+    // Equal blocks have zero channel distance. Avoid the unoptimized
+    // per-channel iterator work for those pixels without changing the oracle.
+    let mut apart = Vec::new();
+    for (block, (a, b)) in a.chunks(BLOCK_BYTES).zip(b.chunks(BLOCK_BYTES)).enumerate() {
+        if a == b {
+            continue;
+        }
+        for (pixel, (a, b)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
             let step = a
                 .iter()
                 .zip(b)
                 .map(|(x, y)| x.abs_diff(*y))
                 .max()
                 .unwrap_or(0);
-            (step > 1).then_some((index % width as usize, index / width as usize, step))
-        })
-        .collect()
+            if step > 1 {
+                let index = block * (BLOCK_BYTES / 4) + pixel;
+                apart.push((index % width as usize, index / width as usize, step));
+            }
+        }
+    }
+    apart
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn pixel_oracle_detects_the_entire_real_render_change_across_blocks() {
+    let size = (128, 128);
+    let mut target = gpu_target(size);
+    target.set_base_color(Color::TRANSPARENT);
+    let before = render_whole(&mut target, &Scene::new(), 1, "empty control");
+    let after = render_whole(&mut target, &rect_scene(), 2, "changed control");
+    assert!(pixels_apart(&before, &before, size.0).is_empty());
+    let apart = pixels_apart(&before, &after, size.0);
+    let positions = apart.iter().map(|&(x, y, _)| (x, y)).collect::<Vec<_>>();
+    let expected = (20..120)
+        .flat_map(|y| (10..100).map(move |x| (x, y)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        positions, expected,
+        "every changed rendered pixel is observed"
+    );
+    assert!(
+        apart.iter().all(|&(_, _, step)| step == 255),
+        "opaque scene pixels change alpha by 255"
+    );
+    for alpha in [1_u8, 2] {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Theme::dark()
+                .tokens
+                .colors
+                .surfaces
+                .scrim
+                .with_alpha(f32::from(alpha) / 255.0),
+            None,
+            &Rect::new(10.0, 20.0, 100.0, 120.0),
+        );
+        let shown = render_whole(&mut target, &scene, u64::from(alpha) + 2, "alpha control");
+        let distance = shown
+            .iter()
+            .zip(&before)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            distance, alpha,
+            "the real render pins the RGBA channel distance"
+        );
+        let apart = pixels_apart(&before, &shown, size.0);
+        if alpha == 1 {
+            assert!(
+                apart.is_empty(),
+                "one channel step retains the existing tolerance"
+            );
+        } else {
+            let positions = apart.iter().map(|&(x, y, _)| (x, y)).collect::<Vec<_>>();
+            assert_eq!(
+                positions, expected,
+                "two channel steps expose every changed pixel"
+            );
+            assert!(apart.iter().all(|&(_, _, step)| step == alpha));
+        }
+    }
 }
 
 /// How many pixels of the band copies of `work` differ by more than one
@@ -2733,7 +2803,7 @@ fn assert_repaints_under_one_percent(damage: &[FineDamageRect], label: &str) {
         .sum();
     let share = |value: u64| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
     eprintln!(
-        "TIL-579 raster pixels ({label}): {pixels} of {output} ({:.3}%); a dense frame is {output}",
+        "#3892 raster pixels ({label}): {pixels} of {output} ({:.3}%); a dense frame is {output}",
         share(pixels) * 100.0 / share(output)
     );
     assert!(
@@ -2920,10 +2990,7 @@ fn hovering_a_tab_repaints_that_tab_not_the_output() {
     let mut document = automerge::AutoCommit::new();
     let mut focus = None;
     let _ = frame.dispatch_event(
-        &winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
-        },
+        &ui::synthetic_input::cursor_moved(pill.center().x, pill.center().y),
         &winit::event::Modifiers::default(),
         &mut ui::widget::Edits::lend(&mut document),
         &automerge::ROOT,
@@ -2943,7 +3010,7 @@ fn hovering_a_tab_repaints_that_tab_not_the_output() {
     paint_retained_and_compare(&mut retained, &mut dense, &hovered, "tab hovered");
 }
 
-// TIL-744: overlays, in-process app widgets and tooltips repaint what they
+// #4166: overlays, in-process app widgets and tooltips repaint what they
 // change, not the output or the tile.
 
 /// A theme by name.
@@ -2982,13 +3049,7 @@ fn dispatch(frame: &mut FrameBuilder, event: &WindowEvent) {
 }
 
 fn point_at(frame: &mut FrameBuilder, at: Point) {
-    dispatch(
-        frame,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-        },
-    );
+    dispatch(frame, &ui::synthetic_input::cursor_moved(at.x, at.y));
 }
 
 fn press(frame: &mut FrameBuilder, button: winit::event::MouseButton) {
@@ -2996,14 +3057,7 @@ fn press(frame: &mut FrameBuilder, button: winit::event::MouseButton) {
         winit::event::ElementState::Pressed,
         winit::event::ElementState::Released,
     ] {
-        dispatch(
-            frame,
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button,
-            },
-        );
+        dispatch(frame, &ui::synthetic_input::mouse_input(state, button));
     }
 }
 
@@ -3154,7 +3208,7 @@ fn assert_change_repaints_under(
     let output = u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT);
     let pixels = raster_pixels(&changed);
     eprintln!(
-        "TIL-744 raster pixels ({label}): {pixels} of {output} ({}); a dense frame is {output}",
+        "#4166 raster pixels ({label}): {pixels} of {output} ({}); a dense frame is {output}",
         if changed.damage_regions.is_some() {
             "sparse"
         } else {

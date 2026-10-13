@@ -411,6 +411,10 @@ fn on_this_device(caller: &Caller) -> Caller {
 }
 
 impl ActionHost for RuntimeActionHost {
+    fn retire_execution(&self, caller: &Caller) {
+        self.broker.state().retire_execution(caller);
+    }
+
     fn query(
         &self,
         caller: &Caller,
@@ -448,6 +452,9 @@ impl ActionHost for RuntimeActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
+            return Pending::ready(Err(refused));
+        }
         if let Some(session) = &self.session {
             if let Err(error) = session.check(caller, &self.joined) {
                 return Pending::ready(Err(error));

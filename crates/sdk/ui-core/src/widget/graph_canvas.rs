@@ -2,9 +2,8 @@
 use super::composition_parts::{Parts, retained_parts};
 use super::{Element, Manual, MeasureConstraint, Widget};
 use crate::{PresenceCtx, Theme, text_render::TextRenderer};
-use automerge::ObjId;
 use std::{cell::Cell, collections::HashMap, rc::Rc};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Point, Rect, Stroke},
@@ -162,10 +161,7 @@ impl Widget for GraphCanvas {
         }
         let node = self.parts.build(
             Style {
-                size: Size {
-                    width: Dimension::auto(),
-                    height: Dimension::auto(),
-                },
+                size: Size::auto(),
                 ..Style::default()
             },
             tree,

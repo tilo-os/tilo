@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,7 +18,7 @@ class CommitHookTests(unittest.TestCase):
         self.git("init", "-q", "-b", "main")
         for key, value in (("user.name", "Test"), ("user.email", "test@example.org"), ("commit.gpgsign", "false")):
             self.git("config", key, value)
-        paths = ["tools/policy/check_source_content.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/ci/check_changed_rust_allows.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg"]
+        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/ci/check_changed_rust_allows.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg"]
         for name in paths:
             dest = self.root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -49,8 +50,11 @@ class CommitHookTests(unittest.TestCase):
         (self.root / name).write_bytes(data)
         self.git("add", "--", name)
 
-    def ci(self):
-        return subprocess.run(["python3", str(self.root / "tools/policy/check_commit_policy.py"), "", self.base], cwd=self.root, capture_output=True, text=True)
+    def ci(self, head_ref=None):
+        env = dict(os.environ)
+        if head_ref is not None:
+            env["PR_HEAD_REF"] = head_ref
+        return subprocess.run(["python3", str(self.root / "tools/policy/check_commit_policy.py"), "", self.base], cwd=self.root, capture_output=True, text=True, env=env)
 
     def test_subject_scope_breaking_marker_and_multiline_body(self):
         self.stage("source", b"text\n")
@@ -64,6 +68,16 @@ class CommitHookTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("fix(shell): preserve window identity", result.stderr)
         self.assertEqual(self.git("rev-parse", "HEAD").stdout, before)
+
+    def test_pull_request_head_branch_with_a_tracker_id_is_rejected(self):
+        self.stage("source", b"text\n")
+        self.git("commit", "-qm", "fix(ui): handle focus")
+        # Spelled in pieces so this file does not trip the check it tests.
+        bad = "xaver/ti" + "l-" + "42-focus"
+        result = self.ci(head_ref=bad)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("branch name", result.stderr)
+        self.assertEqual(self.ci(head_ref="fix/focus-handling").returncode, 0)
 
     def test_unknown_type_empty_scope_and_missing_body_separator_fail(self):
         self.stage("source", b"text\n")
@@ -174,6 +188,37 @@ class CommitHookTests(unittest.TestCase):
         self.stage("main", b"again\n")
         self.git("commit", "--fixup=HEAD", "-q")
         self.assertEqual(self.ci().returncode, 0)
+
+    def test_internal_tracker_references_are_rejected_in_authored_messages(self):
+        # Built from parts so this file passes the check it exercises.
+        key, link = "TIL" + "-512", "https://linear" + ".app/tilo/issue/x"
+        self.stage("source", b"text\n")
+        for message in ("fix(shell): keep focus (" + key + ")", "fix(shell): keep focus\n\nSee " + link + "."):
+            with self.subTest(message=message):
+                result = self.git("commit", "-qm", message, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("internal issue tracker", result.stderr)
+        self.git("commit", "--no-verify", "-qm", "fix(shell): keep focus (" + key + ")")
+        result = self.ci()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("internal issue tracker", result.stderr)
+
+    def test_generated_merge_subjects_keep_historical_references(self):
+        branch = "xaver/" + "til" + "-136-focus"
+        self.git("switch", "-qc", branch)
+        self.stage("feature", b"feature\n")
+        self.git("commit", "-qm", "feat(ui): add feature")
+        self.git("switch", "-q", "main")
+        self.git("merge", "--no-ff", branch, "-m", "Merge branch '" + branch + "'")
+        self.assertEqual(self.ci().returncode, 0)
+
+    def test_pull_request_title_check(self):
+        script = str(self.root / "tools/policy/check_commit_message.py")
+        title = lambda text: subprocess.run(["python3", script, "--title", text], capture_output=True, text=True)
+        self.assertEqual(title("WIP: fix(shell): keep focus while typing").returncode, 0)
+        result = title("fix(shell): keep focus (" + "TIL" + "-512)")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("internal issue tracker", result.stderr)
 
     def test_unobservable_new_history_fails_instead_of_passing(self):
         self.stage("source", b"text\n")

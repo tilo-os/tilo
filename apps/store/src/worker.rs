@@ -1343,6 +1343,7 @@ mod tests {
 
     pub(super) fn item(id: &str, name: &str) -> StoreItem {
         StoreItem {
+            bot: None,
             id: id.into(),
             name: name.into(),
             description: format!("{name} Store test row"),

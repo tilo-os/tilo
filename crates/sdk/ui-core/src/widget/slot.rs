@@ -100,8 +100,19 @@ impl super::Decorator for Slot {
         self.content.take_structure_dirty() | own
     }
 
+    fn settle(&mut self, edits: &mut super::Edits<'_>, path: &automerge::ObjId) {
+        self.adopt();
+        self.content.settle(edits, path);
+    }
+
+    /// Content handed over outside an event (a finished request, say) still
+    /// needs a synchronization pass to be adopted.
+    fn needs_idle_sync(&self) -> bool {
+        self.pending.borrow().is_some() || self.content.needs_idle_sync()
+    }
+
     fn needs_redraw(&self) -> bool {
-        self.repaint.get() || self.content.needs_redraw()
+        self.pending.borrow().is_some() || self.repaint.get() || self.content.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
