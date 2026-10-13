@@ -18,12 +18,11 @@
 #[cfg(test)]
 use super::channel_key;
 use super::{
-    ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionDescriptor,
-    BrokerActionSurface, CollabEvent, CollabRequest, CollabTransport, CollaborationManager,
-    Collaborator, DocumentMutation, DocumentPublicationError, DocumentPublicationReceipt,
-    ExportedAction, ExportedInput, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
-    SignedOp, TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
-    presence_handle_env,
+    ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionSurface, CollabEvent,
+    CollabRequest, CollabTransport, CollaborationManager, Collaborator, DocumentMutation,
+    DocumentPublicationError, DocumentPublicationReceipt, ExportedAction, ExportedInput,
+    PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, SignedOp, TransportCommand,
+    TransportError, TransportStatus, Uuid, auto_hello_env, mpsc, presence_handle_env,
 };
 
 // Worker-owned Cloud facilities: committed-document reads, the paged
@@ -1197,32 +1196,6 @@ async fn remote_action_round_trip(
     })
 }
 
-fn broker_action_bytes(action: &BrokerActionDescriptor, meter: &mut ByteMeter) {
-    meter.string_capacity(&action.resource);
-    if let Some(identity) = &action.semantic_identity {
-        meter.string_capacity(&identity.kind);
-        meter.string_capacity(&identity.key);
-    }
-    meter.string_capacity(&action.action);
-    meter.string_capacity(&action.resource_kind);
-    meter.string_capacity(&action.resource_label);
-    meter.string_capacity(&action.action_label);
-    if let Some(description) = &action.description {
-        meter.string_capacity(description);
-    }
-    meter.add_product(
-        action.params.capacity(),
-        std::mem::size_of::<tilo_actions::ActionParam>(),
-    );
-    for param in &action.params {
-        serialized_bytes(param, meter);
-    }
-    serialized_bytes(&action.contract, meter);
-    meter.string_capacity(&action.input.kind);
-    meter.string_capacity(&action.input.prompt);
-    meter.string_capacity(&action.input.placeholder);
-}
-
 fn action_catalogue_bytes(
     surfaces: &[BrokerActionSurface],
     surface_capacity: usize,
@@ -1235,10 +1208,10 @@ fn action_catalogue_bytes(
         meter.string_capacity(&surface.record_id);
         meter.add_product(
             surface.actions.capacity(),
-            std::mem::size_of::<BrokerActionDescriptor>(),
+            std::mem::size_of::<ExportedAction>(),
         );
         for action in &surface.actions {
-            broker_action_bytes(action, meter);
+            exported_action_bytes(action, meter);
         }
     }
 }
@@ -12274,7 +12247,7 @@ mod tests {
             "operation_kind": tilo_actions::OperationKind::View,
             "params": [tilo_actions::ActionParam::required("page", tilo_actions::ParamType::Resource, "The page to open")],
             "contract": tilo_actions::ActionContract::view(),
-            "input": {"kind": "none"}
+            "input": ExportedInput::None
         })).collect();
         serde_json::json!({"version": 1, "surfaces": [{
             "peer_id": 1, "app_id": "so.tilo.notes", "cluster_id": cluster.to_string(),
