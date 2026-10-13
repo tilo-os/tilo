@@ -4,8 +4,9 @@
 //! see: a pressed chord nothing else in the shell took, and on each tick the
 //! passing of time, the applications publishing live actions to the broker,
 //! the workspaces this device is in, whether Do Not Disturb and the focus
-//! schedule are on, and the files changed in the folders file-changed
-//! triggers watch. Every firing starts through the action
+//! schedule are on, the files changed in the folders file-changed triggers
+//! watch, and the committed changes to records in rooms where a shortcut
+//! watches record changes or incoming messages. Every firing starts through the action
 //! broker as the person this device acts for in the shortcut's room, so a
 //! run from the keyboard or a schedule meets the same checks as one from
 //! the palette, an agent or a peer.
@@ -33,11 +34,16 @@ use super::ShellOverlayHost;
 use super::shortcuts::shortcut_chord_from_event;
 use crate::shell::automation_folders::FolderWatch;
 use crate::shell::automation_host::{is_shortcut_target, replace_trigger_chords, trigger_chords};
+use crate::shell::automation_records::RecordFeed;
 use crate::shell::automation_triggers::{
-    Clock, DeviceDirectory, Firing, FocusState, TriggerEvent, TriggerHost, armed, watched_folders,
+    Armed, Clock, DeviceDirectory, Firing, FocusState, TriggerEvent, TriggerHost, armed,
+    watched_folders,
 };
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::remote_actions::BrokerActionHost;
+use crate::shell::state::RoomId;
+use tilo_automation::TriggerSpec;
+use tilo_automation::dispatch::RecordEvent;
 
 /// How often time is shown to the schedule source.
 const TICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -49,6 +55,7 @@ pub(super) struct ShortcutTriggerState {
     /// The broker's published-surface generation last read for live apps.
     apps_generation: Option<u64>,
     folders: FolderWatch,
+    records: RecordFeed,
 }
 
 impl ShortcutTriggerState {
@@ -59,6 +66,7 @@ impl ShortcutTriggerState {
             last_tick: None,
             apps_generation: None,
             folders: FolderWatch::default(),
+            records: RecordFeed::default(),
         }
     }
 
@@ -105,6 +113,29 @@ fn focus_state(state: &crate::shell::chrome_state::ChromeState, clock: &dyn Cloc
         do_not_disturb: state.dnd(),
         focus: state.focus_schedule_on(minute, weekday),
     }
+}
+
+/// The records held in each room where an armed shortcut watches record
+/// changes or incoming messages: only those are read each tick.
+fn watched_record_rooms(
+    held: &std::collections::HashMap<RoomId, BTreeMap<String, String>>,
+    armed: &[Armed<'_>],
+) -> Vec<(String, BTreeMap<String, String>)> {
+    held.iter()
+        .map(|(room, records)| (room.to_string(), records))
+        .filter(|(room, _)| {
+            armed.iter().any(|armed| {
+                armed.room == *room
+                    && armed.shortcut.triggers.iter().any(|trigger| {
+                        matches!(
+                            trigger,
+                            TriggerSpec::RecordChanged { .. } | TriggerSpec::IncomingMessage { .. }
+                        )
+                    })
+            })
+        })
+        .map(|(room, records)| (room, records.clone()))
+        .collect()
 }
 
 impl ShellOverlayHost {
@@ -185,6 +216,19 @@ impl ShellOverlayHost {
                     self.shortcut_triggers
                         .triggers
                         .observe(TriggerEvent::Focus(focus), &armed),
+                );
+                let rooms = watched_record_rooms(&tree.desktop.room_records_held, &armed);
+                let events = self.shortcut_triggers.records.poll(&rooms, state.records());
+                if !events.is_empty() {
+                    // A run's own first change is its claim: a firing another
+                    // device already started is not held for this one.
+                    let started = events.iter().filter_map(RecordEvent::started_run).collect();
+                    self.shortcut_triggers.triggers.forget_started(&started);
+                }
+                firings.extend(
+                    self.shortcut_triggers
+                        .triggers
+                        .observe(TriggerEvent::Records(&events), &armed),
                 );
                 self.shortcut_triggers
                     .folders
