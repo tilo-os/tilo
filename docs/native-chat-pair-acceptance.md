@@ -77,10 +77,11 @@ certified people, and requires each app to recover exactly one copy of each
 message with its original certified author after transport resumes. It then
 re-reads the exact shared-resource reference through Bob’s current governed action.
 
-Run the same builds above, then use the supported remote session:
+Run the same builds above, then keep this journey in the same supported
+on-builder session and fetch only its nonsecret receipt:
 
 ```sh
-rcargo --no-fallback +1.97.1 --on-builder --fetch two-person-reconnect-proof/journey.json run --locked \
+"$CARGO" --on-builder --fetch two-person-reconnect-proof/journey.json run --locked \
   -p shell --example native_pair_host -- \
   --journey --out target/two-person-reconnect-proof --two-person-reconnect-proof
 ```
