@@ -347,6 +347,7 @@ fetch_snapshot() {
     --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
   jq -e '.entries | type == "array"' "$snapshot" >/dev/null
 }
+source tools/apps/registry-runtime-readiness.sh
 fetch_snapshot
 while IFS= read -r id; do
   accepted=false
@@ -358,7 +359,8 @@ while IFS= read -r id; do
     previous="$RUNNER_TEMP/tilo-registry-previous.json"
     aggregate="$RUNNER_TEMP/tilo-registry-aggregate.json"
     request="$RUNNER_TEMP/tilo-registry-request.json"
-    rm -f "$previous" "$aggregate" "$request"
+    missing_runtime="$RUNNER_TEMP/tilo-registry-missing-runtime.json"
+    rm -f "$previous" "$aggregate" "$request" "$missing_runtime"
     # A request still waiting for review is replaced by this one and
     # must keep its versions, so build on it when there is one.
     "$registry_cli" pending --registry "$registry_url" \
@@ -386,9 +388,11 @@ while IFS= read -r id; do
       args=(entry --arch "$arch" --identity "$registry_identity" \
         --metadata "$metadata" --action "$action" --url "$tapp_url"
         --runtime-catalogue "$snapshot"
-        --registry-owner-pubkey "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY")
+        --registry-owner-pubkey "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"
+        --missing-runtime-output "$missing_runtime")
       [[ -f $aggregate ]] && args+=(--previous-entry "$aggregate")
-      "$registry_cli" "${args[@]}" "$tapp" > "$request"
+      await_registry_runtime_ready "$request" "$missing_runtime" \
+        "$registry_cli" "${args[@]}" "$tapp"
       jq -e --arg id "$id" '.entry | select(.package_id == $id)' \
         "$request" > "$aggregate.next"
       mv "$aggregate.next" "$aggregate"
