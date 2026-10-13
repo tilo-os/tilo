@@ -17,7 +17,7 @@ use std::path::Path;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
 use tilo_content::ContentStore;
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::{Blob, ImageData};
 
 /// A slide may refer to a very large source photo, but the editor must never
 /// turn that reference into an unbounded read or allocation.  These ceilings
@@ -379,13 +379,7 @@ pub(crate) fn decode_bytes_with_budget(bytes: &[u8], budget: usize) -> ImageStat
         return ImageState::Failed;
     }
     let blob = Blob::new(std::sync::Arc::new(rgba.into_raw()));
-    ImageState::Ready(ImageData {
-        data: blob,
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: decoded_w,
-        height: decoded_h,
-    })
+    ImageState::Ready(ui::raster::rgba8(blob, decoded_w, decoded_h))
 }
 
 #[cfg(test)]

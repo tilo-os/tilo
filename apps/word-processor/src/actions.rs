@@ -27,8 +27,6 @@ use ui::tilo_resource::Effect as _;
 
 use crate::effects::WordProcessorEffect;
 
-/// Registry `type_id` for every word-processor action.
-pub use tilo_document::RICH_TEXT_ACTION_TYPE as WORD_PROCESSOR_ACTION_TYPE;
 pub use tilo_document::action::*;
 /// Register the word processor's action decoder for palette execution + remote
 /// replay.
@@ -83,9 +81,6 @@ pub struct SearchTarget {
 /// never allocates one resource object per occurrence forever.
 pub const MAX_RESOURCE_SEARCH_HITS: usize = 64;
 pub const MAX_RESOURCE_REVISIONS: usize = 64;
-/// Sections and images listed around the caret (and sixteen times as many
-/// table cells, so the nearest tables are whole).
-pub const MAX_RESOURCE_OBJECTS: usize = 64;
 
 /// A short label for a structural block in the palette.
 fn short(text: &str, fallback: &str) -> String {
@@ -771,10 +766,9 @@ mod tests {
         );
         let blocks = body_blocks(&state.doc);
         assert!(
-            blocks.iter().any(|block| {
-                matches!(block.attrs.get("toc"), Some(tilo_doc::AttrVal::Bool(true)))
-                    && block.text.contains("Section")
-            }),
+            blocks
+                .iter()
+                .any(|block| { block.flag("toc") && block.text.contains("Section") }),
             "the published action inserts a contents line for the heading"
         );
     }
@@ -1162,10 +1156,6 @@ mod tests {
     /// Selected text exposes a typed hyperlink action that replays; targets are limited to safe authored
     /// schemes; validation is enforced by both resource and executor.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
     fn hyperlinks_are_typed_safe_and_validated_on_both_sides() {
         // Phase: selected_text_exposes_a_typed_hyperlink_action_that_replays.
         {
@@ -1673,10 +1663,7 @@ mod tests {
             }
             let table = body_blocks(&origin.doc)
                 .iter()
-                .find_map(|block| match block.attrs.get("table") {
-                    Some(tilo_doc::AttrVal::Str(id)) => Some(id.clone()),
-                    _ => None,
-                })
+                .find_map(|block| block.str_attr("table").map(str::to_owned))
                 .unwrap();
             for edit in [
                 TableEdit::InsertRow { at: 1 },
@@ -1700,10 +1687,10 @@ mod tests {
             dispatch(&mut base.doc, &insert_table_action(&ids[0], 2, 2));
             let blocks = body_blocks(&base.doc);
             let cell = blocks.iter().find(|block| block.kind == "cell").unwrap();
-            let table = match cell.attrs.get("table") {
-                Some(tilo_doc::AttrVal::Str(id)) => id.clone(),
-                other => panic!("cell has stable table id: {other:?}"),
-            };
+            let table = cell
+                .str_attr("table")
+                .expect("cell has stable table id")
+                .to_owned();
             let bytes = base.save();
             let mut deleted = ui::State::load(&bytes).unwrap();
             let mut divergent = ui::State::load(&bytes).unwrap();
@@ -1721,9 +1708,11 @@ mod tests {
             let mut deleted_for_b = deleted.doc.clone();
             merged_b.merge_incoming(&mut deleted_for_b).unwrap();
             assert_eq!(body_blocks(&merged_a), body_blocks(&merged_b));
-            assert!(body_blocks(&merged_a)
-                .iter()
-                .all(|block| !matches!(block.attrs.get("table"), Some(tilo_doc::AttrVal::Str(id)) if id == &table)));
+            assert!(
+                body_blocks(&merged_a)
+                    .iter()
+                    .all(|block| block.str_attr("table") != Some(table.as_str()))
+            );
         }
     }
 

@@ -2,7 +2,7 @@
 //!
 //! The agent is a participant like any person at the palette: it reads the
 //! live, permission-filtered catalogue the broker publishes to it, invokes
-//! one published operation at a time through the ordinary durable step path,
+//! one published operation at a time through the broker's invocation path,
 //! and reads back what each step did — its result, how its own view changed,
 //! and which operations became available because of it — before deciding the
 //! next. Nothing here knows any application: there are no recipes, no
@@ -18,17 +18,18 @@
 //!   in the same turn as its last `invoke` calls;
 //! * the turn streams on its own thread ([`crate::model::TurnTransport`]):
 //!   each `invoke` runs the moment its call is complete, while the model is
-//!   still writing the next one, and argument text streams into the live
-//!   preview as it is written;
+//!   still writing the next one;
 //! * an `invoke` the model marks `standalone` (independent of the steps
 //!   before it) is started without waiting for them to settle in their applications when
 //!   it acts on another record than every step still running
 //!   ([`Session::start_independent`]); everything else waits for them first,
 //!   so a step that reads what an earlier one wrote stays after it;
+//! * a native task's running steps are followed by re-asks their host holds
+//!   until a step moves on ([`Session::follow_native`]), not on a timer;
 //! * the catalogue survey is rebuilt only when the broker republishes it.
 //!
 //! Every bound is enforced here, not asked for: model turns, wall-clock time
-//! and the host's durable step budget.
+//! and the task's step budget.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
@@ -39,12 +40,10 @@ use serde_json::Value;
 use ui::collaboration::CollabEvent;
 
 use super::{
-    ChunkedParagraph, Following, Handoff, MAX_TASK_STEPS, Session, TaskAction, TaskActionStop,
-    arguments_for_step, task_action_from_offer, with_param,
+    Following, MAX_TASK_STEPS, Session, StepOutcome, TaskAction, TaskActionStop,
+    arguments_for_step, task_action_from_offer,
 };
-use crate::model::{
-    Conversation, FirstTurn, StreamSignal, TurnEvent, plan_stream::PlanArgumentsScanner,
-};
+use crate::model::{Conversation, FirstTurn, TurnEvent};
 use crate::plan::{self, ConfirmationEvidence, Instruction};
 use crate::surface;
 use crate::tools::{self, InvokeReport, Revealed};
@@ -128,166 +127,48 @@ pub(super) struct StreamedCall {
     input: Value,
 }
 
-/// What the stream has shown of one call so far.
-#[derive(Clone, Debug, Default)]
-struct CallMeta {
-    name: String,
-    /// The `invoke` operation, once its string is complete.
-    operation: Option<String>,
-    /// String arguments in order of appearance: `(name, text, done)`.
-    args: Vec<(String, String, bool)>,
-}
-
-/// An `invoke` whose incremental text is being written while the model is
-/// still streaming it: chunk steps run as soon as enough text has arrived.
-struct StreamingInvoke {
-    /// The call's position in its turn.
-    index: usize,
-    operation: String,
-    param: String,
-    first: TaskAction,
-    next: TaskAction,
-    kind: tilo_actions::OperationKind,
-    /// Text committed so far, in chunk steps.
-    committed: String,
-    chunks: usize,
-    target: usize,
-    budget: usize,
-    handoff: Handoff,
-    failed: Option<String>,
-    before: HashMap<String, bool>,
-}
-
-/// The first streamed chunk's target: small, so text appears early.
-pub(super) const FIRST_CHUNK_TARGET: usize = 20;
-/// Later streamed chunks' target. The model writes far faster than a step
-/// commits (~200 ms), so fewer, larger commits keep the text flowing.
-pub(super) const STREAM_CHUNK_TARGET: usize = 120;
-
-/// The next chunk of streamed `pending` text to commit, or `None` to wait
-/// for more. Before the text is complete a chunk ends only at a word
-/// boundary inside [`crate::live::next_chunk_len`]'s window and never takes
-/// the whole pending text (more may belong to its last word); once
-/// complete, nothing is left to stream, so the whole rest is one step
-/// ([`crate::live::step_text_len`]).
-pub(super) fn streaming_chunk_len(
-    pending: &str,
-    target: usize,
-    chunks_left: usize,
-    done: bool,
-) -> Option<usize> {
-    if pending.is_empty() {
-        return None;
-    }
-    if done {
-        return Some(crate::live::step_text_len(pending, chunks_left.max(1)));
-    }
-    let target = target.max(3);
-    if chunks_left <= 1 || pending.len() <= target + target / 3 {
-        return None;
-    }
-    let cut = crate::live::next_chunk_len(pending, target, chunks_left);
-    (cut < pending.len()).then_some(cut)
-}
-
 /// The model turn in flight.
 pub(super) struct ActiveTurn {
     rx: Receiver<TurnEvent>,
-    scanners: BTreeMap<u64, PlanArgumentsScanner>,
-    stream: crate::live::PlanStream,
     /// Calls whose `tool_call` frame arrived and that are not handled yet.
     ready: VecDeque<StreamedCall>,
     finished: Option<Result<String, String>>,
-    /// A step is running: streamed text updates only the reply, so the
-    /// running step's own preview stays on screen.
-    executing: bool,
     /// Completed calls seen (`tool_call` frames): calls below this index
     /// are complete.
     completed: usize,
-    /// What the stream has shown of each call, by index.
-    metas: BTreeMap<usize, CallMeta>,
+    /// Calls the stream has begun, by index.
+    begun: HashSet<usize>,
 }
 
 impl ActiveTurn {
-    fn new(rx: Receiver<TurnEvent>, stream: crate::live::PlanStream) -> Self {
+    fn new(rx: Receiver<TurnEvent>) -> Self {
         Self {
             rx,
-            scanners: BTreeMap::new(),
-            stream,
             ready: VecDeque::new(),
             finished: None,
-            executing: false,
             completed: 0,
-            metas: BTreeMap::new(),
+            begun: HashSet::new(),
         }
     }
 
-    /// Fold one event in; `live` receives what the stream shows.
-    fn absorb(&mut self, event: TurnEvent, live: &mut crate::live::LivePublisher) {
+    /// Fold one event in.
+    fn absorb(&mut self, event: TurnEvent) {
         match event {
             TurnEvent::Frame { event, output } => {
                 if event == tilo_model_gateway::EVENT_TOOL_CALL_DELTA {
-                    let Self {
-                        scanners,
-                        stream,
-                        executing,
-                        metas,
-                        ..
-                    } = self;
                     if let Ok(frame) = serde_json::from_str::<Value>(&output)
                         && let Some(index) = frame
                             .get("index")
                             .and_then(Value::as_u64)
                             .and_then(|index| usize::try_from(index).ok())
-                        && let Some(name) = frame.get("name").and_then(Value::as_str)
+                        && frame.get("name").and_then(Value::as_str).is_some()
                     {
-                        name.clone_into(&mut metas.entry(index).or_default().name);
+                        self.begun.insert(index);
                     }
-                    crate::model::stream_plan_delta(scanners, &output, &mut |signal| {
-                        match signal {
-                            StreamSignal::CallOperation {
-                                call,
-                                operation,
-                                done: true,
-                            } => {
-                                metas.entry(call).or_default().operation = Some(operation.into());
-                            }
-                            StreamSignal::CallArgument {
-                                call,
-                                name,
-                                text,
-                                done,
-                            } => {
-                                let args = &mut metas.entry(call).or_default().args;
-                                match args.iter_mut().find(|(seen, _, _)| seen == name) {
-                                    Some(entry) => {
-                                        text.clone_into(&mut entry.1);
-                                        entry.2 = done;
-                                    }
-                                    None => args.push((name.into(), text.into(), done)),
-                                }
-                            }
-                            _ => {}
-                        }
-                        if !*executing {
-                            stream.apply(live, signal);
-                            return;
-                        }
-                        match signal {
-                            StreamSignal::Reply { text, done } => live.set_reply(text, done),
-                            StreamSignal::CallOperation { .. } => stream.apply(live, signal),
-                            _ => {}
-                        }
-                    });
                 } else if event == tilo_model_gateway::EVENT_TOOL_CALL
                     && let Some(call) = streamed_call(&output, self.completed)
                 {
                     self.completed += 1;
-                    if !self.executing
-                        && let Some(label) = crate::live::tool_label(&call.name)
-                    {
-                        live.set_state(crate::live::LiveState::Tool, label, Some(&call.name));
-                    }
                     self.ready.push_back(call);
                 }
             }
@@ -319,18 +200,12 @@ fn streamed_call(output: &str, index: usize) -> Option<StreamedCall> {
 /// Durable state of one task's loop.
 pub(super) struct LoopState {
     pub(super) revealed: Revealed,
-    /// The next durable step index.
+    /// Invokes started so far, bounded by [`MAX_TASK_STEPS`].
     pub(super) step_index: usize,
-    /// Whether the host keeps a step ledger (else the legacy path).
-    pub(super) stepped: bool,
     /// What the next content-consuming step is built from.
-    pub(super) handoff: Handoff,
+    pub(super) previous: Option<StepOutcome>,
     /// Steps that succeeded.
     pub(super) completed: usize,
-    /// The invoke being written while it streams, if any.
-    streaming: Option<StreamingInvoke>,
-    /// Call indices of this turn already considered for streaming.
-    stream_decided: HashSet<usize>,
     /// One line per invoke of this task, for the conversation memory.
     actions: Vec<String>,
     /// The request's parts, as the model listed them (or the loop implied).
@@ -487,19 +362,11 @@ impl LoopState {
     }
 
     /// A model turn that failed after every listed part of the request
-    /// already has a successful operation (and no streamed text is half
-    /// written) ends the task as finished: the work is done, only the
-    /// model's closing turn was lost (e.g. it ran into its token limit).
+    /// already has a successful operation ends the task as finished: the
+    /// work is done, only the model's closing turn was lost (e.g. it ran
+    /// into its token limit).
     fn finished_despite_failed_plan(&self, error: &str) -> Option<LoopEnd> {
-        let streaming = self
-            .streaming
-            .as_ref()
-            .is_some_and(|streaming| streaming.chunks > 0);
-        if self.completed == 0
-            || self.parts.is_empty()
-            || streaming
-            || !self.undone_parts().is_empty()
-        {
+        if self.completed == 0 || self.parts.is_empty() || !self.undone_parts().is_empty() {
             return None;
         }
         tracing::info!(
@@ -663,7 +530,7 @@ impl Session {
         }
     }
 
-    /// The task catalogue — every live broker offer an unattended task may
+    /// The task catalogue — every broker route an unattended task may
     /// invoke — rebuilt only when the broker republished it, and shared
     /// rather than copied between rebuilds.
     pub(super) fn task_catalogue(&mut self) -> std::sync::Arc<surface::Catalogue> {
@@ -675,7 +542,7 @@ impl Session {
         let offers = surface::broker_offers(&self.broker_surfaces)
             .into_iter()
             .filter(|offer| {
-                offer.broker_peer_id.is_some()
+                (offer.broker_peer_id.is_some() || offer.broker_provider.is_some())
                     // The agent's own AI transforms are not task steps.
                     && !crate::transform::is_transform_kind(&offer.descriptor.resource_kind)
                     && matches!(
@@ -707,54 +574,16 @@ impl Session {
         catalogue
     }
 
-    /// Where each operation writes and how it is labelled, for live previews.
-    pub(super) fn plan_targets(
-        &self,
-        catalogue: &surface::Catalogue,
-    ) -> BTreeMap<String, crate::live::PlanTarget> {
-        catalogue
-            .offers
-            .iter()
-            .map(|offer| {
-                let record = offer
-                    .broker_peer_id
-                    .and_then(|peer| {
-                        self.broker_surfaces
-                            .iter()
-                            .find(|surface| surface.peer_id == peer)
-                    })
-                    .map(|surface| surface.record_id.clone())
-                    .unwrap_or_default();
-                let descriptor = &offer.descriptor;
-                let target = crate::live::PlanTarget {
-                    app: offer.app.clone(),
-                    record,
-                    label: crate::live::action_label(
-                        &descriptor.action_label,
-                        &descriptor.resource_label,
-                    ),
-                    text_params: descriptor
-                        .params
-                        .iter()
-                        .filter(|param| param.ty == tilo_actions::ParamType::Text)
-                        .map(|param| param.name.to_string())
-                        .collect(),
-                };
-                (offer.id(), target)
-            })
-            .collect()
-    }
-
     /// Drain whatever the turn in flight has produced, without waiting.
-    /// Called from every wait on the collaboration link, so live previews
-    /// keep moving and completed calls queue up while a step runs.
+    /// Called from every wait on the collaboration link, so completed calls
+    /// queue up while a step runs.
     pub(super) fn pump_turn(&mut self) {
         let Some(mut turn) = self.turn.take() else {
             return;
         };
         loop {
             match turn.rx.try_recv() {
-                Ok(event) => turn.absorb(event, &mut self.live),
+                Ok(event) => turn.absorb(event),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     if turn.finished.is_none() {
@@ -765,7 +594,14 @@ impl Session {
             }
         }
         self.turn = Some(turn);
-        self.live_publish(false);
+    }
+
+    /// Whether the model is still writing the turn in flight, so a wait
+    /// should keep it moving.
+    pub(super) fn turn_streaming(&self) -> bool {
+        self.turn
+            .as_ref()
+            .is_some_and(|turn| turn.finished.is_none())
     }
 
     /// Wait up to `wait` for the turn's next event, then drain the rest.
@@ -775,7 +611,7 @@ impl Session {
         };
         if turn.ready.is_empty() && turn.finished.is_none() {
             match turn.rx.recv_timeout(wait) {
-                Ok(event) => turn.absorb(event, &mut self.live),
+                Ok(event) => turn.absorb(event),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     turn.finished = Some(Err("the model turn ended without an answer".into()));
@@ -784,12 +620,6 @@ impl Session {
         }
         self.turn = Some(turn);
         self.pump_turn();
-    }
-
-    fn set_executing(&mut self, executing: bool) {
-        if let Some(turn) = &mut self.turn {
-            turn.executing = executing;
-        }
     }
 
     /// Run the loop for `run` until the model finishes, a bound is reached,
@@ -805,11 +635,8 @@ impl Session {
         let mut state = LoopState {
             revealed: Revealed::new(),
             step_index: 0,
-            stepped: self.enrolled_active.is_some(),
-            handoff: Handoff::None,
+            previous: None,
             completed: 0,
-            streaming: None,
-            stream_decided: HashSet::new(),
             actions: Vec::new(),
             parts: Vec::new(),
             done_apps: HashMap::new(),
@@ -826,16 +653,32 @@ impl Session {
                 .checked_add(Duration::from_millis(u64::from(budget.total_ms)))
                 .unwrap_or_else(ui::time::now)
         });
+        // Native tasks are separate permission scopes, not messages in the
+        // legacy conversation. Keep their memory empty for the entire execution;
+        // Conversation still retains this run's turns and authenticated steering.
+        let legacy_memory = self
+            .native_task
+            .is_some()
+            .then(|| std::mem::take(&mut self.memory));
         let result = self.run_task_loop_with(run, &mut state);
         self.task_deadline = None;
+        if let Some(memory) = legacy_memory {
+            // Restore before propagating any I/O error, cancellation or failure,
+            // and never remember native prompts, actions or replies globally.
+            self.memory = memory;
+            return result;
+        }
         let end = result?;
         let reply = match &end {
             LoopEnd::Finished(finish, _) => finish.reply.clone().unwrap_or_default(),
             LoopEnd::Failed(message) => format!("(failed) {message}"),
             LoopEnd::Cancelled(message) => format!("(cancelled) {message}"),
         };
-        self.memory
-            .remember(&run.title, std::mem::take(&mut state.actions), &reply);
+        self.memory.remember(
+            run.instruction(),
+            std::mem::take(&mut state.actions),
+            &reply,
+        );
         Ok(end)
     }
 
@@ -872,7 +715,7 @@ impl Session {
         let catalogue = self.task_catalogue();
         // "ping/tell/notify … in Chat" requires a successful Chat operation,
         // whatever the model later claims.
-        let request = run.title.to_lowercase();
+        let request = run.instruction().to_lowercase();
         if request.contains("chat")
             && NOTIFY_WORDS.iter().any(|word| request.contains(word))
             && let Some(chat) = catalogue
@@ -922,7 +765,7 @@ impl Session {
             task: format!(
                 "{}The request:\n\n{}",
                 self.memory.render(),
-                run.title.trim()
+                run.instruction().trim()
             ),
         };
         let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &first);
@@ -958,7 +801,7 @@ impl Session {
         let label = surface::find(&catalogue.offers, operation).map_or_else(
             || operation.to_owned(),
             |offer| {
-                crate::live::action_label(
+                crate::memory::action_label(
                     &offer.descriptor.action_label,
                     &offer.descriptor.resource_label,
                 )
@@ -969,13 +812,13 @@ impl Session {
             .or_else(|| input.get("arguments"))
             .map(Value::to_string)
             .unwrap_or_default();
-        let arguments = crate::live::head(&arguments, 120);
+        let arguments = crate::memory::head(&arguments, 120);
         let outcome = match (&report.skipped, report.succeeded, &report.error) {
             (Some(_), _, _) => "not run".to_owned(),
             (None, true, _) => "done".to_owned(),
             (None, false, error) => format!(
                 "failed: {}",
-                crate::live::head(error.as_deref().unwrap_or("unknown"), 120)
+                crate::memory::head(error.as_deref().unwrap_or("unknown"), 120)
             ),
         };
         format!("{label} {arguments} → {outcome}")
@@ -1019,21 +862,13 @@ impl Session {
             }
             self.incorporate_native_directions(run, conversation)?;
         }
-        let catalogue = self.task_catalogue();
-        let targets = self.plan_targets(&catalogue);
         let body = conversation.body(&tools::loop_definitions());
-        // The model starts first. The live update and the cancellation poll
-        // are round trips to the host and neither is waited for: the poll's
-        // answer is read while the model thinks, and before any step of this
-        // turn reaches the host.
+        // The model starts first. The cancellation poll is a round trip to
+        // the host and is not waited for: its answer is read while the model
+        // thinks, and before any step of this turn reaches the host.
         let turn_began = ui::time::now();
         let rx = self.chooser.start_turn(body, timeout, turn);
-        self.turn = Some(ActiveTurn::new(rx, crate::live::PlanStream::new(targets)));
-        if self.live.is_active() {
-            self.live
-                .set_state(crate::live::LiveState::Thinking, "Thinking", None);
-            self.live_publish(true);
-        }
+        self.turn = Some(ActiveTurn::new(rx));
         self.poll_cancellation(run)?;
         if self.cancellation_known()? {
             self.turn = None;
@@ -1049,8 +884,6 @@ impl Session {
             self.turn = None;
             return Ok(None);
         }
-        state.streaming = None;
-        state.stream_decided.clear();
         let mut results: HashMap<String, String> = HashMap::new();
         let mut finish: Option<Finishing> = None;
         let mut failed = false;
@@ -1076,7 +909,12 @@ impl Session {
                 .as_ref()
                 .is_some_and(|state| state.pending.is_some())
             {
+                // New directions take the next turn. Steps already running
+                // settle first, as a step in progress always has.
                 self.turn = None;
+                if let Some(message) = self.drain_in_flight(run, state, &mut failed)? {
+                    return Ok(Some(LoopEnd::Cancelled(message)));
+                }
                 return Ok(None);
             }
             self.poll_cancellation_every(run, THINKING_CANCELLATION_POLL)?;
@@ -1097,14 +935,6 @@ impl Session {
                     self.turn = None;
                     return Ok(Some(LoopEnd::Cancelled(message)));
                 }
-            }
-            // Write the text of an invoke still streaming, chunk by chunk.
-            let handling = ui::time::now();
-            let cancelled = self.advance_streaming(run, state, failed)?;
-            stepping += handling.elapsed();
-            if let Some(message) = cancelled {
-                self.turn = None;
-                return Ok(Some(LoopEnd::Cancelled(message)));
             }
             let finished = self.turn.as_mut().and_then(|turn| {
                 turn.ready
@@ -1144,18 +974,8 @@ impl Session {
                 if let Some(end) = state.finished_despite_failed_plan(&error) {
                     return Ok(Some(end));
                 }
-                let written = state
-                    .streaming
-                    .take()
-                    .filter(|streaming| streaming.chunks > 0)
-                    .map_or(String::new(), |streaming| {
-                        format!(
-                            " ({} character(s) of streamed text were already written)",
-                            streaming.committed.chars().count()
-                        )
-                    });
                 return Ok(Some(LoopEnd::Failed(format!(
-                    "Managed model planning unavailable: the call failed: {error}{written}"
+                    "Managed model planning unavailable: the call failed: {error}"
                 ))));
             }
         };
@@ -1167,7 +987,7 @@ impl Session {
                     tracing::info!(
                         turn,
                         tool = %call.name,
-                        args = %crate::live::head(&call.input.to_string(), 400),
+                        args = %crate::memory::head(&call.input.to_string(), 400),
                         "agent tool call"
                     );
                 }
@@ -1291,10 +1111,6 @@ impl Session {
 
     /// Handle one completed call. `failed` records that an `invoke` of this
     /// turn did not succeed; the rest of the turn's invokes are then not run.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one completed call is checked, resolved, performed and recorded in a single auditable sequence"
-    )]
     fn handle_call(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -1352,16 +1168,7 @@ impl Session {
                         ..InvokeReport::default()
                     })));
                 }
-                let streamed = state
-                    .streaming
-                    .as_ref()
-                    .is_some_and(|streaming| streaming.index == call.index && streaming.chunks > 0);
-                let (report, cancelled) = if streamed {
-                    self.finish_streaming(run, state, &call.input)?
-                } else {
-                    state.streaming = None;
-                    self.invoke_from_loop(run, state, &call.input)?
-                };
+                let (report, cancelled) = self.invoke_from_loop(run, state, &call.input)?;
                 if let Some(message) = cancelled {
                     return Ok(Handled::Cancelled(message));
                 }
@@ -1400,7 +1207,7 @@ impl Session {
         if !report.succeeded {
             tracing::info!(
                 turn = state.turn,
-                error = %crate::live::head(
+                error = %crate::memory::head(
                     report.error.as_deref().unwrap_or("not run"),
                     300
                 ),
@@ -1504,7 +1311,7 @@ impl Session {
         };
         let instruction = match Instruction::from_answer(
             &invocation.operation,
-            &run.title,
+            run.instruction(),
             Some(&invocation.arguments),
             &catalogue.offers,
         ) {
@@ -1532,17 +1339,12 @@ impl Session {
         };
         let action =
             task_action_from_offer(&offer, arguments).map_err(|error| refused(with_hint(error)))?;
-        let arguments = state
-            .handoff
-            .outcome()
-            .and_then(|previous| {
-                arguments_for_step(
-                    action.carries.as_deref(),
-                    &action.arguments,
-                    previous.as_ref(),
-                )
-            })
-            .map_err(refused)?;
+        let arguments = arguments_for_step(
+            action.carries.as_deref(),
+            &action.arguments,
+            state.previous.as_ref(),
+        )
+        .map_err(refused)?;
         Ok(Prepared {
             before: availability(&catalogue),
             offer,
@@ -1573,42 +1375,10 @@ impl Session {
         // new window's operations can be told apart.
         let opened = tools::opened_app(&offer).map(|app| (app.to_owned(), self.app_windows(app)));
         let index = state.completed;
-        self.set_executing(true);
-        let result = if let Some((param, text, next)) = self.chunkable(&action, &arguments) {
-            let budget = MAX_TASK_STEPS
-                .saturating_sub(state.step_index)
-                .clamp(1, crate::live::MAX_CHUNKS);
-            let paragraph = ChunkedParagraph {
-                first: &action,
-                next: &next,
-                param: &param,
-                arguments: &arguments,
-                text: &text,
-                budget,
-            };
-            self.run_chunked_paragraph(
-                run,
-                index,
-                &mut state.step_index,
-                &paragraph,
-                &mut state.stepped,
-            )
-        } else {
-            self.live_applying(&action, &arguments, None);
-            let result = self.run_task_step(
-                run,
-                index,
-                state.step_index,
-                &action,
-                &arguments,
-                &mut state.stepped,
-            );
-            state.step_index += 1;
-            result
-        };
-        self.set_executing(false);
+        let result = self.run_task_step(run, index, &action, &arguments);
+        state.step_index += 1;
         match result? {
-            Ok(handoff) => {
+            Ok(outcome) => {
                 let succeeded = Succeeded {
                     offer: &offer,
                     before: &before,
@@ -1616,7 +1386,7 @@ impl Session {
                     opened,
                     index,
                 };
-                Ok((self.invoke_succeeded(state, succeeded, handoff)?, None))
+                Ok((self.invoke_succeeded(state, succeeded, outcome)?, None))
             }
             Err(TaskActionStop::Failed(message)) => Ok((refused_report(message), None)),
             Err(TaskActionStop::Cancelled(message)) => Ok((
@@ -1632,7 +1402,7 @@ impl Session {
         &mut self,
         state: &mut LoopState,
         succeeded: Succeeded<'_>,
-        handoff: Handoff,
+        outcome: StepOutcome,
     ) -> Result<InvokeReport> {
         let Succeeded {
             offer,
@@ -1644,17 +1414,11 @@ impl Session {
         self.chooser
             .mark(tilo_model_gateway::TraceEvent::ActionSettled, index);
         state.completed += 1;
-        let outcome = handoff.outcome().ok().flatten();
-        state.handoff = handoff;
+        state.previous = Some(outcome.clone());
         let view = offer.descriptor.kind == tilo_actions::OperationKind::View;
         let mut note = None;
         if let Some((app, opened_before)) = &opened {
-            let records = opened_records(
-                outcome
-                    .as_ref()
-                    .and_then(|outcome| outcome.output.value.as_ref()),
-                app,
-            );
+            let records = opened_records(outcome.output.value.as_ref(), app);
             let appeared = self.settle_opened(app, opened_before, &records, OPEN_SETTLE)?;
             let new_window = self
                 .app_windows(app)
@@ -1689,9 +1453,8 @@ impl Session {
             MOST_NEWLY_AVAILABLE
         };
         let newly_available = newly_available(before, &after, &mut state.revealed, most);
-        let (value, resources) = outcome.map_or((None, Vec::new()), |outcome| {
-            (outcome.output.value, outcome.output.resources)
-        });
+        let value = outcome.output.value;
+        let resources = outcome.output.resources;
         Ok(InvokeReport {
             succeeded: true,
             changed_view: if view { value.clone() } else { None },
@@ -1710,24 +1473,17 @@ impl Session {
     /// on its own) and followed with the others when the turn needs their
     /// results.
     ///
-    /// Only a plain legacy invocation qualifies, on a record no running step
-    /// acts on: an open, a view change (both change what is published next),
-    /// a step taking the previous step's result, text written in parts,
-    /// durable host steps and native tasks all run in order.
+    /// Only a plain invocation qualifies — a Task Center action or a native
+    /// task's child — on a record no running step acts on: an open, a view
+    /// change (both change what is published next) and a step taking the
+    /// previous step's result all run in order.
     fn start_independent(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
         state: &mut LoopState,
         call: &StreamedCall,
     ) -> Result<Started> {
-        if state.stepped
-            || self.native_task.is_some()
-            || state.in_flight.len() >= MAX_IN_FLIGHT
-            || state
-                .streaming
-                .as_ref()
-                .is_some_and(|streaming| streaming.index == call.index)
-        {
+        if state.in_flight.len() >= MAX_IN_FLIGHT {
             return Ok(Started::InOrder);
         }
         let prepared = match self.prepare_invoke(run, state, &call.input) {
@@ -1738,9 +1494,6 @@ impl Session {
         if tools::opened_app(&prepared.offer).is_some()
             || prepared.offer.descriptor.kind == tilo_actions::OperationKind::View
             || prepared.action.carries.is_some()
-            || self
-                .chunkable(&prepared.action, &prepared.arguments)
-                .is_some()
             || state
                 .in_flight
                 .iter()
@@ -1752,7 +1505,6 @@ impl Session {
             return Ok(Started::Cancelled("Cancelled before the next step".into()));
         }
         let index = state.completed + state.in_flight.len();
-        self.live_applying(&prepared.action, &prepared.arguments, None);
         self.chooser
             .mark(tilo_model_gateway::TraceEvent::ActionSubmitted, index);
         let started = self.start_task_invocation(run, &prepared.action, &prepared.arguments)?;
@@ -1802,10 +1554,7 @@ impl Session {
                 )
             })
             .unzip();
-        self.set_executing(true);
-        let followed_all = self.follow_invocations(run, &mut followed);
-        self.set_executing(false);
-        followed_all?;
+        self.follow_invocations(run, &mut followed)?;
         let mut cancelled = None;
         for ((call, offer, before, index), following) in started.into_iter().zip(followed) {
             self.step_settled();
@@ -1818,7 +1567,7 @@ impl Session {
                         opened: None,
                         index,
                     };
-                    self.invoke_succeeded(state, succeeded, Handoff::Legacy(outcome))?
+                    self.invoke_succeeded(state, succeeded, outcome)?
                 }
                 Err(TaskActionStop::Failed(message)) => refused_report(message),
                 Err(TaskActionStop::Cancelled(message)) => {
@@ -1849,290 +1598,6 @@ impl Session {
         Ok(cancelled.or(folded))
     }
 
-    /// Start or continue writing the text of the `invoke` call that is still
-    /// streaming. Only the call right after every completed one qualifies,
-    /// once every earlier call is handled and none failed, and only when its
-    /// operation declares an incremental Text parameter that is its only
-    /// parameter — so the streamed text is the whole call and cannot be
-    /// changed by an argument that arrives later. `Some` is a cancellation.
-    fn advance_streaming(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        state: &mut LoopState,
-        failed: bool,
-    ) -> Result<Option<String>> {
-        if failed || self.enrolled_active.is_none() {
-            return Ok(None);
-        }
-        let Some(turn) = &self.turn else {
-            return Ok(None);
-        };
-        if !turn.ready.is_empty() {
-            return Ok(None);
-        }
-        if state.streaming.is_none() {
-            let index = turn.completed;
-            if state.stream_decided.contains(&index) {
-                return Ok(None);
-            }
-            let Some(meta) = turn.metas.get(&index) else {
-                return Ok(None);
-            };
-            if meta.name != tools::INVOKE {
-                state.stream_decided.insert(index);
-                return Ok(None);
-            }
-            let Some(operation) = meta.operation.clone() else {
-                return Ok(None);
-            };
-            state.stream_decided.insert(index);
-            state.streaming = self.streaming_for(state, index, &operation);
-        }
-        self.run_stream_chunks(run, state, None)
-    }
-
-    /// Whether the `invoke` of `operation` at `index` can be written while it
-    /// streams, and how.
-    fn streaming_for(
-        &mut self,
-        state: &LoopState,
-        index: usize,
-        operation: &str,
-    ) -> Option<StreamingInvoke> {
-        let operation = state.revealed.resolve(operation).ok()?;
-        let operation = operation.as_str();
-        if state.step_index >= MAX_TASK_STEPS {
-            return None;
-        }
-        let catalogue = self.task_catalogue();
-        let offer = surface::find(&catalogue.offers, operation)?.clone();
-        if offer.wants_content()
-            || !matches!(
-                offer.descriptor.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::None
-            )
-        {
-            return None;
-        }
-        let (param, next) = self.continuation_of(&offer)?;
-        if offer.descriptor.params.len() != 1 {
-            return None;
-        }
-        let mut sample = serde_json::Map::new();
-        sample.insert(param.clone(), Value::String("…".into()));
-        let first = task_action_from_offer(&offer, sample).ok()?;
-        Some(StreamingInvoke {
-            index,
-            operation: operation.to_owned(),
-            param,
-            first,
-            next,
-            kind: offer.descriptor.kind,
-            committed: String::new(),
-            chunks: 0,
-            target: FIRST_CHUNK_TARGET,
-            budget: MAX_TASK_STEPS
-                .saturating_sub(state.step_index)
-                .clamp(1, crate::live::MAX_CHUNKS),
-            handoff: Handoff::None,
-            failed: None,
-            before: availability(&catalogue),
-        })
-    }
-
-    /// Commit every chunk of the streaming invoke's text that is ready:
-    /// from the live stream, or all of `complete` once the call is done.
-    /// Chunks run strictly in order through the durable step path. `Some`
-    /// is a cancellation.
-    fn run_stream_chunks(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        state: &mut LoopState,
-        complete: Option<&str>,
-    ) -> Result<Option<String>> {
-        loop {
-            let Some(mut streaming) = state.streaming.take() else {
-                return Ok(None);
-            };
-            if streaming.failed.is_some() {
-                state.streaming = Some(streaming);
-                return Ok(None);
-            }
-            let (text, done) = if let Some(text) = complete {
-                (text.to_owned(), true)
-            } else {
-                let Some(meta) = self
-                    .turn
-                    .as_ref()
-                    .and_then(|turn| turn.metas.get(&streaming.index))
-                else {
-                    state.streaming = Some(streaming);
-                    return Ok(None);
-                };
-                if meta
-                    .args
-                    .iter()
-                    .any(|(name, _, _)| *name != streaming.param)
-                {
-                    // Another argument: this call is not only its text.
-                    if streaming.chunks > 0 {
-                        streaming.failed =
-                            Some("the call carried an argument its streamed text did not".into());
-                        state.streaming = Some(streaming);
-                    }
-                    return Ok(None);
-                }
-                let Some((_, text, done)) = meta.args.first().cloned() else {
-                    state.streaming = Some(streaming);
-                    return Ok(None);
-                };
-                (text, done)
-            };
-            let Some(pending) = text.strip_prefix(streaming.committed.as_str()) else {
-                streaming.failed = Some("the final text differs from what was streamed".into());
-                state.streaming = Some(streaming);
-                return Ok(None);
-            };
-            let chunks_left = streaming.budget.saturating_sub(streaming.chunks);
-            let Some(len) = streaming_chunk_len(pending, streaming.target, chunks_left, done)
-            else {
-                state.streaming = Some(streaming);
-                return Ok(None);
-            };
-            let Some(chunk) = pending.get(..len).map(str::to_owned) else {
-                state.streaming = Some(streaming);
-                return Ok(None);
-            };
-            let pending = pending.to_owned();
-            let action = if streaming.chunks == 0 {
-                streaming.first.clone()
-            } else {
-                streaming.next.clone()
-            };
-            let arguments = with_param(&action.arguments, &streaming.param, &chunk);
-            self.live_applying(&streaming.first, &arguments, Some(&pending));
-            self.set_executing(true);
-            let began = ui::time::now();
-            let result = self.run_task_step(
-                run,
-                state.completed,
-                state.step_index,
-                &action,
-                &arguments,
-                &mut state.stepped,
-            );
-            self.set_executing(false);
-            state.step_index += 1;
-            match result? {
-                Ok(handoff) => {
-                    streaming.handoff = handoff;
-                    streaming.committed.push_str(&chunk);
-                    streaming.target = if streaming.chunks == 0 {
-                        STREAM_CHUNK_TARGET
-                    } else {
-                        crate::live::adapt_chunk_target(streaming.target, began.elapsed())
-                    };
-                    streaming.chunks += 1;
-                }
-                Err(TaskActionStop::Failed(message)) => streaming.failed = Some(message),
-                Err(TaskActionStop::Cancelled(message)) => {
-                    return Ok(Some(message.unwrap_or_else(|| {
-                        "Cancelled while an action was running".into()
-                    })));
-                }
-            }
-            state.streaming = Some(streaming);
-        }
-    }
-
-    /// The streaming invoke's call is complete: check it is exactly what was
-    /// streamed, write the rest, and report it like any invoke.
-    fn finish_streaming(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        state: &mut LoopState,
-        input: &Value,
-    ) -> Result<(InvokeReport, Option<String>)> {
-        let text = {
-            let Some(streaming) = state.streaming.as_mut() else {
-                return Ok((InvokeReport::default(), None));
-            };
-            match tools::read_invoke(input, &state.revealed) {
-                Ok(invocation)
-                    if invocation.operation == streaming.operation
-                        && invocation.arguments.len() == 1 =>
-                {
-                    invocation
-                        .arguments
-                        .get(&streaming.param)
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                }
-                _ => None,
-            }
-        };
-        match text {
-            Some(text) => {
-                if let Some(cancelled) = self.run_stream_chunks(run, state, Some(&text))? {
-                    state.streaming = None;
-                    return Ok((InvokeReport::default(), Some(cancelled)));
-                }
-            }
-            None => {
-                if let Some(streaming) = state.streaming.as_mut() {
-                    streaming.failed.get_or_insert_with(|| {
-                        "the final call differs from what was streamed".into()
-                    });
-                }
-            }
-        }
-        let Some(streaming) = state.streaming.take() else {
-            return Ok((InvokeReport::default(), None));
-        };
-        let index = state.completed;
-        if let Some(error) = streaming.failed {
-            return Ok((
-                InvokeReport {
-                    succeeded: false,
-                    error: Some(format!(
-                        "{error} ({} character(s) were already written)",
-                        streaming.committed.chars().count()
-                    )),
-                    ..InvokeReport::default()
-                },
-                None,
-            ));
-        }
-        self.live.set_preview(None);
-        self.chooser
-            .mark(tilo_model_gateway::TraceEvent::ActionSettled, index);
-        state.completed += 1;
-        let outcome = streaming.handoff.outcome().ok().flatten();
-        state.handoff = streaming.handoff;
-        let after = self.task_catalogue();
-        let newly_available = newly_available(
-            &streaming.before,
-            &after,
-            &mut state.revealed,
-            MOST_NEWLY_AVAILABLE,
-        );
-        let view = streaming.kind == tilo_actions::OperationKind::View;
-        let (value, resources) = outcome.map_or((None, Vec::new()), |outcome| {
-            (outcome.output.value, outcome.output.resources)
-        });
-        Ok((
-            InvokeReport {
-                succeeded: true,
-                changed_view: if view { value.clone() } else { None },
-                value: if view { None } else { value },
-                resources,
-                newly_available,
-                ..InvokeReport::default()
-            },
-            None,
-        ))
-    }
-
     /// Whether the model turn in flight has given the loop nothing to do
     /// yet: no complete call waiting, no later call begun, the turn not
     /// finished. Waiting then costs the task nothing.
@@ -2140,7 +1605,7 @@ impl Session {
         self.turn.as_ref().is_some_and(|turn| {
             turn.ready.is_empty()
                 && turn.finished.is_none()
-                && !turn.metas.contains_key(&turn.completed)
+                && !turn.begun.contains(&turn.completed)
         })
     }
 
@@ -2383,7 +1848,7 @@ mod tests {
     use tilo_actions::remote::RemoteActionMessage;
     use tilo_actions::{ActionContract, ActionParam, Availability, ParamType};
     use ui::collaboration::CollabRequest;
-    use ui::collaboration::{BrokerActionDescriptor, BrokerActionInput, BrokerActionSurface};
+    use ui::collaboration::{BrokerActionSurface, ExportedAction, ExportedInput};
     use uuid::Uuid;
 
     // -- A scripted model ------------------------------------------------
@@ -2563,8 +2028,8 @@ mod tests {
         params: Vec<ActionParam>,
         availability: Availability,
         tags: Vec<String>,
-    ) -> BrokerActionDescriptor {
-        BrokerActionDescriptor {
+    ) -> ExportedAction {
+        ExportedAction {
             semantic_identity: None,
             resource: DOC.into(),
             action: action.into(),
@@ -2579,12 +2044,8 @@ mod tests {
                 tags,
                 ..ActionContract::default()
             },
-            input: BrokerActionInput {
-                kind: "none".into(),
-                prompt: String::new(),
-                placeholder: String::new(),
-                wants_content: false,
-            },
+            view: None,
+            input: ExportedInput::None,
         }
     }
 
@@ -2617,16 +2078,11 @@ mod tests {
         native_applied_revision: u64,
         /// Cancel once this many steps have been applied.
         cancel_after_steps: Option<usize>,
-        /// How long the host takes to answer a report or a cancellation
-        /// poll; steps are answered at once.
-        report_delay: Duration,
+        /// How long the host takes to answer a cancellation poll; steps are
+        /// answered at once.
         cancel_delay: Duration,
         /// Host answers delivered so far, shared with the model script.
         host_answers: Arc<std::sync::atomic::AtomicUsize>,
-        /// Answers to reports (live updates and progress) delivered so far.
-        report_answers: usize,
-        /// [`Self::report_answers`] when each step arrived.
-        report_answers_at_steps: Vec<usize>,
         /// How the desktop's open of Writer behaves.
         opens: Opens,
         /// The record of a second Writer window (its own peer and record,
@@ -2652,6 +2108,13 @@ mod tests {
         >,
         /// Invocations the agent asked the host to cancel.
         cancelled: Vec<tilo_actions::InvocationId>,
+        /// Re-asks of a started native child (observations), and how many
+        /// of them were answered with nothing new.
+        observations: usize,
+        idle_observations: usize,
+        /// The host answers a re-ask at once even when it asks to be held,
+        /// as a host from before held re-asks does.
+        answers_reasks_at_once: bool,
     }
 
     /// How the desktop's open of Writer behaves in the fixture world.
@@ -2688,6 +2151,7 @@ mod tests {
             let mut surfaces = vec![
                 BrokerActionSurface {
                     peer_id: PEER,
+                    provider: None,
                     app_id: "so.tilo.word-processor".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: "doc-1".into(),
@@ -2756,11 +2220,12 @@ mod tests {
                 },
                 BrokerActionSurface {
                     peer_id: CHAT_PEER,
+                    provider: None,
                     app_id: "so.tilo.chat".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: String::new(),
                     live: true,
-                    actions: vec![BrokerActionDescriptor {
+                    actions: vec![ExportedAction {
                         semantic_identity: None,
                         resource: "chat.channel:general".into(),
                         resource_kind: "chat.channel".into(),
@@ -2787,7 +2252,7 @@ mod tests {
                 if !self.writer_opened {
                     surfaces.remove(0);
                 }
-                let open = |app: &str, title: &str| BrokerActionDescriptor {
+                let open = |app: &str, title: &str| ExportedAction {
                     semantic_identity: None,
                     resource: format!("{}{app}", tools::LAUNCHER_OPEN_PREFIX),
                     resource_kind: "desktop.application".into(),
@@ -2803,6 +2268,7 @@ mod tests {
                 };
                 surfaces.push(BrokerActionSurface {
                     peer_id: DESKTOP_PEER,
+                    provider: None,
                     app_id: "so.tilo.desktop".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: String::new(),
@@ -2818,7 +2284,7 @@ mod tests {
 
         /// The desktop's open of Writer: its first window, a second one, or
         /// — when opens land on it — the window already open. The committed
-        /// continuation; its receipt names the window when the world says so.
+        /// outcome; its receipt names the window when the world says so.
         fn open_writer(&mut self) -> Value {
             let record = if !self.writer_opened || self.opens == Opens::OntoOpenWindow {
                 "doc-1"
@@ -2846,7 +2312,7 @@ mod tests {
             serde_json::json!({ "succeeded": output })
         }
 
-        /// Apply one step; the committed continuation, and whether the
+        /// Apply one step; the committed result, and whether the
         /// catalogue changed.
         fn apply(
             &mut self,
@@ -2855,7 +2321,6 @@ mod tests {
         ) -> (Value, bool) {
             let nth = self.steps.iter().filter(|(seen, _)| seen == action).count();
             self.steps.push((action.into(), arguments.clone()));
-            self.report_answers_at_steps.push(self.report_answers);
             self.steps_at
                 .push(self.emitted.load(std::sync::atomic::Ordering::SeqCst));
             self.applied
@@ -2948,8 +2413,37 @@ mod tests {
         events: Vec<CollabEvent>,
         /// Host answers not delivered yet, with when they are due.
         held: Vec<(ui::time::Instant, CollabEvent)>,
+        /// Re-asks the host holds: request id, child, what the agent had
+        /// seen, and when the hold ends.
+        holding: Vec<HeldReask>,
         /// A catalogue still on its way, and the polls until it arrives.
         late: Option<(usize, CollabEvent)>,
+    }
+
+    /// A native re-ask the fake host holds until its child moves on.
+    struct HeldReask {
+        request_id: u64,
+        invocation: tilo_actions::InvocationId,
+        seen: tilo_actions::remote::UpdateMark,
+        until: ui::time::Instant,
+    }
+
+    /// The host reading a native run as cancelled cancels every child of it
+    /// still running (`cancel_native_children`).
+    fn cancel_native_children(world: &mut World) {
+        let now = ui::time::now();
+        let mut stopped = Vec::new();
+        for (invocation, (due, terminal)) in &mut world.settling {
+            if *due > now {
+                *due = now;
+                *terminal = tilo_actions::InvocationUpdate::Cancelled {
+                    invocation: *invocation,
+                    message: Some("Cancelled from Task Center".into()),
+                };
+                stopped.push(*invocation);
+            }
+        }
+        world.cancelled.extend(stopped);
     }
 
     impl Broker {
@@ -2976,6 +2470,9 @@ mod tests {
                         .retain(|direction| direction.revision > revision);
                     control
                 });
+                if cancelled && world.native_control.is_some() {
+                    cancel_native_children(&mut world);
+                }
                 (cancelled, world.cancel_delay, control)
             };
             if let Some(control) = control {
@@ -3004,17 +2501,12 @@ mod tests {
                 .into_iter()
                 .partition::<Vec<_>, _>(|(at, _)| *at <= now);
             self.held = later;
-            {
-                let mut world = self.world.borrow_mut();
-                world
-                    .host_answers
-                    .fetch_add(due.len(), std::sync::atomic::Ordering::SeqCst);
-                world.report_answers += due
-                    .iter()
-                    .filter(|(_, event)| matches!(event, CollabEvent::EnrolledTaskReply { .. }))
-                    .count();
-            }
+            self.world
+                .borrow()
+                .host_answers
+                .fetch_add(due.len(), std::sync::atomic::Ordering::SeqCst);
             self.events.extend(due.into_iter().map(|(_, event)| event));
+            self.answer_held_reasks(now);
             if let Some((polls, event)) = self.late.take() {
                 if polls == 0 {
                     self.events.push(event);
@@ -3025,11 +2517,14 @@ mod tests {
             std::mem::take(&mut self.events)
         }
         fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+            if self.observe_child(&request) {
+                self.sent.borrow_mut().push(request);
+                return Ok(());
+            }
             match &request {
                 CollabRequest::InvokeTaskAction {
                     request_id,
                     invocation,
-                    step: None,
                     action,
                     arguments,
                     ..
@@ -3040,20 +2535,20 @@ mod tests {
                 }
                 CollabRequest::InvokeTaskAction {
                     request_id,
+                    invocation,
                     action,
                     arguments,
                     ..
                 } => {
-                    let (continuation, republish) =
-                        self.world.borrow_mut().apply(action, arguments);
-                    let update = if continuation.get("succeeded").is_some() {
+                    let (outcome, republish) = self.world.borrow_mut().apply(action, arguments);
+                    let update = if let Some(output) = outcome.get("succeeded") {
                         tilo_actions::InvocationUpdate::Succeeded {
-                            invocation: tilo_actions::InvocationId(Uuid::from_u128(71)),
-                            output: tilo_actions::ActionOutput::default(),
+                            invocation: *invocation,
+                            output: serde_json::from_value(output.clone()).unwrap_or_default(),
                         }
                     } else {
                         tilo_actions::InvocationUpdate::Failed {
-                            invocation: tilo_actions::InvocationId(Uuid::from_u128(71)),
+                            invocation: *invocation,
                             error: tilo_actions::ActionFailure {
                                 code: "app.refused".into(),
                                 message: format!("{action} was refused"),
@@ -3065,8 +2560,6 @@ mod tests {
                     self.events.push(CollabEvent::TaskActionInvocationResult {
                         request_id: *request_id,
                         result: Ok((0, update)),
-                        continuation: Some(serde_json::to_vec(&continuation).unwrap()),
-                        retry_step: false,
                     });
                     // Republished after the result, as a real host does: the
                     // loop must take it up after a view step.
@@ -3100,17 +2593,6 @@ mod tests {
                         });
                     }
                 }
-                CollabRequest::ReportEnrolledTask { request_id, .. }
-                | CollabRequest::AcceptEnrolledTask { request_id, .. } => {
-                    let delay = self.world.borrow().report_delay;
-                    self.answer(
-                        delay,
-                        CollabEvent::EnrolledTaskReply {
-                            request_id: *request_id,
-                            result: Ok(()),
-                        },
-                    );
-                }
                 CollabRequest::RemoteAction {
                     message:
                         message @ (RemoteActionMessage::Observe { .. }
@@ -3125,6 +2607,107 @@ mod tests {
     }
 
     impl Broker {
+        /// The state of a started child as the host holds it now.
+        fn child_state(
+            &self,
+            invocation: tilo_actions::InvocationId,
+        ) -> tilo_actions::InvocationUpdate {
+            let world = self.world.borrow();
+            match world.settling.get(&invocation) {
+                Some((due, terminal)) if *due <= ui::time::now() => terminal.clone(),
+                _ => tilo_actions::InvocationUpdate::Accepted { invocation },
+            }
+        }
+
+        /// Answer a native task's re-ask of a started child (by its stable
+        /// id) with the child's state, as `native_task_observation` does: at
+        /// once, or — when the re-ask asks to be held — once the child moves
+        /// past what the agent saw, the run is cancelled, or the hold ends.
+        /// `false` for any other request.
+        fn observe_child(&mut self, request: &CollabRequest) -> bool {
+            let &CollabRequest::InvokeTaskAction {
+                request_id,
+                invocation,
+                wait,
+                ..
+            } = request
+            else {
+                return false;
+            };
+            if !self.world.borrow().settling.contains_key(&invocation) {
+                return false;
+            }
+            let update = self.child_state(invocation);
+            let held = wait.filter(|wait| {
+                !self.world.borrow().answers_reasks_at_once
+                    && !update.is_terminal()
+                    && tilo_actions::remote::UpdateMark::of(&update) == wait.seen
+            });
+            match held {
+                Some(wait) => self.holding.push(HeldReask {
+                    request_id,
+                    invocation,
+                    seen: wait.seen,
+                    until: ui::time::now() + Duration::from_millis(u64::from(wait.wait_ms)),
+                }),
+                None => self.answer_reask(request_id, invocation, wait.map(|wait| wait.seen)),
+            }
+            true
+        }
+
+        /// Answer the re-ask `request_id` with the child's state now.
+        fn answer_reask(
+            &mut self,
+            request_id: u64,
+            invocation: tilo_actions::InvocationId,
+            seen: Option<tilo_actions::remote::UpdateMark>,
+        ) {
+            let update = self.child_state(invocation);
+            {
+                let mut world = self.world.borrow_mut();
+                world.observations += 1;
+                let news = update.is_terminal()
+                    || seen
+                        .is_some_and(|seen| tilo_actions::remote::UpdateMark::of(&update) != seen);
+                if !news {
+                    world.idle_observations += 1;
+                }
+            }
+            self.events.push(CollabEvent::TaskActionInvocationResult {
+                request_id,
+                result: Ok((0, update)),
+            });
+        }
+
+        /// Answer every held re-ask whose child moved on or whose hold
+        /// ended; first sample the run's cancellation, as the host does
+        /// while it holds re-asks.
+        fn answer_held_reasks(&mut self, now: ui::time::Instant) {
+            if self.holding.is_empty() {
+                return;
+            }
+            {
+                let mut world = self.world.borrow_mut();
+                if world
+                    .cancel_after_steps
+                    .is_some_and(|steps| world.steps.len() >= steps)
+                {
+                    cancel_native_children(&mut world);
+                }
+            }
+            for held in std::mem::take(&mut self.holding) {
+                let update = self.child_state(held.invocation);
+                if update.is_terminal()
+                    || tilo_actions::remote::UpdateMark::of(&update) != held.seen
+                    || now >= held.until
+                {
+                    self.answer_reask(held.request_id, held.invocation, Some(held.seen));
+                } else {
+                    self.holding.push(held);
+                }
+            }
+        }
+
         /// Answer an observation of, or a request to cancel, a legacy
         /// invocation, as the action host does.
         fn answer_remote(&mut self, message: &RemoteActionMessage) {
@@ -3186,13 +2769,11 @@ mod tests {
                 self.events.push(CollabEvent::TaskActionInvocationResult {
                     request_id,
                     result: Err(format!("permission denied: the agent may not {action}")),
-                    continuation: None,
-                    retry_step: false,
                 });
                 return;
             }
-            let (continuation, _) = self.world.borrow_mut().apply(action, arguments);
-            let terminal = if continuation.get("succeeded").is_some() {
+            let (outcome, _) = self.world.borrow_mut().apply(action, arguments);
+            let terminal = if outcome.get("succeeded").is_some() {
                 tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
                     output: tilo_actions::ActionOutput::default(),
@@ -3218,9 +2799,11 @@ mod tests {
             self.events.push(CollabEvent::TaskActionInvocationResult {
                 request_id,
                 result: Ok((0, tilo_actions::InvocationUpdate::Accepted { invocation })),
-                continuation: None,
-                retry_step: false,
             });
+            if self.world.borrow().native_control.is_some() {
+                // A native child is observed by re-asking, never pushed.
+                return;
+            }
             self.answer(
                 due.saturating_duration_since(now),
                 CollabEvent::RemoteAction {
@@ -3256,10 +2839,6 @@ mod tests {
         execution_fixture(title, world, turns, pace, None)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one fixture wires the scripted model, the fake broker peer and the real Session"
-    )]
     fn execution_fixture(
         title: &str,
         world: World,
@@ -3288,38 +2867,20 @@ mod tests {
             events: Vec::new(),
             held: Vec::new(),
             late: None,
+            holding: Vec::new(),
         });
         let mut run = runtime_collab::TaskRunEnvelope {
             version: 1,
             task_id: "task:loop".into(),
             title: title.into(),
+            instruction: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::Model,
             execution_budget: budget,
             action_context: serde_json::Value::Null,
         };
-        run.action_context = serde_json::json!({"purpose": null, "group": {"kind": "task", "id": run.task_id, "label": run.task_id}});
-        let mut custody = runtime_collab::EnrolledRecipientCustody::new(
-            "agent-1",
-            "launch-1",
-            "epoch-1",
-            "channel-1",
-        )
-        .unwrap();
-        let envelope = runtime_collab::EnrolledTaskEnvelope {
-            version: 1,
-            message_id: "message-1".into(),
-            task_id: run.task_id.clone(),
-            run_id: "run-1".into(),
-            launch_id: "launch-1".into(),
-            runtime_epoch: "epoch-1".into(),
-            recipient_agent: "agent-1".into(),
-            channel_lease: "channel-1".into(),
-            history: None,
-            task: run.clone(),
-        };
-        let acceptance = custody.accept(&envelope).unwrap().acceptance;
+        bind_context(&mut run);
         let surfaces = world.borrow().surfaces();
         let session = Session {
             cfg: Config {
@@ -3330,12 +2891,8 @@ mod tests {
                 cluster: Uuid::from_u128(1),
                 record: None,
                 name: "agent-1".into(),
-                pace: Duration::ZERO,
-                once: false,
                 model: true,
                 model_timeout: Duration::from_secs(5),
-                await_document: Duration::ZERO,
-                settle: Duration::ZERO,
                 permissions: ui::permissions::PermissionContext::agent_granted_at(
                     "agent-1",
                     &[],
@@ -3349,14 +2906,11 @@ mod tests {
                 agent_provider_config::ProviderProtocol::OpenAiCompatible,
                 Arc::new(Scripted(script.clone())),
             ),
-            enrolled_custody: Some(custody),
-            enrolled_active: Some(acceptance),
-            enrolled_sequence: 0,
+            managed: false,
             task_deadline: None,
             native_task: None,
             broker_surfaces: surfaces,
             next_broker_request: 1,
-            live: crate::live::LivePublisher::default(),
             memory: Memory::default(),
             broker_revision: 0,
             catalogue_cache: None,
@@ -3370,6 +2924,17 @@ mod tests {
             sent,
             script,
         }
+    }
+
+    /// Bind `run`'s action context to its title and id, as the broker does.
+    fn bind_context(run: &mut runtime_collab::TaskRunEnvelope) {
+        run.action_context = serde_json::to_value(
+            tilo_actions::ActionContext::default()
+                .with_purpose(run.title.as_str())
+                .with_group(run.task_id.as_str(), run.title.as_str(), "task"),
+        )
+        .unwrap();
+        super::super::validate_task_run(run).unwrap();
     }
 
     fn op(action: &str) -> String {
@@ -3389,6 +2954,8 @@ mod tests {
             serde_json::json!({"reply": reply, "done": done}),
         )
     }
+
+    mod native_pipeline;
 
     fn native_fixture(latest: u64) -> Fixture {
         let control = runtime_collab::TaskRunControl {
@@ -3416,20 +2983,7 @@ mod tests {
             },
             vec![turn(&[finish("Reviewed instructions", true)], 24)],
         );
-        fixture.session.enrolled_active = None;
-        fixture.session.enrolled_custody = None;
         fixture.run.lease = "native:00000000000000000000000000000000:0".into();
-        fixture.run.action_context = serde_json::to_value(
-            tilo_actions::ActionContext::default()
-                .with_purpose(fixture.run.title.as_str())
-                .with_group(
-                    fixture.run.task_id.as_str(),
-                    fixture.run.title.as_str(),
-                    "task",
-                ),
-        )
-        .unwrap();
-        super::super::validate_task_run(&fixture.run).unwrap();
         fixture
     }
 
@@ -3452,6 +3006,86 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn native_model_receives_the_full_private_instruction_not_a_truncated_title() {
+        let mut fixture = native_fixture(0);
+        let instruction =
+            "Inspect every release-note section and preserve the complete compatibility matrix. "
+                .repeat(6);
+        assert!(instruction.chars().count() > 240);
+        fixture.run.instruction = Some(instruction.clone());
+        fixture.session.run_task(&fixture.run).unwrap();
+        let bodies = fixture.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert!(bodies[0].to_string().contains(instruction.trim()));
+        drop(bodies);
+        assert!(fixture.session.memory.render().is_empty());
+    }
+
+    #[test]
+    fn native_tasks_isolate_private_memory_in_actual_model_requests() {
+        let mut fixture = native_fixture(0);
+        fixture.session.memory.remember(
+            "legacy-private-prompt-secret",
+            vec!["legacy-private-action-secret".into()],
+            "legacy-private-result-secret",
+        );
+        let legacy = fixture.session.memory.render();
+        let first_instruction = "first-native-private-instruction-secret";
+        fixture.run.instruction = Some(first_instruction.into());
+        *fixture.script.turns.lock().unwrap() = vec![turn(
+            &[finish("first-native-private-result-secret", true)],
+            24,
+        )]
+        .into();
+        fixture.session.run_task(&fixture.run).unwrap();
+        assert_eq!(fixture.session.memory.render(), legacy);
+
+        fixture.run.task_id = "task:second-private-scope".into();
+        fixture.run.run_id += 1;
+        fixture.run.action_context = serde_json::to_value(
+            tilo_actions::ActionContext::default()
+                .with_purpose(fixture.run.title.as_str())
+                .with_group(
+                    fixture.run.task_id.as_str(),
+                    fixture.run.title.as_str(),
+                    "task",
+                ),
+        )
+        .unwrap();
+        fixture
+            .world
+            .borrow_mut()
+            .native_control
+            .as_mut()
+            .unwrap()
+            .task_id = fixture.run.task_id.clone();
+        let second_instruction = "second-native-private-instruction-secret";
+        fixture.run.instruction = Some(second_instruction.into());
+        *fixture.script.turns.lock().unwrap() = vec![turn(
+            &[finish("second-native-private-result-secret", true)],
+            24,
+        )]
+        .into();
+        fixture.session.run_task(&fixture.run).unwrap();
+        assert_eq!(fixture.session.memory.render(), legacy);
+
+        let bodies = fixture.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "both tasks must reach the model");
+        let first = bodies[0].to_string();
+        let second = bodies[1].to_string();
+        drop(bodies);
+        assert!(first.contains(first_instruction));
+        assert!(second.contains(second_instruction));
+        for request in [&first, &second] {
+            assert!(!request.contains("legacy-private-prompt-secret"));
+            assert!(!request.contains("legacy-private-action-secret"));
+            assert!(!request.contains("legacy-private-result-secret"));
+        }
+        assert!(!second.contains(first_instruction));
+        assert!(!second.contains("first-native-private-result-secret"));
     }
 
     #[test]
@@ -3500,7 +3134,7 @@ mod tests {
         sent.iter()
             .rev()
             .find_map(|request| match request {
-                CollabRequest::ReportEnrolledTask { update, .. }
+                CollabRequest::ReportTaskRun { update, .. }
                     if !matches!(update, runtime_collab::TaskRunUpdate::Progress { .. }) =>
                 {
                     Some(update.clone())
@@ -3508,18 +3142,6 @@ mod tests {
                 _ => None,
             })
             .expect("a terminal report")
-    }
-
-    fn live_updates(sent: &[CollabRequest]) -> Vec<crate::live::AgentLiveUpdate> {
-        sent.iter()
-            .filter_map(|request| match request {
-                CollabRequest::ReportEnrolledTask {
-                    update: runtime_collab::TaskRunUpdate::Progress { message },
-                    ..
-                } => crate::live::AgentLiveUpdate::decode(message),
-                _ => None,
-            })
-            .collect()
     }
 
     fn tool_names(body: &Value) -> Vec<String> {
@@ -3575,14 +3197,11 @@ mod tests {
             ["read-text", "select-block", "toggle-mark"]
         );
         let sent = f.sent.borrow();
-        let steps: Vec<Option<u32>> = sent
+        let invocations = sent
             .iter()
-            .filter_map(|request| match request {
-                CollabRequest::InvokeTaskAction { step, .. } => Some(*step),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(steps, [Some(0), Some(1), Some(2)], "one durable step each");
+            .filter(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
+            .count();
+        assert_eq!(invocations, 3, "one invocation each");
         assert_eq!(
             terminal(&sent),
             runtime_collab::TaskRunUpdate::Succeeded {
@@ -3910,12 +3529,15 @@ mod tests {
                 ],
                 24,
             )],
-            Some(Duration::from_secs(1)),
+            // The provider's first event comes long after Stop is seen at the
+            // third cancellation poll (about 600 ms), so a loaded machine's
+            // slower polls still finish well before it.
+            Some(Duration::from_secs(4)),
         );
         let started = ui::time::now();
         f.session.run_task(&f.run).unwrap();
         assert!(
-            started.elapsed() < Duration::from_millis(700),
+            started.elapsed() < Duration::from_secs(2),
             "Stop must not wait for the provider's first event"
         );
         assert_eq!(f.script.bodies.lock().unwrap().len(), 1);
@@ -3932,14 +3554,13 @@ mod tests {
     }
 
     /// The model call is the long pole, so the first turn is asked before
-    /// the host has answered anything: the live update, the progress line and
-    /// the cancellation poll all ride along without a wait.
+    /// the host has answered anything: the progress line and the
+    /// cancellation poll ride along without a wait.
     #[test]
     fn the_first_model_turn_is_asked_before_any_host_answer_arrives() {
         let mut f = fixture(
             "say hello",
             World {
-                report_delay: Duration::from_millis(300),
                 cancel_delay: Duration::from_millis(300),
                 ..World::default()
             },
@@ -3953,101 +3574,22 @@ mod tests {
             "the first model request must not wait for any host answer"
         );
         let sent = f.sent.borrow();
-        let first_live = sent
-            .iter()
-            .position(|request| {
-                matches!(request, CollabRequest::ReportEnrolledTask {
-                    update: runtime_collab::TaskRunUpdate::Progress { message }, ..
-                } if crate::live::AgentLiveUpdate::decode(message).is_some())
-            })
-            .expect("the live view was published");
-        let first_poll = sent
-            .iter()
-            .position(|request| matches!(request, CollabRequest::TaskRunCancellation { .. }))
-            .expect("cancellation was polled");
-        assert!(first_live < first_poll, "{sent:?}");
         assert!(
-            sent.iter().any(
-                |request| matches!(request, CollabRequest::ReportEnrolledTask {
+            sent.iter()
+                .any(|request| matches!(request, CollabRequest::TaskRunCancellation { .. })),
+            "cancellation was polled"
+        );
+        assert!(
+            sent.iter()
+                .any(|request| matches!(request, CollabRequest::ReportTaskRun {
                 update: runtime_collab::TaskRunUpdate::Progress { message }, ..
-            } if message == "Reviewing the permission-filtered action catalogue")
-            ),
+            } if message == "Reviewing the permission-filtered action catalogue")),
             "the progress line is still reported, in order"
         );
         assert_eq!(
             terminal(&sent),
             runtime_collab::TaskRunUpdate::Succeeded {
                 message: "Hello!".into()
-            }
-        );
-        let sequences: Vec<u64> = sent
-            .iter()
-            .filter_map(|request| match request {
-                CollabRequest::ReportEnrolledTask { sequence, .. } => Some(*sequence),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            sequences.windows(2).all(|pair| pair[1] == pair[0] + 1),
-            "reports keep their order and sequence: {sequences:?}"
-        );
-    }
-
-    /// A step is sent the moment its call is ready, not after the host has
-    /// answered the live update shown for it.
-    #[test]
-    fn a_slow_live_update_answer_does_not_hold_back_the_next_step() {
-        let mut f = fixture(
-            "write hello",
-            World {
-                report_delay: Duration::from_millis(400),
-                ..World::default()
-            },
-            vec![turn(
-                &[
-                    invoke("append-paragraph", &serde_json::json!({"text": "Hello"})),
-                    finish("Done", true),
-                ],
-                16,
-            )],
-        );
-        let began = ui::time::now();
-        f.session.run_task(&f.run).unwrap();
-
-        let world = f.world.borrow();
-        assert_eq!(world.blocks, [("p1".to_string(), "Hello".to_string())]);
-        assert!(
-            !world.report_answers_at_steps.is_empty()
-                && world
-                    .report_answers_at_steps
-                    .iter()
-                    .all(|answers| *answers == 0),
-            "every step reached the host before any live or progress answer: {:?}",
-            world.report_answers_at_steps
-        );
-        let sent = f.sent.borrow();
-        let step = sent
-            .iter()
-            .position(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
-            .unwrap();
-        let applying = sent
-            .iter()
-            .position(|request| {
-                matches!(request, CollabRequest::ReportEnrolledTask {
-                update: runtime_collab::TaskRunUpdate::Progress { message }, ..
-            } if crate::live::AgentLiveUpdate::decode(message)
-                .is_some_and(|live| live.state == crate::live::LiveState::Applying))
-            })
-            .expect("the step was shown as applying");
-        assert!(applying < step, "the live view still precedes its step");
-        assert!(
-            began.elapsed() < Duration::from_millis(400) * 3,
-            "only the terminal report waits for the host"
-        );
-        assert_eq!(
-            terminal(&sent),
-            runtime_collab::TaskRunUpdate::Succeeded {
-                message: "Done".into()
             }
         );
     }
@@ -4099,11 +3641,10 @@ mod tests {
         ));
     }
 
-    /// One turn does the whole job: the paragraph is written as ordered
-    /// chunk steps (the word processor's writing, `live::continuation`), its text previewed
-    /// while it streams, and the reply finishes the task — no second turn.
+    /// One turn does the whole job: the paragraph is written in one step
+    /// and the reply finishes the task — no second turn.
     #[test]
-    fn a_single_turn_writes_streams_and_finishes() {
+    fn a_single_turn_writes_and_finishes() {
         let text = "The ocean covers more than seventy percent of our planet, holding \
                     ninety-seven percent of its water and most of its life, from reefs \
                     to trenches.";
@@ -4132,7 +3673,7 @@ mod tests {
         assert_eq!(
             actions,
             ["append-paragraph"],
-            "a complete paragraph is one durable step, not chunk round trips"
+            "a complete paragraph is one step"
         );
         let sent = f.sent.borrow();
         assert_eq!(
@@ -4141,26 +3682,6 @@ mod tests {
                 message: "Here you go: a paragraph about the ocean.".into()
             }
         );
-        let updates = live_updates(&sent);
-        assert!(
-            updates
-                .iter()
-                .any(|update| update.state == crate::live::LiveState::Applying
-                    && update
-                        .preview
-                        .as_ref()
-                        .is_some_and(|preview| preview.text == text
-                            && preview.app == "so.tilo.word-processor"
-                            && preview.record == "doc-1")),
-            "the uncommitted text is previewed at its target"
-        );
-        assert!(
-            updates
-                .iter()
-                .any(|update| update.reply.as_ref().is_some_and(|reply| reply.done)),
-            "the reply is published before the task ends"
-        );
-        assert_eq!(updates.last().unwrap().state, crate::live::LiveState::Done);
     }
 
     /// A failed step stops the rest of its turn and keeps the turn's `plan`
@@ -4401,36 +3922,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_streamed_chunk_waits_for_a_word_boundary_until_the_text_is_complete() {
-        assert_eq!(streaming_chunk_len("", 32, 12, false), None);
-        assert_eq!(streaming_chunk_len("The ocean covers", 32, 12, false), None);
-        let pending = "The ocean covers more than seventy percent of";
-        let cut = streaming_chunk_len(pending, 32, 12, false).unwrap();
-        assert!(
-            pending[..cut].ends_with(' ') && (21..=43).contains(&cut),
-            "{cut}"
-        );
-        assert_eq!(
-            streaming_chunk_len("unbrokenwordunbrokenwordunbrokenwordxx", 32, 12, false),
-            None
-        );
-        assert_eq!(
-            streaming_chunk_len(pending, 32, 1, false),
-            None,
-            "the last chunk waits"
-        );
-        assert_eq!(streaming_chunk_len("tail", 32, 0, true), Some(4));
-        // Once the text is complete, its whole pending tail is one step,
-        // whatever the streaming chunk target.
-        let tail = "and most of its life, from sunlit reefs to the dark trenches. ".repeat(12);
-        assert_eq!(streaming_chunk_len(&tail, 32, 12, true), Some(tail.len()));
-        assert_eq!(
-            streaming_chunk_len(&tail, STREAM_CHUNK_TARGET, 12, true),
-            Some(tail.len())
-        );
-    }
-
     /// Two messages to the same running agent both run and both succeed —
     /// including one the model could not complete — and the agent is still
     /// listening afterwards. A request the agent cannot do is answered in its
@@ -4459,17 +3950,6 @@ mod tests {
                 turn(&[finish("Hello again!", true)], 64),
             ],
         );
-        // A fresh custody, as a launched agent has, taking real envelopes.
-        f.session.enrolled_custody = Some(
-            runtime_collab::EnrolledRecipientCustody::new(
-                "agent-1",
-                "launch-1",
-                "epoch-1",
-                "channel-1",
-            )
-            .unwrap(),
-        );
-        f.session.enrolled_active = None;
         for (index, title) in ["write a line", "make a note", "say hi"]
             .into_iter()
             .enumerate()
@@ -4478,32 +3958,20 @@ mod tests {
             task.task_id = format!("task:{index}");
             task.title = title.into();
             task.run_id = 100 + u64::try_from(index).unwrap();
-            task.action_context = serde_json::json!({"purpose": null, "group": {"kind": "task", "id": task.task_id, "label": task.task_id}});
-            let envelope = runtime_collab::EnrolledTaskEnvelope {
-                version: 1,
-                message_id: format!("message-{index}"),
-                task_id: task.task_id.clone(),
-                run_id: format!("run-{index}"),
-                launch_id: "launch-1".into(),
-                runtime_epoch: "epoch-1".into(),
-                recipient_agent: "agent-1".into(),
-                channel_lease: "channel-1".into(),
-                history: None,
-                task,
-            };
-            f.session.run_enrolled_task(&envelope).unwrap();
-            assert!(
-                f.session.enrolled_active.is_none(),
-                "ready for the next message"
-            );
+            bind_context(&mut task);
+            f.session.run_task(&task).unwrap();
         }
         let terminals: Vec<runtime_collab::TaskRunUpdate> = f
             .sent
             .borrow()
             .iter()
             .filter_map(|request| match request {
-                CollabRequest::ReportEnrolledTask { update, .. }
-                    if !matches!(update, runtime_collab::TaskRunUpdate::Progress { .. }) =>
+                CollabRequest::ReportTaskRun { update, .. }
+                    if !matches!(
+                        update,
+                        runtime_collab::TaskRunUpdate::Progress { .. }
+                            | runtime_collab::TaskRunUpdate::Accepted
+                    ) =>
                 {
                     Some(update.clone())
                 }
@@ -4529,7 +3997,15 @@ mod tests {
             .sent
             .borrow()
             .iter()
-            .filter(|request| matches!(request, CollabRequest::AcceptEnrolledTask { .. }))
+            .filter(|request| {
+                matches!(
+                    request,
+                    CollabRequest::ReportTaskRun {
+                        update: runtime_collab::TaskRunUpdate::Accepted,
+                        ..
+                    }
+                )
+            })
             .count();
         assert_eq!(accepted, 3);
     }
@@ -4628,6 +4104,7 @@ mod tests {
         for title in ["post hello", "what did you just do?"] {
             let mut run = f.run.clone();
             run.title = title.into();
+            bind_context(&mut run);
             f.session.run_task(&run).unwrap();
         }
         let bodies = f.script.bodies.lock().unwrap().clone();
@@ -4695,6 +4172,7 @@ mod tests {
         for title in ["post hello", "what did you just do?"] {
             let mut run = f.run.clone();
             run.title = title.into();
+            bind_context(&mut run);
             f.session.run_task(&run).unwrap();
         }
         let bodies = f.script.bodies.lock().unwrap().clone();
@@ -4741,137 +4219,6 @@ mod tests {
         );
         // Within a task, the first turn is replayed unchanged.
         assert_eq!(bodies[2]["messages"][0], bodies[1]["messages"][0]);
-    }
-
-    /// After a restart the process knows nothing; the host's history in the
-    /// envelope tells it what it wrote (its action log carries the text), so
-    /// "undo what you wrote" is done with ordinary operations — here erasing
-    /// its own paragraph backwards from its caret — and the question about
-    /// its earlier work is answered from the same log.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario follows the agent's writing through history restore end to end"
-    )]
-    fn undo_finds_the_agents_own_writing_in_the_restored_history() {
-        let written = "Thunderstorms build on hot afternoons.";
-        let history = serde_json::json!({
-            "v": 1,
-            "tasks": [
-                {
-                    "at_ms": 1,
-                    "request": "Add a short paragraph at the end of the Writer document about thunderstorms",
-                    "reply": "Added a paragraph about thunderstorms.",
-                    "outcome": "succeeded",
-                    "steps": [
-                        {"app": "so.tilo.word-processor", "record": "doc-1", "resource": DOC,
-                         "action": "new-paragraph", "outcome": "succeeded"},
-                        {"app": "so.tilo.word-processor", "record": "doc-1", "resource": DOC,
-                         "action": "type-text", "args": serde_json::json!({"text": written}).to_string(),
-                         "outcome": "succeeded"}
-                    ]
-                },
-                {
-                    "at_ms": 2,
-                    "request": "Also post a short hello in the Chat general channel",
-                    "reply": "Posted hello in #general.",
-                    "outcome": "succeeded",
-                    "steps": [
-                        {"app": "so.tilo.chat", "resource": "chat.channel:general",
-                         "action": "post", "args": "{\"value\":\"Hello!\"}", "outcome": "succeeded"}
-                    ]
-                }
-            ]
-        })
-        .to_string();
-        let world = World {
-            blocks: vec![
-                ("p1".into(), "Existing text.".into()),
-                ("p2".into(), written.into()),
-            ],
-            ..World::default()
-        };
-        let count = written.chars().count() + 1;
-        let mut f = fixture(
-            "ignored",
-            world,
-            vec![
-                turn(
-                    &[invoke_replying(
-                        "erase-text",
-                        &serde_json::json!({"direction": "backward", "count": count}),
-                        "Removed the thunderstorm paragraph I wrote.",
-                    )],
-                    64,
-                ),
-                turn(
-                    &[finish(
-                        "I added a thunderstorm paragraph in Writer, posted hello in #general, \
-                         and then removed that paragraph again.",
-                        true,
-                    )],
-                    64,
-                ),
-            ],
-        );
-        // A fresh process, as after a host restart.
-        f.session.memory = Memory::default();
-        f.session.enrolled_custody = Some(
-            runtime_collab::EnrolledRecipientCustody::new(
-                "agent-1",
-                "launch-1",
-                "epoch-1",
-                "channel-1",
-            )
-            .unwrap(),
-        );
-        f.session.enrolled_active = None;
-        for (index, title) in [
-            "undo what you wrote in Writer",
-            "What have you done so far?",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let mut task = f.run.clone();
-            task.task_id = format!("task:{index}");
-            task.run_id = 200 + u64::try_from(index).unwrap();
-            task.title = title.into();
-            task.action_context = serde_json::json!({"purpose": null, "group": {"kind": "task", "id": task.task_id, "label": task.task_id}});
-            let envelope = runtime_collab::EnrolledTaskEnvelope {
-                version: 1,
-                message_id: format!("message-{index}"),
-                task_id: task.task_id.clone(),
-                run_id: format!("run-{index}"),
-                launch_id: "launch-1".into(),
-                runtime_epoch: "epoch-1".into(),
-                recipient_agent: "agent-1".into(),
-                channel_lease: "channel-1".into(),
-                // The host re-sends the durable history with every task; the
-                // second one also knows the undo (here: the same base, the
-                // process adds its own last exchange on top).
-                history: (index == 0).then(|| history.clone()),
-                task,
-            };
-            f.session.run_enrolled_task(&envelope).unwrap();
-        }
-        let world = f.world.borrow();
-        assert_eq!(world.blocks.len(), 1, "{:?}", world.blocks);
-        assert_eq!(world.blocks[0].1, "Existing text.");
-        let bodies = f.script.bodies.lock().unwrap().clone();
-        let first = bodies[0]["messages"][1]["content"].as_str().unwrap();
-        assert!(
-            first.contains(written),
-            "the log carries what it wrote: {first}"
-        );
-        assert!(first.contains("so.tilo.chat post"), "{first}");
-        let second = bodies[1]["messages"][1]["content"].as_str().unwrap();
-        assert!(
-            second.contains("Person: undo what you wrote in Writer"),
-            "{second}"
-        );
-        assert!(second.contains("Erase text"), "{second}");
-        assert!(second.contains("Also post a short hello"), "{second}");
     }
 
     fn post(message: &str) -> (&'static str, Value) {
@@ -5280,22 +4627,6 @@ mod tests {
 
     // -- Independent invokes, run alongside each other ---------------------
 
-    /// A Task Center run (no enrolled custody, no durable step ledger): its
-    /// invokes are legacy broker invocations, followed by this agent.
-    fn legacy_fixture(title: &str, world: World, turns: Vec<Vec<TurnEvent>>) -> Fixture {
-        let mut f = fixture(title, world, turns);
-        f.session.enrolled_active = None;
-        f.session.enrolled_custody = None;
-        f.run.action_context = serde_json::to_value(
-            tilo_actions::ActionContext::default()
-                .with_purpose(title)
-                .with_group(f.run.task_id.as_str(), title, "task"),
-        )
-        .unwrap();
-        super::super::validate_task_run(&f.run).unwrap();
-        f
-    }
-
     /// An `invoke` of `action` on `resource` in `peer`'s record; marked
     /// independent of the steps before it when `independent`.
     fn invoke_on(
@@ -5388,7 +4719,7 @@ mod tests {
     #[test]
     fn independent_invokes_on_different_records_run_alongside_each_other() {
         let settle = Duration::from_millis(300);
-        let mut f = legacy_fixture(
+        let mut f = fixture(
             "post the standup change and start the agenda and the minutes",
             World {
                 second_window: Some("doc-2"),
@@ -5438,7 +4769,7 @@ mod tests {
     #[test]
     fn a_step_that_may_read_earlier_writes_waits_for_them() {
         let settle = Duration::from_millis(150);
-        let mut f = legacy_fixture(
+        let mut f = fixture(
             "post, write a heading, then type under it and confirm in Chat",
             World {
                 settle_after: Some(settle),
@@ -5509,7 +4840,7 @@ mod tests {
     /// still running, not only the one being waited on.
     #[test]
     fn cancelling_the_task_cancels_every_invoke_in_flight() {
-        let mut f = legacy_fixture(
+        let mut f = fixture(
             "post the change and start the agenda",
             World {
                 settle_after: Some(Duration::from_secs(20)),
@@ -5569,7 +4900,7 @@ mod tests {
     /// independent is still skipped after a failure.
     #[test]
     fn a_refused_independent_invoke_does_not_stop_the_others() {
-        let mut f = legacy_fixture(
+        let mut f = fixture(
             "post the change and start the agenda",
             World {
                 settle_after: Some(Duration::from_millis(100)),
@@ -5647,7 +4978,7 @@ mod tests {
             .and_then(|reps| reps.parse().ok())
             .unwrap_or(3);
         let run_once = |independent: bool| {
-            let mut f = legacy_fixture(
+            let mut f = fixture(
                 "post the standup change and start the agenda and the minutes",
                 World {
                     second_window: Some("doc-2"),

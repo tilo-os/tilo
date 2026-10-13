@@ -52,9 +52,45 @@ impl LocalCaller {
         owner.validate()?;
         Ok(owner)
     }
-    fn owner(&self) -> InvocationOwner {
+    pub(super) fn owner(&self) -> InvocationOwner {
         self.owner.clone()
     }
+    /// Check the exact host action against the live authenticated connection,
+    /// including its device ceiling. Call inside the owner's serialized admission.
+    pub(super) fn authorize_host_action(
+        &self,
+        state: &CapnpBrokerState,
+        room: &str,
+        requirement: &crate::services::NativeTaskActionRequirement,
+    ) -> Result<Vec<tilo_action_policy::GrantId>, String> {
+        let actor = self.current(state)?.broker_actor();
+        let now = state.checked_policy_time(Some(&self.time))?.1 / 1_000_000_000;
+        let spent = state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .decide_in_room(room, |workspace| {
+                let workspace = workspace.ok_or("workspace no longer hosted")?;
+                let (answer, spent) = actor.action_verdict_in(
+                    workspace,
+                    &requirement.app,
+                    (
+                        &requirement.resource_kind,
+                        &requirement.resource,
+                        &requirement.action,
+                    ),
+                    &requirement.need,
+                    now,
+                );
+                if !answer.admits(actor.direct()) {
+                    return Err("caller no longer authorized for invocation".to_string());
+                }
+                Ok(spent)
+            })??;
+        state.checked_policy_time(Some(&self.time))?;
+        Ok(spent)
+    }
+
     pub(super) fn authorize_retained_task(
         &self,
         state: &CapnpBrokerState,
@@ -99,6 +135,17 @@ impl LocalCaller {
             now,
         )?;
         Ok(crate::services::NativeTaskActionRequirement {
+            binding: match &record.key.owner {
+                InvocationOwner::NativeTask { task, agent, epoch } => {
+                    Some(crate::services::NativeTaskBinding {
+                        task_id: task.clone(),
+                        agent_id: agent.clone(),
+                        epoch: *epoch,
+                        revision: 0,
+                    })
+                }
+                _ => None,
+            },
             app: app.into(),
             resource_kind: resource_kind.into(),
             resource: resource.into(),
@@ -106,7 +153,7 @@ impl LocalCaller {
             need,
         })
     }
-    fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
+    pub(super) fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
         if !state.is_accepting() {
             return Err("invocation broker retired".into());
         }
@@ -357,6 +404,12 @@ impl CapnpBrokerState {
         invocation: tilo_actions::InvocationId,
     ) -> Result<Option<DurableInvocation>, String> {
         let current = caller.current(self)?;
+        // Ordinary durable observations may reconcile effects too. Only the
+        // task-owned route can exercise a native agent's action authority.
+        if current.broker_actor().is_agent && self.native_tasks(&caller.route.cluster_id).is_some()
+        {
+            return Err("native task agent requires authenticated task action admission".into());
+        }
         if host != self.invocation_host()? {
             return Err("durable invocation host mismatch".into());
         }
@@ -416,6 +469,11 @@ impl CapnpBrokerState {
                 &contract.need(),
                 &current.broker_actor(),
                 now,
+            )?;
+            self.authorize_checkpoint_result(
+                &caller.route.cluster_id,
+                current.certificate.as_ref(),
+                record,
             )?;
         }
         caller.current(self)?;
@@ -722,6 +780,7 @@ pub(super) fn invoke(
                 request.binding.peer_id,
                 offered,
                 InvocationInputs {
+                    original_request: None,
                     requested: None,
                     caller: None,
                     execution: None,

@@ -163,15 +163,6 @@ impl SearchBundle {
     }
 }
 
-/// Which result type a deep per-type "see all" search targets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SearchKind {
-    Songs,
-    Albums,
-    Artists,
-    Playlists,
-}
-
 /// What a [`HomeItem`] represents, so the UI can route a click and pick the
 /// right tile shape (artists render as circles).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -469,19 +460,6 @@ pub trait MusicBackend: Send + Sync {
         Ok(SearchBundle::default())
     }
 
-    /// Deep per-type search ("see all Albums / Artists / Playlists"). Offline
-    /// returns an empty bundle; live fills just the requested bucket with a
-    /// fuller list than the mixed [`Self::search_all`] surfaces.
-    ///
-    /// # Errors
-    ///
-    /// Live: returns a [`BackendError`] on a network failure or an
-    /// unparseable `YouTube` Music response. The default (offline) body never
-    /// errors.
-    fn search_more(&self, _query: &str, _kind: SearchKind) -> Result<SearchBundle, BackendError> {
-        Ok(SearchBundle::default())
-    }
-
     /// Resolve a video id to a directly-playable audio stream. Offline errors;
     /// live returns a real googlevideo media URL.
     ///
@@ -608,14 +586,6 @@ mod tests {
             assert!(bundle.artists.is_empty());
             assert!(bundle.playlists.is_empty());
             assert!(bundle.top.is_none());
-            for kind in [
-                SearchKind::Songs,
-                SearchKind::Albums,
-                SearchKind::Artists,
-                SearchKind::Playlists,
-            ] {
-                assert!(b.search_more("aurora", kind).unwrap().is_empty());
-            }
         }
 
         // Phase `preferred_backend_offline_build_notes_and_is_offline`.

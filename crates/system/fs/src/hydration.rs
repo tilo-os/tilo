@@ -79,7 +79,7 @@ pub struct Hydrator {
         AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
     /// Woken by the first peer: a device that knows a peer may be dialled
-    /// by it (TIL-774).
+    /// by it.
     reachability: crate::reachability::Reachability,
 }
 
@@ -210,7 +210,7 @@ impl Hydrator {
 
     /// Register a peer we can hydrate blobs from. Idempotent per endpoint id.
     pub fn add_peer(&self, addr: EndpointAddr) {
-        self.reachability.wake("a content peer is known");
+        crate::reachability::wake(&self.reachability, "a content peer is known");
         let mut peers = self
             .peers
             .write()

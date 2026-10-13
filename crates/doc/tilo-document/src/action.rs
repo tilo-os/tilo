@@ -1779,11 +1779,7 @@ fn apply_split_block(
 
 fn apply_generate_toc(dm: &mut DocMut, entries: &[TocTarget]) {
     let snapshot = tilo_doc::model::materialize(dm.doc, dm.c);
-    for block in snapshot
-        .blocks
-        .iter()
-        .filter(|block| matches!(block.attrs.get("toc"), Some(tilo_doc::AttrVal::Bool(true))))
-    {
+    for block in snapshot.blocks.iter().filter(|block| block.flag("toc")) {
         dm.tombstone_block_in(Region::Body, &block.id);
     }
     let mut previous = None;
@@ -2978,23 +2974,6 @@ pub fn split_block_action(
         ordered,
         next: None,
     }
-}
-
-/// [`split_block_action`], naming the block that follows `block`, as a view
-/// holding the document's order knows it.
-pub fn split_block_before_action(
-    region: RegionKind,
-    block: &str,
-    at: usize,
-    kind: &str,
-    ordered: Option<bool>,
-    next: Option<String>,
-) -> RichTextAction {
-    let mut action = split_block_action(region, block, at, kind, ordered);
-    if let RichTextAction::SplitBlock { next: slot, .. } = &mut action {
-        *slot = next;
-    }
-    action
 }
 
 /// An image already in the caller's content store, as an [`RichTextAction::InsertImage`] refers to it.

@@ -189,8 +189,7 @@ fn ask(cli: &Cli, messages: &[Value]) -> Result<(Value, Value, u128), String> {
 }
 
 fn read_receipt(path: &Path) -> Result<Value, String> {
-    let file = local_model_service::developer::open_without_symlinks(path)
-        .map_err(|error| error.to_string())?;
+    let file = tilo_files::native::nofollow::open_read(path).map_err(|error| error.to_string())?;
     if !file
         .metadata()
         .map_err(|error| error.to_string())?

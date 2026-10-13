@@ -12,7 +12,7 @@ try {
   browser = await launch({args: ['--use-angle=swiftshader', '--enable-features=Vulkan']});
   const tab = await browser.tab();
   const room = randomUUID();
-  await tab.navigate(`${server.url}/index.html?app=so.tilo.chat&room=${room}`);
+  await tab.navigate(`${server.url}/app/?room=${room}#/me/so.tilo.chat`);
   await tab.waitFor('globalThis.tiloMount?.state().phase === "presented"');
   const journey = await tab.evaluate(`(() => {
     const mount = globalThis.tiloMount;

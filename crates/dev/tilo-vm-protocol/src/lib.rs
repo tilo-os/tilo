@@ -142,6 +142,8 @@ pub enum Request {
     LayerVerify(LayerVerify),
     #[serde(rename = "swap")]
     Swap(Swap),
+    #[serde(rename = "userspace.apply")]
+    UserspaceApply(UserspaceApply),
     #[serde(rename = "rollback")]
     Rollback(Rollback),
     #[serde(rename = "logs")]
@@ -164,6 +166,8 @@ pub enum Request {
     BootConfirm(BootConfirm),
     #[serde(rename = "awake")]
     Awake(Awake),
+    #[serde(rename = "network.wake")]
+    NetworkWake(NetworkWake),
     #[serde(rename = "device.unlock.enrol")]
     DeviceUnlockEnrol(disk_unlock::DeviceUnlockEnrol),
     #[serde(rename = "device.actions")]
@@ -189,6 +193,7 @@ impl Request {
             Self::LayerList(_) => "layer.list",
             Self::LayerVerify(_) => "layer.verify",
             Self::Swap(_) => "swap",
+            Self::UserspaceApply(_) => "userspace.apply",
             Self::Rollback(_) => "rollback",
             Self::Logs(_) => "logs",
             Self::SeatClaim(_) => "seat.claim",
@@ -200,6 +205,7 @@ impl Request {
             Self::AppInstall(_) => "app.install",
             Self::BootConfirm(_) => "boot.confirm",
             Self::Awake(_) => "awake",
+            Self::NetworkWake(_) => "network.wake",
         }
     }
 }
@@ -237,6 +243,7 @@ call! {
     LayerList => Vec<LayerInfo>,
     LayerVerify => LayerInfo,
     Swap => ApplyResult,
+    UserspaceApply => UserspaceResult,
     Rollback => ApplyResult,
     Logs => LogsResult,
     SeatClaim => SeatResult,
@@ -248,6 +255,7 @@ call! {
     AppInstall => AppInstallResult,
     BootConfirm => BootConfirmResult,
     Awake => AwakeLease,
+    NetworkWake => NetworkWakeStatus,
     DeviceUnlockEnrol => DeviceUnlockEnrolResult,
     DeviceActions => serde_json::Value,
 }
@@ -359,6 +367,70 @@ pub struct Swap {
     pub info: Option<ComponentInfo>,
 }
 
+/// The canonical matched session components, in layer precedence order.
+/// VM-wide managers and boot components deliberately remain separate.
+pub const USERSPACE_COMPONENTS: &[&str] = &[
+    "launcher",
+    "install",
+    "apps+runtime",
+    "app-host",
+    "native-runtime-host",
+    "control",
+    "app-cli",
+    "ush",
+    "shell",
+];
+
+/// A build/import receipt from the same frozen source inventory. Historical
+/// provenance of reused content-addressed layer bytes remains independent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserspaceMember {
+    pub component: String,
+    pub layer: String,
+    pub build: Provenance,
+    pub source_inventory: String,
+}
+
+/// Host-observed account and login lifetime, revalidated at activation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserspaceSession {
+    pub user: String,
+    pub unit: String,
+    pub login_session: Option<String>,
+    pub login_wrapper: Option<u32>,
+}
+
+/// All members are imported before this generation-conditional admission.
+/// Older daemons reject this new method before making any side effects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserspaceApply {
+    pub slot: String,
+    pub expected_generation: u64,
+    pub expected_session: UserspaceSession,
+    pub source: Box<Provenance>,
+    pub source_inventory: String,
+    pub members: Vec<UserspaceMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserspacePhase {
+    pub name: String,
+    pub seconds: f64,
+}
+
+/// One aggregate, including partial durable selection and its failure. A
+/// failed selection retains its SDK closure; it never reports success or
+/// silently removes the runtime beneath selected user packages.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserspaceResult {
+    pub apply: ApplyResult,
+    pub source: Provenance,
+    pub source_inventory: String,
+    pub members: Vec<UserspaceMember>,
+    pub phases: Vec<UserspacePhase>,
+    pub failure: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rollback {
     pub slot: String,
@@ -452,6 +524,25 @@ pub struct BootConfirm {
 /// Change the keep-awake lease beyond what every request does by itself
 /// (hold the machine awake until [`AWAKE_IDLE_SECONDS`] after it), or with
 /// neither field set just report it.
+/// Inspect or configure one saved `NetworkManager` profile's magic-packet wake.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkWake {
+    pub profile: String,
+    pub enabled: Option<bool>,
+}
+
+/// Configuration observations do not certify physical resume.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkWakeStatus {
+    pub profile: String,
+    pub interface: Option<String>,
+    pub configured: bool,
+    pub supported: Option<bool>,
+    pub applied: Option<bool>,
+    pub problem: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Awake {
     /// Hold it awake this many seconds from now instead.
@@ -733,6 +824,9 @@ pub struct HelloResult {
     /// The keep-awake lease, as this hello renewed it.
     #[serde(default)]
     pub awake: Option<AwakeLease>,
+    /// Optional methods, independent of the protocol-v8 request vocabulary.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 /// The logind `sleep` block lock that keeps the machine from suspending
@@ -818,6 +912,8 @@ pub struct SlotInfo {
     /// `SELinux` domain); `None` when it matches or is not running.
     #[serde(default)]
     pub parity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_identity: Option<UserspaceSession>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -857,6 +953,10 @@ pub struct SlotShowResult {
     pub slot: SlotInfo,
     /// Every file and symlink, grouped by component, sorted by path.
     pub files: Vec<SlotFile>,
+    /// Import provenance of the selected layers, keyed by component. Missing
+    /// metadata stays missing; callers must not infer a source from the request.
+    #[serde(default)]
+    pub provenance: std::collections::BTreeMap<String, Provenance>,
 }
 
 /// One file a layer puts into the slot's view of the system.
@@ -1356,6 +1456,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn network_wake_is_a_typed_non_shell_admin_request() {
+        let request = Request::NetworkWake(NetworkWake {
+            profile: "11111111-1111-4111-8111-111111111111".into(),
+            enabled: Some(true),
+        });
+        assert_eq!(request.method(), "network.wake");
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Request>(wire.clone()).unwrap(),
+            request
+        );
+        let mut injected = wire;
+        injected["params"]["command"] = serde_json::json!("unrelated-tool");
+        assert!(serde_json::from_value::<Request>(injected).is_err());
+    }
+
     /// Slot names fit user names and base info reads what the dev image writes.
     #[test]
     fn slot_names_and_base_info_match_what_the_image_writes() {
@@ -1392,5 +1509,37 @@ mod tests {
                 Some("rustc 1.97.1 (abc 2026-08-01)")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod userspace_compatibility_tests {
+    use super::*;
+
+    #[derive(Deserialize)]
+    #[serde(tag = "method", content = "params")]
+    enum LegacyRequest {
+        #[serde(rename = "swap")]
+        Swap(Swap),
+    }
+
+    #[test]
+    fn new_userspace_method_is_rejected_by_old_v8_before_any_single_swap() {
+        let value = serde_json::json!({"method":"userspace.apply","params":{}});
+        assert!(serde_json::from_value::<LegacyRequest>(value).is_err());
+        let old = serde_json::json!({"method":"swap","params":{"slot":"owned","component":"shell","layer":"abcd"}});
+        let LegacyRequest::Swap(swap) = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(swap.component, "shell");
+        assert!(matches!(
+            serde_json::from_value::<Request>(old).unwrap(),
+            Request::Swap(_)
+        ));
+    }
+
+    #[test]
+    fn old_daemon_hello_has_no_userspace_capability_and_new_fields_are_optional() {
+        let old = serde_json::json!({"protocol":8,"daemon_version":"0.1.0","root":"/state","arch":"x86_64","tools":{"cargo":true,"rsync":true,"python3":true,"sccache":false,"podman":false}});
+        let hello: HelloResult = serde_json::from_value(old).unwrap();
+        assert!(hello.capabilities.is_empty());
     }
 }

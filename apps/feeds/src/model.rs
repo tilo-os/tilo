@@ -427,14 +427,6 @@ impl ReadTheme {
             ReadTheme::Dark => "dark",
         }
     }
-    pub fn from_key(s: &str) -> Self {
-        match s {
-            "light" => ReadTheme::Light,
-            "sepia" => ReadTheme::Sepia,
-            "dark" => ReadTheme::Dark,
-            _ => ReadTheme::System,
-        }
-    }
 }
 
 /// Face of the article body: the serif reading face, the UI sans or the
@@ -461,22 +453,6 @@ impl ReadFont {
             ReadFont::Sans => "sans",
             ReadFont::Serif => "serif",
             ReadFont::Mono => "mono",
-        }
-    }
-    pub fn from_key(s: &str) -> Self {
-        match s {
-            "serif" => ReadFont::Serif,
-            "mono" => ReadFont::Mono,
-            _ => ReadFont::Sans,
-        }
-    }
-    /// Cycle Sans → Serif → Mono → Sans (for the cycle button).
-    #[must_use]
-    pub fn next(self) -> Self {
-        match self {
-            ReadFont::Sans => ReadFont::Serif,
-            ReadFont::Serif => ReadFont::Mono,
-            ReadFont::Mono => ReadFont::Sans,
         }
     }
 }
@@ -921,25 +897,12 @@ mod tests {
         assert!(article.valid().is_err());
     }
 
-    /// Reading settings round-trip their strings and clamp; relative times fall in the right buckets.
+    /// Reading settings default and clamp; relative times fall in the right buckets.
     #[test]
     fn reading_settings_and_relative_time_format_stably() {
-        // --- phase: read_settings_round_trip_strings_and_clamp ---
+        // --- phase: read_settings_default_and_clamp ---
         {
-            for t in ReadTheme::ALL {
-                assert_eq!(ReadTheme::from_key(t.as_str()), t);
-            }
-            for f in ReadFont::ALL {
-                assert_eq!(ReadFont::from_key(f.as_str()), f);
-            }
-            assert_eq!(ReadFont::from_key("serif"), ReadFont::Serif);
-            // An unknown or missing paper follows the system theme.
-            assert_eq!(ReadTheme::from_key(""), ReadTheme::System);
             assert_eq!(ReadSettings::default().theme, ReadTheme::System);
-            // Cycle visits all three faces.
-            assert_eq!(ReadFont::Sans.next(), ReadFont::Serif);
-            assert_eq!(ReadFont::Serif.next(), ReadFont::Mono);
-            assert_eq!(ReadFont::Mono.next(), ReadFont::Sans);
             // Clamp keeps font_scale inside bounds.
             let s = ReadSettings {
                 font_scale: 5.0,

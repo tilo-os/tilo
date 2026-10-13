@@ -684,35 +684,41 @@ fn collect_submission_artifacts(
     }
     let mut artifacts = Vec::with_capacity(pending.change.entry.versions.len());
     for version in &pending.change.entry.versions {
+        let Some(tapp) = version.tapp() else {
+            anyhow::bail!(
+                "{}@{} binds no package to collect",
+                pending.submission_id,
+                version.version
+            );
+        };
         // Staged bytes are content-addressed by the digest the publisher
         // signed, so an update that repeats already collected versions needs
         // no refetch, and those versions stay collectable after their
         // advertised URL stops serving them. They pass the same inspection.
-        let inspection =
-            if let Some(bytes) = storage.find_staged_artifact(&version.tapp_blake3_hex)? {
-                registry_server::inspect_stored_bytes(
-                    storage,
-                    &pending.change.entry,
-                    version,
-                    &bytes,
-                    Some(policy),
-                )?
-            } else {
-                let (inspection, bytes) = registry_server::review_version_bytes(
-                    storage,
-                    &pending.change.entry,
-                    version,
-                    policy,
-                )?;
-                let digest = blake3::hash(&bytes).to_hex().to_string();
-                persist_distinct_artifact(storage, persisted_digests, &digest, &bytes)?;
-                inspection
-            };
+        let inspection = if let Some(bytes) = storage.find_staged_artifact(&tapp.tapp_blake3_hex)? {
+            registry_server::inspect_stored_bytes(
+                storage,
+                &pending.change.entry,
+                version,
+                &bytes,
+                Some(policy),
+            )?
+        } else {
+            let (inspection, bytes) = registry_server::review_version_bytes(
+                storage,
+                &pending.change.entry,
+                version,
+                policy,
+            )?;
+            let digest = blake3::hash(&bytes).to_hex().to_string();
+            persist_distinct_artifact(storage, persisted_digests, &digest, &bytes)?;
+            inspection
+        };
         artifacts.push(StagedArtifact {
             submission_id: pending.submission_id.clone(),
             version: inspection.version,
-            target: Some(version.target.clone()),
-            blake3_hex: version.tapp_blake3_hex.to_ascii_lowercase(),
+            target: Some(tapp.target.clone()),
+            blake3_hex: tapp.tapp_blake3_hex.to_ascii_lowercase(),
         });
     }
     Ok(artifacts)
@@ -988,11 +994,10 @@ fn cmd_publish_staged_first_party(
                 .collect();
             let [artifact] = matching.as_slice() else {
                 anyhow::bail!(
-                    "staged artifact inventory is incomplete or ambiguous for {}@{} ({}/{})",
+                    "staged artifact inventory is incomplete or ambiguous for {}@{} ({:?})",
                     pending.submission_id,
                     version.version,
-                    version.target.platform,
-                    version.target.architecture,
+                    version.group(),
                 );
             };
             let bytes = storage.load_staged_artifact(&artifact.blake3_hex)?;
@@ -1207,7 +1212,7 @@ fn staged_artifact_matches(
                 .count()
                 == 1
         },
-        |target| target == &version.target,
+        |target| Some(target) == version.target(),
     )
 }
 
@@ -1251,13 +1256,13 @@ fn validate_new_native_runtimes(
         if registry_types::is_runtime_package_id(&entry.package_id) {
             continue;
         }
-        if let Some(version) = missing_native_runtime(entry, entries, previous) {
+        if let Some((version, target)) = missing_native_runtime(entry, entries, previous) {
             anyhow::bail!(
                 "{}@{} ({}) has no offered native runtime {}; keep the app pending until its runtime is collected",
                 entry.package_id,
                 version.version,
-                version.target.architecture,
-                version.target.runtime.as_deref().unwrap_or_default(),
+                target.architecture,
+                target.runtime.as_deref().unwrap_or_default(),
             );
         }
     }
@@ -1313,24 +1318,33 @@ fn missing_native_runtime<'a>(
     entry: &'a registry_types::RegistryEntry,
     entries: &[registry_types::RegistryEntry],
     previous: Option<&SignedRegistrySnapshot>,
-) -> Option<&'a registry_types::RegistryVersion> {
+) -> Option<(
+    &'a registry_types::RegistryVersion,
+    &'a registry_types::RegistryTarget,
+)> {
     let retained = previous.and_then(|snapshot| {
         snapshot
             .entries
             .iter()
             .find(|old| old.package_id == entry.package_id)
     });
-    entry.versions.iter().find(|version| {
-        version.target.native_runtime().is_some()
+    entry.versions.iter().find_map(|version| {
+        let target = version.target()?;
+        let missing = target.native_runtime().is_some()
             && !retained.is_some_and(|old| old.versions.contains(version))
             && !entries.iter().any(|provider| {
                 registry_types::is_runtime_package_id(&provider.package_id)
-                    && provider.versions.iter().any(|provided| {
-                        provided.target.platform == version.target.platform
-                            && provided.target.architecture == version.target.architecture
-                            && provided.target.runtime == version.target.runtime
-                    })
-            })
+                    && provider
+                        .versions
+                        .iter()
+                        .filter_map(registry_types::RegistryVersion::target)
+                        .any(|provided| {
+                            provided.platform == target.platform
+                                && provided.architecture == target.architecture
+                                && provided.runtime == target.runtime
+                        })
+            });
+        missing.then_some((version, target))
     })
 }
 
@@ -1363,6 +1377,7 @@ fn unsigned_snapshot(
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
+        bots_signature_hex: String::new(),
     })
 }
 
@@ -1426,6 +1441,7 @@ fn cmd_sign_snapshot(
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
+        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
@@ -1508,6 +1524,7 @@ fn cmd_rollback_snapshot(
         entries: target.entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
+        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
@@ -1669,9 +1686,29 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
                         .unwrap_or(&pending.change.entry.package_id),
                     pending.change.entry.publisher_pubkey_hex
                 );
-                for version in inspection {
-                    println!("\n{} · {} bytes", version.version, version.size_bytes);
-                    println!("{}", serde_json::to_string_pretty(&version.sandbox)?);
+                for inspected in inspection {
+                    match inspected {
+                        registry_server::Inspection::Package(version) => {
+                            println!("\n{} · {} bytes", version.version, version.size_bytes);
+                            println!("{}", serde_json::to_string_pretty(&version.sandbox)?);
+                        }
+                        registry_server::Inspection::Program(program) => {
+                            println!(
+                                "\nprogram {}: {}, {} steps, triggers {:?}, apps {:?}, connectors {:?}{}",
+                                program.version,
+                                program.name,
+                                program.steps,
+                                program.triggers,
+                                program.apps,
+                                program.connectors,
+                                if program.appearance {
+                                    ", posts under other names"
+                                } else {
+                                    ""
+                                }
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1760,7 +1797,7 @@ fn fetch_for_decision(
     storage: &Storage,
     pending: &registry_server::PendingSubmission,
     allow_insecure_local: bool,
-) -> anyhow::Result<Vec<(registry_server::InspectedVersion, Vec<u8>)>> {
+) -> anyhow::Result<Vec<(registry_server::Inspection, Vec<u8>)>> {
     let policy = InspectionPolicy {
         allow_insecure_local,
         ..InspectionPolicy::default()
@@ -2307,7 +2344,13 @@ mod tests {
                     Ok(vec![StagedArtifact {
                         submission_id: pending.submission_id.clone(),
                         version: "1.0.0".into(),
-                        target: Some(pending.change.entry.versions[0].target.clone()),
+                        target: Some(
+                            pending.change.entry.versions[0]
+                                .tapp()
+                                .unwrap()
+                                .target
+                                .clone(),
+                        ),
                         blake3_hex: digest.clone(),
                     }])
                 },
@@ -2355,7 +2398,8 @@ mod tests {
                 .unwrap();
 
             let mut entry = publisher_entry(&publisher);
-            entry.versions[0].tapp_url = "file:///untrusted/package.tapp".into();
+            entry.versions[0].tapp_mut().unwrap().tapp_url =
+                "file:///untrusted/package.tapp".into();
             sign_entry(&mut entry, &publisher);
             storage
                 .save_pending(&registry_server::PendingSubmission {
@@ -2384,7 +2428,7 @@ mod tests {
             let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
             let mut entry = publisher_entry(&key);
             let mut arm = entry.versions[0].clone();
-            arm.target = target("aarch64", "aarch64-v8.2");
+            arm.tapp_mut().unwrap().target = target("aarch64", "aarch64-v8.2");
             entry.versions.push(arm);
             sign_entry(&mut entry, &key);
             let pending = registry_server::PendingSubmission {
@@ -2412,9 +2456,10 @@ mod tests {
                     .filter(|artifact| staged_artifact_matches(artifact, &pending, version))
                     .count();
                 assert_eq!(
-                    matches, 1,
+                    matches,
+                    1,
                     "{} must select exactly one staged artifact",
-                    version.target.architecture
+                    version.tapp().unwrap().target.architecture
                 );
             }
 
@@ -2447,6 +2492,7 @@ mod tests {
     fn publisher_entry(key: &ed25519_dalek::SigningKey) -> RegistryEntry {
         let mut entry = RegistryEntry {
             package_id: "so.tilo.concurrent".into(),
+            kind: registry_types::EntryKind::App,
             name: "Concurrent".into(),
             description: "publisher removal regression".into(),
             tagline: "Test concurrent publication".into(),
@@ -2461,18 +2507,20 @@ mod tests {
             publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
             versions: vec![RegistryVersion {
                 version: "1.0.0".into(),
-                tapp_url: "https://apps.tilo.so/artifacts/concurrent.tapp".into(),
-                tapp_root_hash_hex: "ab".repeat(32),
-                tapp_size_bytes: 1,
                 released_at_unix: 1,
-                tapp_blake3_hex: "cd".repeat(32),
-                target: RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: "https://apps.tilo.so/artifacts/concurrent.tapp".into(),
+                    tapp_root_hash_hex: "ab".repeat(32),
+                    tapp_size_bytes: 1,
+                    tapp_blake3_hex: "cd".repeat(32),
+                    target: RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),

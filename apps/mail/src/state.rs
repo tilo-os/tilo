@@ -120,21 +120,6 @@ impl CtxAction {
             CtxAction::Junk => Icon::Ban,
         }
     }
-
-    /// A visible hint only — command dispatch remains in `MailApp` so these
-    /// shortcuts never bypass the collaborative action boundary.
-    pub fn shortcut(self) -> Option<&'static str> {
-        match self {
-            CtxAction::Reply => Some("R"),
-            CtxAction::ToggleRead => Some("U"),
-            CtxAction::ToggleStar => Some("S"),
-            CtxAction::Archive => Some("E"),
-            CtxAction::Delete => Some("Del"),
-            CtxAction::ReplyAll | CtxAction::Forward | CtxAction::MoveToInbox | CtxAction::Junk => {
-                None
-            }
-        }
-    }
 }
 
 /// A cross-pane effect a pane wants the app to perform after event routing.
@@ -156,16 +141,12 @@ pub enum Intent {
     EditDraft(MessageId),
     /// Open the row menu at a point, beside the row it acts on.
     ContextMenu(MessageId, Point, Rect),
-    /// Open the account setup sheet for the given account index (`None` = add).
-    Settings(Option<usize>),
     /// Ask the app-owned portal boundary to save one hydrated attachment.
     /// Panes intentionally carry only a stable message id + attachment index;
     /// the root revalidates both before it opens the host chooser.
     SaveAttachment(MessageId, usize),
     /// Ask the app to post a request to the engine worker.
     Engine(EngineRequest),
-    /// Surface a transient status toast.
-    Toast(String),
     /// Ask the app-owned modal layer to confirm an all-Trash bulk purge. The
     /// selection remains local; no purge action is authored until confirmed.
     ConfirmBulkPurge,
@@ -958,10 +939,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn reader_selection_is_read_neutral_and_reply_all_is_distinct() {
         // Phase `initial_reader_selection_is_read_state_neutral`.
         {

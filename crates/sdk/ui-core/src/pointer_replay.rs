@@ -284,18 +284,11 @@ mod tests {
     use crate::widget::{Button, EventCtx, TaffyTreeExt as _, Widget};
 
     fn moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(x, y),
-        }
+        crate::synthetic_input::cursor_moved(x, y)
     }
 
     fn button(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        crate::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
     #[test]

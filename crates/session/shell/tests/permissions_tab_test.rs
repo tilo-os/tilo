@@ -11,10 +11,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -166,10 +162,6 @@ fn may_change(ws: &Workspace, person: &str) -> bool {
     clippy::significant_drop_tightening,
     reason = "st's only use is producing t via tree(); the read-guard's lifetime \
 is tied to st's borrow, so it can't be dropped before t's last use"
-)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn the_permissions_tab_is_reachable_renders_its_rows_and_keeps_the_draft() {
     // Phase `the_permissions_pill_is_painted_on_a_workspace_with_no_grants`.

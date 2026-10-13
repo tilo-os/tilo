@@ -88,17 +88,6 @@ impl ModalBody {
         }
     }
 
-    /// A confirmation: the sentence alone.
-    pub fn message(caption: &str) -> Self {
-        Self {
-            caption: Self::caption(caption),
-            input: None,
-            rect: Rect::ZERO,
-            caption_node: None,
-            input_node: None,
-        }
-    }
-
     fn caption(text: &str) -> Text {
         Text::new(text).with_role(TextRole::Body).dimmed()
     }

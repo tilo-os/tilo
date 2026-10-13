@@ -33,8 +33,53 @@ pub(super) enum SearchRequest {
 const CLOSE_WINDOW: &str = "desktop.close-window";
 const MAXIMIZE_WINDOW: &str = "desktop.maximize-window";
 const WORKSPACE_PREFIX: &str = "desktop.workspace:";
+/// Search command ids and banner action keys of the host's own actions.
+const HOST_PREFIX: &str = "host:";
+
+/// An action only the host that embeds the desktop can perform (in a
+/// browser: keeping the person's identity with a passkey). The desktop
+/// offers it in search beside its own commands and on banners the host
+/// posts, and hands the id back when the person chooses it
+/// ([`DesktopHandle::take_host_choices`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct HostAction {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub subtitle: Option<String>,
+}
+
+impl HostAction {
+    /// A banner that offers this action: choosing it performs the action.
+    #[must_use]
+    pub fn notice(
+        &self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> crate::notifications::Notification {
+        let mut notice = crate::notifications::Notification::new(title, body);
+        notice.actions = vec![(format!("{HOST_PREFIX}{}", self.id), self.title.clone())];
+        notice.dismiss_after = crate::notifications::PERSISTENT_DISMISS;
+        notice
+    }
+}
+
+/// The host action a banner action key or search command id names.
+pub(super) fn host_choice(key: &str) -> Option<&str> {
+    key.strip_prefix(HOST_PREFIX)
+}
 
 impl DesktopHandle {
+    /// Offer these host actions from now on, in place of earlier ones.
+    pub fn set_host_actions(&self, actions: Vec<HostAction>) {
+        self.shared.borrow_mut().host_actions = actions;
+    }
+
+    /// The host actions the person chose since the last call, by id.
+    pub fn take_host_choices(&self) -> Vec<String> {
+        std::mem::take(&mut self.shared.borrow_mut().host_choices)
+    }
+
     /// Open search, or close it when it is open. The host schedules a frame.
     pub fn toggle_search(&self) {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Toggle);
@@ -109,8 +154,15 @@ fn windows(tree: &DesktopTree) -> Vec<WindowEntry> {
     out
 }
 
-fn commands(tree: &DesktopTree) -> Vec<CommandSpec> {
-    let mut out = Vec::new();
+fn commands(tree: &DesktopTree, host: &[HostAction]) -> Vec<CommandSpec> {
+    let mut out: Vec<CommandSpec> = host
+        .iter()
+        .map(|action| CommandSpec {
+            id: format!("{HOST_PREFIX}{}", action.id),
+            title: action.title.clone(),
+            subtitle: action.subtitle.clone(),
+        })
+        .collect();
     if let Some(ids) = navigation::active_route(tree)
         && let Some(group) = navigation::locate(tree, ids)
     {
@@ -151,7 +203,10 @@ impl DesktopSurface {
     pub(super) fn open_search(&mut self, doc: &AutoCommit, query: Option<String>) {
         let (windows, commands) = {
             let shared = self.shared.borrow();
-            (windows(&shared.tree), commands(&shared.tree))
+            (
+                windows(&shared.tree),
+                commands(&shared.tree, &shared.host_actions),
+            )
         };
         let mut data = SearchData {
             applications: self.tiles.search_applications(),
@@ -216,7 +271,11 @@ impl DesktopSurface {
             Target::Window { tab } => route_of(&shared.tree, tab).map(Admitted::Select),
             Target::Command { id } => {
                 let active = navigation::active_route(&shared.tree);
-                if id == CLOSE_WINDOW {
+                if let Some(choice) = host_choice(&id) {
+                    let choice = choice.to_owned();
+                    shared.host_choices.push(choice);
+                    None
+                } else if id == CLOSE_WINDOW {
                     active.map(Admitted::Close)
                 } else if id == MAXIMIZE_WINDOW {
                     active.and_then(|ids| {
@@ -346,7 +405,7 @@ impl DesktopSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::winit::event::{DeviceId, KeyEvent, Modifiers, RawKeyEvent};
+    use ui::winit::event::{KeyEvent, Modifiers, RawKeyEvent};
     use ui::winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
 
     fn press(key: Key) -> WindowEvent {
@@ -362,11 +421,7 @@ mod tests {
             None,
             key,
         );
-        WindowEvent::KeyboardInput {
-            device_id: DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     fn mods(state: ModifiersState) -> Modifiers {

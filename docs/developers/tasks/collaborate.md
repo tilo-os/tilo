@@ -41,6 +41,23 @@ merge behavior; sign-in, authorization and delivery between actual devices
 still need host integration tests. They do not require an app-local database,
 undo stack, identity service or sync loop.
 
+## Evolve an existing resource
+
+Changing a Rust field type does not convert documents stored on other
+devices. `Collection<T>` stores a map keyed by item id, with order keys and
+item values; an Automerge list at that path is a different storage shape.
+An absent collection reads as empty. An `expected a collection` error means
+a present value has the wrong shape: inspect its actual type and conflicts
+before changing it. Keep the retained document; do not replace it with defaults.
+
+Declare `#[resource(version = N, migrate = path)]` when changing the storage
+schema. The migration receives the document and prior version. Preserve
+item ids, values and order while converting the known old shape. The runtime
+runs the callback on a fork and applies the housekeeping change only if it
+succeeds. Test an actual old document, migration failure leaving it unchanged,
+and a second open preserving the migrated content. A fresh empty app test does
+not exercise an upgrade.
+
 Next: `tilo-app guide actions` to expose the capability or `guide verify` to
 inspect its public surface.
 More: [Templates and examples](../../examples.md#examples),

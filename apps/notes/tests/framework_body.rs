@@ -100,14 +100,7 @@ fn importing_a_long_note_keeps_actions_usable_before_the_next_frame() {
     app.call("open-note", serde_json::json!({ "page": page }))
         .unwrap();
     app.harness().relayout_at((1000, 300)).unwrap();
-    crate::framework_support::send(
-        &mut app,
-        &winit::event::WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
-            phase: winit::event::TouchPhase::Moved,
-        },
-    );
+    crate::framework_support::send(&mut app, &ui::synthetic_input::mouse_wheel(0.0, -3.0));
     app.harness().relayout_at((1000, 300)).unwrap();
     let scrolled = crate::framework_support::surface(&mut app, |notes| {
         notes.main_panel_mut().scroll_y_for_test()

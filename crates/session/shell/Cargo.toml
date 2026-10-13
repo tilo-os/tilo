@@ -94,6 +94,8 @@ desktop-policy = { path = "../../system/desktop-policy" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-search = { path = "../desktop-search" }
+# Tilo's link grammar, so links to the person's workspaces open in place.
+tilo-reference = { path = "../../collab/reference" }
 # Durable lockdown policy behind the Lockdown portal and native media gates.
 tilo-lockdown-policy = { path = "../tilo-lockdown-policy" }
 tokio = { workspace = true, features = ["full"] }
@@ -122,6 +124,7 @@ iroh.workspace = true
 iroh-base.workspace = true
 iroh-gossip.workspace = true
 iroh-mdns-address-lookup.workspace = true
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 bytes.workspace = true
 blake3.workspace = true
 
@@ -211,6 +214,10 @@ taffy.workspace = true
 vello.workspace = true
 # Compare replacement image patches while retaining every other scene command.
 vello_encoding.workspace = true
+# The DRM backend rasterizes on the CPU where the GPU cannot run vello's
+# compute pipeline (Mali Bifrost under panvk); every presenter bounds scroll
+# copies with its draw bounds.
+tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
 parking_lot.workspace = true
 
 libc.workspace = true
@@ -336,6 +343,7 @@ tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path reads surfaces from.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Native Store publication through the same certified session fixture as Browser.
@@ -345,12 +353,13 @@ chat = { path = "../../../apps/chat", default-features = false }
 # Real native editor instances in certified multi-device continuity fixtures.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 
+# Exercise owner-selected bytes against the actual Store signed-package review.
+app-cli = { path = "../../packaging/app-cli" }
+registry-types = { path = "../../packaging/registry-types" }
+flate2.workspace = true
 greeter = { path = "../greeter" }
 # Private native-pair acceptance uses the governed host's real voice relay.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
-# An iroh relay of a test's own, so a desktop's relays can be started and a
-# home relay appear without the public ones.
-iroh-relay = { version = "1.0.3", features = ["server"] }
 # Signs the TPM quotes the disk-unlock auto-approval tests verify.
 p256 = { version = "0.14", features = ["ecdsa"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
@@ -461,6 +470,3 @@ windows-vm = { path = "../../windows/windows-vm" }
 # The shell runtime's policy, where the person's allow for Terminal's Host
 # target (the device's own shell) is recorded.
 ush = { path = "../../runtime/ush" }
-# The DRM backend rasterizes on the CPU where the GPU cannot run vello's
-# compute pipeline (Mali Bifrost under panvk).
-tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }

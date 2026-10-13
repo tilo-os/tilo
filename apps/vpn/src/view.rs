@@ -839,7 +839,7 @@ impl ThroughputPlot {
             Self::series("download", "Download", colors.text_primary, &self.down),
             Self::series("upload", "Upload", colors.text_dim, &self.up),
         ])
-        .styled(style)
+        .with_style(style)
         .with_height(theme.tokens.metrics.header_height * 5.0)
     }
 }

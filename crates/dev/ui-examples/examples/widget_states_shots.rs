@@ -602,13 +602,7 @@ fn art() -> &'static vello::peniko::ImageData {
     ART.get_or_init(|| {
         let (w, h) = (240_u32, 160_u32);
         let rgba = photo_rgba(w, h);
-        vello::peniko::ImageData {
-            data: vello::peniko::Blob::new(Arc::new(rgba)),
-            format: vello::peniko::ImageFormat::Rgba8,
-            alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: w,
-            height: h,
-        }
+        tilo_ui::raster::rgba8(rgba, w, h)
     })
 }
 
@@ -1971,9 +1965,7 @@ impl Widget for Painted {
         };
         taffy.widget_leaf(style, node_map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = tilo_ui::widget::layout_rect(taffy, node, origin);
-    }
+    tilo_ui::rect_geometry!();
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1986,9 +1978,6 @@ impl Widget for Painted {
     }
     fn name(&self) -> &'static str {
         "Painted"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

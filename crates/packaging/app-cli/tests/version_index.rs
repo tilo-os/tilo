@@ -5,9 +5,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::panic,
     clippy::too_many_lines,
     reason = "in a test these are the assertion, not a hazard"
 )]
@@ -101,18 +99,20 @@ impl Routes {
 fn version(number: &str, url: &str, tapp: &[u8]) -> RegistryVersion {
     RegistryVersion {
         version: number.into(),
-        tapp_url: url.into(),
-        tapp_root_hash_hex: app_registry::tapp::load(tapp).unwrap().package_id.to_hex(),
-        tapp_size_bytes: tapp.len() as u64,
         released_at_unix: 1,
-        tapp_blake3_hex: blake3::hash(tapp).to_hex().to_string(),
-        target: registry_types::RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: native_target().0.into(),
-            isa: native_target().2.into(),
-            runtime: None,
-            interfaces: Vec::new(),
-        },
+        artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+            tapp_url: url.into(),
+            tapp_root_hash_hex: app_registry::tapp::load(tapp).unwrap().package_id.to_hex(),
+            tapp_size_bytes: tapp.len() as u64,
+            tapp_blake3_hex: blake3::hash(tapp).to_hex().to_string(),
+            target: registry_types::RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: native_target().0.into(),
+                isa: native_target().2.into(),
+                runtime: None,
+                interfaces: Vec::new(),
+            },
+        }),
     }
 }
 
@@ -120,6 +120,7 @@ fn entry(package_id: &str, versions: Vec<RegistryVersion>, updated_at: u64) -> R
     let key = SigningKey::from_bytes(&[11u8; 32]);
     let mut entry = RegistryEntry {
         package_id: package_id.into(),
+        kind: registry_types::EntryKind::App,
         name: "Sheets".into(),
         description: "A spreadsheet".into(),
         tagline: "Native Tilo OS app".into(),
@@ -169,6 +170,7 @@ fn publish(
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
+        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut full, owner).unwrap();
     let (mut compact, indexes) = registry_types::compact_snapshot(&full).unwrap();

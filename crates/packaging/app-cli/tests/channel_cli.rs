@@ -1,10 +1,4 @@
 //! Exercise explicit channel selection through the public catalogue CLI.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test fixture assertions"
-)]
 
 use std::process::Command;
 

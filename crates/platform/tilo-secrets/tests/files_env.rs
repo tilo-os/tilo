@@ -1,11 +1,6 @@
 //! A process given `TILO_SECRETS_DIR` keeps every app's secrets in that
 //! directory's sealed file store, not the system store.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_secrets::{Protection, PutOptions, SECRETS_DIR_ENV, SecretStore};
 
 #[test]

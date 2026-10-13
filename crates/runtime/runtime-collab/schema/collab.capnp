@@ -259,15 +259,17 @@ interface ChannelHandle {
   # attribution/context crosses this method. `invocation` is the caller's
   # tilo_actions::InvocationId: a retry with the same id reports the
   # original invocation, which remoteAction (@42) observes and cancels.
-  # `stepIndex` (when `hasStep`) names the task's durable parent step: the
-  # host maps it to exactly one child before execution and returns that
-  # child again on retry. `continuation` is the parent's committed next-step
-  # continuation, present only once the step's exact result is committed.
+  # `waitMs` (non-zero) on a re-ask of a native task's existing child asks
+  # the broker to hold the answer until the child moves past `seenJson` (a
+  # tilo_actions::remote::UpdateMark), settles, the run is cancelled, or the
+  # wait (capped by the broker) ends; the answer is observed and authorized
+  # afresh when it is given. A broker without it answers at once.
   invokeTaskAction @30 (runId :UInt64, lease :Text, peerId :UInt64,
                         resource :Text, action :Text, argument :Text,
                         hasArgument :Bool, confirmationJson :Text,
-                        invocation :Text, stepIndex :UInt32, hasStep :Bool)
-      -> (id :UInt64, updateJson :Text, continuation :Data);
+                        invocation :Text, waitMs :UInt32, seenJson :Text,
+                        provider :Text)
+      -> (id :UInt64, updateJson :Text);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
   taskRunCancelled @31 (runId :UInt64, lease :Text) -> (cancelled :Bool, controlJson :Text);
@@ -342,11 +344,12 @@ interface ChannelHandle {
   # channel's room; nothing in the frame names the caller.
   remoteAction @42 (frame :Data) -> (frame :Data);
 
-  # Private enrolled tasks; old peers without these methods are unavailable.
-  subscribeEnrolledTasks @43 () -> (stream :EnrolledTaskStream);
-  # Exact recipient acceptance; successful RPC reply precedes all task work.
-  acceptEnrolledTask @44 (acceptanceJson :Text) -> ();
-  reportEnrolledTask @45 (acceptanceJson :Text, sequence :UInt64, updateJson :Text) -> ();
+  # Retired per-recipient task delivery verbs keep their ordinals because
+  # Cap'n Proto requires declarations to remain sequential. They carry no
+  # data and have no effect.
+  retiredTaskDelivery @43 () -> ();
+  retiredTaskDeliveryAccept @44 () -> ();
+  retiredTaskDeliveryReport @45 () -> ();
 
   # Local governed call controls. The broker retains genuine kernel/launcher
   # process evidence and derives the exact app/workspace/record from this
@@ -416,6 +419,10 @@ interface ChannelHandle {
   # a timer. A host without a channel service answers unimplemented, and the
   # endpoint asks on a timer as before.
   channelKeysChanged @59 (after :UInt64) -> (change :UInt64);
+  # Informational bounded reports, correlated to that same original invocation.
+  # Final receipt remains authoritative. No fallback to raw execution or @58.
+  approvedCheckReportedProgress @60 (request :Data) -> (stream :ApprovedCheckReportedProgressStream);
+
 
 }
 
@@ -859,6 +866,31 @@ struct ChannelContext {
   # JSON vocabulary is `ui::collaboration::handoff`. Empty on every other
   # frame; never relayed to peers.
   handoff @5 :Data;
+  # Session-local control frame: the delegated agents on this room's roster
+  # whose person's root signed the delegation for exactly that device, as
+  # the session verified them. `historyAgentsChanged == true` means clients
+  # leave the roster snapshot untouched and replace the room's agents with
+  # `historyAgents` (empty: none). History names who wrote from it; it is
+  # presentation only and grants nothing. Additive: a client that predates
+  # it reads an empty roster frame, and roster rows are upserts.
+  historyAgents @6 :List(HistoryAgent);
+  historyAgentsChanged @7 :Bool;
+}
+
+# One verified delegated agent in a `ChannelContext.historyAgents` frame.
+struct HistoryAgent {
+  # The agent's own 32-byte device key: the actor its signed changes carry.
+  device     @0 :Data;
+  # The 32-byte root key of the person it acts for.
+  person     @1 :Data;
+  # That person's name as the room's governance records it.
+  personName @2 :Text;
+  # The delegation's stable agent id.
+  agentId    @3 :Text;
+  # The agent's display name.
+  label      @4 :Text;
+  # Its cursor colour, packed 0x00RRGGBB like `Collaborator.color`.
+  color      @5 :UInt32;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as
@@ -902,11 +934,6 @@ struct ScrollbackBatch {
   done        @3 :Bool;
 }
 
-# Independently versioned enrolled envelope; legacy TaskRunStream is unchanged.
-interface EnrolledTaskStream {
-  read @0 () -> (taskJson :Text);
-}
-
 # One application's view of the session's settings, from `settings`.
 # Documents are JSON objects of sections, at most 1 MiB.
 interface LiveActivity {
@@ -942,4 +969,9 @@ struct ResourceViewRangeSpec {
   startParam @1 :Text;
   endParam @2 :Text;
   unitParam @3 :Text;
+}
+
+# Each read returns exactly one nonempty field. Receipt/error freezes the lane.
+interface ApprovedCheckReportedProgressStream {
+  read @0 () -> (report :Data, receipt :Data, error :Text);
 }

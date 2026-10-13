@@ -4,7 +4,7 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::io::{Cursor, Write};
 use tilo_content::ContentSource;
-use tilo_doc::export::{BlockKind, ExportBlock, detect_image_media, walk_blocks};
+use tilo_doc::export::{BlockKind, ExportBlock, walk_blocks};
 use tilo_doc::snapshot::AttrVal;
 use tilo_doc::{BlockView, DocSnapshot};
 use zip::write::SimpleFileOptions;
@@ -160,7 +160,7 @@ fn image_item_for(b: &BlockView, snap: &Resolved<'_>, existing_count: usize) -> 
         return None;
     };
     let bytes = snap.image(hash)?;
-    let media = detect_image_media(bytes).unwrap_or(tilo_doc::export::ImageMedia {
+    let media = tilo_content::image_format(bytes).unwrap_or(tilo_content::ImageFormat {
         extension: "png",
         mime: "image/png",
     });
@@ -611,14 +611,12 @@ fn render_nav_forest(nodes: &[NavNode], depth: usize, out: &mut String) {
             escape_attr_quotes(&node.link),
             escape_text(&node.label)
         );
-        if node.children.is_empty() {
-            out.push_str("</li>\n");
-        } else {
+        if !node.children.is_empty() {
             out.push('\n');
             render_nav_forest(&node.children, depth.saturating_add(2), out);
             out.push_str(&ipad);
-            out.push_str("</li>\n");
         }
+        out.push_str("</li>\n");
     }
     out.push_str(&pad);
     out.push_str("</ol>\n");

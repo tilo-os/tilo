@@ -8,7 +8,7 @@
 //! ```
 //!
 //! The shell owns the header row, the sidebar toggle, the widths, the drawer
-//! and the push stack. The sidebar is a [`MailSidebar`], the list a
+//! and the push stack. The sidebar is a followed [`NavList`](ui::widget::NavList), the list a
 //! [`MessageList`] and the message a [`MessageReader`]; they share one
 //! [`MailState`] and raise [`Intent`]s and [`Command`]s for effects that
 //! reach past their own column.
@@ -69,7 +69,7 @@ use crate::model::{
 use crate::reader::MessageReader;
 use crate::resource::{Mail, mailbox, read_mail};
 use crate::shortcuts_overlay::MailShortcutsOverlay;
-use crate::sidebar::MailSidebar;
+use crate::sidebar;
 use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, Shared};
 use crate::util::format_absolute;
 
@@ -782,7 +782,7 @@ impl MailApp {
         };
         NavShell::new()
             .with_id("mail-shell")
-            .sidebar(Box::new(MailSidebar::new(shared.clone())))
+            .sidebar(Box::new(sidebar::sidebar(shared)))
             .overview(Box::new(MessageList::new(shared.clone())))
             .content(Box::new(MessageReader::new(shared.clone())))
             .sidebar_header("", vec![Box::new(add_account)])
@@ -945,14 +945,12 @@ impl MailApp {
                 Intent::Forward(id) => self.open_forward(id),
                 Intent::EditDraft(id) => self.open_draft(id),
                 Intent::ContextMenu(id, at, row) => self.open_menu(id, at, Some(row)),
-                Intent::Settings(idx) => self.open_setup_edit(idx),
                 Intent::SaveAttachment(message_id, index) => {
                     self.request_attachment_save(message_id, index);
                 }
                 Intent::Engine(req) => {
                     self.post_engine(req);
                 }
-                Intent::Toast(msg) => self.shared.borrow_mut().status = Some(msg),
                 Intent::ConfirmBulkPurge => {
                     let count = self.shared.borrow().selected_bulk_ids().len();
                     if count == 0 {
@@ -2024,6 +2022,9 @@ impl MailApp {
         }
         match self.engine.as_ref() {
             Some(_) => {
+                if let Some(fields) = self.setup_fields() {
+                    fields.expect_oauth();
+                }
                 self.post_engine(EngineRequest::oauth_authorize(
                     email.clone(),
                     provider,
@@ -2303,6 +2304,9 @@ impl MailApp {
                 request_id,
                 account_id,
             } if self.expects_engine_event(request_id, EngineRequestKind::OAuthAuthorize) => {
+                if let Some(fields) = self.setup_fields() {
+                    fields.complete_oauth(&account_id);
+                }
                 st.status = Some(format!("Signed in as {account_id}"));
                 report_account_sync(
                     &account_id,
@@ -3558,7 +3562,7 @@ impl Widget for MailApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let point = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            let point = ctx.logical(position);
             self.shared.borrow_mut().last_mouse = point;
             self.dirty = true;
         }
@@ -4279,11 +4283,11 @@ impl MailApp {
     pub(crate) fn live_rows(&self) -> Vec<ui::framework::LiveRow> {
         let mut rows: Vec<_> = crate::resource::live_extras(self)
             .into_iter()
-            .map(live_row)
+            .map(ui::framework::LiveRow::from_resource)
             .collect();
-        rows.push(live_row(crate::actions::accounts_collection(
-            &self.accounts_rows(),
-        )));
+        rows.push(ui::framework::LiveRow::from_resource(
+            crate::actions::accounts_collection(&self.accounts_rows()),
+        ));
         rows.extend(self.contact_recipient_rows());
         rows
     }
@@ -4298,18 +4302,18 @@ impl MailApp {
         if id.starts_with("mail.account") {
             let accounts = crate::actions::accounts_collection(&self.accounts_rows());
             if id == "mail.accounts" {
-                return Some(live_row(accounts));
+                return Some(ui::framework::LiveRow::from_resource(accounts));
             }
             return accounts
                 .children
                 .into_iter()
                 .find(|account| account.id.as_str() == id)
-                .map(live_row);
+                .map(ui::framework::LiveRow::from_resource);
         }
         if let Some(message_id) = id.strip_prefix("mail.message:") {
-            return self
-                .resource_message_row(message_id)
-                .map(|row| live_row(crate::actions::message_resource(&row)));
+            return self.resource_message_row(message_id).map(|row| {
+                ui::framework::LiveRow::from_resource(crate::actions::message_resource(&row))
+            });
         }
         if let Some(rest) = id.strip_prefix("mail.attachment:")
             && let Some((message_id, index)) = rest.rsplit_once(':')
@@ -4320,7 +4324,7 @@ impl MailApp {
                 .children
                 .into_iter()
                 .nth(index)
-                .map(live_row);
+                .map(ui::framework::LiveRow::from_resource);
         }
         if let Some(stable) = id.strip_prefix("mail.thread:") {
             let (subject, messages) = self.resource_thread_rows(stable)?;
@@ -4334,14 +4338,16 @@ impl MailApp {
                 },
             );
             for message in &messages {
-                thread = thread.row(live_row(crate::actions::message_resource(message)));
+                thread = thread.row(ui::framework::LiveRow::from_resource(
+                    crate::actions::message_resource(message),
+                ));
             }
             return Some(thread);
         }
         crate::resource::live_extras(self)
             .into_iter()
             .find(|extra| extra.id.as_str() == id)
-            .map(live_row)
+            .map(ui::framework::LiveRow::from_resource)
     }
 
     /// This device's accounts, `(id, label, active)`.
@@ -4355,28 +4361,12 @@ impl MailApp {
             .map(|(index, account)| {
                 (
                     account.id.clone(),
-                    account.label().to_string(),
+                    account.config.label().to_string(),
                     state.accounts.active == index,
                 )
             })
             .collect()
     }
-}
-
-/// `resource`, an item this window has loaded, as the row it publishes: its
-/// view and effect operations. Its document actions are the mailbox's own,
-/// on the published message the row merges into.
-fn live_row(resource: tilo_actions::Resource) -> ui::framework::LiveRow {
-    let mut row = ui::framework::LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
-    for action in resource.actions {
-        if action.kind != tilo_actions::OperationKind::Document {
-            row = row.operation(action);
-        }
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
 }
 
 fn prepare_calendar_invitation_draft(

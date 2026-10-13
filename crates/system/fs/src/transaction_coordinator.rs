@@ -423,7 +423,6 @@ pub enum RecordTransactionCoordinatorError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
 
     use collab_types::Ed25519PublicKey;
     use ed25519_dalek::SigningKey;
@@ -431,7 +430,7 @@ mod tests {
         CONTENT_REVISION_VERSION, ContentHash, FILE_BINDING_VERSION,
         FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileMutationOperation,
         FileMutationParticipant, FileMutationParticipantRole, FileMutationTransaction,
-        FileMutationTransactionManifest, FileNodeKind, FileProvenance, FileRecordId, FileVersionId,
+        FileMutationTransactionManifest, FileNodeKind, FileProvenance, FileVersionId,
         FileVersionV1,
     };
     use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -439,26 +438,13 @@ mod tests {
 
     use super::*;
     use crate::namespace::ROOT_INO;
-    use crate::record_replication::{RecordAction, RecordEnvelopeV1, RecordOperationV1};
+    use crate::record_replication::{RecordEnvelopeV1, RecordOperationV1};
     use crate::record_repository::RecordRepositoryKey;
     use crate::record_transaction::{
         RECORD_TRANSACTION_JOURNAL_VERSION, RecordTransactionParticipantBatch,
     };
 
-    struct Authorizer {
-        actor: FileActor,
-        records: BTreeSet<FileRecordId>,
-    }
-
-    impl RecordAuthorizer for Authorizer {
-        fn actor_is_certified(&self, actor: &FileActor) -> bool {
-            actor == &self.actor
-        }
-
-        fn allows(&self, actor: &FileActor, record_id: FileRecordId, _: RecordAction) -> bool {
-            actor == &self.actor && self.records.contains(&record_id)
-        }
-    }
+    use crate::record_replication::test_authorizers::AllowActorOn;
 
     #[test]
     #[allow(
@@ -602,7 +588,7 @@ mod tests {
         )
         .unwrap();
         let repository = RecordRepository::open(temp.path().join("records")).unwrap();
-        let authorizer = Authorizer {
+        let authorizer = AllowActorOn {
             actor,
             records: [source_record, victim_record].into_iter().collect(),
         };

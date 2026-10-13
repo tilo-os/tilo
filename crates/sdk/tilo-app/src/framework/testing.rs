@@ -1055,6 +1055,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.call_at(None, resource, id, arguments, false)
     }
 
+    /// [`Self::call_on`], answering the whole output: the value and the
+    /// resources the call produced, such as the items a verb created.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn call_on_output(
+        &mut self,
+        resource: &str,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+        self.call_output_at(None, resource, id, arguments, false)
+    }
+
     /// What the host is asking the person to confirm right now — a
     /// destructive verb or a removal that a button, a menu, the palette or
     /// an immediate application submitted — and the text that confirms it.
@@ -1129,6 +1143,18 @@ impl<A: ResourceApp> HeadlessApp<A> {
         arguments: serde_json::Value,
         confirmed: bool,
     ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        self.call_output_at(ambient, resource, id, arguments, confirmed)
+            .map(|output| output.and_then(|output| output.value))
+    }
+
+    fn call_output_at(
+        &mut self,
+        ambient: Option<&tilo_actions::ActionContext>,
+        resource: &str,
+        id: &str,
+        arguments: serde_json::Value,
+        confirmed: bool,
+    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
         let serde_json::Value::Object(arguments) = arguments else {
             return Err(tilo_actions::DoorError::InvalidArguments(
                 "arguments are an object".into(),
@@ -1150,7 +1176,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             }
         };
         harness.relayout();
-        Ok(started.completed().and_then(|output| output.value))
+        Ok(started.completed())
     }
 
     fn invoke_as(
@@ -1453,6 +1479,7 @@ pub fn drive_live_window<A: ResourceApp, T>(
 ///
 /// # Errors
 /// Returns any launch, storage or construction failure.
+#[cfg(feature = "native")]
 pub fn drive_live_embedded<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::app::EmbeddedApp) -> T,
 ) -> Result<T, LaunchError> {

@@ -114,7 +114,7 @@ impl Socket {
         if bytes.len() > super::FRAME_BYTES {
             return Err(io::Error::other("editor packet exceeds its bound"));
         }
-        let received = crate::fd_transport::recv_data(self.0.as_raw_fd(), bytes)?;
+        let received = crate::fd_transport::recv_data(&self.0, bytes)?;
         if received == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,

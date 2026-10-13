@@ -130,7 +130,7 @@ impl ShareControlServer {
     }
 
     /// Wake `reachability` before a share is created: its recipient will
-    /// dial this device (TIL-774).
+    /// dial this device.
     #[must_use]
     pub fn with_reachability(mut self, reachability: crate::reachability::Reachability) -> Self {
         self.reachability = reachability;
@@ -210,7 +210,7 @@ impl ShareControlServer {
             ShareControlOperationV1::CreateNamed { .. }
                 | ShareControlOperationV1::CreateBearerV2 { .. }
         ) {
-            self.reachability.wake("a share is being created");
+            crate::reachability::wake(&self.reachability, "a share is being created");
         }
         let result = match request.operation {
             ShareControlOperationV1::CreateNamed {

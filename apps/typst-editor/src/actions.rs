@@ -77,18 +77,6 @@ pub struct TypstResourceCtx<'a> {
     pub page_count: usize,
 }
 
-/// `resource`, a live entity of the surface, as the row it publishes.
-pub fn live_row(resource: Resource) -> ui::framework::LiveRow {
-    let mut row = ui::framework::LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
-    for action in resource.actions {
-        row = row.operation(action);
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
-}
-
 fn truncate_label(text: &str, max_chars: usize) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= max_chars {
