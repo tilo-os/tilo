@@ -172,7 +172,7 @@ interface ChannelHandle {
   # resources. A delta that does not apply (an unknown shape or template, an
   # invalid action) is refused and changes nothing; the publisher then sends
   # a `reset` delta.
-  publishActionSurface @60 (appId :Text, reset :Bool,
+  publishActionSurface @61 (appId :Text, reset :Bool,
                             shapes :List(ActionShape),
                             templates :List(ActionTemplate),
                             resources :List(ActionResource),
@@ -442,6 +442,10 @@ interface ChannelHandle {
   # a timer. A host without a channel service answers unimplemented, and the
   # endpoint asks on a timer as before.
   channelKeysChanged @59 (after :UInt64) -> (change :UInt64);
+  # Informational bounded reports, correlated to that same original invocation.
+  # Final receipt remains authoritative. No fallback to raw execution or @58.
+  approvedCheckReportedProgress @60 (request :Data) -> (stream :ApprovedCheckReportedProgressStream);
+
 
 }
 
@@ -1016,4 +1020,9 @@ struct ActionResource {
   resourceLabel @2 :Text;
   semanticIdentity @3 :ResourceSemanticIdentity;
   template @4 :Data;
+}
+
+# Each read returns exactly one nonempty field. Receipt/error freezes the lane.
+interface ApprovedCheckReportedProgressStream {
+  read @0 () -> (report :Data, receipt :Data, error :Text);
 }
