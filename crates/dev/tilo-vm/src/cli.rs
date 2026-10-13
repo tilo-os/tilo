@@ -127,7 +127,7 @@ pub enum Command {
     SwapArtifact(ArtifactSwap),
     /// Import a prebuilt local component without building, waking or swapping a slot.
     #[command(
-        after_help = "Example:\n  tilo-vm import-layer launcher --archive launcher.tar --archive-sha256 <producer-sha256> --provenance launcher.json --manifest os/components.toml\n\nThe archive hash pins the producer bytes. Local provenance stays non-promotable.\nThe daemon validates and verifies the native layer; apply its returned hash with\n  tilo-vm swap launcher --slot <slot> --from layer:<hash>\nafterwards."
+        after_help = "Examples:\n  tilo-vm import-layer launcher --archive launcher.tar --archive-sha256 <producer-sha256> --provenance launcher.json --manifest os/components.toml\n\nThe archive hash pins the producer bytes. Local provenance stays non-promotable.\nThe daemon validates and verifies the native layer; apply its returned hash with\n  tilo-vm swap launcher --slot <slot> --from layer:<hash>\nafterwards."
     )]
     ImportLayer(LocalLayerImport),
     /// Put a build of a component (or an app) into a slot and restart what it needs.
