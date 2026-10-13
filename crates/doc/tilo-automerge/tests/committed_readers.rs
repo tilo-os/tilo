@@ -1,10 +1,5 @@
 //! Reading a document's committed history through a shared reference.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc};
 

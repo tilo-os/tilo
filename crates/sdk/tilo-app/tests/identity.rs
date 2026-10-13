@@ -1,6 +1,5 @@
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::float_cmp,
     reason = "test assertions; levels are whole numbers, exact in f64"
 )]

@@ -94,10 +94,7 @@ impl HistoryHost {
             Style {
                 flex_direction: FlexDirection::Row,
                 flex_grow: 1.0,
-                min_size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
+                min_size: Size::from_lengths(0.0, 0.0),
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
@@ -122,10 +119,7 @@ impl HistoryHost {
         let root = tree.parent_node(
             Style {
                 flex_direction: FlexDirection::Column,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             &composition_children,

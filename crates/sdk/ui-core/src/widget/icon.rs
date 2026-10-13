@@ -11,7 +11,7 @@
 //! [`IconWidget::with_color`], [`IconWidget::dim`], [`IconWidget::with_stroke`].
 
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
@@ -140,10 +140,7 @@ impl Widget for IconWidget {
     ) -> NodeId {
         let edge = self.size.px(theme);
         let style = Style {
-            size: Size {
-                width: Dimension::length(edge),
-                height: Dimension::length(edge),
-            },
+            size: Size::from_lengths(edge, edge),
             flex_shrink: 0.0,
             ..Default::default()
         };

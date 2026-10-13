@@ -11,7 +11,7 @@
 //! link fired.
 
 use crate::widget::ModelPath;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -201,10 +201,7 @@ impl Widget for Link {
             self.dirty = true;
         }
         let style = Style {
-            size: Size {
-                width: Dimension::auto(),
-                height: Dimension::auto(),
-            },
+            size: Size::auto(),
             flex_shrink: 0.0,
             flex_grow: 0.0,
             ..Default::default()

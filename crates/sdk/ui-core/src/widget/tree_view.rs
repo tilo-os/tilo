@@ -3204,10 +3204,6 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     .and_then(|decoration| decoration.presence.as_ref())
                 {
                     // Mist is painted in device space.
-                    #[allow(
-                        clippy::arithmetic_side_effects,
-                        reason = "kurbo Affine application is floating-point matrix math; it cannot overflow or panic"
-                    )]
                     let device = transform.transform_rect_bbox(row_rect);
                     for user in presence.peers_on(key) {
                         presence.draw_peer_mist(scene, theme, user, device);
@@ -5443,10 +5439,7 @@ mod tests {
             let node = view.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
             let root_taffy = taffy.parent_node(
                 Style {
-                    size: Size {
-                        width: Dimension::length(200.0),
-                        height: Dimension::length(80.0),
-                    },
+                    size: Size::from_lengths(200.0, 80.0),
                     ..Default::default()
                 },
                 &[node],

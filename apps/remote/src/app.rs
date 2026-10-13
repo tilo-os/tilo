@@ -25,7 +25,7 @@ use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
 
 use iroh_base::{EndpointId, SecretKey};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -1998,10 +1998,6 @@ impl Widget for RemoteApp {
         Some(self)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each pending operation's exact terminal settlement is kept beside cancellation and generation validation"
-    )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // The saved connections arrive through the resource
         // ([`Self::adopt_resource_state`]); here the window catches up on
@@ -2218,10 +2214,6 @@ impl RemoteApp {
         rows
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one arm per published Remote operation keeps the effect boundary auditable"
-    )]
     /// Answer `effect`. Opening a session and sending text answer once the
     /// transport says how it went ([`Self::settle_pending_effect`]).
     pub(crate) fn answer_effect(
@@ -2402,10 +2394,6 @@ impl RemoteApp {
 
     /// How the session effect still waiting ended, once it has; `cancelled`
     /// when its caller gave up on it.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each pending operation's exact terminal settlement is kept beside cancellation and generation validation"
-    )]
     pub(crate) fn pending_outcome(&mut self, cancelled: bool) -> Option<Result<(), String>> {
         let pending = self.pending_resource_operation.as_ref()?;
         if cancelled
@@ -2769,10 +2757,7 @@ impl Widget for SessionPane {
     ) -> NodeId {
         let style = Style {
             flex_grow: 1.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

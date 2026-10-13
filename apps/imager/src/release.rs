@@ -710,10 +710,6 @@ fn download_archive_observed(
     Err("The Tilo installer server did not honor a safe download restart.".into())
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the authenticated download, expansion, and atomic cache publication form one fail-closed transaction"
-)]
 /// Download, verify and expand `release`, telling `notify` how far it is.
 /// Blocks; run it off the UI thread. `control` stops it between chunks.
 pub fn verified_image_observed(
@@ -960,10 +956,6 @@ mod tests {
 
     /// Architecture-matched media selection.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn media_selection_matches_the_native_host_architecture_only() {
         // Phase `development_catalog_is_well_formed`.
         {
@@ -1191,10 +1183,6 @@ mod tests {
 
     /// Digest validation, verified source identity and redirect checks.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn release_sources_keep_strict_digests_identity_and_trusted_redirects() {
         // Phase `digest_validation_is_strict`.
         {
@@ -1254,10 +1242,6 @@ mod tests {
 
     /// Range resume, restart and oversized partials.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn release_download_resumes_only_valid_ranges() {
         // Phase `interrupted_download_keeps_bytes_and_resumes_with_a_valid_range`.
         {
@@ -1374,10 +1358,6 @@ mod tests {
 
     /// Transient failures, progress reporting and cancellation.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn release_download_failures_and_cancellation_keep_the_partial() {
         // Phase `transient_http_failure_does_not_destroy_a_partial_archive`.
         {
@@ -1485,10 +1465,6 @@ mod internal_catalog_tests {
     }
     /// Legacy media, internal purpose, unknown fields and published packages.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn internal_catalog_entries_parse_strictly_and_separately_from_media() {
         // Phase `legacy_media_still_parses`.
         {
@@ -1585,10 +1561,6 @@ mod internal_catalog_tests {
     }
     /// Internal entry binding, selection mismatches and strict profiles.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn internal_entries_bind_manifest_bytes_release_and_architecture() {
         // Phase `internal_entries_remain_separate_and_bind_exact_manifest_bytes`.
         {

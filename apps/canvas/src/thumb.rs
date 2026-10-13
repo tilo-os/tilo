@@ -81,10 +81,7 @@ impl Widget for Thumb {
     ) -> NodeId {
         use ui::widget::TaffyTreeExt as _;
         let style = Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(self.size.0),
-                height: taffy::Dimension::length(self.size.1),
-            },
+            size: taffy::Size::from_lengths(self.size.0, self.size.1),
             flex_shrink: 0.0,
             ..Default::default()
         };

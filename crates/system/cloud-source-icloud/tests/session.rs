@@ -1,7 +1,5 @@
 //! The stored form of an iCloud session: what custody seals in the vault.
 
-#![allow(clippy::unwrap_used, reason = "test fixtures")]
-
 use base64::Engine as _;
 use cloud_source_icloud::auth::StoredSession;
 use cloud_source_icloud::fake::FakeICloud;

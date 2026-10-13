@@ -16,7 +16,7 @@ use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -3835,10 +3835,6 @@ impl MapsApp {
     /// The departure time: a quiet Leave/Arrive choice and a stepper that
     /// moves the time in quarter hours, with "Now" to go back. Defaults to
     /// leaving now. Returns the y below it.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one row of related controls laid out against each other"
-    )]
     fn draw_time_picker(
         &mut self,
         scene: &mut Scene,
@@ -4678,10 +4674,7 @@ impl Widget for MapsApp {
             .set_preferred_size(self.nav_card_size);
         let node = taffy.widget_leaf(
             Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             node_map,

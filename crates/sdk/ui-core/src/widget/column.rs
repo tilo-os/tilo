@@ -494,10 +494,7 @@ mod tests {
             let column_node = col.build_layout(&mut taffy, &theme, &mut node_map);
             let host_node = taffy.parent_node(
                 Style {
-                    size: taffy::Size {
-                        width: length(400.0_f32),
-                        height: length(300.0_f32),
-                    },
+                    size: taffy::Size::from_lengths(400.0_f32, 300.0_f32),
                     ..Default::default()
                 },
                 &[column_node],

@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! A role change while the app runs reaches views, surfaces and the
 //! dispatcher without reopening the app.
 

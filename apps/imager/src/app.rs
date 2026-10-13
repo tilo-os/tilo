@@ -2886,7 +2886,7 @@ mod tests {
             app.goto(Step::Confirm);
             app.confirm_text = String::from("sdb");
             let error = app
-                .begin_write("/dev/sdb", "sdb")
+                .begin_write(&app.target().unwrap().dev_path(), "sdb")
                 .expect_err("an invalid profile refuses the write");
             assert_eq!(app.step, Step::Confirm);
             assert!(app.job_control.is_none());
@@ -2944,7 +2944,7 @@ mod tests {
             app.profile.wifi_ssid = "studio".into();
             app.wifi_psk = "correct-horse".into();
             let err = app
-                .begin_write("/dev/sdb", "sdb")
+                .begin_write(&app.target().unwrap().dev_path(), "sdb")
                 .expect_err("privileged writer is off in unit tests");
             assert!(
                 !err.to_lowercase().contains("installer stick"),
@@ -2965,7 +2965,7 @@ mod tests {
             app.goto(Step::Confirm);
             app.confirm_text = String::from("wrong");
             let error = app
-                .begin_write("/dev/sdb", "wrong")
+                .begin_write(&app.target().unwrap().dev_path(), "wrong")
                 .expect_err("a mistyped device name refuses the write");
             assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
             assert!(app.job_control.is_none());
@@ -2998,7 +2998,7 @@ mod tests {
         app.ssh_public_key = key.into();
         assert!(!app.profile.enroll_local_identity);
         let error = app
-            .begin_write("/dev/sdb", "sdb")
+            .begin_write(&app.target().unwrap().dev_path(), "sdb")
             .expect_err("access staging reaches the disabled writer without enrollment");
         assert!(
             error.to_lowercase().contains("disabled") || error.to_lowercase().contains("backend"),
@@ -3037,7 +3037,7 @@ mod tests {
             .unwrap();
         present(&mut app, &doc);
         let error = app
-            .begin_write("/dev/sdb", "sdb")
+            .begin_write(&app.target().unwrap().dev_path(), "sdb")
             .expect_err("Wi-Fi without a password must be refused before enrollment");
         assert!(error.contains("Wi-Fi password is required"), "{error}");
         assert!(app.job_control.is_none());
@@ -3067,7 +3067,7 @@ mod tests {
         // layout, draw, animation tick or test-only profile assignment intervenes.
         app.present_state(&Imager::read(&doc).expect("the updated resource"));
         let error = app
-            .begin_write("/dev/sdb", "sdb")
+            .begin_write(&app.target().unwrap().dev_path(), "sdb")
             .expect_err("the newly published network requires its password");
         assert!(error.contains("Wi-Fi password is required"), "{error}");
         assert_eq!(app.profile.wifi_ssid, "studio");
@@ -3182,7 +3182,7 @@ mod tests {
         );
         host.with_widget::<ImagerApp, _>(|app| {
             let error = app
-                .begin_write("/dev/sdb", "sdb")
+                .begin_write(&app.target().unwrap().dev_path(), "sdb")
                 .expect_err("an incomplete key must refuse the write");
             assert!(error.contains("public key"), "unexpected refusal: {error}");
             assert!(app.job_control.is_none());

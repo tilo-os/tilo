@@ -4479,10 +4479,6 @@ impl Widget for BooksApp {
         self.deliver_effect_replies();
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "sync refreshes document-derived reader and search state"
-    )]
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, path) = ui::doc::document_ref(doc, path);
         // Hydrate the persisted library on the first frame (when the document is

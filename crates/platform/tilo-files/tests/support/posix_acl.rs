@@ -11,7 +11,6 @@
     clippy::expect_used,
     clippy::panic,
     clippy::unreachable,
-    clippy::arithmetic_side_effects,
     reason = "test fixture: a malformed specification or refused syscall fails the test"
 )]
 

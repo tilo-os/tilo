@@ -1257,10 +1257,6 @@ mod layout_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn functions_operators_scripts_and_delimiters_get_math_spacing_and_baselines() {
         // phase: func_name_and_argument_share_size_and_baseline
         // The 3D default surface `sin(√(x²+y²))` used to render its `sin` at the
