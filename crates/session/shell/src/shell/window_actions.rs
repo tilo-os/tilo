@@ -335,12 +335,17 @@ pub(crate) fn close_tab_unrecorded(
         st.bump();
         return Ok(());
     }
+    let activity = crate::shell::tab_binding::active_workspace_activity_tab(&st.tree())
+        .is_some_and(|(_, _, tab)| tab == tab_id);
     let removed = {
         let mut tree = st.tree_mut();
         tab_binding::remove_tab(&mut tree, tab_id)
     };
     if !removed {
         return Err(TabActionError::UnknownTab);
+    }
+    if activity {
+        st.revoke_history_summary_presentation();
     }
     st.hosted_inputs.prune_documents(&mut st.tree_mut());
     // Close is durable before the client is asked to exit.

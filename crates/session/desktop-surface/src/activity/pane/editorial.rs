@@ -193,17 +193,17 @@ impl RoomActivityPane {
                     return None;
                 }
                 if let Some(id) = &req.record_id {
-                    // Clearing addresses the stored record, not its clipped band.
-                    if req.label.trim().is_empty() {
-                        self.editorial_record(id)?;
-                    } else {
-                        let (a, b) = self.displayed_record_bounds(id)?;
-                        if self.timeline.entries().get(a)?.id != req.start
-                            || self.timeline.entries().get(b)?.id != req.end
-                        {
-                            return None;
-                        }
-                        self.editorial_bounds(req.start, req.end)?;
+                    // Both rename and clear address an admitted displayed band,
+                    // never a document-wide record supplied by a caller. Clear
+                    // retains the stored open/clipped anchors without editing them.
+                    let (a, b) = self.displayed_record_bounds(id)?;
+                    if self.timeline.entries().get(a)?.id != req.start
+                        || self.timeline.entries().get(b)?.id != req.end
+                    {
+                        return None;
+                    }
+                    self.editorial_bounds(req.start, req.end)?;
+                    if !req.label.trim().is_empty() {
                         self.editorial_record_bounds(id)?;
                     }
                 } else {
@@ -501,6 +501,7 @@ mod tests {
                 ..Default::default()
             });
         assert!(pane.validate_editorial(&rename(4, 5, "Renamed")).is_none());
+        assert!(pane.validate_editorial(&rename(4, 5, "")).is_none());
     }
 
     #[test]
@@ -509,6 +510,7 @@ mod tests {
         named(&mut pane, &[(0, Some(1)), (5, Some(2))]);
         assert_eq!(pane.named_positions().len(), 1);
         assert!(pane.validate_editorial(&rename(2, 5, "Renamed")).is_none());
+        assert!(pane.validate_editorial(&rename(2, 5, "")).is_none());
         assert!(
             pane.validate_editorial(&Op::Split {
                 record: "record-1".into(),
@@ -522,7 +524,8 @@ mod tests {
         named(&mut pane, &[(0, Some(1)), (2, None)]);
         assert!(pane.validate_editorial(&rename(2, 5, "Renamed")).is_some());
         assert_eq!(pane.editorial_record("record-1").unwrap().end, None);
-        assert!(pane.validate_editorial(&rename(0, 0, "")).is_some());
+        assert!(pane.validate_editorial(&rename(0, 0, "")).is_none());
+        assert!(pane.validate_editorial(&rename(2, 5, "")).is_some());
     }
 
     #[test]

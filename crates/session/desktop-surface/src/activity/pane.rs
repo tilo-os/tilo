@@ -884,6 +884,8 @@ pub struct RoomActivityPane {
     narrative_owner: u64,
     // Presentation identity must not be resurrected by an A → B → A transition.
     narrative_generation: u64,
+    summary_presentation_present: bool,
+    summary_absence_generation: u64,
     narrative_locale: String,
     summary_source_rects: Vec<(String, Rect)>,
     narrative_feedback: &'static str,
@@ -1127,6 +1129,8 @@ impl RoomActivityPane {
                 })
                 .unwrap_or_else(|_| std::process::abort()),
             narrative_generation: 0,
+            summary_presentation_present: true,
+            summary_absence_generation: 0,
             narrative_locale: ui::i18n::I18nManager::current_locale(),
             summary_source_rects: Vec::new(),
             narrative_feedback: "activity-summary-unavailable",
@@ -1227,6 +1231,7 @@ impl RoomActivityPane {
     /// shown. It advances only when the surface closes, so opening it cannot
     /// erase the very summary the user came to read.
     pub fn begin_view(&mut self, workspace: u64) {
+        self.set_summary_presentation_visible(self.view == ActivityView::CatchUp);
         self.viewed_changes.remove(&workspace);
         if self.scope != RoomScope::ThisRoom {
             self.scope = RoomScope::ThisRoom;
@@ -1303,6 +1308,7 @@ impl RoomActivityPane {
     }
 
     pub fn finish_view(&mut self, workspace: u64) {
+        self.set_summary_presentation_visible(false);
         self.replay_playing = false;
         let Some(viewed) = self.viewed_changes.remove(&workspace) else {
             return;
@@ -1407,7 +1413,7 @@ impl RoomActivityPane {
             .collect();
         if let (Some(start), Some(end)) = (positions.iter().min(), positions.iter().max()) {
             self.timeline.set_selection(Some((*start, *end)));
-            self.view = ActivityView::Explore;
+            self.set_view(ActivityView::Explore);
             self.expanded_brief = None;
             self.clear_comparison();
         }
@@ -1476,11 +1482,18 @@ impl RoomActivityPane {
     }
 
     pub fn set_view(&mut self, view: ActivityView) {
+        if self.view == ActivityView::CatchUp && view != self.view {
+            self.set_summary_presentation_visible(false);
+        }
         self.requested_review_task = None;
         if view != ActivityView::Replay {
             self.replay_playing = false;
         }
+        let changed = self.view != view;
         self.view = view;
+        if changed && view == ActivityView::CatchUp {
+            self.set_summary_presentation_visible(true);
+        }
         self.expanded_brief = None;
         if view == ActivityView::Tasks
             && self.selected_task.is_none()
@@ -2365,7 +2378,7 @@ impl RoomActivityPane {
         }
         if let Some(group) = focus.group_id {
             self.lens = LensSelection::WorkGroup(group);
-            self.view = ActivityView::Explore;
+            self.set_view(ActivityView::Explore);
         }
         if let Some(raw) = focus.entry_id.or(focus.resource_version) {
             let id = HistoryEntryId::from_bytes(raw);
@@ -2376,7 +2389,7 @@ impl RoomActivityPane {
                 .position(|entry| entry.id == id)
             {
                 self.timeline.set_selection(Some((index, index)));
-                self.view = ActivityView::Explore;
+                self.set_view(ActivityView::Explore);
             }
         }
         if let Some(resource) = focus.resource_id {
@@ -2397,7 +2410,7 @@ impl RoomActivityPane {
                 context_match || origin_match
             });
             self.lens = LensSelection::Resource(resource);
-            self.view = ActivityView::Explore;
+            self.set_view(ActivityView::Explore);
             if let Some(index) = matching {
                 self.timeline.set_selection(Some((index, index)));
                 self.explorer_pane = ExplorerPane::Details;
@@ -3269,6 +3282,22 @@ impl RoomActivityPane {
         self.narrative_request = request;
     }
 
+    /// Revoke deferred controls on absence, retaining evidence for reentry.
+    pub fn set_summary_presentation_visible(&mut self, visible: bool) {
+        let visible = visible && self.view == ActivityView::CatchUp;
+        if self.summary_presentation_present && !visible {
+            self.advance_narrative_generation();
+            self.summary_absence_generation = self.narrative_generation;
+        }
+        self.summary_presentation_present = visible;
+    }
+
+    /// Hosts cancel work superseded by absence even if the pane has reentered
+    /// `CatchUp` before their next frame; ordinary feedback updates are not absence.
+    pub fn summary_absence_generation(&self) -> u64 {
+        self.summary_absence_generation
+    }
+
     fn advance_narrative_generation(&mut self) {
         self.narrative_generation = self
             .narrative_generation
@@ -3335,7 +3364,7 @@ impl RoomActivityPane {
 
     fn summary_accessibility_node(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
-        if self.view != ActivityView::CatchUp {
+        if self.view != ActivityView::CatchUp || !self.summary_presentation_present {
             return None;
         }
         if let Some(narrative) = &self.narrative {
@@ -3373,6 +3402,9 @@ impl RoomActivityPane {
     }
 
     fn summary_source_id(&self, key: &str) -> Option<HistoryEntryId> {
+        if self.view != ActivityView::CatchUp || !self.summary_presentation_present {
+            return None;
+        }
         self.narrative
             .as_ref()?
             .source_ids
@@ -3422,6 +3454,9 @@ impl RoomActivityPane {
 
     /// Resolve a citation by identity in the current summary, never its ordinal.
     pub fn reveal_narrative_source(&mut self, id: HistoryEntryId) -> bool {
+        if self.view != ActivityView::CatchUp || !self.summary_presentation_present {
+            return false;
+        }
         if !self
             .narrative
             .as_ref()
@@ -6974,11 +7009,14 @@ impl RoomActivityPane {
                 if self.resume_target.is_some() && self.resume_rect.area() > 0.0 {
                     order.push(ActivityFocus::Resume);
                 }
-                order.extend(
-                    self.summary_source_rects
-                        .iter()
-                        .map(|(key, _)| ActivityFocus::SummarySource(key.clone())),
-                );
+                if self.summary_presentation_present {
+                    order.extend(self.narrative.iter().flat_map(|narrative| {
+                        narrative
+                            .source_ids
+                            .iter()
+                            .map(|id| ActivityFocus::SummarySource(self.summary_source_key(id)))
+                    }));
+                }
                 order.extend(
                     self.brief_rects
                         .iter()

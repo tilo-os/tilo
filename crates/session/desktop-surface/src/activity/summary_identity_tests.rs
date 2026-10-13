@@ -312,3 +312,78 @@ fn language_change_invalidates_summary_on_tick_and_rebuilds_unchanged_history() 
     assert!(pane.summary_source_id(&held).is_none());
     assert_ne!(pane.summary_accessibility_node().unwrap().key, held_text);
 }
+
+#[test]
+fn identical_summary_and_feedback_reentry_revoke_held_native_keys_without_viewed_changes() {
+    for close in [false, true] {
+        let (mut tree, mut pane) = fixture();
+        pane.set_view(ActivityView::CatchUp);
+        let request = pane.narrative_request().unwrap();
+        let heads = tree.doc.get_heads();
+        let workspace = tree.active.raw();
+        let held_feedback = pane.summary_accessibility_node().unwrap().key;
+        if close {
+            pane.finish_view(workspace);
+        } else {
+            pane.set_view(ActivityView::Explore);
+        }
+        assert!(pane.summary_accessibility_node().is_none());
+        if close {
+            pane.begin_view(workspace);
+        } else {
+            pane.set_view(ActivityView::CatchUp);
+        }
+        assert_eq!(pane.narrative_request(), Some(request.clone()));
+        assert_ne!(
+            pane.summary_accessibility_node().unwrap().key,
+            held_feedback
+        );
+        let id = *request.supplied_ids().iter().next().unwrap();
+        // Install without drawing: there are no acknowledged brief cards.
+        assert!(pane.apply_generated_narrative(ui::GroundedNarrative {
+            text: "Retained account.".into(),
+            source_ids: vec![id],
+            generator: "test-model".into(),
+            request: Some(Box::new(request.clone())),
+        }));
+        let retained = pane.narrative();
+        let held_text = pane.summary_accessibility_node().unwrap().key;
+        let held = pane.summary_source_key(&id);
+        let held_key = usize::try_from(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                .with_hashed_key(&held)
+                .key
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(pane.focus_accessibility_path(&[0, held_key]));
+        if close {
+            pane.finish_view(workspace);
+        } else {
+            pane.set_view(ActivityView::Explore);
+        }
+        assert!(!pane.focus_accessibility_path(&[0, held_key]));
+        if close {
+            pane.begin_view(workspace);
+        } else {
+            pane.set_view(ActivityView::CatchUp);
+        }
+        assert_eq!(pane.narrative_request(), Some(request));
+        assert_eq!(pane.narrative(), retained);
+        assert_ne!(pane.summary_accessibility_node().unwrap().key, held_text);
+        assert!(pane.summary_source_id(&held).is_none());
+        assert!(!pane.focus_accessibility_path(&[0, held_key]));
+        let fresh = pane.summary_source_key(&id);
+        let fresh_key = usize::try_from(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                .with_hashed_key(&fresh)
+                .key
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(pane.focus_accessibility_path(&[0, fresh_key]));
+        pane.open_summary_citation(&fresh);
+        assert!(pane.selected_ids().contains(&id));
+        assert_eq!(tree.doc.get_heads(), heads);
+    }
+}

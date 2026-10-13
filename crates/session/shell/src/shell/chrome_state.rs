@@ -685,6 +685,9 @@ pub struct ChromeState {
         Option<crate::shell::overlay_host::history_editorial::Pending>,
     history_summary: Option<HistorySummaryBinding>,
     history_summary_epoch: u64,
+    // Retain the publishing window's identity, never whichever Activity tab
+    // happens to occupy its former position after close/reopen.
+    history_summary_tab: Option<(StripId, GroupId, crate::shell::state::TabId)>,
     history_summary_owner: std::rc::Rc<()>,
     history_summary_action_request: Option<HistorySummaryAction>,
     /// The portal D-Bus backend's prompt queue drains onto the back
@@ -944,6 +947,7 @@ impl ChromeState {
             history_editorial_request: None,
             history_summary: None,
             history_summary_epoch: 0,
+            history_summary_tab: None,
             history_summary_owner: std::rc::Rc::new(()),
             history_summary_action_request: None,
             pending_grants: VecDeque::new(),
@@ -1761,11 +1765,13 @@ impl ChromeState {
     /// Publish the exact summary currently presented by Activity. Refreshes
     /// must clear this binding when there is no summary, including scope changes.
     pub fn publish_history_summary(&mut self, binding: Option<HistorySummaryBinding>) {
-        let mut binding = binding.filter(HistorySummaryBinding::is_valid);
+        let tab = crate::shell::tab_binding::active_workspace_activity_tab(&self.tree());
+        let mut binding = binding.filter(|binding| tab.is_some() && binding.is_valid());
         if let Some(binding) = binding.as_mut() {
             binding.epoch = self.history_summary_epoch;
         }
-        if self.history_summary != binding {
+        let tab = binding.as_ref().and(tab);
+        if self.history_summary != binding || self.history_summary_tab != tab {
             self.history_summary_epoch = self
                 .history_summary_epoch
                 .checked_add(1)
@@ -1775,6 +1781,7 @@ impl ChromeState {
             }
             self.history_summary_action_request = None;
             self.history_summary = binding;
+            self.history_summary_tab = tab;
             self.bump();
         }
     }
@@ -1783,11 +1790,31 @@ impl ChromeState {
         std::rc::Rc::downgrade(&self.history_summary_owner)
     }
 
+    /// A close is absence even if the same tab is restored before a frame.
+    pub fn revoke_history_summary_presentation(&mut self) {
+        self.history_summary_epoch = self
+            .history_summary_epoch
+            .checked_add(1)
+            .unwrap_or_else(|| std::process::abort());
+        self.history_summary = None;
+        self.history_summary_tab = None;
+        self.history_summary_action_request = None;
+        self.bump();
+    }
+
+    pub fn history_summary_epoch(&self) -> u64 {
+        self.history_summary_epoch
+    }
+
     pub fn history_summary_binding(&self) -> Option<&HistorySummaryBinding> {
         self.history_summary.as_ref().filter(|binding| {
-            self.tree().active_workspace().is_some_and(|workspace| {
-                (workspace.id, workspace.room) == (binding.workspace, binding.room)
-            })
+            let tree = self.tree();
+            self.history_summary_tab.is_some()
+                && crate::shell::tab_binding::active_workspace_activity_tab(&tree)
+                    == self.history_summary_tab
+                && tree.active_workspace().is_some_and(|workspace| {
+                    (workspace.id, workspace.room) == (binding.workspace, binding.room)
+                })
         })
     }
 
@@ -1795,7 +1822,8 @@ impl ChromeState {
     /// refreshing Activity. Both read and citation actions retain provenance.
     ///
     /// # Errors
-    /// Refuses a changed scope, stale summary, or missing citation.
+    /// Refuses a hidden or replaced window, changed scope, stale summary,
+    /// or missing citation.
     pub fn request_history_summary_action(
         &mut self,
         binding: &HistorySummaryBinding,

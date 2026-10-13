@@ -866,6 +866,9 @@ pub struct ShellOverlayHost {
     /// Background, local-only prose renderer. Deterministic summaries remain
     /// installed until a cited model result passes validation.
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
+    summary_window: Option<(StripId, GroupId, crate::shell::state::TabId)>,
+    summary_absence_generation: u64,
+    summary_registry_epoch: u64,
     status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
     status_narrative_request: Option<ui::NarrativeRequest>,
     /// Whether the sheet was open last frame, to invalidate derived rows
@@ -2474,6 +2477,9 @@ impl ShellOverlayHost {
             room_activity: inputs.room_activity,
             replay_owner: std::rc::Rc::new(()),
             history_narrator: inputs.history_narrator,
+            summary_window: None,
+            summary_absence_generation: 0,
+            summary_registry_epoch: 0,
             status_narrator: inputs.status_narrator,
             status_narrative_request: None,
             room_activity_was_open: false,
@@ -10895,6 +10901,9 @@ impl ShellOverlayHost {
             }
             None => {}
         }
+        // Citation reveal leaves CatchUp immediately; revoke its registry
+        // publication in the same refresh rather than one frame later.
+        self.refresh_history_narrative();
     }
 
     /// Content viewport of the active personal Activity tab. Its surrounding
@@ -10930,12 +10939,45 @@ impl ShellOverlayHost {
     }
 
     fn refresh_history_narrative(&mut self) {
+        let window = self.chrome.as_ref().and_then(|chrome| {
+            crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
+        });
+        let revoked = self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.history_summary_epoch() != self.summary_registry_epoch
+                && state.history_summary_binding().is_none()
+        });
+        if revoked || (self.summary_window.is_some() && self.summary_window != window) {
+            // A close/reopen between frame pumps is still absence. Never
+            // transfer native node authority to the tab occupying its slot.
+            self.room_activity.set_summary_presentation_visible(false);
+        }
+        self.summary_window = window;
+        let presented = self.activity_window_rect().is_some()
+            && self.room_activity.view() == crate::shell::room_activity::ActivityView::CatchUp;
+        self.room_activity
+            .set_summary_presentation_visible(presented);
+        let absence = self.room_activity.summary_absence_generation();
+        if self.summary_absence_generation != absence {
+            if let Some(narrator) = self.history_narrator.as_mut() {
+                narrator.invalidate();
+            }
+            self.summary_absence_generation = absence;
+        }
         self.room_activity.refresh_narrative_locale();
-        self.update_history_narrative();
+        if presented {
+            self.update_history_narrative();
+        } else if let Some(narrator) = self.history_narrator.as_mut() {
+            narrator.invalidate();
+        }
         if let Some(chrome) = self.chrome.as_ref() {
-            let binding = self
-                .room_activity
-                .narrative_request()
+            // A retained narrative is evidence, not a live presentation. In
+            // particular, a hidden read must never reopen its cached actions.
+            let presented = self.activity_window_rect().is_some()
+                && self.room_activity.view() == crate::shell::room_activity::ActivityView::CatchUp;
+            let binding = presented
+                .then(|| self.room_activity.narrative_request())
+                .flatten()
                 .zip(self.room_activity.narrative())
                 .and_then(|(request, narrative)| {
                     let state = chrome.borrow();
@@ -10954,6 +10996,7 @@ impl ShellOverlayHost {
                     })
                 });
             chrome.borrow_mut().publish_history_summary(binding);
+            self.summary_registry_epoch = chrome.borrow().history_summary_epoch();
         }
     }
 
@@ -10962,6 +11005,15 @@ impl ShellOverlayHost {
             return;
         };
         if let Some(request) = self.room_activity.narrative_request() {
+            // Reentry needs new presentation authority, not necessarily a new
+            // model run. Revalidate retained prose against the exact evidence.
+            if self
+                .room_activity
+                .narrative()
+                .is_some_and(|narrative| ui::validate_narrative(&request, narrative).is_some())
+            {
+                return;
+            }
             narrator.request(&request);
             self.room_activity
                 .set_narrative_feedback(narrator.feedback_for(&request));
@@ -21524,6 +21576,9 @@ impl ShellOverlayHost {
         }
         self.apply_pending_history_editorial();
         self.room_activity_was_open = visible;
+        if !visible && let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().publish_history_summary(None);
+        }
         if visible {
             self.refresh_room_activity();
             self.apply_pending_history_action();

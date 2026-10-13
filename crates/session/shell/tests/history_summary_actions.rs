@@ -243,45 +243,13 @@ fn history_summary_host_accessibility_keeps_exact_citations_and_revokes_stale_on
 fn history_summary_host_revalidates_deferred_citations() {
     use shell::shell::room_activity::{ActivityView, RoomScope};
 
-    let mut tree = WorkspaceTree::bootstrap_demo();
-    tree.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
-    let (mut host, chrome) = build_tilo_overlay_host_with_inputs(
-        tree.shared(),
-        false,
-        ui::record::RecordStore::in_memory(),
-        HostedTileInputs::fixture().expect("fixture inputs"),
-    );
-    *host.room_activity_mut() = RoomActivityPane::new();
-    host.room_activity_mut().set_view(ActivityView::Explore);
-    host.force_room_activity_settled();
-    for name in ["First recorded rename", "Second recorded rename"] {
-        let state = chrome.borrow();
-        let mut tree = state.tree_mut();
-        let reader = tree.doc.get_actor().clone();
-        tree.doc
-            .set_actor(automerge::ActorId::from(b"summary-peer".as_slice()));
-        tree.desktop.workspaces[0].name = name.into();
-        tree.seed_doc_from_cache();
-        tree.doc.set_actor(reader);
-        drop(tree);
-        drop(state);
-        host.force_room_activity_settled();
-    }
-    let request = host
-        .room_activity()
-        .narrative_request()
-        .expect("recorded briefs");
-    let ids: Vec<_> = request.supplied_ids().into_iter().take(2).collect();
+    let (mut host, chrome, narrative) = accessibility_summary_fixture();
+    let ids = narrative.source_ids.clone();
     assert_eq!(ids.len(), 2);
     host.room_activity_mut().set_view(ActivityView::CatchUp);
     assert!(
         host.room_activity_mut()
-            .apply_generated_narrative(ui::GroundedNarrative {
-                text: "Recorded workspace renames.".into(),
-                source_ids: ids.clone(),
-                generator: "test-model".into(),
-                request: Some(Box::new(request)),
-            })
+            .apply_generated_narrative(narrative)
     );
     host.force_room_activity_settled();
     let binding = chrome
@@ -298,7 +266,12 @@ fn history_summary_host_revalidates_deferred_citations() {
     assert_eq!(host.room_activity().view(), ActivityView::Explore);
     assert!(host.room_activity().selected_ids().contains(&ids[0]));
 
-    // Read reveals the currently published prose without rewriting history.
+    // Explore is not a summary presentation. Returning to CatchUp publishes
+    // a fresh read capability without rewriting history.
+    host.force_room_activity_settled();
+    assert!(chrome.borrow().history_summary_binding().is_none());
+    host.room_activity_mut().set_view(ActivityView::CatchUp);
+    host.force_room_activity_settled();
     let binding = chrome.borrow().history_summary_binding().unwrap().clone();
     chrome
         .borrow_mut()
@@ -333,9 +306,12 @@ fn history_summary_host_revalidates_deferred_citations() {
     host.force_room_activity_settled();
     assert!(host.room_activity().selected_ids().contains(&ids[0]));
 
+    host.room_activity_mut().set_view(ActivityView::CatchUp);
+    host.force_room_activity_settled();
+    let current = chrome.borrow().history_summary_binding().unwrap().clone();
     chrome
         .borrow_mut()
-        .request_history_summary_action(&reordered, None)
+        .request_history_summary_action(&current, None)
         .unwrap();
     {
         let state = chrome.borrow();
@@ -344,8 +320,116 @@ fn history_summary_host_revalidates_deferred_citations() {
     }
     host.force_room_activity_settled();
     assert!(chrome.borrow().history_summary_binding().is_none());
-    assert_eq!(host.room_activity().view(), ActivityView::Explore);
+    // The queued read is revoked: it must not change the current pane mode.
+    assert_eq!(host.room_activity().view(), ActivityView::CatchUp);
     assert_eq!(chrome.borrow().tree_mut().doc.get_heads(), heads);
+}
+
+#[test]
+fn history_summary_cached_native_addresses_and_actions_reject_view_and_window_reentry() {
+    use shell::shell::room_activity::ActivityView;
+    use shell::shell::search::action_api::ActionError;
+
+    for close_window in [false, true] {
+        let (mut host, chrome, narrative) = accessibility_summary_fixture();
+        host.room_activity_mut().set_view(ActivityView::CatchUp);
+        assert!(
+            host.room_activity_mut()
+                .apply_generated_narrative(narrative.clone())
+        );
+        host.force_room_activity_settled();
+        // Native accessibility and action discovery do not require painting
+        // brief cards. Keep this presentation unviewed so closing it cannot
+        // change the evidence through acknowledgement.
+        let binding = chrome.borrow().history_summary_binding().unwrap().clone();
+        let cached = summary_actions(&chrome);
+        let old_path = citation_path(&host, &narrative.source_ids[0]).unwrap();
+        let heads = chrome.borrow().tree_mut().doc.get_heads();
+        let selection = host.room_activity().selected_ids();
+
+        if close_window {
+            let tab =
+                shell::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
+                    .unwrap()
+                    .2;
+            shell::shell::window_actions::close_tab(&mut chrome.borrow_mut(), tab).unwrap();
+            assert_eq!(
+                chrome.borrow().tree_mut().doc.get_heads(),
+                heads,
+                "closing personal Activity changes no evidence"
+            );
+            // Refuse even before the host gets its next paint: a read cannot
+            // reopen the closed window through its cached publication.
+            assert!(chrome.borrow().history_summary_binding().is_none());
+            for slot in [None, Some(0)] {
+                assert!(matches!(
+                    invoke_summary(&cached, &binding.action_id(slot), &chrome),
+                    Err(ActionError::Refused(_))
+                ));
+            }
+            host.take_structure_dirty();
+            layout_host(&mut host);
+        } else {
+            host.room_activity_mut().set_view(ActivityView::Explore);
+            host.force_room_activity_settled();
+        }
+        assert!(chrome.borrow().history_summary_binding().is_none());
+        assert!(!host.focus_synthetic_accessibility(&old_path));
+        for slot in [None, Some(0)] {
+            assert!(matches!(
+                invoke_summary(&cached, &binding.action_id(slot), &chrome),
+                Err(ActionError::Refused(_))
+            ));
+        }
+        assert!(
+            chrome
+                .borrow_mut()
+                .take_history_summary_action_request()
+                .is_none()
+        );
+        assert_eq!(host.room_activity().selected_ids(), selection);
+
+        if close_window {
+            chrome.borrow_mut().open_room_activity(None);
+            host.take_structure_dirty();
+            layout_host(&mut host);
+        } else {
+            host.room_activity_mut().set_view(ActivityView::CatchUp);
+        }
+        // Retain the pane and exact evidence; no replacement model result
+        // and still no painted (therefore viewed) brief cards.
+        host.force_room_activity_settled();
+        let restored = chrome.borrow().history_summary_binding().unwrap().clone();
+        assert_eq!(restored.request, binding.request);
+        assert_eq!(restored.narrative, binding.narrative);
+        assert_eq!(restored.native_owner, binding.native_owner);
+        assert!(restored.native_generation > binding.native_generation);
+        assert!(restored.epoch > binding.epoch);
+        let new_path = citation_path(&host, &narrative.source_ids[0]).unwrap();
+        assert_ne!(new_path, old_path);
+        assert!(!host.focus_synthetic_accessibility(&old_path));
+        assert!(host.focus_synthetic_accessibility(&new_path));
+        let fresh = summary_actions(&chrome);
+        for slot in [None, Some(0)] {
+            assert!(matches!(
+                invoke_summary(&cached, &binding.action_id(slot), &chrome),
+                Err(ActionError::Refused(_))
+            ));
+            invoke_summary(&fresh, &restored.action_id(slot), &chrome).unwrap();
+            host.force_room_activity_settled();
+            if slot.is_some() {
+                assert_eq!(host.room_activity().view(), ActivityView::Explore);
+                assert!(
+                    host.room_activity()
+                        .selected_ids()
+                        .contains(&narrative.source_ids[0])
+                );
+            } else {
+                assert_eq!(host.room_activity().view(), ActivityView::CatchUp);
+            }
+        }
+        assert_eq!(chrome.borrow().tree_mut().doc.get_heads(), heads);
+    }
 }
 
 #[test]

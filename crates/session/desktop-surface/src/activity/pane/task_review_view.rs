@@ -135,7 +135,7 @@ impl RoomActivityPane {
         };
         if action == TaskAction::ReviewHistory {
             self.lens = LensSelection::WorkGroup(id);
-            self.view = ActivityView::Explore;
+            self.set_view(ActivityView::Explore);
             self.reinstall_filter();
             return true;
         }

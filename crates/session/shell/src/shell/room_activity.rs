@@ -1766,6 +1766,139 @@ mod morning_host_regression {
     }
 
     #[test]
+    fn native_local_clear_rejects_forged_preview_and_other_room_record() {
+        use automerge::transaction::Transactable as _;
+        let (handle, mut pane, mut request) = native_named_group();
+        let mut live = handle.write();
+        let range =
+            ui::history_groups::read_named_ranges(&live.doc, &ui::AuthorDirectory::new()).remove(0);
+        let end = range.end.unwrap();
+        let middle = pane.entries()[1].id;
+        assert_ne!(range.start, middle);
+        assert_ne!(middle, end);
+        let original_room = live.active_workspace().unwrap().room;
+        let another = live
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room != original_room)
+            .unwrap()
+            .id;
+        // Include every replication document in the refusal assertions, not
+        // just the private desktop document that owns the retained name.
+        let rooms: Vec<_> = live
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.room)
+            .collect();
+        for room in rooms {
+            live.sync_room_doc(room);
+        }
+        assert!(live.room_docs.len() >= 2);
+        let snapshot = |tree: &WorkspaceTree| {
+            let groups = |doc: &automerge::AutoCommit| {
+                ui::history_groups::read_named_ranges(doc, &ui::AuthorDirectory::new())
+            };
+            (
+                tree.doc.base_heads(),
+                groups(&tree.doc),
+                tree.room_docs
+                    .iter()
+                    .map(|(room, doc)| (*room, (doc.base_heads(), groups(doc))))
+                    .collect::<HashMap<_, _>>(),
+            )
+        };
+        pane.refresh(&mut *live);
+        request.frontier = live.doc.get_heads();
+        // These are valid displayed entries, but not the preview's exact
+        // selectors. A record id alone must never authorize clearing it.
+        for (start, supplied_end) in [(middle, end), (range.start, middle), (end, range.start)] {
+            request.operation = HistoryEditorialOperation::Name(ui::GroupNameRequest {
+                start,
+                end: supplied_end,
+                label: String::new(),
+                record_id: Some(range.id.clone()),
+            });
+            let before = snapshot(&live);
+            assert!(!pane.apply_history_editorial(&mut *live, &request));
+            assert_eq!(
+                snapshot(&live),
+                before,
+                "a refused clear writes no document"
+            );
+        }
+
+        // Keep the original production host and document binding. Switching
+        // the displayed room must not lend its authority to a retained id.
+        live.active = another;
+        pane.refresh(&mut *live);
+        request.room = live.active_workspace().unwrap().room.to_string();
+        assert_ne!(request.room, original_room.to_string());
+        request.frontier = live.doc.get_heads();
+        request.operation = HistoryEditorialOperation::Name(ui::GroupNameRequest {
+            start: range.start,
+            end,
+            label: String::new(),
+            record_id: Some(range.id.clone()),
+        });
+        assert_eq!(
+            ui::history_groups::read_named_ranges(&live.doc, &ui::AuthorDirectory::new()),
+            vec![range],
+            "the other room's private naming record remains stored"
+        );
+        let before = snapshot(&live);
+        assert!(!pane.apply_history_editorial(&mut *live, &request));
+        assert_eq!(
+            snapshot(&live),
+            before,
+            "a cross-room clear writes no document"
+        );
+        drop(live);
+    }
+
+    #[test]
+    fn native_local_open_and_clipped_clear_uses_displayed_preview() {
+        let (handle, mut pane, mut request) = native_named_group();
+        let mut live = handle.write();
+        let range =
+            ui::history_groups::read_named_ranges(&live.doc, &ui::AuthorDirectory::new()).remove(0);
+        for stored_end in [None, Some(ui::HistoryEntryId::from_bytes([239; 16]))] {
+            ui::history_groups::name_range(
+                &mut live.doc,
+                &range.start,
+                stored_end.as_ref(),
+                "Open or clipped",
+            );
+            live.commit_room_change();
+            pane.refresh(&mut *live);
+            let stored =
+                ui::history_groups::read_named_ranges(&live.doc, &ui::AuthorDirectory::new());
+            assert_eq!(stored[0].end, stored_end);
+            let mut groups = Vec::new();
+            for group in pane.timeline().groups() {
+                group.walk(&mut groups);
+            }
+            let displayed = groups
+                .into_iter()
+                .find(|group| group.record_id.as_deref() == Some(range.id.as_str()))
+                .expect("open or clipped name has a displayed preview");
+            request.frontier = live.doc.get_heads();
+            request.operation = HistoryEditorialOperation::Name(ui::GroupNameRequest {
+                start: displayed.first_entry,
+                end: displayed.last_entry,
+                label: String::new(),
+                record_id: Some(range.id.clone()),
+            });
+            assert!(pane.apply_history_editorial(&mut *live, &request));
+            assert!(
+                ui::history_groups::read_named_ranges(&live.doc, &ui::AuthorDirectory::new())
+                    .is_empty(),
+                "clearing a displayed preview does not require its stored end to be visible"
+            );
+        }
+        drop(live);
+    }
+
+    #[test]
     fn native_local_open_and_clipped_record_edits_preserve_stored_bounds() {
         let (handle, mut pane, mut request) = native_named_group();
         let mut live = handle.write();

@@ -4653,6 +4653,7 @@ mod tests {
         ws.set_owner("shell-fixture");
         tree.desktop.workspaces.push(ws);
         tree.desktop.active = id;
+        crate::shell::tab_binding::open_workspace_activity(&mut tree);
         let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_fixture_handle(
             handle,

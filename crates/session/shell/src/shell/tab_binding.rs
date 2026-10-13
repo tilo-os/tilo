@@ -1074,6 +1074,10 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
         .is_some_and(|tab| {
             matches!(&tab.tile, TileContent::Foreign { .. }) || tab.tile.is_device_local()
         });
+    let personal_activity =
+        tree.desktop.workspaces[ws_idx].strips[strip_idx].window_groups[group_idx].tabs[tab_idx]
+            .tile
+            == TileContent::WorkspaceActivity;
     // Delete from the CRDT before touching the cache. Besides making the
     // ordering explicit, this guarantees that a revision/peer merge between
     // the two representations cannot treat the stale document entry as an
@@ -1081,7 +1085,13 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
     // the device-local workspace-activity window, may never have entered
     // the replicated document; absence there is therefore already the
     // desired durable state, not a failed close.
-    if !tree.doc_remove_tab(strip_id, group_id, tab_id, remove_group) && !cache_only {
+    // Activity is private presentation, not room content. Its empty group
+    // may exist in a filtered snapshot, but closing it must not delete that
+    // replicated group or invalidate otherwise identical history evidence.
+    if !personal_activity
+        && !tree.doc_remove_tab(strip_id, group_id, tab_id, remove_group)
+        && !cache_only
+    {
         return false;
     }
 
