@@ -1,4 +1,5 @@
 //! Native runs are recoverable from the canonical approved task, not a queue grant.
+pub(super) use super::native_task_launch::NativeLaunch;
 use super::{
     AdmissionProvenance, BrokerActor, CapnpBrokerState, DurableContext, InvocationInputs,
     InvocationJob, InvocationKey, InvocationOwner, PendingTaskRun, TaskRunEnvelope,
@@ -82,7 +83,86 @@ pub(super) struct ChildReask<'a> {
     pub caller: &'a durable_local_invocation::LocalCaller,
 }
 
+pub(super) fn child_provenance(
+    lease: &str,
+    invocation: &str,
+    caller: Option<durable_local_invocation::LocalCaller>,
+) -> Result<
+    Option<(
+        durable_local_invocation::LocalCaller,
+        tilo_actions::InvocationId,
+    )>,
+    capnp::Error,
+> {
+    if runtime_collab::native_task_revision(lease).is_none() {
+        return Ok(None);
+    }
+    let id = uuid::Uuid::parse_str(invocation).map_err(|_| {
+        capnp::Error::failed("native task child requires stable invocation UUID".into())
+    })?;
+    if id.is_nil() {
+        return Err(capnp::Error::failed("nil task invocation".into()));
+    }
+    Ok(Some((
+        caller.ok_or_else(|| {
+            capnp::Error::failed("native task channel custody unavailable".into())
+        })?,
+        tilo_actions::InvocationId(id),
+    )))
+}
+
+fn native_request(
+    run: &PendingTaskRun,
+    target: runtime_collab::TaskAction<'_>,
+    app: &str,
+    record: &str,
+) -> serde_json::Value {
+    let mut request = serde_json::json!({"task":run.task_id,
+        "epoch":run.native.as_ref().map(|binding| binding.epoch),
+        "peer_id":target.peer_id,"app":app,"record":record,
+        "resource":target.resource,"action":target.action,"argument":target.argument});
+    if !target.provider.is_empty()
+        && let Some(request) = request.as_object_mut()
+    {
+        request.remove("peer_id");
+        request.insert("provider".into(), target.provider.into());
+    }
+    request
+}
+
 impl CapnpBrokerState {
+    pub(super) async fn invoke_native_task_child(
+        self: &std::sync::Arc<Self>,
+        reask: &ChildReask<'_>,
+        wait: Option<ChildWait>,
+        admission: (&super::CrdtRoute, &super::AdmittedJoinIdentity),
+    ) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
+        if let Some(observed) = self.observe_native_child(reask, wait, admission).await? {
+            return Ok(observed);
+        }
+        if !reask.target.provider.is_empty() {
+            return self
+                .launch_native_task_action(reask)
+                .await
+                .map_err(capnp::Error::failed);
+        }
+        let provenance = (reask.caller.clone(), reask.invocation);
+        let job = self
+            .start_task_action(
+                reask.peer_id,
+                reask.agent_id,
+                reask.run_id,
+                reask.lease,
+                reask.target,
+                Some(&provenance),
+            )
+            .map_err(capnp::Error::failed)?;
+        let update = self.invocation_status(job.id).ok_or_else(|| {
+            capnp::Error::failed("accepted task action has no broker state".into())
+        })?;
+        Ok((job.id, update))
+    }
+
     /// What a native task's request finds of its child: `None` when it has
     /// not started (the request starts it), else the child's state as
     /// [`Self::native_task_observation`] reports it. With `wait`, a running
@@ -209,26 +289,37 @@ impl CapnpBrokerState {
             found
         };
         let Some(record) = record else {
-            return Ok(None);
+            return self.native_host_observation(run, target, caller, invocation);
         };
         let requirement = caller.authorize_retained_task(self, &record)?;
         self.native_tasks(&run.cluster_id)
             .ok_or("native task owner unavailable")?
             .authorize_action(&run.cluster_id, &run.agent_id, &requirement)?;
-        let offered = self
-            .surfaces
-            .lock()
-            .map_err(|_| "native task target surface unavailable")?
-            .get(&target.peer_id)
-            .and_then(|surface| surface.action_projection(target.resource, target.action))
-            .ok_or("native task target was removed")?;
-        let request = serde_json::json!({
-            "task": run.task_id, "epoch": binding.epoch,
-            "peer_id": target.peer_id, "app": offered.0.app_id,
-            "record": offered.0.route.record_id,
-            "resource": target.resource, "action": target.action,
-            "argument": target.argument,
-        });
+        let (app, record_id) = if target.provider.is_empty() {
+            let offered = self
+                .surfaces
+                .lock()
+                .map_err(|_| "native task target surface unavailable")?
+                .get(&target.peer_id)
+                .and_then(|surface| surface.action_projection(target.resource, target.action))
+                .ok_or("native task target was removed")?;
+            (offered.0.app_id, offered.0.route.record_id)
+        } else {
+            let app = record
+                .intent
+                .get("app_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("retained task app absent")?
+                .to_owned();
+            let record_id = record
+                .intent
+                .get("record_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("retained task record absent")?
+                .to_owned();
+            (app, record_id)
+        };
+        let request = native_request(run, target, &app, &record_id);
         if !record.admitted_request_is(&request) {
             return Err("native task child identity was reused with another request".into());
         }
@@ -294,10 +385,9 @@ impl CapnpBrokerState {
         if offered.0.route.cluster_id != run.cluster_id {
             return Err("task target changed workspace".into());
         }
-        let intent = serde_json::json!({ "task":run.task_id,"epoch":run.native.as_ref().map(|binding| binding.epoch),
-            "peer_id":target.peer_id,"app":offered.0.app_id,"record":offered.0.route.record_id,
-            "resource":target.resource,"action":target.action,"argument":target.argument });
+        let intent = native_request(run, target, &offered.0.app_id, &offered.0.route.record_id);
         let actor = BrokerActor::agent(format!("agent:{}", run.agent_id));
+        let app = offered.0.app_id.clone();
         let _admission = self
             .admission_lock
             .lock()
@@ -327,6 +417,9 @@ impl CapnpBrokerState {
                 retained_time: None,
             },
         )
+        .inspect(|_| {
+            self.launchable.note_view(&run.cluster_id, &actor.id, &app);
+        })
     }
 
     pub(super) fn native_tasks(

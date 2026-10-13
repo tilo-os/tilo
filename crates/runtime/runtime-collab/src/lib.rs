@@ -330,6 +330,8 @@ impl CollabClient {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskAction<'a> {
     pub peer_id: u64,
+    /// A retained or application provider; empty means the live peer above.
+    pub provider: &'a str,
     pub resource: &'a str,
     pub action: &'a str,
     pub argument: Option<&'a str>,
@@ -1646,6 +1648,7 @@ impl ChannelHandle {
             params.set_run_id(run_id);
             params.set_lease(lease);
             params.set_peer_id(target.peer_id);
+            params.set_provider(target.provider);
             params.set_resource(target.resource);
             params.set_action(target.action);
             params.set_argument(target.argument.unwrap_or(""));
@@ -1680,6 +1683,7 @@ impl ChannelHandle {
             params.set_run_id(run_id);
             params.set_lease(lease);
             params.set_peer_id(target.peer_id);
+            params.set_provider(target.provider);
             params.set_resource(target.resource);
             params.set_action(target.action);
             params.set_argument(target.argument.unwrap_or(""));
