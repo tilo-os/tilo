@@ -48,7 +48,15 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
     let catalogue = catalogue();
     let app = "so.tilo.scratchpad";
     let note = common::scratchpad_body("").0;
-    let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
+    let mut page = Replica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
         panic!("a new record is published whole");
     };
@@ -57,7 +65,7 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
         app,
         ROOM,
         "writer",
-        true,
+        &tilo_agent_participant::ReplicaActor::Agent,
         Seed::Existing {
             record: page.record_id().clone(),
             changes: vec![snapshot],
@@ -114,7 +122,7 @@ fn bytes_that_are_not_automerge_never_reach_the_worker() {
         "so.tilo.scratchpad",
         ROOM,
         "writer",
-        true,
+        &tilo_agent_participant::ReplicaActor::Agent,
         Seed::New,
     )
     .unwrap();
@@ -141,7 +149,7 @@ fn a_dead_worker_is_replaced_from_what_the_host_holds() {
         "so.tilo.scratchpad",
         ROOM,
         "writer",
-        true,
+        &tilo_agent_participant::ReplicaActor::Agent,
         Seed::New,
     )
     .unwrap();
@@ -175,4 +183,67 @@ fn kill(pid: u32) {
         .unwrap();
     assert!(status.success());
     std::thread::sleep(std::time::Duration::from_millis(200));
+}
+
+/// The appearances the context entries of `change`'s changes name; a
+/// snapshot, which an edit never is, names none.
+fn appearances(change: &DocumentMutation) -> Vec<Option<tilo_actions::Appearance>> {
+    let DocumentMutation::Incremental(bytes) = change else {
+        return Vec::new();
+    };
+    collab_types::parse_changes(bytes)
+        .unwrap()
+        .iter()
+        .filter_map(automerge::Change::message)
+        .filter_map(tilo_actions::ActionContext::from_change_message)
+        .filter_map(|context| context.invoker)
+        .map(|invoker| invoker.appearance)
+        .collect()
+}
+
+#[test]
+fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
+    let catalogue = catalogue();
+    let app = "so.tilo.scratchpad";
+    let note = common::scratchpad_body("").0;
+    let mut page = Replica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
+        panic!("a new record is published whole");
+    };
+    let agent = ConfinedReplica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "writer",
+        &tilo_agent_participant::ReplicaActor::Agent,
+        Seed::Existing {
+            record: page.record_id().clone(),
+            changes: vec![snapshot],
+        },
+    )
+    .unwrap();
+    let alice = tilo_actions::Appearance::new("alice", None, None).unwrap();
+    agent
+        .invoke_appearing(&note, &edit("From Discord"), false, Some(&alice))
+        .unwrap();
+    let shown = appearances(&agent.take_mutation().unwrap().unwrap());
+    assert!(!shown.is_empty(), "the change names its invoker");
+    assert!(
+        shown.iter().all(|shown| shown.as_ref() == Some(&alice)),
+        "{shown:?}"
+    );
+
+    // A plain invocation shows none.
+    agent.invoke(&note, &edit("Plain"), false).unwrap();
+    let shown = appearances(&agent.take_mutation().unwrap().unwrap());
+    assert!(!shown.is_empty(), "the change names its invoker");
+    assert!(shown.iter().all(Option::is_none), "{shown:?}");
 }

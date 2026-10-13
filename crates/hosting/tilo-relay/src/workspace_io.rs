@@ -25,19 +25,27 @@ fn authorization_slots() -> &'static Arc<Semaphore> {
     SLOTS.get_or_init(|| Arc::new(Semaphore::new(AUTHORIZATION_CAPACITY)))
 }
 
-fn admit_work() -> Result<OwnedSemaphorePermit, StoreError> {
-    authorization_slots()
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| {
-            if crate::persistence::correlated_diagnostics() {
-                tracing::info!(
-                    phase = "authorization_backpressure",
-                    capacity = AUTHORIZATION_CAPACITY
-                );
-            }
-            io_error("workspace authorization backpressure")
-        })
+/// How long authorization work waits for a slot before its caller fails.
+/// Every guest who joins a public room changes its membership, so a burst
+/// of arrivals sends every session's next check to disk at once; they queue
+/// here rather than each ending its session.
+const AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+async fn admit_work() -> Result<OwnedSemaphorePermit, StoreError> {
+    let slots = authorization_slots().clone();
+    if let Ok(permit) = slots.clone().try_acquire_owned() {
+        return Ok(permit);
+    }
+    if crate::persistence::correlated_diagnostics() {
+        tracing::info!(
+            phase = "authorization_backpressure",
+            capacity = AUTHORIZATION_CAPACITY
+        );
+    }
+    tokio::time::timeout(AUTHORIZATION_WAIT, slots.acquire_owned())
+        .await
+        .map_err(|_| io_error("workspace authorization backpressure"))?
+        .map_err(|error| io_error(error.to_string()))
 }
 
 #[derive(Clone, Copy)]
@@ -189,7 +197,7 @@ async fn reload_membership(
     workspace: &SharedWorkspace,
     trace: Option<MembershipTrace>,
 ) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
-    let _slot = admit_work()?;
+    let _slot = admit_work().await?;
     membership_phase(trace, "delivery_membership_handles_wait");
     let (store, lane, generation) = reload_handles(workspace).await;
     membership_phase(trace, "delivery_membership_handles_acquired");
@@ -253,7 +261,7 @@ pub(crate) async fn admit_member(
     device: [u8; 32],
     expected_revision: u64,
 ) -> Result<(), StoreError> {
-    let slot = admit_work()?;
+    let slot = admit_work().await?;
     let workspace = workspace.clone();
     tokio::spawn(async move {
         let _slot = slot;
@@ -299,7 +307,7 @@ pub(crate) async fn replace_membership(
     workspace: &SharedWorkspace,
     members: Vec<[u8; 32]>,
 ) -> Result<(), StoreError> {
-    let slot = admit_work()?;
+    let slot = admit_work().await?;
     let workspace = workspace.clone();
     tokio::spawn(async move {
         let _slot = slot;
@@ -349,7 +357,7 @@ pub(crate) async fn replace_governed_access(
     workspace: &SharedWorkspace,
     access: GovernedAccessRecord,
 ) -> Result<(), StoreError> {
-    let slot = admit_work()?;
+    let slot = admit_work().await?;
     let workspace = workspace.clone();
     tokio::spawn(async move {
         let _slot = slot;

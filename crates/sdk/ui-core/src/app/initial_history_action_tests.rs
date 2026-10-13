@@ -780,11 +780,12 @@ fn ordinary_native_pump_exports_admission_before_any_action() {
         tilo_startup_metrics::mark("admission-probe-start");
         let (mut app, calls) = initial_history_app();
         let deadline = tilo_test_env::hang_deadline();
-        // The directory RPC is answered on the transport thread; wait for its
-        // answer too, or it can land between the export and the comparison.
+        // The directory RPC is answered on the transport thread; wait until it
+        // is both published and answered, or a first publication by the final
+        // pump can be answered between its export and the comparison.
         let directory_answered = |app: &App| {
             let (enqueued, counts) = app.collaboration.manager.action_directory_observation();
-            !enqueued || counts.is_none_or(|(successes, failures)| successes + failures > 0)
+            enqueued && counts.is_none_or(|(successes, failures)| successes + failures > 0)
         };
         while !app.published_action_history_ready() || !directory_answered(&app) {
             app.pump_collab_presence();

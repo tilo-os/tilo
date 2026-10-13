@@ -2289,7 +2289,6 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
 mod tests {
     use super::*;
     use crate::shell::persist;
-    use winit::event::DeviceId;
     use winit::keyboard::{Key, NamedKey};
 
     fn key_event(logical: Key, pressed: bool) -> WindowEvent {
@@ -2302,11 +2301,7 @@ mod tests {
                 ElementState::Released
             },
         );
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed::<DeviceId>() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ev)
     }
 
     #[test]

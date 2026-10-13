@@ -471,7 +471,6 @@ inputs = [
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
-  "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_latency_bench_test.py",
   "scripts/perf/device_notes_latency_test.py",
@@ -511,13 +510,12 @@ suites = [
 [[group]]
 name = "developer-scripts"
 inputs = [
-  "scripts/tests/", "scripts/demo/", "scripts/app-launch-sweep.py",
+  "scripts/tests/", "scripts/app-launch-sweep.py",
   "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py", "scripts/agent-loop/",
 ]
 suites = [
   "scripts/tests/test_agent_loop_usage.py",
   "scripts/tests/test_app_launch_sweep.py",
-  "scripts/tests/test_demo_scripts.py",
   "scripts/tests/test_runtime_mcp_proof.py",
   "scripts/tests/test_tilo_mcp_server.py",
 ]
@@ -665,6 +663,16 @@ readers = [
   "crates/packaging/tilo-app-package/tests/app_manifests.rs",
   "crates/packaging/tilo-app-package/src/validate.rs",
   "crates/packaging/tilo-app-package/src/view.rs",
+]
+
+[[cargo]]
+package = "discord-worker"
+# The bridge test and the live example install the bridge bot from its
+# program file, beside the worker in the connector app.
+inputs = ["apps/discord/bridge/program.json"]
+readers = [
+  "apps/discord/worker/tests/bridge.rs",
+  "apps/discord/worker/examples/live_bridge.rs",
 ]
 
 [[cargo]]
@@ -1103,6 +1111,11 @@ by = "tools/tests/test_focused_test.py"
 [[unrequired]]
 suite = "tools/ci/test_airdrop_sender.py"
 reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Python dependencies, system libarchive/OpenSSL and loopback TLS sockets; the offline ci-fast image cannot fetch the oracle; run explicitly as documented in continuity-interop.md, failing if prerequisites are absent"
+
+[[unrequired]]
+suite = "crates/hosting/tilo-room-service/container/test-image.sh"
+reason = "needs the built room-service image"
+workflow = "room-service-image.yml"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"

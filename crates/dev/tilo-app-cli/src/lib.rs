@@ -4214,13 +4214,7 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
         .as_ref()
         .map(|manifest| manifest.package.id.clone());
 
-    check_source_file(
-        &app_dir,
-        "src/lib.rs",
-        "app root",
-        &["impl ResourceApp for", "pub fn app_root"],
-        &mut checks,
-    );
+    check_app_root(&app_dir, &mut checks);
     check_source_file(
         &app_dir,
         "src/main.rs",
@@ -4263,24 +4257,131 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
     DoctorReport { app_dir, checks }
 }
 
-fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
-    fn append_rust_sources(dir: &Path, source: &mut String) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                append_rust_sources(&path, source)?;
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                source.push_str(&std::fs::read_to_string(path)?);
-                source.push('\n');
+/// The Rust sources under `dir`, as (path relative to `root`, text), in a
+/// stable order.
+fn rust_sources(
+    root: &Path,
+    dir: &Path,
+    sources: &mut Vec<(PathBuf, String)>,
+) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            rust_sources(root, &path, sources)?;
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            let text = std::fs::read_to_string(&path)?;
+            let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            sources.push((relative, text));
+        }
+    }
+    Ok(())
+}
+
+/// Where an app's sources use the app framework, read from the parsed items
+/// rather than their text, so `#[resource(..)]`,
+/// `#[ui::tilo_resource::resource(..)]` and
+/// `impl ui::framework::ResourceApp for` are all recognised.
+#[derive(Debug, Default)]
+struct FrameworkUse {
+    /// The first file with a `#[resource]` impl or an `impl Resource for`.
+    resource: Option<PathBuf>,
+    /// The first file with an `impl ResourceApp for`.
+    host: Option<PathBuf>,
+}
+
+impl FrameworkUse {
+    fn of(sources: &[(PathBuf, String)]) -> Self {
+        let mut found = Self::default();
+        for (file, text) in sources {
+            // A file that does not parse fails the build, which reports it
+            // better than this check could.
+            if let Ok(parsed) = syn::parse_file(text) {
+                found.visit(&parsed.items, file);
             }
         }
-        Ok(())
+        found
     }
 
-    let mut source = String::new();
-    if append_rust_sources(&app_dir.join("src"), &mut source).is_err() {
+    fn visit(&mut self, items: &[syn::Item], file: &Path) {
+        fn last_segment(path: &syn::Path) -> Option<String> {
+            path.segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+        }
+        for item in items {
+            match item {
+                syn::Item::Impl(item) => {
+                    let attribute = item.attrs.iter().any(|attribute| {
+                        last_segment(attribute.path()).as_deref() == Some("resource")
+                    });
+                    let implemented = item
+                        .trait_
+                        .as_ref()
+                        .and_then(|(_, path, _)| last_segment(path));
+                    if attribute || implemented.as_deref() == Some("Resource") {
+                        self.resource.get_or_insert_with(|| file.to_path_buf());
+                    }
+                    if implemented.as_deref() == Some("ResourceApp") {
+                        self.host.get_or_insert_with(|| file.to_path_buf());
+                    }
+                }
+                syn::Item::Mod(module) => {
+                    if let Some((_, items)) = &module.content {
+                        self.visit(items, file);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The app's root: `src/lib.rs` declares `pub fn app_root`, or the crate
+/// implements `ResourceApp`, in whichever module it keeps it.
+fn check_app_root(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let (status, detail) = match std::fs::read_to_string(app_dir.join("src/lib.rs")) {
+        Err(error) => (DoctorStatus::Fail, format!("src/lib.rs: {error}")),
+        Ok(source) if rust_code_only(&source).contains("pub fn app_root") => {
+            (DoctorStatus::Pass, "src/lib.rs".to_owned())
+        }
+        Ok(_) => {
+            let mut sources = Vec::new();
+            // An unreadable source directory leaves the host unfound, which
+            // the warning below reports.
+            let _ = rust_sources(app_dir, &app_dir.join("src"), &mut sources);
+            match FrameworkUse::of(&sources).host {
+                Some(file) => (
+                    DoctorStatus::Pass,
+                    format!("{} implements ResourceApp", file.display()),
+                ),
+                None => (
+                    DoctorStatus::Warning,
+                    "src/lib.rs does not use the generated impl ResourceApp for contract"
+                        .to_owned(),
+                ),
+            }
+        }
+    };
+    checks.push(DoctorCheck {
+        status,
+        label: "app root",
+        detail,
+    });
+}
+
+fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let mut sources = Vec::new();
+    if rust_sources(app_dir, &app_dir.join("src"), &mut sources).is_err() {
         return;
     }
+    let source = sources
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     let code = rust_code_only(&source);
     let toolkit_host = code.contains("ui::widget::resource_actions::immediate(")
         || code.contains("ui::widget::resource_actions::form(")
@@ -4302,9 +4403,8 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
     // methods into verbs, the replayable catalogue `ResourceApp` hosts; a
     // hand-written `impl Resource` (a custom storage layout) is the same
     // contract.
-    let framework_surface = code.contains("#[resource(") || code.contains("impl Resource for");
-    let framework_host = code.contains("impl ResourceApp for");
-    let framework = framework_surface && framework_host;
+    let framework_use = FrameworkUse::of(&sources);
+    let framework = framework_use.resource.is_some() && framework_use.host.is_some();
     let (status, detail) = if framework || toolkit_surface || custom_surface {
         (
             DoctorStatus::Pass,

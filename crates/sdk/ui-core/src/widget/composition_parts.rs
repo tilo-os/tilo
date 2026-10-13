@@ -82,14 +82,6 @@ macro_rules! retained_parts {
         retained_parts!(children: $($path).+);
     };
     (children: $($path:ident).+) => {
-        fn start_operation(
-            &mut self,
-            op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut crate::widget::Edits<'_>,
-            path: &ObjId,
-        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            crate::widget::start_in_children(self, op, doc, path)
-        }
         fn update(
             &mut self,
             state: &crate::widget::AppModel,

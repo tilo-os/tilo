@@ -49,6 +49,9 @@ impl StatePeer {
             return Err("membership caller is not current admitted evidence".into());
         }
         self.certificate(&caller.device_public_key, now)?;
+        if let Some(outcome) = self.apply_bot_command(caller, command, key, now) {
+            return outcome;
+        }
         if matches!(
             command,
             WorkspaceMembershipCommand::GrantForTask { .. }
@@ -96,12 +99,75 @@ impl StatePeer {
             | WorkspaceMembershipCommand::GrantForTask { .. }
             | WorkspaceMembershipCommand::RevokeForTask { .. }
             | WorkspaceMembershipCommand::Grant { .. }
-            | WorkspaceMembershipCommand::Revoke { .. } => {
+            | WorkspaceMembershipCommand::Revoke { .. }
+            | WorkspaceMembershipCommand::InstallBot(_)
+            | WorkspaceMembershipCommand::RenewBot(_)
+            | WorkspaceMembershipCommand::UninstallBot { .. }
+            | WorkspaceMembershipCommand::PauseBot { .. }
+            | WorkspaceMembershipCommand::ResumeBot { .. }
+            | WorkspaceMembershipCommand::SetBotAppearance { .. }
+            | WorkspaceMembershipCommand::AdoptBot(_) => {
                 return Err("a command entered the agent membership branch".into());
             }
         };
         *self = candidate;
         Ok(removed || added)
+    }
+
+    /// Apply a bot command (install, renew, uninstall, pause, resume,
+    /// appearance, adopt); `None` for every other command.
+    fn apply_bot_command(
+        &mut self,
+        caller: &DeviceCert,
+        command: &WorkspaceMembershipCommand,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Option<Result<bool, String>> {
+        match command {
+            WorkspaceMembershipCommand::InstallBot(install) => {
+                Some(self.apply_install_bot(caller, install, key, now))
+            }
+            WorkspaceMembershipCommand::RenewBot(renewal) => {
+                Some(self.apply_renew_bot(caller, renewal, key, now))
+            }
+            WorkspaceMembershipCommand::UninstallBot { installation } => {
+                Some(self.apply_uninstall_bot(caller, installation.as_str(), key, now))
+            }
+            WorkspaceMembershipCommand::PauseBot { installation } => Some(self.apply_bot_flag(
+                caller,
+                installation.as_str(),
+                roles::governance::PAUSE_BOT,
+                |row| !std::mem::replace(&mut row.paused, true),
+                key,
+                now,
+            )),
+            WorkspaceMembershipCommand::ResumeBot { installation } => Some(self.apply_bot_flag(
+                caller,
+                installation.as_str(),
+                roles::governance::RESUME_BOT,
+                |row| std::mem::replace(&mut row.paused, false),
+                key,
+                now,
+            )),
+            WorkspaceMembershipCommand::SetBotAppearance {
+                installation,
+                appearance,
+            } => {
+                let appearance = *appearance;
+                Some(self.apply_bot_flag(
+                    caller,
+                    installation.as_str(),
+                    roles::governance::SET_BOT_APPEARANCE,
+                    move |row| std::mem::replace(&mut row.appearance, appearance) != appearance,
+                    key,
+                    now,
+                ))
+            }
+            WorkspaceMembershipCommand::AdoptBot(adoption) => {
+                Some(self.apply_adopt_bot(caller, adoption, key, now))
+            }
+            _ => None,
+        }
     }
 
     /// Give or take back a grant in the room, as the caller: the room's

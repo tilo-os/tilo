@@ -126,6 +126,9 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             },
             allowed_origins: Vec::new(),
             plain_listen: None,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
         .await
         .unwrap();
@@ -206,7 +209,7 @@ fn approve_agents(relay: &Relay, root: SigningKey, laptop: &Device) -> tokio::ta
                     approver
                         .decide(
                             pending.request_digest,
-                            ApproverDecision::IssueAgent { cert, delegation }
+                            ApproverDecision::IssueDelegate { cert, delegation }
                         )
                         .await
                         .unwrap(),
@@ -399,7 +402,7 @@ impl Browser {
                     app,
                     ROOM,
                     "ada",
-                    false,
+                    tilo_agent_participant::ReplicaActor::Owner,
                     Seed::Existing {
                         record: route_record(&route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
@@ -860,8 +863,15 @@ struct Page {
 
 impl Page {
     fn create(browser: &Browser, app: &str) -> Self {
-        let mut page =
-            Replica::open(&common::catalogue(), app, ROOM, "ada", false, Seed::New).unwrap();
+        let mut page = Replica::open(
+            &common::catalogue(),
+            app,
+            ROOM,
+            "ada",
+            tilo_agent_participant::ReplicaActor::Owner,
+            Seed::New,
+        )
+        .unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: ROOM.into(),
@@ -895,7 +905,7 @@ impl Page {
                     SHEETS,
                     ROOM,
                     "bea",
-                    false,
+                    tilo_agent_participant::ReplicaActor::Owner,
                     Seed::Existing {
                         record: route_record(&creator.route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
@@ -1063,7 +1073,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
                 SHEETS,
                 ROOM,
                 "ada",
-                false,
+                tilo_agent_participant::ReplicaActor::Owner,
                 Seed::Existing {
                     record: route_record(&page.route.record),
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),

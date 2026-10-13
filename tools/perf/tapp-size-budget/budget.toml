@@ -116,6 +116,10 @@ aarch64 = 4587520
 x86_64 = 1179648
 aarch64 = 1114112
 
+[apps."so.tilo.discord"]
+x86_64 = 5963776
+aarch64 = 5963776
+
 [apps."so.tilo.disk-usage"]
 x86_64 = 786432
 aarch64 = 786432
