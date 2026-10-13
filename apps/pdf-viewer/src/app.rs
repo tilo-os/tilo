@@ -8114,10 +8114,23 @@ mod tests {
     /// Page `page`'s (1-based) engine text layer, as the worker delivers it
     /// for a selection or search.
     pub(super) fn text_layer(app: &mut PdfApp, st: &mut ui::State, page: usize) -> Arc<PageText> {
-        if app.ensure_raster_text(page).is_none() {
-            settle_until(app, st, |app| app.raster_text.contains_key(&page));
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            if let Some(layer) = app.ensure_raster_text(page) {
+                return layer;
+            }
+            assert!(
+                ui::time::now() < deadline,
+                "the PDF worker never answered ({:?})",
+                app.status_note
+            );
+            // A reconcile answered in the same frame as the text drops both
+            // the layer and the request; ask again, as the next drawn frame does.
+            settle_until(app, st, |app| {
+                app.raster_text.contains_key(&page)
+                    || !app.raster_text_pending.contains(&(page - 1))
+            });
         }
-        app.raster_text[&page].clone()
     }
 
     /// Take the PDF worker's results until `done` holds, for results that
