@@ -133,39 +133,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
                 mode = Some(Mode::Join { invitation });
             }
             Some("--run-app") if mode.is_none() => {
-                let app_id = arguments
-                    .next()
-                    .and_then(|arg| arg.into_string().ok())
-                    .ok_or_else(|| invalid("--run-app requires an application ID"))?;
-                if app_id.trim().is_empty() || app_id.len() > 4096 {
-                    return Err(invalid("invalid application ID"));
-                }
-                let mut next = arguments.next();
-                let mut room = None;
-                if next.as_deref() == Some(std::ffi::OsStr::new("--room")) {
-                    room = Some(
-                        arguments
-                            .next()
-                            .and_then(|arg| arg.into_string().ok())
-                            .filter(|room| uuid::Uuid::parse_str(room).is_ok())
-                            .ok_or_else(|| invalid("--room requires a room id"))?,
-                    );
-                    next = arguments.next();
-                }
-                if next.as_deref() != Some(std::ffi::OsStr::new("--")) {
-                    return Err(invalid(
-                        "--run-app APP_ID [--room ROOM] requires -- EXECUTABLE ARGS...",
-                    ));
-                }
-                let executable = arguments
-                    .next()
-                    .ok_or_else(|| invalid("missing app executable"))?;
-                mode = Some(Mode::RunApp {
-                    app_id,
-                    room,
-                    executable,
-                    args: arguments.collect(),
-                });
+                mode = Some(parse_run_app(&mut arguments)?);
                 break;
             }
             _ => {
@@ -203,6 +171,44 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
         mode,
         dev,
         standalone: standalone || explicit_profile,
+    })
+}
+
+/// `--run-app APP_ID [--room ROOM] -- EXECUTABLE ARGS...`, after `--run-app`:
+/// the rest of the command line is the app's.
+fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<Mode> {
+    let app_id = arguments
+        .next()
+        .and_then(|arg| arg.into_string().ok())
+        .ok_or_else(|| invalid("--run-app requires an application ID"))?;
+    if app_id.trim().is_empty() || app_id.len() > 4096 {
+        return Err(invalid("invalid application ID"));
+    }
+    let mut next = arguments.next();
+    let mut room = None;
+    if next.as_deref() == Some(std::ffi::OsStr::new("--room")) {
+        room = Some(
+            arguments
+                .next()
+                .and_then(|arg| arg.into_string().ok())
+                .filter(|room| uuid::Uuid::parse_str(room).is_ok())
+                .ok_or_else(|| invalid("--room requires a room id"))?,
+        );
+        next = arguments.next();
+    }
+    if next.as_deref() != Some(std::ffi::OsStr::new("--")) {
+        return Err(invalid(
+            "--run-app APP_ID [--room ROOM] requires -- EXECUTABLE ARGS...",
+        ));
+    }
+    let executable = arguments
+        .next()
+        .ok_or_else(|| invalid("missing app executable"))?;
+    Ok(Mode::RunApp {
+        app_id,
+        room,
+        executable,
+        args: arguments.collect(),
     })
 }
 
