@@ -11,20 +11,18 @@
 //! log instead of needing a profiler on their machine. Outside a slow event
 //! the cost is two clock reads per event and one per marked phase.
 
+use crate::time::{Duration, Instant};
 use std::cell::RefCell;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
 
 const DEFAULT_THRESHOLD_MS: u64 = 100;
 
 fn threshold() -> Duration {
     static THRESHOLD: OnceLock<Duration> = OnceLock::new();
     *THRESHOLD.get_or_init(|| {
-        let ms = crate::env::var("TILO_SLOW_EVENT_MS")
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .unwrap_or(DEFAULT_THRESHOLD_MS);
-        Duration::from_millis(ms)
+        Duration::from_millis(
+            super::native_runner::slow_event_threshold_ms().unwrap_or(DEFAULT_THRESHOLD_MS),
+        )
     })
 }
 
@@ -88,7 +86,10 @@ impl Drop for Span {
         for (name, took) in &merged {
             line.push_str(&format!(" {name}={}", took.as_millis()));
         }
-        line.push_str(&format!(" other={}", total.saturating_sub(named).as_millis()));
+        line.push_str(&format!(
+            " other={}",
+            total.saturating_sub(named).as_millis()
+        ));
         crate::diag!(
             "tilo: SLOW-EVENT {} {} {} ms:{line}",
             self.kind,
