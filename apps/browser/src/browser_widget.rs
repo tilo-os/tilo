@@ -87,6 +87,12 @@ struct PageOperation {
     request_id: u32,
     phase: PagePhase,
     deadline: std::time::Instant,
+    /// A main-frame load that settled while the request was with the engine
+    /// (`Some(error)` when it failed). The engine answers a navigating action
+    /// only once its page loaded, after the tab heard so: an answer that says
+    /// "loading" then completes at once instead of waiting for a load that
+    /// already happened.
+    settled_while_sent: Option<Option<String>>,
 }
 
 enum PagePhase {
@@ -1490,6 +1496,7 @@ impl BrowserWidget {
                 until: now + PAGE_LOAD_WAIT,
             },
             deadline: now + PAGE_OPERATION_TIMEOUT,
+            settled_while_sent: None,
         });
         self.drive_page_operation();
         Ok(())
@@ -1547,6 +1554,16 @@ impl BrowserWidget {
         }) else {
             return;
         };
+        if let (Ok(reply), Some(error)) = (&result, &operation.settled_while_sent)
+            && reply.loading
+        {
+            let note = error
+                .as_deref()
+                .map(|error| format!("the page it opened failed to load: {error}"));
+            self.page_operation_result =
+                Some(self.page_success(operation.invocation, reply, note.as_deref()));
+            return;
+        }
         self.page_operation_result = Some(match result {
             Ok(reply) if reply.loading => {
                 self.page_operation = Some(PageOperation {
@@ -1572,6 +1589,12 @@ impl BrowserWidget {
     /// A page action that started a navigation completes once it settles, so
     /// the caller's next read sees the page the action opened.
     fn page_navigation_settled(&mut self, error: Option<&str>) {
+        if let Some(operation) = self.page_operation.as_mut()
+            && matches!(operation.phase, PagePhase::Sent)
+        {
+            operation.settled_while_sent = Some(error.map(str::to_owned));
+            return;
+        }
         let Some(operation) = self
             .page_operation
             .take_if(|operation| matches!(operation.phase, PagePhase::Navigating { .. }))
