@@ -80,10 +80,10 @@ use history::{
 use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
-    SHORTCUT_NAVIGATION_STEP, configured_shortcut_action, shortcut_action_label,
-    shortcut_action_rows, shortcut_action_summary, shortcut_chord_from_event,
-    shortcut_chord_keycaps, shortcut_guide_chord, shortcut_guide_content_height,
-    shortcut_navigation_columns, shortcut_navigation_height, shortcut_note_lines,
+    configured_shortcut_action, shortcut_action_label, shortcut_action_rows,
+    shortcut_action_summary, shortcut_chord_from_event, shortcut_chord_keycaps,
+    shortcut_guide_chord, shortcut_guide_content_height, shortcut_navigation_columns,
+    shortcut_navigation_height, shortcut_navigation_step, shortcut_note_lines,
     shortcut_reference_columns, shortcut_reference_group_height, shortcut_reference_rows,
     shortcut_reference_step,
 };
@@ -640,6 +640,9 @@ pub struct ShellOverlayHost {
     overview_metrics: OverviewMetrics,
     /// Layout-only theme snapshot for the shared compact-modal rule.
     overview_layout_theme: Theme,
+    /// The keyboard guide's navigation row step for the theme of the last
+    /// layout pass, so the guide's hit-testing and paint share one answer.
+    shortcut_navigation_step: f64,
     overview_layout_viewport: Rect,
     /// Interruptible open/close driver for quick-settings, so it fades +
     /// slides out on close instead of vanishing.
@@ -2400,6 +2403,7 @@ impl ShellOverlayHost {
             overview_panel_cache_fills: 0,
             overview_metrics: OverviewMetrics::default(),
             overview_layout_theme: Theme::default(),
+            shortcut_navigation_step: shortcut_navigation_step(&Theme::default()),
             overview_layout_viewport: Rect::ZERO,
             transition_started: None,
             transition_from: 0.0,
@@ -18309,6 +18313,7 @@ impl Widget for ShellOverlayHost {
         // them here, where the theme is in hand, so this pass's hit-testing
         // and paint share one answer.
         self.resolve_overview_layout(theme);
+        self.shortcut_navigation_step = shortcut_navigation_step(theme);
         self.onboarding_node = None;
         // Both pushed before the content tree is built, so this pass's
         // fullscreen collapse and per-display width resolution are in
@@ -21822,6 +21827,7 @@ impl ShellOverlayHost {
                 width - 48.0,
                 SHORTCUT_GUIDE_ROWS.len(),
                 note_lines,
+                self.shortcut_navigation_step,
             ) + 22.0
         } else {
             600.0
@@ -22340,8 +22346,12 @@ impl ShellOverlayHost {
                 // shifted by `scroll`; the body clips it. The panel is as
                 // tall as this content, so scrolling only exists when the
                 // window is shorter than the guide.
-                let content_height =
-                    shortcut_guide_content_height(body.width(), rows.len(), note_lines);
+                let content_height = shortcut_guide_content_height(
+                    body.width(),
+                    rows.len(),
+                    note_lines,
+                    self.shortcut_navigation_step,
+                );
                 self.shortcut_guide_max_scroll = (content_height - body.height()).max(0.0);
                 let scroll = self
                     .shortcut_guide_scroll
@@ -22358,7 +22368,11 @@ impl ShellOverlayHost {
                     &visible,
                 );
                 let nav_columns = shortcut_navigation_columns(body.width());
-                let navigation_height = shortcut_navigation_height(rows.len(), nav_columns);
+                let navigation_height = shortcut_navigation_height(
+                    rows.len(),
+                    nav_columns,
+                    self.shortcut_navigation_step,
+                );
                 let navigation_surface =
                     Rect::new(body.x0, body.y0, body.x1, body.y0 + navigation_height);
                 scene.fill(
@@ -22390,8 +22404,9 @@ impl ShellOverlayHost {
                         / f64_of_usize(nav_columns);
                     let x =
                         navigation_surface.x0 + 14.0 + f64_of_usize(column) * (column_width + 8.0);
-                    let y =
-                        navigation_surface.y0 + 31.0 + f64_of_usize(row) * SHORTCUT_NAVIGATION_STEP;
+                    let y = navigation_surface.y0
+                        + 31.0
+                        + f64_of_usize(row) * self.shortcut_navigation_step;
                     text_renderer.draw_style(
                         scene,
                         &t(label),
@@ -22636,7 +22651,7 @@ impl ShellOverlayHost {
                     scene.fill(
                         Fill::NonZero,
                         outer,
-                        colors.text_dim.multiply_alpha(0.5),
+                        ui::widget::scrollbar::thumb_color(theme, false),
                         None,
                         &RoundedRect::new(track.x0, thumb_y, track.x1, thumb_y + thumb_h, 2.0),
                     );
