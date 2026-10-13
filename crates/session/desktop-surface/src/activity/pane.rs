@@ -7246,11 +7246,14 @@ impl RoomActivityPane {
                     if self.summary_details_rect.is_some() {
                         order.push(ActivityFocus::SummaryDetails);
                     }
-                    order.extend(
-                        self.summary_source_rects
+                    // Semantic citations exist before the first paint; native
+                    // focus must not depend on cached pointer rectangles.
+                    order.extend(self.narrative.iter().flat_map(|narrative| {
+                        narrative
+                            .source_ids
                             .iter()
-                            .map(|(key, _)| ActivityFocus::SummarySource(key.clone())),
-                    );
+                            .map(|id| ActivityFocus::SummarySource(self.summary_source_key(id)))
+                    }));
                 }
                 order.extend(
                     self.brief_rects
