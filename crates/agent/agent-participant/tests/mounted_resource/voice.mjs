@@ -78,9 +78,9 @@ async function open(device) {
   return tab;
 }
 
-async function action(tab, name, gesture = false) {
+async function action(tab, name, gesture = false, confirm = false) {
   const response = await tab.send('Runtime.evaluate', {expression:
-    `mount.invokeAction(fixture.callRow, ${JSON.stringify(name)})`,
+    `mount.invokeAction(fixture.callRow, ${JSON.stringify(name)}, {}, {confirm:${confirm}})`,
     returnByValue:true, userGesture:gesture});
   assert.equal(response.result?.exceptionDetails, undefined, 'public Chat action failed');
   const result = response.result.result.value;
@@ -114,9 +114,14 @@ try {
   const first = await open({});
   const second = await open(fixture.secondDevice);
   for (const tab of pages) {
-    const controls = await tab.evaluate("mount.actions(fixture.callRow).map(a=>a.address.action)");
-    for (const name of ['join-call','call-status','mute','unmute','leave-call']) assert.ok(controls.includes(name), `public ${name} missing`);
-    await action(tab, 'join-call');
+    const controls = await tab.evaluate("mount.actions(fixture.callRow)");
+    for (const name of ['join-call','call-status','mute','unmute','leave-call']) assert.ok(controls.some(row => row.address.action === name), `public ${name} missing`);
+    assert.equal(controls.find(row => row.address.action === 'join-call').contract.confirmation.mode, 'confirm', 'public join-call requires host confirmation');
+    const unconfirmed = await tab.send('Runtime.evaluate', {expression:
+      "mount.invokeAction(fixture.callRow, 'join-call')", returnByValue:true});
+    assert.match(JSON.stringify(unconfirmed.result?.exceptionDetails ?? {}),
+      /action_confirmation_required/, 'unconfirmed browser join-call must be refused');
+    await action(tab, 'join-call', false, true);
   }
   for (const tab of pages) {
     await tab.waitFor('peer.voice.call.state.phase === "live" && peer.voice.call.state.participants.length === 2', {timeout:30_000});
@@ -152,7 +157,7 @@ try {
   await first.waitFor('peer.voice.call.state.participants.length === 1');
   assert.equal(await resourcesClosed(second), true, 'Leave closes every real browser audio resource');
   stage('actual-chat-leave-closes-tracks-worklets-and-carrier');
-  await action(second, 'join-call');
+  await action(second, 'join-call', false, true);
   await second.waitFor('peer.voice.call.state.phase === "live" && peer.voice.call.state.participants.length === 2');
   assert.equal(await inactive(second), true, 'rejoin requires fresh consent');
   await action(second, 'unmute', true);
