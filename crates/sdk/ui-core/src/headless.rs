@@ -12296,9 +12296,7 @@ mod undo_driver_tests {
             node
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             use automerge::{ReadDoc, transaction::Transactable};
@@ -12328,10 +12326,6 @@ mod undo_driver_tests {
 
         fn name(&self) -> &'static str {
             "Typer"
-        }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            self.rect
         }
     }
 
@@ -12551,9 +12545,7 @@ mod dispatched_action_driver_tests {
             node
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             let doc = ctx.state.document_mut();
@@ -12617,10 +12609,6 @@ mod dispatched_action_driver_tests {
 
         fn name(&self) -> &'static str {
             "ActionEditor"
-        }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            self.rect
         }
 
         fn is_focusable(&self) -> bool {
@@ -13627,9 +13615,7 @@ mod framed_tests {
             taffy.widget_leaf(style, node_map, self)
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if matches!(
@@ -13642,10 +13628,6 @@ mod framed_tests {
                 self.presses = self.presses.saturating_add(1);
                 *ctx.handled = true;
             }
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
         }
 
         fn name(&self) -> &'static str {
@@ -13740,13 +13722,7 @@ mod framed_tests {
             }
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
-        }
+        crate::rect_geometry!();
 
         fn name(&self) -> &'static str {
             "Tall"

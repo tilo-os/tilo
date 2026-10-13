@@ -650,13 +650,7 @@ impl Widget for CollaborationLaunchpad {
         }
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    ui::redraw_flag!();
 
     #[allow(
         clippy::arithmetic_side_effects,

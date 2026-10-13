@@ -65,9 +65,7 @@ impl Widget for Well {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -141,9 +139,5 @@ impl Widget for Well {
 
     fn name(&self) -> &'static str {
         "Well"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
