@@ -836,10 +836,7 @@ pub enum ChatRuntime {
 /// Whether this host imports attachments from native paths. Voice support
 /// is reported independently through the host's local media lane.
 pub(crate) fn native_file_access() -> bool {
-    matches!(
-        tilo_files::availability(tilo_files::Feature::NativePaths),
-        tilo_files::Availability::Available
-    )
+    tilo_files::available(tilo_files::Feature::NativePaths)
 }
 
 impl ChatApp {

@@ -257,55 +257,6 @@ pub trait WorkspaceMemberships: Send + Sync {
     ) -> tilo_peer_state::owner_commit::CommitFuture;
 }
 
-pub type DesktopCommandFuture = std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = Result<
-                    tilo_peer_state::owner_commit::OwnerCommitReceipt,
-                    tilo_peer_state::desktop_command::DesktopCommandError,
-                >,
-            > + Send,
-    >,
->;
-/// An explicitly installed native semantic owner, never a compositor session.
-/// The broker constructs requests from authenticated durable invocations.
-pub trait DesktopCommands: Send + Sync {
-    fn room(&self) -> &str;
-    fn execute(
-        &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        direct_delivery: bool,
-    ) -> DesktopCommandFuture;
-    /// Applications this owner can open. Each is published as an ordinary
-    /// `desktop:app:<id>#open` action, the same for people (command palette)
-    /// and agents.
-    fn catalogue(&self) -> &dyn tilo_desktop_model::apps::AppCatalogue {
-        &()
-    }
-    /// The owner's kept receipt of a committed desktop command (its command
-    /// id and the windows it opened), when the owner keeps one. Read after
-    /// a successful execute; the default keeps none.
-    fn receipt(
-        &self,
-        request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> Option<tilo_peer_state::desktop_command::DesktopCommandReceipt> {
-        let _ = request;
-        None
-    }
-}
-
-/// The room's owner for documents proposed into the room
-/// ([`tilo_peer_state::document_import`]). The broker constructs each
-/// request from an authenticated durable invocation; the owner decides it
-/// in its serialized turn.
-pub trait DocumentImports: Send + Sync {
-    fn room(&self) -> &str;
-    fn execute(
-        &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> DesktopCommandFuture;
-}
-
 /// Where the view of a launched app opens: next to where the actor that
 /// needs it already is, so the person and every actor keep their place.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1118,12 +1069,8 @@ pub struct HostServices {
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
-    pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
     pub task_execution: Option<Arc<dyn WorkspaceTaskExecution>>,
-    /// Documents proposed into the room and the owner's answers. Without it
-    /// nothing can be proposed.
-    pub document_imports: Option<Arc<dyn DocumentImports>>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
@@ -1154,7 +1101,6 @@ pub struct HostServices {
     /// Records grants people give applications for other apps' actions.
     /// Without it an app is never offered a grant question.
     pub app_action_grants: Option<Arc<dyn AppActionGrants>>,
-    pub collaboration_admin: Option<Arc<dyn crate::collaboration_admin::CollaborationAdmin>>,
     /// Where the launchable action catalogue survives a restart. Without it
     /// closed apps' actions are retained for this broker's lifetime only.
     pub launchable_catalogue: Option<std::path::PathBuf>,

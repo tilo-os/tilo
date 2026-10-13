@@ -16,7 +16,7 @@ use ui::widget::TaffyTreeExt;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
 use ui::presence::PresenceCtx;
@@ -66,9 +66,7 @@ impl Widget for StatusLog {
         taffy.widget_leaf(crate::full_width_row(self.height), node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -137,10 +135,6 @@ impl Widget for StatusLog {
 
     fn test_id(&self) -> Option<&str> {
         Some("install_status_log")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
