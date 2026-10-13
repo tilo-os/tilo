@@ -483,10 +483,6 @@ mod tests {
 
     /// Identifier fallbacks, path containment and manifest bounds.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn extension_identifiers_and_manifests_are_safe_and_bounded() {
         // Phase `slug_fallback_for_manifests_without_gecko_id`.
         {

@@ -5,11 +5,7 @@
 //! go to the *new* focus, exactly once; sending it back to the old surface
 //! would contradict the Wayland ordering and create a stuck key.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test harness failures are assertions"
-)]
+#![allow(clippy::expect_used, reason = "test harness failures are assertions")]
 #![allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
@@ -510,10 +506,6 @@ fn drain_edges(
 /// it, queues `Activated`, and on release queues `Deactivated` (which
 /// push-to-talk clients wait for) without ever showing the client either
 /// edge.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the grant, the focused client and both key edges form one wire transcript"
-)]
 #[test]
 fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_release() {
     use shell::portal::global_shortcuts::{

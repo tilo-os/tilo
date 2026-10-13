@@ -89,10 +89,7 @@ impl Widget for Shiftable {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(120.0),
-                height: taffy::Dimension::length(40.0),
-            },
+            size: taffy::Size::from_lengths(120.0, 40.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

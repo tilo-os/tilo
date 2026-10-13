@@ -56,13 +56,6 @@ pub fn encoded_video_only() -> std::path::PathBuf {
     CLIP.get_or_init(|| encode_fixture(false)).clone()
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test-fixture dimensions are fixed; panics make a missing codec or malformed buffer fail loudly"
-)]
 fn encode_fixture(with_audio: bool) -> std::path::PathBuf {
     // Test binaries live in `target/<profile>/deps`; keep the clip next to
     // that profile's other outputs.
@@ -102,13 +95,6 @@ fn encode_fixture(with_audio: bool) -> std::path::PathBuf {
     path
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test-fixture dimensions are fixed; panics make a missing codec or malformed buffer fail loudly"
-)]
 fn encode_to(path: &std::path::Path, with_audio: bool) {
     gst::init().expect("initialize GStreamer for generated video fixture");
     std::fs::remove_file(path).ok();
@@ -188,9 +174,6 @@ fn encode_to(path: &std::path::Path, with_audio: bool) {
 
 #[allow(
     clippy::arithmetic_side_effects,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
     reason = "test-fixture dimensions are fixed; panics make a missing codec or malformed buffer fail loudly"
 )]
 fn push_video_frames(source: &gst_app::AppSrc) {

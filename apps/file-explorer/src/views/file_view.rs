@@ -1249,10 +1249,7 @@ impl FileView {
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
                 left: LengthPercentage::length(0.0),
                 right: LengthPercentage::length(0.0),

@@ -4715,10 +4715,7 @@ impl Widget for ForeignSurfaceWidget {
         // dummy id here just means the fallback is unreachable by real
         // traversal instead of panicking.
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -6680,10 +6677,7 @@ mod tests {
             let node = widget.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
             let root = taffy.parent_node(
                 taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::length(1200.0),
-                        height: taffy::Dimension::length(800.0),
-                    },
+                    size: taffy::Size::from_lengths(1200.0, 800.0),
                     ..Default::default()
                 },
                 &[node],

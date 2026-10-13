@@ -3836,10 +3836,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn invalid_or_unauthorized_operations_fail_closed_without_publishing() {
         // Phase `read_only_authorizer_cannot_create_durable_state`.
         {

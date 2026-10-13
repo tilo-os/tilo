@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{FreshId as _, WorkspaceId, WorkspaceTree};
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
@@ -40,10 +40,7 @@ pub fn lay_out_with_theme<W: Widget + ?Sized>(
     let root_node = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(width),
-                    height: Dimension::length(height),
-                },
+                size: Size::from_lengths(width, height),
                 ..Default::default()
             },
             &[child],

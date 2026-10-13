@@ -962,10 +962,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn reader_selection_is_read_neutral_and_reply_all_is_distinct() {
         // Phase `initial_reader_selection_is_read_state_neutral`.
         {

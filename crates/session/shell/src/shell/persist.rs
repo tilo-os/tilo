@@ -845,10 +845,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn foreign_surfaces_persist_symbolically_and_closed_ones_stay_closed() {
         fn live_foreign_surface_round_trip_preserves_symbolic_app_and_exact_placement() {
             use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
@@ -1042,10 +1038,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn loaded_state_seeds_rooms_and_docs_but_not_presence() {
         /// Presence must not survive the process that observed it — a
         /// persisted roster would paint people who aren't there. Safe to

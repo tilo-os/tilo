@@ -948,14 +948,23 @@ mod tests {
             Err(ui::tilo_actions::DoorError::ConfirmationRequired)
         ));
 
+        // The write names its drive by the platform's device path (for
+        // example `/dev/rsdb` on macOS), never by the bare fixture name.
+        let device = |name: &str| {
+            crate::model::sample_targets()
+                .into_iter()
+                .find(|target| target.name == name)
+                .unwrap()
+                .dev_path()
+        };
         let chosen = app
             .harness()
             .with_widget_mut(|wizard: &mut ImagerApp| {
                 wizard.forget_target_for_test();
-                wizard.choose_for_write("/dev/sdb");
+                wizard.choose_for_write(&device("sdb"));
                 let sdb = wizard.target().map(|target| target.name.clone());
                 wizard.forget_target_for_test();
-                wizard.choose_for_write("/dev/nvme0n1");
+                wizard.choose_for_write(&device("nvme0n1"));
                 (sdb, wizard.target().is_none())
             })
             .unwrap();

@@ -602,12 +602,10 @@ impl Widget for InputHint {
             .sum::<f64>()
             + CAP_GAP * crate::num::f64_of_usize(self.tokens().len().saturating_sub(1));
         let style = Style {
-            size: Size {
-                width: Dimension::length(crate::num::f32_of_f64(approximate)),
-                height: Dimension::length(crate::num::f32_of_f64(
-                    f64::from(theme.tokens.spacing.s6).max(height),
-                )),
-            },
+            size: Size::from_lengths(
+                crate::num::f32_of_f64(approximate),
+                crate::num::f32_of_f64(f64::from(theme.tokens.spacing.s6).max(height)),
+            ),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()

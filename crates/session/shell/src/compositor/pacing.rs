@@ -1211,10 +1211,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn early_wakeups_neither_push_the_deadline_nor_drift() {
         // Phase `a_wakeup_that_does_not_paint_must_not_push_the_deadline_out`.
         {

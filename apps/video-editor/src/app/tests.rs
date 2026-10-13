@@ -2901,10 +2901,6 @@ fn reveal_inspector_rect_for_test(app: &mut VideoEditorApp, r: &Regions, rect: R
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario: each former test is a labelled case block with its own fixture"
-)]
 fn resource_and_view_actions_target_exact_entities() {
     // Case `a_chosen_search_hit_brokers_the_exact_timeline_selection`:
     // A chosen search row resolves through the exported resource tree and the
@@ -9612,10 +9608,6 @@ fn walked_row_rect(l: &InspectorLayout, row: InspectorRow) -> Option<Rect> {
 )]
 fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
     // Case `two_x_text_scales_every_canvas_band_without_collisions`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one end-to-end 2× geometry regression keeps all cross-pane collision assertions together"
-    )]
     {
         // Regression for the first accessibility-scale pass: only the side
         // pane breakpoint used effective width, leaving 2× text painted

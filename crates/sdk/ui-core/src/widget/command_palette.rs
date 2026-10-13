@@ -9,7 +9,7 @@ use crate::widget::ModelPath;
 use automerge::ObjId;
 use std::collections::HashSet;
 use std::sync::Arc;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_search::FieldWeight;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -2075,10 +2075,7 @@ impl Widget for CommandPalette {
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();
         let style = Style {
-            size: Size {
-                width: Dimension::length(f32_of_f64(width)),
-                height: Dimension::length(f32_of_f64(height)),
-            },
+            size: Size::from_lengths(f32_of_f64(width), f32_of_f64(height)),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

@@ -8,15 +8,6 @@
 //! Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump PNGs for each theme.
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-#![allow(
     clippy::cast_precision_loss,
     reason = "test viewport dims are small hard-coded literals (a few hundred px), always exactly representable in f32"
 )]
@@ -24,7 +15,7 @@
 use std::collections::HashMap;
 
 use osk::OskWidget;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -53,10 +44,7 @@ fn osk_renders_keys_and_toolbar() {
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
-                    },
+                    size: Size::from_lengths(w as f32, h as f32),
                     ..Default::default()
                 },
                 &[child],

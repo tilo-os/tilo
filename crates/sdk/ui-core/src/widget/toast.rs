@@ -1254,10 +1254,7 @@ impl Widget for ToastStack {
         let (w, h) = self.stack_size();
         self.laid_out = self.toasts.len();
         let style = Style {
-            size: Size {
-                width: Dimension::length(w),
-                height: Dimension::length(h),
-            },
+            size: Size::from_lengths(w, h),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

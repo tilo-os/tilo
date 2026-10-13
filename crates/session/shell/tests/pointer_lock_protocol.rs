@@ -2,11 +2,6 @@
 //! the compositor withdraws the lock when the game loses focus and when the
 //! person presses the release chord, and does not hand it back until focus
 //! has moved on.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test harness failures are assertions"
-)]
 
 use std::ops::{Deref, DerefMut};
 

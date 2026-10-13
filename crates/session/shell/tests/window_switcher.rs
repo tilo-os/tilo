@@ -13,7 +13,7 @@ use shell::shell::state::{
     AppKind, FreshId as _, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
     WorkspaceTree,
 };
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Role};
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -176,10 +176,7 @@ fn lay_out(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
+                size: Size::from_lengths(1600.0, 900.0),
                 ..Default::default()
             },
             &[node],

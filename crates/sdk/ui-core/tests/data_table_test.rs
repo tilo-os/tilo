@@ -1,13 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_ui::text_render::TextRenderer;
@@ -78,10 +68,7 @@ fn cell_render_receives_text_renderer_and_rect() {
         .set_style(
             root,
             taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::length(400.0),
-                    height: taffy::Dimension::length(200.0),
-                },
+                size: taffy::Size::from_lengths(400.0, 200.0),
                 ..Default::default()
             },
         )

@@ -1,9 +1,4 @@
 //! Exercise the production client's wire calls and acknowledgment boundaries.
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "test setup and assertions"
-)]
 
 use std::cell::RefCell;
 use std::collections::VecDeque;

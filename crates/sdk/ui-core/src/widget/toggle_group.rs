@@ -1995,10 +1995,7 @@ impl Widget for ToggleGroup {
             self.stacked = (side, gap);
             let n = f64_of_usize(self.segments.len().max(1));
             let node = taffy.leaf_node(Style {
-                size: Size {
-                    width: Dimension::length(f32_of_f64(side)),
-                    height: Dimension::length(f32_of_f64(side * n + gap * (n - 1.0))),
-                },
+                size: Size::from_lengths(f32_of_f64(side), f32_of_f64(side * n + gap * (n - 1.0))),
                 flex_shrink: 0.0,
                 ..Default::default()
             });

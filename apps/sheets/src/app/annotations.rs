@@ -637,10 +637,6 @@ impl SheetsApp {
     /// The first comment thread of the active sheet, as a card: who wrote it
     /// and on what range, the comment, its replies, and what can be done with
     /// it.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the card's rows are painted top to bottom from one shared set of measured offsets"
-    )]
     fn draw_comment_card(&mut self, ctx: &mut PaintCtx<'_>, card: Rect) {
         let Some(thread) = self.sheet_comments.first().cloned() else {
             return;

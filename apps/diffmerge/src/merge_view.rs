@@ -1066,10 +1066,7 @@ impl Widget for MergeView {
     ) -> NodeId {
         // `new_leaf` on a freshly created tree never fails.
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             ..Default::default()
         };

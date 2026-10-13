@@ -983,10 +983,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn availability_registry_persists_by_stable_record_id_and_rejects_tampering() {
         // Phase `registry_survives_restart_and_is_keyed_by_stable_record_id`.
         {
