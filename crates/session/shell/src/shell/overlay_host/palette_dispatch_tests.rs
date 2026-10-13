@@ -1485,7 +1485,7 @@ fn quick_settings_settings_opens_the_personal_app_or_reports_its_absence() {
 
 #[test]
 fn dictation_model_setup_uses_semantic_normal_launcher_and_never_grants_capture() {
-    use crate::compositor::dictation::{DictationStatus, runtime::RuntimeError};
+    use crate::compositor::dictation_status::{DictationStatus, RuntimeError};
     let (mut host, _) = host_with_chrome();
     let launches = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let recorded = std::rc::Rc::clone(&launches);
