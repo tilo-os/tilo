@@ -284,11 +284,11 @@ impl Harness {
             .send(&mut self.host, &event);
     }
 
-    /// A horizontally-dominant wheel event over the strip, the way a
-    /// two-finger sideways swipe arrives.
-    fn scroll_horizontally(&mut self, dx: f32) {
+    /// A horizontally-dominant wheel event over the strip, `rightward`
+    /// lines to the right. winit reports a rightward wheel with negative x.
+    fn scroll_horizontally(&mut self, rightward: f32) {
         self.event(&ui::synthetic_input::cursor_moved(600.0, 500.0));
-        self.event(&ui::synthetic_input::mouse_wheel(dx, 0.0));
+        self.event(&ui::synthetic_input::mouse_wheel(-rightward, 0.0));
     }
 
     fn scroll_x(&self) -> f64 {
@@ -851,7 +851,7 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
         let by_swipe = {
             let mut h = Harness::new();
             for _ in 0..3 {
-                // Positive dx steps forward, matching the chord's direction.
+                // A rightward wheel steps forward, matching the chord's direction.
                 h.scroll_horizontally(4.0);
                 h.tick();
             }
