@@ -635,6 +635,8 @@ struct SimulatedVblankPresenter {
     last_render: Duration,
     /// What the last frame repainted.
     last_painted: PaintedArea,
+    /// `wl_shm` bytes uploaded to client-frame textures as of the last frame.
+    shm_uploaded: u64,
 }
 
 /// What one frame repainted and what it cost.
@@ -699,6 +701,7 @@ impl SimulatedVblankPresenter {
             queued_last: false,
             last_render: Duration::ZERO,
             last_painted: PaintedArea::default(),
+            shm_uploaded: crate::shell::gpu_frames::shm_upload_bytes(),
         })
     }
 
@@ -875,8 +878,13 @@ impl Presenter for SimulatedVblankPresenter {
 
     fn frame_detail(&mut self) -> Option<String> {
         let painted = self.last_painted;
+        // What clients' wl_shm commits sent to the GPU since the last frame.
+        let uploaded = crate::shell::gpu_frames::shm_upload_bytes();
+        let shm_upload =
+            uploaded.saturating_sub(std::mem::replace(&mut self.shm_uploaded, uploaded));
         Some(format!(
-            "gpu_us={} damage_px={} raster_px={} dense={} submit_us={} settle_us={}",
+            "gpu_us={} damage_px={} raster_px={} dense={} submit_us={} settle_us={} \
+             shm_upload_bytes={shm_upload}",
             self.last_render.as_micros(),
             painted.damage,
             painted.raster,
