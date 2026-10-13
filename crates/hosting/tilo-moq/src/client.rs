@@ -249,8 +249,7 @@ impl Client {
         } else {
             carrier::Trust::Fingerprints(shared.scope.fingerprints.clone())
         };
-        let mut publish = None;
-        if let Some(name) = &shared.scope.publication {
+        let publish = if let Some(name) = &shared.scope.publication {
             let broadcast = shared
                 .outgoing
                 .create_broadcast(name.as_str())
@@ -269,16 +268,19 @@ impl Client {
             state.broadcast = Some(broadcast);
             drop(state);
             let names = crate::relay::exact(&[name.as_str()]).ok_or(ClientError::Invalid)?;
-            publish = Some(
+            Some(
                 shared
                     .outgoing
                     .consume()
                     .scope("", &names)
                     .map_err(|_| ClientError::Invalid)?,
-            );
-        }
-        let mut subscribe = None;
-        if !shared.scope.subscriptions.is_empty() {
+            )
+        } else {
+            None
+        };
+        let subscribe = if shared.scope.subscriptions.is_empty() {
+            None
+        } else {
             let names: Vec<&str> = shared
                 .scope
                 .subscriptions
@@ -286,13 +288,13 @@ impl Client {
                 .map(String::as_str)
                 .collect();
             let names = crate::relay::exact(&names).ok_or(ClientError::Invalid)?;
-            subscribe = Some(
+            Some(
                 shared
                     .incoming
                     .scope("", &names)
                     .map_err(|_| ClientError::Invalid)?,
-            );
-        }
+            )
+        };
         let run_shared = shared.clone();
         let grant = connection.authorization;
         let task = runtime.spawn(async move {

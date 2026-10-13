@@ -1247,7 +1247,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     background_service.launch_at_session_start(&ctx.grants.tree_handle());
     let background = BackgroundBackend::with_service_and_lifecycle(
         ctx.clone(),
-        background::BackgroundServiceHandle::new(Arc::new(background_service)),
+        Arc::new(background_service),
         lifecycle.clone(),
     );
     let input_capture =
@@ -1262,7 +1262,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     let shortcut_service = global_shortcuts::ShellGlobalShortcutsService::global();
     let shortcuts = GlobalShortcutsBackend::with_service(
         ctx.clone(),
-        global_shortcuts::GlobalShortcutsServiceHandle::new(Arc::new(shortcut_service.clone())),
+        Arc::new(shortcut_service.clone()),
         lifecycle.clone(),
     );
     let shortcut_events = shortcuts.handle();

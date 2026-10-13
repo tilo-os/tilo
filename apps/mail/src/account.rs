@@ -13,7 +13,7 @@
 //! ergonomic in-memory shapes the rest of the app works with — [`Account`]
 //! (an [`AccountConfig`] plus per-account sidebar state) and [`AccountStore`]
 //! (the list plus the active index) — and hydrates them from the shared store
-//! and vault ([`AccountStore::load`]). The type-specific connection settings
+//! and vault ([`AccountStore::load_in`]). The type-specific connection settings
 //! ([`AccountConfig`]) are serialised into each shared account's opaque
 //! `config`; the password is read back from the vault, never from the JSON.
 
@@ -71,7 +71,12 @@ impl Account {
     /// [`StoredAccount`]. The password is `#[serde(skip)]` on [`AccountConfig`],
     /// so it never reaches this JSON — it lives only in the vault.
     fn to_stored(&self) -> StoredAccount {
-        let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), TYPE_ID);
+        let type_id = if self.config.import_pending {
+            accounts::thunderbird::PENDING_TYPE
+        } else {
+            TYPE_ID
+        };
+        let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), type_id);
         stored.display_name = self.config.label().to_string();
         stored.tint = self.tint;
         stored.set_config(&StoredConfig {
@@ -86,7 +91,10 @@ impl Account {
     fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
         let payload = stored.config_as::<StoredConfig>()?;
         let mut config = payload.config;
-        if let Some(secret) = vault.get(&stored.id) {
+        config.import_pending |= stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
+        if !config.import_pending
+            && let Some(secret) = vault.get(&stored.id)
+        {
             config.password = secret.password;
         }
         Some(Self {
@@ -127,13 +135,6 @@ impl AccountStore {
         }
     }
 
-    /// Load the mail accounts from the shared canonical store, hydrating each
-    /// password from the secret vault. An empty store when nothing is
-    /// configured — never an error.
-    pub fn load() -> Self {
-        Self::from_shared(&SharedStore::load(), &SecretVault::open())
-    }
-
     /// Load under an explicit config root — the seam tests use, so they never
     /// touch the real user config directory.
     pub fn load_in(config_root: &Path) -> Self {
@@ -153,6 +154,7 @@ impl AccountStore {
         let accounts: Vec<Account> = shared
             .list(&ty)
             .into_iter()
+            .chain(shared.list(&accounts::thunderbird::PENDING_TYPE.into()))
             .filter_map(|stored| Account::from_stored(stored, vault))
             .collect();
         // Map the shared store's active-id back to Mail's active-index.
@@ -161,22 +163,6 @@ impl AccountStore {
             .and_then(|id| accounts.iter().position(|a| a.id == id.as_str()))
             .unwrap_or(0);
         Self { accounts, active }
-    }
-
-    /// Persist to the default Tilo config root
-    /// (`$XDG_CONFIG_HOME/tilo/accounts/`). The in-app account add/edit/remove
-    /// flow calls this so accounts survive a restart; a no-op (Ok) when the
-    /// config root can't be resolved (read-only environment / `--shots`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if writing the shared account store or the secret vault
-    /// fails (see [`AccountStore::persist_in`]).
-    pub fn persist(&self) -> std::io::Result<()> {
-        match accounts::config_root() {
-            Some(root) => self.persist_in(&root),
-            None => Ok(()),
-        }
     }
 
     /// Write these accounts into the shared store + vault under an explicit
@@ -212,6 +198,9 @@ impl AccountStore {
         for acct in &self.accounts {
             let id = AccountId::from(acct.id.clone());
             shared.upsert(acct.to_stored());
+            if acct.config.import_pending {
+                continue;
+            }
             // Keep an existing sealed OAuth token intact: an OAuth account has
             // no password, and its token was sealed by the sign-in flow — do
             // not clobber it. Only manage the password secret here.
@@ -282,6 +271,9 @@ impl AccountStore {
             vault.remove(id);
         }
         for acct in &self.accounts {
+            if acct.config.import_pending {
+                continue;
+            }
             let id = AccountId::from(acct.id.clone());
             if acct.config.password.is_empty() {
                 if acct.config.auth != crate::model::AuthMethod::OAuth {
@@ -383,10 +375,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn account_store_upserts_clamps_and_round_trips_the_shared_store() {
         // Phase `upsert_replaces_by_id_not_appends`.
         {
@@ -448,10 +436,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn account_secrets_live_in_the_vault_and_a_damaged_vault_blocks_changes() {
         // Phase `removed_account_secret_is_purged_from_the_vault`.
         {
@@ -651,3 +635,6 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 }
+
+#[cfg(test)]
+mod import_tests;

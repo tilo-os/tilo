@@ -297,10 +297,7 @@ impl ContentStore {
         if let Some(shared) = env(SHARED_STORE_ENV).filter(|value| !value.is_empty()) {
             return Self::in_dir(PathBuf::from(shared));
         }
-        if !matches!(
-            tilo_files::availability(tilo_files::Feature::NativePaths),
-            tilo_files::Availability::Available
-        ) {
+        if !tilo_files::available(tilo_files::Feature::NativePaths) {
             return Self::in_page_files();
         }
         let Some(data) = tilo_paths::data_dir() else {

@@ -58,12 +58,14 @@ fn a_generated_app_builds_outside_the_tilo_repository() {
     ])
     .args(["--template", "starter", "--directory"])
     .arg(&app)
-    .arg("--ui-path")
-    .arg(checkout.join("crates/sdk/ui-core"))
     .current_dir(&parent_path);
+    // `--sdk-git` and `--ui-path` are alternative SDK sources.
     if std::env::var("TILO_SDK_SOURCE").as_deref() == Ok("git") {
         new.arg("--sdk-git")
             .arg(format!("file://{}", checkout.display()));
+    } else {
+        new.arg("--ui-path")
+            .arg(checkout.join("crates/sdk/ui-core"));
     }
     run(&mut new, "tilo-app new");
 

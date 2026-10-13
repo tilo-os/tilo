@@ -98,6 +98,10 @@ pub struct Channel {
     pub kind: ChannelKind,
     /// Archived channels leave the sidebar and stay in the record.
     pub archived: bool,
+    /// Bare authenticated Agent id for a direct conversation; ordinary
+    /// channels leave it empty and remain in the navigation list.
+    #[model(readonly)]
+    pub conversation_with: Option<Atom>,
 }
 
 /// One message of a channel.
@@ -169,6 +173,7 @@ impl Default for Channel {
             topic: String::new(),
             kind: ChannelKind::default(),
             archived: false,
+            conversation_with: None,
         }
     }
 }
@@ -560,6 +565,19 @@ pub fn reply_id(summons: &Id, agent: &str) -> Id {
     hash.write(&[0]);
     hash.write(agent.as_bytes());
     Id::from_raw(format!("m_reply_{:016x}", hash.finish()))
+}
+
+/// Stable hidden conversation shared by every replica for this workspace and
+/// authenticated Agent. The id is an address only; admission still comes
+/// from the live room roster.
+#[must_use]
+pub fn agent_conversation_channel_id(workspace: &str, agent: &str) -> Id {
+    use std::hash::Hasher as _;
+    let mut hash = fnv::FnvHasher::default();
+    hash.write(workspace.as_bytes());
+    hash.write(&[0]);
+    hash.write(agent.as_bytes());
+    Id::from_raw(format!("c_agent_{:016x}", hash.finish()))
 }
 
 /// A new message's fields beyond its channel, author and time.

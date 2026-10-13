@@ -12,10 +12,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -798,4 +794,70 @@ fn cohort_selection_preserves_user_holds_pins_and_state_through_the_real_install
     assert!(!ok);
     assert!(!out.contains("cohort-selection:"));
     assert_eq!(env.registry_toml(), before);
+}
+
+#[test]
+fn selected_runtime_inventory_uses_the_real_catalog_and_xdg_bundle_path() {
+    let env = Env::new();
+    let archive = env.tapp(
+        "1.0.0",
+        b"actual selected payload",
+        Some("tilo-runtime/2026.07"),
+    );
+    let (ok, _, error) = env.cmd(&[
+        "install",
+        "--allow-self-signed",
+        "--ignore-missing-runtime",
+        archive.to_str().unwrap(),
+    ]);
+    assert!(ok, "{error}");
+    let host = env.home.path().join("fixture-host");
+    std::fs::create_dir_all(&host).unwrap();
+    let library = env.home.path().join("library.so");
+    std::fs::write(&library, b"selected runtime bytes").unwrap();
+    let identity = env.home.path().join("identity.json");
+    std::fs::write(
+        &identity,
+        serde_json::json!({"secret_key_hex":"11".repeat(32)}).to_string(),
+    )
+    .unwrap();
+    let runtime = env.xdg_data().join("tilo-runtime/2026.07");
+    runtime_bundle::build_bundle_with(
+        &runtime,
+        "2026.07",
+        &runtime_bundle::BuildOptions {
+            from: Some(&host),
+            identity: Some(&identity),
+            extra_libs: &[library],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = env.registry_toml();
+    let (ok, output, error) = env.cmd(&["list", "--json", "--runtime-paths"]);
+    assert!(ok, "{error}");
+    let snapshot: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(snapshot["apps"][0]["id"], "so.tilo.lifecycle");
+    assert_eq!(snapshot["apps"][0]["runtime"], "tilo-runtime/2026.07");
+    assert_eq!(
+        snapshot["runtime_paths"]["2026.07"],
+        runtime.to_str().unwrap()
+    );
+    assert!(
+        !runtime.starts_with(env.home.path().join(".local/share")),
+        "must honor actual XDG_DATA_HOME"
+    );
+    let (ok, output, error) = env.cmd(&["list", "--json"]);
+    assert!(ok, "{error}");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&output)
+            .unwrap()
+            .is_array()
+    );
+    assert!(!env.cmd(&["list", "--runtime-paths"]).0);
+    assert_eq!(
+        env.registry_toml(),
+        before,
+        "inspection never changes a selection"
+    );
 }

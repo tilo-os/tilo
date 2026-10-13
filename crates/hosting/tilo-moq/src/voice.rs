@@ -165,7 +165,7 @@ pub const LOSS_MIN_PACKETS: u64 = 20;
 pub const REDUNDANCY_HOLD: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How many earlier objects one hop adds to each datagram bundle, from the
-/// loss that hop's transport measured (TIL-624). Redundancy costs a full
+/// loss that hop's transport measured. Redundancy costs a full
 /// object per copy, so it is spent only where loss is observed: zero on a
 /// clean hop, one at [`REDUNDANCY_ONE_PERMILLE`], two at
 /// [`REDUNDANCY_TWO_PERMILLE`]. The browser publisher applies the same policy

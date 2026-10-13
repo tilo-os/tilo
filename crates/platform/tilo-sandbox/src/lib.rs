@@ -37,7 +37,7 @@ pub enum Feature {
     SealedMemory,
 }
 
-pub use tilo_platform_caps::{Availability, availability};
+pub use tilo_platform_caps::{Availability, availability, available};
 
 impl tilo_platform_caps::Feature for Feature {
     /// The feature's availability on Linux, macOS and the web, in that order.

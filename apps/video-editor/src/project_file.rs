@@ -189,17 +189,6 @@ fn header_fields(bytes: &[u8]) -> Result<(u16, u16, u32), ProjectFileError> {
     ))
 }
 
-/// The `version` / `min_reader` a file declares, without loading it.
-///
-/// # Errors
-///
-/// [`ProjectFileError::NotAProject`] when `bytes` do not open with a whole
-/// project-file header.
-pub fn header_versions(bytes: &[u8]) -> Result<(u16, u16), ProjectFileError> {
-    let (version, min_reader, _) = header_fields(bytes)?;
-    Ok((version, min_reader))
-}
-
 /// Read project-file `bytes` back into the model.
 ///
 /// # Errors
@@ -533,10 +522,7 @@ mod tests {
             bytes[9..11].copy_from_slice(&(FORMAT_VERSION + 7).to_le_bytes());
             let back = decode(&bytes).expect("a compatible newer file still opens");
             assert_eq!(back.clips.len(), 1);
-            assert_eq!(
-                header_versions(&bytes).unwrap(),
-                (FORMAT_VERSION + 7, MIN_READER_VERSION)
-            );
+            assert_eq!(header_fields(&bytes).unwrap().0, FORMAT_VERSION + 7);
         }
     }
 
@@ -570,7 +556,7 @@ mod tests {
             assert_eq!(decode(b"").unwrap_err(), ProjectFileError::NotAProject);
             // A file shorter than the header is not a readable project either.
             assert_eq!(
-                header_versions(&[0u8; 4]).unwrap_err(),
+                header_fields(&[0u8; 4]).unwrap_err(),
                 ProjectFileError::NotAProject
             );
         }
@@ -579,13 +565,13 @@ mod tests {
             let bytes = encode(&Project::new("t")).expect("the project encodes");
             for n in 0..HEADER_LEN {
                 assert_eq!(
-                    header_versions(&bytes[..n]),
-                    Err(ProjectFileError::NotAProject),
+                    header_fields(&bytes[..n]).unwrap_err(),
+                    ProjectFileError::NotAProject,
                     "{n} bytes"
                 );
             }
             assert_eq!(
-                header_versions(&bytes[..HEADER_LEN]),
+                header_fields(&bytes[..HEADER_LEN]).map(|(v, m, _)| (v, m)),
                 Ok((FORMAT_VERSION, MIN_READER_VERSION))
             );
         }

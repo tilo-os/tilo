@@ -283,10 +283,7 @@ impl Widget for StandaloneHistoryPane {
         }
         let style = Style {
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             gap: Size {
                 width: taffy::LengthPercentage::length(theme.gap_standard),
                 height: taffy::LengthPercentage::length(theme.gap_standard),

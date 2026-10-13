@@ -24,6 +24,8 @@
 //!   it acts on another record than every step still running
 //!   ([`Session::start_independent`]); everything else waits for them first,
 //!   so a step that reads what an earlier one wrote stays after it;
+//! * a native task's running steps are followed by re-asks their host holds
+//!   until a step moves on ([`Session::follow_native`]), not on a timer;
 //! * the catalogue survey is rebuilt only when the broker republishes it.
 //!
 //! Every bound is enforced here, not asked for: model turns, wall-clock time
@@ -594,6 +596,14 @@ impl Session {
         self.turn = Some(turn);
     }
 
+    /// Whether the model is still writing the turn in flight, so a wait
+    /// should keep it moving.
+    pub(super) fn turn_streaming(&self) -> bool {
+        self.turn
+            .as_ref()
+            .is_some_and(|turn| turn.finished.is_none())
+    }
+
     /// Wait up to `wait` for the turn's next event, then drain the rest.
     fn pump_turn_waiting(&mut self, wait: Duration) {
         let Some(mut turn) = self.turn.take() else {
@@ -643,16 +653,32 @@ impl Session {
                 .checked_add(Duration::from_millis(u64::from(budget.total_ms)))
                 .unwrap_or_else(ui::time::now)
         });
+        // Native tasks are separate permission scopes, not messages in the
+        // legacy conversation. Keep their memory empty for the entire execution;
+        // Conversation still retains this run's turns and authenticated steering.
+        let legacy_memory = self
+            .native_task
+            .is_some()
+            .then(|| std::mem::take(&mut self.memory));
         let result = self.run_task_loop_with(run, &mut state);
         self.task_deadline = None;
+        if let Some(memory) = legacy_memory {
+            // Restore before propagating any I/O error, cancellation or failure,
+            // and never remember native prompts, actions or replies globally.
+            self.memory = memory;
+            return result;
+        }
         let end = result?;
         let reply = match &end {
             LoopEnd::Finished(finish, _) => finish.reply.clone().unwrap_or_default(),
             LoopEnd::Failed(message) => format!("(failed) {message}"),
             LoopEnd::Cancelled(message) => format!("(cancelled) {message}"),
         };
-        self.memory
-            .remember(&run.title, std::mem::take(&mut state.actions), &reply);
+        self.memory.remember(
+            run.instruction(),
+            std::mem::take(&mut state.actions),
+            &reply,
+        );
         Ok(end)
     }
 
@@ -689,7 +715,7 @@ impl Session {
         let catalogue = self.task_catalogue();
         // "ping/tell/notify … in Chat" requires a successful Chat operation,
         // whatever the model later claims.
-        let request = run.title.to_lowercase();
+        let request = run.instruction().to_lowercase();
         if request.contains("chat")
             && NOTIFY_WORDS.iter().any(|word| request.contains(word))
             && let Some(chat) = catalogue
@@ -739,7 +765,7 @@ impl Session {
             task: format!(
                 "{}The request:\n\n{}",
                 self.memory.render(),
-                run.title.trim()
+                run.instruction().trim()
             ),
         };
         let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &first);
@@ -883,7 +909,12 @@ impl Session {
                 .as_ref()
                 .is_some_and(|state| state.pending.is_some())
             {
+                // New directions take the next turn. Steps already running
+                // settle first, as a step in progress always has.
                 self.turn = None;
+                if let Some(message) = self.drain_in_flight(run, state, &mut failed)? {
+                    return Ok(Some(LoopEnd::Cancelled(message)));
+                }
                 return Ok(None);
             }
             self.poll_cancellation_every(run, THINKING_CANCELLATION_POLL)?;
@@ -1080,10 +1111,6 @@ impl Session {
 
     /// Handle one completed call. `failed` records that an `invoke` of this
     /// turn did not succeed; the rest of the turn's invokes are then not run.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one completed call is checked, resolved, performed and recorded in a single auditable sequence"
-    )]
     fn handle_call(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -1284,7 +1311,7 @@ impl Session {
         };
         let instruction = match Instruction::from_answer(
             &invocation.operation,
-            &run.title,
+            run.instruction(),
             Some(&invocation.arguments),
             &catalogue.offers,
         ) {
@@ -1446,17 +1473,17 @@ impl Session {
     /// on its own) and followed with the others when the turn needs their
     /// results.
     ///
-    /// Only a plain legacy invocation qualifies, on a record no running step
-    /// acts on: an open, a view change (both change what is published next),
-    /// a step taking the previous step's result and native tasks all run in
-    /// order.
+    /// Only a plain invocation qualifies — a Task Center action or a native
+    /// task's child — on a record no running step acts on: an open, a view
+    /// change (both change what is published next) and a step taking the
+    /// previous step's result all run in order.
     fn start_independent(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
         state: &mut LoopState,
         call: &StreamedCall,
     ) -> Result<Started> {
-        if self.native_task.is_some() || state.in_flight.len() >= MAX_IN_FLIGHT {
+        if state.in_flight.len() >= MAX_IN_FLIGHT {
             return Ok(Started::InOrder);
         }
         let prepared = match self.prepare_invoke(run, state, &call.input) {
@@ -2085,6 +2112,13 @@ mod tests {
         >,
         /// Invocations the agent asked the host to cancel.
         cancelled: Vec<tilo_actions::InvocationId>,
+        /// Re-asks of a started native child (observations), and how many
+        /// of them were answered with nothing new.
+        observations: usize,
+        idle_observations: usize,
+        /// The host answers a re-ask at once even when it asks to be held,
+        /// as a host from before held re-asks does.
+        answers_reasks_at_once: bool,
     }
 
     /// How the desktop's open of Writer behaves in the fixture world.
@@ -2380,8 +2414,37 @@ mod tests {
         events: Vec<CollabEvent>,
         /// Host answers not delivered yet, with when they are due.
         held: Vec<(ui::time::Instant, CollabEvent)>,
+        /// Re-asks the host holds: request id, child, what the agent had
+        /// seen, and when the hold ends.
+        holding: Vec<HeldReask>,
         /// A catalogue still on its way, and the polls until it arrives.
         late: Option<(usize, CollabEvent)>,
+    }
+
+    /// A native re-ask the fake host holds until its child moves on.
+    struct HeldReask {
+        request_id: u64,
+        invocation: tilo_actions::InvocationId,
+        seen: tilo_actions::remote::UpdateMark,
+        until: ui::time::Instant,
+    }
+
+    /// The host reading a native run as cancelled cancels every child of it
+    /// still running (`cancel_native_children`).
+    fn cancel_native_children(world: &mut World) {
+        let now = ui::time::now();
+        let mut stopped = Vec::new();
+        for (invocation, (due, terminal)) in &mut world.settling {
+            if *due > now {
+                *due = now;
+                *terminal = tilo_actions::InvocationUpdate::Cancelled {
+                    invocation: *invocation,
+                    message: Some("Cancelled from Task Center".into()),
+                };
+                stopped.push(*invocation);
+            }
+        }
+        world.cancelled.extend(stopped);
     }
 
     impl Broker {
@@ -2408,6 +2471,9 @@ mod tests {
                         .retain(|direction| direction.revision > revision);
                     control
                 });
+                if cancelled && world.native_control.is_some() {
+                    cancel_native_children(&mut world);
+                }
                 (cancelled, world.cancel_delay, control)
             };
             if let Some(control) = control {
@@ -2441,6 +2507,7 @@ mod tests {
                 .host_answers
                 .fetch_add(due.len(), std::sync::atomic::Ordering::SeqCst);
             self.events.extend(due.into_iter().map(|(_, event)| event));
+            self.answer_held_reasks(now);
             if let Some((polls, event)) = self.late.take() {
                 if polls == 0 {
                     self.events.push(event);
@@ -2451,6 +2518,10 @@ mod tests {
             std::mem::take(&mut self.events)
         }
         fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+            if self.observe_child(&request) {
+                self.sent.borrow_mut().push(request);
+                return Ok(());
+            }
             match &request {
                 CollabRequest::InvokeTaskAction {
                     request_id,
@@ -2537,6 +2608,107 @@ mod tests {
     }
 
     impl Broker {
+        /// The state of a started child as the host holds it now.
+        fn child_state(
+            &self,
+            invocation: tilo_actions::InvocationId,
+        ) -> tilo_actions::InvocationUpdate {
+            let world = self.world.borrow();
+            match world.settling.get(&invocation) {
+                Some((due, terminal)) if *due <= ui::time::now() => terminal.clone(),
+                _ => tilo_actions::InvocationUpdate::Accepted { invocation },
+            }
+        }
+
+        /// Answer a native task's re-ask of a started child (by its stable
+        /// id) with the child's state, as `native_task_observation` does: at
+        /// once, or — when the re-ask asks to be held — once the child moves
+        /// past what the agent saw, the run is cancelled, or the hold ends.
+        /// `false` for any other request.
+        fn observe_child(&mut self, request: &CollabRequest) -> bool {
+            let &CollabRequest::InvokeTaskAction {
+                request_id,
+                invocation,
+                wait,
+                ..
+            } = request
+            else {
+                return false;
+            };
+            if !self.world.borrow().settling.contains_key(&invocation) {
+                return false;
+            }
+            let update = self.child_state(invocation);
+            let held = wait.filter(|wait| {
+                !self.world.borrow().answers_reasks_at_once
+                    && !update.is_terminal()
+                    && tilo_actions::remote::UpdateMark::of(&update) == wait.seen
+            });
+            match held {
+                Some(wait) => self.holding.push(HeldReask {
+                    request_id,
+                    invocation,
+                    seen: wait.seen,
+                    until: ui::time::now() + Duration::from_millis(u64::from(wait.wait_ms)),
+                }),
+                None => self.answer_reask(request_id, invocation, wait.map(|wait| wait.seen)),
+            }
+            true
+        }
+
+        /// Answer the re-ask `request_id` with the child's state now.
+        fn answer_reask(
+            &mut self,
+            request_id: u64,
+            invocation: tilo_actions::InvocationId,
+            seen: Option<tilo_actions::remote::UpdateMark>,
+        ) {
+            let update = self.child_state(invocation);
+            {
+                let mut world = self.world.borrow_mut();
+                world.observations += 1;
+                let news = update.is_terminal()
+                    || seen
+                        .is_some_and(|seen| tilo_actions::remote::UpdateMark::of(&update) != seen);
+                if !news {
+                    world.idle_observations += 1;
+                }
+            }
+            self.events.push(CollabEvent::TaskActionInvocationResult {
+                request_id,
+                result: Ok((0, update)),
+            });
+        }
+
+        /// Answer every held re-ask whose child moved on or whose hold
+        /// ended; first sample the run's cancellation, as the host does
+        /// while it holds re-asks.
+        fn answer_held_reasks(&mut self, now: ui::time::Instant) {
+            if self.holding.is_empty() {
+                return;
+            }
+            {
+                let mut world = self.world.borrow_mut();
+                if world
+                    .cancel_after_steps
+                    .is_some_and(|steps| world.steps.len() >= steps)
+                {
+                    cancel_native_children(&mut world);
+                }
+            }
+            for held in std::mem::take(&mut self.holding) {
+                let update = self.child_state(held.invocation);
+                if update.is_terminal()
+                    || tilo_actions::remote::UpdateMark::of(&update) != held.seen
+                    || now >= held.until
+                {
+                    self.answer_reask(held.request_id, held.invocation, Some(held.seen));
+                } else {
+                    self.holding.push(held);
+                }
+            }
+        }
+
         /// Answer an observation of, or a request to cancel, a legacy
         /// invocation, as the action host does.
         fn answer_remote(&mut self, message: &RemoteActionMessage) {
@@ -2629,6 +2801,10 @@ mod tests {
                 request_id,
                 result: Ok((0, tilo_actions::InvocationUpdate::Accepted { invocation })),
             });
+            if self.world.borrow().native_control.is_some() {
+                // A native child is observed by re-asking, never pushed.
+                return;
+            }
             self.answer(
                 due.saturating_duration_since(now),
                 CollabEvent::RemoteAction {
@@ -2664,10 +2840,6 @@ mod tests {
         execution_fixture(title, world, turns, pace, None)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one fixture wires the scripted model, the fake broker peer and the real Session"
-    )]
     fn execution_fixture(
         title: &str,
         world: World,
@@ -2696,11 +2868,13 @@ mod tests {
             events: Vec::new(),
             held: Vec::new(),
             late: None,
+            holding: Vec::new(),
         });
         let mut run = runtime_collab::TaskRunEnvelope {
             version: 1,
             task_id: "task:loop".into(),
             title: title.into(),
+            instruction: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::Model,
@@ -2718,12 +2892,8 @@ mod tests {
                 cluster: Uuid::from_u128(1),
                 record: None,
                 name: "agent-1".into(),
-                pace: Duration::ZERO,
-                once: false,
                 model: true,
                 model_timeout: Duration::from_secs(5),
-                await_document: Duration::ZERO,
-                settle: Duration::ZERO,
                 permissions: ui::permissions::PermissionContext::agent_granted_at(
                     "agent-1",
                     &[],
@@ -2786,6 +2956,8 @@ mod tests {
         )
     }
 
+    mod native_pipeline;
+
     fn native_fixture(latest: u64) -> Fixture {
         let control = runtime_collab::TaskRunControl {
             version: 1,
@@ -2835,6 +3007,86 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn native_model_receives_the_full_private_instruction_not_a_truncated_title() {
+        let mut fixture = native_fixture(0);
+        let instruction =
+            "Inspect every release-note section and preserve the complete compatibility matrix. "
+                .repeat(6);
+        assert!(instruction.chars().count() > 240);
+        fixture.run.instruction = Some(instruction.clone());
+        fixture.session.run_task(&fixture.run).unwrap();
+        let bodies = fixture.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert!(bodies[0].to_string().contains(instruction.trim()));
+        drop(bodies);
+        assert!(fixture.session.memory.render().is_empty());
+    }
+
+    #[test]
+    fn native_tasks_isolate_private_memory_in_actual_model_requests() {
+        let mut fixture = native_fixture(0);
+        fixture.session.memory.remember(
+            "legacy-private-prompt-secret",
+            vec!["legacy-private-action-secret".into()],
+            "legacy-private-result-secret",
+        );
+        let legacy = fixture.session.memory.render();
+        let first_instruction = "first-native-private-instruction-secret";
+        fixture.run.instruction = Some(first_instruction.into());
+        *fixture.script.turns.lock().unwrap() = vec![turn(
+            &[finish("first-native-private-result-secret", true)],
+            24,
+        )]
+        .into();
+        fixture.session.run_task(&fixture.run).unwrap();
+        assert_eq!(fixture.session.memory.render(), legacy);
+
+        fixture.run.task_id = "task:second-private-scope".into();
+        fixture.run.run_id += 1;
+        fixture.run.action_context = serde_json::to_value(
+            tilo_actions::ActionContext::default()
+                .with_purpose(fixture.run.title.as_str())
+                .with_group(
+                    fixture.run.task_id.as_str(),
+                    fixture.run.title.as_str(),
+                    "task",
+                ),
+        )
+        .unwrap();
+        fixture
+            .world
+            .borrow_mut()
+            .native_control
+            .as_mut()
+            .unwrap()
+            .task_id = fixture.run.task_id.clone();
+        let second_instruction = "second-native-private-instruction-secret";
+        fixture.run.instruction = Some(second_instruction.into());
+        *fixture.script.turns.lock().unwrap() = vec![turn(
+            &[finish("second-native-private-result-secret", true)],
+            24,
+        )]
+        .into();
+        fixture.session.run_task(&fixture.run).unwrap();
+        assert_eq!(fixture.session.memory.render(), legacy);
+
+        let bodies = fixture.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "both tasks must reach the model");
+        let first = bodies[0].to_string();
+        let second = bodies[1].to_string();
+        drop(bodies);
+        assert!(first.contains(first_instruction));
+        assert!(second.contains(second_instruction));
+        for request in [&first, &second] {
+            assert!(!request.contains("legacy-private-prompt-secret"));
+            assert!(!request.contains("legacy-private-action-secret"));
+            assert!(!request.contains("legacy-private-result-secret"));
+        }
+        assert!(!second.contains(first_instruction));
+        assert!(!second.contains("first-native-private-result-secret"));
     }
 
     #[test]
@@ -3278,12 +3530,15 @@ mod tests {
                 ],
                 24,
             )],
-            Some(Duration::from_secs(1)),
+            // The provider's first event comes long after Stop is seen at the
+            // third cancellation poll (about 600 ms), so a loaded machine's
+            // slower polls still finish well before it.
+            Some(Duration::from_secs(4)),
         );
         let started = ui::time::now();
         f.session.run_task(&f.run).unwrap();
         assert!(
-            started.elapsed() < Duration::from_millis(700),
+            started.elapsed() < Duration::from_secs(2),
             "Stop must not wait for the provider's first event"
         );
         assert_eq!(f.script.bodies.lock().unwrap().len(), 1);

@@ -28,7 +28,7 @@ use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
-use tilo_search::{Document, FieldWeight, MatchTier, Matching, Page, SearchIndex, Signals};
+use tilo_search::{Document, FieldWeight, MatchTier, Matching, SearchIndex, Signals};
 
 /// Skip these paths anywhere in the tree — they explode the index without
 /// adding user-visible files. A pattern with a `/` matches that many
@@ -488,11 +488,15 @@ impl FilesProvider {
     /// Kick the home walk and the inotify watch. Safe to call once; a
     /// second call walks again but does not arm another watcher.
     fn start_name_index(&self) {
+        let wake = crate::shell::search::invocation_wake::waker();
         let name_index = Arc::clone(&self.name_index);
         let home = self.home.clone();
         thread::Builder::new()
             .name("tilo-search-files-walk".into())
-            .spawn(move || walk_home(&home, &name_index))
+            .spawn(move || {
+                walk_home(&home, &name_index);
+                wake.wake();
+            })
             .ok();
         start_name_watch(&self.home, &self.name_index, &self.watch);
     }
@@ -566,66 +570,27 @@ impl FilesProvider {
         };
         let revision = index.generation.to_string();
         let needle = ctx.needle.to_lowercase();
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor.token.split_once('\u{1f}') {
-                Some((cursor_needle, offset)) if cursor_needle == needle => match offset.parse() {
-                    Ok(offset) => offset,
-                    Err(_) => return SearchPage::stale(revision),
-                },
-                _ => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
         let needle_len = needle.len();
-        let found = index.index.search_scored(
-            &needle,
-            Page {
-                offset,
-                limit: budget.max_work,
-            },
-            move |signals| name_score(needle_len, signals),
-        );
-        let mut bytes = 0usize;
-        let mut results = Vec::new();
-        let mut consumed = 0usize;
-        let mut stopped_for_budget = false;
-        for hit in &found.hits {
-            let Some(entry) = index.entry(hit.key) else {
-                consumed = consumed.saturating_add(1);
-                continue;
-            };
-            if (entry.is_dir && !want_folder) || (!entry.is_dir && !want_file) {
-                consumed = consumed.saturating_add(1);
-                continue;
-            }
-            // Budget what the palette receives, including both labels and
-            // the opaque path id, before cloning any row into the UI.
-            let row_bytes = entry
-                .path
-                .display()
-                .to_string()
-                .len()
-                .saturating_add(entry.display.len())
-                .saturating_add(file_title(&entry.path).len())
-                .saturating_add(96);
-            if results.len() >= budget.max_results
-                || bytes.saturating_add(row_bytes) > budget.max_bytes
-            {
-                stopped_for_budget = true;
-                break;
-            }
-            bytes = bytes.saturating_add(row_bytes);
-            consumed = consumed.saturating_add(1);
-            results.push(make_result(entry, hit.score, None));
-        }
-        drop(index);
-        let exhausted = !stopped_for_budget && !found.more;
-        let next = offset.saturating_add(consumed);
-        SearchPage::continuing(
+        crate::shell::search::index_page(
             revision,
-            results,
-            (!exhausted).then(|| format!("{needle}\u{1f}{next}")),
+            cursor,
+            &needle,
+            budget,
+            |page| {
+                index.index.search_scored(
+                    &needle,
+                    tilo_search::Page {
+                        limit: budget.max_work,
+                        ..page
+                    },
+                    move |signals| name_score(needle_len, signals),
+                )
+            },
+            |hit| {
+                let entry = index.entry(hit.key)?;
+                let wanted = if entry.is_dir { want_folder } else { want_file };
+                wanted.then(|| make_result(entry, hit.score, None))
+            },
         )
     }
 }
@@ -665,6 +630,18 @@ impl SearchProvider for FilesProvider {
             },
         )
         .results
+    }
+
+    fn query_incomplete_reason(
+        &self,
+        _ctx: &SearchContext<'_>,
+    ) -> Option<crate::shell::search::QueryIncompleteReason> {
+        // Generation zero is the placeholder before the first walk publishes.
+        // It establishes neither an empty home nor a finished query source.
+        self.published()
+            .as_ref()
+            .is_none_or(|index| index.generation == 0)
+            .then_some(crate::shell::search::QueryIncompleteReason::Unavailable)
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
@@ -1417,6 +1394,7 @@ fn display_path(home: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_search::Page;
 
     thread_local! {
         /// Whole-index builds ([`NameIndex::from_entries`]).
@@ -2368,10 +2346,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn the_walk_skips_bloat_and_indexes_every_tree_before_ranking() {
         // Phase `skip_dirs_hits_common_bloat`.
         {
@@ -2499,6 +2473,74 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    #[test]
+    fn file_catalogue_completion_rejects_unpublished_placeholder() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        use crate::shell::search::{QueryArgs, QueryIncompleteReason, SearchRegistry};
+        let provider = std::rc::Rc::new(provider_from_entries(Vec::new()));
+        *provider.name_index.write().unwrap() = NameIndex::default();
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let chrome = empty_chrome();
+        let doc = automerge::AutoCommit::new();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let unknown = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(unknown.enumerate().is_empty());
+        assert!(!unknown.completion().complete);
+        assert_eq!(
+            unknown
+                .completion()
+                .incomplete
+                .first()
+                .expect("unpublished source")
+                .reason,
+            QueryIncompleteReason::Unavailable
+        );
+        *provider.name_index.write().unwrap() = NameIndex::from_entries(Vec::new(), 1);
+        let ready = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(ready.enumerate().is_empty());
+        assert!(ready.completion().complete);
+    }
+
+    #[test]
+    fn initial_file_walk_wakes_catalogue_waiter() {
+        let home = tempfile::tempdir().expect("home");
+        let provider = FilesProvider::with_home(home.path().to_owned());
+        let (woken, wake) = std::sync::mpsc::channel();
+        let _installed = crate::shell::search::invocation_wake::install(Arc::new(move || {
+            woken.send(()).expect("waiting catalogue caller");
+        }));
+        assert_eq!(provider.published().unwrap().generation, 0);
+        provider.start_name_index();
+        wake.recv_timeout(tilo_test_env::hang_bound())
+            .expect("the initial name walk must wake a held listing");
+        assert_ne!(provider.published().unwrap().generation, 0);
+        let chrome = empty_chrome();
+        let doc = automerge::AutoCommit::new();
+        assert_eq!(
+            provider.query_incomplete_reason(&SearchContext {
+                query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+                include_programmatic: true,
+                needle: "",
+                wanted: &[ResourceKind::File],
+                chrome: &chrome.borrow(),
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            }),
+            None,
+            "the production walk established a complete empty name source"
+        );
     }
 
     fn provider_from_entries(entries: Vec<NameEntry>) -> FilesProvider {
@@ -2737,6 +2779,49 @@ mod tests {
     /// linear scan would still exceed it by far; the 100k case itself is
     /// covered by the shared search provider tests in `ui`.
     const LARGE_CORPUS: usize = 4_000;
+
+    #[test]
+    fn filtered_name_pages_consume_hits_and_respect_the_result_budget() {
+        let provider = provider_with_index(vec![
+            ("~/a-needle", true),
+            ("~/b-needle", true),
+            ("~/c-needle", true),
+            ("~/d-needle", true),
+            ("~/e-needle", true),
+        ]);
+        let chrome = empty_chrome();
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let budget = SearchBudget {
+            max_results: 1,
+            max_bytes: 8_192,
+            max_work: 5,
+        };
+        let filtered = provider.query_page(
+            ctx_for("needle", &[ResourceKind::File], &state, &doc),
+            None,
+            budget,
+        );
+        assert!(filtered.results.is_empty());
+        assert!(
+            filtered.exhausted,
+            "all five declined hits must be consumed"
+        );
+
+        let mut cursor = None;
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..5 {
+            let page = provider.query_page(
+                ctx_for("needle", &[ResourceKind::Folder], &state, &doc),
+                cursor.as_ref(),
+                budget,
+            );
+            assert_eq!(page.results.len(), 1);
+            assert!(ids.insert(page.results[0].id.clone()), "a hit was repeated");
+            cursor = page.next_cursor;
+        }
+        assert!(cursor.is_none(), "the last emitted hit exhausts the page");
+    }
 
     #[test]
     #[allow(

@@ -877,7 +877,7 @@ fn press(
     modifiers: winit::keyboard::ModifiersState,
 ) {
     use std::collections::HashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
     use ui::widget::Widget as _;
 
     let theme = ui::theme::Theme::dark();
@@ -887,10 +887,7 @@ fn press(
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(1280.0),
-                    height: Dimension::length(800.0),
-                },
+                size: Size::from_lengths(1280.0, 800.0),
                 ..Default::default()
             },
             &[child],
@@ -919,11 +916,7 @@ fn press(
     {
         event.text = Some(text.clone());
     }
-    let event = winit::event::WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    };
+    let event = ui::synthetic_input::keyboard_input(event);
     let handled = ui::testing::Dispatch::new()
         .modifiers(modifiers)
         .layout(&taffy, child)
@@ -1805,10 +1798,6 @@ fn allowing_once_admits_that_call_and_the_next_asks_again() {
 /// word: the person is asked on their sheet each time, and the call runs
 /// only on their answer.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "a confirmed call and a declined one are one grant's life"
-)]
 fn a_grant_that_asks_first_runs_each_call_on_the_persons_confirmation() {
     let (mut door, mut sheet) = door_asking(true);
     let socket = door.dir.path().join("collab.sock");

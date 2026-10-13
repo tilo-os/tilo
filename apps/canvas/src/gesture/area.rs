@@ -5,10 +5,6 @@
 //!
 //! Held keys say how a new area meets the selection there is: Shift adds,
 //! Alt subtracts, both intersect.
-#![allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo's geometry operators (Affine, Point, Vec2) are float geometry, not overflowing integer arithmetic"
-)]
 
 use ui::tilo_resource::Invoke;
 use ui::vello::Scene;

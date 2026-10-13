@@ -51,6 +51,17 @@ class ActionsPagingTest(unittest.TestCase):
         self.assertNotIn("--cursor", self.calls[0])
         self.assertEqual(self.calls[1][self.calls[1].index("--cursor") + 1], "3.ab")
 
+    def test_programmatic_scope_survives_paging_and_stale_cursor_restart(self):
+        first = {"actions": [row(0)], "truncated": True, "next_cursor": "1.ab"}
+        last = {"actions": [row(1)], "truncated": False}
+        with self.answer([first, "error: stale_cursor", first, last]):
+            self.assertEqual(self.vm.actions("so.tilo.terminal", programmatic=True), [row(0), row(1)])
+        for cmd in self.calls:
+            self.assertIn("so.tilo.terminal", cmd)
+            self.assertIn("--programmatic", cmd)
+        self.assertNotIn("--cursor", self.calls[2])
+        self.assertIn("--cursor", self.calls[3])
+
     def test_a_listing_that_changed_while_paged_is_read_again_from_its_start(self):
         first = {"actions": [row(0)], "truncated": True, "next_cursor": "1.ab"}
         whole = {"actions": [row(0), CLOSER], "truncated": False}

@@ -13,6 +13,7 @@
 //! key's shape never changes under the same name.
 
 use automerge::{AutoCommit, ReadDoc};
+use tilo_automerge::ReadTyped as _;
 
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId, counter_of, peer_salt_of};
@@ -92,14 +93,8 @@ pub struct ReplicatedStrip {
 /// untouched state and two peers exporting to each other never fall
 /// quiet.
 pub fn put_str_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: &str) {
-    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
-    let current = match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    };
+    use automerge::transaction::Transactable;
+    let current = doc.str_at(obj, key);
     if current.as_deref() != Some(value) {
         let _ = doc.put(obj, key, value.to_string());
     }
@@ -107,14 +102,8 @@ pub fn put_str_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &st
 
 /// [`put_str_if_changed`] for an unsigned integer.
 pub fn put_uint_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: u64) {
-    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
-    let current = match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Uint(v) => Some(*v),
-            _ => None,
-        },
-        _ => None,
-    };
+    use automerge::{ScalarValue, transaction::Transactable};
+    let current = doc.uint_at(obj, key);
     if current != Some(value) {
         let _ = doc.put(obj, key, ScalarValue::Uint(value));
     }
@@ -1028,15 +1017,7 @@ pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
             _ => None,
         }
     };
-    let text = |obj: &automerge::ObjId, key: &str| -> Option<String> {
-        match doc.get(obj, key).ok().flatten() {
-            Some((Value::Scalar(v), _)) => match v.as_ref() {
-                ScalarValue::Str(t) => Some(t.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    };
+    let text = |obj: &automerge::ObjId, key: &str| -> Option<String> { doc.str_at(obj, key) };
 
     let contents_all = map_candidates(doc, &ROOT, ROOM_CONTENTS_KEY);
     let mut strips: Vec<ReplicatedStrip> = Vec::new();
@@ -1387,13 +1368,7 @@ pub fn project_room_records(
         };
         // Compared before writing, like every other value here — a
         // re-projection of unchanged state must not manufacture one.
-        let current = match doc.get(&entry, "kind").ok().flatten() {
-            Some((automerge::Value::Scalar(v), _)) => match v.as_ref() {
-                automerge::ScalarValue::Str(k) => Some(k.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let current = doc.str_at(&entry, "kind");
         if current.as_deref() != Some(kind.as_str()) {
             let _ = doc.put(&entry, "kind", kind.clone());
         }
@@ -1404,7 +1379,7 @@ pub fn project_room_records(
 /// Read a room document's record index back as `(record id, kind)`
 /// pairs, sorted by id so two peers read one document the same way.
 pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
-    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value};
+    use automerge::{ObjType, ROOT, ReadDoc, Value};
 
     // `records` is created on first projection, so two peers whose room
     // documents started empty may each have minted one: a key conflict
@@ -1433,13 +1408,7 @@ pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
         if out.iter().any(|(seen, _)| *seen == key) {
             continue;
         }
-        let kind = match doc.get(&entry, "kind").ok().flatten() {
-            Some((Value::Scalar(v), _)) => match v.as_ref() {
-                ScalarValue::Str(k) => k.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        };
+        let kind = doc.str_at(&entry, "kind").unwrap_or_default();
         out.push((key, kind));
     }
     out.sort();
@@ -1560,14 +1529,7 @@ pub fn merge_room_contents(
 /// one. A payload naming a different room than the one it answers must be
 /// refused before anything else reads it.
 pub fn declared_room(candidate: &AutoCommit) -> Option<RoomId> {
-    use automerge::{ROOT, ScalarValue, Value};
-    match candidate.get(&ROOT, ROOM_ID_KEY).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Str(v) => RoomId::parse(v.as_str()),
-            _ => None,
-        },
-        _ => None,
-    }
+    RoomId::parse(&candidate.str_at(&automerge::ROOT, ROOM_ID_KEY)?)
 }
 
 /// How many entries this peer owns that `candidate` would rewrite,

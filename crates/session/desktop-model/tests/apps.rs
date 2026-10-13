@@ -1,13 +1,5 @@
 //! Tiles name their app; tabs in a room document can name their record.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
-
 use automerge::AutoCommit;
 use tilo_desktop_model::apps::{BindRecordError, bind_tab_record, canonical_app_id, record_routes};
 use tilo_desktop_model::projection::{EmptyStrips, project_owned_contents};

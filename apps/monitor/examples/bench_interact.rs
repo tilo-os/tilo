@@ -207,10 +207,7 @@ impl BenchHarness {
 
         let root = taffy.new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
+                size: Size::from_lengths(w as f32, h as f32),
                 ..Default::default()
             },
             &[child],

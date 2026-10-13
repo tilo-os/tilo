@@ -15,6 +15,7 @@ name = "tilo-vmd"
 path = "src/main.rs"
 
 [dependencies]
+os-actions = { path = "../../system/os-actions" }
 launcher = { path = "../../packaging/launcher" }
 package-store = { path = "../../packaging/package-store" }
 runtime-bundle = { path = "../../packaging/runtime-bundle" }

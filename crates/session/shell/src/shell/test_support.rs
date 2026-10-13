@@ -111,27 +111,16 @@ pub(crate) fn dispatch_populated_fixture_click(
     document: &mut automerge::AutoCommit,
     focus: &mut Option<ui::taffy::NodeId>,
 ) -> vello::Scene {
-    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+    use winit::event::Modifiers;
 
     let center = frame
         .widget_registry()
         .get(target)
         .expect("actual populated shell control")
         .center();
-    let cursor = WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-    };
-    let press = WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    };
-    let release = WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    };
+    let cursor = ui::synthetic_input::cursor_moved(center.x, center.y);
+    let press = ui::synthetic_input::mouse_press();
+    let release = ui::synthetic_input::mouse_release();
     let _ = frame.dispatch_event(
         &cursor,
         &Modifiers::default(),

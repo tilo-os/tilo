@@ -66,8 +66,6 @@ pub(super) struct ChromeMetrics {
     pub fx_w: f64,
     /// Measured width of [`NAME_BOX_REFERENCE`] in `Body`.
     pub name_box_label_w: f64,
-    /// Height of the window's header row, where the command bar stands.
-    pub header_h: f64,
     /// Width of every sheet tab's name in the chosen tab's strong `Label`.
     pub tab_label_w: HashMap<String, f64>,
     /// Theme spacing tokens.
@@ -113,7 +111,6 @@ impl ChromeMetrics {
             lh_caption: f64::from(lh_caption),
             fx_w: f64::from(fx_w),
             name_box_label_w: f64::from(name_box_label_w),
-            header_h: HeaderRowFace::height(theme),
             tab_label_w,
             s1: f64::from(sp.s1),
             s2: f64::from(sp.s2),
@@ -142,7 +139,6 @@ impl ChromeMetrics {
             lh_caption: 16.0,
             fx_w: 14.0,
             name_box_label_w: 80.0,
-            header_h: HeaderRowFace::height(&theme),
             tab_label_w: HashMap::new(),
             s1: f64::from(sp.s1),
             s2: f64::from(sp.s2),

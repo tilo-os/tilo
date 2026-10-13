@@ -24,14 +24,7 @@ fn dispatch_key(
     let handled = Dispatch::new()
         .modifiers(modifiers)
         .doc(doc)
-        .send(
-            editor,
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event,
-                is_synthetic: false,
-            },
-        )
+        .send(editor, &crate::synthetic_input::keyboard_input(event))
         .handled;
     editor.sync(doc, &ROOT);
     handled
