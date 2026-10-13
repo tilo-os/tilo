@@ -406,6 +406,11 @@ impl GlCompositor {
         let started = Instant::now();
         let mut stats = ComposeStats::default();
         let slot = self.free_slot().ok_or("no free scanout buffer")?;
+        // Strip additions/removals shift the wheel and chrome texture slots.
+        // A new CpuRenderer can reuse a previous slot's generation number.
+        if self.layers.len() != layers.len() {
+            self.layers.clear();
+        }
         let mut textures = Vec::with_capacity(layers.len());
         for (index, view) in layers.iter().enumerate() {
             textures.push(self.layer_texture(index, view, &mut stats)?);

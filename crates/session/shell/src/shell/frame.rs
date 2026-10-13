@@ -5711,8 +5711,8 @@ mod tests {
         let _env_lock = tilo_test_env::lock();
         for size in [(1920, 1080), (640, 480)] {
             let mut frame = FrameBuilder::new(size);
+            frame.set_strip_pan_presenter(true, true);
             frame.set_retained_layer_width(Some(8192));
-            frame.host.set_pixel_aligned_strip_pan(true);
             frame.relayout();
             let outside = frame
                 .host
@@ -5775,19 +5775,17 @@ mod tests {
                 ),
             );
             let mut retained = Scene::new();
-            crate::shell::render::strip_layers::append_panned(
-                &mut retained,
-                &workspace,
-                &plan.strips,
-                frame.scene_size,
-            );
+            let layers = FrameLayers {
+                backdrop: Scene::new(),
+                workspace: Scene::new(),
+                strips: vec![workspace; plan.strips.len()],
+                strip_parts: vec![None; plan.strips.len()],
+                wheel: None,
+                chrome: Scene::new(),
+            };
+            crate::shell::render::strip_layers::append_panned(&mut retained, &layers, &plan.strips);
             let mut dense = Scene::new();
-            crate::shell::render::strip_layers::append_panned(
-                &mut dense,
-                &workspace,
-                &unclipped,
-                frame.scene_size,
-            );
+            crate::shell::render::strip_layers::append_panned(&mut dense, &layers, &unclipped);
             assert_eq!(
                 rasterized_pan_scene(&retained, size),
                 rasterized_pan_scene(&dense, size),

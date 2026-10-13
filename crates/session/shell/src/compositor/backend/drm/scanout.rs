@@ -2951,9 +2951,9 @@ impl DrmScanout {
             self.cursor_bitmap().map(|bitmap| {
                 (
                     bitmap.clone(),
-                    pixel_coord(pointer.0)
+                    i32_of_f64(pointer.0)
                         .saturating_sub(i32::try_from(bitmap.hotspot.0).unwrap_or(0)),
-                    pixel_coord(pointer.1)
+                    i32_of_f64(pointer.1)
                         .saturating_sub(i32::try_from(bitmap.hotspot.1).unwrap_or(0)),
                 )
             })
