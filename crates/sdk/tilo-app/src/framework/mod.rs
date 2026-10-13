@@ -374,9 +374,11 @@ pub use view::{Bindable, EffectsHandle, ViewCx};
 #[cfg(not(target_arch = "wasm32"))]
 mod headless_results_tests;
 
-/// Record content and canonical hashing. Use the store borrowed through
-/// `SurfaceCx::content` or `LaunchInput::content` so the host binds reads and
-/// writes to the resource's content lane.
+/// Record content, canonical hashing and picture headers. Use the store
+/// borrowed through `SurfaceCx::content` or `LaunchInput::content` so the host
+/// binds reads and writes to the resource's content lane.
 pub mod content {
-    pub use tilo_content::{ContentStore, hash_bytes, valid_hash};
+    pub use tilo_content::{
+        ContentStore, ImageFormat, hash_bytes, image_format, image_size, valid_hash,
+    };
 }
