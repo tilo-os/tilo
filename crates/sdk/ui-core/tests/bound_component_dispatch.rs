@@ -914,9 +914,6 @@ impl AppWidget for Root {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("P")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
     fn commands(&self) -> Vec<tilo_ui::AppCommand> {
         COMMAND_CALLS.set(COMMAND_CALLS.get().saturating_add(1));
         vec![tilo_ui::AppCommand {

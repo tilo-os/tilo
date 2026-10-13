@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use ui::a11y::{AccessNode, Role};
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
+use ui::vello::kurbo::{Affine, Circle, Rect, Stroke};
 use ui::widget::{AppModel, EventCtx, ModelPath, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::{PresenceCtx, TextRenderer, Theme};
@@ -111,7 +111,7 @@ impl Widget for Well {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let at = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let at = ctx.logical(position);
                 self.hovered = self.rect.contains(at);
             }
             WindowEvent::CursorLeft { .. } => self.hovered = false,

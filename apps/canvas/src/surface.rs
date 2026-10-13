@@ -3242,8 +3242,7 @@ impl Widget for CanvasSurface {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.stylus = ctx.pen();
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if self.drag.is_some() {
                     self.drag_to(self.cursor);
                     *ctx.handled = true;

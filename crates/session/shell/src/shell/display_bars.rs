@@ -170,7 +170,7 @@ impl Widget for DisplayBars {
         }
         let target = match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.cursor = Some(p);
                 self.bar_under(p)
             }

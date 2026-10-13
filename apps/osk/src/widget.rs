@@ -2859,10 +2859,7 @@ impl Widget for OskWidget {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
+            self.pointer = Some(ctx.logical(position));
         }
         self.cancel_stale_contacts();
         if self.handle_panel_event(event, ctx.scale_factor, ctx.handled) {
@@ -2872,7 +2869,7 @@ impl Widget for OskWidget {
             WindowEvent::Touch(touch) => self.handle_touch(touch, ctx.scale_factor, ctx.handled),
             WindowEvent::Focused(false) => self.cancel_contacts(),
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.pointer = Some(p);
                 // While the button is held over the keys, accumulate the
                 // gesture path for swipe decoding.

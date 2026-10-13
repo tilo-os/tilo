@@ -602,8 +602,7 @@ impl Widget for ReaderPane {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.core.borrow_mut().pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.core.borrow_mut().pointer = ctx.logical(position);
         }
         if self.core.borrow_mut().reader_event(event, ctx) {
             *ctx.handled = true;

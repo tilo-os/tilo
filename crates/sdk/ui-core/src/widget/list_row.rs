@@ -3365,7 +3365,7 @@ impl crate::widget::Decorator for ControlRow {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
             let hovered = Widget::get_rect(&self.content).contains(self.cursor);
             self.dirty |= hovered != self.hovered;
             self.hovered = hovered;
