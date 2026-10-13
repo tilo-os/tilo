@@ -247,9 +247,93 @@ pub enum Error {
     Cancelled,
 }
 
+/// A revocable command authority. Cancellation wakes supervision immediately.
+pub struct Cancellation {
+    dispatch: std::sync::Mutex<()>,
+    cancelled: AtomicBool,
+    #[cfg(unix)]
+    wake: Arc<WakeFd>,
+}
+
+impl Cancellation {
+    /// Create a cancellation source.
+    ///
+    /// # Errors
+    /// Returns a wake-descriptor allocation failure.
+    pub fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            dispatch: std::sync::Mutex::new(()),
+            cancelled: AtomicBool::new(false),
+            #[cfg(unix)]
+            wake: Arc::new(WakeFd::new()?),
+        })
+    }
+
+    /// Permanently revoke this command authority.
+    pub fn cancel(&self) {
+        let dispatch = self
+            .dispatch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.cancelled.store(true, Ordering::Release);
+        drop(dispatch);
+        #[cfg(unix)]
+        self.wake.ring();
+    }
+
+    /// Whether this authority has been revoked.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+/// Run a prepared command with wake-based cancellation.
+///
+/// # Errors
+/// Returns the bounded-command failures, including cancellation.
+pub fn run_prepared_cancellable(
+    command: Command,
+    input: Option<&[u8]>,
+    output_limit: usize,
+    timeout: Duration,
+    cancel: &Cancellation,
+) -> Result<Output, Error> {
+    if input.is_some_and(|bytes| bytes.len() > MAX_INPUT_BYTES) {
+        return Err(Error::InputTooLarge);
+    }
+    run_prepared_inner(
+        command,
+        input.map(|bytes| Zeroizing::new(bytes.to_vec())),
+        output_limit,
+        output_limit,
+        timeout,
+        Some(cancel),
+    )
+}
+
+fn spawn_reader(
+    pipe: impl Read + Send + 'static,
+    limit: usize,
+    done: &Arc<AtomicBool>,
+    cancel: &Cancellation,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    let done = Arc::clone(done);
+    #[cfg(unix)]
+    let wake = Arc::clone(&cancel.wake);
+    #[cfg(not(unix))]
+    let _ = cancel;
+    std::thread::spawn(move || {
+        let bytes = read_bounded(pipe, limit);
+        done.store(true, Ordering::Release);
+        #[cfg(unix)]
+        wake.ring();
+        bytes
+    })
+}
+
 /// A nonblocking bounded command which cancels its process group when dropped.
 pub struct AsyncCommand {
-    cancel: Arc<AtomicBool>,
+    cancel: Arc<Cancellation>,
     result: Receiver<Result<Output, Error>>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
@@ -275,7 +359,7 @@ impl AsyncCommand {
 
 impl Drop for AsyncCommand {
     fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Release);
+        self.cancel.cancel();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -299,7 +383,7 @@ pub fn spawn_prepared(
         return Err(Error::InputTooLarge);
     }
     let input = input.map(|bytes| Zeroizing::new(bytes.to_vec()));
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::new(Cancellation::new()?);
     let worker_cancel = Arc::clone(&cancel);
     let (sender, result) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
@@ -463,8 +547,19 @@ fn run_prepared_inner(
     stdout_limit: usize,
     stderr_limit: usize,
     timeout: Duration,
-    cancel: Option<&AtomicBool>,
+    cancel: Option<&Cancellation>,
 ) -> Result<Output, Error> {
+    let local_cancel = Cancellation::new()?;
+    let cancel = cancel.unwrap_or(&local_cancel);
+    // Serialize revocation with dispatch: after cancel returns, this authority
+    // can never launch another process carrying a private request.
+    let dispatch = cancel
+        .dispatch
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cancel.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
     command
         .stdin(if input.is_some() {
             Stdio::piped()
@@ -475,12 +570,23 @@ fn run_prepared_inner(
         .stderr(Stdio::piped());
     own_process_tree(&mut command);
     let mut child = command.spawn()?;
+    drop(dispatch);
+    let input_done = Arc::new(AtomicBool::new(input.is_none()));
     let input_writer = if let Some(bytes) = input {
         let mut stdin = child
             .stdin
             .take()
             .ok_or_else(|| Error::Process(std::io::Error::other("command stdin is unavailable")))?;
-        Some(std::thread::spawn(move || stdin.write_all(&bytes)))
+        #[cfg(unix)]
+        let wake = Arc::clone(&cancel.wake);
+        let done = Arc::clone(&input_done);
+        Some(std::thread::spawn(move || {
+            let result = stdin.write_all(&bytes);
+            done.store(true, Ordering::Release);
+            #[cfg(unix)]
+            wake.ring();
+            result
+        }))
     } else {
         None
     };
@@ -493,28 +599,21 @@ fn run_prepared_inner(
         .stderr
         .take()
         .ok_or_else(|| Error::Process(std::io::Error::other("command stderr is unavailable")))?;
-    let out_reader = std::thread::spawn(move || read_bounded(stdout, stdout_limit));
-    let err_reader = std::thread::spawn(move || read_bounded(stderr, stderr_limit));
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .unwrap_or_else(Instant::now);
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break Some(status);
-        }
-        let cancelled = cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
-        if cancelled || Instant::now() >= deadline {
-            kill_tree(&mut child);
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
+    let out_done = Arc::new(AtomicBool::new(false));
+    let err_done = Arc::new(AtomicBool::new(false));
+    let out_reader = spawn_reader(stdout, stdout_limit, &out_done, cancel);
+    let err_reader = spawn_reader(stderr, stderr_limit, &err_done, cancel);
+    let status = supervise(
+        &mut child,
+        cancel,
+        timeout,
+        &[&out_done, &err_done, &input_done],
+    )?;
     let stdout = out_reader.join().map_err(|_| Error::Reader)?;
     let stderr = err_reader.join().map_err(|_| Error::Reader)?;
     let input_result = input_writer.map(std::thread::JoinHandle::join);
     let Some(status) = status else {
-        return Err(if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err(if cancel.is_cancelled() {
             Error::Cancelled
         } else {
             Error::Timeout(timeout.as_millis())
@@ -542,6 +641,45 @@ fn run_prepared_inner(
     })
 }
 
+fn supervise(
+    child: &mut Child,
+    cancel: &Cancellation,
+    timeout: Duration,
+    done: &[&AtomicBool],
+) -> Result<Option<ExitStatus>, Error> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    let mut exited = None;
+    loop {
+        #[cfg(unix)]
+        cancel.wake.drain();
+        if cancel.is_cancelled() || Instant::now() >= deadline {
+            kill_tree(child);
+            let _ = child.wait();
+            return Ok(None);
+        }
+        if exited.is_none() {
+            exited = child.try_wait()?;
+        }
+        if exited.is_some() && done.iter().all(|flag| flag.load(Ordering::Acquire)) {
+            return Ok(exited);
+        }
+        #[cfg(unix)]
+        if exited.is_none() {
+            if let Wakeup::Exited(status) =
+                wait_child_or(child, Some(cancel.wake.fd()), Some(deadline))?
+            {
+                exited = Some(status);
+            }
+        } else {
+            child_wait::wait_wake_until(cancel.wake.fd(), deadline)?;
+        }
+        #[cfg(not(unix))]
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
@@ -552,6 +690,57 @@ mod tests {
     /// For tests of anything but the timeout: long enough that a loaded
     /// machine never turns the expected error into `Error::Timeout`.
     const UNTESTED_TIMEOUT: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn cancellation_wakes_a_running_tree_and_closes_descendant_pipes() {
+        let directory = tempfile::tempdir().unwrap();
+        let ready = directory.path().join("ready");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&ready)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (sender, received) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut pipe = fs::File::open(ready).unwrap();
+            let mut byte = [0];
+            pipe.read_exact(&mut byte).unwrap();
+            sender.send(()).unwrap();
+        });
+        let cancel = Arc::new(Cancellation::new().unwrap());
+        let worker_cancel = Arc::clone(&cancel);
+        let path = directory.path().join("ready");
+        let worker = std::thread::spawn(move || {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 30 & printf x > \"$1\"; wait", "fixture"]);
+            command.arg(path);
+            run_prepared_cancellable(command, None, 64, UNTESTED_TIMEOUT, &worker_cancel)
+        });
+        received.recv_timeout(Duration::from_secs(5)).unwrap();
+        let began = Instant::now();
+        cancel.cancel();
+        assert!(matches!(worker.join().unwrap(), Err(Error::Cancelled)));
+        assert!(began.elapsed() < Duration::from_secs(1));
+        reader.join().unwrap();
+        assert!(matches!(
+            run_prepared_cancellable(Command::new("false"), None, 64, UNTESTED_TIMEOUT, &cancel),
+            Err(Error::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn inherited_pipes_remain_deadline_bounded_after_the_leader_exits() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & exit 0"]);
+        let began = Instant::now();
+        assert!(matches!(
+            run_prepared(command, None, 64, Duration::from_millis(50)),
+            Err(Error::Timeout(_))
+        ));
+        assert!(began.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn input_and_output_limits_are_enforced_independently() {

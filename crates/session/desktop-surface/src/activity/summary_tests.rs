@@ -62,18 +62,21 @@ fn generated_summary_reads_as_static_text_and_sources_open_existing_explorer() {
     assert!(pane.summary_label().contains("not fact checks"));
     assert_eq!(pane.summary_source_rects.len(), 1);
     assert!(
-        pane.access_control(&ActivityFocus::SummarySource(0))
+        pane.access_control(&ActivityFocus::SummarySource(pane.summary_source_key(&id)))
             .unwrap()
             .description
             .contains(&ui::widget::history_group::hex16(&id))
     );
+    assert_eq!(
+        pane.summary_accessibility_node().unwrap().description,
+        Some(pane.summary_label())
+    );
     assert!(
         pane.selection_history_actions()
             .iter()
-            .any(|(id, _)| *id == "history.summary.read")
+            .all(|(id, _)| !id.starts_with("history.summary."))
     );
-    let outcome = pane.apply_selection_history_action(SUMMARY_SOURCE_ACTIONS[0], &mut tree, None);
-    assert!(outcome.handled);
+    assert!(pane.reveal_narrative_source(id));
     assert_eq!(pane.view, ActivityView::Explore);
     assert!(pane.selected_ids().contains(&id));
     assert_eq!(
@@ -81,6 +84,43 @@ fn generated_summary_reads_as_static_text_and_sources_open_existing_explorer() {
         heads,
         "reading generated text and opening evidence never writes history"
     );
+}
+
+#[test]
+fn unbound_summary_actions_never_handle_or_change_selection() {
+    let (mut tree, mut pane) = fixture();
+    let heads = tree.doc.get_heads();
+    for generated in [false, true] {
+        if generated {
+            let request = pane.narrative_request().unwrap();
+            let id = *request.supplied_ids().iter().next().unwrap();
+            assert!(pane.apply_generated_narrative(ui::GroundedNarrative {
+                text: "Generated wording.".into(),
+                source_ids: vec![id],
+                generator: "configured-model".into(),
+                request: Some(Box::new(request)),
+            }));
+        }
+        let view = pane.view;
+        let selection = pane.selected_ids();
+        for action in std::iter::once("history.summary.read".to_owned())
+            .chain((0..6).map(|slot| format!("history.summary.source.{slot}")))
+        {
+            assert!(
+                !pane
+                    .apply_selection_history_action(&action, &mut tree, None)
+                    .handled
+            );
+            assert_eq!(pane.view, view);
+            assert_eq!(pane.selected_ids(), selection);
+        }
+        assert!(
+            pane.selection_history_actions()
+                .iter()
+                .all(|(id, _)| !id.starts_with("history.summary."))
+        );
+    }
+    assert_eq!(tree.doc.get_heads(), heads);
 }
 
 #[test]

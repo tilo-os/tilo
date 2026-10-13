@@ -211,6 +211,7 @@ activity-replay-checkpoints-unavailable = { $count } { $count ->
 activity-latest = Latest · { $headline }
 activity-history-pending = History is waiting for current edits to finish
 activity-caught-up = You're caught up
+activity-summary-discovery-failed = Could not discover summary models. Recorded history remains available.
 activity-summary-pending = Generating optional summary… Recorded history remains available.
 activity-summary-unavailable = No summary model available. Use your configured Ollama model; recorded history remains available.
 activity-summary-failed = Summary generation failed or returned invalid citations. Recorded history remains available.

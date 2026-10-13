@@ -1367,6 +1367,7 @@ struct ActivityRefreshKey {
     tree_pending: usize,
     records: String,
     room_records: (u64, u64),
+    locale: String,
 }
 
 /// Decides when the passive Activity awareness refreshes: when its key
@@ -10770,6 +10771,7 @@ impl ShellOverlayHost {
                 .apply_selection_history_action(&id, &mut *tree, Some(&records));
         drop(tree);
         drop(st);
+        self.refresh_history_narrative();
         self.apply_room_activity_outcome(&chrome, outcome);
     }
 
@@ -10787,6 +10789,7 @@ impl ShellOverlayHost {
                 .refresh_observed(&tree, &records, &*local);
         }
         self.refresh_history_narrative();
+        self.apply_pending_history_summary_action();
         self.publish_replay_actions();
     }
 
@@ -10861,6 +10864,39 @@ impl ShellOverlayHost {
         state.replay_host.descriptors = self.room_activity.replay_action_descriptors();
     }
 
+    /// Revalidate the entire original presentation after observing current history.
+    /// An ordinal from an earlier frame must never select a different brief.
+    fn apply_pending_history_summary_action(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let Some(action) = chrome.borrow_mut().take_history_summary_action_request() else {
+            return;
+        };
+        if chrome.borrow().history_summary_binding() != Some(&action.binding) {
+            return;
+        }
+        match action.source {
+            Some(source) => {
+                let brief = action
+                    .binding
+                    .request
+                    .sources
+                    .iter()
+                    .find(|brief| brief.ids.contains(&source));
+                if brief != action.brief.as_ref() {
+                    return;
+                }
+                self.room_activity.reveal_narrative_source(source);
+            }
+            None if action.brief.is_none() => {
+                self.room_activity
+                    .set_view(crate::shell::room_activity::ActivityView::CatchUp);
+            }
+            None => {}
+        }
+    }
+
     /// Content viewport of the active personal Activity tab. Its surrounding
     /// group is an ordinary tiled window and therefore owns close, resize,
     /// reorder, focus and clipping.
@@ -10894,6 +10930,31 @@ impl ShellOverlayHost {
     }
 
     fn refresh_history_narrative(&mut self) {
+        self.room_activity.refresh_narrative_locale();
+        self.update_history_narrative();
+        if let Some(chrome) = self.chrome.as_ref() {
+            let binding = self
+                .room_activity
+                .narrative_request()
+                .zip(self.room_activity.narrative())
+                .and_then(|(request, narrative)| {
+                    let state = chrome.borrow();
+                    let tree = state.tree();
+                    let workspace = tree.active_workspace()?;
+                    let (workspace, room) = (workspace.id, workspace.room);
+                    drop(tree);
+                    Some(crate::shell::chrome_state::HistorySummaryBinding {
+                        workspace,
+                        room,
+                        request,
+                        narrative,
+                    })
+                });
+            chrome.borrow_mut().publish_history_summary(binding);
+        }
+    }
+
+    fn update_history_narrative(&mut self) {
         let Some(narrator) = self.history_narrator.as_mut() else {
             return;
         };
@@ -10935,6 +10996,7 @@ impl ShellOverlayHost {
             tree_pending,
             records: state.records().content_revision(),
             room_records: self.room_records.borrow().revision(),
+            locale: ui::i18n::I18nManager::current_locale(),
         })
     }
 

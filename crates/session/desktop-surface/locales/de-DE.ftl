@@ -223,6 +223,7 @@ activity-replay-checkpoints-unavailable = { $count } { $count ->
 activity-latest = Zuletzt · { $headline }
 activity-history-pending = Der Verlauf wartet auf laufende Bearbeitungen
 activity-caught-up = Du bist auf dem neuesten Stand
+activity-summary-discovery-failed = Modelle für Zusammenfassungen konnten nicht ermittelt werden. Der Verlauf bleibt verfügbar.
 activity-summary-pending = Optionale Zusammenfassung wird erstellt… Der Verlauf bleibt verfügbar.
 activity-summary-unavailable = Kein Modell für Zusammenfassungen verfügbar. Konfiguriertes Ollama-Modell verwenden; der Verlauf bleibt verfügbar.
 activity-summary-failed = Zusammenfassung fehlgeschlagen oder ungültige Quellen. Der Verlauf bleibt verfügbar.

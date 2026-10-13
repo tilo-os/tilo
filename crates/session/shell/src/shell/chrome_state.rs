@@ -549,6 +549,62 @@ impl QuickSettingsState {
     }
 }
 
+/// Private presentation identity for a summary and its cited briefs. Nothing
+/// here is replicated; request equality includes scope, coverage and frontiers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistorySummaryBinding {
+    pub workspace: WorkspaceId,
+    pub room: crate::shell::state::RoomId,
+    pub request: ui::NarrativeRequest,
+    pub narrative: ui::GroundedNarrative,
+}
+
+impl HistorySummaryBinding {
+    /// Stable address includes workspace/room, request, runner provenance and
+    /// brief identity. Re-enumeration cannot rebind an old ordinal to new prose.
+    pub fn action_id(&self, slot: Option<usize>) -> String {
+        let mut canonical = self.clone();
+        canonical
+            .narrative
+            .source_ids
+            .sort_by_key(ui::widget::history_group::hex16);
+        let identity = blake3::hash(format!("{canonical:?}").as_bytes());
+        match slot {
+            None => format!("history.summary.read.{identity}"),
+            Some(slot) => match self.narrative.source_ids.get(slot) {
+                Some(source) => format!(
+                    "history.summary.source.{identity}.{}",
+                    ui::widget::history_group::hex16(source)
+                ),
+                None => format!("history.summary.source.{identity}.unavailable"),
+            },
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        !self.request.sources.is_empty()
+            && self.narrative.source_ids.iter().all(|id| {
+                self.request.source_ids.contains(id)
+                    && self
+                        .request
+                        .sources
+                        .iter()
+                        .any(|brief| brief.ids.contains(id))
+            })
+            && (self.narrative == ui::deterministic_narrative(&self.request)
+                || ui::validate_narrative(&self.request, self.narrative.clone()).is_some())
+    }
+}
+
+/// Deferred action carries the cited entry and complete brief identity rather
+/// than resolving the same ordinal against the next frame's summary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistorySummaryAction {
+    pub binding: HistorySummaryBinding,
+    pub source: Option<ui::widget::HistoryEntryId>,
+    pub brief: Option<ui::NarrativeSource>,
+}
+
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
 #[allow(
@@ -624,6 +680,8 @@ pub struct ChromeState {
     history_action_request: Option<String>,
     pub(crate) history_editorial_request:
         Option<crate::shell::overlay_host::history_editorial::Pending>,
+    history_summary: Option<HistorySummaryBinding>,
+    history_summary_action_request: Option<HistorySummaryAction>,
     /// The portal D-Bus backend's prompt queue drains onto the back
     /// every frame; the overlay host renders `front()` and drains it
     /// on click. Entries carry the portal's reply channel when a D-Bus
@@ -879,6 +937,8 @@ impl ChromeState {
             workspace_view_request: None,
             history_action_request: None,
             history_editorial_request: None,
+            history_summary: None,
+            history_summary_action_request: None,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
             local_user_id,
@@ -1636,20 +1696,29 @@ impl ChromeState {
     ///
     /// Returns an error when `id` is not a recognised history action.
     pub fn request_history_selection_action(&mut self, id: &str) -> Result<(), String> {
+        if id.starts_with("history.summary.read") || id.starts_with("history.summary.source.") {
+            let binding = self
+                .history_summary_binding()
+                .cloned()
+                .ok_or_else(|| "History summary unavailable".to_string())?;
+            let slot = if id == binding.action_id(None) {
+                None
+            } else {
+                Some(
+                    (0..binding.narrative.source_ids.len().min(6))
+                        .find(|slot| id == binding.action_id(Some(*slot)))
+                        .ok_or_else(|| "Unknown or stale summary citation".to_string())?,
+                )
+            };
+            return self.request_history_summary_action(&binding, slot);
+        }
         match id {
             tilo_desktop::activity::HISTORY_COMPARE
             | tilo_desktop::activity::HISTORY_UNDO
             | tilo_desktop::activity::HISTORY_RESTORE
             | tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE
             | tilo_desktop::activity::ACTIVITY_TASKS
-            | tilo_desktop::activity::morning::MORNING_SOURCE
-            | "history.summary.read"
-            | "history.summary.source.0"
-            | "history.summary.source.1"
-            | "history.summary.source.2"
-            | "history.summary.source.3"
-            | "history.summary.source.4"
-            | "history.summary.source.5" => {}
+            | tilo_desktop::activity::morning::MORNING_SOURCE => {}
             _ if [
                 tilo_desktop::activity::morning::MORNING_OPEN,
                 tilo_desktop::activity::morning::MORNING_REMOVE,
@@ -1680,6 +1749,74 @@ impl ChromeState {
 
     pub fn take_history_action_request(&mut self) -> Option<String> {
         self.history_action_request.take()
+    }
+
+    /// Publish the exact summary currently presented by Activity. Refreshes
+    /// must clear this binding when there is no summary, including scope changes.
+    pub fn publish_history_summary(&mut self, binding: Option<HistorySummaryBinding>) {
+        let binding = binding.filter(HistorySummaryBinding::is_valid);
+        if self.history_summary != binding {
+            self.history_summary = binding;
+            self.bump();
+        }
+    }
+
+    pub fn history_summary_binding(&self) -> Option<&HistorySummaryBinding> {
+        self.history_summary.as_ref().filter(|binding| {
+            self.tree().active_workspace().is_some_and(|workspace| {
+                (workspace.id, workspace.room) == (binding.workspace, binding.room)
+            })
+        })
+    }
+
+    /// Queue a bound action, never an ordinal that can be reinterpreted after
+    /// refreshing Activity. Both read and citation actions retain provenance.
+    ///
+    /// # Errors
+    /// Refuses a changed scope, stale summary, or missing citation.
+    pub fn request_history_summary_action(
+        &mut self,
+        binding: &HistorySummaryBinding,
+        slot: Option<usize>,
+    ) -> Result<(), String> {
+        if self.history_summary_binding() != Some(binding) {
+            return Err("History summary changed".into());
+        }
+        let source = slot
+            .map(|slot| {
+                binding
+                    .narrative
+                    .source_ids
+                    .get(slot)
+                    .copied()
+                    .ok_or_else(|| "Unknown summary citation".to_string())
+            })
+            .transpose()?;
+        let brief = source
+            .map(|source| {
+                binding
+                    .request
+                    .sources
+                    .iter()
+                    .find(|brief| brief.ids.contains(&source))
+                    .cloned()
+                    .ok_or_else(|| "Summary citation unavailable".to_string())
+            })
+            .transpose()?;
+        self.open_room_activity(None);
+        self.history_summary_action_request = Some(HistorySummaryAction {
+            binding: binding.clone(),
+            source,
+            brief,
+        });
+        self.bump();
+        Ok(())
+    }
+
+    /// The renderer consumes this separately from unbound selection actions;
+    /// it must revalidate the binding after refreshing before revealing a brief.
+    pub fn take_history_summary_action_request(&mut self) -> Option<HistorySummaryAction> {
+        self.history_summary_action_request.take()
     }
 
     /// Reveal one authoritative workspace-settings destination. All shell

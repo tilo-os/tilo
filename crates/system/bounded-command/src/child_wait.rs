@@ -118,6 +118,10 @@ fn wait_fallback(
     }
 }
 
+pub(crate) fn wait_wake_until(wake: BorrowedFd<'_>, deadline: Instant) -> io::Result<()> {
+    poll(&mut [pollin(wake.as_raw_fd())], remaining(Some(deadline)))
+}
+
 fn pollin(fd: i32) -> libc::pollfd {
     libc::pollfd {
         fd,

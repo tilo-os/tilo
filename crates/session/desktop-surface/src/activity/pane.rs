@@ -71,15 +71,6 @@ use ui::widget::ButtonRole;
 /// and start becoming hard to scan across.
 /// How long a device must be away from a workspace before its return is
 /// greeted with a recap of what changed.
-const SUMMARY_SOURCE_ACTIONS: [&str; 6] = [
-    "history.summary.source.0",
-    "history.summary.source.1",
-    "history.summary.source.2",
-    "history.summary.source.3",
-    "history.summary.source.4",
-    "history.summary.source.5",
-];
-
 const AWAY_RECAP_AFTER: Duration = Duration::from_secs(45 * 60);
 /// How long an expanding catch-up card takes to open.
 const BRIEF_EXPANSION_DURATION: Duration = Duration::from_millis(180);
@@ -214,7 +205,7 @@ enum ActivityFocus {
     Morning(String, bool),
     MorningCommand(String, MorningCommand),
     Brief(usize),
-    SummarySource(usize),
+    SummarySource(String),
     WorkSessionBoundary(WorkSessionBoundary),
     MoreBriefs,
     Acknowledge,
@@ -730,6 +721,7 @@ pub struct RoomActivityPane {
     named: Vec<NamedRange>,
     /// Heads at the last rebuild, so a no-op frame skips re-deriving.
     last_heads: Vec<ChangeHash>,
+    projection_locale: String,
     period: Period,
     /// Every row the document yielded, with the workspace each belongs
     /// to (`None` for no single workspace). [`Self::scope`] selects the
@@ -885,7 +877,7 @@ pub struct RoomActivityPane {
     replay_slider_doc: automerge::AutoCommit,
     narrative: Option<ui::GroundedNarrative>,
     narrative_request: Option<NarrativeRequest>,
-    summary_source_rects: Vec<(usize, Rect)>,
+    summary_source_rects: Vec<(String, Rect)>,
     narrative_feedback: &'static str,
     /// Task receipts live beside the records they describe. They are indexed
     /// here so selecting any affected change can explain the whole task.
@@ -1003,6 +995,7 @@ impl RoomActivityPane {
             clear_filters_intent,
             named: Vec::new(),
             last_heads: Vec::new(),
+            projection_locale: ui::i18n::I18nManager::current_locale(),
             period: Period::default(),
             derived: Vec::new(),
             scoped_tree_rows: Vec::new(),
@@ -1722,23 +1715,6 @@ impl RoomActivityPane {
     /// door search, agents and assistive technology use.
     pub fn selection_history_actions(&self) -> Vec<(&'static str, String)> {
         let mut out = Vec::new();
-        if let Some(narrative) = &self.narrative {
-            out.push((
-                "history.summary.read",
-                format!("{}: {}", self.summary_label(), narrative.text),
-            ));
-            for (slot, id) in narrative.source_ids.iter().enumerate() {
-                if let Some(brief) = self
-                    .digest
-                    .briefs
-                    .iter()
-                    .find(|brief| brief.entry_ids.contains(id))
-                    && let Some(action) = SUMMARY_SOURCE_ACTIONS.get(slot)
-                {
-                    out.push((*action, brief.title.clone()));
-                }
-            }
-        }
         let Some(detail) = self.selection_detail() else {
             return out;
         };
@@ -1767,17 +1743,6 @@ impl RoomActivityPane {
         tree: &mut impl ActivityTree,
         records: Option<&RecordStore>,
     ) -> RoomActivityOutcome {
-        if id == "history.summary.read" {
-            self.set_view(ActivityView::CatchUp);
-            return handled_outcome();
-        }
-        if let Some(slot) = SUMMARY_SOURCE_ACTIONS
-            .iter()
-            .position(|action| *action == id)
-        {
-            self.open_summary_source(slot);
-            return handled_outcome();
-        }
         if let Some(room) = id.strip_prefix(&format!("{MORNING_SOURCE}.")) {
             if room == self.task_room {
                 self.toggle_morning_selection();
@@ -1991,7 +1956,8 @@ impl RoomActivityPane {
         })
     }
 
-    fn selected_ids(&self) -> Vec<HistoryEntryId> {
+    /// Exact history identities selected in the explorer.
+    pub fn selected_ids(&self) -> Vec<HistoryEntryId> {
         self.timeline
             .selection()
             .and_then(|(start, end)| self.timeline.entries().get(start..=end))
@@ -2558,7 +2524,10 @@ impl RoomActivityPane {
 
         let heads = tree.document_mut().get_heads();
         let active = tree.active.raw();
-        if heads == self.last_heads && !self.timeline.entries().is_empty() {
+        let locale = ui::i18n::I18nManager::current_locale();
+        let language_changed = self.projection_locale != locale;
+        self.projection_locale = locale;
+        if heads == self.last_heads && !language_changed && !self.timeline.entries().is_empty() {
             if self.last_active != Some(active) {
                 self.apply_scope(tree);
             }
@@ -3343,13 +3312,7 @@ impl RoomActivityPane {
             return Some(
                 AccessNode::new(Role::StaticText)
                     .with_name(narrative.text.clone())
-                    .with_description(format!(
-                        "{} · {}",
-                        self.summary_label(),
-                        self.narrative_request
-                            .as_ref()
-                            .map_or("", |r| r.projection.as_str())
-                    )),
+                    .with_description(self.summary_label()),
             );
         }
         self.narrative_request
@@ -3357,13 +3320,32 @@ impl RoomActivityPane {
             .map(|_| AccessNode::new(Role::StaticText).with_name(t(self.narrative_feedback)))
     }
 
-    fn open_summary_source(&mut self, slot: usize) {
-        let Some(id) = self
-            .narrative
-            .as_ref()
-            .and_then(|n| n.source_ids.get(slot))
+    fn summary_source_key(&self, id: &HistoryEntryId) -> String {
+        // The entire request authorizes the citation; its position in model output does not.
+        let request = format!("{:?}", self.narrative_request);
+        format!(
+            "history.summary.source.{}.{}",
+            blake3::hash(request.as_bytes()),
+            ui::widget::history_group::hex16(id)
+        )
+    }
+
+    fn summary_source_id(&self, key: &str) -> Option<HistoryEntryId> {
+        self.narrative
+            .as_ref()?
+            .source_ids
+            .iter()
             .copied()
-        else {
+            .find(|id| self.summary_source_key(id) == key)
+    }
+
+    /// Capture the language even on ticks where committed history did not change.
+    pub fn refresh_narrative_locale(&mut self) {
+        self.reset_narrative();
+    }
+
+    fn open_summary_citation(&mut self, key: &str) {
+        let Some(id) = self.summary_source_id(key) else {
             return;
         };
         if let Some(index) = self
@@ -3378,6 +3360,25 @@ impl RoomActivityPane {
 
     pub fn narrative_request(&self) -> Option<NarrativeRequest> {
         self.narrative_request.clone()
+    }
+
+    /// Exact presentation snapshot for deferred semantic actions.
+    pub fn narrative(&self) -> Option<ui::GroundedNarrative> {
+        self.narrative.clone()
+    }
+
+    /// Resolve a citation by identity in the current summary, never its ordinal.
+    pub fn reveal_narrative_source(&mut self, id: HistoryEntryId) -> bool {
+        if !self
+            .narrative
+            .as_ref()
+            .is_some_and(|narrative| narrative.source_ids.contains(&id))
+        {
+            return false;
+        }
+        let key = self.summary_source_key(&id);
+        self.open_summary_citation(&key);
+        self.view == ActivityView::Explore && self.selected_ids().contains(&id)
     }
 
     /// Install optional model prose only when every cited action belongs to
@@ -4645,7 +4646,7 @@ impl RoomActivityPane {
                 );
             }
             let mut source_y = card.y0 + body_top + 2.0 * metrics.line_lh;
-            for (slot, id) in narrative.source_ids.iter().enumerate() {
+            for id in &narrative.source_ids {
                 let Some(brief) = self
                     .digest
                     .briefs
@@ -4661,7 +4662,8 @@ impl RoomActivityPane {
                     source_y + control_h,
                 );
                 draw_task_button(scene, transform, tr, theme, rect, &brief.title, false);
-                self.summary_source_rects.push((slot, rect));
+                self.summary_source_rects
+                    .push((self.summary_source_key(id), rect));
                 source_y += control_h;
             }
             y += card_h + 8.0;
@@ -6306,8 +6308,8 @@ impl RoomActivityPane {
             });
         }
         if let Some(slot) = hit_value(&self.summary_source_rects, point) {
-            self.keyboard_focus = Some(ActivityFocus::SummarySource(slot));
-            self.open_summary_source(slot);
+            self.keyboard_focus = Some(ActivityFocus::SummarySource(slot.clone()));
+            self.open_summary_citation(&slot);
             return Some(handled_outcome());
         }
         if let Some(index) = hit_value(&self.brief_rects, point) {
@@ -6907,7 +6909,7 @@ impl RoomActivityPane {
                 order.extend(
                     self.summary_source_rects
                         .iter()
-                        .map(|(slot, _)| ActivityFocus::SummarySource(*slot)),
+                        .map(|(key, _)| ActivityFocus::SummarySource(key.clone())),
                 );
                 order.extend(
                     self.brief_rects
@@ -7071,7 +7073,7 @@ impl RoomActivityPane {
             }
             ActivityFocus::Resume => outcome.open_target.clone_from(&self.resume_target),
             ActivityFocus::Brief(index) => self.activate_brief(index),
-            ActivityFocus::SummarySource(slot) => self.open_summary_source(slot),
+            ActivityFocus::SummarySource(key) => self.open_summary_citation(&key),
             ActivityFocus::WorkSessionBoundary(boundary) => {
                 outcome.named = self.move_work_session_boundary(tree, boundary);
             }
@@ -7217,15 +7219,13 @@ impl RoomActivityPane {
                     &[("target", (&target.label).into())],
                 )
             }),
-            ActivityFocus::SummarySource(slot) => self
-                .narrative
-                .as_ref()
-                .and_then(|n| n.source_ids.get(*slot))
+            ActivityFocus::SummarySource(key) => self
+                .summary_source_id(key)
                 .and_then(|id| {
                     self.digest
                         .briefs
                         .iter()
-                        .find(|brief| brief.entry_ids.contains(id))
+                        .find(|brief| brief.entry_ids.contains(&id))
                 })
                 .map(|brief| brief.title.clone()),
             ActivityFocus::Brief(index) => self
@@ -7365,7 +7365,7 @@ impl RoomActivityPane {
                     ),
                 )
             }
-            ActivityFocus::SummarySource(slot) => control(
+            ActivityFocus::SummarySource(key) => control(
                 Role::Button,
                 false,
                 None,
@@ -7373,9 +7373,8 @@ impl RoomActivityPane {
                     "activity-summary-citation-description",
                     &[(
                         "id",
-                        self.narrative
+                        self.summary_source_id(key)
                             .as_ref()
-                            .and_then(|n| n.source_ids.get(*slot))
                             .map(ui::widget::history_group::hex16)
                             .unwrap_or_default()
                             .into(),
@@ -7581,6 +7580,11 @@ impl RoomActivityPane {
             .with_description(control.description)
             .with_state(state)
             .with_position(index.saturating_add(1), set_size);
+        let node = if let ActivityFocus::SummarySource(key) = focus {
+            node.with_hashed_key(key)
+        } else {
+            node
+        };
         // The same rect the pointer hits, so assistive technology, the
         // control socket and the UX bench can all address this control.
         Some(match self.rect_for_focus(focus) {
@@ -7768,13 +7772,36 @@ impl RoomActivityPane {
         description
     }
 
+    fn accessibility_focus(&self, key: usize) -> Option<ActivityFocus> {
+        let order = self.focus_order();
+        order
+            .iter()
+            .find(|focus| {
+                if let ActivityFocus::SummarySource(identity) = focus {
+                    ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                        .with_hashed_key(identity)
+                        .key
+                        == Some(key as u64)
+                        && self.summary_source_id(identity).is_some()
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .or_else(|| {
+                order
+                    .get(key)
+                    .filter(|focus| !matches!(focus, ActivityFocus::SummarySource(_)))
+                    .cloned()
+            })
+    }
+
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         match path {
             [0] => Some(self.sheet),
             [0, index] => self
-                .focus_order()
-                .get(*index)
-                .and_then(|focus| self.rect_for_focus(focus)),
+                .accessibility_focus(*index)
+                .and_then(|focus| self.rect_for_focus(&focus)),
             [0, index, row] if self.focus_order().get(*index) == Some(&ActivityFocus::Timeline) => {
                 self.timeline.accessibility_row_rect(*row)
             }
@@ -7793,7 +7820,7 @@ impl RoomActivityPane {
         let [0, index] = path else {
             return false;
         };
-        let Some(focus) = self.focus_order().get(*index).cloned() else {
+        let Some(focus) = self.accessibility_focus(*index) else {
             return false;
         };
         self.keyboard_focus = Some(focus);
@@ -9996,3 +10023,7 @@ mod pane_tests;
 #[cfg(test)]
 #[path = "summary_tests.rs"]
 mod summary_tests;
+
+#[cfg(test)]
+#[path = "summary_identity_tests.rs"]
+mod summary_identity_tests;

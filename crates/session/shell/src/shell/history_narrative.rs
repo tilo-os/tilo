@@ -6,16 +6,29 @@
 
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+
 use std::time::{Duration, Instant};
 
 use ui::{GroundedNarrative, NarrativeRequest};
 
+type CommandFactory = dyn Fn(&[&str]) -> Command + Send + Sync;
+
+#[derive(Default)]
+struct RunnerState {
+    generation: u64,
+    running: bool,
+    pending: Option<(String, GroundedNarrative)>,
+    feedback: Option<(String, &'static str)>,
+}
+
 pub struct LocalHistoryNarrator {
     enabled: bool,
-    pending: Arc<std::sync::Mutex<Option<(String, GroundedNarrative)>>>,
-    running: Arc<AtomicBool>,
-    feedback: Arc<std::sync::Mutex<Option<(String, &'static str)>>>,
+    state: Arc<std::sync::Mutex<RunnerState>>,
+    cancel: Option<Arc<bounded_command::Cancellation>>,
+    command: Arc<CommandFactory>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    #[cfg(test)]
+    injected: bool,
     last_key: Option<String>,
     completed_key: Option<String>,
     last_attempt: Option<Instant>,
@@ -25,9 +38,16 @@ impl Default for LocalHistoryNarrator {
     fn default() -> Self {
         Self {
             enabled: true,
-            pending: Arc::default(),
-            running: Arc::default(),
-            feedback: Arc::default(),
+            state: Arc::default(),
+            cancel: None,
+            worker: None,
+            #[cfg(test)]
+            injected: false,
+            command: Arc::new(|args| {
+                let mut command = Command::new("ollama");
+                command.args(args);
+                command
+            }),
             last_key: None,
             completed_key: None,
             last_attempt: None,
@@ -35,10 +55,15 @@ impl Default for LocalHistoryNarrator {
     }
 }
 
+impl Drop for LocalHistoryNarrator {
+    fn drop(&mut self) {
+        self.invalidate();
+    }
+}
+
 const FAILED_RETRY_DELAY: Duration = Duration::from_secs(60);
-/// Automatic history prose stays a background convenience rather than
-/// evicting the foreground app's working set. `TILO_HISTORY_LLM_MODEL` remains
-/// an explicit opt-in escape hatch for a larger installed model.
+/// Automatic selection avoids evicting the foreground app's working set.
+/// An explicit model override remains the user's informed choice.
 const MAX_AUTOMATIC_MODEL_BYTES: u64 = 5_000_000_000;
 const MODEL_LIST_LIMIT: usize = 1024 * 1024;
 const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -46,22 +71,16 @@ const NARRATIVE_LIMIT: usize = 1024 * 1024;
 const NARRATIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
 impl LocalHistoryNarrator {
-    /// Deterministic narrator for fixtures and hosts without local-model
-    /// authority. Requests remain inert instead of probing the host.
     pub(crate) fn disabled() -> Self {
-        Self {
-            enabled: false,
-            ..Self::default()
-        }
+        let mut narrator = Self::default();
+        narrator.enabled = false;
+        narrator
     }
 
-    /// Start one bounded background generation when the evidence changes.
     pub fn request(&mut self, request: &NarrativeRequest) {
         self.request_prompt(request, prompt_for(request));
     }
 
-    /// Status uses the same private runner and citation contract, but a much
-    /// tighter first-person prompt than the away recap.
     pub fn request_status(&mut self, request: &NarrativeRequest) {
         self.request_prompt(request, status_prompt_for(request));
     }
@@ -70,84 +89,121 @@ impl LocalHistoryNarrator {
         if !self.enabled {
             return;
         }
-        #[cfg(test)]
-        crate::shell::test_support::ambient_start("history model worker");
         let key = blake3::hash(prompt.as_bytes()).to_hex().to_string();
-        if self.completed_key.as_deref() != Some(&key) {
-            self.completed_key = None;
+        // Revoke on every transition, including A → B → A. Prompt equality is
+        // not authority to publish from a previous lifetime of that prompt.
+        if self.last_key.as_deref() != Some(&key) {
+            self.invalidate();
         }
         if self.completed_key.as_deref() == Some(&key)
             || (self.last_key.as_deref() == Some(&key)
                 && self
                     .last_attempt
                     .is_some_and(|attempt| attempt.elapsed() < FAILED_RETRY_DELAY))
-            || self.running.swap(true, Ordering::AcqRel)
         {
             return;
         }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.running {
+            return;
+        }
+        let Ok(cancel) = bounded_command::Cancellation::new() else {
+            state.feedback = Some((key, "activity-summary-discovery-failed"));
+            return;
+        };
+        #[cfg(test)]
+        if !self.injected {
+            crate::shell::test_support::ambient_start("history model worker");
+        }
+        let cancel = Arc::new(cancel);
+        self.cancel = Some(Arc::clone(&cancel));
         self.last_key = Some(key.clone());
         self.last_attempt = Some(Instant::now());
-        *self
-            .feedback
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some((key.clone(), "activity-summary-pending"));
-        let feedback = Arc::clone(&self.feedback);
+        state.running = true;
+        state.feedback = Some((key.clone(), "activity-summary-pending"));
+        let generation = state.generation;
+        drop(state);
+        let shared = Arc::clone(&self.state);
+        let command = Arc::clone(&self.command);
+        let requested_model = std::env::var("TILO_HISTORY_LLM_MODEL").ok();
         let request = request.clone();
-        let pending = Arc::clone(&self.pending);
-        let running = Arc::clone(&self.running);
-        std::thread::spawn(move || {
-            match generate(&prompt) {
-                Ok(mut narrative) => {
-                    narrative.request = Some(Box::new(request.clone()));
-                    let Some(narrative) = ui::validate_narrative(&request, narrative) else {
-                        *feedback
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                            Some((key, "activity-summary-failed"));
-                        running.store(false, Ordering::Release);
-                        return;
-                    };
-                    *feedback
+        self.worker = Some(std::thread::spawn(move || {
+            let current = || {
+                !cancel.is_cancelled()
+                    && shared
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some((key.clone(), "activity-summary-ready"));
-                    *pending
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some((key, narrative));
-                }
-                Err(state) => {
-                    *feedback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, state));
-                }
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .generation
+                        == generation
+            };
+            let outcome = generate(
+                &prompt,
+                requested_model.as_deref(),
+                &cancel,
+                command.as_ref(),
+                &current,
+            )
+            .and_then(|mut narrative| {
+                narrative.request = Some(Box::new(request.clone()));
+                ui::validate_narrative(&request, narrative).ok_or("activity-summary-failed")
+            });
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.generation != generation || cancel.is_cancelled() {
+                return;
             }
-            running.store(false, Ordering::Release);
-        });
+            state.running = false;
+            match outcome {
+                Ok(narrative) => {
+                    state.feedback = Some((key.clone(), "activity-summary-ready"));
+                    state.pending = Some((key, narrative));
+                }
+                Err(feedback) => state.feedback = Some((key, feedback)),
+            }
+        }));
     }
 
-    /// Return a result only while it still describes the request on screen.
-    /// A slower generation must never overwrite a newer deterministic digest.
+    /// Revocation is monotonic even if the evidence later returns to the same key.
     pub fn invalidate(&mut self) {
+        // Revoke dispatch authority before advancing publication authority.
+        // Cancellation serializes with spawn, so there is no gap in which a
+        // revoked generation can send its prompt to the configured endpoint.
+        if let Some(cancel) = self.cancel.take() {
+            cancel.cancel();
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(generation) = state.generation.checked_add(1) else {
+            // Fail closed rather than ever reusing a publication authority.
+            std::process::abort();
+        };
+        state.generation = generation;
+        state.pending = None;
+        state.feedback = None;
+        state.running = false;
+        drop(state);
         self.completed_key = None;
         self.last_key = None;
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        self.last_attempt = None;
     }
 
     pub fn feedback_for(&self, request: &NarrativeRequest) -> &'static str {
         let expected = blake3::hash(prompt_for(request).as_bytes())
             .to_hex()
             .to_string();
-        self.feedback
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .feedback
             .as_ref()
             .filter(|(key, _)| *key == expected)
-            .map_or("activity-summary-unavailable", |(_, state)| *state)
+            .map_or("activity-summary-pending", |(_, state)| *state)
     }
 
     pub fn take_for(&mut self, request: &NarrativeRequest) -> Option<GroundedNarrative> {
@@ -159,12 +215,12 @@ impl LocalHistoryNarrator {
     }
 
     fn take_for_prompt(&mut self, prompt: &str) -> Option<GroundedNarrative> {
-        // Scope and coverage are carried in the prompt identity, even when prose evidence matches.
         let expected = blake3::hash(prompt.as_bytes()).to_hex().to_string();
         let narrative = self
-            .pending
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending
             .take()
             .and_then(|(key, narrative)| (key == expected).then_some(narrative));
         if narrative.is_some() {
@@ -172,18 +228,6 @@ impl LocalHistoryNarrator {
         }
         narrative
     }
-}
-
-fn installed_model() -> Option<String> {
-    let mut command = Command::new("ollama");
-    command.arg("list");
-    let output =
-        bounded_command::run_prepared(command, None, MODEL_LIST_LIMIT, MODEL_LIST_TIMEOUT).ok()?;
-    output.status.success().then_some(())?;
-    select_installed_model(
-        &String::from_utf8(output.stdout).ok()?,
-        std::env::var("TILO_HISTORY_LLM_MODEL").ok().as_deref(),
-    )
 }
 
 fn select_installed_model(list: &str, requested: Option<&str>) -> Option<String> {
@@ -235,20 +279,48 @@ fn select_installed_model(list: &str, requested: Option<&str>) -> Option<String>
     models.into_iter().next().map(|(name, _)| name)
 }
 
-fn generate(prompt: &str) -> Result<GroundedNarrative, &'static str> {
-    let model = installed_model().ok_or("activity-summary-unavailable")?;
-    generate_with(prompt, Some(model), |model, prompt| {
-        let mut command = Command::new("ollama");
-        command.args(["run", model, prompt]);
-        let output =
-            bounded_command::run_prepared(command, None, NARRATIVE_LIMIT, NARRATIVE_TIMEOUT)
-                .ok()?;
-        output.status.success().then_some(())?;
-        String::from_utf8(output.stdout).ok()
-    })
-    .ok_or("activity-summary-failed")
+fn generate(
+    prompt: &str,
+    requested: Option<&str>,
+    cancel: &bounded_command::Cancellation,
+    command: &CommandFactory,
+    current: &impl Fn() -> bool,
+) -> Result<GroundedNarrative, &'static str> {
+    if !current() {
+        return Err("activity-summary-pending");
+    }
+    let output = bounded_command::run_prepared_cancellable(
+        command(&["list"]),
+        None,
+        MODEL_LIST_LIMIT,
+        MODEL_LIST_TIMEOUT,
+        cancel,
+    )
+    .map_err(|_| "activity-summary-discovery-failed")?;
+    if !output.status.success() {
+        return Err("activity-summary-discovery-failed");
+    }
+    let list = String::from_utf8(output.stdout).map_err(|_| "activity-summary-discovery-failed")?;
+    let model = select_installed_model(&list, requested).ok_or("activity-summary-unavailable")?;
+    if !current() {
+        return Err("activity-summary-pending");
+    }
+    let output = bounded_command::run_prepared_cancellable(
+        command(&["run", &model, prompt]),
+        None,
+        NARRATIVE_LIMIT,
+        NARRATIVE_TIMEOUT,
+        cancel,
+    )
+    .map_err(|_| "activity-summary-failed")?;
+    if !current() || !output.status.success() {
+        return Err("activity-summary-failed");
+    }
+    let raw = String::from_utf8(output.stdout).map_err(|_| "activity-summary-failed")?;
+    parse_response(&raw, &model).ok_or("activity-summary-failed")
 }
 
+#[cfg(test)]
 fn generate_with(
     prompt: &str,
     model: Option<String>,
@@ -386,6 +458,148 @@ mod tests {
     }
 
     #[test]
+    fn injected_subprocess_generations_revoke_even_when_the_key_returns() {
+        let (entered, events) = std::sync::mpsc::channel();
+        let (release, gates) = std::sync::mpsc::channel();
+        let gates = std::sync::Mutex::new(gates);
+        let model = std::env::var("TILO_HISTORY_LLM_MODEL")
+            .ok()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "fixture:test".into());
+        let inventory = format!("NAME ID SIZE MODIFIED\n{} id 1 MB now", model.trim());
+        let mut narrator = LocalHistoryNarrator::default();
+        narrator.injected = true;
+        narrator.command = Arc::new(move |args| {
+            // Pause before run dispatch. No model service or global
+            // environment mutation is involved in this regression.
+            if args[0] == "run" {
+                entered.send(()).unwrap();
+                gates.lock().unwrap().recv().unwrap();
+            }
+            let text = if args[0] == "list" {
+                inventory.as_str()
+            } else {
+                r#"{"text":"Recorded edits","source_ids":["01010101010101010101010101010101"]}"#
+            };
+            let mut command = Command::new("sh");
+            command.args(["-c", "printf '%s' \"$1\"", "fixture", text]);
+            command
+        });
+        let a = request(1, "Recorded edits");
+        let b = request(2, "Other edits");
+        narrator.request(&a);
+        events.recv_timeout(Duration::from_secs(5)).unwrap();
+        let first = narrator.worker.take().unwrap();
+        let first_generation = narrator.state.lock().unwrap().generation;
+        narrator.request(&b);
+        // Release A before allowing B through the same deterministic gate.
+        release.send(()).unwrap();
+        first.join().unwrap();
+        events.recv_timeout(Duration::from_secs(5)).unwrap();
+        let second = narrator.worker.take().unwrap();
+        narrator.request(&a);
+        release.send(()).unwrap();
+        second.join().unwrap();
+        events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(narrator.state.lock().unwrap().generation > first_generation);
+        assert_eq!(narrator.feedback_for(&a), "activity-summary-pending");
+        assert!(narrator.take_for(&a).is_none());
+        release.send(()).unwrap();
+        narrator.worker.take().unwrap().join().unwrap();
+        assert_eq!(narrator.feedback_for(&a), "activity-summary-ready");
+        assert!(narrator.take_for(&a).is_some());
+        narrator.invalidate();
+        assert!(narrator.take_for(&a).is_none());
+        assert_eq!(narrator.feedback_for(&a), "activity-summary-pending");
+    }
+
+    #[test]
+    fn changed_evidence_cancels_an_inflight_discovery_tree_without_waiting_for_timeout() {
+        use std::io::Read as _;
+        let directory = tempfile::tempdir().unwrap();
+        let ready = directory.path().join("ready");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&ready)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (sender, received) = std::sync::mpsc::channel();
+        let reader_path = ready.clone();
+        let reader = std::thread::spawn(move || {
+            let mut pipe = std::fs::File::open(reader_path).unwrap();
+            let mut byte = [0];
+            pipe.read_exact(&mut byte).unwrap();
+            sender.send(()).unwrap();
+        });
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let mut narrator = LocalHistoryNarrator::default();
+        narrator.injected = true;
+        narrator.command = Arc::new(move |args| {
+            assert_eq!(args, ["list"]);
+            let mut command = Command::new("sh");
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                command
+                    .args(["-c", "sleep 30 & printf x > \"$1\"; wait", "fixture"])
+                    .arg(&ready);
+            } else {
+                command.args(["-c", "printf 'NAME ID SIZE MODIFIED\\n'"]);
+            }
+            command
+        });
+        let a = request(1, "Recorded edits");
+        narrator.request(&a);
+        received.recv_timeout(Duration::from_secs(5)).unwrap();
+        let old_worker = narrator.worker.take().unwrap();
+        let began = Instant::now();
+        let b = request(2, "Other edits");
+        narrator.request(&b);
+        old_worker.join().unwrap();
+        assert!(began.elapsed() < Duration::from_secs(1));
+        narrator.worker.take().unwrap().join().unwrap();
+        assert_eq!(narrator.feedback_for(&b), "activity-summary-unavailable");
+        assert_eq!(narrator.feedback_for(&a), "activity-summary-pending");
+        assert!(narrator.take_for(&a).is_none());
+        reader.join().unwrap();
+    }
+
+    #[test]
+    fn injected_discovery_distinguishes_failure_from_no_installed_model() {
+        let cancel = bounded_command::Cancellation::new().unwrap();
+        for (script, expected) in [
+            ("exit 7", "activity-summary-discovery-failed"),
+            (
+                "printf 'NAME ID SIZE MODIFIED\\n'",
+                "activity-summary-unavailable",
+            ),
+        ] {
+            let factory: Arc<CommandFactory> = Arc::new(move |args| {
+                assert_eq!(args, ["list"], "discovery must not dispatch generation");
+                let mut command = Command::new("sh");
+                command.args(["-c", script]);
+                command
+            });
+            assert_eq!(
+                generate("evidence", None, &cancel, factory.as_ref(), &|| true).unwrap_err(),
+                expected
+            );
+        }
+        cancel.cancel();
+        assert_eq!(
+            generate(
+                "evidence",
+                None,
+                &cancel,
+                &|_| panic!("revoked worker dispatched"),
+                &|| false
+            )
+            .unwrap_err(),
+            "activity-summary-pending"
+        );
+    }
+
+    #[test]
     fn injected_runner_respects_selection_locale_bounds_and_missing_model() {
         let mut evidence = request(1, "Recorded edits");
         evidence.locale = "de-DE".into();
@@ -443,7 +657,7 @@ mod tests {
             let key = blake3::hash(prompt_for(&old).as_bytes())
                 .to_hex()
                 .to_string();
-            *narrator.pending.lock().unwrap() = Some((
+            narrator.state.lock().unwrap().pending = Some((
                 key,
                 GroundedNarrative {
                     text: "Old work".into(),

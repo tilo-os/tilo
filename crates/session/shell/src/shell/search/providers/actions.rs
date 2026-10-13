@@ -250,13 +250,6 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "history.compare",
     "history.undo",
     "history.restore",
-    "history.summary.read",
-    "history.summary.source.0",
-    "history.summary.source.1",
-    "history.summary.source.2",
-    "history.summary.source.3",
-    "history.summary.source.4",
-    "history.summary.source.5",
     shared_display_actions::INSPECT_ID,
     DISPLAY_OUTPUTS_INSPECT_ID,
 ];
@@ -284,7 +277,12 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
         }
-        id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
+        id if VIEW_ACTION_IDS.contains(&id)
+            || id.starts_with("history.summary.read.")
+            || id.starts_with("history.summary.source.") =>
+        {
+            contract = ActionContract::view();
+        }
         "workspace.create" => contract = workspace_create_contract(),
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
             contract.kind = ActionKind::Outside;
@@ -3817,49 +3815,57 @@ impl ActionsProvider {
                 });
             }
         }
-        for (id, label_key, subtitle_key, keywords_key) in [
-            (
-                "history.summary.read",
-                "search-action-history-summary-read",
-                "search-action-history-summary-subtitle",
-                "search-action-history-summary-read",
-            ),
-            (
-                "history.summary.source.0",
+        if let Some(binding) = ctx.chrome.history_summary_binding() {
+            let source_labels = [
                 "search-action-history-summary-source-1",
-                "search-action-history-summary-subtitle",
-                "search-action-history-summary-read",
-            ),
-            (
-                "history.summary.source.1",
                 "search-action-history-summary-source-2",
-                "search-action-history-summary-subtitle",
-                "search-action-history-summary-read",
-            ),
-            (
-                "history.summary.source.2",
                 "search-action-history-summary-source-3",
-                "search-action-history-summary-subtitle",
-                "search-action-history-summary-read",
-            ),
-            (
-                "history.summary.source.3",
                 "search-action-history-summary-source-4",
-                "search-action-history-summary-subtitle",
-                "search-action-history-summary-read",
-            ),
-            (
-                "history.summary.source.4",
                 "search-action-history-summary-source-5",
-                "search-action-history-summary-subtitle",
-                "search-action-history-summary-read",
-            ),
-            (
-                "history.summary.source.5",
                 "search-action-history-summary-source-6",
-                "search-action-history-summary-subtitle",
+            ];
+            let summary_actions = std::iter::once((
+                binding.action_id(None),
                 "search-action-history-summary-read",
-            ),
+                None,
+            ))
+            .chain(
+                binding
+                    .narrative
+                    .source_ids
+                    .iter()
+                    .zip(source_labels)
+                    .enumerate()
+                    .map(|(slot, (_, label))| (binding.action_id(Some(slot)), label, Some(slot))),
+            );
+            for (id, label_key, slot) in summary_actions {
+                let label = t(label_key);
+                let subtitle = t("search-action-history-summary-subtitle");
+                candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), &id);
+                let binding = binding.clone();
+                out.push(SearchResult {
+                    kind: ResourceKind::Action,
+                    operation_kind: tilo_actions::OperationKind::View,
+                    provider_id: self.id().into(),
+                    id,
+                    title: label,
+                    subtitle: Some(subtitle),
+                    badge: None,
+                    score: 0,
+                    params: vec![],
+                    contract: Some(tilo_actions::ActionContract::view()),
+                    on_open: Rc::new(move |_, _, chrome, _| {
+                        chrome
+                            .borrow_mut()
+                            .request_history_summary_action(&binding, slot)
+                            .map_err(ActionError::Refused)
+                    }),
+                    on_invoke: None,
+                    on_begin_invoke: None,
+                });
+            }
+        }
+        for (id, label_key, subtitle_key, keywords_key) in [
             (
                 tilo_desktop::activity::morning::MORNING_SOURCE,
                 "activity-morning-choose",
@@ -4676,6 +4682,238 @@ mod tests {
             &ActionArgs::none(),
         )
         .unwrap();
+    }
+
+    fn summary_binding(chrome: &Chrome) -> crate::shell::chrome_state::HistorySummaryBinding {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let workspace = tree.active_workspace().unwrap();
+        let (workspace, room) = (workspace.id, workspace.room);
+        drop(tree);
+        let id = ui::widget::HistoryEntryId([1; 16]);
+        let request = ui::NarrativeRequest {
+            deterministic_text: "Recorded edits".into(),
+            projection: "workspace scope, committed frontier, complete coverage".into(),
+            locale: "en-US".into(),
+            source_ids: vec![id, ui::widget::HistoryEntryId([2; 16])],
+            sources: vec![ui::NarrativeSource {
+                ids: vec![id, ui::widget::HistoryEntryId([2; 16])],
+                title: "Edited document".into(),
+                detail: "Two recorded changes".into(),
+                authors: vec!["Ada".into()],
+                changes: 2,
+            }],
+        };
+        let narrative = ui::GroundedNarrative {
+            text: "Recorded edits".into(),
+            source_ids: vec![id],
+            generator: "fixture".into(),
+            request: Some(Box::new(request.clone())),
+        };
+        crate::shell::chrome_state::HistorySummaryBinding {
+            workspace,
+            room,
+            request,
+            narrative,
+        }
+    }
+
+    fn try_summary_action(
+        results: &[SearchResult],
+        id: &str,
+        chrome: &Chrome,
+    ) -> Result<(), ActionError> {
+        let result = results.iter().find(|result| result.id == id).unwrap();
+        let mut document = AutoCommit::new();
+        (result.on_open)(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            chrome,
+            &ActionArgs::none(),
+        )
+    }
+
+    #[test]
+    fn summary_registry_exposes_only_published_citations_and_rejects_missing_sources() {
+        let chrome = chrome_with_room();
+        let provider = ActionsProvider::new();
+        assert!(
+            action_results(&provider, &chrome)
+                .iter()
+                .all(|row| !row.id.starts_with("history.summary."))
+        );
+        let binding = summary_binding(&chrome);
+        chrome
+            .borrow_mut()
+            .publish_history_summary(Some(binding.clone()));
+        let results = action_results(&provider, &chrome);
+        let ids = results
+            .iter()
+            .filter(|row| row.id.starts_with("history.summary."))
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            [
+                binding.action_id(None).as_str(),
+                binding.action_id(Some(0)).as_str()
+            ]
+        );
+        assert!(
+            chrome
+                .borrow_mut()
+                .request_history_selection_action("history.summary.source.1")
+                .is_err()
+        );
+        assert!(
+            chrome
+                .borrow_mut()
+                .request_history_selection_action("history.summary.source.invalid")
+                .is_err()
+        );
+        try_summary_action(&results, &binding.action_id(Some(0)), &chrome).unwrap();
+        let queued = chrome
+            .borrow_mut()
+            .take_history_summary_action_request()
+            .unwrap();
+        assert_eq!(queued.binding, binding);
+        assert_eq!(queued.source, Some(binding.narrative.source_ids[0]));
+        assert_eq!(queued.brief, Some(binding.request.sources[0].clone()));
+        assert!(chrome.borrow_mut().take_history_action_request().is_none());
+        let mut invalid = binding;
+        invalid.narrative.source_ids = vec![ui::widget::HistoryEntryId([9; 16])];
+        chrome.borrow_mut().publish_history_summary(Some(invalid));
+        assert!(
+            action_results(&provider, &chrome)
+                .iter()
+                .all(|row| !row.id.starts_with("history.summary."))
+        );
+    }
+
+    #[test]
+    fn summary_dispatch_rejects_changed_scope_room_request_and_provenance() {
+        use crate::shell::state::{Workspace, WorkspaceId};
+        let chrome = chrome_with_room();
+        let provider = ActionsProvider::new();
+        let binding = summary_binding(&chrome);
+        chrome
+            .borrow_mut()
+            .publish_history_summary(Some(binding.clone()));
+        let results = action_results(&provider, &chrome);
+        let assert_stale = || {
+            for id in [binding.action_id(None), binding.action_id(Some(0))] {
+                assert!(try_summary_action(&results, &id, &chrome).is_err(), "{id}");
+            }
+            assert!(
+                chrome
+                    .borrow_mut()
+                    .take_history_summary_action_request()
+                    .is_none()
+            );
+        };
+        let other = WorkspaceId::new();
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let mut workspace = Workspace::new(other, "Other");
+            workspace.room = binding.room;
+            tree.desktop.workspaces.push(workspace);
+            tree.desktop.active = other;
+        }
+        assert_stale();
+        assert!(
+            action_results(&provider, &chrome)
+                .iter()
+                .all(|row| !row.id.starts_with("history.summary."))
+        );
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            tree.desktop.active = binding.workspace;
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == binding.workspace)
+                .unwrap();
+            workspace.room = crate::shell::state::RoomId::new();
+            drop(tree);
+        }
+        assert_stale();
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            tree.desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == binding.workspace)
+                .unwrap()
+                .room = binding.room;
+        }
+        let mut changed = binding.clone();
+        changed.request.projection.push_str(" newer frontier");
+        changed.narrative.request = Some(Box::new(changed.request.clone()));
+        chrome.borrow_mut().publish_history_summary(Some(changed));
+        assert_stale();
+        let mut changed = binding.clone();
+        changed.narrative.generator = "different runner".into();
+        chrome.borrow_mut().publish_history_summary(Some(changed));
+        assert_stale();
+        chrome.borrow_mut().publish_history_summary(None);
+        assert_stale();
+    }
+
+    #[test]
+    fn summary_deferred_dispatch_preserves_exact_brief_binding_across_refresh() {
+        let chrome = chrome_with_room();
+        let provider = ActionsProvider::new();
+        let binding = summary_binding(&chrome);
+        chrome
+            .borrow_mut()
+            .publish_history_summary(Some(binding.clone()));
+        let results = action_results(&provider, &chrome);
+        try_summary_action(&results, &binding.action_id(Some(0)), &chrome).unwrap();
+        let mut replacement = binding.clone();
+        replacement.narrative.source_ids = vec![replacement.request.source_ids[1]];
+        replacement.request.sources[0].title = "Different brief".into();
+        replacement.narrative.request = Some(Box::new(replacement.request.clone()));
+        chrome
+            .borrow_mut()
+            .publish_history_summary(Some(replacement));
+        let queued = chrome
+            .borrow_mut()
+            .take_history_summary_action_request()
+            .unwrap();
+        assert_eq!(queued.binding, binding);
+        assert_eq!(queued.source, Some(binding.narrative.source_ids[0]));
+        assert_eq!(queued.brief, Some(binding.request.sources[0].clone()));
+        assert_ne!(
+            chrome.borrow().history_summary_binding(),
+            Some(&queued.binding)
+        );
+        let results = action_results(&provider, &chrome);
+        assert!(
+            results.iter().all(
+                |row| row.id != binding.action_id(Some(0)) && row.id != binding.action_id(None)
+            ),
+            "fresh lookup must not rebind a stale address"
+        );
+        let read_id = chrome
+            .borrow()
+            .history_summary_binding()
+            .unwrap()
+            .action_id(None);
+        try_summary_action(&results, &read_id, &chrome).unwrap();
+        let read = chrome
+            .borrow_mut()
+            .take_history_summary_action_request()
+            .unwrap();
+        assert_eq!(
+            Some(&read.binding),
+            chrome.borrow().history_summary_binding()
+        );
+        assert!(read.source.is_none());
+        assert!(read.brief.is_none());
     }
 
     #[test]
