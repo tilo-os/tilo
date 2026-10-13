@@ -113,7 +113,7 @@ impl Appearance {
         if self
             .avatar
             .as_deref()
-            .is_some_and(|hash| !tilo_content::valid_hash(hash))
+            .is_some_and(|hash| !tilo_content_types::valid_hash(hash))
         {
             return Err(AppearanceError::AvatarNotHash);
         }
@@ -168,7 +168,7 @@ pub fn check_avatar_bytes(bytes: &[u8]) -> Result<(), AppearanceError> {
     if bytes.len() > MAX_AVATAR_BYTES {
         return Err(AppearanceError::AvatarTooLarge);
     }
-    match tilo_content::image_format(bytes) {
+    match tilo_content_types::image_format(bytes) {
         Some(format) if matches!(format.extension, "png" | "jpg" | "webp" | "gif") => Ok(()),
         _ => Err(AppearanceError::AvatarNotImage),
     }

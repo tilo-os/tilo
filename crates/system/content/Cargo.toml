@@ -20,6 +20,7 @@ dir = ["dep:tilo-advisory-lock", "dep:tilo-clock", "dep:tilo-files", "dep:tilo-p
 device = ["dir", "dep:runtime-fs"]
 
 [dependencies]
+tilo-content-types = { version = "0.1.0", path = "../content-types" }
 tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock", optional = true }
 blake3.workspace = true
 thiserror.workspace = true

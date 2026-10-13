@@ -333,6 +333,7 @@ members = [
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
     "crates/system/content",
+    "crates/system/content-types",
     "crates/system/durable-store",
     "crates/system/endpoint-reachability",
     "crates/system/fs",

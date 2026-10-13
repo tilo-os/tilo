@@ -20,6 +20,7 @@ blake3 = { workspace = true, optional = true }
 tilo-files = { path = "../../platform/tilo-files", optional = true }
 cap-primitives = { version = "3.4.6", optional = true }
 cap-fs-ext = { version = "3.4.6", optional = true }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
