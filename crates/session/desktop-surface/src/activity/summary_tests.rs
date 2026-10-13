@@ -23,6 +23,7 @@ fn fixture() -> (TestTree, RoomActivityPane) {
 fn generated_summary_reads_as_static_text_and_sources_open_existing_explorer() {
     let (mut tree, mut pane) = fixture();
     let heads = tree.doc.get_heads();
+    let recorded_latest = pane.recorded_latest().expect("recorded evidence");
     let request = pane.narrative_request().expect("recorded activity");
     let id = *request.supplied_ids().iter().next().unwrap();
     assert!(pane.apply_generated_narrative(ui::GroundedNarrative {
@@ -57,6 +58,16 @@ fn generated_summary_reads_as_static_text_and_sources_open_existing_explorer() {
             .iter()
             .any(|node| node.role == ui::a11y::Role::StaticText
                 && node.name.as_deref() == Some("Generated wording, not recorded evidence."))
+    );
+    assert_eq!(
+        pane.recorded_latest().as_deref(),
+        Some(recorded_latest.as_str())
+    );
+    assert!(
+        !pane
+            .recorded_latest()
+            .unwrap()
+            .contains("Generated wording")
     );
     assert!(pane.summary_label().contains("configured-model"));
     assert!(pane.summary_label().contains("not fact checks"));

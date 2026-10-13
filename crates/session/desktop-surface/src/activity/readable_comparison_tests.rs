@@ -52,6 +52,7 @@ fn readable_comparison_keeps_historical_names_and_machine_evidence() {
     let mut empty = comparison.clone();
     empty.patches.clear();
     assert!(comparison_preview_labels(&empty, Some(&detail), &entries).is_empty());
+    assert_eq!(comparison_empty_label(&empty), t("activity-no-differences"));
     let after = automerge::AutoCommit::load(&comparison.after_document).unwrap();
     assert_eq!(
         after
@@ -139,6 +140,14 @@ fn readable_comparison_excludes_workspace_bookkeeping_but_keeps_task_actions() {
     let after = comparison.after_document.clone();
     assert!(!comparison.patches.is_empty());
     assert!(comparison_change_labels(&comparison.patches).is_empty());
+    assert_eq!(
+        comparison_empty_label(&comparison),
+        t("activity-comparison-no-readable-content")
+    );
+    assert_ne!(
+        comparison_empty_label(&comparison),
+        t("activity-no-differences")
+    );
     let preview = comparison_preview_labels(&comparison, None, &entries).join("\n");
     assert!(preview.contains("Launch brief"), "{preview}");
     assert!(preview.contains("Tasks at the time"), "{preview}");
@@ -236,6 +245,101 @@ fn readable_comparison_rejects_raw_summaries_and_unknown_semantic_types() {
         comparison_semantic_label(&context),
         Some(t("activity-comparison-action-unavailable"))
     );
+}
+
+#[test]
+fn structured_labels_reject_address_tokens_without_rejecting_short_id_titles() {
+    use tilo_actions::{Did, EditOp, FieldEdit};
+    for (id, label, rejected) in [
+        ("invocation:private", "Receipt invocation:private", true),
+        ("opaque-123", "Receipt (opaque-123)", true),
+        ("other-id", "Receipt invocation:private", true),
+        ("ann", "Annual report", false),
+        ("ann", "Planning annual report", false),
+    ] {
+        let mut context = ActionContext::for_resource(id, "document", label);
+        context.what = Some(Did::Edit(FieldEdit {
+            ty: "document".into(),
+            field: "title".into(),
+            path: Vec::new(),
+            op: EditOp::Set,
+            old: None,
+            new: None,
+            args: BTreeMap::default(),
+        }));
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "title", "Changed").unwrap();
+        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+        let entries = HistorySource::new().entries(&mut doc);
+        let detail = HistorySelectionDetail::from_range(&entries, (0, 0)).unwrap();
+        let provenance = detail_provenance(&detail, &entries);
+        let comparison = ui::history_source::compare_entries(&mut doc, &detail.entry_ids).unwrap();
+        let preview = comparison_preview_labels(&comparison, Some(&detail), &entries).join("\n");
+        let action = comparison_semantic_label(&context).unwrap();
+        if rejected {
+            assert!(!provenance.contains(label), "{provenance}");
+            assert!(!preview.contains(label), "{preview}");
+            assert_eq!(action, t("activity-comparison-action-unavailable"));
+        } else {
+            assert!(provenance.contains(label), "{provenance}");
+            assert!(preview.contains(label), "{preview}");
+            assert!(action.contains(label), "{action}");
+        }
+        assert_eq!(detail.resources[0].id, id);
+        assert_eq!(context.resource.as_ref().unwrap().label, label);
+    }
+}
+
+#[test]
+fn comparison_values_use_token_boundaries_too() {
+    use tilo_actions::{Did, EditOp, FieldEdit, Scalar};
+    let mut context = ActionContext::for_resource("ann", "document", "Annual report");
+    for (value, rejected) in [
+        ("Annual report", false),
+        ("Selected ann", true),
+        ("Receipt invocation:private", true),
+    ] {
+        context.what = Some(Did::Edit(FieldEdit {
+            ty: "document".into(),
+            field: "title".into(),
+            path: Vec::new(),
+            op: EditOp::Set,
+            old: None,
+            new: Some(Scalar::text(value)),
+            args: BTreeMap::default(),
+        }));
+        let label = comparison_semantic_label(&context).unwrap();
+        assert_eq!(
+            label == t("activity-comparison-action-unavailable"),
+            rejected,
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn scroll_fade_deadline_and_animation_reach_idle() {
+    let mut pane = RoomActivityPane::new();
+    let start = ui::time::now();
+    tilo_clock::testing::with_monotonic_time(start, || {
+        pane.catchup_scroll
+            .set_viewport(Rect::new(0.0, 0.0, 300.0, 200.0), &Theme::dark());
+        pane.catchup_scroll.set_content_size(300.0, 800.0);
+        assert!(
+            pane.catchup_scroll
+                .scroll_by(vello::kurbo::Vec2::new(0.0, 50.0))
+        );
+        assert!(pane.next_wake_deadline().is_some());
+    });
+    let deadline =
+        tilo_clock::testing::with_monotonic_time(start, || pane.next_wake_deadline().unwrap());
+    tilo_clock::testing::with_monotonic_time(deadline + Duration::from_millis(1), || {
+        assert!(pane.needs_animation_frame(ui::time::now()));
+    });
+    tilo_clock::testing::with_monotonic_time(deadline + Duration::from_secs(5), || {
+        assert!(!pane.needs_animation_frame(ui::time::now()));
+        assert!(pane.next_wake_deadline().is_none());
+    });
 }
 
 #[test]

@@ -265,6 +265,7 @@ activity-comparison-counts = { $actions } { $actions ->
         [one] document change
        *[other] document changes
     }
+activity-comparison-no-readable-content = Recorded changes have no readable content comparison.
 activity-no-differences = No content differences in this selection
 activity-comparison-more = +{ $count } more
 activity-preview-unavailable = Preview unavailable

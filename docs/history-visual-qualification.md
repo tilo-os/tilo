@@ -110,6 +110,48 @@ representative inspections do not claim every updated PNG was individually
 opened. Summary and details scroll through production controls rather than
 moving their content or forcing selection for the camera.
 
+## Recorded-evidence and scroll-clip qualification
+
+A further qualification on source baseline `cdbd4a2eec` writes captures to
+`target/history-truth-shots/{light,dark,high-contrast}/{1600x900,800x600}/`.
+All six runs of `history_visual_qualification` completed offscreen. The
+synthetic generated paragraph remains only in its explicitly generated card;
+the header's Latest line now uses the newest recorded row, not that paragraph.
+
+The original citation's **full rectangle** must fit the actual scroll-content
+clip, excluding header and scrollbar lanes. Detail paging asserts the measured
+offset reaches its actual maximum. Every comparison text row must be fully
+visible during paging, and the final row must be fully visible at the end.
+A narrow comparison is taller than its viewport: this does not claim all its
+rows fit simultaneously in the final capture.
+
+Opened as images from this new matrix:
+- `light/800x600/02-validated-fixture-summary.png`: generated heading and full
+  citation visible in the scrolled content.
+- `dark/800x600/04b-comparison-scrolled-end.png`: recorded Latest wording and
+  final comparison row visible; heading/count rows are above the viewport.
+- `high-contrast/1600x900/04b-comparison-scrolled-end.png`: full comparison and
+  exact counts visible together.
+
+The pane distinguishes zero patches from recorded patches with no readable
+content comparison. Address-token handling applies to structured historical
+labels; it is not a general secret-redaction guarantee. Regression tests retain
+machine addresses and exact comparison patches while rejecting mixed routing
+labels and preserving legitimate titles containing short-id substrings.
+The shared sentence reader's existing semantics and published-action labels
+remain unchanged. Structured scalar comparison values use the same token-boundary
+policy, rather than matching a short id anywhere in the rendered sentence.
+Scroll-region fade frames and wake deadlines now flow through
+the history surface, with an idle-after-fade regression test.
+
+Verification logs for this source are untracked under `target/`:
+`history-truth-lib.log` (212 desktop-surface library tests),
+`history-truth-desktop-lib.log` (186 desktop library tests),
+`history-truth-shots-test.log` (focused qualification at both sizes),
+`history-truth-check.log` (shell test-target check), and
+`history-truth-clippy.log` (warning-denying shell test-target Clippy).
+These are CPU/offscreen checks, not claims about live model or seat behavior.
+
 ## Limits
 
 Stills prove paint, not a live model, screen-reader delivery or real-seat input.

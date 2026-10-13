@@ -2355,13 +2355,11 @@ impl ShellDriver {
             .iter()
             .find(|node| node.key == Some(citation_key))?;
         let bounds = citation.bounds?.to_rect();
-        assert!(
-            self.fb
-                .host()
-                .room_activity()
-                .rect()
-                .contains(bounds.center()),
-            "the original citation must actually be visible after keyboard scrolling"
+        let clip = self.fb.host().room_activity().catchup_content_clip();
+        assert_eq!(
+            clip.intersect(bounds),
+            bounds,
+            "the full original citation must be within the actual scroll-content clip"
         );
         assert_eq!(self.fb.host().room_activity().narrative()?, narrative);
         assert_eq!(self.chrome().tree_mut().doc.get_heads(), heads);
@@ -2371,9 +2369,51 @@ impl ShellDriver {
     pub fn qualify_activity_detail_end_for_shots(&mut self) {
         let ids = self.fb.host().room_activity().selected_ids();
         let heads = self.chrome().tree_mut().doc.get_heads();
+        self.press_key(&Key::Named(NamedKey::Home));
+        let _ = self.fb.paint();
+        let mut visible_rows =
+            vec![false; self.fb.host().room_activity().comparison_row_bounds().len()];
         for _ in 0..12 {
+            {
+                let pane = self.fb.host().room_activity();
+                let (clip, _, _) = pane.detail_scroll_geometry();
+                for (seen, row) in visible_rows.iter_mut().zip(pane.comparison_row_bounds()) {
+                    *seen |= clip.intersect(row) == row;
+                }
+            }
             self.press_key(&Key::Named(NamedKey::PageDown));
             let _ = self.fb.paint();
+        }
+        {
+            let ((clip, offset, end), has_comparison, rows) = {
+                let pane = self.fb.host().room_activity();
+                (
+                    pane.detail_scroll_geometry(),
+                    pane.has_comparison(),
+                    pane.comparison_row_bounds(),
+                )
+            };
+            assert!(
+                (offset - end).abs() < 0.5,
+                "detail must reach its actual scroll end: {offset}/{end}"
+            );
+            if has_comparison {
+                assert!(!rows.is_empty(), "comparison must publish painted rows");
+                for (seen, row) in visible_rows.iter_mut().zip(&rows) {
+                    *seen |= clip.intersect(*row) == *row;
+                }
+                assert!(
+                    visible_rows.iter().all(|seen| *seen),
+                    "every full comparison row must be visible while paging through the actual content clip"
+                );
+                if let Some(&last) = rows.last() {
+                    assert_eq!(
+                        clip.intersect(last),
+                        last,
+                        "full final comparison row must be visible at the end"
+                    );
+                }
+            }
         }
         assert_eq!(self.fb.host().room_activity().selected_ids(), ids);
         assert_eq!(self.chrome().tree_mut().doc.get_heads(), heads);

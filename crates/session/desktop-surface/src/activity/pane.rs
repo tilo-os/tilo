@@ -891,6 +891,8 @@ pub struct RoomActivityPane {
     summary_source_rects: Vec<(String, Rect)>,
     catchup_scroll: ui::widget::ScrollRegion,
     detail_scroll: ui::widget::ScrollRegion,
+    detail_content_height: f64,
+    comparison_row_rects: std::cell::RefCell<Vec<Rect>>,
     catchup_theme: Theme,
     catchup_focus_pending: bool,
     summary_details_open: bool,
@@ -1142,6 +1144,8 @@ impl RoomActivityPane {
             summary_source_rects: Vec::new(),
             catchup_scroll: ui::widget::ScrollRegion::vertical(),
             detail_scroll: ui::widget::ScrollRegion::vertical(),
+            detail_content_height: 0.0,
+            comparison_row_rects: std::cell::RefCell::new(Vec::new()),
             catchup_theme: Theme::dark(),
             catchup_focus_pending: false,
             summary_details_open: false,
@@ -1313,11 +1317,51 @@ impl RoomActivityPane {
     }
 
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
-        self.review_pending.is_some()
+        self.catchup_scroll
+            .needs_animation_frame(&self.catchup_theme)
+            || self
+                .detail_scroll
+                .needs_animation_frame(&self.catchup_theme)
+            || self.review_pending.is_some()
             || (self.view == ActivityView::Tasks && self.task_review.is_none())
             || self.brief_expansion_started.is_some_and(|(_, started)| {
                 now.saturating_duration_since(started) < BRIEF_EXPANSION_DURATION
             })
+    }
+
+    pub fn next_wake_deadline(&self) -> Option<Instant> {
+        [
+            self.catchup_scroll.next_wake_deadline(&self.catchup_theme),
+            self.detail_scroll.next_wake_deadline(&self.catchup_theme),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// Actual clip used to paint catch-up content, excluding scrollbar lanes.
+    pub fn catchup_content_clip(&self) -> Rect {
+        self.catchup_scroll.content_rect()
+    }
+
+    /// Painted detail viewport, current offset and maximum vertical offset.
+    pub fn detail_scroll_geometry(&self) -> (Rect, f64, f64) {
+        let clip = self.detail_scroll.content_rect();
+        (
+            clip,
+            self.detail_scroll.offset().y,
+            (self.detail_content_height - clip.height()).max(0.0),
+        )
+    }
+
+    /// Full comparison text-row bounds in viewport coordinates.
+    pub fn comparison_row_bounds(&self) -> Vec<Rect> {
+        let offset = self.detail_scroll.offset();
+        self.comparison_row_rects
+            .borrow()
+            .iter()
+            .map(|rect| Affine::translate((-offset.x, -offset.y)).transform_rect_bbox(*rect))
+            .collect()
     }
 
     pub fn finish_view(&mut self, workspace: u64) {
@@ -1381,6 +1425,15 @@ impl RoomActivityPane {
         if self.persistent_frontiers {
             self.persist_frontiers();
         }
+    }
+
+    /// Newest recorded row, independent of optional generated wording.
+    fn recorded_latest(&self) -> Option<String> {
+        self.timeline
+            .entries()
+            .iter()
+            .max_by_key(|entry| entry.timestamp)
+            .map(|entry| entry.summary.clone())
     }
 
     /// `(headline, unread, pulse)` consumed by passive chrome. `pulse` is a
@@ -3856,8 +3909,9 @@ impl RoomActivityPane {
             bounds.x1 -= f64::from(theme.tokens.metrics.scrollbar_gutter);
             let bottom =
                 self.draw_explorer_details(&mut content, Affine::IDENTITY, tr, theme, bounds);
+            self.detail_content_height = bottom - right.y0 + 12.0;
             self.detail_scroll
-                .set_content_size(right.width(), bottom - right.y0 + 12.0);
+                .set_content_size(right.width(), self.detail_content_height);
             self.detail_scroll
                 .paint(scene, transform, theme, |scene, content_transform| {
                     scene.append(
@@ -4413,6 +4467,7 @@ impl RoomActivityPane {
         width: f32,
         y: f64,
     ) -> f64 {
+        self.comparison_row_rects.borrow_mut().clear();
         if !self.comparison_attempted {
             return y;
         }
@@ -4435,7 +4490,7 @@ impl RoomActivityPane {
                 self.timeline.entries(),
             );
             if labels.is_empty() {
-                rows.push((t("activity-no-differences"), TextRole::Caption, false));
+                rows.push((comparison_empty_label(comparison), TextRole::Caption, false));
             }
             // Every description remains in the scrollable document; there is
             // no hidden tail behind a "more" count.
@@ -4474,6 +4529,12 @@ impl RoomActivityPane {
         );
         let mut row_y = y + 12.0;
         for ((label, role, primary), height) in rows.iter().zip(heights) {
+            self.comparison_row_rects.borrow_mut().push(Rect::new(
+                card.x0 + 12.0,
+                row_y,
+                card.x0 + 12.0 + f64::from(inner_width),
+                row_y + height,
+            ));
             tr.draw_style(
                 scene,
                 label,
@@ -5809,10 +5870,7 @@ impl RoomActivityPane {
             None
         }
         .or_else(|| {
-            self.narrative
-                .as_ref()
-                .map(|narrative| narrative.text.clone())
-                .or_else(|| self.digest.headline())
+            self.recorded_latest()
                 .map(|headline| t_args("activity-latest", &[("headline", headline.into())]))
         });
         // The subtitle may wrap, but the header band holds one subtitle line
@@ -8784,8 +8842,39 @@ fn hit_value<T: Clone>(rects: &[(T, Rect)], point: Point) -> Option<T> {
         .map(|(value, _)| value.clone())
 }
 
-/// Resolve presentation from the selected historical context, not the live
-/// resource registry. Opaque addresses remain in the detail/action model.
+/// Recognize routing tokens in a structured display field, not prose substrings.
+fn address_in_label(label: &str, address: &str) -> bool {
+    // Preserve punctuation used in routing addresses; split surrounding prose.
+    label
+        .split(|c: char| !c.is_alphanumeric() && !matches!(c, ':' | '/' | '.' | '_' | '-' | '@'))
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            let token = token.trim_end_matches('.');
+            token == address
+                || [
+                    "invocation:",
+                    "receipt:",
+                    "task:",
+                    "file:",
+                    "record:",
+                    "route:",
+                ]
+                .iter()
+                .any(|prefix| token.starts_with(prefix) && token.len() > prefix.len())
+                || token.contains("://")
+        })
+}
+
+fn comparison_empty_label(comparison: &HistoryComparison) -> String {
+    t(if comparison.patches.is_empty() {
+        "activity-no-differences"
+    } else {
+        "activity-comparison-no-readable-content"
+    })
+}
+
+/// Resolve presentation from historical context, not the live resource registry.
+/// Opaque addresses remain in the detail/action model.
 fn readable_resources(detail: &HistorySelectionDetail, entries: &[HistoryEntry]) -> Vec<String> {
     let mut labels = Vec::new();
     for resource in &detail.resources {
@@ -8796,7 +8885,7 @@ fn readable_resources(detail: &HistorySelectionDetail, entries: &[HistoryEntry])
             .filter_map(|context| context.resource.as_ref())
             .find(|target| target.id == resource.id && target.kind == resource.kind);
         let label = historical.map_or("", |target| target.label.as_str());
-        let label = if label.trim().is_empty() || label == resource.id {
+        let label = if label.trim().is_empty() || address_in_label(label, &resource.id) {
             t(match resource.kind.as_str() {
                 "task" | "tilo.task" => "activity-readable-task-unavailable",
                 "file" | "document" => "activity-readable-document-unavailable",
@@ -8928,26 +9017,26 @@ fn comparison_semantic_label(context: &tilo_actions::ActionContext) -> Option<St
     if !accepted {
         return Some(t("activity-comparison-action-unavailable"));
     }
-    let sentence = ui::history_source::sentence::sentence(context);
-    // Historical labels are usable, but a label equal to (or containing) its
-    // machine address is not. The renderer must not leak addresses in values
-    // either. Leave all original context intact for machine consumers.
-    let addresses = context
+    // Check address-bearing labels, not substrings of a sentence: a short
+    // id such as "ann" must not reject "Annual report". This is presentation
+    // policy, not general secret detection; original context stays intact.
+    if context
         .resource
-        .iter()
-        .map(|resource| resource.id.as_str())
-        .chain(context.item.iter().map(|item| item.id.as_str()))
-        .chain(context.app.iter().map(|app| app.id.as_str()));
-    if addresses
-        .filter(|address| !address.is_empty())
-        .any(|address| sentence.contains(address))
+        .as_ref()
+        .is_some_and(|r| address_in_label(&r.label, &r.id))
+        || context
+            .item
+            .as_ref()
+            .is_some_and(|r| address_in_label(&r.label, &r.id))
+        || comparison_values_have_addresses(context)
     {
         return Some(t("activity-comparison-action-unavailable"));
     }
+    let sentence = ui::history_source::sentence::sentence(context);
     let app = context
         .app
         .as_ref()
-        .filter(|app| !app.label.trim().is_empty() && !app.label.contains(&app.id));
+        .filter(|app| !app.label.trim().is_empty() && !address_in_label(&app.label, &app.id));
     Some(app.map_or_else(
         || sentence.clone(),
         |app| {
@@ -8960,6 +9049,36 @@ fn comparison_semantic_label(context: &tilo_actions::ActionContext) -> Option<St
             )
         },
     ))
+}
+
+fn comparison_values_have_addresses(context: &tilo_actions::ActionContext) -> bool {
+    use tilo_actions::Did;
+    let values = match context.what.as_ref() {
+        Some(Did::Edit(edit)) => edit
+            .old
+            .iter()
+            .chain(edit.new.iter())
+            .chain(edit.args.values())
+            .collect::<Vec<_>>(),
+        Some(Did::Verb(verb)) => verb.args.values().collect(),
+        _ => return false,
+    };
+    let addresses = context
+        .resource
+        .iter()
+        .map(|r| r.id.as_str())
+        .chain(context.item.iter().map(|r| r.id.as_str()))
+        .chain(context.app.iter().map(|r| r.id.as_str()))
+        .collect::<Vec<_>>();
+    values
+        .into_iter()
+        .filter_map(tilo_actions::Scalar::as_str)
+        .any(|value| {
+            address_in_label(value, "")
+                || addresses
+                    .iter()
+                    .any(|address| address_in_label(value, address))
+        })
 }
 
 /// Receipt and durable-task blobs are transport projections, not changed

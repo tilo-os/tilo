@@ -272,6 +272,9 @@ impl Widget for HistoryOverlay {
     fn needs_animation_frame(&self) -> bool {
         self.pane.replay_is_playing() || self.pane.needs_animation_frame(ui::time::now())
     }
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.pane.next_wake_deadline()
+    }
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
     }
