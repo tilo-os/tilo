@@ -1218,7 +1218,7 @@ impl WindowGroup {
     /// Where a finger can grab the whole group: anywhere on its tab bar,
     /// tabs included, except the new-tab button and the resize edge.
     pub fn touch_grab_hit(&self, p: Point) -> bool {
-        if self.external_navigation || !self.bar_rect().contains(p) {
+        if !self.navigation_bar_visible() || !self.bar_rect().contains(p) {
             return false;
         }
         if self.resize_grab_hit(p) {
