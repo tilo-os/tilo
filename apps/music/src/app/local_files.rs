@@ -1113,7 +1113,7 @@ mod tests {
             let arguments = [path.to_str().unwrap().to_owned()];
             app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
             assert!(app.playback_error.is_none());
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::seed::empty_document();
             app.sync(&doc, &automerge::ROOT);
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
