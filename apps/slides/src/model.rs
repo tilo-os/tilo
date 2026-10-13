@@ -631,9 +631,6 @@ pub struct Deck {
 }
 
 impl Deck {
-    pub fn slide(&self, idx: usize) -> Option<&Slide> {
-        self.slides.get(idx)
-    }
     pub fn index_of(&self, id: &str) -> Option<usize> {
         self.slides.iter().position(|s| s.id == id)
     }

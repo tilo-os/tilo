@@ -235,8 +235,7 @@ impl Activation {
         let before = self.state;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 self.state.hovered = rect.contains(self.cursor);
             }
             WindowEvent::CursorLeft { .. } => {
@@ -865,11 +864,7 @@ mod tests {
     use crate::synthetic_input::cursor_moved;
 
     fn button(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        crate::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
     fn keys() -> PaintedTargets {

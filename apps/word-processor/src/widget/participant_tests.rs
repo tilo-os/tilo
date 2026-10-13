@@ -405,14 +405,7 @@ fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
         .modifiers(mods)
         .doc(&mut state.doc)
         .path(&state.root)
-        .send(
-            wp,
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            },
-        );
+        .send(wp, &ui::synthetic_input::keyboard_input(ev));
 }
 
 type Step = Box<dyn Fn(&ParticipantView, &AutoCommit) -> crate::actions::editing::EditResult>;

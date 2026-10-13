@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! One action is one undo step; a group of actions is one too.
 
 use tilo_app::prelude::*;

@@ -27,10 +27,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
@@ -40,9 +37,10 @@
 
 use std::time::Duration;
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::ReadTyped as _;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT};
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -75,17 +73,6 @@ async fn round_trip(client: &RelayClient, what: &str) {
             Envelope::Ready { .. } => {}
             other => panic!("{what}: unexpected envelope {other:?}"),
         }
-    }
-}
-
-/// Read a string value at `key` under the document root.
-fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
-    match doc.get(ROOT, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
     }
 }
 
@@ -209,8 +196,11 @@ async fn reconnect_b_and_catch_up(
         "B expected Ready(WS) counting its catch-up replay, got {ready:?}"
     );
 
-    assert_eq!(read_str(doc_b, "title").as_deref(), Some("hello from A"));
-    assert_eq!(read_str(doc_b, "body").as_deref(), Some("second edit"));
+    assert_eq!(
+        doc_b.str_at(&ROOT, "title").as_deref(),
+        Some("hello from A")
+    );
+    assert_eq!(doc_b.str_at(&ROOT, "body").as_deref(), Some("second edit"));
     assert_eq!(
         doc_a.get_heads(),
         doc_b.get_heads(),
@@ -268,7 +258,10 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     let got1 = recv_delta(&b_client, "B live delta").await;
     let mut doc_b = AutoCommit::new();
     doc_b.load_incoming(&got1).expect("B applies d1");
-    assert_eq!(read_str(&doc_b, "title").as_deref(), Some("hello from A"));
+    assert_eq!(
+        doc_b.str_at(&ROOT, "title").as_deref(),
+        Some("hello from A")
+    );
     assert_eq!(
         doc_a.get_heads(),
         doc_b.get_heads(),

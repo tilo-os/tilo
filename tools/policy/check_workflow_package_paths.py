@@ -153,6 +153,17 @@ def pattern_covers(directory: str, pattern: str) -> bool:
     )
 
 
+def unmatched_patterns(workflow_text: str, files: list[str]) -> list[str]:
+    """Trigger patterns no tracked file matches: a moved or deleted input whose
+    changes would no longer start the workflow."""
+    return sorted(
+        pattern
+        for pattern in set().union(*workflow_path_blocks(workflow_text))
+        if not pattern.startswith("!")
+        and not any(fnmatchcase(path, pattern) for path in files)
+    )
+
+
 def audit(
     metadata: dict[str, Any], root: Path, package: str, workflow_text: str
 ) -> list[Violation]:

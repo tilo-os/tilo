@@ -356,13 +356,30 @@ impl AttachedView {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
     ) -> Result<ActionOutput, DoorError> {
+        self.invoke_appearing(address, arguments, confirmed, None)
+    }
+
+    /// [`Self::invoke`] showing `appearance`, which the door already admitted
+    /// for this one invocation. `None` clears any appearance the view's
+    /// context carried: only a door sets one.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn invoke_appearing(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+        appearance: Option<tilo_actions::Appearance>,
+    ) -> Result<ActionOutput, DoorError> {
         // The task may name the person the participant acts for now.
         let invoker = self
             .context
             .as_ref()
             .and_then(|context| context.invoker.clone())
             .filter(|invoker| invoker.actor == self.invoker.actor)
-            .unwrap_or_else(|| self.invoker.clone());
+            .unwrap_or_else(|| self.invoker.clone())
+            .with_appearance(appearance);
         self.invoke_as(invoker, address, arguments, confirmed)
     }
 
@@ -477,6 +494,12 @@ impl AttachedView {
     /// recorded with each thing it does.
     pub fn set_context(&mut self, context: Option<tilo_actions::ActionContext>) {
         self.context = context;
+    }
+
+    /// The task the participant carries out, when it has one.
+    #[must_use]
+    pub const fn context(&self) -> Option<&tilo_actions::ActionContext> {
+        self.context.as_ref()
     }
 
     /// Record one instruction that changed several records as one run in

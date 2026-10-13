@@ -17,6 +17,7 @@ fn terminal_bridge_failure_withdraws_reads_before_disconnected_health() {
         op_backlog: vec![],
         presence_backlog: vec![],
         context_backlog: vec![],
+        terminate_context_stream: false,
         scrollback_response: None,
     };
     let (fd, _captures, thread) = stand_up_fake_broker(broker);
@@ -117,6 +118,7 @@ fn held_capture_acknowledgement(outcome: AcknowledgementOutcome) {
         op_backlog: vec![],
         presence_backlog: vec![],
         context_backlog: vec![],
+        terminate_context_stream: false,
         scrollback_response: None,
     };
     let (fd, captures, thread) = stand_up_fake_broker(broker);
@@ -339,6 +341,7 @@ impl ReadyReader {
             op_backlog: vec![],
             presence_backlog: vec![],
             context_backlog: vec![],
+            terminate_context_stream: false,
             scrollback_response: None,
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);

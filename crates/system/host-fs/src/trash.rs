@@ -8,7 +8,8 @@
 use std::path::{Path, PathBuf};
 
 /// Move files to the host Trash, preparing private home Trash directories on
-/// freedesktop platforms before the legacy backend writes into them.
+/// freedesktop platforms before the legacy backend writes into them. On macOS
+/// the items go to the user's Trash through `NSFileManager`, without Finder.
 ///
 /// # Errors
 ///
@@ -20,7 +21,19 @@ pub fn delete(paths: &[PathBuf]) -> Result<(), String> {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     ensure_trash_dir().map_err(|error| error.to_string())?;
-    trash::delete_all(paths).map_err(|error| error.to_string())
+    #[cfg(target_os = "macos")]
+    let context = {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos as _};
+        // The crate's default asks Finder over Apple Events, which needs an
+        // Automation grant the user is prompted for and fails outright
+        // without a GUI session. NSFileManager moves the items itself.
+        let mut context = trash::TrashContext::new();
+        context.set_delete_method(DeleteMethod::NsFileManager);
+        context
+    };
+    #[cfg(not(target_os = "macos"))]
+    let context = trash::TrashContext::new();
+    context.delete_all(paths).map_err(|error| error.to_string())
 }
 
 /// Prepare the home Trash without making its contents readable by other users.

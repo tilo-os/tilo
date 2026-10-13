@@ -261,13 +261,8 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
         requested,
         [
             "TiloSans[wdth,wght].ttf",
-            "TiloSans-Italic[wdth,wght].ttf",
             "Onest-Cyrillic[wght].ttf",
             "NotoSans[wght].ttf",
-            "NotoSans-Italic[wght].ttf",
-            "NewCM10-Book.otf",
-            "NewCM10-BookItalic.otf",
-            "NotoSansMono[wght].ttf",
         ]
     );
     assert_eq!(
@@ -275,9 +270,9 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
             .iter()
             .map(|name| std::fs::metadata(root.join(name)).unwrap().len())
             .sum::<u64>(),
-        4_159_800
+        1_118_556
     );
-    assert_eq!(fonts.db().len(), 8);
+    assert_eq!(fonts.db().len(), 3);
 }
 
 #[test]
@@ -528,14 +523,16 @@ fn a_browser_fetches_the_cuts_a_reading_style_can_take() {
         .unwrap();
     let mut renderer = crate::TextRenderer::with_browser_font_system(fonts);
     let reading = crate::tokens::Typography::default().style(crate::tokens::TextRole::Reading);
-    // Body text: Book ships at startup, the 8 pt cut serves its footnotes.
+    // Body text: the page starts with the UI face alone, so it fetches Book
+    // and the 8 pt cut its footnotes take.
+    let cuts = ["NewCM08-Book.otf", "NewCM10-Book.otf"];
     renderer.measure_style("Chapter", None, &reading);
-    assert_eq!(renderer.take_browser_font_demands(), ["NewCM08-Book.otf"]);
+    assert_eq!(renderer.take_browser_font_demands(), cuts);
     // A browser serves the standalone catalog, which has no Regular cut:
     // Book sets a title too. A UI role in a startup face adds nothing.
     let title = reading.clone().with_content_size(48.0);
     renderer.measure_style("Chapter", None, &title);
-    assert_eq!(renderer.take_browser_font_demands(), ["NewCM08-Book.otf"]);
+    assert_eq!(renderer.take_browser_font_demands(), cuts);
     let body = crate::tokens::Typography::default().style(crate::tokens::TextRole::Body);
     renderer.measure_style("Settings", None, &body.strong());
     assert!(renderer.take_browser_font_demands().is_empty());

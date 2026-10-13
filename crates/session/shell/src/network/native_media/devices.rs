@@ -518,7 +518,7 @@ mod tests {
         }
     }
 
-    /// with no call nothing reads an observation, so the loop does
+    /// #4074: with no call nothing reads an observation, so the loop does
     /// not run its once-a-second registry round trip; a call's watch starts
     /// it and its end parks it again.
     #[test]

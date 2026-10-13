@@ -958,7 +958,7 @@ def terminal_probe(ctx, name: str) -> list[str]:
 # How long a new Terminal window may stand before its shell runs. The first
 # session of an account also imports the environment's runtime into the user's
 # package store: 7.5-21 s on the CI VM depending on its load, 40-46 s while the
-# import synced once per file (runs 90460, 90980 and 90397, 90249).
+# import synced once per file (#3997; runs 90460, 90980 and 90397, 90249).
 TERMINAL_SHELL_S = 45
 
 # Performance is a separate verdict from eventual readiness. The batched

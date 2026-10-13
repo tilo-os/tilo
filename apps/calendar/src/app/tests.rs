@@ -470,10 +470,6 @@ fn titles_elide_to_fit_and_week_ranges_keep_both_endpoints() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
 fn user_edits_and_source_identity_persist_across_restart() {
     // Case `a_named_event_persists_across_restart`.
     {
@@ -1263,10 +1259,6 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
 fn sidebar_presentation_follows_width_and_hides_via_its_toggle() {
     // Case `wide_window_docks_the_sidebar_and_floats_the_editor_sheet`.
     {
@@ -1374,10 +1366,6 @@ fn sidebar_presentation_follows_width_and_hides_via_its_toggle() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
 fn the_editor_sheet_floats_over_the_calendar_at_every_width() {
     // Case `a_narrow_window_keeps_the_calendar_behind_the_sheet`.
     {

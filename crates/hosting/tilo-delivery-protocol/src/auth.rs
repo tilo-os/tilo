@@ -17,7 +17,6 @@ pub const MAX_AUTH_BYTES: usize = 8 * 1024;
 
 const DOMAIN: &[u8] = b"tilo-delivery-v3\0";
 const SESSION_NS: u64 = 15 * 60 * 1_000_000_000;
-const MAX_ORIGIN_BYTES: usize = 2048;
 
 /// Closed carrier values, canonically encoded as Postcard enum indices 0 and 1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +43,7 @@ pub struct Binding {
     /// Root certifying that host.
     pub host_root: [u8; 32],
     /// Exact authorized HTTPS origin/audience, with no credentials or path.
-    #[serde(deserialize_with = "bounded_origin")]
+    #[serde(deserialize_with = "crate::origin::deserialize")]
     pub origin: String,
     /// Authority-validated bootstrap generation.
     pub descriptor_generation: u64,
@@ -571,7 +570,9 @@ fn validate_scope_and_authority(
         return Err(AuthError::UnsupportedVersion(transcript.protocol));
     }
     let binding = &transcript.binding;
-    validate_origin(&binding.origin)?;
+    if !crate::origin::is_https_origin(&binding.origin) {
+        return Err(AuthError::InvalidBinding);
+    }
     if binding.workspace == 0
         || binding.workspace_root == [0; 32]
         || binding.server_boot_id == [0; 16]
@@ -663,66 +664,6 @@ fn decode<T: for<'de> Deserialize<'de> + Serialize>(bytes: &[u8]) -> Result<T, A
         return Err(AuthError::Codec);
     }
     Ok(value)
-}
-fn bounded_origin<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    let origin = <&str>::deserialize(deserializer)?;
-    validate_origin(origin).map_err(serde::de::Error::custom)?;
-    Ok(origin.to_owned())
-}
-fn validate_origin(origin: &str) -> Result<(), AuthError> {
-    if origin.len() > MAX_ORIGIN_BYTES || !origin.is_ascii() {
-        return Err(AuthError::InvalidBinding);
-    }
-    let authority = origin
-        .strip_prefix("https://")
-        .ok_or(AuthError::InvalidBinding)?;
-    if authority.is_empty()
-        || authority.bytes().any(|b| {
-            b.is_ascii_whitespace()
-                || b.is_ascii_control()
-                || matches!(b, b'/' | b'\\' | b'?' | b'#' | b'@')
-        })
-    {
-        return Err(AuthError::InvalidBinding);
-    }
-    let (host, port) = if let Some(ipv6) = authority.strip_prefix('[') {
-        let (host, suffix) = ipv6.split_once(']').ok_or(AuthError::InvalidBinding)?;
-        host.parse::<std::net::Ipv6Addr>()
-            .map_err(|_| AuthError::InvalidBinding)?;
-        let port = if suffix.is_empty() {
-            None
-        } else {
-            Some(suffix.strip_prefix(':').ok_or(AuthError::InvalidBinding)?)
-        };
-        (None, port)
-    } else {
-        let (host, port) = authority
-            .rsplit_once(':')
-            .map_or((authority, None), |(host, port)| (host, Some(port)));
-        (Some(host), port)
-    };
-    if let Some(host) = host
-        && (host.len() > 253
-            || host.split('.').any(|part| {
-                part.is_empty()
-                    || part.len() > 63
-                    || part.starts_with('-')
-                    || part.ends_with('-')
-                    || !part
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            }))
-    {
-        return Err(AuthError::InvalidBinding);
-    }
-    if let Some(port) = port
-        && (port.is_empty()
-            || !port.bytes().all(|b| b.is_ascii_digit())
-            || port.parse::<u16>().ok().as_ref().is_none_or(|p| *p == 0))
-    {
-        return Err(AuthError::InvalidBinding);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

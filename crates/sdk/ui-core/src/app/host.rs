@@ -374,7 +374,7 @@ fn draw_presence_layer(
         });
         part_drawn(scene, PartKey::new("ui.action-presence", ()), |scene| {
             let before = scene.encoding().draw_tags.len();
-            crate::action_locus::draw_action_presence(
+            app.floating.drawn_action_markers = crate::action_locus::draw_action_presence(
                 &mut crate::paint::PaintCtx::new(
                     scene,
                     transform,

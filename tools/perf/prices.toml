@@ -1,8 +1,8 @@
 # Price sheet for the relay hosting-cost records, read by
 # tools/perf/adapters.py hosting-load.
 #
-# The VM prices are the cost model's assumptions (dated 2026-10-09).
-# Change a price here, with its date and
+# The VM prices are the cost model's assumptions (#3965, "Hosting cost model
+# ($/active user/month)", 2026-10-09). Change a price here, with its date and
 # source, when the provider changes it; the records name the sheet's date.
 #
 # How a measurement becomes dollars, per provider:

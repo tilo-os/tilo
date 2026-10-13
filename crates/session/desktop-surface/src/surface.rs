@@ -49,6 +49,7 @@ mod search;
 
 pub use history::HistorySource;
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
+pub use search::HostAction;
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -114,6 +115,9 @@ struct Shared {
     rebuild: Vec<TabId>,
     search_request: Option<search::SearchRequest>,
     search_open: bool,
+    /// What the host offers to do for the person, and what they chose.
+    host_actions: Vec<search::HostAction>,
+    host_choices: Vec<String>,
     /// Pan, scroll, history and activity state, as last presented.
     presentation: Presentation,
     /// Bumped whenever `presentation` changes. Unlike `revision` it never
@@ -436,6 +440,8 @@ impl DesktopSurface {
             rebuild: Vec::new(),
             search_request: None,
             search_open: false,
+            host_actions: Vec::new(),
+            host_choices: Vec::new(),
             presentation: Presentation::default(),
             presented: 0,
         }));
@@ -522,9 +528,20 @@ impl DesktopSurface {
         layer.tick();
         let mut open_app = layer.open_app.take();
         for outcome in layer.notifications().take_outcomes() {
-            let NotificationOutcome::Activated { notification, .. } = outcome else {
+            let NotificationOutcome::Activated {
+                notification,
+                action,
+            } = outcome
+            else {
                 continue;
             };
+            if let Some(choice) = action.as_deref().and_then(search::host_choice) {
+                self.shared
+                    .borrow_mut()
+                    .host_choices
+                    .push(choice.to_owned());
+                continue;
+            }
             if let Some(uri) = layer
                 .inbox
                 .as_mut()
@@ -784,10 +801,6 @@ impl DesktopSurface {
     }
 
     /// Mirror gestures the shown row performed into the tree.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered harvest, matching the shell overlay host's pass order"
-    )]
     fn harvest(&mut self) {
         let Some(strip_id) = self.shown else {
             return;

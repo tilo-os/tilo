@@ -245,7 +245,7 @@ impl ShareAuthority {
     }
 
     /// Whether any grant is still unrevoked: someone holding its link or
-    /// invitation may dial this device ([`crate::reachability`]).
+    /// invitation may dial this device (#4224, [`crate::reachability`]).
     /// Expiry is not consulted; a grant that only lapsed still counts.
     #[must_use]
     pub fn has_unrevoked_grants(&self) -> bool {

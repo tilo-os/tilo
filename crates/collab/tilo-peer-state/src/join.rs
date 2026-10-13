@@ -28,6 +28,7 @@ pub enum MemberRole {
     Viewer,
     Commenter,
     Editor,
+    Moderator,
 }
 
 impl From<MemberRole> for collab_types::Role {
@@ -36,6 +37,7 @@ impl From<MemberRole> for collab_types::Role {
             MemberRole::Viewer => Self::Viewer,
             MemberRole::Commenter => Self::Commenter,
             MemberRole::Editor => Self::Editor,
+            MemberRole::Moderator => Self::Moderator,
         }
     }
 }
@@ -924,9 +926,9 @@ fn validate_grant(grant: &InviteGrant, now_ns: u64, enforce_expiry: bool) -> Res
     if grant
         .invitee_name
         .as_ref()
-        .is_some_and(|name| name.len() > 1024)
+        .is_some_and(|name| tilo_user_identity::display_name(name).is_err())
     {
-        return Err("invitation display name is too long".into());
+        return Err("invitation display name is invalid".into());
     }
     Ok(())
 }

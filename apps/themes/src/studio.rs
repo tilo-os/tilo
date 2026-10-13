@@ -379,14 +379,6 @@ impl Rung {
         }
     }
 
-    #[must_use]
-    pub fn from_id(id: &str) -> Option<Self> {
-        Self::SURFACES
-            .into_iter()
-            .chain(Self::INK)
-            .find(|rung| rung.id() == id)
-    }
-
     /// The path of this rung's lightness in `theme`.
     #[must_use]
     pub fn path<R>(self, theme: &ThemePaths<R>) -> Path<R, f64> {

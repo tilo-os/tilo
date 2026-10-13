@@ -102,7 +102,7 @@ grep -Fq 'scope=kernel-{0},mode=min,ignore-error=true' "$workflows/build-kernel.
 # A cache manifest naming a blob the registry lost fails a build only when the
 # layer's content is needed. The OS build treats exactly that as a cache miss:
 # rebuild without cache-from, rewrite every cache tag, consume either digest
-# (or the rechunked image's, which is made from either).
+# (or the rechunked image's, #4190, which is made from either).
 uncached=$(awk '/- name: Build the Tilo image without the damaged layer cache/,/# Dev VMs must not wait/' "$os")
 [ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the build toolchain/,/- name: Recognize a missing registry cache blob/' "$os"))" = 5 ] \
   && grep -Fq 'run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"' "$os" \
@@ -353,7 +353,7 @@ grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 
 ! grep -Fq 'cron:' "$os" \
   && grep -Fq "if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$os" \
   && grep -Fq 'elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then' "$os" \
-  && grep -Fq '$PUBLISHED_REVISION == "$GITHUB_SHA"' "$os" \
+  && grep -Fq '$PUBLISHED_REVISION == "$TILO_IMAGE_SOURCE"' "$os" \
   && grep -Fq "needs.plan.outputs.skip != 'true'" "$os" \
   && grep -Fq '&& ${PLANNED_PUBLISH:-false} == true ) \' "$os" \
   && grep -Fq "(github.event_name == 'schedule' && github.ref == 'refs/heads/main')" "$os" \

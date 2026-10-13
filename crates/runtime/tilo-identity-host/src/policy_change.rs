@@ -427,6 +427,7 @@ mod platform {
                         return;
                     }
                     entry.revents = 0;
+                    drain(entry.fd);
                     if self
                         .timer
                         .as_ref()
@@ -434,10 +435,8 @@ mod platform {
                     {
                         // Expired, or cancelled by a clock change: either
                         // way the clock moved past what was armed.
-                        drain(entry.fd);
                         clock.fire();
                     } else {
-                        drain(entry.fd);
                         // A directory created meanwhile is watched from now.
                         self.changed.store(true, Ordering::SeqCst);
                         let _ = self.sync_watches();

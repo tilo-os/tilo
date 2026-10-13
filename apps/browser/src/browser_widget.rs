@@ -18,7 +18,7 @@
 //!    displays.
 
 use automerge::{AutoCommit, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -110,13 +110,11 @@ fn decode_favicon_png(
     if decoded.width != expected_width || decoded.height != expected_height {
         return None;
     }
-    Some(vello::peniko::ImageData {
-        data: vello::peniko::Blob::new(std::sync::Arc::new(decoded.rgba)),
-        format: vello::peniko::ImageFormat::Rgba8,
-        alpha_type: vello::peniko::ImageAlphaType::Alpha,
-        width: expected_width,
-        height: expected_height,
-    })
+    Some(ui::raster::rgba8(
+        decoded.rgba,
+        expected_width,
+        expected_height,
+    ))
 }
 
 /// Browser's public navigation boundary. Keep this separate from the generic
@@ -3436,7 +3434,7 @@ impl Continuable for BrowserWidget {
         _root: &ObjId,
     ) -> Option<ui::collaboration::ContinuationMetadata> {
         Some(ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
+            schema_version: ui::collaboration::semantic_schema::WEB_LOCATION_V1,
             bytes: self.restorable_page()?,
         })
     }
@@ -3447,7 +3445,8 @@ impl Continuable for BrowserWidget {
         _state: &mut ui::widget::Edits<'_>,
         _root: &ObjId,
     ) -> bool {
-        metadata.schema_version == 1 && self.restore_page(&metadata.bytes)
+        metadata.schema_version == ui::collaboration::semantic_schema::WEB_LOCATION_V1
+            && self.restore_page(&metadata.bytes)
     }
 }
 
@@ -3564,10 +3563,7 @@ impl Widget for BrowserWidget {
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         // `new_with_children` only fails when a child belongs to a different
@@ -3700,7 +3696,7 @@ impl Widget for BrowserWidget {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.window_scale = ctx.scale_factor as f32;
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         if let Some((node, id)) = self.pending_chrome_focus.take() {
             self.focus_control_preserving_selection(id);
@@ -3985,11 +3981,11 @@ impl Widget for BrowserWidget {
                         direction.as_str(),
                         entry.id
                     ))
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.back_menu.hovered() == Some(index),
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.back_menu.hovered() == Some(index)),
+                    )
             })
             .collect();
         let name = match direction {
@@ -5930,10 +5926,7 @@ mod architecture_tests {
             widget.cursor = Point::new(850.0, 650.0);
             dispatch_back_event(
                 &mut widget,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
-                },
+                &ui::synthetic_input::cursor_moved(850.0, 650.0),
             );
             assert!(dispatch_back_event(
                 &mut widget,
@@ -6560,10 +6553,7 @@ mod tests {
         let layout_root = tree
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(width),
-                        height: Dimension::length(height),
-                    },
+                    size: Size::from_lengths(width, height),
                     ..Default::default()
                 },
                 &[child],
@@ -6602,20 +6592,9 @@ mod tests {
             .layout(tree, node);
         let mut release_handled = false;
         for event in [
-            WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
+            ui::synthetic_input::cursor_moved(point.x, point.y),
+            ui::synthetic_input::mouse_press(),
+            ui::synthetic_input::mouse_release(),
         ] {
             release_handled = at.send(widget, &event).handled;
         }
@@ -7476,10 +7455,7 @@ mod tests {
             let layout_root = tree
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(390.0),
-                            height: Dimension::length(844.0),
-                        },
+                        size: Size::from_lengths(390.0, 844.0),
                         ..Default::default()
                     },
                     &[child],
@@ -7585,10 +7561,7 @@ mod tests {
             let layout_root = tree
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(900.0),
-                            height: Dimension::length(620.0),
-                        },
+                        size: Size::from_lengths(900.0, 620.0),
                         ..Default::default()
                     },
                     &[child],
@@ -8718,7 +8691,7 @@ mod tests {
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
             let (mut doc, root) = synced(&mut widget);
             let metadata = ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
+                schema_version: ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                 bytes: br#"{"url":"https://example.test/reading"}"#.to_vec(),
             };
             assert!(widget.restore_continuation_metadata(
@@ -9091,7 +9064,7 @@ mod tests {
                     .is_none()
             );
             let metadata = ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
+                schema_version: ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                 bytes: br#"{"url":"https://normal.test"}"#.to_vec(),
             };
             assert!(!widget.restore_continuation_metadata(

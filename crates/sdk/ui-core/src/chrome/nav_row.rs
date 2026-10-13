@@ -446,7 +446,7 @@ pub fn nav_rail_item_height(
 
 /// The run a rail caption is set in, inside a tile `width` wide.
 fn rail_caption_width(theme: &Theme, width: f64) -> f64 {
-    (width - 4.0 * f64::from(theme.tokens.spacing.s1)).max(0.0)
+    (width - 2.0 * f64::from(theme.tokens.spacing.s1)).max(0.0)
 }
 
 /// A rail caption broken into at most two lines of `max_w`: at a space
@@ -1392,6 +1392,33 @@ mod tests {
         assert!((nav_row_height(&theme) - 32.0).abs() < 1e-9);
         assert!(nav_row_height(&big) > nav_row_height(&theme));
         assert!(nav_section_height(&theme, false) > nav_section_height(&theme, true));
+    }
+
+    #[test]
+    fn hc200_rail_keeps_a_short_destination_meaningful() {
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        let lines = rail_caption_lines(
+            &theme,
+            &mut text,
+            "Channels",
+            rail_caption_width(&theme, 76.0),
+        );
+        assert!(
+            lines.len() <= 2,
+            "the rail caption remains at most two lines"
+        );
+        assert!(
+            lines.iter().all(|line| !line.contains('\u{2026}')),
+            "a short destination is not reduced to an ambiguous fragment: {lines:?}"
+        );
+        assert_eq!(lines.concat().replace('-', ""), "Channels");
+        assert!(
+            nav_rail_item_height(&theme, &mut text, "Channels", 76.0)
+                >= nav_rail_row_height(&theme),
+            "the shared measured height reserves the repaired caption"
+        );
     }
 
     #[test]

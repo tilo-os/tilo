@@ -167,10 +167,6 @@ impl PlotPanel {
         }
     }
 
-    pub fn words(&self) -> Words {
-        self.words
-    }
-
     pub fn side(&self) -> &SidePanel {
         &self.panel
     }

@@ -47,7 +47,7 @@ BUDGETS = {
     # threads, whose work a GPU does on a real desktop. With no frame painted in
     # the window those threads have nothing to do and must stay idle.
     "idle_software_raster_cpu_pct": 0.1,
-    # Terminal's shell runtime with its shell running and nothing typed (R02):
+    # Terminal's shell runtime with its shell running and nothing typed (R02, #4057):
     # every `tilo-ush` process summed, CPU and context switches of all their threads.
     # Measured 0.0% and 0.0/s (run 91757) once the egress DNS stub's threads block
     # on their sockets; before, its 200 ms stop-flag polls were all

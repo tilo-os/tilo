@@ -20,7 +20,7 @@ pub mod presence_slot;
 pub mod retention;
 
 pub use presence_slot::PresenceSlot;
-pub use retention::{Retention, app_document_channel, retention};
+pub use retention::{Retention, app_document_channel, audience, retention, standalone};
 
 use serde::{Deserialize, Serialize};
 

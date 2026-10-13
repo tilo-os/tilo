@@ -241,7 +241,7 @@ impl ui::widget::Decorator for Navigator {
 mod tests {
     use super::*;
     use crate::link::ViewModel;
-    use crate::model::{ColumnInfo, TableInfo, TypeClass};
+    use crate::model::{ColumnInfo, TableInfo};
     use ui::headless::FrameHarness;
     use ui::theme::Theme;
 
@@ -252,7 +252,6 @@ mod tests {
             columns: vec![ColumnInfo {
                 name: "id".into(),
                 decl_type: "INTEGER".into(),
-                class: TypeClass::Integer,
                 not_null: true,
                 primary_key: true,
                 default: None,

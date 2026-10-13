@@ -100,13 +100,10 @@ fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::Sc
     let mut document = automerge::AutoCommit::new();
     let mut focus = None;
     let _ = frame.dispatch_event(
-        &winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(
-                f64::from(NATIVE_WIDTH) - 50.0,
-                f64::from(NATIVE_HEIGHT) - 50.0,
-            ),
-        },
+        &ui::synthetic_input::cursor_moved(
+            f64::from(NATIVE_WIDTH) - 50.0,
+            f64::from(NATIVE_HEIGHT) - 50.0,
+        ),
         &winit::event::Modifiers::default(),
         &mut ui::widget::Edits::lend(&mut document),
         &automerge::ROOT,
@@ -444,7 +441,7 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(fixture.viewport(), (3840.0, 2160.0));
     assert_eq!(
         fixture.host().fixture_provider_ids(),
-        vec!["actions", "records"]
+        vec!["actions", "records", "file-picker"]
     );
 
     let chrome = fixture.chrome();
@@ -2806,7 +2803,7 @@ fn assert_repaints_under_one_percent(damage: &[FineDamageRect], label: &str) {
         .sum();
     let share = |value: u64| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
     eprintln!(
-        "raster pixels ({label}): {pixels} of {output} ({:.3}%); a dense frame is {output}",
+        "#3892 raster pixels ({label}): {pixels} of {output} ({:.3}%); a dense frame is {output}",
         share(pixels) * 100.0 / share(output)
     );
     assert!(
@@ -2993,10 +2990,7 @@ fn hovering_a_tab_repaints_that_tab_not_the_output() {
     let mut document = automerge::AutoCommit::new();
     let mut focus = None;
     let _ = frame.dispatch_event(
-        &winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
-        },
+        &ui::synthetic_input::cursor_moved(pill.center().x, pill.center().y),
         &winit::event::Modifiers::default(),
         &mut ui::widget::Edits::lend(&mut document),
         &automerge::ROOT,
@@ -3016,7 +3010,7 @@ fn hovering_a_tab_repaints_that_tab_not_the_output() {
     paint_retained_and_compare(&mut retained, &mut dense, &hovered, "tab hovered");
 }
 
-// overlays, in-process app widgets and tooltips repaint what they
+// #4166: overlays, in-process app widgets and tooltips repaint what they
 // change, not the output or the tile.
 
 /// A theme by name.
@@ -3055,13 +3049,7 @@ fn dispatch(frame: &mut FrameBuilder, event: &WindowEvent) {
 }
 
 fn point_at(frame: &mut FrameBuilder, at: Point) {
-    dispatch(
-        frame,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-        },
-    );
+    dispatch(frame, &ui::synthetic_input::cursor_moved(at.x, at.y));
 }
 
 fn press(frame: &mut FrameBuilder, button: winit::event::MouseButton) {
@@ -3069,14 +3057,7 @@ fn press(frame: &mut FrameBuilder, button: winit::event::MouseButton) {
         winit::event::ElementState::Pressed,
         winit::event::ElementState::Released,
     ] {
-        dispatch(
-            frame,
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button,
-            },
-        );
+        dispatch(frame, &ui::synthetic_input::mouse_input(state, button));
     }
 }
 
@@ -3227,7 +3208,7 @@ fn assert_change_repaints_under(
     let output = u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT);
     let pixels = raster_pixels(&changed);
     eprintln!(
-        "raster pixels ({label}): {pixels} of {output} ({}); a dense frame is {output}",
+        "#4166 raster pixels ({label}): {pixels} of {output} ({}); a dense frame is {output}",
         if changed.damage_regions.is_some() {
             "sparse"
         } else {

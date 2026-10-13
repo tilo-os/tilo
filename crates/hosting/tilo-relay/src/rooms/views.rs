@@ -1,5 +1,5 @@
 //! Exact-source discovery using the governor's already-owned channel state.
-use super::{GovernedRoom, Rooms, SystemTime};
+use super::{GovernedRoom, Rooms, StatePeer, SystemTime};
 use tilo_actions::remote::{Caller, CallerPrincipal};
 use tilo_agent_participant::room_actions::{ViewDocument, ViewReadPolicy};
 use tilo_browser_peer::DocumentRoute;
@@ -35,7 +35,39 @@ impl GovernedRoom {
     }
 }
 
+/// Whether the bot installed as `installation` may show other names on what
+/// it writes in `peer`'s room at `now`: its governed installation row is
+/// live, acting, and allows `Personas`. Any other device, an uninstalled or
+/// moved-away row, or a bot installed to post as itself is refused.
+pub(crate) fn bot_shows_personas(peer: &StatePeer, installation: &str, now: SystemTime) -> bool {
+    peer.installation(installation, now).is_some_and(|bot| {
+        bot.acting
+            && bot.withdrawn_at_ns.is_none()
+            && bot.installation.appearance == tilo_peer_state::AppearancePolicy::Personas
+    })
+}
+
 impl Rooms {
+    /// [`bot_shows_personas`] in the room of `workspace` governed here;
+    /// false for a room not governed here.
+    pub(crate) async fn bot_personas(&self, workspace: u64, installation: &str) -> bool {
+        let rooms = self
+            .inner
+            .rooms
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for governed in rooms {
+            let room = governed.lock().await;
+            if room.workspace_id() == workspace {
+                return bot_shows_personas(room.peer(), installation, SystemTime::now());
+            }
+        }
+        false
+    }
+
     pub(crate) async fn resource_view_policy(
         &self,
         workspace: u64,

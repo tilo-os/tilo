@@ -199,8 +199,8 @@ agents see. In a framework view that is a path or a verb, never an id string:
 ```rust
 let p = cx.paths();
 let title = cx.input(p.title);                                   // field edits
-let pinned = cx.checkbox(keys::NOTES_PINNED, p.pinned);
-let save = cx.button(keys::NOTES_SAVE, Notes::SAVE.invoke());   // a verb
+let pinned = cx.checkbox("notes-pinned", p.pinned);
+let save = cx.button("notes-save", Notes::SAVE.invoke());   // a verb
 ```
 
 Controls look the action up on the resource's published tree by its key, so
@@ -847,7 +847,7 @@ dynamic linking, so an app's web build is the runtime bundle with the app
 linked in and registered:
 
 ```bash
-tilo-app build --platform web      # <target>/tilo-app/web/<pkg>/bundle, index.html?app=<id>
+tilo-app build --platform web      # <target>/tilo-app/web/<pkg>/bundle, app/#/me/<id>
 tilo-app dev --platform web        # serve it, rebuild and reload on save
 tilo-app package --target web      # the bundle in the immutable layout Cloud serves
 ```
@@ -1021,11 +1021,11 @@ impl ResourceApp for App {
         let next = cx.form::<list::Add>();
         let books = cx.each(|list| &list.books, |row| {
             let p = row.paths();
-            Box::new(ui::row![row.checkbox(keys::LIST_READ, p.read), row.input(p.title)])
+            Box::new(ui::row![row.checkbox("list-read", p.read), row.input(p.title)])
         });
         Box::new(ui::column![
             cx.input(p.title).with_id("title"),
-            ui::row![cx.input(next.paths().title), cx.button(keys::LIST_ADD, next.submit())],
+            ui::row![cx.input(next.paths().title), cx.button("list-add", next.submit())],
             books,
         ])
     }
@@ -1101,7 +1101,7 @@ Declare a semantic control once. Pointer, direct-touch tap, keyboard,
 accessibility, Ctrl+K and headless activation all reach the same action intent:
 
 ```rust
-cx.button(keys::APP_SAVE, Document::SAVE.invoke())
+cx.button("app-save", Document::SAVE.invoke())
     .role(ButtonRole::Primary)
 ```
 
@@ -2036,12 +2036,7 @@ let name = TextInput::local()
 `Text`, fitted `Button` labels, input placeholders and accessible names,
 collection names, and table headers resolve through the same catalog.
 
-The generated registry also declares one `LabelKey` constant per message of
-`locales/en-US.ftl` in `locales::keys`, which `ViewCx` buttons, checkboxes and
-placeholders accept: `cx.button(keys::PROJECT_SAVE, ..)`. A misspelt key then
-does not compile. Every `tilo-app` build, `tilo-app add` and
-`tilo-app locale sync` keeps the constants in step with the catalog, and
-`tilo-app check` fails on a literal key the catalog lacks and on a shipped
+`tilo-app check` fails on a label key the catalog lacks and on a shipped
 translation missing a source message.
 
 History renders each change from the app's catalogue by convention:

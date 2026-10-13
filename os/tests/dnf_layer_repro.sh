@@ -145,7 +145,7 @@ for instruction in instructions:
         transactions += 1
         assert '${FINALIZE_RPMDB}' in active, active[:120]
 # Every rpm transaction rewrites the whole database, so each RUN that holds
-# one ships a full rpmdb.sqlite in its layer (twenty layers carried
+# one ships a full rpmdb.sqlite in its layer (#4055: twenty layers carried
 # 957 MB of them). The package transactions share one RUN; the kernel swap,
 # which needs files copied after them, is the other.
 assert transactions == 2, (

@@ -16,8 +16,8 @@ use tilo_automation::{
 use ui::tilo_actions::remote::CatalogueRow;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
 
-use crate::grant;
 use crate::model::{Draft, step_at};
+use tilo_automation::grant;
 
 /// The shortcut `draft` would save as, with the least grant it needs, as the
 /// checker and the save effect see it.
@@ -134,6 +134,12 @@ pub fn explain(error: &CheckError, steps: &[Step], catalog: &ActionCatalog) -> S
         }
         CheckErrorKind::Recursion { .. } => {
             String::from("This shortcut would end up running itself")
+        }
+        CheckErrorKind::UnusedRule(node) => {
+            format!("As a bot, this shortcut may not hold {node}, which none of its steps use")
+        }
+        CheckErrorKind::MissingRule(node) => {
+            format!("As a bot, this shortcut needs {node} in its permissions")
         }
     }
 }
@@ -530,6 +536,7 @@ impl Offer {
             action: ActionKey::new(&self.app_id, &self.kind, &self.action),
             resource: Selector::Fixed(self.resource.clone()),
             args: BTreeMap::new(),
+            appearance: None,
         }
     }
 }

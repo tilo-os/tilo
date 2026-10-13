@@ -1652,11 +1652,10 @@ impl QuickSettingsRoot {
         // paints nothing under its controls. A second fill here (formerly
         // `surfaces.raised`) covered the inner half of that border and made
         // the tiles' own `raised` faces vanish into it.
+        self.header(scene, transform, text, theme, cursor, state);
         if self.edit_mode {
-            self.header(scene, transform, text, theme, cursor, state);
             self.draw_edit(scene, transform, text, theme, cursor, state);
         } else {
-            self.header(scene, transform, text, theme, cursor, state);
             self.draw_root(scene, transform, text, theme, cursor, state);
         }
     }

@@ -78,6 +78,7 @@ fn start_action(
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         },
     );
     // This thread does not drive the broker; waiting here blocks nothing.

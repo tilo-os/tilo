@@ -41,13 +41,13 @@ measures main's newest image for both architectures and records
   the second night running. To land intended growth, dispatch Perf / scheduled
   on main with `kpis=footprint` and `accept=<KPI ids>` once the image has it.
 - **Ceiling.** Compressed bytes and unique content are held to an enforced
-  ceiling, set 5 % over the first measured image and lowered by what each
+  ceiling, set 5 % over the image #4003 measured and lowered by what each
   later size change saved, so slow creep fails too. It may only be lowered,
   except by a change that says why in the same pull request; a change that
   shrinks the image lowers it by its measured saving and records the
   numbers under `docs/benchmarks/`. The KPI targets (3.5 GB compressed, 7 GB of content for
   x86_64) are written beside the ceilings. Windows compatibility is most of
-  the gap; the plan is to move it to a downloaded system extension.
+  the gap; shipping it as a downloaded system extension would close most of it.
 
 ## Content-based layers (rechunking)
 

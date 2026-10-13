@@ -1,6 +1,6 @@
 # OS image size, 2026-10-10
 
-A follow-up of [the first image-size receipt](os-image-size-2026-10-09.md), whose
+A follow-up of [the #4003 receipt](os-image-size-2026-10-09.md), whose
 "other redundant payload" table this change works down. The nightly records
 `footprint.image.*` in `tilo-perf-results` hold the current values
 (docs/measurements/os-image-size.md).
@@ -61,14 +61,14 @@ the change's base; none of those commits touched `os/`.
 | `/usr/lib/udev/hwdb.bin` (`/etc/udev/hwdb.bin` in the base) | 14,372,567 |
 | `/kernel/7.2.8/vmlinuz` (whited-out original in the kernel-swap layer) | 14,299,648 |
 
-## One inode per identical file
+## #4064: one inode per identical file
 
 `os/scripts/hardlink-identical.py` hard-links the identical files of three
 trees, each in the RUN that writes it, before the COPY that carries it into
 the rootfs. The build logged 73,094,460 B under Proton, 53,114,139 B under the
 app store's packages (the env-runtime's glibc locales) and 11,746,503 B under
 the runtime bundles. Measured on the pull request's x86_64 image
-(`tilo-ci:pr-4064-84e57e4-x86_64`, revision `84e57e4ca5`, built before the change
+(`tilo-ci:pr-4064-84e57e4-x86_64`, revision `84e57e4ca5`, built before #4055
 landed) against the same "before" image, in bytes:
 
 | measure | before | after | change |
@@ -83,7 +83,7 @@ Unique content counts identical files once already, so it barely moves; the
 pull and the deployed content shrink. The pull request built x86_64 only, so
 the aarch64 ceiling is left to the nightly records.
 
-## The env-runtime from the host's files
+## #4072: the env-runtime from the host's files
 
 The app store's env-runtime ships without the files the host already has,
 byte for byte: the `app-store` stage leaves them out and names each in the
@@ -91,7 +91,7 @@ image's `host-sources`, and package-store imports them from the host, every
 byte checked against the image's signed hash. The build logged
 `2230 files, 167741166 bytes taken from the host`; the rootfs's final check
 put back 0 bytes. Measured on `tilo-ci:pr-4072-e90b144-x86_64` (revision
-`e90b144fa5`) against main with the one-package-layer and hard-link changes
+`e90b144fa5`) against main with #4055 and #4064
 (`tilo-ci:main-e88a45c-x86_64`, three commits later, none touching `os/`), in
 bytes:
 
@@ -108,6 +108,6 @@ x86_64 only.
 
 ## Together (x86_64)
 
-From the first follow-up's "before" (`main-9ce45bf`) to the image with all
+From the #4003 follow-up's "before" (`main-9ce45bf`) to the image with all
 three changes: compressed 5,163,976,980 → 4,711,047,974 B (−452,929,006,
 −8.8 %), redundant payload 900,763,895 → 269,058,974 B.

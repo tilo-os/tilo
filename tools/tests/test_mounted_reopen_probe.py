@@ -111,7 +111,7 @@ class MountedReopenProbeTests(unittest.TestCase):
         self.assertNotIn('continue-on-error', source)
         fixture = (ROOT / 'crates/agent/agent-participant/tests/mounted_resource/driver.mjs').read_text()
         self.assertIn('130_000', fixture)
-        self.assertIn('Shared resource open. Leave to close this session.', fixture)
+        self.assertIn("assert.equal(await tab.evaluate(entryOutcome), 'open'", fixture)
         self.assertIn('} catch (error) {', fixture)
         self.assertIn('throw error;', fixture)
         self.assertIn("phase:'error'", fixture)

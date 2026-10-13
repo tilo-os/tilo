@@ -1064,7 +1064,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 if let Some(drag) = self.drag {
                     self.update_pointer_presence(pt);
                     self.apply_drag(drag, pt);
@@ -1681,10 +1681,7 @@ mod tests {
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
     use crate::synthetic_input::mouse_press;
     use crate::synthetic_input::mouse_release;

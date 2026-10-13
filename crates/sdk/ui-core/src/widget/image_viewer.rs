@@ -15,7 +15,7 @@
 use crate::num::f32_of_f64;
 use std::collections::HashMap;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{self, BlendMode, Fill};
@@ -200,10 +200,7 @@ impl Widget for ImageViewer {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             flex_shrink: 1.0,
             ..Default::default()
@@ -211,9 +208,7 @@ impl Widget for ImageViewer {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -324,10 +319,6 @@ impl Widget for ImageViewer {
         use crate::a11y::{AccessNode, Role};
         Some(AccessNode::new(Role::Image))
     }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 }
 
 #[cfg(test)]
@@ -335,7 +326,7 @@ mod tests {
     use super::*;
     use crate::testing::dispatch;
     use std::sync::Arc;
-    use vello::peniko::{Blob, ImageAlphaType, ImageData as Image, ImageFormat as Format};
+    use vello::peniko::{Blob, ImageData as Image};
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -343,13 +334,7 @@ mod tests {
     fn make_image() -> Image {
         let pixels = vec![255u8; 4 * 16 * 16];
         let blob = Blob::new(Arc::new(pixels));
-        Image {
-            data: blob,
-            format: Format::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: 16,
-            height: 16,
-        }
+        crate::raster::rgba8(blob, 16, 16)
     }
 
     #[test]

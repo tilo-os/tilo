@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Per-app size budgets for the shipped tapps, and the fleet gate over them.
 
-"Apps are ~2 MB" is a marketed claim. The KPI behind it ("Performance and cost
-KPIs", Linear af384e878293, "App package size") is the bytes of the signed
+"Apps are ~2 MB" is a marketed claim. The KPI behind it ("App package size")
+is the bytes of the signed
 `.tapp` a person downloads, per architecture: median <= 2 MB, p90 <= 4 MB and
 max <= 6 MB, ratcheted per app. Three gates hold it:
 
@@ -433,7 +433,7 @@ def increases(before: Budget, after: Budget, new_raises: set[str]) -> list[str]:
         problems.append("headroom raised")
     for stat, value in after.targets.items():
         if value > before.targets.get(stat, value):
-            problems.append(f"KPI target {stat} raised; the KPI targets set it")
+            problems.append(f"KPI target {stat} raised; the KPI sets it")
     for kind, old, new in (("apps", before.app_totals(), after.app_totals()),
                            ("fleet", before.fleet_ceilings(), after.fleet_ceilings())):
         allowance = after.added(kind, new_raises)

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/ci"))
 from check_changed_rust_allows import comparison_range
 from check_commit_message import EXAMPLES, validate
-from check_self_contained import ADVICE, find_reference
+from check_public_references import internal_reference
 from check_source_content import content_issues
 
 
@@ -124,11 +124,13 @@ def main():
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         print("Commit policy inspection failed: " + str(error), file=sys.stderr)
         return 1
-    # The pull request's head branch name, when CI provides it (PR_HEAD_REF).
+    # The pull request's head branch name, when CI provides it (PR_HEAD_REF):
+    # it lands in the merge commit subject on main.
     head_ref = os.environ.get("PR_HEAD_REF", "")
-    reference = find_reference(head_ref)
+    reference = internal_reference(head_ref)
     if reference:
-        failures.append(f"branch name {head_ref!r} points at an internal reference ({reference}). Rename the branch. {ADVICE}")
+        failures.append(f"branch name {head_ref!r}: '{reference}' is an internal reference;"
+                        " rename the branch after what it changes.")
     if failures:
         print("\n".join(failures) + "\n" + EXAMPLES, file=sys.stderr)
         return 1

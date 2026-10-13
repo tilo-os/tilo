@@ -41,9 +41,6 @@ const IDLE_TTL: Duration = Duration::from_secs(45);
 /// live deliveries then stay on disk until the device reads and its room
 /// resumes (`crate::peer::Lag`): a slow reader costs latency, not its session.
 const MAX_LOG_BYTES: usize = 16 * 1024 * 1024;
-/// Concurrent sessions and handshakes.
-const MAX_SESSIONS: usize = 256;
-const MAX_HANDSHAKES: usize = 64;
 /// Duplex buffer between the HTTPS side and the peer loop.
 const DUPLEX_BYTES: usize = 4 * 1024 * 1024;
 
@@ -142,6 +139,8 @@ pub(crate) struct Sessions {
     live: Mutex<HashMap<[u8; 32], Arc<Session>>>,
     /// Signalled when any session ends, for the live authority's observer.
     ended: Arc<Notify>,
+    /// Concurrent sessions and handshakes.
+    limits: super::WebLimits,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -151,13 +150,19 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Sessions {
+    #[cfg(test)]
     pub(crate) fn new(web: WebContext) -> Arc<Self> {
+        Self::with_limits(web, super::WebLimits::default())
+    }
+
+    pub(crate) fn with_limits(web: WebContext, limits: super::WebLimits) -> Arc<Self> {
         Arc::new(Self {
             web,
             mac_key: rand::random(),
             handshakes: Mutex::default(),
             live: Mutex::default(),
             ended: Arc::default(),
+            limits,
         })
     }
 
@@ -190,7 +195,7 @@ impl Sessions {
         let handshake: [u8; 16] = rand::random();
         let mut handshakes = lock(&self.handshakes);
         handshakes.retain(|_, pending| pending.started.elapsed() < HANDSHAKE_TTL);
-        if handshakes.len() >= MAX_HANDSHAKES {
+        if handshakes.len() >= self.limits.max_handshakes {
             return Err(SessionError::Busy);
         }
         handshakes.insert(
@@ -220,7 +225,7 @@ impl Sessions {
             SessionError::Refused(error.to_string())
         })?;
         self.web.relay.metrics.inc_conns_authed();
-        if lock(&self.live).len() >= MAX_SESSIONS {
+        if lock(&self.live).len() >= self.limits.max_sessions {
             return Err(SessionError::Busy);
         }
         let token: [u8; 32] = rand::random();
@@ -411,6 +416,22 @@ impl Sessions {
             session.close();
         }
         lock(&self.handshakes).retain(|_, pending| pending.started.elapsed() < HANDSHAKE_TTL);
+    }
+
+    /// Open sessions per person (user root). A public host counts people
+    /// from it, and tells its one spectator person's sessions apart.
+    pub(crate) fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
+        let mut online = std::collections::BTreeMap::new();
+        for session in lock(&self.live)
+            .values()
+            .filter(|session| session.is_open())
+        {
+            let count = online
+                .entry(session.peer.user_public_key)
+                .or_insert(0_usize);
+            *count = count.saturating_add(1);
+        }
+        online
     }
 
     /// Device and user of every open session, for the live authority.

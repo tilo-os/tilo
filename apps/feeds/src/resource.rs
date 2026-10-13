@@ -28,14 +28,7 @@ use crate::model::{
     tag_key,
 };
 
-/// The reader's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[
-    ("en-US", include_str!("../locales/en-US.ftl")),
-    ("de-DE", include_str!("../locales/de-DE.ftl")),
-];
-
-/// The reader's messages, in every host that mounts it.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// How many tags the library publishes as places.
 pub const MAX_TAG_PLACES: usize = 32;

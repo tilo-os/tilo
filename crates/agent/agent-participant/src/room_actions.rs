@@ -191,6 +191,16 @@ pub trait RoomRecordsLink: Send + Sync {
     ) -> Option<tilo_actions::remote::ResourceViewLocator> {
         None
     }
+    /// Whether the bot installed as `installation` in `workspace` may show
+    /// other names on what it writes. Absence refuses.
+    fn bot_personas(&self, _workspace: u64, _installation: &str) -> bool {
+        false
+    }
+    /// The bytes `workspace`'s content store holds under `hash`, for an
+    /// avatar an appearance names. Absence refuses the appearance.
+    fn content_blob(&self, _workspace: u64, _hash: &str) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 struct Entry {
@@ -404,7 +414,13 @@ impl RoomActions {
                         status,
                     }))
                 };
-                if !self.authorized(caller) {
+                // Anyone the room admits may ask for a resource's link: it
+                // reads where the resource is shown and grants nothing, and
+                // the governed view lookup behind it applies their own grant.
+                let link_request = request.target.address.action
+                    == ui::tilo_resource::share::SHARE_LINK
+                    && record_of(&request.target.provider, "").is_some();
+                if !link_request && !self.authorized(caller) {
                     return Some(receipt(ReceiptStatus::Rejected {
                         error: ActionHostError::UnknownAction,
                     }));
@@ -1066,7 +1082,7 @@ impl Worker {
                 &route.app_id,
                 &route.cluster_id,
                 &self.participant,
-                false,
+                &crate::ReplicaActor::Owner,
                 Seed::Existing {
                     record: reads::record_id(&route.record)?,
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
@@ -1355,6 +1371,32 @@ impl Worker {
         InvocationState::new(invocation, update).receipt()
     }
 
+    /// The appearance `request` may show: only a bot whose installation
+    /// allows it, and only on a record's own actions.
+    fn admit_appearance(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Option<tilo_actions::Appearance>, ActionHostError> {
+        let Some(appearance) = &request.appearance else {
+            return Ok(None);
+        };
+        let link = self.shared.link.get();
+        let admitted = tilo_actions::appearance::admit(
+            caller,
+            appearance,
+            |installation| link.is_some_and(|link| link.bot_personas(workspace_id, installation)),
+            |hash| link.and_then(|link| link.content_blob(workspace_id, hash)),
+        )?;
+        if workspace_provider_room(&request.target.provider).is_some() {
+            return Err(ActionHostError::Refused {
+                reason: "an appearance is shown only on a record's own actions".into(),
+            });
+        }
+        Ok(Some(admitted))
+    }
+
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -1365,6 +1407,9 @@ impl Worker {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<ActionOutput, Outcome> {
+        let appearance = self
+            .admit_appearance(workspace_id, caller, request)
+            .map_err(Outcome::Rejected)?;
         if let Some(output) = self
             .try_registered_read(workspace_id, caller, request)
             .map_err(|error| *error)?
@@ -1422,8 +1467,12 @@ impl Worker {
         let mounted = self
             .mount(&route, &state)
             .map_err(|_| Outcome::Rejected(ActionHostError::UnknownAction))?;
-        let descriptor = live_actions(&mounted.app)
-            .into_iter()
+        let live = live_actions(&mounted.app);
+        if target.address.action == ui::tilo_resource::share::SHARE_LINK {
+            return self.share_link(workspace_id, caller, &route, &live, target, arguments);
+        }
+        let descriptor = live
+            .iter()
             .find(|descriptor| descriptor.address == target.address)
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
         let confirmed = match (&descriptor.contract.confirmation, &request.confirmation) {
@@ -1435,7 +1484,7 @@ impl Worker {
         };
         let output = mounted
             .app
-            .invoke(&target.address, &arguments, confirmed)
+            .invoke_appearing(&target.address, &arguments, confirmed, appearance.as_ref())
             .map_err(|error| door_outcome(&error))?;
         let mutation = mounted.app.take_mutation().map_err(|error| {
             Outcome::Failed(ActionFailure {
@@ -1545,7 +1594,7 @@ impl Worker {
             app,
             room,
             &self.participant,
-            false,
+            &crate::ReplicaActor::Owner,
             Seed::New,
         )
         .map_err(|error| refused(error.to_string()))?;
@@ -1611,6 +1660,89 @@ impl Worker {
             mounted.seen.insert(digest);
         }
         Ok(())
+    }
+}
+
+impl Worker {
+    /// `share-link` on a record this host runs headless. An app's root mints
+    /// it where the app runs; here no root runs, so the host mints the same
+    /// link from the resource's views as `caller` may read them now (the
+    /// governed lookup a link's page makes too), under the web entry the
+    /// host announces.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn share_link(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        route: &DocumentRoute,
+        live: &[tilo_actions::ActionDescriptor],
+        target: &tilo_actions::remote::RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ActionOutput, Outcome> {
+        let failed = |message: String| {
+            Outcome::Failed(ActionFailure {
+                code: "share_link".into(),
+                message,
+                details: None,
+                retryable: false,
+            })
+        };
+        let resource = &target.address.resource;
+        // The record's own actions name the resource's kind; its views are
+        // attached where the app renders, which the lookup below runs.
+
+        let kind = live
+            .iter()
+            .find(|descriptor| descriptor.address.resource == *resource)
+            .map(|descriptor| descriptor.resource_kind.clone())
+            .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+        let query = CatalogueQuery {
+            provider: Some(record_provider(route)),
+            view_resource: Some(tilo_actions::remote::ViewResourceQuery {
+                id: resource.clone(),
+                kind: kind.clone(),
+            }),
+            ..CatalogueQuery::default()
+        };
+        let page = self
+            .view_catalogue_page(workspace_id, caller, &query)
+            .map_err(Outcome::Rejected)?;
+        let views = page
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .filter(|descriptor| descriptor.address.resource == *resource)
+            .filter_map(|descriptor| {
+                descriptor
+                    .view
+                    .as_ref()
+                    .filter(|view| view.open_action == descriptor.address.action)
+            })
+            .map(|view| ui::tilo_resource::share::SharedView {
+                id: view.id.clone(),
+                primary: view.primary,
+                range: view.range.is_some(),
+            })
+            .collect();
+        let request = ui::tilo_resource::share::ShareRequest {
+            resource: resource.clone(),
+            kind,
+            views,
+            invite: false,
+            args: arguments,
+        };
+        let locator = page
+            .locator
+            .ok_or_else(|| failed("This workspace's host serves no web page".into()))?;
+        let url = ui::framework::host_link(&request, &route.app_id, &route.record, &locator)
+            .map_err(failed)?;
+        Ok(ActionOutput {
+            value: Some(serde_json::json!({ "url": url })),
+            resources: Vec::new(),
+        })
     }
 }
 

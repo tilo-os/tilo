@@ -97,6 +97,12 @@ const MAX_REMOTE_PUBLISHERS: usize = 64;
 const MAX_OPS_SUBSCRIPTIONS: usize = 256;
 const MAX_SESSIONS: usize = MAX_LIVE_SESSIONS;
 const PRESENCE_LATENCY: Duration = Duration::from_millis(50);
+/// The shortest gap between two writes of presence to one stream. Presence
+/// is latest-value per member, so what arrives in between rides in the next
+/// write: a stream carries at most 20 presence writes a second however many
+/// members move, instead of one per member move. Receivers glide a pointer
+/// over the gap between two samples.
+const PRESENCE_GAP: Duration = Duration::from_millis(50);
 const OPS_LATENCY: Duration = Duration::from_millis(2500);
 
 /// Why a fallback request was refused.
@@ -116,6 +122,73 @@ pub enum FallbackError {
 #[derive(Default)]
 pub(super) struct Registry {
     sessions: Mutex<HashMap<[u8; 16], Arc<Fallback>>>,
+    /// Presence feeds by member namespace path.
+    feeds: Mutex<HashMap<String, Weak<PresenceFeed>>>,
+}
+
+/// One subscription to a member's presence, shared by every fallback session
+/// of the relay that shows the member. A subscription per watching session
+/// woke one task per session for every move, all contending on the same
+/// track; a shared one wakes once and hands the move to each outbox.
+struct PresenceFeed {
+    broadcast: moq_net::broadcast::Consumer,
+    sessions: Mutex<HashMap<u64, Weak<Fallback>>>,
+    pump: Mutex<Option<Task>>,
+}
+
+/// A session's place in a [`PresenceFeed`]: dropping it stops the session's
+/// delivery, and the feed's pump stops with its last seat.
+struct PresenceSeat {
+    feed: Arc<PresenceFeed>,
+    session: u64,
+}
+impl Drop for PresenceSeat {
+    fn drop(&mut self) {
+        self.feed
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.session);
+    }
+}
+
+impl Registry {
+    /// Seat `session` in the feed of the member at `path`, starting one when
+    /// none reads this `broadcast`.
+    fn seat(
+        &self,
+        path: &str,
+        broadcast: &moq_net::broadcast::Consumer,
+        publisher: [u8; 32],
+        session: &Arc<Fallback>,
+    ) -> PresenceSeat {
+        let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        let feed = match feeds.get(path).and_then(Weak::upgrade) {
+            Some(feed) if feed.broadcast.is_clone(broadcast) => feed,
+            _ => {
+                feeds.retain(|_, feed| feed.strong_count() > 0);
+                let feed = Arc::new(PresenceFeed {
+                    broadcast: broadcast.clone(),
+                    sessions: Mutex::default(),
+                    pump: Mutex::default(),
+                });
+                *feed.pump.lock().unwrap_or_else(PoisonError::into_inner) = Some(Task::spawn(
+                    pump_presence(Arc::downgrade(&feed), broadcast.clone(), publisher),
+                ));
+                feeds.insert(path.to_owned(), Arc::downgrade(&feed));
+                feed
+            }
+        };
+        drop(feeds);
+        feed.sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(session.relay, Arc::downgrade(session));
+        PresenceSeat {
+            feed,
+            session: session.relay,
+        }
+    }
 }
 
 /// One HTTPS response stream of server frames.
@@ -230,7 +303,7 @@ struct Publish {
 
 #[derive(Default)]
 struct Subscribe {
-    members: HashMap<[u8; 32], (moq_net::broadcast::Consumer, Task)>,
+    members: HashMap<[u8; 32], (moq_net::broadcast::Consumer, PresenceSeat)>,
     ops: HashMap<([u8; 32], [u8; 32]), Task>,
 }
 
@@ -245,7 +318,10 @@ struct Fallback {
     outbox: Mutex<Outbox>,
     publish: Mutex<Publish>,
     subscribe: Mutex<Subscribe>,
+    /// Members, ops and the end: written as soon as the writer gets to them.
     notify: Notify,
+    /// Presence: written at most every [`PRESENCE_GAP`].
+    presence_notify: Notify,
     /// Current stream generation and when the last stream detached.
     stream: Mutex<(u64, Option<Instant>)>,
     ended: AtomicBool,
@@ -268,7 +344,7 @@ impl Fallback {
             .unwrap_or_else(PoisonError::into_inner)
             .presence
             .insert(publisher, payload);
-        self.notify.notify_one();
+        self.presence_notify.notify_one();
     }
     /// Queue an ops frame; `false` when over budget (the caller resets).
     fn push_ops(&self, publisher: &[u8; 32], record: &[u8; 32], payload: &[u8]) -> bool {
@@ -291,14 +367,19 @@ impl Fallback {
         drop(outbox);
         self.notify.notify_one();
     }
-    /// Drain queued frames into one chunk (members, then presence, then ops).
-    fn take_chunk(&self, out: &mut Vec<u8>) -> Option<u8> {
+    /// Drain queued frames into one chunk (members, then presence when
+    /// `presence`, then ops). Also answers whether presence went, and
+    /// whether presence still waits.
+    fn take_chunk(&self, out: &mut Vec<u8>, presence: bool) -> (Option<u8>, bool, bool) {
         let mut outbox = self.outbox.lock().unwrap_or_else(PoisonError::into_inner);
         while let Some((publisher, active)) = outbox.members.pop_front() {
             put(out, FRAME_MEMBER, &[&publisher, &[u8::from(active)]]);
         }
-        for (publisher, payload) in outbox.presence.drain() {
-            put(out, FRAME_PRESENCE, &[&publisher, &payload]);
+        let wrote = presence && !outbox.presence.is_empty();
+        if presence {
+            for (publisher, payload) in outbox.presence.drain() {
+                put(out, FRAME_PRESENCE, &[&publisher, &payload]);
+            }
         }
         while out.len() < CHUNK_BYTES {
             let Some(frame) = outbox.ops.pop_front() else {
@@ -307,7 +388,11 @@ impl Fallback {
             outbox.ops_bytes = outbox.ops_bytes.saturating_sub(frame.len());
             out.extend_from_slice(&frame);
         }
-        outbox.end.filter(|_| outbox.ops.is_empty())
+        (
+            outbox.end.filter(|_| outbox.ops.is_empty()),
+            wrote,
+            !outbox.presence.is_empty(),
+        )
     }
     fn finish(&self, reason: u8) {
         if self.ended.swap(true, Ordering::SeqCst) {
@@ -393,6 +478,7 @@ impl LiveRelay {
             publish: Mutex::default(),
             subscribe: Mutex::default(),
             notify: Notify::new(),
+            presence_notify: Notify::new(),
             stream: Mutex::new((0, None)),
             ended: AtomicBool::new(false),
             end: Notify::new(),
@@ -786,7 +872,11 @@ async fn write_stream(session: Arc<Fallback>, generation: u64, sender: mpsc::Sen
             .0
             == generation
     };
+    let mut presence_at: Option<Instant> = None;
     loop {
+        let presence_wait = presence_at.map_or(Duration::ZERO, |at| {
+            PRESENCE_GAP.saturating_sub(at.elapsed())
+        });
         let mut chunk = Vec::new();
         if first {
             let flags =
@@ -794,7 +884,10 @@ async fn write_stream(session: Arc<Fallback>, generation: u64, sender: mpsc::Sen
             put(&mut chunk, FRAME_HELLO, &[&session.id, &[flags]]);
             first = false;
         }
-        let end = session.take_chunk(&mut chunk);
+        let (end, wrote, waiting) = session.take_chunk(&mut chunk, presence_wait.is_zero());
+        if wrote {
+            presence_at = Some(Instant::now());
+        }
         let rotate = end.is_none() && started.elapsed() >= STREAM_LIFETIME;
         if let Some(reason) = end.or_else(|| rotate.then_some(END_ROTATE)) {
             put(&mut chunk, FRAME_END, &[&[reason]]);
@@ -810,6 +903,8 @@ async fn write_stream(session: Arc<Fallback>, generation: u64, sender: mpsc::Sen
         let wait = KEEPALIVE.min(STREAM_LIFETIME.saturating_sub(started.elapsed()));
         tokio::select! {
             () = session.notify.notified() => {}
+            () = session.presence_notify.notified(), if presence_wait.is_zero() || !waiting => {}
+            () = tokio::time::sleep(presence_wait), if waiting && !presence_wait.is_zero() => {}
             () = sender.closed() => break,
             () = tokio::time::sleep(wait) => {
                 if started.elapsed() < STREAM_LIFETIME {
@@ -825,6 +920,7 @@ async fn write_stream(session: Arc<Fallback>, generation: u64, sender: mpsc::Sen
             // A newer stream replaced this one: hand over a wake-up this
             // writer may have consumed.
             session.notify.notify_one();
+            session.presence_notify.notify_one();
             break;
         }
     }
@@ -881,12 +977,11 @@ async fn watch_members(inner: Weak<Inner>, session: Weak<Fallback>) {
                 continue;
             }
             subscribe.ops.retain(|(member, _), _| *member != publisher);
-            let task = Task::spawn(pump_presence(
-                Arc::downgrade(&session),
-                broadcast.clone(),
-                publisher,
-            ));
-            subscribe.members.insert(publisher, (broadcast, task));
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            let seat = inner.fallback.seat(path, &broadcast, publisher, &session);
+            subscribe.members.insert(publisher, (broadcast, seat));
             drop(subscribe);
             if known {
                 session.push_member(publisher, false);
@@ -909,7 +1004,7 @@ async fn watch_members(inner: Weak<Inner>, session: Weak<Fallback>) {
 }
 
 async fn pump_presence(
-    session: Weak<Fallback>,
+    feed: Weak<PresenceFeed>,
     broadcast: moq_net::broadcast::Consumer,
     publisher: [u8; 32],
 ) {
@@ -921,10 +1016,22 @@ async fn pump_presence(
         };
         if let Some(mut subscriber) = subscriber {
             while let Ok(Some(datagram)) = subscriber.recv_datagram().await {
-                let Some(session) = session.upgrade() else {
+                let Some(feed) = feed.upgrade() else {
                     return;
                 };
-                session.push_presence(publisher, datagram.payload);
+                // Collected first: a session dropped here drops its seat,
+                // which takes this lock.
+                let seated: Vec<Arc<Fallback>> = feed
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .values()
+                    .filter_map(Weak::upgrade)
+                    .collect();
+                drop(feed);
+                for session in seated {
+                    session.push_presence(publisher, datagram.payload.clone());
+                }
             }
         }
         if broadcast.is_closed() {

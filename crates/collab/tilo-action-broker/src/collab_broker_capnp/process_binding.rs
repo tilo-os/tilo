@@ -110,7 +110,6 @@ async fn bind_inner(
 #[cfg(all(test, target_os = "linux"))]
 #[allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     reason = "in these kernel-socket fixtures a failed unwrap is the test assertion"
 )]
 mod tests {

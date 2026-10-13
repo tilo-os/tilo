@@ -186,7 +186,7 @@ mod tests {
             .unwrap();
     }
 
-    /// A change is on disk within the bound the 100 ms poll kept
+    /// #4130. A change is on disk within the bound the 100 ms poll kept
     /// (500 ms after it, plus one look), a continuous run at least every
     /// 3 s, and an idle namespace is never written.
     #[tokio::test(start_paused = true)]

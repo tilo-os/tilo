@@ -141,7 +141,7 @@ mod share_mount_tests {
         }
     }
 
-    /// The persister writes the sync progress with each peer
+    /// #4113. The persister writes the sync progress with each peer
     /// beside the namespace document, and a restart resumes it; damaged
     /// progress, or progress beside a document recovered from an older
     /// generation, is ignored, so every exchange starts with a full sync.
@@ -1390,7 +1390,8 @@ async fn replica(config_path: PathBuf) -> Result<()> {
     validate_home_peer_set(&bundle)?;
     // Held for the life of the process: the relay honours a ready status
     // only while this lock is held (or its stamp is a few seconds old), so
-    // the status is written when it changes rather than every second. Taken before the status is touched, so a second replica
+    // the status is written when it changes rather than every second.
+    // Taken before the status is touched, so a second replica
     // refused here cannot clobber a running one's status.
     let _alive = fs::full_replica::ReplicaLiveness::hold(&bundle.status_file)?;
     save_status(
@@ -1765,7 +1766,7 @@ async fn serve(
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
     // The relays wait until something means another party may dial this
-    // mount (`fs::reachability`): each trace of one wakes them.
+    // mount (#4224, `fs::reachability`): each trace of one wakes them.
     let (endpoint, lookup, reachability) =
         sync::bind_dormant_endpoint_with_key(device.secret.clone()).await?;
     if let Some(authority) = share_authority.as_ref()
@@ -2147,7 +2148,7 @@ async fn serve(
             // something is enqueued. What could not be delivered (the
             // recipient's devices offline) is retried with backoff from
             // 5 s to a minute, and at once when a new delivery arrives
-            // (an empty outbox no longer wakes every 5 s).
+            // (#4130: an empty outbox no longer wakes every 5 s).
             let mut retry = NAMED_DELIVERY_RETRY;
             loop {
                 let now = unix_now_ms();
@@ -2719,7 +2720,7 @@ async fn recipient_service(
     // Mounts every accepted envelope at once, and restarts a named mount
     // whose child died. While every one is running the restart pass backs
     // off from 2 s to a minute; one that had to start a mount (or was woken
-    // by a new envelope) goes back to 2 s (it used to run every
+    // by a new envelope) goes back to 2 s (#4130: it used to run every
     // 2 s for the life of the service).
     let named_mount_task = tokio::spawn(async move {
         let mut every = NAMED_MOUNT_REPAIR;
@@ -3956,7 +3957,6 @@ async fn seed_from_dir(
     store: &Arc<ContentStore>,
     root: &Path,
 ) -> Result<()> {
-    let registry = tilo_doc_codecs::builtin_registry();
     let document_content = tilo_content::ContentStore::for_app();
     let mut stack = vec![(ROOT_INO, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {
@@ -3976,18 +3976,14 @@ async fn seed_from_dir(
                 stack.push((ino, path));
             } else if ft.is_file() {
                 let data = std::fs::read(&path)?;
-                let codec = name
-                    .rsplit('.')
-                    .next()
-                    .filter(|e| *e != name)
-                    .and_then(|e| registry.provider_for_ext(e).map(|_| e.to_lowercase()));
+                let codec = fs::fs::document_codec_for(&name);
                 if let Some(c) = codec {
                     // Recognized rich-text format → seed as a CRDT document.
                     let mut ns = namespace
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if let Some(ino) = ns.create_document(parent_ino, &name, &c, unix_now_ms()) {
-                        ns.import_document(ino, &registry, &data, unix_now_ms(), &document_content);
+                        ns.import_document(ino, &data, unix_now_ms(), &document_content);
                     }
                 } else {
                     let size = data.len() as u64;

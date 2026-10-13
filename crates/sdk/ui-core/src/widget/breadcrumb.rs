@@ -280,10 +280,7 @@ impl Widget for Breadcrumb {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
-            min_size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::length(line_h),
-            },
+            min_size: Size::from_lengths(0.0, line_h),
             flex_shrink: 1.0,
             ..Default::default()
         };
@@ -404,8 +401,7 @@ impl Widget for Breadcrumb {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let logical = ctx.logical(position);
                 self.last_cursor = Some(logical);
                 let mut new_hover: Option<usize> = None;
                 let active_origin = self.segments.len().saturating_sub(1);
@@ -482,10 +478,7 @@ mod tests {
     use std::rc::Rc;
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
 
     use crate::synthetic_input::mouse_press;

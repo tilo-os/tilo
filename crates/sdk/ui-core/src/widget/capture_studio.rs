@@ -4597,9 +4597,7 @@ impl Widget for CaptureStudio {
         map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
         n
     }
-    fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, o: Point) {
-        self.rect = crate::widget::layout_rect(t, n, o);
-    }
+    crate::rect_geometry!();
     fn draw(
         &mut self,
         s: &mut Scene,
@@ -5206,8 +5204,7 @@ impl Widget for CaptureStudio {
         if self.replay_active {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.cursor = ctx.logical(position);
                     *ctx.handled = self.replay_indicator_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
@@ -5269,8 +5266,7 @@ impl Widget for CaptureStudio {
         if self.recording_finished_at.is_some() {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.cursor = ctx.logical(position);
                     *ctx.handled = self.recording_receipt_rect().contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
@@ -5301,8 +5297,7 @@ impl Widget for CaptureStudio {
         if self.take.active {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.cursor = ctx.logical(position);
                     *ctx.handled = self.recording_indicator_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
@@ -5322,8 +5317,7 @@ impl Widget for CaptureStudio {
         *ctx.handled = true;
         match e {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if let Some(d) = self.drag.as_mut() {
                     d.set_current(self.cursor)
                 }
@@ -5429,9 +5423,6 @@ impl Widget for CaptureStudio {
     }
     fn test_id(&self) -> Option<&str> {
         Some("shell.capture-studio")
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
     fn modal_capture(&self) -> Option<Rect> {
         (self.open

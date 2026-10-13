@@ -67,7 +67,7 @@ fn main() -> Result<(), Error> {
     );
 
     let full = median(RUNS, || verify_bundle_with(&bundle, &policy).map(|_| ()))?;
-    println!("full hash (launch before the change):  {full:?}");
+    println!("full hash (launch before #3937):  {full:?}");
     let (unsealed, check) = timed_verity(&bundle, &policy)?;
     println!("verity path, unsealed (fallback):   {unsealed:?}  {check:?}");
     // Manifest, signatures and one stat per file: the sealed path's work

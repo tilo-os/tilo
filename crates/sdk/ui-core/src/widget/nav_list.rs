@@ -844,7 +844,13 @@ pub struct NavList {
     /// What was open before a filter opened every match, restored when the
     /// filter clears.
     unfiltered_open: Option<Vec<NodeId>>,
+    /// The app state the list follows, read at every sync and update.
+    source: Option<NavSource>,
 }
+
+/// What a followed list reads: the sections and the chosen destination, or
+/// `None` while the state cannot be read (it is borrowed elsewhere).
+type NavSource = Box<dyn FnMut() -> Option<(Vec<NavSection>, Option<String>)>>;
 
 impl NavList {
     #[must_use]
@@ -949,6 +955,7 @@ impl NavList {
             sections,
             filter: String::new(),
             unfiltered_open: None,
+            source: None,
         };
         list.install_presentation(false);
         list.refresh_keys();
@@ -1078,6 +1085,34 @@ impl NavList {
         self.set_selected(value.as_deref());
         self.shared.borrow_mut().binding = Some(binding);
         self
+    }
+
+    /// Keep the list in step with app state: `source` answers the sections
+    /// and the chosen destination, read now and at every sync and update. A
+    /// choice the person makes shows until the state answers it; a state that
+    /// chooses otherwise wins.
+    #[must_use]
+    pub fn follow(
+        mut self,
+        source: impl FnMut() -> Option<(Vec<NavSection>, Option<String>)> + 'static,
+    ) -> Self {
+        self.source = Some(Box::new(source));
+        self.pull();
+        self
+    }
+
+    /// Read the followed state; whether the list changed.
+    fn pull(&mut self) -> bool {
+        let Some((sections, selected)) = self.source.as_mut().and_then(|source| source()) else {
+            return false;
+        };
+        let changed = sections != self.sections;
+        self.set_sections(sections);
+        if self.selected_id() == selected {
+            return changed;
+        }
+        self.set_selected(selected.as_deref());
+        true
     }
 
     /// Called with the item id when the person chooses a destination.
@@ -1551,7 +1586,13 @@ impl crate::widget::Decorator for NavList {
         if let Some(next) = next {
             self.set_selected(next.as_deref());
         }
+        self.pull();
         crate::widget::Widget::sync(&mut self.tree, state, path);
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let pulled = self.pull();
+        crate::widget::Widget::update(&mut self.tree, state, path) || pulled
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

@@ -769,7 +769,7 @@ impl Selection {
         self.sorter.stats.last_step_work = 1;
         match self.phase {
             Phase::Old => {
-                if let Step::Done(()) = self.old_read.step()? {
+                if self.old_read.step()? == Step::Done(()) {
                     self.old = std::mem::take(&mut self.old_read.basis);
                     self.phase = Phase::Scan;
                 }
@@ -1140,10 +1140,8 @@ impl Selection {
                     {
                         return Ok(Step::Done(SelectionOutcome::UnresolvedTailDependencies));
                     }
-                    self.blocked = true;
-                } else {
-                    self.blocked = true;
                 }
+                self.blocked = true;
                 self.extra(&meta)?;
             }
             Phase::Historical => {
@@ -1398,7 +1396,7 @@ impl Selection {
             }
             Phase::Gc => {
                 if let Some(gc) = &mut self.active_gc {
-                    if let Step::Done(()) = gc.step()? {
+                    if gc.step()? == Step::Done(()) {
                         self.active_gc = None;
                     }
                     return Ok(Step::More);
@@ -1408,11 +1406,12 @@ impl Selection {
                         self.store.root.join(DIRECTORY),
                     )?);
                 }
-                if let Step::Done(()) = self
+                if self
                     .collect
                     .as_mut()
                     .invariant("collect missing")?
                     .step(limit)?
+                    == Step::Done(())
                 {
                     // CURRENT is this basis now. Only a cut that never fell
                     // back leaves cursors for plain tails; a wanted route

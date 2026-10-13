@@ -11,9 +11,9 @@
 //! [`IconWidget::with_color`], [`IconWidget::dim`], [`IconWidget::with_stroke`].
 
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX};
@@ -140,19 +140,14 @@ impl Widget for IconWidget {
     ) -> NodeId {
         let edge = self.size.px(theme);
         let style = Style {
-            size: Size {
-                width: Dimension::length(edge),
-                height: Dimension::length(edge),
-            },
+            size: Size::from_lengths(edge, edge),
             flex_shrink: 0.0,
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -172,10 +167,6 @@ impl Widget for IconWidget {
 
     fn name(&self) -> &'static str {
         "IconWidget"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     /// A leaf sized by the theme: layout is settled once the first
