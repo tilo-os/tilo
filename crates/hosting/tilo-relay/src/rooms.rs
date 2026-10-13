@@ -485,6 +485,12 @@ struct RoomsInner {
     /// Channel access requests and acknowledgements waiting for their
     /// room's steward, by room.
     channel_notices: std::sync::Mutex<HashMap<String, Vec<ChannelNotice>>>,
+    /// Pre-admitted redemptions waiting for their room's next admission
+    /// pass, by room.
+    queued_admissions: std::sync::Mutex<HashMap<String, Vec<pages::QueuedAdmission>>>,
+    /// Those waiting for their room's next write of the changes it staged,
+    /// by room.
+    queued_writes: std::sync::Mutex<HashMap<String, Vec<collaboration::Written>>>,
 }
 
 /// What a member sent a room's channel steward.
@@ -600,6 +606,8 @@ impl Rooms {
                 record_writes: tokio::sync::broadcast::channel(256).0,
                 content: content::ContentSlot::default(),
                 channel_notices: std::sync::Mutex::default(),
+                queued_admissions: std::sync::Mutex::default(),
+                queued_writes: std::sync::Mutex::default(),
             }),
         };
         let rooms = this
