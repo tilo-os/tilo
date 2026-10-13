@@ -79,6 +79,14 @@ struct Shared {
     done: Condvar,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Writes this thread handed to [`DurableWriter::submit`], so a test can
+    /// tell a call that queued a write from one that found nothing to do.
+    pub(crate) static SUBMITS_ON_THIS_THREAD: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// A single background thread that performs queued state writes.
 pub struct DurableWriter {
     shared: Arc<Shared>,
@@ -113,6 +121,8 @@ impl DurableWriter {
     /// Queue `job`, the write that produces `key`, replacing any write for
     /// `key` that has not started.
     pub fn submit(&self, key: PathBuf, job: impl FnOnce() + Send + 'static) {
+        #[cfg(test)]
+        SUBMITS_ON_THIS_THREAD.with(|submits| submits.set(submits.get().saturating_add(1)));
         if self.thread.is_none() {
             job();
             return;
