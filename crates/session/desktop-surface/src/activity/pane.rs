@@ -1940,18 +1940,28 @@ impl RoomActivityPane {
     }
 
     fn named_positions(&self) -> Vec<(&NamedRange, usize, usize)> {
-        let last = self.timeline.entries().len().saturating_sub(1);
-        let mut ranges = self
-            .named
-            .iter()
-            .filter_map(|range| {
-                let start = self.entry_position(&range.start)?;
-                let end = range
-                    .end
-                    .as_ref()
-                    .and_then(|id| self.entry_position(id))
-                    .unwrap_or(last);
-                Some((range, start.min(end), start.max(end)))
+        // Use the canonical forest: concurrent overlaps are clipped and
+        // reversed stored ranges are absent, not silently reordered.
+        let mut groups = Vec::new();
+        for group in self.timeline.groups() {
+            group.walk(&mut groups);
+        }
+        let mut ranges = groups
+            .into_iter()
+            .filter(|group| {
+                self.timeline
+                    .entries()
+                    .get(group.start..group.end)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|entry| self.timeline.filter().matches(entry))
+            })
+            .filter_map(|group| {
+                let range = self
+                    .named
+                    .iter()
+                    .find(|range| Some(range.id.as_str()) == group.record_id.as_deref())?;
+                Some((range, group.start, group.end.checked_sub(1)?))
             })
             .collect::<Vec<_>>();
         ranges.sort_by_key(|(_, start, _)| *start);

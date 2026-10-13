@@ -166,6 +166,25 @@ impl RoomActivityPane {
         self.named.iter().find(|range| range.id == id)
     }
 
+    /// Helpers retain stored anchors outside a clipped displayed band.
+    /// Validate those independently before writing.
+    fn editorial_record_bounds(&self, id: &str) -> Option<(usize, usize)> {
+        let range = self.editorial_record(id)?;
+        let end = match range.end {
+            Some(end) => end,
+            None => self.timeline.entries().last()?.id,
+        };
+        self.editorial_bounds(range.start, end)
+    }
+
+    fn displayed_record_bounds(&self, id: &str) -> Option<(usize, usize)> {
+        let (_, start, end) = self
+            .named_positions()
+            .into_iter()
+            .find(|(r, _, _)| r.id == id)?;
+        Some((start, end))
+    }
+
     fn validate_editorial(&self, op: &Op) -> Option<Op> {
         let label_valid = |s: &str| s.trim().chars().count() <= ui::history_groups::MAX_LABEL_LEN;
         match op {
@@ -174,19 +193,18 @@ impl RoomActivityPane {
                     return None;
                 }
                 if let Some(id) = &req.record_id {
-                    self.editorial_record(id)?;
                     // Clearing addresses the stored record, not its clipped band.
-                    if !req.label.trim().is_empty() {
-                        let (_, a, b) = self
-                            .named_positions()
-                            .into_iter()
-                            .find(|(r, _, _)| r.id == *id)?;
+                    if req.label.trim().is_empty() {
+                        self.editorial_record(id)?;
+                    } else {
+                        let (a, b) = self.displayed_record_bounds(id)?;
                         if self.timeline.entries().get(a)?.id != req.start
                             || self.timeline.entries().get(b)?.id != req.end
                         {
                             return None;
                         }
                         self.editorial_bounds(req.start, req.end)?;
+                        self.editorial_record_bounds(id)?;
                     }
                 } else {
                     self.editorial_bounds(req.start, req.end)?;
@@ -204,6 +222,7 @@ impl RoomActivityPane {
                 label,
                 right_label,
             } => {
+                self.editorial_record_bounds(record)?;
                 let (_, start, end) = self
                     .named_positions()
                     .into_iter()
@@ -240,6 +259,7 @@ impl RoomActivityPane {
                     if !seen.insert(id) {
                         return None;
                     }
+                    self.editorial_record_bounds(id)?;
                     let (_, a, b) = self
                         .named_positions()
                         .into_iter()
@@ -294,6 +314,7 @@ impl RoomActivityPane {
             }
             if let Some(id) = &session.record {
                 let range = self.editorial_record(id)?;
+                self.editorial_record_bounds(id)?;
                 let (_, start, end) = self
                     .named_positions()
                     .into_iter()
@@ -304,8 +325,42 @@ impl RoomActivityPane {
                 {
                     return None;
                 }
-            } else if self.named.iter().any(|r| r.start == session.start) {
-                return None;
+            } else {
+                // None cannot invent a session: bounds and title must match
+                // a current automatic projection from the canonical engine.
+                let mut groups = Vec::new();
+                for group in self.timeline.groups() {
+                    group.walk(&mut groups);
+                }
+                let timeline_match = groups.into_iter().any(|group| {
+                    group.record_id.is_none()
+                        && group.first_entry == session.start
+                        && group.last_entry == session.end
+                        && group.title(self.timeline.entries()) == session.label
+                        && self
+                            .timeline
+                            .entries()
+                            .get(group.start..group.end)
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|entry| self.timeline.filter().matches(entry))
+                });
+                // Recap titles describe outcomes rather than timeline counts.
+                let recap_match = self.view == super::ActivityView::CatchUp
+                    && self.digest.briefs.iter().any(|brief| {
+                        brief.work_session_id.is_none()
+                            && brief.entry_ids.first() == Some(&session.start)
+                            && brief.entry_ids.last() == Some(&session.end)
+                            && brief.title == session.label
+                            && brief.entry_ids.iter().any(|id| {
+                                self.entry_position(id)
+                                    .and_then(|position| self.timeline.entries().get(position))
+                                    .is_some_and(|entry| self.timeline.filter().matches(entry))
+                            })
+                    });
+                if !timeline_match && !recap_match {
+                    return None;
+                }
             }
         }
         if self
@@ -325,5 +380,184 @@ fn displayed(session: &EditorialSession) -> ui::history_groups::DisplayedSession
         start: &session.start,
         end: &session.end,
         label: &session.label,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+    use ui::widget::ArtifactKind;
+    use ui::{EntryKind, HistoryAuthor, HistoryEntry};
+
+    fn id(n: u8) -> HistoryEntryId {
+        HistoryEntryId([n; 16])
+    }
+
+    fn pane() -> RoomActivityPane {
+        let mut pane = RoomActivityPane::new();
+        pane.timeline.set_entries(
+            (0..6)
+                .map(|n| HistoryEntry {
+                    id: id(n),
+                    author: HistoryAuthor::new("Ada", 210.0, "ada"),
+                    entry_kind: EntryKind::Text,
+                    artifact_kind: ArtifactKind::File,
+                    timestamp: SystemTime::UNIX_EPOCH
+                        + Duration::from_secs(u64::from(n) * 10 + if n >= 3 { 600 } else { 0 }),
+                    summary: "Edited text".into(),
+                    text_delta: None,
+                    diff_payload: None,
+                    redaction: None,
+                    context: None,
+                })
+                .collect(),
+        );
+        pane
+    }
+
+    fn named(pane: &mut RoomActivityPane, ranges: &[(u8, Option<u8>)]) {
+        pane.named = ranges
+            .iter()
+            .enumerate()
+            .map(|(i, (start, end))| NamedRange {
+                id: format!("record-{i}"),
+                label: format!("Name {i}"),
+                start: id(*start),
+                end: end.map(id),
+                named_by: None,
+                created: SystemTime::UNIX_EPOCH,
+            })
+            .collect();
+        pane.timeline.set_named_ranges(pane.named.clone());
+    }
+
+    fn rename(start: u8, end: u8, label: &str) -> Op {
+        Op::Name(ui::GroupNameRequest {
+            record_id: Some("record-1".into()),
+            start: id(start),
+            end: id(end),
+            label: label.into(),
+        })
+    }
+
+    #[test]
+    fn editorial_canonical_overlap_clipping_and_stored_anchors() {
+        let mut pane = pane();
+        named(&mut pane, &[(0, Some(3)), (2, Some(5))]);
+        assert!(pane.validate_editorial(&rename(4, 5, "Renamed")).is_some());
+        assert!(pane.validate_editorial(&rename(2, 5, "Renamed")).is_none());
+        assert!(
+            pane.validate_editorial(&Op::Split {
+                record: "record-1".into(),
+                left_end: id(4),
+                right_start: id(5),
+                label: "Left".into(),
+                right_label: "Right".into(),
+            })
+            .is_some()
+        );
+        assert!(
+            pane.validate_editorial(&Op::Merge {
+                records: vec!["record-0".into(), "record-1".into()],
+                start: id(0),
+                end: id(5),
+                label: "Merged".into(),
+            })
+            .is_some()
+        );
+        let left = EditorialSession {
+            record: Some("record-0".into()),
+            start: id(0),
+            end: id(3),
+            label: "Name 0".into(),
+        };
+        let right = EditorialSession {
+            record: Some("record-1".into()),
+            start: id(4),
+            end: id(5),
+            label: "Name 1".into(),
+        };
+        assert!(
+            pane.validate_boundary(&left, &right, id(2), id(3))
+                .is_some()
+        );
+        // The stored start is retained by rename/split even though clipped.
+        pane.external_entry = pane.timeline.entries().get(2).cloned();
+        assert!(pane.validate_editorial(&rename(4, 5, "Renamed")).is_none());
+        assert!(pane.validate_editorial(&rename(4, 5, "")).is_some());
+        pane.external_entry = None;
+        pane.timeline
+            .set_filter(ui::widget::history::HistoryFilter {
+                authors: vec!["Nobody".into()],
+                ..Default::default()
+            });
+        assert!(pane.validate_editorial(&rename(4, 5, "Renamed")).is_none());
+    }
+
+    #[test]
+    fn editorial_reversed_record_is_not_a_displayed_band_and_open_clear_survives() {
+        let mut pane = pane();
+        named(&mut pane, &[(0, Some(1)), (5, Some(2))]);
+        assert_eq!(pane.named_positions().len(), 1);
+        assert!(pane.validate_editorial(&rename(2, 5, "Renamed")).is_none());
+        assert!(
+            pane.validate_editorial(&Op::Split {
+                record: "record-1".into(),
+                left_end: id(3),
+                right_start: id(4),
+                label: "Left".into(),
+                right_label: "Right".into(),
+            })
+            .is_none()
+        );
+        named(&mut pane, &[(0, Some(1)), (2, None)]);
+        assert!(pane.validate_editorial(&rename(2, 5, "Renamed")).is_some());
+        assert_eq!(pane.editorial_record("record-1").unwrap().end, None);
+        assert!(pane.validate_editorial(&rename(0, 0, "")).is_some());
+    }
+
+    #[test]
+    fn editorial_automatic_boundary_requires_exact_groups_and_titles() {
+        let mut pane = pane();
+        let sessions: Vec<_> = pane
+            .timeline
+            .groups()
+            .iter()
+            .map(|group| EditorialSession {
+                record: group.record_id.clone(),
+                start: group.first_entry,
+                end: group.last_entry,
+                label: group.title(pane.timeline.entries()),
+            })
+            .collect();
+        assert_eq!(sessions.len(), 2);
+        assert!(
+            pane.validate_boundary(&sessions[0], &sessions[1], id(3), id(4))
+                .is_some()
+        );
+        let mut invented = sessions[0].clone();
+        invented.label = "Invented title".into();
+        assert!(
+            pane.validate_boundary(&invented, &sessions[1], id(3), id(4))
+                .is_none()
+        );
+        invented = sessions[0].clone();
+        invented.end = id(1);
+        let mut right = sessions[1].clone();
+        right.start = id(2);
+        assert!(
+            pane.validate_boundary(&invented, &right, id(2), id(3))
+                .is_none()
+        );
+        pane.timeline
+            .set_filter(ui::widget::history::HistoryFilter {
+                authors: vec!["Nobody".into()],
+                ..Default::default()
+            });
+        assert!(
+            pane.validate_boundary(&sessions[0], &sessions[1], id(3), id(4))
+                .is_none()
+        );
     }
 }

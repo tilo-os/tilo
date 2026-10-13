@@ -168,6 +168,66 @@ mod tests {
         assert_eq!(chrome.borrow().tree_mut().doc.save(), bytes);
     }
     #[test]
+    fn inspection_never_discloses_other_workspace_names_after_edit() {
+        let (mut host, mut args) = fixture();
+        let chrome = host.chrome.clone().unwrap();
+        let private_anchors = {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let original = tree.desktop.active;
+            tree.append_empty_workspace("Private room");
+            tree.desktop.active = tree.desktop.workspaces.last().unwrap().id;
+            for name in ["Private revision one", "Private revision two"] {
+                tree.active_workspace_mut().unwrap().name = name.into();
+                tree.seed_doc_from_cache();
+                tree.commit_room_change();
+            }
+            host.room_activity.refresh(&mut *tree);
+            let entries = host.room_activity.entries();
+            let start = entries[0].id;
+            let end = entries.last().unwrap().id;
+            ui::history_groups::name_range(
+                &mut tree.doc,
+                &start,
+                Some(&end),
+                "Confidential other room",
+            );
+            tree.commit_room_change();
+            tree.desktop.active = original;
+            host.room_activity.refresh(&mut *tree);
+            drop(tree);
+            [encode_entry(start), encode_entry(end)]
+        };
+        host.refresh_room_activity();
+        args.as_object_mut().unwrap().remove("operation");
+        args.as_object_mut().unwrap().remove("frontier");
+        for after_mutation in [false, true] {
+            let ticket = invoke_action(&host, &args, INSPECT);
+            host.apply_pending_history_editorial();
+            let receipt = ticket().unwrap().unwrap();
+            let tilo_actions::InvocationUpdate::Succeeded { output, .. } = receipt.update else {
+                panic!("inspection must succeed");
+            };
+            let value = output.value.unwrap();
+            let serialized = value.to_string();
+            assert!(!serialized.contains("Confidential other room"));
+            for anchor in &private_anchors {
+                assert!(!serialized.contains(anchor));
+            }
+            if after_mutation {
+                assert!(serialized.contains("Visible review"));
+            } else {
+                let mut edit = args.clone();
+                edit["frontier"] = value["frontier"].clone();
+                edit["operation"] = serde_json::json!({"kind":"name","start":value["entries"][0],"end":value["entries"][1],"label":"Visible review"});
+                let ticket = invoke(&host, &edit);
+                host.apply_pending_history_editorial();
+                assert!(ticket().unwrap().is_some());
+            }
+        }
+    }
+
+    #[test]
     fn wrong_room_and_unknown_kind_never_write() {
         let (mut host, mut args) = fixture();
         let chrome = host.chrome.clone().unwrap();
@@ -539,10 +599,30 @@ impl crate::shell::overlay_host::ShellOverlayHost {
         // Do not open, rebind or refresh the pane here: that would silently
         // replace the context the caller reviewed with a new capability.
         if pending.inspect {
-            let groups = self.room_activity.timeline().named_ranges().iter().filter(|r| r.id.len() <= 128).take(64).map(|r| serde_json::json!({"record":r.id,"start":encode_entry(r.start),"end":r.end.map(encode_entry),"label":r.label.chars().take(ui::history_groups::MAX_LABEL_LEN).collect::<String>()})).collect::<Vec<_>>();
+            let records = state.records().clone();
+            let local = self.room_records.borrow();
+            self.room_activity
+                .refresh_records_with_local(&mut *tree, &records, &*local);
             let timeline = self.room_activity.timeline();
-            let display_groups = timeline.groups().iter()
-                .flat_map(|g| std::iter::once(g).chain(g.children.iter()))
+            // Document-wide marker storage is private, even when bounded.
+            // Only expose names admitted into a currently displayed band.
+            let mut visible = Vec::new();
+            for group in timeline.groups() {
+                group.walk(&mut visible);
+            }
+            visible.retain(|g| {
+                timeline
+                    .entries()
+                    .get(g.start..g.end)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|e| timeline.filter().matches(e))
+            });
+            let groups = visible.iter().filter_map(|g| {
+                let record = g.record_id.as_deref().filter(|id| id.len() <= 128)?;
+                Some(serde_json::json!({"record":record,"start":encode_entry(g.first_entry),"end":encode_entry(g.last_entry),"label":g.title(timeline.entries()).chars().take(ui::history_groups::MAX_LABEL_LEN).collect::<String>()}))
+            }).take(64).collect::<Vec<_>>();
+            let display_groups = visible.iter()
                 .take(64)
                 .map(|g| serde_json::json!({
                     "start": encode_entry(g.first_entry),
@@ -563,6 +643,14 @@ impl crate::shell::overlay_host::ShellOverlayHost {
             .room_activity
             .apply_history_editorial(&mut *tree, &pending.request)
         {
+            // The mutation's tree refresh is not a source-admitted room
+            // projection. Restore aggregation before a cached inspection can
+            // observe it, rather than waiting for the next paint refresh.
+            let records = state.records().clone();
+            let local = self.room_records.borrow();
+            self.room_activity
+                .refresh_records_with_local(&mut *tree, &records, &*local);
+            drop(tree);
             pending.finish(Ok(ActionReceipt::completed()));
         } else {
             pending.finish(Err(invalid("unknown group, stale pane/frontier, invalid label or boundary, or no live local writer; inspect again before retrying")));
