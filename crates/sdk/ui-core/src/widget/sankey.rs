@@ -23,7 +23,7 @@ use crate::widget::Widget;
 use crate::widget::chart_data::{ChartLink, ChartNode};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
+    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_index,
 };
 
 #[derive(Clone, Debug)]
@@ -76,7 +76,7 @@ struct LinkBand {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Hit {
+pub(crate) enum Hit {
     Node(usize),
     Link(usize),
 }
@@ -88,11 +88,8 @@ pub struct SankeyChart {
     title: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
-    hovered: Option<Hit>,
+    inspection: ChartInspection<Hit>,
     activated: Option<SankeySelection>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
     /// Trailing room kept for the last column's labels, measured at paint.
     label_reserve: f64,
 }
@@ -106,11 +103,8 @@ impl SankeyChart {
             title: String::new(),
             height: 420.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
+            inspection: ChartInspection::default(),
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
             label_reserve: 0.0,
         }
     }
@@ -132,7 +126,7 @@ impl SankeyChart {
     pub fn set_data(&mut self, nodes: Vec<ChartNode>, links: Vec<ChartLink>) {
         self.nodes = nodes;
         self.links = links;
-        self.hovered = None;
+        self.inspection.hovered = None;
     }
     pub fn take_activated(&mut self) -> Option<SankeySelection> {
         self.activated.take()
@@ -150,7 +144,7 @@ impl SankeyChart {
         }
     }
     pub fn inspect(&mut self, selection: &SankeySelection) -> bool {
-        self.hovered = match selection {
+        self.inspection.hovered = match selection {
             SankeySelection::Node(id) => self
                 .nodes
                 .iter()
@@ -162,33 +156,32 @@ impl SankeyChart {
                 .position(|link| link.id == *id && link.value.is_finite() && link.value > 0.0)
                 .map(Hit::Link),
         };
-        self.keyboard_inspection = self.hovered.is_some();
+        self.inspection.keyboard = self.inspection.hovered.is_some();
         self.update_inspection_anchor();
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
     fn update_inspection_anchor(&mut self) {
-        let Some(hit) = self.hovered else { return };
+        let Some(hit) = self.inspection.hovered else {
+            return;
+        };
         let (nodes, links) = self.geometry();
-        self.pointer = match hit {
+        self.inspection.pointer = match hit {
             Hit::Node(index) => nodes
                 .iter()
                 .find(|node| node.index == index)
-                .map_or(self.pointer, |node| node.rect.center()),
-            Hit::Link(index) => {
-                links
-                    .iter()
-                    .find(|link| link.index == index)
-                    .map_or(self.pointer, |link| {
-                        Point::new(
-                            link.source.x.midpoint(link.target.x),
-                            link.source.y.midpoint(link.target.y),
-                        )
-                    })
-            }
+                .map_or(self.inspection.pointer, |node| node.rect.center()),
+            Hit::Link(index) => links.iter().find(|link| link.index == index).map_or(
+                self.inspection.pointer,
+                |link| {
+                    Point::new(
+                        link.source.x.midpoint(link.target.x),
+                        link.source.y.midpoint(link.target.y),
+                    )
+                },
+            ),
         };
     }
 
@@ -515,23 +508,21 @@ impl SankeyChart {
 }
 
 impl InteractiveChart for SankeyChart {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = Hit;
+    fn inspection(&mut self) -> &mut ChartInspection<Hit> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
         let (nodes, links) = self.geometry();
-        if let Some(node) = nodes
-            .iter()
-            .find(|node| node.rect.inflate(3.0, 3.0).contains(self.pointer))
-        {
-            self.hovered = Some(Hit::Node(node.index));
+        if let Some(node) = nodes.iter().find(|node| {
+            node.rect
+                .inflate(3.0, 3.0)
+                .contains(self.inspection.pointer)
+        }) {
+            self.inspection.hovered = Some(Hit::Node(node.index));
             return;
         }
-        self.hovered = links
+        self.inspection.hovered = links
             .iter()
             .find(|link| {
                 (0_u32..=20).any(|step| {
@@ -539,16 +530,13 @@ impl InteractiveChart for SankeyChart {
                     let x = link.source.x + (link.target.x - link.source.x) * t;
                     let smooth = t * t * (3.0 - 2.0 * t);
                     let y = link.source.y + (link.target.y - link.source.y) * smooth;
-                    Point::new(x, y).distance(self.pointer) <= link.thickness / 2.0 + 4.0
+                    Point::new(x, y).distance(self.inspection.pointer) <= link.thickness / 2.0 + 4.0
                 })
             })
             .map(|link| Hit::Link(link.index));
     }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
-    }
     fn activate_hovered(&mut self) -> bool {
-        let Some(hit) = self.hovered else {
+        let Some(hit) = self.inspection.hovered else {
             return false;
         };
         self.activated = self.selection_for(hit);
@@ -564,12 +552,13 @@ impl InteractiveChart for SankeyChart {
             .chain(links.iter().map(|link| Hit::Link(link.index)))
             .collect::<Vec<_>>();
         let current = self
+            .inspection
             .hovered
             .and_then(|hit| candidates.iter().position(|candidate| *candidate == hit));
-        self.hovered = moved_index(current, candidates.len(), action)
+        self.inspection.hovered = moved_index(current, candidates.len(), action)
             .and_then(|index| candidates.get(index).copied());
         self.update_inspection_anchor();
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
@@ -589,7 +578,7 @@ impl Widget for SankeyChart {
         _presence: &PresenceCtx,
     ) {
         self.measure_label_reserve(tr, theme);
-        if self.keyboard_inspection {
+        if self.inspection.keyboard {
             self.update_inspection_anchor();
         }
         let (nodes, links) = self.geometry();
@@ -615,7 +604,7 @@ impl Widget for SankeyChart {
             let base = spec
                 .color
                 .unwrap_or_else(|| Self::palette(theme, source_index));
-            let alpha = if self.hovered == Some(Hit::Link(link.index)) {
+            let alpha = if self.inspection.hovered == Some(Hit::Link(link.index)) {
                 self.style.link_alpha.saturating_add(70)
             } else {
                 self.style.link_alpha
@@ -640,7 +629,7 @@ impl Widget for SankeyChart {
                 self.style.node_radius.min(node.rect.width() / 2.0),
             );
             scene.fill(Fill::NonZero, transform, color, None, &shape);
-            if self.hovered == Some(Hit::Node(node.index)) {
+            if self.inspection.hovered == Some(Hit::Node(node.index)) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -651,7 +640,7 @@ impl Widget for SankeyChart {
             }
         }
         self.draw_node_labels(scene, transform, tr, theme, &nodes);
-        if let Some(hit) = self.hovered.filter(|_| self.style.tooltip) {
+        if let Some(hit) = self.inspection.hovered.filter(|_| self.style.tooltip) {
             let (title, detail) = match hit {
                 Hit::Node(index) => {
                     let Some(node) = self.nodes.get(index) else {
@@ -699,7 +688,7 @@ impl Widget for SankeyChart {
                 transform,
                 tr,
                 theme,
-                self.pointer,
+                self.inspection.pointer,
                 self.rect,
                 150.0,
                 (&title, &detail),

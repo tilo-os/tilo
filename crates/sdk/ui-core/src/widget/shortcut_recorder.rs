@@ -231,9 +231,7 @@ impl Widget for ShortcutRecorder {
         tree.set_style(node, style).is_ok()
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -380,9 +378,6 @@ impl Widget for ShortcutRecorder {
     }
     fn test_id(&self) -> Option<&str> {
         Some(&self.id)
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.rect

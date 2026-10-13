@@ -8,6 +8,7 @@
 
 pub mod atomic;
 pub mod bounded;
+pub mod identity;
 pub mod lock;
 pub mod nofollow;
 pub mod private;

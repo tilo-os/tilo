@@ -972,9 +972,7 @@ impl Widget for SearchResultsView {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1124,10 +1122,6 @@ impl Widget for SearchResultsView {
 
     fn test_id(&self) -> Option<&str> {
         self.test_id.as_deref()
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn perform_semantic_action(

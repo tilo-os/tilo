@@ -2658,9 +2658,7 @@ impl Widget for EditorView {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -2806,10 +2804,6 @@ impl Widget for EditorView {
                         .multiline(true),
                 ),
         )
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

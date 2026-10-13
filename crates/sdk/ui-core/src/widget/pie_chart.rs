@@ -32,7 +32,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, chart_nav_action, handle_chart_event,
+    ChartInspection, ChartNavAction, InteractiveChart, chart_nav_action, handle_chart_event,
     moved_index,
 };
 use crate::widget::{TaffyTreeExt, Widget};
@@ -171,11 +171,8 @@ pub struct PieChart {
     /// Keys inspect slices only while the chart has focus.
     focused: bool,
     rect: Rect,
-    hovered: Option<usize>,
     activated: Option<String>,
-    pointer: Point,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
+    inspection: ChartInspection<usize>,
     transition_from: Option<Vec<PieSlice>>,
     transition_started: Instant,
     reduce_motion: bool,
@@ -197,11 +194,8 @@ impl PieChart {
             legend_rects: Vec::new(),
             focused: false,
             rect: Rect::ZERO,
-            hovered: None,
             activated: None,
-            pointer: Point::ZERO,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
+            inspection: ChartInspection::default(),
             transition_from: None,
             transition_started: crate::time::now(),
             reduce_motion: false,
@@ -379,7 +373,7 @@ impl PieChart {
         } else {
             self.transition_from = None;
         }
-        self.hovered =
+        self.inspection.hovered =
             hovered_id.and_then(|id| self.slices.iter().position(|slice| slice.id == id));
     }
     /// Replace data without motion, useful for initial hydration, restored
@@ -388,7 +382,7 @@ impl PieChart {
         let hovered_id = self.hovered().map(|slice| slice.id.clone());
         self.slices = slices;
         self.transition_from = None;
-        self.hovered =
+        self.inspection.hovered =
             hovered_id.and_then(|id| self.slices.iter().position(|slice| slice.id == id));
     }
     pub fn finish_animation(&mut self) {
@@ -405,18 +399,17 @@ impl PieChart {
         self.center_subtitle = subtitle.into();
     }
     pub fn hovered(&self) -> Option<&PieSlice> {
-        self.hovered.and_then(|i| self.slices.get(i))
+        self.inspection.hovered.and_then(|i| self.slices.get(i))
     }
     /// Inspect a slice by stable ID. Useful for keyboard navigation,
     /// coordinated views, guided tours, and deterministic visual tests.
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.hovered = self.slices.iter().position(|slice| slice.id == id);
-        self.keyboard_inspection = self.hovered.is_some();
-        self.hovered.is_some()
+        self.inspection.hovered = self.slices.iter().position(|slice| slice.id == id);
+        self.inspection.keyboard = self.inspection.hovered.is_some();
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
@@ -558,7 +551,7 @@ impl PieChart {
         let slice_anchor = || {
             self.sectors_at(crate::time::now())
                 .into_iter()
-                .find(|sector| self.hovered == Some(sector.index))
+                .find(|sector| self.inspection.hovered == Some(sector.index))
                 .map_or_else(
                     || self.rect.center(),
                     |sector| {
@@ -573,7 +566,9 @@ impl PieChart {
                 )
         };
         let anchor = match self.style.tooltip_anchor {
-            PieTooltipAnchor::Pointer if self.rect.contains(self.pointer) => self.pointer,
+            PieTooltipAnchor::Pointer if self.rect.contains(self.inspection.pointer) => {
+                self.inspection.pointer
+            }
             PieTooltipAnchor::Pointer | PieTooltipAnchor::Slice => slice_anchor(),
         };
         let title_style = theme.text(TextRole::Caption);
@@ -676,21 +671,19 @@ impl PieChart {
 }
 
 impl InteractiveChart for PieChart {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = usize;
+    fn inspection(&mut self) -> &mut ChartInspection<usize> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
-        self.hovered = self.hit_test(self.pointer);
-    }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
+        self.inspection.hovered = self.hit_test(self.inspection.pointer);
     }
     fn activate_hovered(&mut self) -> bool {
-        let Some(slice) = self.hovered.and_then(|index| self.slices.get(index)) else {
+        let Some(slice) = self
+            .inspection
+            .hovered
+            .and_then(|index| self.slices.get(index))
+        else {
             return false;
         };
         if !slice.interactive {
@@ -706,11 +699,12 @@ impl InteractiveChart for PieChart {
             .map(|sector| sector.index)
             .collect::<Vec<_>>();
         let position = self
+            .inspection
             .hovered
             .and_then(|index| indices.iter().position(|candidate| *candidate == index));
-        self.hovered = moved_index(position, indices.len(), action)
+        self.inspection.hovered = moved_index(position, indices.len(), action)
             .and_then(|position| indices.get(position).copied());
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
@@ -757,9 +751,7 @@ impl Widget for PieChart {
             height: known.height.unwrap_or(height),
         }
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -788,7 +780,7 @@ impl Widget for PieChart {
                 continue;
             };
             let mid = sector.start.midpoint(sector.end);
-            let lift = if self.hovered == Some(sector.index) && slice.interactive {
+            let lift = if self.inspection.hovered == Some(sector.index) && slice.interactive {
                 self.style.hover_offset
             } else {
                 0.0
@@ -940,9 +932,6 @@ impl Widget for PieChart {
     fn name(&self) -> &'static str {
         "PieChart"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn needs_animation_frame(&self) -> bool {
         self.is_animating()
     }
@@ -951,7 +940,7 @@ impl Widget for PieChart {
     }
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
-        if !focused && self.keyboard_inspection {
+        if !focused && self.inspection.keyboard {
             self.clear_inspection();
         }
     }

@@ -19,14 +19,14 @@ use ui::widget::TaffyTreeExt;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
 use ui::a11y::{AccessNode, Action};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Widget, layout_rect};
+use ui::widget::Widget;
 
 use crate::core::{Core, OverviewEventCtx};
 
@@ -86,9 +86,7 @@ impl Widget for OverviewPane {
         leaf(taffy, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -156,10 +154,6 @@ impl Widget for OverviewPane {
         Some("weather-overview")
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn accessibility(&self) -> Option<AccessNode> {
         Some(self.core.borrow().overview_accessibility(self.rect))
     }
@@ -212,9 +206,7 @@ impl Widget for DetailPane {
         leaf(taffy, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -248,10 +240,6 @@ impl Widget for DetailPane {
 
     fn test_id(&self) -> Option<&str> {
         Some("weather-detail")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn tooltip(&self) -> Option<&str> {

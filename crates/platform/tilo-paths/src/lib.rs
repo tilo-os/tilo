@@ -61,7 +61,7 @@ mod location;
 pub mod session;
 
 pub use app::{AppPaths, DEFAULT_PROFILE, default_profile, set_default_profile};
-pub use caps::{Availability, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use location::{InvalidVPath, Location, VPath, VirtualRoot};
 
 /// Where a Tilo Linux session mounts the collaborative workspace, and the
@@ -399,7 +399,7 @@ pub fn runtime_dir() -> Option<PathBuf> {
 /// have a native path; an app's own scratch space is [`AppPaths::runtime`].
 #[must_use]
 pub fn temp_dir() -> Option<PathBuf> {
-    (availability(Feature::NativePaths) == Availability::Available).then(std::env::temp_dir)
+    (available(Feature::NativePaths)).then(std::env::temp_dir)
 }
 
 /// Directories the system and the user install fonts into, most general

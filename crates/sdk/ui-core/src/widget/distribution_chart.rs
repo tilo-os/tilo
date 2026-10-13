@@ -20,7 +20,7 @@ use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
+    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
 };
 
 #[derive(Clone, Debug)]
@@ -172,11 +172,8 @@ pub struct DistributionChart {
     title: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
-    hovered: Option<usize>,
+    inspection: ChartInspection<usize>,
     activated: Option<String>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
 }
 
 impl DistributionChart {
@@ -187,11 +184,8 @@ impl DistributionChart {
             title: String::new(),
             height: 360.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
+            inspection: ChartInspection::default(),
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
         }
     }
     #[must_use]
@@ -216,25 +210,24 @@ impl DistributionChart {
     }
     pub fn set_series(&mut self, series: Vec<DistributionSeries>) {
         self.series = series;
-        self.hovered = None;
+        self.inspection.hovered = None;
     }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
         let summaries = self.summaries();
-        self.hovered = self.series.iter().enumerate().position(|(index, series)| {
+        self.inspection.hovered = self.series.iter().enumerate().position(|(index, series)| {
             series.id == id && summaries.get(index).is_some_and(Option::is_some)
         });
-        self.keyboard_inspection = self.hovered.is_some();
-        if let Some(index) = self.hovered {
-            self.pointer = Point::new(self.center_x(index), self.plot_rect().center().y);
+        self.inspection.keyboard = self.inspection.hovered.is_some();
+        if let Some(index) = self.inspection.hovered {
+            self.inspection.pointer = Point::new(self.center_x(index), self.plot_rect().center().y);
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
     fn plot_rect(&self) -> Rect {
         Rect::new(
@@ -335,38 +328,37 @@ impl DistributionChart {
 }
 
 impl InteractiveChart for DistributionChart {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = usize;
+    fn inspection(&mut self) -> &mut ChartInspection<usize> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
-        if !self.plot_rect().contains(self.pointer) {
-            self.hovered = None;
+        if !self.plot_rect().contains(self.inspection.pointer) {
+            self.inspection.hovered = None;
             return;
         }
-        self.hovered = self
+        self.inspection.hovered = self
             .series
             .iter()
             .enumerate()
             .filter(|(_, series)| !series.samples.is_empty())
             .min_by(|(left, _), (right, _)| {
-                (self.center_x(*left) - self.pointer.x)
+                (self.center_x(*left) - self.inspection.pointer.x)
                     .abs()
-                    .total_cmp(&(self.center_x(*right) - self.pointer.x).abs())
+                    .total_cmp(&(self.center_x(*right) - self.inspection.pointer.x).abs())
             })
             .and_then(|(index, _)| {
-                ((self.center_x(index) - self.pointer.x).abs() <= self.slot_width() / 2.0)
+                ((self.center_x(index) - self.inspection.pointer.x).abs()
+                    <= self.slot_width() / 2.0)
                     .then_some(index)
             });
     }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
-    }
     fn activate_hovered(&mut self) -> bool {
-        let Some(series) = self.hovered.and_then(|index| self.series.get(index)) else {
+        let Some(series) = self
+            .inspection
+            .hovered
+            .and_then(|index| self.series.get(index))
+        else {
             return false;
         };
         self.activated = Some(series.id.clone());
@@ -380,11 +372,11 @@ impl InteractiveChart for DistributionChart {
             .filter(|(_, summary)| summary.is_some())
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        self.hovered = moved_item(self.hovered, &candidates, action);
-        if let Some(index) = self.hovered {
-            self.pointer = Point::new(self.center_x(index), self.plot_rect().center().y);
+        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
+        if let Some(index) = self.inspection.hovered {
+            self.inspection.pointer = Point::new(self.center_x(index), self.plot_rect().center().y);
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
@@ -406,10 +398,10 @@ impl Widget for DistributionChart {
         let summaries = self.summaries();
         let range = Self::range(&summaries);
         let plot = self.plot_rect();
-        if self.keyboard_inspection
-            && let Some(index) = self.hovered
+        if self.inspection.keyboard
+            && let Some(index) = self.inspection.hovered
         {
-            self.pointer = Point::new(self.center_x(index), plot.center().y);
+            self.inspection.pointer = Point::new(self.center_x(index), plot.center().y);
         }
         if !self.title.is_empty() {
             tr.draw_style(
@@ -543,7 +535,7 @@ impl Widget for DistributionChart {
                     );
                 }
             }
-            if self.hovered == Some(index) {
+            if self.inspection.hovered == Some(index) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -570,7 +562,7 @@ impl Widget for DistributionChart {
                 &theme.text(TextRole::Caption),
             );
         }
-        if let Some(index) = self.hovered.filter(|_| self.style.tooltip)
+        if let Some(index) = self.inspection.hovered.filter(|_| self.style.tooltip)
             && let (Some(series), Some(Some(summary))) =
                 (self.series.get(index), summaries.get(index))
         {
@@ -590,7 +582,7 @@ impl Widget for DistributionChart {
                 transform,
                 tr,
                 theme,
-                self.pointer,
+                self.inspection.pointer,
                 self.rect,
                 210.0,
                 (&series.label, &detail),
