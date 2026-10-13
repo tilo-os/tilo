@@ -7297,20 +7297,12 @@ impl FrameHarness {
     /// three events a click produces, in order.
     pub fn click_at(&mut self, x: f64, y: f64) {
         self.pump_component_wakes();
-        self.send(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x * self.input_scale, y * self.input_scale),
-        });
-        self.send(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        self.send(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.send(&crate::synthetic_input::cursor_moved(
+            x * self.input_scale,
+            y * self.input_scale,
+        ));
+        self.send(&crate::synthetic_input::mouse_press());
+        self.send(&crate::synthetic_input::mouse_release());
     }
 
     /// Two left clicks at `(x, y)` that count as one double-click however
@@ -7333,20 +7325,13 @@ impl FrameHarness {
     pub fn drag_at(&mut self, from: (f64, f64), to: (f64, f64)) {
         self.pump_component_wakes();
         let moved = |this: &mut Self, (x, y): (f64, f64)| {
-            this.send(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(
-                    x * this.input_scale,
-                    y * this.input_scale,
-                ),
-            });
+            this.send(&crate::synthetic_input::cursor_moved(
+                x * this.input_scale,
+                y * this.input_scale,
+            ));
         };
         moved(self, from);
-        self.send(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        self.send(&crate::synthetic_input::mouse_press());
         for fraction in [0.25, 0.5, 0.75, 1.0] {
             moved(
                 self,
@@ -7356,11 +7341,7 @@ impl FrameHarness {
                 ),
             );
         }
-        self.send(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.send(&crate::synthetic_input::mouse_release());
     }
 
     /// Direct-touch activation at logical coordinates.
@@ -7565,11 +7546,7 @@ impl FrameHarness {
             reason = "line-delta counts are small integers; winit's `LineDelta` is f32 and there is no fallible f64->f32 conversion"
         )]
         let (dx, dy) = (dx as f32, dy as f32);
-        self.send(&WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        self.send(&crate::synthetic_input::mouse_wheel(dx, dy));
     }
 
     // -- Perf harness plumbing (see [`crate::profiling`]) ------------------
@@ -9048,10 +9025,7 @@ mod tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let style = Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
+                size: taffy::Size::from_percent(1.0, 1.0),
                 ..Style::default()
             };
             taffy.widget_leaf(style, node_map, self)
@@ -10271,10 +10245,7 @@ mod tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let style = Style {
-                size: Size {
-                    width: Dimension::length(120.0),
-                    height: Dimension::length(40.0),
-                },
+                size: Size::from_lengths(120.0, 40.0),
                 ..Default::default()
             };
             taffy.widget_leaf(style, node_map, self)
@@ -10392,8 +10363,7 @@ mod tests {
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.pointer =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.pointer = ctx.logical(position);
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
@@ -12319,10 +12289,7 @@ mod undo_driver_tests {
         ) -> NodeId {
             let node = taffy
                 .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(40.0),
-                        height: Dimension::length(20.0),
-                    },
+                    size: Size::from_lengths(40.0, 20.0),
                     ..Default::default()
                 })
                 .unwrap();
@@ -12330,9 +12297,7 @@ mod undo_driver_tests {
             node
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             use automerge::{ReadDoc, transaction::Transactable};
@@ -12362,10 +12327,6 @@ mod undo_driver_tests {
 
         fn name(&self) -> &'static str {
             "Typer"
-        }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            self.rect
         }
     }
 
@@ -12577,10 +12538,7 @@ mod dispatched_action_driver_tests {
         ) -> NodeId {
             let node = taffy
                 .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(60.0),
-                        height: Dimension::length(20.0),
-                    },
+                    size: Size::from_lengths(60.0, 20.0),
                     ..Default::default()
                 })
                 .unwrap();
@@ -12588,9 +12546,7 @@ mod dispatched_action_driver_tests {
             node
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             let doc = ctx.state.document_mut();
@@ -12654,10 +12610,6 @@ mod dispatched_action_driver_tests {
 
         fn name(&self) -> &'static str {
             "ActionEditor"
-        }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            self.rect
         }
 
         fn is_focusable(&self) -> bool {
@@ -12940,10 +12892,7 @@ mod dispatched_action_driver_tests {
             d.type_text("a");
 
             // A pointer move: reaches the tree, dispatches no action.
-            d.send(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
-            });
+            d.send(&crate::synthetic_input::cursor_moved(5.0, 5.0));
 
             assert!(
                 d.perform_undo(),
@@ -13027,10 +12976,7 @@ mod prepared_driver_tests {
         ) -> NodeId {
             let node = tree
                 .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(80.0),
-                        height: Dimension::length(30.0),
-                    },
+                    size: Size::from_lengths(80.0, 30.0),
                     ..Default::default()
                 })
                 .unwrap();
@@ -13105,9 +13051,6 @@ mod prepared_driver_tests {
         }
         fn app_icon(&self) -> crate::widget::IconDescriptor {
             crate::widget::IconDescriptor::Glyph("O")
-        }
-        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-            None
         }
     }
     fn factory(
@@ -13664,18 +13607,13 @@ mod framed_tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let style = Style {
-                size: Size {
-                    width: Dimension::length(self.width),
-                    height: Dimension::length(40.0),
-                },
+                size: Size::from_lengths(self.width, 40.0),
                 ..Default::default()
             };
             taffy.widget_leaf(style, node_map, self)
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if matches!(
@@ -13688,10 +13626,6 @@ mod framed_tests {
                 self.presses = self.presses.saturating_add(1);
                 *ctx.handled = true;
             }
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
         }
 
         fn name(&self) -> &'static str {
@@ -13786,13 +13720,7 @@ mod framed_tests {
             }
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
-        }
+        crate::rect_geometry!();
 
         fn name(&self) -> &'static str {
             "Tall"

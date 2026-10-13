@@ -102,6 +102,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `window-management.md` | one model for windows, strips and workspaces: chords, gestures, pointer, overlays, actions, motion |
 | `collaboration.md` | CRDT sync, presence, peers |
 | `rooms.md` | workspaces, hosts, membership |
+| `web-routing.md` | links: one URL grammar over resource refs, desktop and full-tab modes, history, admission, `share-link` |
 | `storage.md` | unified storage, sync, records, history and caching (design for review) |
 | `security.md` | sandbox and capability grants for app code |
 | `theming.md` | the theme token contract, validation, layers and precedence, app boundaries |
@@ -110,6 +111,8 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `search.md` | providers and per-resource-type rendering |
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
 | `agent-host.md` | agent MCP beside a local enrolled relay on a foreign Linux host (no desktop/OS) |
+| `bots.md` | bots and connectors: headless Shortcuts with identity, derived grants, the trigger dispatcher, the runner, appearance, the bot directory |
+| `discord-bridge.md` | the Discord connector and bridge bot, layout and role ownership, moderation mapping, and the persistent public room it bridges |
 | `../system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |
 | `distribution.md` | how software, settings and content reach a machine |
 | `language-checking.md` | spelling, grammar, text actions |

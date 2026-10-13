@@ -18,12 +18,11 @@
 #[cfg(test)]
 use super::channel_key;
 use super::{
-    ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionDescriptor,
-    BrokerActionSurface, CollabEvent, CollabRequest, CollabTransport, CollaborationManager,
-    Collaborator, DocumentMutation, DocumentPublicationError, DocumentPublicationReceipt,
-    ExportedAction, ExportedInput, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
-    SignedOp, TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
-    presence_handle_env,
+    ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionSurface, CollabEvent,
+    CollabRequest, CollabTransport, CollaborationManager, Collaborator, DocumentMutation,
+    DocumentPublicationError, DocumentPublicationReceipt, ExportedAction, ExportedInput,
+    PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, SignedOp, TransportCommand,
+    TransportError, TransportStatus, Uuid, auto_hello_env, mpsc, presence_handle_env,
 };
 
 // Worker-owned Cloud facilities: committed-document reads, the paged
@@ -771,37 +770,11 @@ fn json_map_bytes(values: &serde_json::Map<String, serde_json::Value>, meter: &m
 /// to a `Vec<u8>` reuses the serializer every value is already sent with,
 /// instead of compiling a second one per type for a counting writer.
 fn serialized_bytes<T: serde::Serialize>(value: &T, meter: &mut ByteMeter) {
-    thread_local! {
-        static TEXT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-    let written = TEXT.with(|text| {
-        let Ok(mut text) = text.try_borrow_mut() else {
-            return written_len(&mut Vec::new(), value);
-        };
-        text.clear();
-        let written = written_len(&mut text, value);
-        // Keep the buffer for the next value, but not the peak of a large one.
-        if text.capacity() > SERIALIZED_TEXT_KEPT {
-            *text = Vec::new();
-        }
-        written
-    });
-    match written {
-        Some(bytes) => meter.add(bytes),
-        None => meter.0 = None,
+    match runtime_collab::wire_json_len(value) {
+        usize::MAX => meter.0 = None,
+        bytes => meter.add(bytes),
     }
 }
-
-/// The length of `value`'s JSON text, written after what `text` holds.
-fn written_len<T: serde::Serialize>(text: &mut Vec<u8>, value: &T) -> Option<usize> {
-    value
-        .serialize(&mut serde_json::Serializer::new(&mut *text))
-        .ok()
-        .map(|()| text.len())
-}
-
-/// The most text [`serialized_bytes`] keeps allocated between values.
-const SERIALIZED_TEXT_KEPT: usize = 64 * 1024;
 
 fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     meter.string_capacity(&action.resource);
@@ -1197,32 +1170,6 @@ async fn remote_action_round_trip(
     })
 }
 
-fn broker_action_bytes(action: &BrokerActionDescriptor, meter: &mut ByteMeter) {
-    meter.string_capacity(&action.resource);
-    if let Some(identity) = &action.semantic_identity {
-        meter.string_capacity(&identity.kind);
-        meter.string_capacity(&identity.key);
-    }
-    meter.string_capacity(&action.action);
-    meter.string_capacity(&action.resource_kind);
-    meter.string_capacity(&action.resource_label);
-    meter.string_capacity(&action.action_label);
-    if let Some(description) = &action.description {
-        meter.string_capacity(description);
-    }
-    meter.add_product(
-        action.params.capacity(),
-        std::mem::size_of::<tilo_actions::ActionParam>(),
-    );
-    for param in &action.params {
-        serialized_bytes(param, meter);
-    }
-    serialized_bytes(&action.contract, meter);
-    meter.string_capacity(&action.input.kind);
-    meter.string_capacity(&action.input.prompt);
-    meter.string_capacity(&action.input.placeholder);
-}
-
 fn action_catalogue_bytes(
     surfaces: &[BrokerActionSurface],
     surface_capacity: usize,
@@ -1235,10 +1182,10 @@ fn action_catalogue_bytes(
         meter.string_capacity(&surface.record_id);
         meter.add_product(
             surface.actions.capacity(),
-            std::mem::size_of::<BrokerActionDescriptor>(),
+            std::mem::size_of::<ExportedAction>(),
         );
         for action in &surface.actions {
-            broker_action_bytes(action, meter);
+            exported_action_bytes(action, meter);
         }
     }
 }
@@ -4528,20 +4475,20 @@ async fn spawn_context_stream(
                     if !tx.send_durable(CollabEvent::DocumentSnapshotRequested {
                         route: route.clone(),
                     }) {
-                        break;
+                        return;
                     }
                     continue;
                 }
                 if let Some(peer_id) = context.follow_changed {
                     if !tx.send_durable(CollabEvent::FollowChanged { peer_id }) {
-                        break;
+                        return;
                     }
                     continue;
                 }
                 if let Some(message) = context.handoff {
                     if let Some(request) = super::handoff::HandoffRequest::decode(&message) {
                         if !tx.send_durable(CollabEvent::Handoff { request }) {
-                            break;
+                            return;
                         }
                     } else {
                         tracing::warn!("collab: malformed handoff request dropped");
@@ -4586,9 +4533,15 @@ async fn spawn_context_stream(
                     collaborators,
                     permissions: context.permissions,
                 }) {
-                    break;
+                    return;
                 }
             }
+            // Context is a complete owner-backed membership snapshot. Losing
+            // that source must withdraw it rather than retain stale people.
+            let _ = tx.send_durable(CollabEvent::Context {
+                collaborators: Vec::new(),
+                permissions: Vec::new(),
+            });
         });
     }
 }
@@ -6594,6 +6547,7 @@ async fn dispatch_sdk_request(
             run_id,
             lease,
             peer_id,
+            provider,
             resource,
             action,
             arguments,
@@ -6612,6 +6566,7 @@ async fn dispatch_sdk_request(
                 );
                 let target = runtime_collab::TaskAction {
                     peer_id,
+                    provider: &provider,
                     resource: &resource,
                     action: &action,
                     argument: Some(&argument),
@@ -6646,6 +6601,7 @@ async fn dispatch_sdk_request(
             run_id,
             lease,
             peer_id,
+            provider,
             resource,
             action,
             arguments,
@@ -6658,6 +6614,7 @@ async fn dispatch_sdk_request(
             );
             let target = runtime_collab::TaskAction {
                 peer_id,
+                provider: &provider,
                 resource: &resource,
                 action: &action,
                 argument: Some(&argument),
@@ -7359,6 +7316,7 @@ mod tests {
 
     struct FakeContextStream {
         backlog: Rc<RefCell<Vec<SeedContext>>>,
+        terminate_after_backlog: bool,
     }
 
     impl context_stream::Server for FakeContextStream {
@@ -7369,6 +7327,11 @@ mod tests {
         ) -> Promise<(), capnp::Error> {
             let mut backlog = self.backlog.borrow_mut();
             if backlog.is_empty() {
+                if self.terminate_after_backlog {
+                    return Promise::err(capnp::Error::disconnected(
+                        "fixture context source gone".into(),
+                    ));
+                }
                 return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
             }
             let seed = backlog.remove(0);
@@ -7400,6 +7363,7 @@ mod tests {
         op_backlog: OpBacklog,
         presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
         context_backlog: Rc<RefCell<Vec<SeedContext>>>,
+        terminate_context_stream: bool,
         scrollback_response: Rc<RefCell<Option<SeedScrollback>>>,
     }
 
@@ -7866,6 +7830,7 @@ mod tests {
         ) -> Promise<(), capnp::Error> {
             let client: context_stream::Client = capnp_rpc::new_client(FakeContextStream {
                 backlog: self.context_backlog.clone(),
+                terminate_after_backlog: self.terminate_context_stream,
             });
             results.get().set_stream(client);
             Promise::ok(())
@@ -7941,6 +7906,7 @@ mod tests {
         op_backlog: Vec<(Vec<u8>, String)>,
         presence_backlog: Vec<SeedPresence>,
         context_backlog: Vec<SeedContext>,
+        terminate_context_stream: bool,
         scrollback_response: Option<SeedScrollback>,
     }
 
@@ -7986,6 +7952,7 @@ mod tests {
                 op_backlog: Rc::new(RefCell::new(self.op_backlog.clone())),
                 presence_backlog: Rc::new(RefCell::new(self.presence_backlog.clone())),
                 context_backlog: Rc::new(RefCell::new(self.context_backlog.clone())),
+                terminate_context_stream: self.terminate_context_stream,
                 scrollback_response: Rc::new(RefCell::new(self.scrollback_response.clone())),
             };
             let client: channel_handle::Client = capnp_rpc::new_client(chan);
@@ -11156,6 +11123,7 @@ mod tests {
             op_backlog: vec![],
             presence_backlog: vec![],
             context_backlog: vec![],
+            terminate_context_stream: false,
             scrollback_response: None,
         };
         let (scope, wakes) = wake_channel();
@@ -11878,6 +11846,7 @@ mod tests {
                     ],
                     permissions: vec!["edit".to_owned(), "share".to_owned()],
                 }],
+                terminate_context_stream: true,
                 ..FakeBroker::default()
             };
             let (fd, _captures, _th) = stand_up_fake_broker(broker);
@@ -11885,27 +11854,32 @@ mod tests {
             let events = poll_until(&mut mgr, |events| {
                 events
                     .iter()
-                    .any(|e| matches!(e, CollabEvent::Context { .. }))
+                    .filter(|event| matches!(event, CollabEvent::Context { .. }))
+                    .count()
+                    == 2
             });
 
-            let ctx = events
+            let contexts = events
                 .iter()
-                .find_map(|e| match e {
+                .filter_map(|e| match e {
                     CollabEvent::Context {
                         collaborators,
                         permissions,
                     } => Some((collaborators.clone(), permissions.clone())),
                     _ => None,
                 })
-                .expect("must receive a Context event");
-            let (collabs, perms) = ctx;
+                .collect::<Vec<_>>();
+            assert_eq!(contexts.len(), 2, "source loss must withdraw its context");
+            let (collabs, perms) = &contexts[0];
             assert_eq!(collabs.len(), 2);
             assert_eq!(collabs[0].id, "alice");
             assert_eq!(collabs[0].name, "Alice");
             // 0x00FF8000 is an orange; 0 says no colour.
             assert_eq!(collabs[0].colour, Some(crate::tokens::PresenceHue::Orange));
             assert_eq!(collabs[1].colour, None);
-            assert_eq!(perms, vec!["edit".to_owned(), "share".to_owned()]);
+            assert_eq!(perms, &["edit".to_owned(), "share".to_owned()]);
+            assert!(contexts[1].0.is_empty());
+            assert!(contexts[1].1.is_empty());
         }
 
         // Case `presence_stream_translates_cursor_and_all_other_variants`.
@@ -12247,7 +12221,7 @@ mod tests {
             "operation_kind": tilo_actions::OperationKind::View,
             "params": [tilo_actions::ActionParam::required("page", tilo_actions::ParamType::Resource, "The page to open")],
             "contract": tilo_actions::ActionContract::view(),
-            "input": {"kind": "none"}
+            "input": ExportedInput::None
         })).collect();
         serde_json::json!({"version": 1, "surfaces": [{
             "peer_id": 1, "app_id": "so.tilo.notes", "cluster_id": cluster.to_string(),

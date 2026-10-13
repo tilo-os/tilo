@@ -526,6 +526,7 @@ mod durable_local_matrix {
                     confirmation: None,
                     revision: None,
                     wait_ms: None,
+                    appearance: None,
                 };
                 assert!(matches!(
                     rig.state
@@ -1066,6 +1067,7 @@ mod durable_local_matrix {
                     revision: None,
                     on_behalf_of: None,
                     wait_ms: None,
+                    appearance: None,
                 };
                 assert!(matches!(
                     rig.state
@@ -1105,4 +1107,5 @@ mod durable_local_matrix {
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");
     include!("keyboard_map_read_authority_tests.rs");
+    include!("store_directory_publication_tests.rs");
 }

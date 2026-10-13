@@ -137,7 +137,7 @@ const server = process.env.SERVER ? {url: process.env.SERVER, close() {}} : awai
 // Chrome's synthetic camera answers getUserMedia without a prompt.
 const browser = await launch({args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream']});
 const results = [];
-const presented = "/frames [1-9]/.test(document.getElementById('status')?.textContent ?? '')";
+const presented = "/frames [1-9]/.test((document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? ''))";
 const text = s => s.replaceAll('{nonce}', nonce);
 
 async function nodes(tab) {
@@ -210,7 +210,7 @@ async function committed(tab) {
   await tab.evaluate('globalThis.tiloMount?.flush?.()').catch(() => {});
   let status = '';
   for (let i = 0; i < 40; i++) {
-    status = await tab.evaluate("document.getElementById('status')?.textContent ?? ''");
+    status = await tab.evaluate("(document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? '')");
     if (/committed/.test(status)) break;
     await sleep(250);
   }
@@ -239,7 +239,7 @@ try {
     try {
       await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false});
       await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: CHOOSER});
-      await tab.navigate(`${server.url}/index.html?app=${encodeURIComponent(app)}`);
+      await tab.navigate(`${server.url}/app/#/me/${app}`);
       await tab.waitFor(presented, {timeout: 300000});
       await sleep(2000);
       if (recipe.files) {
@@ -264,7 +264,7 @@ try {
       const errors = tab.log.filter(l => l.startsWith('EXC') || /panic/i.test(l));
       if (errors.length) result.detail += `; ${errors[0]}`;
     } catch (error) {
-      const status = await tab.evaluate("document.getElementById('status')?.textContent ?? ''").catch(() => '?');
+      const status = await tab.evaluate("(document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? '')").catch(() => '?');
       result.detail = `${String(error?.message ?? error).slice(0, 300)} (status: ${status}; ${tab.log.slice(0, 2).join(' | ').slice(0, 300)})`;
     } finally {
       results.push(result);

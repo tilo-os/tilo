@@ -2210,10 +2210,7 @@ impl ui::widget::Decorator for FeedsApp {
             let root = ui::widget::TaffyTreeExt::parent_node(
                 taffy,
                 taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
+                    size: taffy::Size::from_percent(1.0, 1.0),
                     ..Default::default()
                 },
                 &children,
@@ -2349,8 +2346,7 @@ impl ui::widget::Decorator for FeedsApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.core.borrow_mut().pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.core.borrow_mut().pointer = ctx.logical(position);
         }
         self.core.borrow_mut().flush_doc_writes(&mut ctx.state);
         if self.modal.is_some() {

@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -58,10 +58,7 @@ impl Widget for HeaderTitle {
         self.measured = None;
         let style = Style {
             flex_shrink: 1.0,
-            min_size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::length(0.0),
-            },
+            min_size: Size::from_lengths(0.0, 0.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -84,9 +81,7 @@ impl Widget for HeaderTitle {
         }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -109,10 +104,6 @@ impl Widget for HeaderTitle {
         self.measured
             .as_ref()
             .is_none_or(|(title, count)| *title != self.title || *count != self.count)
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

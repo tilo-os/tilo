@@ -347,14 +347,15 @@ impl Credentials {
     }
 
     pub fn sync(&mut self, engine: &SharedEngine) -> bool {
-        let mut dirty = false;
-        if let Some(addresses) = self.opening.get() {
+        let mut dirty = if let Some(addresses) = self.opening.get() {
             self.opening.set(None);
             self.address_mode = addresses;
             let requests = self.open(engine.supports_native_filtering());
             Self::send(engine, requests);
-            dirty = true;
-        }
+            true
+        } else {
+            false
+        };
         if let Some(action) = self.action.get() {
             self.action.set(None);
             dirty = true;
@@ -746,10 +747,6 @@ mod tests {
 
     /// Account selection, deletion confirmation and capture lifetime.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn credential_selection_and_capture_require_explicit_fresh_choices() {
         // Phase `multiple_accounts_require_selection_and_delete_confirmation`.
         {

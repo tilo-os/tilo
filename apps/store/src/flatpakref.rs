@@ -97,6 +97,7 @@ impl FlatpakRef {
                 user_managed: true,
             });
         StoreItem {
+            bot: None,
             id: self.app_id,
             name: self.title,
             description: self.comment,

@@ -23,6 +23,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import is_test_file, line_number  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCANNED = (Path("crates"), Path("apps"))
@@ -51,16 +54,6 @@ class Violation:
             "literal; write through a settings_store::Key or SectionWrite, or the "
             "schema's section constant"
         )
-
-
-def is_test_file(relative: Path) -> bool:
-    name = relative.name
-    return (
-        "tests" in relative.parts
-        or "benches" in relative.parts
-        or name == "tests.rs"
-        or name.endswith("_tests.rs")
-    )
 
 
 TEST_ITEM = re.compile(r"#\[(?:cfg\((?:all\()?test\b[^\]]*|test)\]")
@@ -152,10 +145,6 @@ def arguments(text: str, open_paren: int) -> list[str]:
             start = index + 1
         index += 1
     return [arg.strip() for arg in args]
-
-
-def line_number(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1
 
 
 def audit_file(root: Path, path: Path) -> list[Violation]:

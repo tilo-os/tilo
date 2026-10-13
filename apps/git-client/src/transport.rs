@@ -47,7 +47,6 @@ pub(super) fn current_config() -> Result<git2::Config, git2::Error> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "owned repository fixtures")]
 mod tests {
     use super::*;
 

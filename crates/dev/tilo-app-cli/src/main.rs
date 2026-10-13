@@ -1373,10 +1373,6 @@ fn run_locale(args: LocaleArgs) -> Result<Value> {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one dispatch over every artifact the command adds"
-)]
 fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
     let Some(command) = args.command else {
         anyhow::ensure!(
@@ -2234,7 +2230,7 @@ fn run_app_task(args: AppTaskArgs, task: tilo_app_cli::AppTask) -> Result<Value>
 }
 
 fn run_doctor(args: DoctorArgs) -> Result<Value> {
-    if let Some(ToolchainArg::Android) = args.platform {
+    if matches!(args.platform, Some(ToolchainArg::Android)) {
         let report = tilo_app_cli::android::doctor();
         println!("{}", report.summary());
         if !report.is_ready() {
@@ -2627,6 +2623,12 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
         // The agent is the headless consumer being used to drive apps; its
         // broker protocol is certified by the structural contract and tests.
         .filter(|dir| dir.file_name().is_none_or(|name| name != "agent"))
+        // An `apps/<name>-model` crate is an app's shared data library, not
+        // an application.
+        .filter(|dir| {
+            dir.file_name()
+                .is_none_or(|name| !name.to_string_lossy().ends_with("-model"))
+        })
         .collect::<Vec<_>>();
     app_dirs.sort();
     let mut packages = Vec::with_capacity(app_dirs.len());
@@ -2976,11 +2978,10 @@ fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
                 profile: None,
             },
         )?;
-        Ok(report)
     } else {
         println!("{}", outcome.summary());
-        Ok(report)
     }
+    Ok(report)
 }
 
 fn list_templates() -> Value {

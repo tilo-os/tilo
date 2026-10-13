@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_actions::{ActionSpec, ResourcePresentation};
@@ -104,6 +104,7 @@ fn action_code(action: ActionKind) -> &'static str {
         ActionKind::FlatpakOpen => "flatpak-open",
         ActionKind::FlatpakRemove => "flatpak-remove",
         ActionKind::NeedsFlatpakHost => "flatpak-setup",
+        ActionKind::AddBot => "add-bot",
     }
 }
 
@@ -653,6 +654,7 @@ impl StoreApp {
                     title: "Flathub".into(),
                     disabled: false,
                     user_managed: false,
+                    catalogue_error: None,
                 }]);
                 if scenario == Some("account-remotes") {
                     self.show_remotes();
@@ -666,6 +668,7 @@ impl StoreApp {
                     title: "Flathub".into(),
                     disabled: scenario == Some("remotes-disabled"),
                     user_managed: true,
+                    catalogue_error: None,
                 }]);
             }
             Some("progress") => {
@@ -1094,10 +1097,7 @@ impl Widget for StoreApp {
             Style {
                 flex_direction: taffy::FlexDirection::Column,
                 flex_grow: 1.0,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             &[child],
@@ -1152,8 +1152,7 @@ impl Widget for StoreApp {
         // Track the pointer so the bubble stays open while it rests on it
         // (coords are window-space, unscaled).
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
         }
         if let (Some(root), Ok(children)) = (self.root.as_mut(), ctx.taffy.children(ctx.node_id))
             && let Some(&child_node) = children.first()
@@ -1390,6 +1389,7 @@ impl StoreApp {
                     "title": resource_detail_excerpt(&remote.title),
                     "scope": if remote.user_managed { "account" } else { "device" },
                     "disabled": remote.disabled,
+                    "catalogue_error": remote.catalogue_error.as_deref().map(resource_detail_excerpt),
                 })
             })
             .collect::<Vec<_>>();
@@ -1762,7 +1762,8 @@ impl StoreApp {
             | StoreEffect::FlatpakUpdate { .. }
             | StoreEffect::FlatpakOpen { .. }
             | StoreEffect::FlatpakRemove { .. }
-            | StoreEffect::FlatpakSetup { .. } => {}
+            | StoreEffect::FlatpakSetup { .. }
+            | StoreEffect::AddBot { .. } => {}
         }
         Ok(Admitted::Done)
     }
@@ -2391,6 +2392,8 @@ fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
 fn package_action_label(action: ActionKind, error: Option<&str>) -> String {
     if action == ActionKind::NeedsFlatpakHost && error.is_some() {
         ui::i18n!("store-flatpak-unavailable")
+    } else if action == ActionKind::AddBot {
+        ui::i18n!("store-bot-add-to-room")
     } else {
         action.label().to_owned()
     }
@@ -2671,6 +2674,54 @@ mod tests {
     }
 
     #[test]
+    fn a_bot_detail_names_triggers_connectors_and_the_bot_label() {
+        let bot = crate::sources::tilo_bot_to_store_item(&app_cli::bots::CatalogueBot {
+            package_id: "so.tilo.bots.bridge".into(),
+            name: "Discord bridge".into(),
+            tagline: "Mirror a Discord server".into(),
+            description: "Bridges channels".into(),
+            icon_url: None,
+            publisher_pubkey_hex: "aa".repeat(32),
+            registry_name: "Tilo".into(),
+            version: "1.0.0".into(),
+            artifact: registry_types::BotArtifact {
+                program_url: format!("https://apps.tilo.so/blobs/{}", "ab".repeat(32)),
+                program_blake3_hex: "ab".repeat(32),
+                program_size_bytes: 10,
+                requires: registry_types::BotRequirements {
+                    connectors: vec![registry_types::PackageRequirement {
+                        package_id: "so.tilo.discord".into(),
+                        min_version: "0.1.0".into(),
+                    }],
+                    apps: vec!["so.tilo.chat".into()],
+                    appearance: true,
+                    triggers: vec!["connector".into(), "record_changed".into()],
+                },
+            },
+        });
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.set_items(vec![bot]);
+            store.focus_detail("so.tilo.bots.bridge");
+        })
+        .unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(
+            visible.contains("When its connector reports an event"),
+            "{visible}"
+        );
+        assert!(visible.contains("When a record changes"));
+        assert!(visible.contains("so.tilo.discord"));
+        assert!(visible.contains("May post under other names and avatars. Always labelled BOT."));
+        assert!(visible.contains("Add to a room"));
+        assert!(
+            !visible.contains("\"Open\""),
+            "a bot is never opened as an app"
+        );
+    }
+
+    #[test]
     fn empty_search_preserves_loading_failure_and_unfiltered_empty_states() {
         let (_environment, _directory, mut app) = inspected_store();
         app.effect(&StoreEffect::SetSearch {
@@ -2795,6 +2846,55 @@ mod tests {
     }
 
     #[test]
+    fn independent_repository_warning_stays_visible_and_other_actions_enabled() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            // This controlled source fixture replaces the initial missing-service snapshot.
+            store.set_operation_error(None);
+            store.set_items(crate::fixture::fixture_catalog());
+            store.set_flatpak_available(true);
+            store.set_worker_busy(false);
+            store.set_remotes(vec![crate::flathub_client::Remote {
+                name: "fedora".into(),
+                url: "https://example.invalid/fedora".into(),
+                title: "Fedora Flatpaks".into(),
+                disabled: false,
+                user_managed: false,
+                catalogue_error: Some(
+                    "Could not read Fedora Flatpaks: Unable to load summary".into(),
+                ),
+            }]);
+        })
+        .unwrap();
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            for width in [480, 1280] {
+                app.harness().resize((width, 900)).unwrap();
+                app.harness().set_theme(theme.clone());
+                let retry = app.harness().targets()["store.error.refresh"];
+                assert!(retry.x0 >= 0.0 && retry.x1 <= f64::from(width));
+                assert!(retry.y0 >= 0.0 && retry.y1 <= 900.0);
+                let inspection = app.harness().inspection_json().unwrap();
+                assert!(
+                    inspection.contains("Unable to load summary"),
+                    "{inspection}"
+                );
+                assert!(
+                    app.harness()
+                        .controls()
+                        .iter()
+                        .any(|control| control.name.as_deref() == Some("Refresh apps")
+                            && !control.disabled)
+                );
+                app.with_surface(|store: &mut StoreApp| {
+                    assert!(store.inspect_catalogue(None).unwrap()["error"].is_null());
+                })
+                .unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn readable_store_failure_and_build_metadata_have_reviewable_layouts() {
         let output =
             std::env::var_os("TILO_STORE_PRESENTATION_REVIEW_DIR").map(std::path::PathBuf::from);
@@ -2815,6 +2915,7 @@ mod tests {
                 title: "Fedora Flatpaks".into(),
                 disabled: false,
                 user_managed: false,
+                catalogue_error: None,
             };
             store.set_worker_busy(false);
             store.set_operation_error(Some(crate::flathub_client::remote_error(
@@ -2960,10 +3061,7 @@ mod tests {
                 "persistent account control is visible without hover: {rect:?}"
             );
         }
-        let move_pointer = |x, y| winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        };
+        let move_pointer = |x, y| ui::synthetic_input::cursor_moved(x, y);
         if scenario == "detail-technical" {
             app.harness().send(&move_pointer(
                 f64::from(viewport.0) / 2.0,
@@ -3116,6 +3214,7 @@ mod tests {
                     url: "https://dl.flathub.org/repo/".into(),
                     disabled: false,
                     user_managed: false,
+                    catalogue_error: None,
                 }]);
             })
             .unwrap();
@@ -3165,6 +3264,7 @@ mod tests {
                     url: "https://dl.flathub.org/repo/".into(),
                     disabled: false,
                     user_managed: false,
+                    catalogue_error: None,
                 }]);
             })
             .unwrap();
@@ -3201,6 +3301,7 @@ mod tests {
                 url: "https://dl.flathub.org/repo/".into(),
                 disabled: false,
                 user_managed: false,
+                catalogue_error: None,
             }]);
             store.set_flatpak_available(false);
             store.flatpak_error = Some("The app service is unavailable.".into());
@@ -3245,6 +3346,7 @@ mod tests {
                 url: "https://dl.flathub.org/repo/".into(),
                 disabled: false,
                 user_managed: true,
+                catalogue_error: None,
             }]);
         })
         .unwrap();
@@ -3351,6 +3453,7 @@ mod tests {
             StoreSource::FlatpakRemote { .. } => StoreTrust::ConfiguredRemote,
         };
         StoreItem {
+            bot: None,
             id: format!("id.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: format!("{name} description"),
@@ -3452,6 +3555,7 @@ mod tests {
             url: "https://tools.example.test/repo/".into(),
             disabled: true,
             user_managed: true,
+            catalogue_error: None,
         };
         let system = crate::flathub_client::Remote {
             user_managed: false,
@@ -3512,6 +3616,7 @@ mod tests {
                 url: "https://tools.example.test/repo/".into(),
                 disabled: true,
                 user_managed: true,
+                catalogue_error: None,
             }]);
             store.show_remotes();
         })
@@ -3550,6 +3655,7 @@ mod tests {
             title: "Flathub".into(),
             disabled: false,
             user_managed: false,
+            catalogue_error: None,
         };
         app.set_remotes(vec![source.clone()]);
         let row = app.live_row(&source.resource_id()).unwrap().into_resource();
@@ -3627,6 +3733,7 @@ mod tests {
             title: "Flathub".into(),
             disabled: false,
             user_managed: false,
+            catalogue_error: None,
         };
         app.set_remotes(vec![system.clone()]);
         let resource = app
@@ -3675,6 +3782,7 @@ mod tests {
             url: "https://tools.example/repo".into(),
             disabled: false,
             user_managed: false,
+            catalogue_error: None,
         };
         app.set_remotes(vec![remote.clone()]);
         let row = app.live_row("remote:system:tools").unwrap().into_resource();
@@ -4066,6 +4174,7 @@ mod tests {
                 title: "Flathub".into(),
                 disabled: false,
                 user_managed: true,
+                catalogue_error: None,
             }]);
             for id in [REMOTES_ID, "remote:flathub", crate::resource::MODERATION_ID] {
                 assert!(app.live_row(id).is_some(), "{id} resolves");
@@ -4319,10 +4428,7 @@ mod tests {
         let root = tree
             .new_with_children(
                 taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::length(width),
-                        height: taffy::Dimension::length(900.0),
-                    },
+                    size: taffy::Size::from_lengths(width, 900.0),
                     ..Default::default()
                 },
                 &[node],
@@ -4434,7 +4540,6 @@ mod tests {
     fn cards_and_detail_controls_keep_typed_local_bindings() {
         // Case `card_pointer_details_and_primary_activation_keep_typed_bindings`.
         {
-            use winit::event::WindowEvent;
             for width in [480.0, 1200.0] {
                 let app = seeded_app();
                 let item = &app.items[1];
@@ -4463,22 +4568,11 @@ mod tests {
                         .center();
                     let mut doc = AutoCommit::new();
                     let mut focus = None;
-                    let cursor = WindowEvent::CursorMoved {
-                        device_id: winit::event::DeviceId::dummy(),
-                        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-                    };
+                    let cursor = ui::synthetic_input::cursor_moved(center.x, center.y);
                     let events = [
                         cursor,
-                        WindowEvent::MouseInput {
-                            device_id: winit::event::DeviceId::dummy(),
-                            state: winit::event::ElementState::Pressed,
-                            button: winit::event::MouseButton::Left,
-                        },
-                        WindowEvent::MouseInput {
-                            device_id: winit::event::DeviceId::dummy(),
-                            state: winit::event::ElementState::Released,
-                            button: winit::event::MouseButton::Left,
-                        },
+                        ui::synthetic_input::mouse_press(),
+                        ui::synthetic_input::mouse_release(),
                     ];
                     for event in events {
                         focus = ui::testing::Dispatch::new()

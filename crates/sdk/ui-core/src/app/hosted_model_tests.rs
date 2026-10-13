@@ -659,3 +659,67 @@ fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
     );
     assert_ne!(app.action_directory_revision(), page.revision);
 }
+
+#[test]
+fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() {
+    let mut app = hosted_directory_fixture();
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![
+            crate::collaboration::Collaborator {
+                id: "person:local".into(),
+                name: "Local person".into(),
+                colour: None,
+                is_agent: false,
+                is_self: true,
+            },
+            crate::collaboration::Collaborator {
+                id: "opaque-member".into(),
+                name: "Build helper".into(),
+                colour: None,
+                is_agent: true,
+                is_self: false,
+            },
+            crate::collaboration::Collaborator {
+                id: "agent:spoof".into(),
+                name: "A person".into(),
+                colour: None,
+                is_agent: false,
+                is_self: false,
+            },
+        ],
+        permissions: vec![],
+    });
+    let opaque = crate::permissions::UserId("opaque-member".into());
+    let spoof = crate::permissions::UserId("agent:spoof".into());
+    assert_eq!(
+        app.presence_ctx.participant_kind(&opaque),
+        crate::presence::ParticipantKind::Agent
+    );
+    assert_eq!(
+        app.presence_ctx.participant_kind(&spoof),
+        crate::presence::ParticipantKind::Person
+    );
+
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![crate::collaboration::Collaborator {
+            id: "person:local".into(),
+            name: "Local person".into(),
+            colour: None,
+            is_agent: false,
+            is_self: true,
+        }],
+        permissions: vec![],
+    });
+    assert!(!app.presence_ctx.names.contains_key(&opaque));
+    assert!(!app.presence_ctx.names.contains_key(&spoof));
+    assert_eq!(
+        app.presence_ctx.participant_kind(&opaque),
+        crate::presence::ParticipantKind::Person
+    );
+
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![],
+        permissions: vec![],
+    });
+    assert!(app.presence_ctx.self_id().is_none());
+}

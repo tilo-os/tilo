@@ -79,15 +79,16 @@ mod tests {
     const PATH: &str = "/var/workspace/photos/harbour.png";
 
     fn photo(path: &str) -> LibraryPhoto {
-        LibraryPhoto::from_image(
-            OpenImage::from_path(path, 1200, 800)
-                .with_content(tilo_content::hash_bytes(path.as_bytes()))
-                .portable(),
-        )
+        LibraryPhoto::from_image(OpenImage::new(
+            path,
+            1200,
+            800,
+            tilo_content::hash_bytes(path.as_bytes()),
+        ))
     }
 
     fn doc_with(photo: &LibraryPhoto) -> AutoCommit {
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let mut library = crate::test_doc::library(&doc);
         library.add_photo(photo.clone());
         crate::test_doc::set_library(&mut doc, &library);

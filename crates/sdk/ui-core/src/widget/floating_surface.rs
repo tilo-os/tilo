@@ -706,7 +706,6 @@ mod tests {
 mod control_bar_tests {
     use super::*;
     use crate::icons::Icon;
-    use winit::event::{ElementState, MouseButton, WindowEvent};
 
     #[test]
     fn a_control_bar_is_concentric_and_reports_its_clicks() {
@@ -737,29 +736,9 @@ mod control_bar_tests {
         assert!((first.x0 - (rect.x0 + inset)).abs() < 1e-9);
         assert!((first.y0 - (rect.y0 + inset)).abs() < 1e-9);
         let click = |bar: &mut ControlBar, p: Point| {
-            bar.handle(
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-                },
-                1.0,
-            );
-            bar.handle(
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-                1.0,
-            );
-            bar.handle(
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-                1.0,
-            )
+            bar.handle(&crate::synthetic_input::cursor_moved(p.x, p.y), 1.0);
+            bar.handle(&crate::synthetic_input::mouse_press(), 1.0);
+            bar.handle(&crate::synthetic_input::mouse_release(), 1.0)
         };
         assert_eq!(click(&mut bar, first.center()), Some(0));
         let disabled = bar.control_rect(2).unwrap();

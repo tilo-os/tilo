@@ -22,8 +22,8 @@ use ui::TextRenderer;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape as _, Stroke};
 use ui::vello::peniko::{
-    BlendMode, Blob, Color, ColorStop, Compose, Extend, Fill, Gradient as PenikoGradient,
-    ImageAlphaType, ImageBrush, ImageData, ImageFormat, Mix,
+    BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient as PenikoGradient, ImageBrush,
+    ImageData, Mix,
 };
 
 use crate::adjust::Grade;
@@ -738,7 +738,7 @@ impl Renderer {
                 speck(byte_of(128.0 + (lit - 236.0) * 3.0))
             })
             .collect();
-        let image = image(relief, width, height);
+        let image = crate::picture::image_of(relief, width, height);
         self.tooth = Some((key, image.clone()));
         image
     }
@@ -762,7 +762,7 @@ impl Renderer {
             ));
             let lit = tilo_wet_media::parse_paint(&art.ground.colour, &[])
                 .map_or(tilo_wet_media::Rgb::WHITE, |paint| paint.colour);
-            let image = image(field.shade(lit), width, height);
+            let image = crate::picture::image_of(field.shade(lit), width, height);
             self.ground = Some((key, field, image));
         }
         #[allow(clippy::expect_used, reason = "set just above when absent")]
@@ -1297,16 +1297,6 @@ pub fn selection_outline(scene: &mut Scene, path: &BezPath, width: f64, phase: f
         None,
         path,
     );
-}
-
-fn image(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
-    ImageData {
-        data: Blob::new(Arc::new(pixels)),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: u32::try_from(width).unwrap_or(1),
-        height: u32::try_from(height).unwrap_or(1),
-    }
 }
 
 /// The outline of `path` flattened into polygons, in cell coordinates.
@@ -1866,13 +1856,7 @@ fn draw_dabbed(
         }) else {
             return;
         };
-        let image = ImageData {
-            data: Blob::new(Arc::new(dabs.pixels)),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: dabs.width,
-            height: dabs.height,
-        };
+        let image = ui::raster::rgba8(dabs.pixels, dabs.width, dabs.height);
         cx.brushes.bytes = cx.brushes.bytes.saturating_add(image.data.len());
         cx.brushes.entries.insert(
             key,
@@ -2010,7 +1994,7 @@ fn noise() -> ImageData {
                 let grey = u8::try_from(u16::midpoint(u16::from(a), u16::from(b))).unwrap_or(128);
                 pixels.extend_from_slice(&speck(grey));
             }
-            image(pixels, GRAIN_TILE, GRAIN_TILE)
+            crate::picture::image_of(pixels, GRAIN_TILE, GRAIN_TILE)
         })
         .clone()
 }

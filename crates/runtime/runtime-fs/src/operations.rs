@@ -867,7 +867,6 @@ struct PublishRequest<'a> {
     moving: bool,
 }
 #[allow(
-    clippy::too_many_lines,
     clippy::needless_pass_by_value,
     reason = "keep owned source and durable publication/removal transitions in one auditable scope"
 )]
@@ -1837,7 +1836,6 @@ fn trash(ctx: &Context<'_>, entry: &GrantedEntry) -> Result<ItemOutcome, FsError
 
 #[cfg(test)]
 #[allow(
-    clippy::arithmetic_side_effects,
     clippy::too_many_lines,
     reason = "bounded temporary fixtures and explicit lifecycle assertions"
 )]

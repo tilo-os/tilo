@@ -665,7 +665,7 @@ impl<R, T: Model> Path<R, crate::Grid<T>> {
     }
 }
 
-impl<R, T: Model, O: Serialize + serde::de::DeserializeOwned + 'static>
+impl<R, T: Model, O: Serialize + serde::de::DeserializeOwned + Default + 'static>
     Path<R, crate::Outbox<T, O>>
 {
     /// Record how the owning device settled the entry `id`: content from
@@ -1145,6 +1145,25 @@ impl<R> Serialize for Edit<R> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         edit_to_json(&self.path, &self.op).serialize(serializer)
     }
+}
+
+/// The arguments of [`FIELD_EDIT`](crate::FIELD_EDIT) that settle entry
+/// `id` of the outbox stored at field `field` with `outcome` (a
+/// [`Settled`](crate::Settled) in JSON form): [`Path::settle`] for a host
+/// that holds the record without its app's types, such as a room's host
+/// settling what a bot's connector performed.
+#[must_use]
+pub fn outbox_settle_arguments(
+    field: &str,
+    id: &str,
+    outcome: &serde_json::Value,
+) -> serde_json::Map<String, serde_json::Value> {
+    let op = EditOp::Settle {
+        id: Id::from_raw(id),
+        outcome: outcome.clone(),
+    };
+    let edit = edit_to_json(&[Segment::Field(field.to_owned())], &op);
+    serde_json::Map::from_iter([(crate::EDIT_PARAM.to_owned(), edit)])
 }
 
 #[inline(never)]

@@ -246,6 +246,7 @@ fn signed_entry(
         .unwrap_or_else(|| package_store::display_name_for_package_id(app));
     let mut entry = RegistryEntry {
         package_id: app.to_owned(),
+        kind: registry_types::EntryKind::App,
         name: name.as_str().into(),
         description: format!("{name}, offered by a test registry").into(),
         tagline: name.as_str().into(),
@@ -261,18 +262,20 @@ fn signed_entry(
             .iter()
             .map(|p| RegistryVersion {
                 version: p.version.clone(),
-                tapp_url: format!("{base_url}{}", p.file),
-                tapp_root_hash_hex: p.root_hex.clone(),
-                tapp_size_bytes: p.bytes.len() as u64,
                 released_at_unix: 1,
-                tapp_blake3_hex: blake3::hash(&p.bytes).to_hex().to_string(),
-                target: RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: std::env::consts::ARCH.into(),
-                    isa: std::env::consts::ARCH.into(),
-                    runtime: manifest.package.runtime.clone(),
-                    interfaces: p.interfaces.clone(),
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: format!("{base_url}{}", p.file),
+                    tapp_root_hash_hex: p.root_hex.clone(),
+                    tapp_size_bytes: p.bytes.len() as u64,
+                    tapp_blake3_hex: blake3::hash(&p.bytes).to_hex().to_string(),
+                    target: RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: std::env::consts::ARCH.into(),
+                        isa: std::env::consts::ARCH.into(),
+                        runtime: manifest.package.runtime.clone(),
+                        interfaces: p.interfaces.clone(),
+                    },
+                }),
             })
             .collect(),
         updated_at_unix: 2,
@@ -304,6 +307,7 @@ fn routes(
         entries: vec![entry],
         owner_signature_hex: String::new(),
         channel_authorization: None,
+        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut full, owner).map_err(|e| format!("sign snapshot: {e}"))?;
     let (mut compact, indexes) =
@@ -363,7 +367,6 @@ fn serve(mut stream: TcpStream, routes: &HashMap<String, Vec<u8>>) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 
     use super::*;
 
@@ -439,6 +442,6 @@ system = "required@1"
             &publisher,
         );
         assert_eq!(entry.validate(), Ok(()));
-        assert_eq!(entry.versions[0].target.interfaces, ["system@1"]);
+        assert_eq!(entry.versions[0].target().unwrap().interfaces, ["system@1"]);
     }
 }

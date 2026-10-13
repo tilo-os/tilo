@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::expect_used, reason = "test assertions")]
 
 //! The resource/action/view contract on the production host path.
 //!
@@ -12,10 +12,11 @@ use tilo_actions::{
     ResourceViewSpec,
 };
 use tilo_app::automerge::transaction::Transactable;
-use tilo_app::automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use tilo_app::automerge::{ObjType, ROOT, ReadDoc};
 use tilo_app::prelude::*;
 use tilo_app::record::RecordId;
 use tilo_app::record::transfer::Origin;
+use tilo_automerge::ReadTyped as _;
 use tilo_resource::{ActionDecl, Doc, Invoke, ModelError};
 
 const ITEMS: &str = "items";
@@ -154,13 +155,7 @@ fn list(doc: &tilo_app::automerge::AutoCommit, key: &str) -> Vec<String> {
         return Vec::new();
     };
     (0..doc.length(&list))
-        .filter_map(|index| match doc.get(&list, index).ok().flatten() {
-            Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Str(text) => Some(text.to_string()),
-                _ => None,
-            },
-            _ => None,
-        })
+        .filter_map(|index| doc.str_at(&list, index))
         .collect()
 }
 

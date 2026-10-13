@@ -142,7 +142,7 @@ fn dialog_for(info: MapInfo, close_requested: Rc<Cell<bool>>) -> ModalDialog<Tex
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::{DeviceId, ElementState, MouseButton};
+    use winit::event::ElementState;
     use winit::keyboard::{Key, NamedKey};
 
     fn escape() -> WindowEvent {
@@ -171,11 +171,7 @@ mod tests {
         // Phase `closed_sheet_does_not_capture_input`.
         {
             let mut sheet = MapInfoSheet::default();
-            let press = WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            };
+            let press = ui::synthetic_input::mouse_press();
             assert!(!sheet.handle_event(
                 &press,
                 1.0,

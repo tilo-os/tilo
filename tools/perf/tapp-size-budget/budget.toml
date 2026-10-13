@@ -116,6 +116,10 @@ aarch64 = 4587520
 x86_64 = 1179648
 aarch64 = 1114112
 
+[apps."so.tilo.discord"]
+x86_64 = 5963776
+aarch64 = 5963776
+
 [apps."so.tilo.disk-usage"]
 x86_64 = 786432
 aarch64 = 786432
@@ -147,10 +151,6 @@ aarch64 = 3801088
 [apps."so.tilo.hex-editor"]
 x86_64 = 851968
 aarch64 = 786432
-
-[apps."so.tilo.hot-reload-demo"]
-x86_64 = 720896
-aarch64 = 655360
 
 [apps."so.tilo.imager"]
 x86_64 = 4521984

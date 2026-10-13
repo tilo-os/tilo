@@ -122,10 +122,7 @@ impl Host {
         // The pointer rests over a row: its hover lift is drawn.
         host.app.surface_input(
             &host.window,
-            WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(200.0 * scale, 200.0 * scale),
-            },
+            ui::synthetic_input::cursor_moved(200.0 * scale, 200.0 * scale),
             false,
         );
         for _ in 0..3 {

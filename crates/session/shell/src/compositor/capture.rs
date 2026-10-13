@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use ui::num::f64_of_usize;
 
-use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
+use ui::floating_surface::{FloatingSource, FloatingSurfaceRequest};
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
@@ -510,10 +510,7 @@ impl CaptureExecutor {
             // Calls use the exact app widget in the shell's second paint pass,
             // retaining controls and pointer capture. Other app-region/media
             // sources use the generic live mirror host below.
-            if matches!(
-                request.role,
-                FloatingRole::ActiveCall | FloatingRole::Navigation
-            ) {
+            if request.role.uses_app_owned_host() {
                 frame_builder.on_floating_surface_host_message(
                     &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
                         id: public_id,
@@ -2002,7 +1999,6 @@ fn read_png_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
 mod tests {
     #![allow(
         clippy::field_reassign_with_default,
-        clippy::too_many_lines,
         reason = "capture integration tests keep their full scenario setup explicit"
     )]
     #![allow(
@@ -2047,10 +2043,7 @@ mod tests {
             node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             let style = taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
+                size: taffy::Size::from_percent(1.0, 1.0),
                 ..taffy::Style::default()
             };
             taffy.widget_leaf(style, node_map, self)
@@ -2114,9 +2107,6 @@ mod tests {
         }
         fn app_icon(&self) -> ui::widget::IconDescriptor {
             ui::widget::IconDescriptor::Glyph("L")
-        }
-        fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-            None
         }
     }
 

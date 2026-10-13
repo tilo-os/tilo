@@ -1395,6 +1395,20 @@ impl GroupRow {
         !self.lanes.is_empty()
     }
 
+    /// The shown group a left press at the remembered cursor lands in;
+    /// mouse buttons carry no position of their own.
+    pub fn group_under_cursor(&self) -> Option<u64> {
+        self.groups
+            .iter()
+            .enumerate()
+            .find(|(i, group)| {
+                !self.layout_hides_group(*i)
+                    && !group.is_closing()
+                    && group.get_rect().contains(self.last_cursor)
+            })
+            .map(|(_, group)| group.id)
+    }
+
     /// Whether logical point `p` is over this strip: inside one of its
     /// lanes when it is partitioned, else within its row's band.
     pub fn covers(&self, p: Point) -> bool {
@@ -3031,6 +3045,12 @@ impl FloatingSurfaceProvider for GroupRow {
         }
     }
 
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(group, id);
+        }
+    }
+
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         for group in &mut self.groups {
             FloatingSurfaceProvider::on_floating_surface_event_source(group, id);
@@ -3103,6 +3123,28 @@ impl FloatingSurfaceProvider for GroupRow {
                 presence,
             );
         }
+    }
+
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        self.groups.iter_mut().any(|group| {
+            FloatingSurfaceProvider::draw_floating_surface(
+                group,
+                id,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )
+        })
     }
 
     fn set_floating_surface_bounds(&mut self, bounds: Rect) {
@@ -4056,7 +4098,9 @@ impl Widget for GroupRow {
     fn mark_drawn(&mut self) {
         let culled = std::mem::take(&mut self.culled_groups);
         for group in &mut self.groups {
-            if !culled.contains(&group.id) {
+            if culled.contains(&group.id) {
+                group.next_frame();
+            } else {
                 group.mark_drawn();
             }
         }
@@ -5626,6 +5670,29 @@ mod tests {
 
     fn make_row_with_groups(tab_specs: &[&[u64]]) -> GroupRow {
         make_row_with_groups_with_taffy(tab_specs).0
+    }
+
+    /// A closing window's fade rebuilds the row once per drawn frame. Asking
+    /// on every composition pass kept one frame from ever settling, so
+    /// closing a window stopped a host's drawing (`CompositionDidNotSettle`).
+    #[test]
+    fn a_closing_window_lets_its_frame_settle() {
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.take_structure_dirty();
+        row.groups[0].start_closing();
+        let mut passes = 0;
+        let settled = crate::widget::layout::settle_widget_composition(false, |_| {
+            passes += 1;
+            Ok((Some(Vec::new()), row.take_structure_dirty()))
+        });
+        assert!(settled.is_ok(), "{settled:?} after {passes} passes");
+        assert_eq!(passes, 2, "one rebuild for the fade's frame, then settled");
+        row.mark_drawn();
+        assert!(
+            row.take_structure_dirty(),
+            "the next frame steps the fade again"
+        );
+        assert!(!row.take_structure_dirty());
     }
 
     fn drawn_strip(windows: u64) -> (GroupRow, Scene) {

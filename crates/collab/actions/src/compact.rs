@@ -98,6 +98,18 @@ const WORDS: &[&str] = &[
     "raw",
     "text",
     "index",
+    // A bot run's cause.
+    "cb",
+    "installation",
+    "event",
+    "depth",
+    // A bot's appearance.
+    "appearance",
+    "name",
+    "avatar",
+    "persona",
+    "service",
+    "account",
 ];
 
 /// The message form of `value`.
@@ -433,6 +445,25 @@ fn quote(out: &mut Vec<u8>, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn appearance_keys_are_known_words() {
+        for word in [
+            "appearance",
+            "name",
+            "avatar",
+            "persona",
+            "service",
+            "account",
+        ] {
+            // A word reference: `k` and the word's index, never the text.
+            let encoded = encode(&serde_json::json!(word));
+            assert!(
+                encoded.starts_with('k') && encoded.len() <= 3,
+                "{word}: {encoded:?}"
+            );
+        }
+    }
 
     fn round_trip(value: &Value) -> String {
         let text = encode(value);

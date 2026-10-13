@@ -275,6 +275,12 @@ pub struct WindowGroup {
     /// once `close_complete()` is true.
     closing_at: Option<Instant>,
     close_duration: Duration,
+    /// Per drawn frame the width spring steps once and a closing group asks
+    /// for one rebuild (its spring steps in `build_layout`). A frame's
+    /// composition takes several passes and real time moves between them:
+    /// stepping or asking on every pass kept the frame from ever settling.
+    width_stepped: bool,
+    close_rebuild_taken: bool,
     /// Last motion policy observed from the active theme. Widget scheduling
     /// has no `Theme` parameter, so draw latches it here and the next
     /// `needs_animation_frame` query can avoid waking for transitions that
@@ -439,6 +445,8 @@ impl WindowGroup {
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            width_stepped: false,
+            close_rebuild_taken: false,
             close_duration: crate::tokens::motion::Durations::default().base(),
             reduce_motion: false,
             style_dirty: false,
@@ -579,15 +587,12 @@ impl WindowGroup {
             self.style_dirty = true;
             return;
         }
-        let now = crate::time::now();
-        // One step per wall instant: composition settle rebuilds the
-        // same frame up to eight times and must not walk the spring.
-        if self
-            .last_width_step
-            .is_some_and(|t| now.saturating_duration_since(t).is_zero())
-        {
+        // One step per drawn frame: composition settle rebuilds the same
+        // frame up to eight times and must not walk the spring.
+        if std::mem::replace(&mut self.width_stepped, true) {
             return;
         }
+        let now = crate::time::now();
         let dt = self
             .last_width_step
             .map(|t| now.saturating_duration_since(t).as_secs_f32())
@@ -629,7 +634,16 @@ impl WindowGroup {
         }
         let from = self.layout_width_px();
         self.closing_at = Some(crate::time::now());
+        self.close_rebuild_taken = false;
         self.retarget_width(from, 0.0);
+    }
+
+    /// A new frame may step the width spring and rebuild a closing group
+    /// once more. Called when the group is drawn, and by a row for groups
+    /// it culled from a frame, so an off-screen transition still ends.
+    pub fn next_frame(&mut self) {
+        self.width_stepped = false;
+        self.close_rebuild_taken = false;
     }
 
     pub fn is_closing(&self) -> bool {
@@ -1086,6 +1100,8 @@ impl WindowGroup {
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            width_stepped: false,
+            close_rebuild_taken: false,
             close_duration: crate::tokens::motion::Durations::default().base(),
             reduce_motion: false,
             style_dirty: false,
@@ -2119,6 +2135,12 @@ impl FloatingSurfaceProvider for WindowGroup {
         }
     }
 
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(host, id);
+        }
+    }
+
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         for (_, host) in &mut self.hosts {
             FloatingSurfaceProvider::on_floating_surface_event_source(host, id);
@@ -2155,8 +2177,11 @@ impl FloatingSurfaceProvider for WindowGroup {
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        self.active_host_mut()
-            .and_then(FloatingSurfaceProvider::take_floating_surface_request)
+        // A detached presentation remains interactive even when its source tab
+        // is not selected. Drain every retained owner, not only the tiled one.
+        self.hosts
+            .iter_mut()
+            .find_map(|(_, host)| FloatingSurfaceProvider::take_floating_surface_request(host))
     }
 
     fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
@@ -2192,6 +2217,28 @@ impl FloatingSurfaceProvider for WindowGroup {
             );
         }
         self.draw_tab_drag_visual(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        self.hosts.iter_mut().any(|(_, host)| {
+            FloatingSurfaceProvider::draw_floating_surface(
+                host,
+                id,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )
+        })
     }
 
     fn set_floating_surface_bounds(&mut self, bounds: Rect) {
@@ -2724,10 +2771,10 @@ impl Widget for WindowGroup {
         }
         let style = std::mem::take(&mut self.style_dirty);
         let active_switched = self.built_active != Some(active);
-        bar || active_host
-            || style
-            || active_switched
-            || (self.is_closing() && !self.close_complete())
+        let closing = self.is_closing()
+            && !self.close_complete()
+            && !std::mem::replace(&mut self.close_rebuild_taken, true);
+        bar || active_host || style || active_switched || closing
     }
     fn needs_redraw(&self) -> bool {
         // Redraw follows the presentation tree. Retained inactive hosts still
@@ -2737,6 +2784,7 @@ impl Widget for WindowGroup {
     }
     fn mark_drawn(&mut self) {
         self.grip_dirty = false;
+        self.next_frame();
         for child in self.children_mut() {
             child.mark_drawn();
         }
@@ -4855,6 +4903,7 @@ mod tests {
             );
             let mut last = g.layout_width_px();
             for _ in 0..8 {
+                g.next_frame();
                 g.step_width_spring();
                 let now = g.layout_width_px();
                 assert!(now >= last, "open must grow the slot, {last} → {now}");
@@ -4872,6 +4921,7 @@ mod tests {
             g.set_strip_usable_px(1200.0);
             g.start_spawn_animation();
             for _ in 0..10 {
+                g.next_frame();
                 g.step_width_spring();
             }
             let mid = g.layout_width_px();
@@ -4919,6 +4969,7 @@ mod tests {
                 let mut rebuilds = 0;
                 while std::mem::take(&mut g.style_dirty) && rebuilds < 200 {
                     g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(frame_ms));
+                    g.next_frame();
                     g.step_width_spring();
                     rebuilds += 1;
                 }
@@ -4956,6 +5007,7 @@ mod tests {
             );
             let mut last = g.layout_width_px();
             for _ in 0..8 {
+                g.next_frame();
                 g.step_width_spring();
                 let now = g.layout_width_px();
                 assert!(now <= last, "close must collapse the slot, {last} → {now}");
@@ -4989,6 +5041,7 @@ mod tests {
                 "a live resize starts a spring when motion is allowed",
             );
             g.set_reduce_motion(true);
+            g.next_frame();
             g.step_width_spring();
             assert!(
                 (g.layout_width_px() - g.resolved_width_px()).abs() < 0.5,
@@ -5009,6 +5062,7 @@ mod tests {
         g.start_spawn_animation();
         for frame in 0..40 {
             g.last_width_step = g.width_spring.as_ref().map(|_| instant_ago_ms(80));
+            g.next_frame();
             g.step_width_spring();
             let width = g.layout_width_px();
             assert!(

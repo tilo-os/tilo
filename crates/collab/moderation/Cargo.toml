@@ -1,0 +1,50 @@
+[package]
+name = "tilo-moderation"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Reports, the moderation agent's decisions and their enforcement through a room's grants and history."
+
+[lib]
+name = "tilo_moderation"
+path = "src/lib.rs"
+
+[features]
+# The moderation agent and its model provider, for the room host. Apps that
+# only offer reporting embed the record without them.
+host = [
+  "dep:tilo-action-policy",
+  "dep:agent-provider-config",
+  "dep:tilo-secrets",
+  "dep:reqwest",
+  "dep:tilo-net",
+  "dep:zeroize",
+]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-actions = { path = "../actions" }
+# The record apps embed; the agent here decides into it.
+moderation-model = { path = "../../../apps/moderation-model" }
+tilo-action-policy = { path = "../action-policy", optional = true }
+# The model is configured as any other provider profile: protocol, endpoint
+# and default model, the key held in the host's secret store.
+agent-provider-config = { path = "../../agent/provider-config", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
+reqwest = { workspace = true, features = ["json"], optional = true }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"], optional = true }
+zeroize = { workspace = true, optional = true }
+
+[dev-dependencies]
+tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

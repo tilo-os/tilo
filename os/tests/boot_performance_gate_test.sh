@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+fail() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/zram0"
