@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use ui::a11y::{AccessNode, Role};
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
+use ui::vello::kurbo::{Affine, Circle, Rect, Stroke};
 use ui::widget::{AppModel, EventCtx, ModelPath, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::{PresenceCtx, TextRenderer, Theme};
