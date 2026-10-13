@@ -164,53 +164,18 @@ pub enum ManifestError {
 /// # Errors
 ///
 /// Returns the specific [`ManifestError`] variant for the first invariant
-/// violated, checked in this order: an explicit `[sandbox.fs]` grant
-/// (`FsWriteDeclared`/`FsReadDeclared`), an unparseable `package.version`
-/// (`BadVersion`), a malformed or misplaced `package.runtime`
-/// (`RuntimeKindHasRuntime`/`BadRuntimeForm`/`BadRuntimeVersion`), a missing
-/// `kind = "app"` entrypoint (`AppMissingEntrypoint`), an empty
-/// `kind = "format-provider"` mime list (`FormatProviderMissingMime`), an
-/// invalid provider extension/mime/scheme
-/// (`BadProviderExtension`/`BadProviderMime`/`BadProviderScheme`), or an
-/// unparseable `publisher.identity`/`publisher.signature`
-/// (`BadPublisherIdentity`/`BadPublisherSignature`).
+/// violated. Validation proceeds through filesystem policy (writes before
+/// reads), platforms and capabilities, continuity and accessibility, package
+/// version, optional runtimes and runtime entrypoint, runtime dependency and
+/// provides, service protocol, kind-specific entrypoint, image metadata,
+/// provider/resource/service declarations, publisher identity and signature,
+/// then target compatibility.
 pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
-    // Filesystem policy first — the check most likely to reject a
-    // package a publisher believed was fine, so it's the line they read
-    // rather than the fourth error after a semver nit. Writes before
-    // reads: a package asking for `/` is the more alarming of the two.
-    if let Some(entry) = m.sandbox.fs.write.first() {
-        return Err(ManifestError::FsWriteDeclared {
-            package: m.package.id.clone(),
-            entry: entry.clone(),
-        });
-    }
-    if let Some(entry) = m.sandbox.fs.read.first() {
-        return Err(ManifestError::FsReadDeclared {
-            package: m.package.id.clone(),
-            entry: entry.clone(),
-        });
-    }
+    validate_filesystem_policy(m)?;
 
     validate_platforms(m).and_then(|()| validate_capabilities(m))?;
 
-    let mut facets = std::collections::BTreeSet::new();
-    for facet in &m.continuity.required {
-        if !facets.insert(*facet) {
-            return Err(ManifestError::DuplicateContinuityFacet(*facet));
-        }
-    }
-    if facets.contains(&ContinuityFacet::Semantic)
-        && !facets.contains(&ContinuityFacet::Presentation)
-    {
-        return Err(ManifestError::SemanticContinuityWithoutPresentation);
-    }
-    if facets.contains(&ContinuityFacet::Semantic) && m.continuity.semantic_schema.is_none() {
-        return Err(ManifestError::SemanticContinuityWithoutSchema);
-    }
-    if m.package.kind == Kind::App && !facets.contains(&ContinuityFacet::Presentation) {
-        return Err(ManifestError::AppContinuityMissingPresentation);
-    }
+    validate_continuity(m)?;
 
     validate_atspi_acceptance(m)?;
 
@@ -240,6 +205,66 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         }
     }
     validate_provides(m)?;
+    validate_service_protocol(m)?;
+
+    validate_kind_entrypoint(m)?;
+    validate_image(m)?;
+    validate_declarations(m)?;
+
+    m.publisher
+        .identity_bytes()
+        .map_err(|e| ManifestError::BadPublisherIdentity(e.to_string()))?;
+    m.publisher
+        .signature_bytes()
+        .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
+    validate_target(m)
+}
+
+/// Publishers cannot grant themselves filesystem access.
+fn validate_filesystem_policy(m: &Manifest) -> Result<(), ManifestError> {
+    // Filesystem policy first — the check most likely to reject a
+    // package a publisher believed was fine, so it's the line they read
+    // rather than the fourth error after a semver nit. Writes before
+    // reads: a package asking for `/` is the more alarming of the two.
+    if let Some(entry) = m.sandbox.fs.write.first() {
+        return Err(ManifestError::FsWriteDeclared {
+            package: m.package.id.clone(),
+            entry: entry.clone(),
+        });
+    }
+    if let Some(entry) = m.sandbox.fs.read.first() {
+        return Err(ManifestError::FsReadDeclared {
+            package: m.package.id.clone(),
+            entry: entry.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Continuity facets must be unique and include the state their dependencies require.
+fn validate_continuity(m: &Manifest) -> Result<(), ManifestError> {
+    let mut facets = std::collections::BTreeSet::new();
+    for facet in &m.continuity.required {
+        if !facets.insert(*facet) {
+            return Err(ManifestError::DuplicateContinuityFacet(*facet));
+        }
+    }
+    if facets.contains(&ContinuityFacet::Semantic)
+        && !facets.contains(&ContinuityFacet::Presentation)
+    {
+        return Err(ManifestError::SemanticContinuityWithoutPresentation);
+    }
+    if facets.contains(&ContinuityFacet::Semantic) && m.continuity.semantic_schema.is_none() {
+        return Err(ManifestError::SemanticContinuityWithoutSchema);
+    }
+    if m.package.kind == Kind::App && !facets.contains(&ContinuityFacet::Presentation) {
+        return Err(ManifestError::AppContinuityMissingPresentation);
+    }
+    Ok(())
+}
+
+/// Service wire contracts use a bounded canonical name and a positive version.
+fn validate_service_protocol(m: &Manifest) -> Result<(), ManifestError> {
     if m.package.service_protocol.as_ref().is_some_and(|protocol| {
         protocol.version == 0
             || protocol.name.is_empty()
@@ -260,7 +285,11 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     }) {
         return Err(ManifestError::BadServiceProtocol);
     }
+    Ok(())
+}
 
+/// Each launchable package kind must declare the entrypoint or provider it needs.
+fn validate_kind_entrypoint(m: &Manifest) -> Result<(), ManifestError> {
     match m.package.kind {
         Kind::App => {
             let ep = m
@@ -302,16 +331,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         }
         Kind::Service | Kind::Plugin | Kind::Runtime | Kind::EnvRuntime | Kind::Tool => {}
     }
-    validate_image(m)?;
-    validate_declarations(m)?;
-
-    m.publisher
-        .identity_bytes()
-        .map_err(|e| ManifestError::BadPublisherIdentity(e.to_string()))?;
-    m.publisher
-        .signature_bytes()
-        .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
-    validate_target(m)
+    Ok(())
 }
 
 /// An image is a directory tree for an environment's `/usr` and `/etc`:
@@ -742,6 +762,51 @@ mode = "off"
         m.package.kind = Kind::FormatProvider;
         m.providers.mime = vec!["text/markdown".into()];
         m
+    }
+
+    #[test]
+    fn validation_stages_preserve_first_error_order() {
+        let mut manifest = minimal_runtime_manifest();
+        manifest.sandbox.fs.write = vec!["/".into()];
+        manifest.sandbox.fs.read = vec!["/etc/shadow".into()];
+        manifest.continuity.required = vec![ContinuityFacet::Semantic];
+        manifest.package.version = "invalid".into();
+        manifest.package.service_protocol = Some(crate::manifest::ServiceProtocol {
+            name: "invalid/contract".into(),
+            version: 0,
+        });
+        assert_eq!(
+            validate_manifest(&manifest),
+            Err(ManifestError::FsWriteDeclared {
+                package: manifest.package.id.clone(),
+                entry: "/".into(),
+            })
+        );
+        manifest.sandbox.fs.write.clear();
+        assert_eq!(
+            validate_manifest(&manifest),
+            Err(ManifestError::FsReadDeclared {
+                package: manifest.package.id.clone(),
+                entry: "/etc/shadow".into(),
+            })
+        );
+        manifest.sandbox.fs.read.clear();
+        assert_eq!(
+            validate_manifest(&manifest),
+            Err(ManifestError::SemanticContinuityWithoutPresentation)
+        );
+        manifest.continuity.required.clear();
+        assert!(matches!(
+            validate_manifest(&manifest),
+            Err(ManifestError::BadVersion(..))
+        ));
+        manifest.package.version = "2025.6.0".into();
+        assert_eq!(
+            validate_manifest(&manifest),
+            Err(ManifestError::BadServiceProtocol)
+        );
+        manifest.package.service_protocol = None;
+        assert_eq!(validate_manifest(&manifest), Ok(()));
     }
 
     #[test]
