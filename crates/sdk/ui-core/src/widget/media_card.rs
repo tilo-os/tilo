@@ -1214,35 +1214,7 @@ impl Widget for MediaCard {
         }
     }
 
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        (self.activation.is_bound() && self.rect.contains(point))
-            .then_some(winit::window::CursorIcon::Pointer)
-    }
-
-    fn is_focusable(&self) -> bool {
-        self.activation.is_bound()
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        if self.activation.state.focused != focused {
-            self.activation.state.focused = focused;
-            self.dirty = true;
-        }
-    }
-
-    fn is_focused(&self) -> bool {
-        self.activation.state.focused
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _root: &crate::widget::ModelPath,
-    ) -> bool {
-        matches!(action, crate::a11y::Action::Activate) && self.activation.activate()
-    }
+    crate::widget::pressable!(rect);
 
     crate::redraw_flag!();
 
