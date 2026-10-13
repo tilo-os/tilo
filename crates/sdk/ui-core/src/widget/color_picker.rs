@@ -1271,11 +1271,11 @@ impl Widget for ColorPicker {
             .with_action_target(TARGET_VALUE)
             .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
             .with_value(self.hex_string())
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused()),
+            );
         if !self.has_extras() {
             return Some(value);
         }

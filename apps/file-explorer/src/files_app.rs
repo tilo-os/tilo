@@ -9312,12 +9312,12 @@ impl Widget for FileExplorerWidget {
                     ))
                     .with_value(panel.lines.join(". "))
                     .with_live(Politeness::Polite)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.collab_panel_focused,
-                        modal: true,
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.collab_panel_focused)
+                            .modal(true),
+                    )
                     .with_children(children),
             );
         }
@@ -9334,10 +9334,7 @@ impl Widget for FileExplorerWidget {
             } else {
                 Politeness::Polite
             })
-            .with_state(AccessState {
-                busy: self.is_loading,
-                ..Default::default()
-            });
+            .with_state(AccessState::new().busy(self.is_loading));
         if let Some((title, detail, can_retry)) = self.state_surface_copy() {
             let mut state = AccessNode::new(Role::Group)
                 .with_name(title)
@@ -9347,10 +9344,7 @@ impl Widget for FileExplorerWidget {
                 } else {
                     Politeness::Polite
                 })
-                .with_state(AccessState {
-                    busy: self.is_loading,
-                    ..Default::default()
-                });
+                .with_state(AccessState::new().busy(self.is_loading));
             if can_retry {
                 state = state.with_children(vec![
                     AccessNode::new(Role::Button)

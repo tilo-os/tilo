@@ -255,15 +255,15 @@ impl Widget for BottomPanelToggle {
                 .with_semantic_key(Self::ID)
                 .with_name(Self::name(self.expanded))
                 .with_description("Problems and terminal")
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    checked: Some(self.expanded),
-                    selected: self.expanded,
-                    expanded: Some(self.expanded),
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused())
+                        .disabled(!self.is_enabled())
+                        .checked(self.expanded)
+                        .selected(self.expanded)
+                        .expanded(self.expanded),
+                ),
         )
     }
 

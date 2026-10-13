@@ -15,9 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{
-    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format,
-};
+use vello::peniko::{Color, Fill, ImageBrush, ImageData as Image};
 
 use crate::ColorCompat;
 use crate::theme::Theme;
@@ -184,13 +182,7 @@ fn bake(
             data.push((alpha * 255.0).round() as u8);
         }
     }
-    Image {
-        data: Blob::new(Arc::new(data)),
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width,
-        height,
-    }
+    crate::raster::rgba8_premultiplied(data, width, height)
 }
 
 fn build_shadow_sprites(r: u8, g: u8, b: u8) -> ShadowSprites {

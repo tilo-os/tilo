@@ -546,10 +546,7 @@ impl Widget for CandlestickChart {
                         "Open {}, high {}, low {}, close {}. {}",
                         candle.open, candle.high, candle.low, candle.close, candle.detail
                     ))
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect();
         Some(

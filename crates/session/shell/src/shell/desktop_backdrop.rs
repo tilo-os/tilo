@@ -4,10 +4,10 @@
 //! wallpaper each workspace shows, read from Tilo's own 0600 registry and
 //! cache (the portal's preview file first). Wallpaper is per device.
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 pub use tilo_desktop::backdrop::DesktopBackdrop;
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat as Format};
+use vello::peniko::ImageData;
 
 /// The backdrop for one local workspace, showing its native wallpaper.
 pub fn native_backdrop(workspace_id: impl Into<String>) -> DesktopBackdrop {
@@ -131,11 +131,9 @@ fn safe_cache_name(name: &str) -> bool {
 
 fn read_normalised_wallpaper(path: &std::path::Path) -> Option<ImageData> {
     let decoded = ui::png::read_rgba8(path).ok()?;
-    Some(ImageData {
-        data: Blob::new(Arc::new(decoded.rgba)),
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: decoded.width,
-        height: decoded.height,
-    })
+    Some(ui::raster::rgba8(
+        decoded.rgba,
+        decoded.width,
+        decoded.height,
+    ))
 }

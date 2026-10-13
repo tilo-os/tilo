@@ -582,10 +582,7 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
                     AccessNode::new(Role::MenuItem)
                         .with_action_target(format!("row:{entry_index}"))
                         .with_name(entry.label.clone())
-                        .with_state(AccessState {
-                            selected: position == self.cursor,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().selected(position == self.cursor))
                         .with_position(position.saturating_add(1), count)
                 })
             })
@@ -594,10 +591,7 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
             AccessNode::new(Role::Menu)
                 .with_name(self.spec.access_name)
                 .with_optional_value((!self.filter.is_empty()).then(|| self.filter.clone()))
-                .with_state(AccessState {
-                    expanded: Some(true),
-                    ..Default::default()
-                })
+                .with_state(AccessState::new().expanded(true))
                 .with_children(items),
         )
     }

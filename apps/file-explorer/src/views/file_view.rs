@@ -30,7 +30,7 @@ use taffy::{Dimension, LengthPercentage, NodeId, Size, Style, TaffyTree};
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
+use vello::peniko::{Color, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -652,13 +652,7 @@ impl FileView {
         if let Some(img) = ctx.imgs.borrow().get(&key) {
             return img.clone();
         }
-        let img = PenikoImage {
-            data: Blob::new(Arc::new(rgba.rgba.clone())),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: rgba.width,
-            height: rgba.height,
-        };
+        let img = ui::raster::rgba8(rgba.rgba.clone(), rgba.width, rgba.height);
         ctx.imgs.borrow_mut().insert(key, img.clone());
         img
     }
@@ -1205,10 +1199,7 @@ impl Widget for FileView {
                     .with_description(accessible_entry_description(entry))
                     .with_position(index + 1, self.entries.len())
                     .with_bounds(self.cell_rect(index))
-                    .with_state(AccessState {
-                        selected: self.selection.is_selected(index),
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().selected(self.selection.is_selected(index)))
             })
             .collect();
         let mut node = AccessNode::new(Role::List)
@@ -1220,11 +1211,7 @@ impl Widget for FileView {
                     .map_or(self.rect, |viewport| self.rect.intersect(viewport)),
             )
             .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: true,
-                focused: self.is_focused,
-                ..Default::default()
-            })
+            .with_state(AccessState::new().focusable(true).focused(self.is_focused))
             .with_children(children);
         if let Some(i) = primary
             && i < self.entries.len()

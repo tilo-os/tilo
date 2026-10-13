@@ -38,12 +38,9 @@
 )]
 
 use std::cell::RefCell;
-use std::sync::Arc;
 
 use vello::kurbo::{Affine, Rect, Shape};
-use vello::peniko::{
-    Blob, Color, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat, ImageQuality,
-};
+use vello::peniko::{Color, Extend, Fill, ImageBrush, ImageData, ImageQuality};
 use vello::{AaConfig, RenderParams, Renderer, Scene, wgpu};
 
 use crate::floating_surface::Material;
@@ -417,13 +414,7 @@ fn placeholder(slot: PlaceholderKey, width: u32, height: u32, ground: Color) -> 
             .cycle()
             .take(texel_count.saturating_mul(4))
             .collect();
-        let image = ImageData {
-            data: Blob::new(Arc::new(bytes)),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width,
-            height,
-        };
+        let image = crate::raster::rgba8(bytes, width, height);
         cache.retain(|(index, _)| *index != slot);
         cache.push((slot, image.clone()));
         image

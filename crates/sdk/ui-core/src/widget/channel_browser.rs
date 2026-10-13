@@ -1184,11 +1184,7 @@ impl Widget for ChannelBrowser {
             AccessNode::new(Role::List)
                 .with_name("Channels")
                 .with_description(format!("{} channels", self.visible.len()))
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.is_focused,
-                    ..Default::default()
-                }),
+                .with_state(AccessState::new().focusable(true).focused(self.is_focused)),
         )
     }
 
