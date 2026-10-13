@@ -4,12 +4,3 @@
 
 ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
-/// One constant per message of locales/en-US.ftl, for labels and placeholders.
-pub mod keys {
-    use ui::i18n::LabelKey;
-    pub const LOGS_CLEAR_FILTERS: LabelKey = LabelKey::new("logs-clear-filters");
-    pub const LOGS_LOGS_BOOT: LabelKey = LabelKey::new("logs-logs-boot");
-    pub const LOGS_LOGS_SEARCH: LabelKey = LabelKey::new("logs-logs-search");
-    pub const LOGS_LOGS_SEVERITY: LabelKey = LabelKey::new("logs-logs-severity");
-    pub const LOGS_LOGS_UNIT: LabelKey = LabelKey::new("logs-logs-unit");
-}

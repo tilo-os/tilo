@@ -16,7 +16,6 @@ pub const APP_TITLE: &str = "Bound Controls";
 
 pub mod locales;
 
-use locales::keys;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
 
@@ -97,9 +96,9 @@ impl ResourceApp for App {
         let name = cx
             .input(p.name)
             .with_id("name-input")
-            .with_placeholder(keys::CONTROLS_NAME_PLACEHOLDER);
+            .with_placeholder("controls-name-placeholder");
         let updates = cx
-            .checkbox(keys::CONTROLS_UPDATES_LABEL, p.updates)
+            .checkbox("controls-updates-label", p.updates)
             .with_id("updates-checkbox");
         // Everything else goes through `cx.control`: build the control from
         // the `LocalState` it is given and name the field it edits.
@@ -131,7 +130,7 @@ impl ResourceApp for App {
                 Atom,
             )
             .with_id("region-select");
-        let reset = cx.button(keys::CONTROLS_RESET, Preferences::RESET.invoke());
+        let reset = cx.button("controls-reset", Preferences::RESET.invoke());
 
         Box::new(ui::column![
             Text::new("controls-title").with_role(TextRole::Title),
