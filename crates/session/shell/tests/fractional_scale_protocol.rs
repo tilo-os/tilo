@@ -33,6 +33,7 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
 };
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
+use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 // Client-side state: registry advertisements + the per-surface preferred scale.
 
@@ -342,4 +343,194 @@ fn a_subsurface_is_asked_for_its_windows_scale() {
         Some(240),
         "the subsurface must render at its window's 2x, not the session-wide 1x"
     );
+}
+
+/// What a window client hears, in wire order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Heard {
+    PreferredScale(u32),
+    Configure,
+}
+
+#[derive(Default)]
+struct WindowClient {
+    globals: Vec<(u32, String, u32)>,
+    heard: Vec<Heard>,
+}
+
+impl Dispatch<wl_registry::WlRegistry, ()> for WindowClient {
+    fn event(
+        state: &mut Self,
+        _: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        {
+            state.globals.push((name, interface, version));
+        }
+    }
+}
+
+impl Dispatch<xdg_wm_base::XdgWmBase, ()> for WindowClient {
+    fn event(
+        _: &mut Self,
+        base: &xdg_wm_base::XdgWmBase,
+        event: xdg_wm_base::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<xdg_surface::XdgSurface, ()> for WindowClient {
+    fn event(
+        state: &mut Self,
+        surface: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            state.heard.push(Heard::Configure);
+            surface.ack_configure(serial);
+        }
+    }
+}
+
+impl Dispatch<WpFractionalScaleV1, ()> for WindowClient {
+    fn event(
+        state: &mut Self,
+        _: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            state.heard.push(Heard::PreferredScale(scale));
+        }
+    }
+}
+
+wayland_client::delegate_noop!(WindowClient: ignore wl_compositor::WlCompositor);
+wayland_client::delegate_noop!(WindowClient: ignore wl_surface::WlSurface);
+wayland_client::delegate_noop!(WindowClient: ignore WpFractionalScaleManagerV1);
+wayland_client::delegate_noop!(WindowClient: ignore xdg_toplevel::XdgToplevel);
+
+#[test]
+fn a_window_moved_to_another_scale_is_configured_after_hearing_it() {
+    use shell::compositor::backend::{Output, OutputId};
+
+    let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop event loop");
+    let mut display: Display<State> = Display::new().expect("wayland display");
+    let mut server = State::new(event_loop.handle(), display.handle());
+    // A 1x monitor with a 1.25x one to its right.
+    server.set_output_layout(&[
+        Output::new(OutputId(0), (1920, 1080), 1.0),
+        Output {
+            position: (1920, 0),
+            logical_position: (1920, 0),
+            ..Output::new(OutputId(1), (1280, 800), 1.25)
+        },
+    ]);
+
+    let (client_side, server_side) = UnixStream::pair().expect("socket pair");
+    display
+        .handle()
+        .insert_client(server_side, Arc::new(ClientState::default()))
+        .expect("insert client");
+    client_side.set_nonblocking(true).expect("non-blocking");
+    let conn = Connection::from_socket(client_side).expect("client from socket");
+    let mut queue = conn.new_event_queue::<WindowClient>();
+    let qh = queue.handle();
+    let mut client = WindowClient::default();
+    let mut pump = |server: &mut State, client: &mut WindowClient| {
+        for _ in 0..6 {
+            let _ = queue.flush();
+            let _ = display.dispatch_clients(server);
+            let _ = display.flush_clients();
+            if let Some(guard) = conn.prepare_read() {
+                let _ = guard.read();
+            }
+            let _ = queue.dispatch_pending(client);
+        }
+    };
+
+    let registry = conn.display().get_registry(&qh, ());
+    pump(&mut server, &mut client);
+    let bind = |interface: &str, version: u32| {
+        let (name, _, advertised) = client
+            .globals
+            .iter()
+            .find(|(_, i, _)| i == interface)
+            .unwrap_or_else(|| panic!("{interface} is advertised"))
+            .clone();
+        (name, version.min(advertised))
+    };
+    let (name, version) = bind("wl_compositor", 4);
+    let compositor: wl_compositor::WlCompositor = registry.bind(name, version, &qh, ());
+    let (name, version) = bind("xdg_wm_base", 2);
+    let wm_base: xdg_wm_base::XdgWmBase = registry.bind(name, version, &qh, ());
+    let (name, version) = bind("wp_fractional_scale_manager_v1", 1);
+    let manager: WpFractionalScaleManagerV1 = registry.bind(name, version, &qh, ());
+    let surface = compositor.create_surface(&qh, ());
+    let _fractional = manager.get_fractional_scale(&surface, &qh, ());
+    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    surface.commit();
+    pump(&mut server, &mut client);
+    // The run loop sends the opening configure once the window has a tile.
+    let window = server
+        .xdg_shell_state
+        .toplevel_surfaces()
+        .first()
+        .cloned()
+        .expect("the window is a toplevel");
+    window.send_configure();
+    pump(&mut server, &mut client);
+    assert!(
+        client.heard.contains(&Heard::Configure),
+        "the window was configured: {:?}",
+        client.heard
+    );
+    let id = shell::compositor::state::surface_id(window.wl_surface());
+
+    // Placed on the 1.25x monitor, moved to the 1x one, and back.
+    for (origin, scale_120) in [
+        ((2000.0, 10.0), 150),
+        ((10.0, 10.0), 120),
+        ((2000.0, 10.0), 150),
+    ] {
+        client.heard.clear();
+        server.update_surface_scales(&[(id, origin)]);
+        pump(&mut server, &mut client);
+        // Xwayland's X window is sized when the configure is handled, at the
+        // scale heard last: the configure has to come after the new scale.
+        let scale_at = client
+            .heard
+            .iter()
+            .position(|heard| *heard == Heard::PreferredScale(scale_120));
+        let configured_at = client
+            .heard
+            .iter()
+            .rposition(|heard| *heard == Heard::Configure);
+        assert!(
+            matches!((scale_at, configured_at), (Some(s), Some(c)) if s < c),
+            "at {origin:?} the window hears its scale {scale_120}/120 and then a configure: {:?}",
+            client.heard
+        );
+    }
+    let _keep = (xdg, toplevel);
 }

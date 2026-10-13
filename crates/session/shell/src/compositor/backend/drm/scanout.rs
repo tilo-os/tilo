@@ -908,6 +908,9 @@ pub struct ConnectorSnapshot {
     /// a lit output so a later rescan can tell a changed request from an
     /// unchanged one (see [`super::hotplug::retained_mode`]).
     pub mode_intent: Option<settings_store::hardware::OutputMode>,
+    /// The display configuration names this output, so its scale and
+    /// rotation come from there (see [`super::hotplug::retained_presentation`]).
+    pub arranged: bool,
 }
 
 impl ConnectorSnapshot {
@@ -1152,6 +1155,7 @@ impl CardHandle {
                 physical_mm: info.size().filter(|&(w, h)| w > 0 && h > 0),
                 monitor,
                 mode_intent: None,
+                arranged: false,
             });
         }
         out
@@ -1202,6 +1206,7 @@ impl CardHandle {
         let output_config = config.output_for(&config_key);
         snapshot.enabled = output_config.is_none_or(|output| output.enabled);
         snapshot.mode_intent = output_config.and_then(|output| output.mode);
+        snapshot.arranged = output_config.is_some();
         snapshot.mode = pick_configured_mode(&snapshot.modes, snapshot.mode_intent)
             .or_else(|| pick_configured_mode(&snapshot.modes, None))
             // `connected` has already rejected an empty KMS mode table; retaining
