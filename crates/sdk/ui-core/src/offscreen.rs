@@ -2105,7 +2105,6 @@ impl OffscreenRenderer {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use super::{
         AreaPpt8AttemptAccounting, CanonicalSegmentOrderAttemptAccounting,
@@ -2118,9 +2117,7 @@ mod tests {
     };
     use vello::Scene;
     use vello::kurbo::{Affine, BezPath, Rect};
-    use vello::peniko::{
-        BlendMode, Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
-    };
+    use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 
     #[test]
     fn offscreen_publication_is_send_resilient_and_decodable() {
@@ -2692,17 +2689,15 @@ mod tests {
         {
             const W: u32 = 256;
             const H: u32 = 192;
-            let image = |rgba: [u8; 4]| ImageData {
-                data: Blob::new(Arc::new(
+            let image = |rgba: [u8; 4]| {
+                crate::raster::rgba8(
                     rgba.into_iter()
                         .cycle()
                         .take(4 * 4 * 4)
                         .collect::<Vec<u8>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
+                    4,
+                    4,
+                )
             };
             let blue = image([20, 120, 255, 190]);
             let orange = image([255, 100, 30, 170]);
@@ -3092,19 +3087,15 @@ mod tests {
             oracle.set_defer_bump_readback_enabled(false);
             oracle.set_sparse_fine_enabled(false);
 
-            let image = ImageData {
-                data: Blob::new(Arc::new(
-                    [30_u8, 180, 250, 180]
-                        .into_iter()
-                        .cycle()
-                        .take(4 * 4 * 4)
-                        .collect::<Vec<_>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
-            };
+            let image = crate::raster::rgba8(
+                [30_u8, 180, 250, 180]
+                    .into_iter()
+                    .cycle()
+                    .take(4 * 4 * 4)
+                    .collect::<Vec<_>>(),
+                4,
+                4,
+            );
             let scene_for = |accent: Rect, image_rect: Rect| {
                 let mut scene = Scene::new();
                 let full = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
@@ -3948,19 +3939,15 @@ mod tests {
             oracle.set_cpu_metadata_enabled(false);
             oracle.set_cpu_pathtag_enabled(false);
             oracle.set_cpu_draw_prefix_enabled(false);
-            let image = ImageData {
-                data: Blob::new(Arc::new(
-                    [30_u8, 170, 240, 180]
-                        .into_iter()
-                        .cycle()
-                        .take(64)
-                        .collect::<Vec<_>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
-            };
+            let image = crate::raster::rgba8(
+                [30_u8, 170, 240, 180]
+                    .into_iter()
+                    .cycle()
+                    .take(64)
+                    .collect::<Vec<_>>(),
+                4,
+                4,
+            );
             let scene_for = |offset: f64, add_tag: bool| {
                 let mut scene = Scene::new();
                 let clip = Rect::new(12.0, 10.0, 180.0, 150.0);

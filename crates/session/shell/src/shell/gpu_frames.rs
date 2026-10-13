@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::ImageData;
 use vello::wgpu;
 
 /// The longest a GPU marker or readback may take before it is abandoned.
@@ -392,14 +392,8 @@ impl GpuFrame {
         {
             return image.clone();
         }
-        let image = ImageData {
-            data: Blob::new(Arc::new(Vec::<u8>::new())),
-            format: ImageFormat::Rgba8,
-            // Wayland `ARGB8888` is premultiplied; `X` formats are drawn opaque.
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
-            width: crop.2,
-            height: crop.3,
-        };
+        // Wayland `ARGB8888` is premultiplied; `X` formats are drawn opaque.
+        let image = ui::raster::rgba8_premultiplied(Vec::<u8>::new(), crop.2, crop.3);
         registry().register(&image, self, crop);
         *cached = Some((crop, image.clone()));
         image

@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use desktop_entry::icon_theme::{self, IconFile, IconFormat, IconLookup};
 use ui::icons::{AppImage, AppImageSource};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::{Blob, ImageData};
 
 use crate::shell::host_apps::{self};
 
@@ -45,13 +45,7 @@ pub struct Raster {
 
 impl Raster {
     fn image_data(&self) -> ImageData {
-        ImageData {
-            data: Blob::new(self.rgba.clone()),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: self.width,
-            height: self.height,
-        }
+        ui::raster::rgba8(Blob::new(self.rgba.clone()), self.width, self.height)
     }
 }
 

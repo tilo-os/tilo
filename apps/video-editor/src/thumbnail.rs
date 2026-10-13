@@ -35,7 +35,7 @@ use std::time::Duration;
 #[cfg(any(feature = "decode", test))]
 use thumbnail::ThumbSize;
 use thumbnail::{ThumbKey, ThumbState, ThumbnailService};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::{Blob, ImageData};
 
 use crate::media::MediaSource;
 use crate::model::MediaId;
@@ -127,13 +127,7 @@ impl Thumb {
     /// Wrap owned pixels, building the render handle once.
     pub fn new(width: u32, height: u32, rgba: Arc<Vec<u8>>, real: bool) -> Self {
         let data: Arc<dyn AsRef<[u8]> + Send + Sync> = rgba.clone();
-        let image = ImageData {
-            data: Blob::new(data),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width,
-            height,
-        };
+        let image = ui::raster::rgba8(Blob::new(data), width, height);
         Self {
             width,
             height,

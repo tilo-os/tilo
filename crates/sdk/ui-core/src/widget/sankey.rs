@@ -718,10 +718,7 @@ impl Widget for SankeyChart {
                     .with_action_target(format!("node:{}", node.id))
                     .with_name(&node.label)
                     .with_description(&node.detail)
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect::<Vec<_>>();
         children.extend(
@@ -737,10 +734,7 @@ impl Widget for SankeyChart {
                         } else {
                             link.detail.clone()
                         })
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                 }),
         );
         Some(

@@ -2125,11 +2125,11 @@ impl Widget for MainPanel {
                 .with_name("New note")
                 .with_description("Create the first note in this workspace")
                 .with_action_target("notes.first_note")
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.empty_action_focused,
-                    ..Default::default()
-                });
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.empty_action_focused),
+                );
             // Only the painted pill takes the click; without its own bounds
             // the button would claim the whole panel, whose centre is empty.
             return Some(if self.empty_action_rect.width() > 0.0 {

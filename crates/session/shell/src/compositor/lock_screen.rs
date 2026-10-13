@@ -1048,12 +1048,12 @@ fn draw_lock_media(
         None,
         &card,
     );
-    let image = player.artwork.as_ref().map(|art| ImageData {
-        data: vello::peniko::Blob::new(art.rgba.clone()),
-        format: vello::peniko::ImageFormat::Rgba8,
-        alpha_type: vello::peniko::ImageAlphaType::Alpha,
-        width: art.width,
-        height: art.height,
+    let image = player.artwork.as_ref().map(|art| {
+        ui::raster::rgba8(
+            vello::peniko::Blob::new(art.rgba.clone()),
+            art.width,
+            art.height,
+        )
     });
     paint_artwork(
         scene,

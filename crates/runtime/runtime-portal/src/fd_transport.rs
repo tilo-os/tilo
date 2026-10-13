@@ -204,7 +204,7 @@ mod tests {
         let (sender, receiver) = UnixDatagram::pair().unwrap();
         let (mut reader, writer) = UnixStream::pair().unwrap();
         reader.set_nonblocking(true).unwrap();
-        send_many(&sender, b"invalid", &[writer.as_raw_fd(); 3]);
+        send_many(&sender, b"invalid", &[writer.as_raw_fd(); MAX_BUNDLE + 1]);
         drop(writer);
         assert!(recv_with_fds(&receiver).is_err());
         assert_eq!(reader.read(&mut [0]).unwrap(), 0);

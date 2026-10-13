@@ -407,12 +407,12 @@ impl Widget for Link {
             AccessNode::new(Role::Link)
                 .with_name(self.label.clone())
                 .with_optional_value((!self.url.is_empty()).then(|| self.url.clone()))
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused())
+                        .disabled(!self.is_enabled()),
+                ),
         )
     }
 }

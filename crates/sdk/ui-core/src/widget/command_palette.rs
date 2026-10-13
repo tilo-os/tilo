@@ -2407,11 +2407,7 @@ impl Widget for CommandPalette {
             .with_value(query.1.clone())
             .with_text_selection(anchor, caret)
             .with_bounds(self.input_row_rect())
-            .with_state(AccessState {
-                focusable: true,
-                focused: self.is_focused,
-                ..Default::default()
-            });
+            .with_state(AccessState::new().focusable(true).focused(self.is_focused));
 
         let total = self.visible.len();
         let mut result_children: Vec<AccessNode> = (0..total)
@@ -2426,12 +2422,12 @@ impl Widget for CommandPalette {
                     .with_name(entry.label.clone())
                     .with_position(visible_index.saturating_add(1), total)
                     .with_bounds(rect)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.is_focused && visible_index == self.cursor,
-                        selected: visible_index == self.cursor,
-                        ..Default::default()
-                    });
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.is_focused && visible_index == self.cursor)
+                            .selected(visible_index == self.cursor),
+                    );
                 if let Some(description) = &entry.description {
                     item = item.with_description(description.clone());
                 }
