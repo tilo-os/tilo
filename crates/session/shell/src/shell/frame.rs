@@ -3311,15 +3311,16 @@ impl FrameBuilder {
             });
             plan.ids.push(strip);
         }
-        // Overlapping destinations cannot sample different pan offsets from
-        // the same screen pixel. Draw those strips in the full scene.
-        let overlapping = plan.strips.iter().enumerate().any(|(index, a)| {
+        // Adjacent strips' shadows overlap at their row boundary. Their
+        // canvases are independent and compose in strip order, but two strips
+        // with the exact same destination indicate a duplicated row.
+        let duplicate_destination = plan.strips.iter().enumerate().any(|(index, a)| {
             plan.strips
                 .iter()
                 .skip(index.saturating_add(1))
-                .any(|b| strip_blits_overlap(a, b))
+                .any(|b| strip_blits_same_destination(a, b))
         });
-        if overlapping {
+        if duplicate_destination {
             return Some(StripPlan::baked(screen_w));
         }
         Some(plan)
@@ -9883,14 +9884,9 @@ fn without_contained_regions(regions: &[FineDamageRect]) -> Vec<FineDamageRect> 
         .collect()
 }
 
-/// Whether the destinations of `a` and `b` share a pixel.
-fn strip_blits_overlap(a: &StripBlit, b: &StripBlit) -> bool {
-    let span = |start: u32, length: u32| (start, start.saturating_add(length));
-    let (ax0, ax1) = span(a.dest_x, a.dest_w);
-    let (ay0, ay1) = span(a.dest_y, a.dest_h);
-    let (bx0, bx1) = span(b.dest_x, b.dest_w);
-    let (by0, by1) = span(b.dest_y, b.dest_h);
-    ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1
+/// Whether two strips would draw precisely the same destination row.
+fn strip_blits_same_destination(a: &StripBlit, b: &StripBlit) -> bool {
+    a.dest_x == b.dest_x && a.dest_y == b.dest_y && a.dest_w == b.dest_w && a.dest_h == b.dest_h
 }
 
 /// A whole scene coordinate, possibly negative (off screen to the left or
