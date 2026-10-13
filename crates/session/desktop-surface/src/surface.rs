@@ -74,12 +74,6 @@ pub trait TileSource {
     /// strip is shown.
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost;
 
-    /// A group's new-tab control was pressed: the tab to open, under `id`.
-    /// `None` opens nothing.
-    fn new_tab(&mut self, _workspace: &Workspace, _id: TabId) -> Option<Tab> {
-        None
-    }
-
     /// A launch command named `app`: the tab to open under `id`. `None`
     /// opens nothing.
     fn launch(&mut self, _workspace: &Workspace, _id: TabId, _app: &str) -> Option<Tab> {
@@ -377,6 +371,9 @@ pub struct DesktopSurface {
     /// The sideways swipe in progress, if any.
     swipe: Option<Swipe>,
     search: tilo_desktop_search::DesktopSearch,
+    /// The window a group's new-tab control opened search for: the
+    /// application chosen there opens as its tab, as in the native shell.
+    new_tab_into: Option<(StripId, GroupId)>,
     /// The pointer in logical coordinates, while search is open.
     search_pointer: Point,
     platform: ui::platform::PlatformConventions,
@@ -457,6 +454,7 @@ impl DesktopSurface {
             unbuilt: Vec::new(),
             swipe: None,
             search: tilo_desktop_search::DesktopSearch::new(),
+            new_tab_into: None,
             search_pointer: Point::ZERO,
             platform: ui::platform::PlatformConventions::default(),
             history: None,
@@ -846,7 +844,7 @@ impl DesktopSurface {
                 .reorder_group_within_strip(strip_id, group, index)
                 .is_some();
         }
-        let mut new_tabs = Vec::new();
+        let mut new_tab = None;
         for group in &mut row.groups {
             for tab in group.take_pending_close_commits() {
                 changed |= shared.tree.remove_tab(tab).is_some();
@@ -879,7 +877,7 @@ impl DesktopSurface {
                 changed = true;
             }
             if group.take_pending_new_tab().is_some() {
-                new_tabs.push(group.id);
+                new_tab = Some(group.id);
             }
         }
         if let Some(topology) = row.take_pending_topology_change() {
@@ -897,27 +895,10 @@ impl DesktopSurface {
                 .reconcile_strip_topology(strip_id, &shape)
                 .is_some();
         }
-        for group_id in new_tabs {
-            let id = shared.minter.mint();
-            let Some(workspace) = shared.tree.active_workspace() else {
-                continue;
-            };
-            let Some(tab) = self.tiles.new_tab(workspace, id) else {
-                continue;
-            };
-            let host = build_tile(self.tiles.as_mut(), workspace, &tab);
-            let Some(model) = find_group(&mut shared.tree, strip_id, group_id) else {
-                continue;
-            };
-            model.tabs.push(tab.clone());
-            model.active_tab = tab.id;
-            let index = model.tabs.len().saturating_sub(1);
-            shared.tree.set_active_group(strip_id, group_id);
-            if let Some(group) = row.groups.iter_mut().find(|g| g.id == group_id) {
-                group.insert_detached_tab(index, descriptor(&tab), host);
-                group.set_active_tab(tab.id);
-            }
-            changed = true;
+        // The new-tab control asks which application to open there: search
+        // over the applications, aimed at that window.
+        if let Some(group) = new_tab {
+            shared.search_request = Some(search::SearchRequest::NewTab(strip_id, group));
         }
         if changed {
             shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
@@ -1168,6 +1149,19 @@ impl DesktopSurface {
         self.rows.get(&self.shown?)
     }
 
+    /// Where window `group`'s new-tab control is drawn, while its strip is
+    /// shown, so a test presses it as a person does.
+    #[cfg(any(test, debug_assertions))]
+    #[must_use]
+    pub fn new_tab_rect(&self, group: GroupId) -> Option<Rect> {
+        self.shown_row_ref()?
+            .groups
+            .iter()
+            .find(|g| g.id == group)
+            .map(WindowGroup::new_tab_rect)
+            .filter(|rect| rect.area() > 0.0)
+    }
+
     /// Present a launched window. A row first built after the launch
     /// already holds it, with its content, from the tree.
     fn open_group(&mut self, strip: StripId, group: GroupId, index: usize, tab: &Tab) {
@@ -1378,6 +1372,40 @@ fn launch(tiles: &mut dyn TileSource, shared: &mut Shared, app: &str) -> Option<
         index,
         tab,
     })
+}
+
+impl DesktopSurface {
+    /// Open `app` as a new tab of window `group` in strip `strip`, focused.
+    /// Returns whether it opened.
+    fn open_tab_in_group(&mut self, strip: StripId, group: GroupId, app: &str) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let id = shared.minter.mint();
+        let Some(workspace) = shared.tree.active_workspace() else {
+            return false;
+        };
+        let Some(tab) = self.tiles.launch(workspace, id, app) else {
+            return false;
+        };
+        let host = build_tile(self.tiles.as_mut(), workspace, &tab);
+        let Some(model) = find_group(&mut shared.tree, strip, group) else {
+            return false;
+        };
+        model.tabs.push(tab.clone());
+        model.active_tab = tab.id;
+        let index = model.tabs.len().saturating_sub(1);
+        shared.tree.set_active_group(strip, group);
+        if let Some(widget) = self
+            .rows
+            .get_mut(&strip)
+            .and_then(|row| row.groups.iter_mut().find(|g| g.id == group))
+        {
+            widget.insert_detached_tab(index, descriptor(&tab), host);
+            widget.set_active_tab(tab.id);
+        }
+        shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
+        shared.changed();
+        true
+    }
 }
 
 /// Pan `row` to `offset` the way the shell's direct strip pan does, within
