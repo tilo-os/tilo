@@ -30,6 +30,43 @@ use crate::model::{
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
+/// Bring a library written before every picture was named by its content
+/// up to date. A picture's origin path is no longer stored, and a photograph
+/// kept only by path never had bytes another device could read, so it goes.
+fn upgrade_library(
+    doc: &mut tilo_resource::Doc,
+    from: u32,
+) -> Result<(), tilo_resource::ModelError> {
+    use automerge::transaction::Transactable as _;
+    use automerge::{ObjType, ROOT, ReadDoc as _, Value};
+    if from != 1 {
+        return Err(tilo_resource::ModelError::invalid(format!(
+            "no migration from {from}"
+        )));
+    }
+    let Some((Value::Object(ObjType::Map), photos)) = doc.get(ROOT, "photos")? else {
+        return Ok(());
+    };
+    let ids: Vec<String> = doc.keys(&photos).collect();
+    for id in ids {
+        let image = match doc.get(&photos, id.as_str())? {
+            Some((Value::Object(ObjType::Map), photo)) => match doc.get(&photo, "image")? {
+                Some((Value::Object(ObjType::Map), image)) => Some(image),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(image) = image else { continue };
+        if doc.get(&image, "path")?.is_some() {
+            doc.delete(&image, "path")?;
+        }
+        if doc.get(&image, "content")?.is_none() {
+            doc.delete(&photos, id.as_str())?;
+        }
+    }
+    Ok(())
+}
+
 /// The most photographs one verb changes at once.
 pub(crate) const MAX_BATCH_PHOTOS: usize = 256;
 
@@ -39,7 +76,9 @@ pub(crate) const MAX_BATCH_PHOTOS: usize = 256;
     children = PhotoLibrary::places,
     search = crate::search::library_search_entries,
     read_content = PhotoLibrary::content,
-    effects = PhotosEffect
+    effects = PhotosEffect,
+    version = 2,
+    migrate = upgrade_library
 )]
 impl PhotoLibrary {
     /// Import photograph.
