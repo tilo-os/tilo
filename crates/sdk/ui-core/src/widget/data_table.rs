@@ -3559,7 +3559,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         // The row under the pointer, before a control in it takes the move.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 self.last_cursor = Some(pt);
                 self.track_hover(Some(pt));
             }
@@ -3579,7 +3579,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 self.on_cursor_moved(pt, ctx.handled);
             }
             WindowEvent::MouseInput {

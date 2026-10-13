@@ -69,7 +69,6 @@ pub(crate) trait RootApp {
     fn app_kind(&self) -> AppKind;
     fn app_title(&self) -> &str;
     fn app_icon(&self) -> IconDescriptor;
-    fn permission_hint(&self) -> Option<AppKind>;
     fn device_shell_operation(
         &mut self,
         operation: &ui_core::floating_surface::DeviceShellOperation,
@@ -276,10 +275,6 @@ impl AppWidget for RootWidget {
 
     fn app_icon(&self) -> IconDescriptor {
         self.0.app_icon()
-    }
-
-    fn permission_hint(&self) -> Option<AppKind> {
-        self.0.permission_hint()
     }
 
     fn device_shell_operation(

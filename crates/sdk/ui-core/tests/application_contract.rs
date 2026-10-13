@@ -1298,9 +1298,6 @@ mod save_status_fixture {
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Named("status".into())
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
         fn record_save_status(&mut self, status: RecordSaveStatus) {
             assert_eq!(self.records.save_status(&self.checkout.id).unwrap(), status);
             DELIVERED.with(|seen| seen.borrow_mut().push(status));
@@ -1652,9 +1649,6 @@ mod paired_local {
         }
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Glyph("")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
         fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
             let mut state = self.0.borrow_mut();

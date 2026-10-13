@@ -969,8 +969,7 @@ impl Widget for PropertyList {
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 let hovered = target_at(&self.layout, self.cursor);
                 if hovered != self.hovered_action {
                     self.hovered_action = hovered;
@@ -1342,8 +1341,7 @@ impl Widget for PropertyValue {
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let point = ctx.logical(position);
                 self.hovered = target.contains(point);
             }
             WindowEvent::MouseInput {

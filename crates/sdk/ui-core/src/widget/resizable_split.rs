@@ -273,8 +273,7 @@ impl SplitHandle {
     ) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 self.hover = self.divider.contains(self.cursor);
                 if let Some(offset) = self.drag {
                     *ctx.handled = true;
@@ -682,17 +681,11 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             }
         }
         let cursor_pt = match event {
-            WindowEvent::CursorMoved { position, .. } => Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            )),
+            WindowEvent::CursorMoved { position, .. } => Some(ctx.logical(position)),
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
                 Some(self.handle.cursor)
             }
-            WindowEvent::Touch(touch) => Some(Point::new(
-                touch.location.x / ctx.scale_factor,
-                touch.location.y / ctx.scale_factor,
-            )),
+            WindowEvent::Touch(touch) => Some(ctx.logical(touch.location)),
             _ => None,
         };
 

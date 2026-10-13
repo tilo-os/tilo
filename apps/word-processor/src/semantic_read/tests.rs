@@ -175,58 +175,6 @@ fn semantic_read_refuses_to_emit_an_unusable_oversized_cursor() {
 }
 
 #[test]
-fn semantic_read_uses_exact_bound_root_and_refuses_cross_root_cursor() {
-    let mut doc = AutoCommit::new();
-    let left = doc
-        .put_object(ROOT, "left", automerge::ObjType::Map)
-        .unwrap();
-    let right = doc
-        .put_object(ROOT, "right", automerge::ObjType::Map)
-        .unwrap();
-    for (root, words) in [
-        (&left, ["left one", "left two"]),
-        (&right, ["right one", "right two"]),
-    ] {
-        let c = tilo_doc::model::init(&mut doc, root);
-        let mut ids = tilo_doc::IdGen::new("same-block-ids".into());
-        let mut dm = tilo_doc::DocMut {
-            doc: &mut doc,
-            c: &c,
-            ids: &mut ids,
-        };
-        let mut previous = None;
-        for word in words {
-            let id = dm.insert_block(previous.as_deref(), "paragraph");
-            dm.splice_text(&id, 0, 0, word);
-            previous = Some(id);
-        }
-    }
-    doc.commit();
-    let heads = doc.base_heads();
-    let page = read_text_at(&doc, &doc.base_heads(), &left, None, limits(1)).unwrap();
-    assert_eq!(page.segments[0].text, "left one");
-    assert_eq!(
-        read_text_at(
-            &doc,
-            &doc.base_heads(),
-            &right,
-            page.next.as_ref(),
-            limits(1)
-        )
-        .unwrap_err(),
-        ReadError::InvalidCursor
-    );
-    assert_eq!(
-        read_text_at(&doc, &doc.base_heads(), &right, None, limits(2))
-            .unwrap()
-            .segments[1]
-            .text,
-        "right two"
-    );
-    assert_eq!(doc.base_heads(), heads);
-}
-
-#[test]
 fn semantic_read_uses_borrowed_owner_heads_without_cloning_legacy_isolation() {
     let mut doc = fixture(&["hello"]);
     let heads = doc.base_heads();

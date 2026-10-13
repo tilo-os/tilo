@@ -1,7 +1,7 @@
 //! Catalogue selection never changes how an existing track is resolved.
 use super::{
     AlbumPage, ArtistPage, BackendError, HomeContent, MusicBackend, PlaylistPage, ResolveOutcome,
-    SearchBundle, SearchKind, SearchOutcome, spotify,
+    SearchBundle, SearchOutcome, spotify,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -103,9 +103,6 @@ impl MusicBackend for Sources {
     }
     fn search_all(&self, query: &str) -> Result<SearchBundle, BackendError> {
         self.selected().search_all(query)
-    }
-    fn search_more(&self, query: &str, kind: SearchKind) -> Result<SearchBundle, BackendError> {
-        self.selected().search_more(query, kind)
     }
     fn resolve_audio(&self, id: &str) -> ResolveOutcome {
         self.for_id(id)?.resolve_audio(id)

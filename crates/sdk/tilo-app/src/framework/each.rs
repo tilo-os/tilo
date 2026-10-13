@@ -573,8 +573,7 @@ impl<R: Resource> Each<R> {
     /// Route an event to the row menu. Returns whether it was consumed.
     fn menu_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.menu.cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.menu.cursor = ctx.logical(position);
         }
         if self.menu.menu.is_open() {
             self.menu.menu.handle_event(event, ctx);

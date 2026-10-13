@@ -850,9 +850,6 @@ impl AppWidget for ProbeRoot {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("P")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 
 #[allow(

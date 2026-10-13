@@ -602,8 +602,7 @@ impl Widget for DisplayArrangement {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let point = ctx.logical(position);
                 self.cursor = Some(point);
                 if self.drag_to(point) {
                     *ctx.handled = true;

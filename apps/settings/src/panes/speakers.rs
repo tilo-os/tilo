@@ -1700,8 +1700,7 @@ impl Widget for RoomCanvas {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if let Some(index) = self.dragging {
                     let moved = self.to_room(self.cursor);
                     self.points.update(|points| {

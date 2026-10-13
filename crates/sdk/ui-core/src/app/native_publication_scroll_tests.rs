@@ -69,9 +69,6 @@ impl crate::widget::AppWidget for PublicationProbeRoot {
     fn app_icon(&self) -> crate::widget::IconDescriptor {
         crate::widget::IconDescriptor::Glyph("S")
     }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
-    }
 }
 
 impl crate::resources::PublishesResources for PublicationProbeRoot {

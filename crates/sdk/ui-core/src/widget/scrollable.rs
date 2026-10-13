@@ -1778,9 +1778,9 @@ impl Widget for Scrollable {
             .as_ref()
             .is_some_and(|child| child.wants_pointer_capture());
         let pointer_in_content = match event {
-            WindowEvent::CursorMoved { position, .. } => self.content_viewport_rect().contains(
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor),
-            ),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.content_viewport_rect().contains(ctx.logical(position))
+            }
             WindowEvent::MouseInput { .. } => {
                 self.content_viewport_rect().contains(self.last_cursor)
             }
