@@ -269,14 +269,17 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
         // form, and blobs shared across releases.
         for version in &entry.versions {
             let bytes = storage
-                .load_staged_artifact(&version.tapp_blake3_hex)
+                .load_staged_artifact(&version.tapp().unwrap().tapp_blake3_hex)
                 .unwrap();
             assert_eq!(
                 blake3::hash(&bytes).to_hex().as_str(),
-                version.tapp_blake3_hex
+                version.tapp().unwrap().tapp_blake3_hex
             );
             assert_eq!(
-                status(&format!("{base}/thin/{}.tapp", version.tapp_root_hash_hex)),
+                status(&format!(
+                    "{base}/thin/{}.tapp",
+                    version.tapp().unwrap().tapp_root_hash_hex
+                )),
                 reqwest::StatusCode::OK
             );
         }
@@ -291,7 +294,7 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             entry
                 .versions
                 .iter()
-                .map(|version| format!("{}.root", version.tapp_blake3_hex))
+                .map(|version| format!("{}.root", version.tapp().unwrap().tapp_blake3_hex))
                 .collect()
         );
         let stored = names(&data_dir.join("payload-blobs"));
