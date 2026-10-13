@@ -255,15 +255,15 @@ impl Widget for BottomPanelToggle {
                 .with_semantic_key(Self::ID)
                 .with_name(Self::name(self.expanded))
                 .with_description("Problems and terminal")
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    checked: Some(self.expanded),
-                    selected: self.expanded,
-                    expanded: Some(self.expanded),
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused())
+                        .disabled(!self.is_enabled())
+                        .checked(self.expanded)
+                        .selected(self.expanded)
+                        .expanded(self.expanded),
+                ),
         )
     }
 
@@ -2921,10 +2921,6 @@ impl Widget for CodeApp {
         }))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the widget lifecycle deliberately sequences every asynchronous projection in one auditable frame boundary"
-    )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         if !self.seeded {
@@ -3077,10 +3073,7 @@ impl Widget for CodeApp {
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &[content_node], node_map, self)

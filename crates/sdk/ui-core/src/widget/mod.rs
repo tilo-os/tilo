@@ -2826,10 +2826,7 @@ pub trait TaffyTreeExt {
         widget: &mut (dyn Widget + 'static),
     ) -> NodeId {
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         self.widget_leaf(style, node_map, widget)
@@ -2856,10 +2853,7 @@ pub trait TaffyTreeExt {
             taffy::Style {
                 display: taffy::Display::Flex,
                 flex_grow: 1.0,
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
+                size: taffy::Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             &[child],

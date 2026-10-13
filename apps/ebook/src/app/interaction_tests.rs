@@ -3259,10 +3259,6 @@ fn library_shelf_layout_filtering_and_keyboard() {
 // ---- library: open-from-anywhere, import, share ------------------------
 
 /// Books open by path or picker, failures settle visibly, watch scans never replace explicit opens, one book has one identity and removal keeps dedup.
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-)]
 #[test]
 #[serial]
 fn importing_and_removing_books_keeps_one_identity() {
@@ -3538,10 +3534,6 @@ fn import_worker_is_non_blocking_and_wakes_its_host() {
 }
 
 /// Workspace books surface as shared; sharing materialises before success, remote opens verify content ids, and share jobs report their lifecycle.
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-)]
 #[test]
 #[serial]
 fn workspace_sharing_materialises_and_verifies_books() {

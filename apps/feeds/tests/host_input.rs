@@ -1,8 +1,6 @@
 //! The Add feed dialog through the real host loop: its address field takes
 //! typed text after the host lays out between every event.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 use ui::framework::testing::TestApp;
 use ui::headless::FrameHarness;
 

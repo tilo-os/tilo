@@ -11,7 +11,7 @@ use ui::widget::ModelPath;
 
 #[cfg(test)]
 use automerge::AutoCommit;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::Color;
@@ -1265,10 +1265,7 @@ impl Widget for CalculatorApp {
         let node = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
+                    size: Size::from_percent(1.0, 1.0),
                     ..Default::default()
                 },
                 &children,
@@ -1938,10 +1935,6 @@ impl CalculatorApp {
             .with_children(children)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one parser keeps every retained graph control on the same action-dispatch path"
-    )]
     fn perform_graph_semantic_action(
         &mut self,
         target: &str,

@@ -23,10 +23,6 @@ fn write(path: &Path, bytes: &[u8]) {
 // ---- file identity ---------------------------------------------------
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
 fn file_identity_follows_the_file_not_its_path_or_bytes() {
     // phase: a_file_keeps_its_identity_through_rename_and_move
     {

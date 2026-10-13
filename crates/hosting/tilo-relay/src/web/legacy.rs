@@ -608,12 +608,6 @@ impl LegacyWindows {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion"
-)]
 mod tests {
     use super::*;
     use tilo_moq::live::{AuthorizationStatus, Denied, LiveAuthority, LiveSession, LoopbackLive};

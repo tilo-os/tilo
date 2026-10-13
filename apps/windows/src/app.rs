@@ -2281,10 +2281,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
     fn portal_pickers_hand_open_descriptors_to_the_right_target() {
         // Case `installer_portal_handoff_uses_its_open_descriptor_and_display_name`.
         {
@@ -2431,10 +2427,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
     fn destructive_and_escalating_actions_require_explicit_confirmation() {
         // Case `deleting_private_data_requires_the_dialog_confirmation`.
         {

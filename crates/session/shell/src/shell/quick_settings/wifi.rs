@@ -795,10 +795,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn wifi_rows_join_only_joinable_networks_exactly_once() {
         // Phase `protected_and_open_rows_take_distinct_paths`.
         {

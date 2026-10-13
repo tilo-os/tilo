@@ -5,16 +5,6 @@
 //! it in the other" — the App layer drives exactly these calls
 //! (`broadcast_doc_delta` -> document incremental; poll -> `load_incremental`).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use crate::support::typed_collab::TypedBroker;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};

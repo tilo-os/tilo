@@ -750,13 +750,11 @@ impl NowPlayingCard {
         {
             return Some(image.clone());
         }
-        let image = vello::peniko::ImageData {
-            data: vello::peniko::Blob::new(art.rgba.clone()),
-            format: vello::peniko::ImageFormat::Rgba8,
-            alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: art.width,
-            height: art.height,
-        };
+        let image = ui::raster::rgba8(
+            vello::peniko::Blob::new(art.rgba.clone()),
+            art.width,
+            art.height,
+        );
         self.image = Some((identity, image.clone()));
         Some(image)
     }

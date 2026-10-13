@@ -287,10 +287,6 @@ mod tests {
 
     /// Download store lifecycle, bounds, restore and destinations.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn download_rows_are_bounded_restart_safe_and_truthful() {
         // Phase `lifecycle_is_stable_bounded_and_restart_safe`.
         {

@@ -274,10 +274,6 @@ fn reserved_chords_are_owned_by_rename_and_quick_settings_with_help_and_escape_p
 
 #[test]
 #[serial_test::serial(process_env)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn status_editor_and_presence_publish_live_manual_status_without_leaking_keys() {
     fn inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps() {
         let settings = tempfile::tempdir().expect("isolated settings directory");
@@ -762,10 +758,6 @@ fn configured_shortcuts_match_exactly_capture_safely_and_are_claimed_before_clie
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn session_power_actions_respect_inhibitors_and_report_failure() {
     fn logout_and_switch_user_respect_their_portal_inhibitors() {
         let (mut host, chrome) = host_with_chrome();
@@ -1718,10 +1710,6 @@ const SAMPLE_TOKEN: &str = "eyJ3b3Jrc3BhY2VfaWQiOjEsInJvb21faWQiOiJhYmMifQ";
 
 #[test]
 #[serial_test::serial(clipboard)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn invite_tokens_travel_through_the_clipboard_exactly() {
     fn ctrl_c_puts_the_minted_invite_token_on_the_clipboard() {
         let (mut h, _) = host_with_chrome();

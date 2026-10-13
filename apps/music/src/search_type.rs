@@ -561,10 +561,6 @@ mod tests {
     use crate::seed;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn search_descriptors_deep_links_and_subtitles_are_stable_and_safe() {
         // Phase `descriptors_are_stable_and_complete`.
         {
@@ -623,10 +619,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn library_provider_registers_real_hits_and_fabricates_nothing() {
         // Phase `offline_provider_contributes_nothing_but_never_errors`.
         {

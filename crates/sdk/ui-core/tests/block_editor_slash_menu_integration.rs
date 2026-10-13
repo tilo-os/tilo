@@ -5,16 +5,6 @@
 //! See `crates/sdk/ui-core/src/widget/slash_menu.rs` and `block_editor.rs` for the
 //! unit-level pins on each part of the flow.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_ui::widget::{BlockEditor, BlockKind};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey, SmolStr};

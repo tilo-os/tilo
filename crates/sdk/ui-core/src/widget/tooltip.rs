@@ -5,7 +5,7 @@
 
 use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -391,10 +391,7 @@ impl Widget for Tooltip {
             (0.0, 0.0)
         };
         let style = Style {
-            size: Size {
-                width: Dimension::length(w),
-                height: Dimension::length(h),
-            },
+            size: Size::from_lengths(w, h),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

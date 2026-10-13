@@ -2309,7 +2309,13 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "one shared initialization body for the host interaction surfaces"
     )]
-    fn from_inputs(content: Box<dyn Widget>, inputs: OverlayInputs) -> Self {
+    fn from_inputs(content: Box<dyn Widget>, mut inputs: OverlayInputs) -> Self {
+        let file_picker_overlay = FilePickerOverlay::default();
+        inputs.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::file_picker::FilePickerProvider::new(
+                file_picker_overlay.actions(),
+            ),
+        ));
         // Palette entries come from the search registry on every
         // keystroke. New providers slot in via `SearchRegistry::register`;
         // the palette picks up their resource-kind chips automatically.
@@ -2420,7 +2426,7 @@ impl ShellOverlayHost {
             portal_prompts: None,
             host_shell_allows: Vec::new(),
             terminal_device_shell: None,
-            file_picker_overlay: FilePickerOverlay::default(),
+            file_picker_overlay,
             portal_dialogs: inputs.portal_dialogs,
             peer_sync_enabled: false,
             peer_sync_bridge: None,
@@ -6340,6 +6346,13 @@ impl ShellOverlayHost {
 
     /// The live file-chooser dialog, if one is up. For the frame
     /// builder's widget walk and for tests.
+    #[cfg(test)]
+    pub(crate) fn file_picker_actions_for_test(
+        &self,
+    ) -> crate::shell::file_picker_overlay::actions::PickerActions {
+        self.file_picker_overlay.actions()
+    }
+
     pub fn file_picker(&self) -> Option<&ui::widget::FilePicker> {
         self.file_picker_overlay.widget()
     }

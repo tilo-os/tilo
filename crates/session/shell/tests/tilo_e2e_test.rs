@@ -9,10 +9,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -366,10 +362,6 @@ fn topbar_avatars_cap_at_three_and_never_leak_into_an_empty_workspace() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn tab_presence_seeds_per_tab_peers_and_colours_without_phantom_carets() {
     // Phase `sync_tab_presence_seeds_per_tab_peer_registrations`.
     {
@@ -661,7 +653,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         }
         use automerge::AutoCommit;
         use std::collections::HashMap;
-        use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+        use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
         use ui::theme::Theme;
@@ -683,10 +675,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let vp = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
+                    size: Size::from_lengths(W, H),
                     ..Default::default()
                 },
                 &[root_node],
@@ -752,7 +741,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
     {
         use automerge::AutoCommit;
         use std::collections::HashMap;
-        use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+        use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
         use ui::theme::Theme;
@@ -782,10 +771,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let vp = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
+                    size: Size::from_lengths(W, H),
                     ..Default::default()
                 },
                 &[node],
@@ -847,7 +833,7 @@ fn topbar_with_overview_btn_hit() -> (
     vello::kurbo::Point,
 ) {
     use std::collections::HashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
@@ -871,10 +857,7 @@ fn topbar_with_overview_btn_hit() -> (
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
+                size: Size::from_lengths(1600.0, 900.0),
                 ..Default::default()
             },
             &[node],

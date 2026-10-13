@@ -25,13 +25,11 @@ use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
 
 use iroh_base::{EndpointId, SecretKey};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{
-    Blob, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat,
-};
+use vello::peniko::{Blob, Fill, ImageBrush, ImageData as PenikoImage};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
@@ -355,26 +353,18 @@ impl SessionCore {
             Some(LiveSession::Ssh(s)) => changed = s.pump(),
             Some(LiveSession::Vnc(s)) => {
                 if let Some(fb) = s.take_frame() {
-                    self.fb_image = Some(PenikoImage {
-                        data: Blob::new(fb.data),
-                        format: ImageFormat::Rgba8,
-                        alpha_type: ImageAlphaType::Alpha,
-                        width: u32::from(fb.width),
-                        height: u32::from(fb.height),
-                    });
+                    self.fb_image = Some(ui::raster::rgba8(
+                        Blob::new(fb.data),
+                        u32::from(fb.width),
+                        u32::from(fb.height),
+                    ));
                     changed = true;
                 }
             }
             Some(LiveSession::Tilo(session)) => {
                 if let Some(frame) = session.take_latest_frame() {
                     session.size = Some((frame.width, frame.height));
-                    self.fb_image = Some(PenikoImage {
-                        data: Blob::new(Arc::new(frame.rgba)),
-                        format: ImageFormat::Rgba8,
-                        alpha_type: ImageAlphaType::Alpha,
-                        width: frame.width,
-                        height: frame.height,
-                    });
+                    self.fb_image = Some(ui::raster::rgba8(frame.rgba, frame.width, frame.height));
                     changed = true;
                 }
             }
@@ -739,13 +729,7 @@ impl RemoteApp {
             ))));
         } else {
             let (width, height) = crate::sample::DESKTOP_SIZE;
-            session.fb_image = Some(PenikoImage {
-                data: Blob::new(Arc::new(crate::sample::desktop())),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width,
-                height,
-            });
+            session.fb_image = Some(ui::raster::rgba8(crate::sample::desktop(), width, height));
             session.live = Some(LiveSession::Sample(SampleSurface::Desktop));
         }
         drop(session);
@@ -2014,10 +1998,6 @@ impl Widget for RemoteApp {
         Some(self)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each pending operation's exact terminal settlement is kept beside cancellation and generation validation"
-    )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // The saved connections arrive through the resource
         // ([`Self::adopt_resource_state`]); here the window catches up on
@@ -2234,10 +2214,6 @@ impl RemoteApp {
         rows
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one arm per published Remote operation keeps the effect boundary auditable"
-    )]
     /// Answer `effect`. Opening a session and sending text answer once the
     /// transport says how it went ([`Self::settle_pending_effect`]).
     pub(crate) fn answer_effect(
@@ -2418,10 +2394,6 @@ impl RemoteApp {
 
     /// How the session effect still waiting ended, once it has; `cancelled`
     /// when its caller gave up on it.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each pending operation's exact terminal settlement is kept beside cancellation and generation validation"
-    )]
     pub(crate) fn pending_outcome(&mut self, cancelled: bool) -> Option<Result<(), String>> {
         let pending = self.pending_resource_operation.as_ref()?;
         if cancelled
@@ -2785,10 +2757,7 @@ impl Widget for SessionPane {
     ) -> NodeId {
         let style = Style {
             flex_grow: 1.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

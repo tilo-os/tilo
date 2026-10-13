@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, Cap, Circle, Join, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Brush, Color, Fill};
@@ -581,10 +581,7 @@ impl Widget for ProgressRing {
     ) -> NodeId {
         let side = crate::num::f32_of_f64(self.face().diameter(theme));
         let style = Style {
-            size: Size {
-                width: Dimension::length(side),
-                height: Dimension::length(side),
-            },
+            size: Size::from_lengths(side, side),
             flex_shrink: 0.0,
             ..Default::default()
         };

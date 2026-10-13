@@ -398,10 +398,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn account_store_upserts_clamps_and_round_trips_the_shared_store() {
         // Phase `upsert_replaces_by_id_not_appends`.
         {
@@ -463,10 +459,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn account_secrets_live_in_the_vault_and_a_damaged_vault_blocks_changes() {
         // Phase `removed_account_secret_is_purged_from_the_vault`.
         {

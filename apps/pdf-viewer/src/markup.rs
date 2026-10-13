@@ -341,7 +341,6 @@ impl PdfMarkup {
 
     /// Apply `invoke` to `doc` through the door, as a replica of it does.
     #[cfg(test)]
-    #[allow(clippy::expect_used, reason = "a test fixture refuses loudly")]
     pub(crate) fn apply_to(
         doc: &mut tilo_resource::Doc,
         invoke: impl Into<tilo_resource::Invoke<Self>>,
@@ -354,7 +353,6 @@ impl PdfMarkup {
     /// A record holding a plan of `pages` source pages, as bytes every test
     /// replica loads: the shared genesis two peers start from.
     #[cfg(test)]
-    #[allow(clippy::expect_used, reason = "a test fixture refuses loudly")]
     pub(crate) fn planned(pages: usize) -> Vec<u8> {
         let mut replica = tilo_resource::Replica::<Self>::new();
         replica

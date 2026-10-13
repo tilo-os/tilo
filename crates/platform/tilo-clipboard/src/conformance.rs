@@ -4,8 +4,6 @@
 //! The checks panic with the violated rule. They write the clipboard they are
 //! given, so run [`check_system`] only where clobbering it is acceptable.
 #![allow(
-    clippy::panic,
-    clippy::expect_used,
     clippy::missing_panics_doc,
     reason = "a conformance check fails by panicking with the violated rule"
 )]

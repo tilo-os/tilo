@@ -1142,10 +1142,7 @@ impl Widget for Table {
 
         let node = if self.is_empty() {
             taffy.leaf_node(Style {
-                size: Size {
-                    width: length(total_w as f32),
-                    height: length(total_h as f32),
-                },
+                size: Size::from_lengths(total_w as f32, total_h as f32),
                 ..Default::default()
             })
         } else {
@@ -1158,10 +1155,7 @@ impl Widget for Table {
             taffy.parent_node(
                 Style {
                     display: Display::Grid,
-                    size: Size {
-                        width: length(total_w as f32),
-                        height: length(total_h as f32),
-                    },
+                    size: Size::from_lengths(total_w as f32, total_h as f32),
                     padding: TaffyRect {
                         left: length(LEFT_GUTTER as f32),
                         right: length(RIGHT_PAD as f32),

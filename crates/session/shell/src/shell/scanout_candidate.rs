@@ -250,21 +250,14 @@ pub fn pixel_exact_origin(transform: Affine, size: (u32, u32)) -> Option<(i32, i
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageFormat};
+    use vello::peniko::{Color, Fill, ImageBrush};
 
     fn image(width: u32, height: u32) -> ImageData {
-        ImageData {
-            data: Blob::new(Arc::new(vec![
-                0_u8;
-                width.saturating_mul(height).saturating_mul(4)
-                    as usize
-            ])),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
+        ui::raster::rgba8_premultiplied(
+            vec![0_u8; width.saturating_mul(height).saturating_mul(4) as usize],
             width,
             height,
-        }
+        )
     }
 
     fn fill_image(scene: &mut Scene, image: &ImageData, transform: Affine) {

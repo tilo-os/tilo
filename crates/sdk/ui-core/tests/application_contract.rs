@@ -10,10 +10,6 @@ use tilo_ui::launch::LaunchError;
 use tilo_ui::record::RecordId;
 use tilo_ui::view::{FocusView, ThawError, View};
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-)]
 #[test]
 fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
     // Case `new_instances_are_distinct_and_catalogue_never_fabricates_apps`.
@@ -1736,10 +1732,6 @@ mod paired_local {
         STATE.with(|slot| *slot.borrow_mut() = state.clone());
         (host, definition(factory), state)
     }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-    )]
     #[test]
     fn paired_local_views_bracket_restore_and_keep_complete_pairs_on_failure() {
         // Case `second_capture_failure_retains_complete_previous_pair_during_owned_close`.

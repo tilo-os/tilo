@@ -784,10 +784,6 @@ impl DesktopSurface {
     }
 
     /// Mirror gestures the shown row performed into the tree.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered harvest, matching the shell overlay host's pass order"
-    )]
     fn harvest(&mut self) {
         let Some(strip_id) = self.shown else {
             return;

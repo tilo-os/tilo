@@ -1,12 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use super::*;
 use crate::model::{Stopwatch, WeekdayKey};
 use std::time::Duration;
@@ -224,10 +215,6 @@ fn find(resources: &[ui::tilo_actions::Resource], id: &str) -> Option<ui::tilo_a
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
 fn one_published_tree_offers_every_clock_and_floats_timers_on_this_device_only() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let mut app = TestApp::<ClocksShell>::new().unwrap();
