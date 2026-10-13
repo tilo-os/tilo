@@ -117,6 +117,7 @@ pub use action_locus::{ActionUiRoute, PaintedActionMarker};
 pub mod action_palette;
 pub mod agent_identity;
 pub mod animation;
+pub mod author;
 #[cfg(test)]
 extern crate self as tilo_ui;
 #[cfg(test)]

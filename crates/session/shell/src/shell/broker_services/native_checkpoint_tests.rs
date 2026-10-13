@@ -95,6 +95,7 @@ impl CheckpointDriver {
             confirmation: None,
             revision: None,
             on_behalf_of: None,
+            appearance: None,
             wait_ms: None,
         }
     }

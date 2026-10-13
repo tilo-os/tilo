@@ -549,6 +549,7 @@ impl CapnpBrokerState {
             confirmation: None,
             revision: None,
             on_behalf_of: None,
+            appearance: None,
             wait_ms: None,
         };
         let launch_key = native.launch_key(self)?;

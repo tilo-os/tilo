@@ -5019,7 +5019,7 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
     );
 
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    assert!(app_is_workspace_member(&repo.join("apps/hot-reload-demo")));
+    assert!(app_is_workspace_member(&repo.join("apps/calculator")));
     let temp = tempfile::tempdir().unwrap();
     assert!(!app_is_workspace_member(temp.path()));
 }

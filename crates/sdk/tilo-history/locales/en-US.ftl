@@ -83,4 +83,5 @@ history-actor-unknown = Someone
 history-actor-agent = { $actor } · Agent
 history-actor-shortcut = { $actor } · Shortcut
 history-actor-app = { $actor } · App
+history-actor-bot = { $actor } · Bot
 history-actor-for-you = you
