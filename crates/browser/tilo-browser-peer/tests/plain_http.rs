@@ -62,8 +62,12 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
             },
             allowed_origins: Vec::new(),
             plain_listen: Some("0.0.0.0:0".parse().unwrap()),
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
-        .await;
+        .await
+        .is_err();
     drop(host);
-    assert!(refused.is_err(), "a plain listener must stay on loopback");
+    assert!(refused, "a plain listener must stay on loopback");
 }

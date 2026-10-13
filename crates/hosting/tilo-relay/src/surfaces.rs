@@ -14,14 +14,53 @@ pub const DEFAULT_REGISTRY: &str = "https://apps.tilo.so";
 /// What the relay has of each surface: its bytes, or a fetch under way.
 type Fetched = Arc<Mutex<HashMap<String, Option<Vec<u8>>>>>;
 
-/// Decide every change this process receives against surfaces fetched by
-/// hash from `registry`. Call it once, on the runtime the relay runs on,
-/// before the relay starts.
+/// The surface `hash` of `record`'s app, when this host runs the app in
+/// its own process (a bot's apps) and that is the surface it runs.
+#[cfg(feature = "agents")]
+fn carried(record: &collab_types::Record<'_>, hash: &str) -> Option<Vec<u8>> {
+    surface_of(record.app, hash)
+}
+
+/// The surface `hash` of `app` when it is the one this host runs `app`
+/// with.
+#[cfg(feature = "agents")]
+pub(crate) fn surface_of(app: &str, hash: &str) -> Option<Vec<u8>> {
+    let carried = ui::app_surface::hash_of(app)?;
+    (hex::encode(carried) == hash)
+        .then(|| ui::app_surface::bytes_of(app).map(<[u8]>::to_vec))
+        .flatten()
+}
+
+#[cfg(not(feature = "agents"))]
+const fn carried(_: &collab_types::Record<'_>, _: &str) -> Option<Vec<u8>> {
+    None
+}
+
+/// The surface the changes this host signs for `app` name: the one it runs
+/// the app with, for its own writes and its bots' alike.
+#[cfg(feature = "agents")]
+fn signed_surface(app: &str) -> Option<[u8; 32]> {
+    ui::app_surface::hash_of(app)
+}
+
+/// A relay running no app in its own process signs no app's changes.
+#[cfg(not(feature = "agents"))]
+const fn signed_surface(_: &str) -> Option<[u8; 32]> {
+    None
+}
+
+/// Decide every change this process receives against the surfaces of the
+/// apps this host runs in its own process, and others fetched by hash from
+/// `registry`. Call it once, on the runtime the relay runs on, before the
+/// relay starts.
 pub fn decide_receipt_from_registry(registry: &str) {
     let blobs = tilo_app_registry_blobs(registry);
     let fetched: Fetched = Arc::default();
     let runtime = tokio::runtime::Handle::try_current().ok();
-    let read = move |_: &collab_types::Record<'_>, hash: &str| -> Option<Vec<u8>> {
+    let read = move |record: &collab_types::Record<'_>, hash: &str| -> Option<Vec<u8>> {
+        if let Some(bytes) = carried(record, hash) {
+            return Some(bytes);
+        }
         let mut known = fetched.lock().ok()?;
         match known.get(hash) {
             Some(Some(bytes)) => return Some(bytes.clone()),
@@ -56,8 +95,7 @@ pub fn decide_receipt_from_registry(registry: &str) {
         collab_types::Surfaces::from_source(Arc::new(collab_types::surface::ContentSurfaces::new(
             read,
         ))),
-        // The relay signs no app's changes.
-        |_| None,
+        signed_surface,
     );
 }
 

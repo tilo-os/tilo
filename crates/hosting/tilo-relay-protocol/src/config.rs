@@ -117,6 +117,14 @@ pub struct RelayConfig {
     /// This is a navigation destination, not an admission or content-access grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_browser_page: Option<String>,
+    /// Per-person change and content budgets, for a host whose rooms admit
+    /// the public. `None` limits nobody.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_limits: Option<MemberLimitsConfig>,
+    /// Pre-admissions a governed room keeps, spent ones included. A public
+    /// room that pre-admits every visitor raises it. `None` keeps 1024.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_room_grants: Option<usize>,
 }
 
 /// How a relay's compute worker hosts members' environment sessions.
@@ -431,6 +439,33 @@ impl Default for RelayConfig {
             peer_relays: Vec::new(),
             environments: None,
             resource_browser_page: None,
+            member_limits: None,
+            max_room_grants: None,
+        }
+    }
+}
+
+/// Per-person limits a public host applies to members' traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberLimitsConfig {
+    /// Changes refilled per window.
+    pub changes_per_window: u32,
+    /// The window, in seconds.
+    pub window_secs: u32,
+    /// Changes a person may send at once.
+    pub burst: u32,
+    /// Record content bytes a person may send per hour.
+    pub content_bytes_per_hour: u64,
+}
+
+impl Default for MemberLimitsConfig {
+    fn default() -> Self {
+        Self {
+            changes_per_window: 20,
+            window_secs: 10,
+            burst: 40,
+            content_bytes_per_hour: 8 * 1024 * 1024,
         }
     }
 }

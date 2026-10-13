@@ -70,6 +70,17 @@ pub struct WebArgs {
     /// uses the HTTPS stream fallback).
     #[arg(long = "web-plain", value_name = "ADDR")]
     pub web_plain: Option<SocketAddr>,
+    /// The `https://` origin a TLS-terminating proxy publishes
+    /// `--web-plain` at (a public room behind an ingress); it lets
+    /// `--web-plain` bind a non-loopback address.
+    #[arg(long = "public-origin", value_name = "ORIGIN", requires = "web_plain")]
+    pub public_origin: Option<String>,
+    /// The `https://` origin browsers dial WebTransport at, when the page
+    /// origin is behind a proxy that passes HTTP only: `--web` is reached
+    /// directly under this name (its certificate from `--tls files:…`),
+    /// and the HTTPS stream on the page origin stays the fallback.
+    #[arg(long = "live-origin", value_name = "ORIGIN", requires = "web")]
+    pub live_origin: Option<String>,
     /// Without a device certificate yet, create the device key, print its
     /// public half and serve only `/peer/v1/install` on `--web` until a
     /// root-signed host certificate for it arrives with the token in this
@@ -187,11 +198,14 @@ impl HostedRelay {
     allow(unused_variables, reason = "agents only")
 )]
 pub async fn start_relay(
-    cfg: tilo_relay::RelayConfig,
+    mut cfg: tilo_relay::RelayConfig,
     identity: RelayIdentity,
     args: &WebArgs,
     state_root: &Path,
 ) -> anyhow::Result<HostedRelay> {
+    if let Some(max) = env_count("TILO_RELAY_MAX_ROOM_GRANTS") {
+        cfg.max_room_grants = Some(max);
+    }
     #[cfg(feature = "agents")]
     let options = args.agents.options(state_root.join("agents"))?;
     #[cfg(feature = "agents")]
@@ -214,7 +228,7 @@ pub async fn start_relay(
     })
 }
 
-fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfig {
+pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfig {
     let tls = match &args.tls {
         TlsArg::Dev => TlsSource::Development {
             hosts: vec!["localhost".into(), listen.ip().to_string()],
@@ -231,6 +245,25 @@ fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfi
         tls,
         allowed_origins: args.allowed_origins.clone(),
         plain_listen: args.web_plain,
+        public_origin: args.public_origin.clone(),
+        live_origin: args.live_origin.clone(),
+        limits: web_limits(),
+    }
+}
+
+/// A count from the environment, for an operator raising a public host's
+/// caps without a config file.
+fn env_count(name: &str) -> Option<usize> {
+    std::env::var(name).ok()?.trim().parse().ok()
+}
+
+fn web_limits() -> tilo_relay::web::WebLimits {
+    let defaults = tilo_relay::web::WebLimits::default();
+    tilo_relay::web::WebLimits {
+        max_sessions: env_count("TILO_RELAY_MAX_WEB_SESSIONS").unwrap_or(defaults.max_sessions),
+        max_handshakes: env_count("TILO_RELAY_MAX_HANDSHAKES").unwrap_or(defaults.max_handshakes),
+        max_live_grants: env_count("TILO_RELAY_MAX_LIVE_GRANTS")
+            .unwrap_or(defaults.max_live_grants),
     }
 }
 
@@ -312,7 +345,8 @@ pub async fn serve(
     let Some(listen) = args.web else {
         return Ok(None);
     };
-    if let Some(device) = session_device(args)? {
+    let device = session_device(args)?;
+    if let Some(device) = device {
         relay.set_node_session(device);
     }
     let web = relay
@@ -356,7 +390,7 @@ fn dev_identity(state: &Path) -> anyhow::Result<[SigningKey; 3]> {
         .map_err(|_| anyhow::anyhow!("{} is not a dev identity; delete it", path.display()))
 }
 
-fn enrol(
+pub(crate) fn enrol(
     root: &SigningKey,
     device: &SigningKey,
     label: &str,
@@ -475,7 +509,7 @@ async fn approve_every_browser(
                 )
                 .map_or(
                     tilo_relay::certify::ApproverDecision::Deny,
-                    |(cert, delegation)| tilo_relay::certify::ApproverDecision::IssueAgent {
+                    |(cert, delegation)| tilo_relay::certify::ApproverDecision::IssueDelegate {
                         cert,
                         delegation,
                     },
@@ -672,7 +706,7 @@ type OperatorLine = Result<OperatorCommand, String>;
 
 /// Operator lines from stdin, read on their own thread: a blocking read
 /// must never hold up the host.
-fn operator_lines() -> anyhow::Result<tokio::sync::mpsc::Receiver<OperatorLine>> {
+pub(crate) fn operator_lines() -> anyhow::Result<tokio::sync::mpsc::Receiver<OperatorLine>> {
     operator_lines_from(std::io::stdin())
 }
 
@@ -904,6 +938,13 @@ pub async fn room(
     args: RoomArgs,
     shutdown: impl std::future::Future<Output = anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
+    // Every change the room receives is decided against its app's surface,
+    // a bot's included: the room's own apps carry theirs, others come from
+    // the registry.
+    tilo_relay::surfaces::decide_receipt_from_registry(
+        &std::env::var("TILO_REGISTRY")
+            .unwrap_or_else(|_| tilo_relay::surfaces::DEFAULT_REGISTRY.to_owned()),
+    );
     let state = args.state;
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
     let listen = args.web.web.context("a room needs --web")?;

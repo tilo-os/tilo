@@ -1,7 +1,7 @@
 //! Delegated agents as governed members of a room.
 //!
 //! An agent is a device of its person: its own key, a certificate the
-//! person's root signed, and a root-signed [`AgentDelegation`] naming the
+//! person's root signed, and a root-signed [`Delegation`] naming the
 //! device an agent, how it is shown, the rooms and apps it may act in and
 //! until when. The room's governor admits it as a governed identity that
 //! carries that delegation ([`StatePeer::admit_agent`]), so every member
@@ -9,7 +9,7 @@
 //! are signed by its own key and attributed to it, never to the device that
 //! launched it.
 //!
-//! The rule every member applies, in one place ([`GovernedAgentRow::acting`]):
+//! The rule every member applies, in one place ([`GovernedDelegateRow::acting`]):
 //! an agent identity acts only while its delegation verifies against the
 //! certificate's own root, names that device and this room, is inside its
 //! validity window, and the governor has not withdrawn it. It acts with its
@@ -21,24 +21,28 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::agent_policy;
-use tilo_relay_protocol::agents::AgentDelegation;
+use tilo_relay_protocol::delegation::{Delegate, Delegation};
 use tilo_user_identity::DeviceCert;
 
 use super::{GovernedIdentity, Role, SigningKey, StatePeer, SystemTime, err, now_ns, room};
 
-/// What a governed identity carries when its device is a delegated agent.
+/// What a governed identity carries when its device is a delegate of its
+/// person: an agent, or an installed bot.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct GovernedAgentRow {
-    /// The person's root-signed delegation naming this device an agent.
-    pub(crate) delegation: AgentDelegation,
-    /// When the governor withdrew the agent; it acts on nothing from then on.
+pub struct GovernedDelegateRow {
+    /// The person's root-signed delegation naming this device.
+    pub delegation: Delegation,
+    /// When the governor withdrew it; it acts on nothing from then on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) withdrawn_at_ns: Option<u64>,
+    pub withdrawn_at_ns: Option<u64>,
+    /// For a bot, its installation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation: Option<crate::installation::Installation>,
 }
 
 /// Why an agent identity does not act at a given time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AgentInactive {
+pub(crate) enum DelegateInactive {
     /// The governor withdrew it.
     Withdrawn,
     /// The delegation is not the certificate root's, or is outside its
@@ -48,20 +52,27 @@ pub(crate) enum AgentInactive {
     OtherDevice,
     /// The delegation does not name this room.
     OtherRoom,
+    /// A bot row without its installation, an installation that is not the
+    /// delegation's, or an agent row carrying one.
+    Mismatch,
+    /// The installation names another installer than the delegation's root.
+    InstallerMismatch,
 }
 
-impl std::fmt::Display for AgentInactive {
+impl std::fmt::Display for DelegateInactive {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Withdrawn => "the agent was withdrawn",
-            Self::Delegation => "the agent's delegation is not current",
-            Self::OtherDevice => "the agent's delegation names another device",
-            Self::OtherRoom => "the agent is not delegated this room",
+            Self::Withdrawn => "the delegate was withdrawn",
+            Self::Delegation => "the delegate's delegation is not current",
+            Self::OtherDevice => "the delegate's delegation names another device",
+            Self::OtherRoom => "the delegate is not delegated this room",
+            Self::Mismatch => "the delegation does not match its installation",
+            Self::InstallerMismatch => "the bot's installer did not sign its delegation",
         })
     }
 }
 
-impl GovernedAgentRow {
+impl GovernedDelegateRow {
     /// Whether the agent whose certificate is `cert` acts in `room` at
     /// `now_ns`: the one rule (see the module documentation).
     pub(crate) fn acting(
@@ -69,33 +80,42 @@ impl GovernedAgentRow {
         cert: &DeviceCert,
         room: &str,
         now_ns: u64,
-    ) -> Result<(), AgentInactive> {
+    ) -> Result<(), DelegateInactive> {
         if self.withdrawn_at_ns.is_some_and(|at| at <= now_ns) {
-            return Err(AgentInactive::Withdrawn);
+            return Err(DelegateInactive::Withdrawn);
         }
         let delegation = &self.delegation;
-        if delegation.agent_device_public_key != cert.device_public_key {
-            return Err(AgentInactive::OtherDevice);
+        if delegation.device_public_key != cert.device_public_key {
+            return Err(DelegateInactive::OtherDevice);
         }
         delegation
             .verify(&cert.user_public_key, now_ns)
-            .map_err(|_| AgentInactive::Delegation)?;
-        let workspace =
-            tilo_relay_protocol::room_workspace_id(room).map_err(|_| AgentInactive::OtherRoom)?;
+            .map_err(|_| DelegateInactive::Delegation)?;
+        let workspace = tilo_relay_protocol::room_workspace_id(room)
+            .map_err(|_| DelegateInactive::OtherRoom)?;
         if !delegation.permits_workspace(workspace) {
-            return Err(AgentInactive::OtherRoom);
+            return Err(DelegateInactive::OtherRoom);
         }
-        Ok(())
+        match (&delegation.delegate, &self.installation) {
+            (Delegate::Agent { .. }, None) => Ok(()),
+            (Delegate::Bot { installation }, Some(row)) if row.id.as_str() == installation => {
+                if row.installed_by != hex::encode(delegation.user_public_key) {
+                    return Err(DelegateInactive::InstallerMismatch);
+                }
+                Ok(())
+            }
+            _ => Err(DelegateInactive::Mismatch),
+        }
     }
 }
 
 impl GovernedIdentity {
-    /// Whether this identity may act in `room` at `now_ns` as far as agent
-    /// delegation goes. Every identity that is no agent passes.
-    pub(crate) fn agent_acting(&self, room: &str, now_ns: u64) -> Result<(), AgentInactive> {
-        self.agent.as_ref().map_or(Ok(()), |agent| {
-            agent.acting(&self.device_cert, room, now_ns)
-        })
+    /// Whether this identity may act in `room` at `now_ns` as far as its
+    /// delegation goes. Every identity that is no delegate passes.
+    pub(crate) fn delegate_acting(&self, room: &str, now_ns: u64) -> Result<(), DelegateInactive> {
+        self.delegate
+            .as_ref()
+            .map_or(Ok(()), |row| row.acting(&self.device_cert, room, now_ns))
     }
 }
 
@@ -128,7 +148,7 @@ pub struct GovernedAgent {
 }
 
 /// Capabilities an agent's certificate never carries.
-const fn holds_no_power(cert: &DeviceCert) -> bool {
+pub(crate) const fn holds_no_power(cert: &DeviceCert) -> bool {
     let capabilities = &cert.capabilities;
     !(capabilities.can_own_workspaces
         || capabilities.can_admit_devices
@@ -156,10 +176,13 @@ impl StatePeer {
     pub fn admit_agent(
         &mut self,
         cert: DeviceCert,
-        delegation: AgentDelegation,
+        delegation: Delegation,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
+        if delegation.delegate.agent_id().is_none() {
+            return Err("the delegation is not an agent's".into());
+        }
         self.require_governance_writer(key, now)?;
         if !agent_policy::OTHER_PEOPLES_AGENTS_JOIN
             && cert.user_public_key != self.core.authority.user_public_key
@@ -178,9 +201,10 @@ impl StatePeer {
         {
             return Err("certificate conflict".into());
         }
-        let row = GovernedAgentRow {
+        let row = GovernedDelegateRow {
             delegation,
             withdrawn_at_ns: None,
+            installation: None,
         };
         row.acting(&cert, &self.core.room, now_ns(now))
             .map_err(|reason| reason.to_string())?;
@@ -203,17 +227,23 @@ impl StatePeer {
                 admission: None,
                 admissions: vec![],
                 workspace_delegations: vec![],
-                agent: Some(row),
+                delegate: Some(row),
             },
             Some(prior) if prior.device_cert != cert => {
                 return Err("certificate conflict".into());
             }
-            Some(GovernedIdentity { agent: None, .. }) => {
+            Some(GovernedIdentity { delegate: None, .. }) => {
                 return Err("the device is a member, not an agent".into());
             }
             Some(GovernedIdentity {
-                agent:
-                    Some(GovernedAgentRow {
+                delegate: Some(ref known),
+                ..
+            }) if known.installation.is_some() => {
+                return Err("the device is a bot, not an agent".into());
+            }
+            Some(GovernedIdentity {
+                delegate:
+                    Some(GovernedDelegateRow {
                         withdrawn_at_ns: Some(_),
                         ..
                     }),
@@ -222,13 +252,13 @@ impl StatePeer {
                 return Err("the agent was withdrawn".into());
             }
             Some(GovernedIdentity {
-                agent: Some(ref known),
+                delegate: Some(ref known),
                 ..
             }) if known.delegation.issued_at_ns >= row.delegation.issued_at_ns => {
                 return Ok(false);
             }
             Some(mut prior) => {
-                prior.agent = Some(row);
+                prior.delegate = Some(row);
                 prior
             }
         };
@@ -265,9 +295,12 @@ impl StatePeer {
             return Ok(false);
         };
         let mut identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
-        let Some(agent) = identity.agent.as_mut() else {
+        let Some(agent) = identity.delegate.as_mut() else {
             return Err("the device is a member, not an agent".into());
         };
+        if agent.installation.is_some() {
+            return Err("the device is a bot, not an agent".into());
+        }
         if agent.withdrawn_at_ns.is_some() {
             return Ok(false);
         }
@@ -281,11 +314,12 @@ impl StatePeer {
     pub fn governed_agent(
         &self,
         device: &[u8; 32],
-    ) -> Option<(DeviceCert, AgentDelegation, Option<u64>)> {
+    ) -> Option<(DeviceCert, Delegation, Option<u64>)> {
         let doc = self.core.room_doc.as_ref()?;
         let bytes = doc.policy().identities.get(&hex::encode(device))?.clone();
         let identity: GovernedIdentity = serde_json::from_slice(&bytes).ok()?;
-        let agent = identity.agent?;
+        let agent = identity.delegate?;
+        agent.delegation.delegate.agent_id()?;
         Some((
             identity.device_cert,
             agent.delegation,
@@ -307,14 +341,19 @@ impl StatePeer {
         let mut agents = Vec::new();
         for bytes in doc.policy().identities.values() {
             let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
-            let acting = identity.agent_acting(&self.core.room, now_ns(now)).is_ok();
-            let Some(agent) = identity.agent else {
+            let acting = identity
+                .delegate_acting(&self.core.room, now_ns(now))
+                .is_ok();
+            let Some(agent) = identity.delegate else {
+                continue;
+            };
+            let Some(agent_id) = agent.delegation.delegate.agent_id().map(str::to_owned) else {
                 continue;
             };
             agents.push(GovernedAgent {
                 device_public_key: identity.device_cert.device_public_key,
                 user_public_key: identity.device_cert.user_public_key,
-                agent_id: agent.delegation.agent_id,
+                agent_id,
                 label: agent.delegation.label,
                 color: agent.delegation.color,
                 expires_at_ns: agent.delegation.expires_at_ns,
@@ -328,5 +367,5 @@ impl StatePeer {
 }
 
 #[cfg(test)]
-#[path = "agent_members_tests.rs"]
+#[path = "delegates_tests.rs"]
 mod tests;
