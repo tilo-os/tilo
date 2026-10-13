@@ -63,7 +63,7 @@ fn commit(state: &State, sequence: u64, index: u32) {
         .start_retain(&CHANNEL, Some(sequence), edit(index))
         .unwrap();
     let scratch = build.scratch().to_owned();
-    while let Step::More = build.step(WorkLimit::default()).unwrap() {
+    while build.step(WorkLimit::default()).unwrap() == Step::More {
         assert!(!scratch.exists(), "a delta's retention created scratch");
     }
     assert!(!scratch.exists(), "a delta's retention created scratch");

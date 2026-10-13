@@ -7855,15 +7855,22 @@ mod tests {
         );
         let mut registry = crate::shell::search::SearchRegistry::new();
         registry.register(provider);
-        let rows = registry.query_with_programmatic(&crate::shell::search::QueryArgs {
-            needle: "",
-            scope: crate::shell::search::SearchScope::All,
-            active_provider_id: None,
-            wanted_kinds: &[ResourceKind::Action],
-            chrome: &state,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
+        let (rows, completion) = registry.query_catalogue(
+            &crate::shell::search::QueryArgs {
+                needle: "",
+                scope: crate::shell::search::SearchScope::All,
+                active_provider_id: None,
+                wanted_kinds: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            },
+            true,
+        );
+        assert!(
+            completion.complete,
+            "workspace actions must be fully listed"
+        );
         assert_eq!(
             rows.iter()
                 .filter(|row| row.id == "workspace.create")

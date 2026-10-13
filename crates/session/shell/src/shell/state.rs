@@ -5788,6 +5788,27 @@ mod automerge_foundation_tests {
     use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 
     #[test]
+    fn appended_workspace_rebuilds_with_the_same_default_grants() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let id = tree.append_empty_workspace("Project X");
+        let created = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .unwrap();
+        let mut restored = DesktopTree::default();
+        tilo_desktop_model::desktop_doc::rebuild(&tree.doc, &mut restored);
+        let reconstructed = restored
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .unwrap();
+        assert_eq!(reconstructed.room, created.room);
+        assert_eq!(reconstructed.policy, created.policy);
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"

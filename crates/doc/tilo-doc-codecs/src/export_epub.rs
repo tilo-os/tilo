@@ -611,14 +611,12 @@ fn render_nav_forest(nodes: &[NavNode], depth: usize, out: &mut String) {
             escape_attr_quotes(&node.link),
             escape_text(&node.label)
         );
-        if node.children.is_empty() {
-            out.push_str("</li>\n");
-        } else {
+        if !node.children.is_empty() {
             out.push('\n');
             render_nav_forest(&node.children, depth.saturating_add(2), out);
             out.push_str(&ipad);
-            out.push_str("</li>\n");
         }
+        out.push_str("</li>\n");
     }
     out.push_str(&pad);
     out.push_str("</ol>\n");

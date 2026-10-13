@@ -193,11 +193,16 @@ fn push_video_frames(source: &gst_app::AppSrc) {
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
                 let stripe = ((x + phase) / 16).is_multiple_of(2);
-                let mut colour = if stripe { [24, 50, 78] } else { [76, 38, 24] };
-                if i64::from(x) >= block_x && i64::from(x) < block_x + 64 && (56..124).contains(&y)
-                {
-                    colour = [230, 118, 24];
-                }
+                let in_block = i64::from(x) >= block_x
+                    && i64::from(x) < block_x + 64
+                    && (56..124).contains(&y);
+                let colour = if in_block {
+                    [230, 118, 24]
+                } else if stripe {
+                    [24, 50, 78]
+                } else {
+                    [76, 38, 24]
+                };
                 let offset =
                     usize::try_from((y * WIDTH + x) * 4).expect("fixture pixel offset fits usize");
                 rgba[offset..offset + 3].copy_from_slice(&colour);

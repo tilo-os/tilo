@@ -130,8 +130,8 @@ impl ResourceApp for App {
         // A form: the new bookmark's parameters, local to this window,
         // never synced or undone, submitted as one invocation of `add`.
         let form = cx.form::<bookmarks::Add>();
-        let url = cx.input(form.paths().url).with_placeholder(keys::BOOKMARKS_URL_PLACEHOLDER);
-        let add = cx.button(keys::BOOKMARKS_ADD, form.submit());
+        let url = cx.input(form.paths().url).with_placeholder("bookmarks-url-placeholder");
+        let add = cx.button("bookmarks-add", form.submit());
 
         let rows = cx.each(|library| &library.bookmarks, |row| {
             let Some(id) = row.item().cloned() else {
@@ -139,9 +139,9 @@ impl ResourceApp for App {
             };
             let p = row.paths();
             Box::new(ui::row![
-                row.checkbox(keys::BOOKMARKS_FAVORITE, p.favorite),
+                row.checkbox("bookmarks-favorite", p.favorite),
                 row.input(p.title),
-                row.button(keys::BOOKMARKS_DELETE, Bookmarks::DELETE.with(id)),
+                row.button("bookmarks-delete", Bookmarks::DELETE.with(id)),
             ])
         });
         Box::new(ui::column![ui::row![url, add], rows])
@@ -162,9 +162,8 @@ impl ResourceApp for App {
 - A control bound to a path wakes only when a change touched that path; one
   bound with a closure re-reads after every change. Prefer paths in large
   lists.
-- Labels and placeholders are Fluent message ids. The generated
-  `locales::keys` constants (`keys::BOOKMARKS_ADD`) are checked by the
-  compiler; `tilo-app` keeps them in step with `locales/en-US.ftl`.
+- Labels and placeholders are Fluent message ids; `tilo-app check` fails on
+  one that `locales/en-US.ftl` lacks.
 - A control bound to an action the resource does not publish, or to a
   read-only field, fails under `TestApp` and `tilo-app check` rather than
   greying out.

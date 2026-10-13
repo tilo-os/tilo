@@ -4356,6 +4356,7 @@ dependencies = [
  "tilo-fs",
  "tilo-history",
  "tilo-paths",
+ "tilo-process",
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-user-identity",

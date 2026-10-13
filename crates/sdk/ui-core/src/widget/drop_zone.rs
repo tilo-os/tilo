@@ -19,7 +19,6 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
-use crate::dnd::DragPayload;
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
@@ -449,22 +448,6 @@ impl Widget for DropZone {
         }
     }
 
-    fn accepts_drop(&self, payload: &DragPayload) -> bool {
-        matches!(payload, DragPayload::File { .. })
-    }
-
-    fn on_drop(
-        &mut self,
-        payload: DragPayload,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
-    ) {
-        if let DragPayload::File { path } = payload {
-            self.deliver(vec![PathBuf::from(path)]);
-        }
-        self.set_drag_over(false);
-    }
-
     fn children(&self) -> Vec<&dyn Widget> {
         self.action
             .as_ref()
@@ -558,22 +541,13 @@ mod tests {
     fn dropped_files_reach_the_callback() {
         let got = Rc::new(RefCell::new(Vec::new()));
         let sink = got.clone();
-        let mut zone = DropZone::new("import", "Drop books here")
+        let zone = DropZone::new("import", "Drop books here")
             .on_files(move |files| sink.borrow_mut().extend(files));
-        assert!(zone.accepts_drop(&DragPayload::File {
-            path: "/home/ada/notes.epub".into()
-        }));
-        assert!(!zone.accepts_drop(&DragPayload::Text {
-            value: "hello".into()
-        }));
-        let mut doc = automerge::AutoCommit::new();
-        zone.on_drop(
-            DragPayload::File {
-                path: "/home/ada/notes.epub".into(),
-            },
-            &mut crate::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        );
+        let mut harness =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(zone), (400, 300));
+        let [x, y, w, h] = harness.inspection().root.rect;
+        harness.click_at(x + w / 2.0, y + h / 2.0);
+        harness.send(&WindowEvent::DroppedFile("/home/ada/notes.epub".into()));
         assert_eq!(
             got.borrow().as_slice(),
             [PathBuf::from("/home/ada/notes.epub")]

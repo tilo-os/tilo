@@ -1472,9 +1472,7 @@ mod tests {
             };
             taffy.widget_leaf(style, nodes, self)
         }
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
         fn draw(
             &mut self,
             scene: &mut Scene,
@@ -1518,9 +1516,6 @@ mod tests {
         }
         fn is_focusable(&self) -> bool {
             true
-        }
-        fn get_rect(&self) -> KurboRect {
-            self.rect
         }
     }
 

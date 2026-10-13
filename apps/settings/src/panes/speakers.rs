@@ -1613,9 +1613,7 @@ impl Widget for RoomCanvas {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1746,10 +1744,6 @@ impl Widget for RoomCanvas {
 
     fn test_id(&self) -> Option<&str> {
         Some("speakers.room")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

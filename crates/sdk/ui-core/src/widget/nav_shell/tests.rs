@@ -41,9 +41,7 @@ impl Widget for Probe {
         taffy.fill_leaf(node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -91,10 +89,6 @@ impl Widget for Probe {
 
     fn test_id(&self) -> Option<&str> {
         Some(self.id)
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

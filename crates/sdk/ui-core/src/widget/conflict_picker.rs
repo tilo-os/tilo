@@ -663,7 +663,7 @@ impl Widget for ConflictPicker {
                     ..
                 } = key_event;
                 if *element_state == ElementState::Pressed
-                    && let Key::Named(NamedKey::Escape) = logical_key
+                    && matches!(logical_key, Key::Named(NamedKey::Escape))
                 {
                     self.fire(PickerOutcome::Cancel);
                     *ctx.handled = true;
@@ -696,13 +696,7 @@ impl Widget for ConflictPicker {
         self.rect
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 }
 
 impl ConflictPicker {

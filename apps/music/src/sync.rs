@@ -49,16 +49,19 @@ pub(crate) fn converge(a: &mut AutoCommit, b: &mut AutoCommit) {
     let mut a_to_b = SyncSession::default();
     let mut b_to_a = SyncSession::default();
     for _ in 0..200 {
-        let mut progressed = false;
-        if let Some(message) = a_to_b.generate(a) {
+        let forward = if let Some(message) = a_to_b.generate(a) {
             b_to_a.receive(b, &message);
-            progressed = true;
-        }
-        if let Some(message) = b_to_a.generate(b) {
+            true
+        } else {
+            false
+        };
+        let backward = if let Some(message) = b_to_a.generate(b) {
             a_to_b.receive(a, &message);
-            progressed = true;
-        }
-        if !progressed {
+            true
+        } else {
+            false
+        };
+        if !forward && !backward {
             break;
         }
     }

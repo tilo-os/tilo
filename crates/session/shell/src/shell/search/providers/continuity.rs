@@ -1127,11 +1127,10 @@ fn device_projection(
             })),
     );
     let mut fields: Vec<_> = actions.iter().map(ContinuityAction::fields).collect();
-    let mut wake_result = None;
-    if let Some((title, subtitle)) = wake {
+    let wake_result = wake.map(|(title, subtitle)| {
         fields.push(action_fields(&title, &subtitle, WAKE_ACTION_ID));
-        wake_result = Some(wake_search_result(bridge, title, subtitle));
-    }
+        wake_search_result(bridge, title, subtitle)
+    });
     let results = actions
         .into_iter()
         .map(|entry| {

@@ -5719,11 +5719,6 @@ impl State {
         self.input_method_popup_surfaces()
     }
 
-    /// Content-free composing state for the input-method wire regression.
-    pub fn input_method_preedit_active_for_tests(&self) -> bool {
-        self.input_method_preedit.is_active()
-    }
-
     /// The xdg popups mapped over a window, in the order they opened.
     pub fn xdg_popups(&self) -> impl Iterator<Item = &PopupSurface> + '_ {
         self.popups.iter().map(|popup| &popup.surface)
