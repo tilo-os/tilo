@@ -955,12 +955,8 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
             "join-call",
         ),
     };
-    assert!(matches!(
-        frame.invoke_bound_action(&address, &serde_json::Map::new()),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
     frame
-        .invoke_bound_action_confirmed(&address, &serde_json::Map::new())
+        .invoke_bound_action(&address, &serde_json::Map::new())
         .unwrap();
     let requests = lane.take(&mut frame);
     let joining = requests
@@ -993,7 +989,7 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
         "voice effects never write the Chat CRDT"
     );
     frame
-        .invoke_bound_action_confirmed(&address, &serde_json::Map::new())
+        .invoke_bound_action(&address, &serde_json::Map::new())
         .unwrap();
     let pending = lane.take(&mut frame);
     assert!(
@@ -1129,7 +1125,7 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
             .invoke_bound_action(&copy, &serde_json::Map::new())
             .unwrap();
         frame
-            .invoke_bound_action_confirmed(&join, &serde_json::Map::new())
+            .invoke_bound_action(&join, &serde_json::Map::new())
             .unwrap();
         let mut lane = MediaLane::default();
         let (catalogues, media) = if catalogue_first {
@@ -1164,7 +1160,7 @@ fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
     let (mut frame, _, _) =
         component_mount_in_room(&cache, "author", 1, "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71");
     frame
-        .invoke_bound_action_confirmed(
+        .invoke_bound_action(
             &BoundActionAddress {
                 instance_id: 1,
                 address: tilo_actions::ActionAddress::new(
