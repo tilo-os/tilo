@@ -375,6 +375,12 @@ impl WorkspaceHistoryIndex {
         }
     }
 
+    /// Committed per-origin frontiers consumed by this history projection.
+    /// Summary provenance uses these, never a fresh read of private documents.
+    pub fn document_frontiers(&self) -> &BTreeMap<String, Vec<ChangeHash>> {
+        &self.document_heads
+    }
+
     pub fn entries(&self) -> &[WorkspaceHistoryEntry] {
         &self.entries
     }

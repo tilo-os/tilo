@@ -71,6 +71,15 @@ use ui::widget::ButtonRole;
 /// and start becoming hard to scan across.
 /// How long a device must be away from a workspace before its return is
 /// greeted with a recap of what changed.
+const SUMMARY_SOURCE_ACTIONS: [&str; 6] = [
+    "history.summary.source.0",
+    "history.summary.source.1",
+    "history.summary.source.2",
+    "history.summary.source.3",
+    "history.summary.source.4",
+    "history.summary.source.5",
+];
+
 const AWAY_RECAP_AFTER: Duration = Duration::from_secs(45 * 60);
 /// How long an expanding catch-up card takes to open.
 const BRIEF_EXPANSION_DURATION: Duration = Duration::from_millis(180);
@@ -205,6 +214,7 @@ enum ActivityFocus {
     Morning(String, bool),
     MorningCommand(String, MorningCommand),
     Brief(usize),
+    SummarySource(usize),
     WorkSessionBoundary(WorkSessionBoundary),
     MoreBriefs,
     Acknowledge,
@@ -875,6 +885,8 @@ pub struct RoomActivityPane {
     replay_slider_doc: automerge::AutoCommit,
     narrative: Option<ui::GroundedNarrative>,
     narrative_request: Option<NarrativeRequest>,
+    summary_source_rects: Vec<(usize, Rect)>,
+    narrative_feedback: &'static str,
     /// Task receipts live beside the records they describe. They are indexed
     /// here so selecting any affected change can explain the whole task.
     agent_runs: Vec<IndexedAgentRun>,
@@ -1108,6 +1120,8 @@ impl RoomActivityPane {
             replay_slider_doc: automerge::AutoCommit::new(),
             narrative: None,
             narrative_request: None,
+            summary_source_rects: Vec::new(),
+            narrative_feedback: "activity-summary-unavailable",
             agent_runs: Vec::new(),
             cold_agent_runs: HashMap::new(),
             agent_undo_notice: None,
@@ -1707,10 +1721,27 @@ impl RoomActivityPane {
     /// Diff, restore and undo for the selected explorer row — the same
     /// door search, agents and assistive technology use.
     pub fn selection_history_actions(&self) -> Vec<(&'static str, String)> {
-        let Some(detail) = self.selection_detail() else {
-            return Vec::new();
-        };
         let mut out = Vec::new();
+        if let Some(narrative) = &self.narrative {
+            out.push((
+                "history.summary.read",
+                format!("{}: {}", self.summary_label(), narrative.text),
+            ));
+            for (slot, id) in narrative.source_ids.iter().enumerate() {
+                if let Some(brief) = self
+                    .digest
+                    .briefs
+                    .iter()
+                    .find(|brief| brief.entry_ids.contains(id))
+                    && let Some(action) = SUMMARY_SOURCE_ACTIONS.get(slot)
+                {
+                    out.push((*action, brief.title.clone()));
+                }
+            }
+        }
+        let Some(detail) = self.selection_detail() else {
+            return out;
+        };
         if self.selected_morning_source().is_some() {
             out.push((
                 MORNING_SOURCE,
@@ -1736,6 +1767,17 @@ impl RoomActivityPane {
         tree: &mut impl ActivityTree,
         records: Option<&RecordStore>,
     ) -> RoomActivityOutcome {
+        if id == "history.summary.read" {
+            self.set_view(ActivityView::CatchUp);
+            return handled_outcome();
+        }
+        if let Some(slot) = SUMMARY_SOURCE_ACTIONS
+            .iter()
+            .position(|action| *action == id)
+        {
+            self.open_summary_source(slot);
+            return handled_outcome();
+        }
         if let Some(room) = id.strip_prefix(&format!("{MORNING_SOURCE}.")) {
             if room == self.task_room {
                 self.toggle_morning_selection();
@@ -3132,6 +3174,7 @@ impl RoomActivityPane {
     /// Call after refreshing records, which rebuilds the other coverage counts.
     pub fn mark_desktop_history_capped(&mut self) {
         self.feed_coverage.capped_records = self.feed_coverage.capped_records.saturating_add(1);
+        self.reset_narrative();
     }
 
     pub fn feed_coverage(&self) -> &FeedCoverage {
@@ -3215,14 +3258,122 @@ impl RoomActivityPane {
     }
 
     fn reset_narrative(&mut self) {
-        let request = NarrativeRequest::from_digest(&self.digest);
+        let request = NarrativeRequest::from_digest(&self.digest).map(|mut request| {
+            request.projection = format!(
+                "room={:?};scope={:?};tree_heads={:?};origin_heads={:?};seen={:?};coverage={:?}",
+                self.task_room,
+                self.scope,
+                self.last_heads,
+                self.history_index.document_frontiers(),
+                self.catchup_frontier,
+                self.feed_coverage
+            );
+            request
+        });
         if self.narrative_request == request {
             return;
         }
         // The deterministic summary only restates the brief titles below
         // it, so the card waits for prose that adds something.
         self.narrative = None;
+        self.summary_source_rects.clear();
+        self.narrative_feedback = "activity-summary-unavailable";
         self.narrative_request = request;
+    }
+
+    pub fn set_narrative_feedback(&mut self, feedback: &'static str) {
+        if feedback == "activity-summary-pending" && self.narrative_feedback != feedback {
+            self.narrative = None;
+            self.summary_source_rects.clear();
+        }
+        self.narrative_feedback = feedback;
+    }
+
+    fn summary_label(&self) -> String {
+        t_args(
+            "activity-summary-generated",
+            &[
+                (
+                    "model",
+                    self.narrative
+                        .as_ref()
+                        .map_or("", |n| n.generator.as_str())
+                        .into(),
+                ),
+                (
+                    "locale",
+                    self.narrative_request
+                        .as_ref()
+                        .map_or("", |r| r.locale.as_str())
+                        .into(),
+                ),
+                (
+                    "coverage",
+                    t(if self.feed_coverage.is_complete() {
+                        "activity-summary-complete"
+                    } else {
+                        "activity-summary-partial"
+                    })
+                    .into(),
+                ),
+                (
+                    "briefs",
+                    self.narrative_request
+                        .as_ref()
+                        .map_or(0, |r| r.sources.len().min(24))
+                        .into(),
+                ),
+                (
+                    "total",
+                    self.narrative_request
+                        .as_ref()
+                        .map_or(0, |r| r.sources.len())
+                        .into(),
+                ),
+            ],
+        )
+    }
+
+    fn summary_accessibility_node(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+        if self.view != ActivityView::CatchUp {
+            return None;
+        }
+        if let Some(narrative) = &self.narrative {
+            return Some(
+                AccessNode::new(Role::StaticText)
+                    .with_name(narrative.text.clone())
+                    .with_description(format!(
+                        "{} · {}",
+                        self.summary_label(),
+                        self.narrative_request
+                            .as_ref()
+                            .map_or("", |r| r.projection.as_str())
+                    )),
+            );
+        }
+        self.narrative_request
+            .as_ref()
+            .map(|_| AccessNode::new(Role::StaticText).with_name(t(self.narrative_feedback)))
+    }
+
+    fn open_summary_source(&mut self, slot: usize) {
+        let Some(id) = self
+            .narrative
+            .as_ref()
+            .and_then(|n| n.source_ids.get(slot))
+            .copied()
+        else {
+            return;
+        };
+        if let Some(index) = self
+            .digest
+            .briefs
+            .iter()
+            .position(|brief| brief.entry_ids.contains(&id))
+        {
+            self.open_brief_in_explorer(index);
+        }
     }
 
     pub fn narrative_request(&self) -> Option<NarrativeRequest> {
@@ -4385,6 +4536,7 @@ impl RoomActivityPane {
         theme: &Theme,
     ) {
         self.brief_rects.clear();
+        self.summary_source_rects.clear();
         self.acknowledge_rect = None;
         self.boundary_rects.clear();
         self.brief_more_rect = None;
@@ -4435,18 +4587,33 @@ impl RoomActivityPane {
             return;
         }
         let metrics = BriefCardMetrics::new(tr, theme);
+        if self.narrative.is_none() {
+            let label = t(self.narrative_feedback);
+            tr.draw_style(
+                scene,
+                &label,
+                theme.tokens.colors.text_dim,
+                at(transform, x0 + 4.0, y),
+                Some(text_width(x1 - x0 - 8.0)),
+                &theme.text(TextRole::Caption),
+            );
+            y += control_h;
+        }
         if let Some(narrative) = self.narrative.as_ref() {
             // Section-header role for the label (HIG §9.6: `xs`) — the former
             // `sm - 1` was an invented size — over up to two body lines, each
             // seated on its measured line so 200 % type grows the card.
             let label_style = theme.text(TextRole::Caption);
             let body_style = theme.text(TextRole::Caption);
-            let label = t("activity-summary-on-device");
+            let label = self.summary_label();
             let inner_w = text_width(x1 - x0 - 24.0);
             let (_, label_h) = tr.measure_style(&label, Some(inner_w), &label_style);
             let lines = tr.clamp_to_lines(&narrative.text, &body_style, inner_w, 2);
             let body_top = metrics.pad + f64::from(label_h) + metrics.gap;
-            let card_h = body_top + 2.0 * metrics.line_lh + metrics.pad;
+            let card_h = body_top
+                + 2.0 * metrics.line_lh
+                + metrics.pad
+                + small_count_to_f64(narrative.source_ids.len()) * control_h;
             let card = Rect::new(x0, y, x1, y + card_h);
             scene.fill(
                 Fill::NonZero,
@@ -4476,6 +4643,26 @@ impl RoomActivityPane {
                     Some(inner_w),
                     &body_style,
                 );
+            }
+            let mut source_y = card.y0 + body_top + 2.0 * metrics.line_lh;
+            for (slot, id) in narrative.source_ids.iter().enumerate() {
+                let Some(brief) = self
+                    .digest
+                    .briefs
+                    .iter()
+                    .find(|brief| brief.entry_ids.contains(id))
+                else {
+                    continue;
+                };
+                let rect = Rect::new(
+                    card.x0 + 12.0,
+                    source_y,
+                    card.x1 - 12.0,
+                    source_y + control_h,
+                );
+                draw_task_button(scene, transform, tr, theme, rect, &brief.title, false);
+                self.summary_source_rects.push((slot, rect));
+                source_y += control_h;
             }
             y += card_h + 8.0;
         }
@@ -6118,6 +6305,11 @@ impl RoomActivityPane {
                 ..RoomActivityOutcome::default()
             });
         }
+        if let Some(slot) = hit_value(&self.summary_source_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::SummarySource(slot));
+            self.open_summary_source(slot);
+            return Some(handled_outcome());
+        }
         if let Some(index) = hit_value(&self.brief_rects, point) {
             self.keyboard_focus = Some(ActivityFocus::Brief(index));
             if self.expanded_brief == Some(index) {
@@ -6713,6 +6905,11 @@ impl RoomActivityPane {
                     order.push(ActivityFocus::Resume);
                 }
                 order.extend(
+                    self.summary_source_rects
+                        .iter()
+                        .map(|(slot, _)| ActivityFocus::SummarySource(*slot)),
+                );
+                order.extend(
                     self.brief_rects
                         .iter()
                         .map(|(index, _)| ActivityFocus::Brief(*index)),
@@ -6874,6 +7071,7 @@ impl RoomActivityPane {
             }
             ActivityFocus::Resume => outcome.open_target.clone_from(&self.resume_target),
             ActivityFocus::Brief(index) => self.activate_brief(index),
+            ActivityFocus::SummarySource(slot) => self.open_summary_source(slot),
             ActivityFocus::WorkSessionBoundary(boundary) => {
                 outcome.named = self.move_work_session_boundary(tree, boundary);
             }
@@ -7019,6 +7217,17 @@ impl RoomActivityPane {
                     &[("target", (&target.label).into())],
                 )
             }),
+            ActivityFocus::SummarySource(slot) => self
+                .narrative
+                .as_ref()
+                .and_then(|n| n.source_ids.get(*slot))
+                .and_then(|id| {
+                    self.digest
+                        .briefs
+                        .iter()
+                        .find(|brief| brief.entry_ids.contains(id))
+                })
+                .map(|brief| brief.title.clone()),
             ActivityFocus::Brief(index) => self
                 .digest
                 .briefs
@@ -7156,6 +7365,23 @@ impl RoomActivityPane {
                     ),
                 )
             }
+            ActivityFocus::SummarySource(slot) => control(
+                Role::Button,
+                false,
+                None,
+                t_args(
+                    "activity-summary-citation-description",
+                    &[(
+                        "id",
+                        self.narrative
+                            .as_ref()
+                            .and_then(|n| n.source_ids.get(*slot))
+                            .map(ui::widget::history_group::hex16)
+                            .unwrap_or_default()
+                            .into(),
+                    )],
+                ),
+            ),
             ActivityFocus::Brief(index) => {
                 let brief = self.digest.briefs.get(*index)?;
                 let mut description = t_args(
@@ -7390,6 +7616,9 @@ impl RoomActivityPane {
             .enumerate()
             .filter_map(|(index, focus)| self.accessibility_control_node(focus, index, set_size))
             .collect();
+        if let Some(summary) = self.summary_accessibility_node() {
+            root.children.push(summary);
+        }
         if self.view == ActivityView::CatchUp && !self.tasks.is_empty() {
             root.children
                 .push(AccessNode::new(Role::StaticText).with_name(self.catch_up_task_summary()));
@@ -7606,6 +7835,10 @@ impl RoomActivityPane {
                     })
             }
             ActivityFocus::Resume => Some(self.resume_rect),
+            ActivityFocus::SummarySource(value) => self
+                .summary_source_rects
+                .iter()
+                .find_map(|(slot, rect)| (slot == value).then_some(*rect)),
             ActivityFocus::Brief(value) => self
                 .brief_rects
                 .iter()
@@ -9759,3 +9992,7 @@ include!("workspace_activity_tests.rs");
 #[cfg(test)]
 #[path = "pane_tests.rs"]
 mod pane_tests;
+
+#[cfg(test)]
+#[path = "summary_tests.rs"]
+mod summary_tests;

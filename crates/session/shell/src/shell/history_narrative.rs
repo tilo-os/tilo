@@ -1,9 +1,8 @@
-//! Private, local-model history prose.
+//! Optional history prose through the user's configured Ollama runner.
 //!
-//! The shell discovers an already-installed Ollama model and runs it off the
-//! UI thread. It never downloads a model and never sends workspace evidence
-//! to a remote endpoint. Generated prose is still admitted only through the
-//! UI crate's citation validator.
+//! Model selection uses `TILO_HISTORY_LLM_MODEL`; Ollama owns endpoint configuration
+//! (including `OLLAMA_HOST`). No credentials or parallel gateway are introduced.
+//! Citation checks establish source membership, not truth or entailment.
 
 use std::process::Command;
 use std::sync::Arc;
@@ -16,6 +15,7 @@ pub struct LocalHistoryNarrator {
     enabled: bool,
     pending: Arc<std::sync::Mutex<Option<(String, GroundedNarrative)>>>,
     running: Arc<AtomicBool>,
+    feedback: Arc<std::sync::Mutex<Option<(String, &'static str)>>>,
     last_key: Option<String>,
     completed_key: Option<String>,
     last_attempt: Option<Instant>,
@@ -27,6 +27,7 @@ impl Default for LocalHistoryNarrator {
             enabled: true,
             pending: Arc::default(),
             running: Arc::default(),
+            feedback: Arc::default(),
             last_key: None,
             completed_key: None,
             last_attempt: None,
@@ -65,13 +66,16 @@ impl LocalHistoryNarrator {
         self.request_prompt(request, status_prompt_for(request));
     }
 
-    fn request_prompt(&mut self, _request: &NarrativeRequest, prompt: String) {
+    fn request_prompt(&mut self, request: &NarrativeRequest, prompt: String) {
         if !self.enabled {
             return;
         }
         #[cfg(test)]
         crate::shell::test_support::ambient_start("history model worker");
         let key = blake3::hash(prompt.as_bytes()).to_hex().to_string();
+        if self.completed_key.as_deref() != Some(&key) {
+            self.completed_key = None;
+        }
         if self.completed_key.as_deref() == Some(&key)
             || (self.last_key.as_deref() == Some(&key)
                 && self
@@ -83,13 +87,41 @@ impl LocalHistoryNarrator {
         }
         self.last_key = Some(key.clone());
         self.last_attempt = Some(Instant::now());
+        *self
+            .feedback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((key.clone(), "activity-summary-pending"));
+        let feedback = Arc::clone(&self.feedback);
+        let request = request.clone();
         let pending = Arc::clone(&self.pending);
         let running = Arc::clone(&self.running);
         std::thread::spawn(move || {
-            if let Some(narrative) = generate(&prompt) {
-                *pending
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, narrative));
+            match generate(&prompt) {
+                Ok(mut narrative) => {
+                    narrative.request = Some(Box::new(request.clone()));
+                    let Some(narrative) = ui::validate_narrative(&request, narrative) else {
+                        *feedback
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some((key, "activity-summary-failed"));
+                        running.store(false, Ordering::Release);
+                        return;
+                    };
+                    *feedback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some((key.clone(), "activity-summary-ready"));
+                    *pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some((key, narrative));
+                }
+                Err(state) => {
+                    *feedback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, state));
+                }
             }
             running.store(false, Ordering::Release);
         });
@@ -97,6 +129,27 @@ impl LocalHistoryNarrator {
 
     /// Return a result only while it still describes the request on screen.
     /// A slower generation must never overwrite a newer deterministic digest.
+    pub fn invalidate(&mut self) {
+        self.completed_key = None;
+        self.last_key = None;
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
+    pub fn feedback_for(&self, request: &NarrativeRequest) -> &'static str {
+        let expected = blake3::hash(prompt_for(request).as_bytes())
+            .to_hex()
+            .to_string();
+        self.feedback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|(key, _)| *key == expected)
+            .map_or("activity-summary-unavailable", |(_, state)| *state)
+    }
+
     pub fn take_for(&mut self, request: &NarrativeRequest) -> Option<GroundedNarrative> {
         self.take_for_prompt(&prompt_for(request))
     }
@@ -106,6 +159,7 @@ impl LocalHistoryNarrator {
     }
 
     fn take_for_prompt(&mut self, prompt: &str) -> Option<GroundedNarrative> {
+        // Scope and coverage are carried in the prompt identity, even when prose evidence matches.
         let expected = blake3::hash(prompt.as_bytes()).to_hex().to_string();
         let narrative = self
             .pending
@@ -181,15 +235,27 @@ fn select_installed_model(list: &str, requested: Option<&str>) -> Option<String>
     models.into_iter().next().map(|(name, _)| name)
 }
 
-fn generate(prompt: &str) -> Option<GroundedNarrative> {
-    let model = installed_model()?;
-    let mut command = Command::new("ollama");
-    command.args(["run", &model, prompt]);
-    let output =
-        bounded_command::run_prepared(command, None, NARRATIVE_LIMIT, NARRATIVE_TIMEOUT).ok()?;
-    output.status.success().then_some(())?;
-    let raw = String::from_utf8(output.stdout).ok()?;
-    parse_response(&raw, &model)
+fn generate(prompt: &str) -> Result<GroundedNarrative, &'static str> {
+    let model = installed_model().ok_or("activity-summary-unavailable")?;
+    generate_with(prompt, Some(model), |model, prompt| {
+        let mut command = Command::new("ollama");
+        command.args(["run", model, prompt]);
+        let output =
+            bounded_command::run_prepared(command, None, NARRATIVE_LIMIT, NARRATIVE_TIMEOUT)
+                .ok()?;
+        output.status.success().then_some(())?;
+        String::from_utf8(output.stdout).ok()
+    })
+    .ok_or("activity-summary-failed")
+}
+
+fn generate_with(
+    prompt: &str,
+    model: Option<String>,
+    run: impl FnOnce(&str, &str) -> Option<String>,
+) -> Option<GroundedNarrative> {
+    let model = model?;
+    parse_response(&run(&model, prompt)?, &model)
 }
 
 fn prompt_for(request: &NarrativeRequest) -> String {
@@ -202,15 +268,20 @@ fn prompt_for(request: &NarrativeRequest) -> String {
 fn status_prompt_for(request: &NarrativeRequest) -> String {
     evidence_prompt(
         request,
-        "Write a short present-tense status describing what the local participant appears to be working toward right now. Use a natural verb phrase, no name or pronoun, and 12 words or fewer. Infer only from the supplied recent actions; never invent an outcome or motivation.",
+        "Describe the recorded recent actions, not inferred goals or current task status. Use a natural verb phrase, no name or pronoun, and 12 words or fewer. Never invent an outcome or motivation.",
     )
 }
 
 fn evidence_prompt(request: &NarrativeRequest, instruction: &str) -> String {
     let mut evidence = Vec::new();
-    for source in request.sources.iter().take(24) {
+    for source in request
+        .sources
+        .iter()
+        .filter(|source| source.ids.iter().any(|id| request.source_ids.contains(id)))
+        .take(24)
+    {
         evidence.push(serde_json::json!({
-            "source_ids": source.ids.iter().map(hex_id).collect::<Vec<_>>(),
+            "source_ids": source.ids.iter().filter(|id| request.source_ids.contains(id)).take(64).map(hex_id).collect::<Vec<_>>(),
             "title": truncate_for_prompt(&source.title, 180),
             "detail": truncate_for_prompt(&source.detail, 240),
             "authors": source.authors.iter().take(8).map(|name| truncate_for_prompt(name, 80)).collect::<Vec<_>>(),
@@ -218,8 +289,19 @@ fn evidence_prompt(request: &NarrativeRequest, instruction: &str) -> String {
         }));
     }
     format!(
-        "{instruction} Return JSON only: {{\"text\":\"...\",\"source_ids\":[\"32 lowercase hex chars\"]}}. \
-Include only source_ids that directly support the sentence, and at least one.\nEvidence: {}",
+        "Request identity: {:?}. Locale: {}. {instruction} Return JSON only: {{\"text\":\"...\",\"source_ids\":[\"32 lowercase hex chars\"]}}. \
+Include only source_ids that directly support the sentence, and at least one, at most six unique IDs.\nEvidence: {}",
+        blake3::hash(
+            format!(
+                "{request:?}:{:?}:{:?}",
+                std::env::var("TILO_HISTORY_LLM_MODEL").ok(),
+                std::env::var("OLLAMA_HOST").ok()
+            )
+            .as_bytes()
+        )
+        .to_hex()
+        .to_string(),
+        request.locale,
         serde_json::Value::Array(evidence)
     )
 }
@@ -236,17 +318,42 @@ fn truncate_for_prompt(value: &str, limit: usize) -> String {
 fn parse_response(raw: &str, model: &str) -> Option<GroundedNarrative> {
     let value: serde_json::Value = serde_json::from_str(raw.trim()).ok()?;
     let text = value.get("text")?.as_str()?.trim().to_string();
-    let source_ids = value
-        .get("source_ids")?
-        .as_array()?
+    let ids = value.get("source_ids")?.as_array()?;
+    if ids.is_empty() || ids.len() > 6 {
+        return None;
+    }
+    let source_ids = ids
         .iter()
         .map(|id| parse_hex_id(id.as_str()?))
         .collect::<Option<Vec<_>>>()?;
     Some(GroundedNarrative {
         text,
         source_ids,
-        generator: format!("ollama:{model}"),
+        generator: model_source(model),
+        request: None,
     })
+}
+
+fn model_source(model: &str) -> String {
+    // Host configuration is user choice. Do not expose URL credentials or claim locality.
+    let endpoint = std::env::var("OLLAMA_HOST").ok().and_then(|host| {
+        let authority = host
+            .split_once("://")
+            .map_or(host.as_str(), |(_, rest)| rest)
+            .split('/')
+            .next()?
+            .rsplit('@')
+            .next()?;
+        (!authority.is_empty()
+            && authority
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(c)))
+        .then(|| authority.to_string())
+    });
+    endpoint.map_or_else(
+        || format!("ollama:{model}"),
+        |host| format!("ollama:{model} ({host})"),
+    )
 }
 
 fn hex_id(id: &ui::widget::HistoryEntryId) -> String {
@@ -265,6 +372,8 @@ mod tests {
         let id = ui::widget::HistoryEntryId([id; 16]);
         NarrativeRequest {
             deterministic_text: title.into(),
+            projection: String::new(),
+            locale: "en-US".into(),
             source_ids: vec![id],
             sources: vec![ui::NarrativeSource {
                 ids: vec![id],
@@ -274,6 +383,46 @@ mod tests {
                 changes: 1,
             }],
         }
+    }
+
+    #[test]
+    fn injected_runner_respects_selection_locale_bounds_and_missing_model() {
+        let mut evidence = request(1, "Recorded edits");
+        evidence.locale = "de-DE".into();
+        evidence
+            .sources
+            .extend((2..=25).map(|id| ui::NarrativeSource {
+                ids: vec![ui::widget::HistoryEntryId([id; 16])],
+                title: format!("brief-{id}"),
+                detail: String::new(),
+                authors: Vec::new(),
+                changes: 1,
+            }));
+        evidence
+            .source_ids
+            .extend((2..=25).map(|id| ui::widget::HistoryEntryId([id; 16])));
+        let prompt = prompt_for(&evidence);
+        let model = select_installed_model(
+            "NAME ID SIZE MODIFIED\nchosen:test a 2 GB now",
+            Some("chosen:test"),
+        );
+        let mut response = generate_with(&prompt, model, |model, input| {
+            assert_eq!(model, "chosen:test");
+            assert!(input.contains("Locale: de-DE"));
+            assert!(input.contains("brief-24"));
+            assert!(!input.contains("brief-25"));
+            Some(
+                r#"{"text":"Recorded edits","source_ids":["01010101010101010101010101010101"]}"#
+                    .into(),
+            )
+        })
+        .unwrap();
+        response.request = Some(Box::new(evidence.clone()));
+        assert!(ui::validate_narrative(&evidence, response).is_some());
+        assert!(
+            generate_with(&prompt, None, |_, _| panic!("missing model must not run")).is_none()
+        );
+        assert!(generate_with(&prompt, Some("chosen:test".into()), |_, _| None).is_none());
     }
 
     #[test]
@@ -298,8 +447,9 @@ mod tests {
                 key,
                 GroundedNarrative {
                     text: "Old work".into(),
-                    source_ids: old.source_ids,
+                    source_ids: old.source_ids.clone(),
                     generator: "test".into(),
+                    request: Some(Box::new(old)),
                 },
             ));
 

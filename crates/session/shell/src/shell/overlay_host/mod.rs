@@ -10899,12 +10899,16 @@ impl ShellOverlayHost {
         };
         if let Some(request) = self.room_activity.narrative_request() {
             narrator.request(&request);
+            self.room_activity
+                .set_narrative_feedback(narrator.feedback_for(&request));
             if let Some(narrative) = narrator.take_for(&request)
                 && self.room_activity.apply_generated_narrative(narrative)
             {
                 // The glance may quote it; publish on the next frame.
                 self.activity_refresh.invalidate();
             }
+        } else {
+            narrator.invalidate();
         }
     }
 

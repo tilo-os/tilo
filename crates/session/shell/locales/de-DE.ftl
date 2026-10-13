@@ -1445,6 +1445,14 @@ search-action-quick-settings-unavailable = Der Dienst für die Schnelleinstellun
 search-action-workspace-switch-keywords = wechseln arbeitsbereich gehe switch workspace
 search-action-activity-keywords = aktivität verlauf änderungen zeitleiste wer activity history
 
+search-action-history-summary-read = Generierte Verlaufzusammenfassung lesen
+search-action-history-summary-subtitle = Optionaler generierter Text ist kein Beleg; aufgezeichnete Quellen erkunden.
+search-action-history-summary-source-1 = Quelle der generierten Zusammenfassung erkunden 1
+search-action-history-summary-source-2 = Quelle der generierten Zusammenfassung erkunden 2
+search-action-history-summary-source-3 = Quelle der generierten Zusammenfassung erkunden 3
+search-action-history-summary-source-4 = Quelle der generierten Zusammenfassung erkunden 4
+search-action-history-summary-source-5 = Quelle der generierten Zusammenfassung erkunden 5
+search-action-history-summary-source-6 = Quelle der generierten Zusammenfassung erkunden 6
 search-action-history-compare = Diese Änderung vergleichen
 search-action-history-compare-subtitle = Die gewählte Aktivitätszeile vergleichen
 search-action-history-compare-keywords = vergleichen diff verlauf änderung

@@ -71,6 +71,23 @@ carrying its source frontier. It is a cache over the facts, never stored as the
 facts themselves. Changing filters regenerates it; stale or unavailable AI
 removes the paragraph without degrading the cards.
 
+The current runner uses the user's Ollama configuration, including
+`TILO_HISTORY_LLM_MODEL` for model selection and `OLLAMA_HOST` for the endpoint.
+An endpoint can be local or remote: placement is the user's choice, not a
+claim the History UI makes. History does not yet consume the agent provider
+profile picker: the model gateway authorizes text transforms only for the agent
+app. It does not expand that allowlist or introduce provider credentials.
+
+Generated summaries identify the actual runner/model, locale, projection scope,
+committed frontier and coverage. They consume bounded excerpts of the first 24
+briefs, up to 64 allowed IDs per brief, and accept at most six unique citations.
+Citation membership checks only that IDs were supplied, not factual correctness
+or entailment. Citation buttons use the existing Explore evidence navigation;
+`history.summary.read` and `history.summary.source.0` through `.5` expose the
+same views to automation. The prose is static text for assistive technology,
+never a history entry. Pending, unavailable and invalid-output states retain
+the deterministic cards and recorded history.
+
 ## 3. Investigate: a faceted, lossless timeline
 
 “Explore all history” turns the catch-up surface into a wide content panel. On

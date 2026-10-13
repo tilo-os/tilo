@@ -1642,7 +1642,14 @@ impl ChromeState {
             | tilo_desktop::activity::HISTORY_RESTORE
             | tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE
             | tilo_desktop::activity::ACTIVITY_TASKS
-            | tilo_desktop::activity::morning::MORNING_SOURCE => {}
+            | tilo_desktop::activity::morning::MORNING_SOURCE
+            | "history.summary.read"
+            | "history.summary.source.0"
+            | "history.summary.source.1"
+            | "history.summary.source.2"
+            | "history.summary.source.3"
+            | "history.summary.source.4"
+            | "history.summary.source.5" => {}
             _ if [
                 tilo_desktop::activity::morning::MORNING_OPEN,
                 tilo_desktop::activity::morning::MORNING_REMOVE,

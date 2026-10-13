@@ -1448,6 +1448,14 @@ search-action-quick-settings-unavailable = Quick Settings service is unavailable
 search-action-workspace-switch-keywords = switch workspace go
 search-action-activity-keywords = activity history changes timeline who
 
+search-action-history-summary-read = Read generated history summary
+search-action-history-summary-subtitle = Optional generated wording is not evidence; explore recorded sources.
+search-action-history-summary-source-1 = Explore generated summary source 1
+search-action-history-summary-source-2 = Explore generated summary source 2
+search-action-history-summary-source-3 = Explore generated summary source 3
+search-action-history-summary-source-4 = Explore generated summary source 4
+search-action-history-summary-source-5 = Explore generated summary source 5
+search-action-history-summary-source-6 = Explore generated summary source 6
 search-action-history-compare = Compare this change
 search-action-history-compare-subtitle = Diff the selected activity row
 search-action-history-compare-keywords = compare diff history change

@@ -250,6 +250,13 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "history.compare",
     "history.undo",
     "history.restore",
+    "history.summary.read",
+    "history.summary.source.0",
+    "history.summary.source.1",
+    "history.summary.source.2",
+    "history.summary.source.3",
+    "history.summary.source.4",
+    "history.summary.source.5",
     shared_display_actions::INSPECT_ID,
     DISPLAY_OUTPUTS_INSPECT_ID,
 ];
@@ -3811,6 +3818,48 @@ impl ActionsProvider {
             }
         }
         for (id, label_key, subtitle_key, keywords_key) in [
+            (
+                "history.summary.read",
+                "search-action-history-summary-read",
+                "search-action-history-summary-subtitle",
+                "search-action-history-summary-read",
+            ),
+            (
+                "history.summary.source.0",
+                "search-action-history-summary-source-1",
+                "search-action-history-summary-subtitle",
+                "search-action-history-summary-read",
+            ),
+            (
+                "history.summary.source.1",
+                "search-action-history-summary-source-2",
+                "search-action-history-summary-subtitle",
+                "search-action-history-summary-read",
+            ),
+            (
+                "history.summary.source.2",
+                "search-action-history-summary-source-3",
+                "search-action-history-summary-subtitle",
+                "search-action-history-summary-read",
+            ),
+            (
+                "history.summary.source.3",
+                "search-action-history-summary-source-4",
+                "search-action-history-summary-subtitle",
+                "search-action-history-summary-read",
+            ),
+            (
+                "history.summary.source.4",
+                "search-action-history-summary-source-5",
+                "search-action-history-summary-subtitle",
+                "search-action-history-summary-read",
+            ),
+            (
+                "history.summary.source.5",
+                "search-action-history-summary-source-6",
+                "search-action-history-summary-subtitle",
+                "search-action-history-summary-read",
+            ),
             (
                 tilo_desktop::activity::morning::MORNING_SOURCE,
                 "activity-morning-choose",
