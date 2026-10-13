@@ -773,11 +773,9 @@ fn draw_template(
                 );
                 x += dot + gap * 2.0;
             }
-            let mut right = x1;
-            if let Some(date) = date {
-                right =
-                    trailing(scene, transform, tr, date, ink.tertiary, x1, y, &meta) - gap * 2.0;
-            }
+            let right = date.as_deref().map_or(x1, |date| {
+                trailing(scene, transform, tr, date, ink.tertiary, x1, y, &meta) - gap * 2.0
+            });
             y += line(
                 scene,
                 transform,
@@ -856,11 +854,9 @@ fn draw_template(
             let lines =
                 height(&body, tr) + byline.as_ref().map_or(0.0, |_| gap + height(&caption, tr));
             let mut y = rect.y0 + ((rect.height() - lines) / 2.0).max(0.0);
-            let mut right = x1;
-            if let Some(duration) = duration {
-                right = trailing(scene, transform, tr, duration, ink.tertiary, x1, y, &meta)
-                    - gap * 2.0;
-            }
+            let right = duration.as_deref().map_or(x1, |duration| {
+                trailing(scene, transform, tr, duration, ink.tertiary, x1, y, &meta) - gap * 2.0
+            });
             y += line(
                 scene,
                 transform,

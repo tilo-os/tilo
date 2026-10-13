@@ -1524,8 +1524,8 @@ impl Widget for Scrollable {
         node: NodeId,
         _text: &mut TextRenderer,
     ) -> bool {
-        let mut changed = false;
-        if self.height_limit_dirty {
+        let mut changed = self.height_limit_dirty;
+        if changed {
             let Ok(mut style) = taffy.style(node).cloned() else {
                 return false;
             };
@@ -1539,7 +1539,6 @@ impl Widget for Scrollable {
                 return false;
             }
             self.height_limit_dirty = false;
-            changed = true;
         }
         let Ok(layout) = taffy.layout(node).copied() else {
             return changed;
@@ -2105,9 +2104,7 @@ mod tests {
             taffy.widget_leaf(style, node_map, self)
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn draw(
             &mut self,
@@ -2144,10 +2141,6 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "EventSpy"
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
         }
 
         fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {

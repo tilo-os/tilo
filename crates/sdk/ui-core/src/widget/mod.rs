@@ -6,7 +6,6 @@ pub(crate) mod resource_operation;
 pub(crate) use resource_operation::start_without_document_writes;
 pub(crate) use resource_operation::{ResourceOperation, ResourceOperationStart, start_in_children};
 
-use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
@@ -181,6 +180,21 @@ macro_rules! rect_geometry {
 
         fn get_rect(&self) -> $crate::kurbo::Rect {
             self.rect
+        }
+    };
+}
+
+/// Implements [`Widget::needs_redraw`] and [`Widget::mark_drawn`] for a
+/// widget that tracks whether it needs repainting in `self.dirty`.
+#[macro_export]
+macro_rules! redraw_flag {
+    () => {
+        fn needs_redraw(&self) -> bool {
+            self.dirty
+        }
+
+        fn mark_drawn(&mut self) {
+            self.dirty = false;
         }
     };
 }
@@ -2217,26 +2231,10 @@ pub trait Widget {
         None
     }
 
-    fn accepts_drop(&self, _payload: &DragPayload) -> bool {
-        false
-    }
-    fn on_drop(
-        &mut self,
-        _payload: DragPayload,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) {
-    }
     fn wants_pointer_capture(&self) -> bool {
         false
     }
 
-    /// Unlike `wants_pointer_capture`, does not swallow misses — drawn
-    /// and hit-tested first, so a small on-video affordance gets z-order
-    /// priority without deadening the content under it. Default `false`.
-    fn is_floating(&self) -> bool {
-        false
-    }
     /// `App` polls this in `Event::AboutToWait`; without it a curve would
     /// freeze partway until an unrelated event woke it again.
     fn needs_animation_frame(&self) -> bool {

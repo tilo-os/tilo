@@ -163,8 +163,7 @@ pub(in crate::state) fn restore(
         native_cut_publisher: None,
         _retention: (),
     };
-    let mut media_policy = None;
-    if let Some(doc) = &core.room_doc {
+    let media_policy = if let Some(doc) = &core.room_doc {
         if doc.has_missing_dependencies() {
             return Err(invalid(BoundedPeerInvalid::Governance));
         }
@@ -232,8 +231,10 @@ pub(in crate::state) fn restore(
                 _ => invalid(BoundedPeerInvalid::Media),
             })?;
         }
-        media_policy = policy;
-    }
+        policy
+    } else {
+        None
+    };
     if let Some(exact) = &core.exact_admissions {
         for (key, _) in exact.iter() {
             let floor = core

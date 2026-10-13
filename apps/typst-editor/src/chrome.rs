@@ -301,9 +301,7 @@ impl Chrome {
         }
 
         let mut view_rect = Rect::ZERO;
-        let picker_rect;
-        let toolbar_rect;
-        if compact {
+        let picker_rect = if compact {
             let view_w = SegmentedFace::intrinsic_width(
                 &["Edit", "Preview"],
                 ControlSize::Regular,
@@ -314,16 +312,17 @@ impl Chrome {
             // gives way to the switch and the chip, never the other way round.
             let toolbar_min = control;
             let picker_w = natural.min((right - x - view_w - toolbar_min - 2.0 * gap).max(0.0));
-            picker_rect = row(x, x + picker_w);
+            let picker_rect = row(x, x + picker_w);
             x += picker_w + gap;
             view_rect = row(x, x + view_w);
             x += view_w + gap;
-            toolbar_rect = row(x, right);
+            picker_rect
         } else {
-            picker_rect = row(x, x + natural.min((right - x - control - gap).max(0.0)));
+            let picker_rect = row(x, x + natural.min((right - x - control - gap).max(0.0)));
             x = picker_rect.x1 + gap;
-            toolbar_rect = row(x, right);
-        }
+            picker_rect
+        };
+        let toolbar_rect = row(x, right);
 
         self.document.apply_layout_external(picker_rect);
         self.view.apply_layout_external(view_rect);

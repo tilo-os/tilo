@@ -25,6 +25,8 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use shell::shell::chrome_state::{ChromeState, WsTab};
 use shell::shell::quick_settings::QsLevel;
+use shell::shell::state::StripId;
+use ui::widget::GroupRow;
 
 use super::driver::ShellDriver;
 
@@ -984,37 +986,59 @@ fn apply_wheel_and_reveal_samples<S: SnapshotSink>(
                 // curve, then freeze it before a render's worth of wall time
                 // can retire it.
                 driver.relayout();
-                let strips: Vec<_> = {
-                    let st = driver.chrome();
-                    let tree = st.tree();
-                    tree.desktop
-                        .active_workspace()
-                        .map(|ws| ws.strips.iter().map(|s| s.id).collect())
-                        .unwrap_or_default()
-                };
-                for ms in *at_ms {
-                    let mut any = false;
-                    for sid in &strips {
-                        if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
-                            for g in &mut row.groups {
-                                any |= g
-                                    .bar_mut_for_tests()
-                                    .hold_reveal_at(std::time::Duration::from_millis(*ms));
-                            }
-                        }
-                    }
-                    if !any {
-                        eprintln!("scenario: no tab reveal in flight to sample at {ms} ms");
-                    }
-                    driver.relayout();
-                    let name: &'static str =
-                        Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
-                    sink.capture(driver, name);
-                }
+                sample_held(
+                    driver,
+                    sink,
+                    prefix,
+                    at_ms,
+                    "tab reveal in flight",
+                    |row, at| {
+                        row.groups.iter_mut().fold(false, |any, g| {
+                            g.bar_mut_for_tests().hold_reveal_at(at) | any
+                        })
+                    },
+                );
             }
         }
         _ => {}
     }
+}
+
+/// Capture `{prefix}-{ms}ms` at each of `at_ms`, with every strip's row
+/// animation frozen there by `hold`, which reports whether it found one in
+/// flight. Returns the strips it held, so the caller can release them.
+fn sample_held<S: SnapshotSink>(
+    driver: &mut ShellDriver,
+    sink: &mut S,
+    prefix: &str,
+    at_ms: &[u64],
+    what: &str,
+    mut hold: impl FnMut(&mut GroupRow, std::time::Duration) -> bool,
+) -> Vec<StripId> {
+    let strips: Vec<_> = {
+        let st = driver.chrome();
+        let tree = st.tree();
+        tree.desktop
+            .active_workspace()
+            .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+            .unwrap_or_default()
+    };
+    for ms in at_ms {
+        let at = std::time::Duration::from_millis(*ms);
+        let mut any = false;
+        for sid in &strips {
+            if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                any |= hold(row, at);
+            }
+        }
+        if !any {
+            eprintln!("scenario: no {what} to sample at {ms} ms");
+        }
+        driver.relayout();
+        let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+        sink.capture(driver, name);
+    }
+    strips
 }
 
 /// `Action::SampleMakeSpace`, `Action::SampleSiblingFade` and
@@ -1028,28 +1052,9 @@ fn apply_make_space_sample_and_widths<S: SnapshotSink>(
     match action {
         Action::SampleSiblingFade { prefix, at_ms } => {
             driver.relayout();
-            let strips: Vec<_> = {
-                let st = driver.chrome();
-                let tree = st.tree();
-                tree.desktop
-                    .active_workspace()
-                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
-                    .unwrap_or_default()
-            };
-            for ms in *at_ms {
-                let mut any = false;
-                for sid in &strips {
-                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
-                        any |= row.hold_sibling_fade_at(std::time::Duration::from_millis(*ms));
-                    }
-                }
-                if !any {
-                    eprintln!("scenario: no sibling fade to sample at {ms} ms");
-                }
-                driver.relayout();
-                let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
-                sink.capture(driver, name);
-            }
+            let strips = sample_held(driver, sink, prefix, at_ms, "sibling fade", |row, at| {
+                row.hold_sibling_fade_at(at)
+            });
             for sid in &strips {
                 if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
                     row.clear_sibling_fade_hold();
@@ -1063,28 +1068,14 @@ fn apply_make_space_sample_and_widths<S: SnapshotSink>(
             // a render's worth of wall time can retire it.
             driver.step_frames(1);
             driver.relayout();
-            let strips: Vec<_> = {
-                let st = driver.chrome();
-                let tree = st.tree();
-                tree.desktop
-                    .active_workspace()
-                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
-                    .unwrap_or_default()
-            };
-            for ms in *at_ms {
-                let mut any = false;
-                for sid in &strips {
-                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
-                        any |= row.hold_shift_at(std::time::Duration::from_millis(*ms));
-                    }
-                }
-                if !any {
-                    eprintln!("scenario: no make-space slide in flight to sample at {ms} ms");
-                }
-                driver.relayout();
-                let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
-                sink.capture(driver, name);
-            }
+            sample_held(
+                driver,
+                sink,
+                prefix,
+                at_ms,
+                "make-space slide in flight",
+                GroupRow::hold_shift_at,
+            );
         }
         Action::SetWindowWidths(permille) => {
             let permille = *permille;

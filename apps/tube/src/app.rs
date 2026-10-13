@@ -1232,11 +1232,8 @@ impl TubeApp {
         self.model.playhead = pos_ms as f64 / 1000.0;
         self.model.playing = playing;
 
-        let mut changed = false;
         // Auto-skip runs against the real playhead and seeks the engine.
-        if self.apply_auto_skip() {
-            changed = true;
-        }
+        let mut changed = self.apply_auto_skip();
         // On-video "Skip" overlay visibility: recompute which (if any) show-mode
         // segment the playhead sits in. A transition (enter/leave) must rebuild
         // the tree so the overlay appears/dismisses — the advancing playhead by
@@ -2162,7 +2159,7 @@ impl Widget for TubeApp {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_pointer =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                if let Some(ui::NavAction::Back) = self.back_gesture.pointer_move(self.last_pointer)
+                if self.back_gesture.pointer_move(self.last_pointer) == Some(ui::NavAction::Back)
                     && self.nav.can_go_back()
                 {
                     action::push(&self.bus, Action::Back);
@@ -2226,12 +2223,10 @@ impl Widget for TubeApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = std::mem::take(&mut self.structure_dirty);
+        let structure_dirty = std::mem::take(&mut self.structure_dirty);
         // Fold any results that arrived between events so live data still
         // lands when the user is idle.
-        if self.pump() {
-            dirty = true;
-        }
+        let dirty = self.pump() || structure_dirty;
         // Image loads must not force a structural rebuild: thumbnails, avatars
         // and banners resolve their decoded image *lazily* in their own `sync`
         // (they hold an `ImageStore` handle + URL) and repaint via

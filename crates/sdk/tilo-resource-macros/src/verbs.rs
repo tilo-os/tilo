@@ -484,15 +484,15 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
                     params.push(item_param(&pat.ident));
                     continue;
                 }
-                let mut param_options = ParamOptions::default();
-                if let Some(index) = typed
+                let param_options = if let Some(index) = typed
                     .attrs
                     .iter()
                     .position(|attr| attr.path().is_ident("param"))
                 {
-                    let attr = typed.attrs.remove(index);
-                    param_options = attr.parse_args::<ParamOptions>()?;
-                }
+                    typed.attrs.remove(index).parse_args::<ParamOptions>()?
+                } else {
+                    ParamOptions::default()
+                };
                 let (owned, by_ref) = owned_type(&typed.ty);
                 let name = pat.ident.to_string();
                 let role = param_options.role();
