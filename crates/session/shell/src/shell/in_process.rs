@@ -1496,6 +1496,7 @@ mod tests {
                     confirmation: None,
                     revision: Some(listed.revision),
                     wait_ms: None,
+                    appearance: None,
                 },
             );
             let mut outcome = None;

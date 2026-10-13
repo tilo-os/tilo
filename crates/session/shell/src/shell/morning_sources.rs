@@ -248,6 +248,7 @@ impl NativeMorningSources {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         });
         commands.insert(
             key,

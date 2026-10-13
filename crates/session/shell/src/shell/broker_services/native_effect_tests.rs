@@ -567,6 +567,7 @@ fn failed_effect(
         revision: None,
         on_behalf_of: None,
         wait_ms: None,
+        appearance: None,
     };
     let mut pending = host.invoke(&caller, request);
     let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();

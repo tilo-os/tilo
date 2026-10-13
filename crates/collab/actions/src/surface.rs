@@ -57,6 +57,11 @@ pub struct VerbSurface {
     pub kind: ActionKind,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub destructive: bool,
+    /// It records a message someone received, so an incoming-message
+    /// trigger fires on its changes
+    /// ([`INCOMING_MESSAGE_TAG`](crate::INCOMING_MESSAGE_TAG)).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub incoming_message: bool,
     /// Left out of a surface file when it takes none.
     #[serde(default)]
     pub params: Vec<ParamSurface>,

@@ -205,6 +205,7 @@ impl CapnpBrokerState {
         let asker = match caller.principal() {
             tilo_actions::remote::CallerPrincipal::Agent(agent) => agent.clone(),
             tilo_actions::remote::CallerPrincipal::App(app) => app.clone(),
+            tilo_actions::remote::CallerPrincipal::Bot(bot) => format!("bot:{bot}"),
             tilo_actions::remote::CallerPrincipal::Person(id) => id.clone(),
         };
         Some(Question {

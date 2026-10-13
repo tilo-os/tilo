@@ -122,6 +122,7 @@ macro_rules! read_through_json_value {
 }
 
 pub mod action;
+pub mod appearance;
 pub mod compact;
 pub mod content;
 pub mod context;
@@ -147,18 +148,20 @@ pub mod surface;
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
 };
+pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{
     CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, ContentParts, MissingContent, keep_content_in,
 };
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
-    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, ChangeKind,
+    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, Cause, ChangeKind,
     MAX_PARTICIPANT_ID_BYTES, ParticipantId, RISK_FACET,
 };
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy,
-    DOCUMENT_READ_TAG, ExecutionMode, LOCAL_DEVICE_ONLY, PROGRAMMATIC_TAG, ResultSpec, RetryPolicy,
-    RiskLevel, UNTRUSTED_CONTENT_TAG, action_node,
+    DOCUMENT_READ_TAG, ExecutionMode, INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG,
+    LOCAL_DEVICE_ONLY, PROGRAMMATIC_TAG, ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG,
+    action_node,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use entry::{
@@ -212,7 +215,7 @@ pub use tilo_action_policy as policy;
 /// The field a resource's comments live in: an action that only comments
 /// is placed below it ([`ActionContract::field`]), where someone who may only
 /// comment is granted changes.
-pub use tilo_action_policy::roles::COMMENTS_FIELD;
+pub use tilo_action_policy::roles::{COMMENTS_FIELD, MODERATION_FIELD};
 
 #[cfg(test)]
 mod tests {

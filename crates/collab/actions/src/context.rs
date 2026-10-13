@@ -67,6 +67,9 @@ pub struct ActionContext {
     /// this field from their retained admission before applying an action.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_invocation: Option<InvocationId>,
+    /// The bot run that made this change, when one did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caused_by: Option<Cause>,
     /// The action this change ran, encoded as the executor dispatched it:
     /// what a device that receives the change replays to verify it, and
     /// what redo runs again. The executor records it on every change it
@@ -112,6 +115,7 @@ impl Clone for ActionContext {
             facets: self.facets.clone(),
             invoker: self.invoker.clone(),
             source_invocation: self.source_invocation,
+            caused_by: self.caused_by.clone(),
             action: self.action.clone(),
             compensation: self.compensation.clone(),
             gesture: self.gesture,
@@ -186,6 +190,9 @@ impl ActionContext {
         if self.source_invocation.is_none() {
             self.source_invocation = ambient.source_invocation;
         }
+        if self.caused_by.is_none() {
+            self.caused_by.clone_from(&ambient.caused_by);
+        }
         for facet in &ambient.facets {
             if !self.facets.contains(facet) {
                 self.facets.push(facet.clone());
@@ -201,6 +208,13 @@ impl ActionContext {
     #[must_use]
     pub fn with_source_invocation(mut self, invocation: Option<InvocationId>) -> Self {
         self.source_invocation = invocation;
+        self
+    }
+
+    /// Record the bot run this change continues.
+    #[must_use]
+    pub fn with_caused_by(mut self, cause: Option<Cause>) -> Self {
+        self.caused_by = cause;
         self
     }
 
@@ -524,7 +538,7 @@ mod wire {
 
     use super::{
         ActionApp, ActionContext, ActionFacet, ActionGroup, ActionInvoker, ActionItem,
-        ActionResource, ChangeKind,
+        ActionResource, Cause, ChangeKind,
     };
     use crate::entry::{Did, PathStep};
     use crate::key::ActionKind;
@@ -560,6 +574,8 @@ mod wire {
         invoker: Option<ActionInvoker>,
         #[serde(rename = "s", skip_serializing_if = "Option::is_none")]
         source_invocation: Option<crate::InvocationId>,
+        #[serde(rename = "cb", skip_serializing_if = "Option::is_none")]
+        caused_by: Option<Cause>,
         #[serde(rename = "a", skip_serializing_if = "Option::is_none")]
         action: Option<Action>,
         #[serde(rename = "u", skip_serializing_if = "Option::is_none")]
@@ -970,6 +986,7 @@ mod wire {
                 facets: context.facets.clone(),
                 invoker: context.invoker.clone(),
                 source_invocation: context.source_invocation,
+                caused_by: context.caused_by.clone(),
                 action: context.action.as_ref().map(Action::of),
                 compensation: context.compensation.as_ref().map(Action::of),
                 gesture: context
@@ -1008,6 +1025,7 @@ mod wire {
                 facets: self.facets,
                 invoker: self.invoker,
                 source_invocation: self.source_invocation,
+                caused_by: self.caused_by,
                 compensation: self.compensation.and_then(Action::into_encoded),
                 gesture: self
                     .gesture
@@ -1131,6 +1149,10 @@ pub struct ActionInvoker {
     pub on_behalf_of: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub participant: Option<ParticipantId>,
+    /// The name and avatar a bot showed for this action. Set only by the
+    /// door that admitted the invocation, and only for a bot allowed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<crate::Appearance>,
 }
 
 #[allow(
@@ -1149,6 +1171,7 @@ impl ActionInvoker {
             kind: ActorKind::Person,
             on_behalf_of: None,
             participant: None,
+            appearance: None,
         }
     }
 
@@ -1163,6 +1186,7 @@ impl ActionInvoker {
                 .clone()
                 .filter(|person| *person != actor.id),
             participant: None,
+            appearance: None,
         }
     }
 
@@ -1184,6 +1208,15 @@ impl ActionInvoker {
     pub fn acting_for(mut self, person: impl Into<String>) -> Self {
         let person = person.into();
         self.on_behalf_of = (person != self.actor && !person.trim().is_empty()).then_some(person);
+        self
+    }
+
+    /// The appearance the door admitted for this one invocation; `None`
+    /// clears one, so an invoker copied from a caller's context never keeps
+    /// what no door checked.
+    #[must_use]
+    pub fn with_appearance(mut self, appearance: Option<crate::Appearance>) -> Self {
+        self.appearance = appearance;
         self
     }
 
@@ -1215,6 +1248,7 @@ impl ActionInvoker {
             kind: named.map_or(ActorKind::Person, |invoker| invoker.kind),
             on_behalf_of: named.and_then(|invoker| invoker.on_behalf_of.clone()),
             participant: named.and_then(|invoker| invoker.participant.clone()),
+            appearance: named.and_then(|invoker| invoker.appearance.clone()),
         }
     }
 }
@@ -1231,6 +1265,18 @@ pub struct ActionResource {
     pub id: String,
     pub kind: String,
     pub label: String,
+}
+
+/// The run of a bot that made a change, and how deep in a chain of runs it
+/// is: a run fired by a change that itself came from a run is one deeper.
+/// Correlation only; it grants nothing. The dispatcher fires nothing past
+/// a depth of four, so two bots answering each other stop.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Cause {
+    pub installation: String,
+    /// The firing change's hash (hex) or the connector event's id.
+    pub event: String,
+    pub depth: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1269,6 +1315,80 @@ mod tests {
     use super::*;
     use crate::entry::{EditOp, FieldEdit, PathStep, Scalar};
     use crate::key::ActionKey;
+
+    #[test]
+    fn an_appearance_round_trips_through_the_change_message() {
+        let appearance = crate::Appearance::new(
+            "alice",
+            None,
+            Some(crate::Persona {
+                service: "discord".into(),
+                account: "80351110224678912".into(),
+            }),
+        )
+        .unwrap();
+        let entry = ActionContext::default().with_invoker(
+            ActionInvoker::actor("bot:7f1c")
+                .with_kind(ActorKind::Bot)
+                .acting_for("person:ada")
+                .with_appearance(Some(appearance.clone())),
+        );
+        let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
+        assert_eq!(read, entry);
+        assert_eq!(read.invoker.unwrap().appearance, Some(appearance));
+        // Without one, nothing is written for it.
+        let plain = ActionContext::default().with_invoker(ActionInvoker::actor("person:ada"));
+        let json = serde_json::to_string(&plain.invoker).unwrap();
+        assert!(!json.contains("appearance"), "{json}");
+    }
+
+    #[test]
+    fn the_host_rewriting_the_invoker_drops_an_appearance_the_caller_put_there() {
+        let smuggled = ActionContext::default().with_invoker(
+            ActionInvoker::actor("person:mallory")
+                .with_appearance(Some(crate::Appearance::new("Ada", None, None).unwrap())),
+        );
+        let hosted = smuggled.with_host_invoker("person:mallory", None);
+        assert_eq!(hosted.invoker.unwrap().appearance, None);
+    }
+
+    #[test]
+    fn a_delivered_invoker_keeps_the_appearance_only_for_the_named_actor() {
+        let appearance = crate::Appearance::new("alice", None, None).unwrap();
+        let context = ActionContext::default().with_invoker(
+            ActionInvoker::actor("bot:7f1c").with_appearance(Some(appearance.clone())),
+        );
+        assert_eq!(
+            ActionInvoker::delivered("bot:7f1c", Some(&context)).appearance,
+            Some(appearance)
+        );
+        assert_eq!(
+            ActionInvoker::delivered("person:b", Some(&context)).appearance,
+            None
+        );
+    }
+
+    #[test]
+    fn a_cause_survives_the_change_message() {
+        let context = ActionContext::for_app("so.tilo.chat", "Chat").with_caused_by(Some(Cause {
+            installation: "4a6c0c49-8a0d-4c3e-9d55-0a1b2c3d4e5f".into(),
+            event: "ab".repeat(32),
+            depth: 3,
+        }));
+        let message = context.change_message().unwrap();
+        let read = ActionContext::from_change_message(&message).unwrap();
+        assert_eq!(read.caused_by, context.caused_by);
+        // A context without a cause writes no key for it.
+        let plain = ActionContext::for_app("so.tilo.chat", "Chat")
+            .change_message()
+            .unwrap();
+        assert!(
+            ActionContext::from_change_message(&plain)
+                .unwrap()
+                .caused_by
+                .is_none()
+        );
+    }
 
     fn starred() -> Described {
         Described::new(Did::Edit(FieldEdit {
