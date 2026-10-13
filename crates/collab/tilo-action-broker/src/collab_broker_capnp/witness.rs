@@ -110,6 +110,18 @@ impl CapnpBrokerState {
         let (completer, pending) = tilo_actions::remote::pending();
         let state = Arc::clone(self);
         let request = request.clone();
+        // "Allow for this task" lets a session-delegated agent's run go on
+        // without asking again; it ends with the run.
+        let task = match caller.principal() {
+            tilo_actions::remote::CallerPrincipal::Agent(agent)
+                if question.actor.session_delegated =>
+            {
+                caller
+                    .execution_id()
+                    .map(|execution| (agent.clone(), execution))
+            }
+            _ => None,
+        };
         // The person answers in their own time; nothing here holds a
         // runtime while they decide.
         let spawned = std::thread::Builder::new()
@@ -122,6 +134,16 @@ impl CapnpBrokerState {
                     state.show_waiting(&question, &request, false);
                     completer.complete(Err(ActionHostError::NotPermitted));
                     return;
+                }
+                if answer == AppActionConsent::Session
+                    && let Some((agent, execution)) = &task
+                {
+                    super::allow_for_task(
+                        agent,
+                        *execution,
+                        (&question.request.room, &question.request.target_app),
+                        &question.request.person,
+                    );
                 }
                 completer.complete(
                     state

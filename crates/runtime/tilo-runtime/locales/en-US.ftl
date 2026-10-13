@@ -22,10 +22,10 @@ device-grant-denied = { $device ->
 device-grant-room = in workspace { $room }
 device-grant-revoke = Revoke
 device-grant-revoke-description = Forget this decision: a running capture stops, and the person is asked again next time.
-# The confirmation an agent acting for the person asks for, once, before an
-# action whose contract asks for it. $action is the label the app declares
-# for the action, $app the app's name: never text a web page wrote.
-agent-confirm-question = Allow your agent to “{ $action }” in { $app }?
-agent-confirm-detail = An agent acting for you asks to do this once. It asks again next time.
-agent-confirm-allow = Allow once
+# What an agent acting for the person asks before it first acts in an app
+# for a task. $action is the label the app declares for the action it starts
+# with, $app the app's name: never text a web page wrote.
+agent-confirm-question = Let your agent work in { $app } for this task?
+agent-confirm-detail = It wants to start with “{ $action }”. Until the task ends it can act in { $app } without asking again; actions that always ask, such as deleting, still ask.
+agent-confirm-allow = Allow for this task
 agent-confirm-deny = Don’t Allow
