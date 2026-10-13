@@ -178,12 +178,10 @@ source = "CONFLICT_SCAN_LONGEST_HOLD_SLO"
 # attachment (the capability's limit). Each verifies only the chunk groups it
 # returns; loading the attachment whole instead takes the gate's reported
 # document-media-whole-blob-load-64m (464.5 ms on the first CI run).
-# The status read's ceiling is provisional until CI runs give a p99, derived
-# beside its constant. The tail read's gate is a share of that whole load in
-# the same run (MEDIA_TAIL_READ_SHARE_OF_WHOLE_LOAD), so a slow runner cannot
-# fail it; here it is compared night to night, and its former 40 ms ceiling is
-# reported as a target, not enforced. tests/document_media_footprint.rs gates
-# the daemon heap of the same reads.
+# Both latency ceilings are provisional until CI runs give a p99, derived
+# beside their constants. The tail read must also stay within one eighth of
+# the whole load in the same run. tests/document_media_footprint.rs gates the
+# daemon heap of the same reads.
 [kpi."fs.document-media-cold-64m-status"]
 unit = "ms"
 max = 5.0
@@ -196,11 +194,11 @@ source = "MEDIA_STATUS_SLO"
 [kpi."fs.document-media-cold-64m-tail-4m-read"]
 unit = "ms"
 max = 40.0
-enforce = false
+enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 1.0
-source = "MEDIA_TAIL_READ_SHARE_OF_WHOLE_LOAD"
+source = "MEDIA_TAIL_READ_SLO"
 
 # fs daemon heap (tests/document_media_footprint.rs, which asserts the same
 # ceilings on every run): what storing a 64 MiB attachment leaves behind,
