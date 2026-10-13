@@ -78,6 +78,8 @@ store-record-moderation-case = Die Registry hat Fall { $case_id } eröffnet: { $
 store-report-note = Das Anliegen einer Meldung beschrieben
 store-reports-reports = Eine Meldung bearbeitet
 
+store-source-partial = Einige Paketquellen sind nicht verfügbar. Andere Apps bleiben verfügbar.
+
 store-bot-label = BOT
 store-bot-what-it-does = Was er tut
 store-bot-needs-apps = Braucht Apps: { $apps }
