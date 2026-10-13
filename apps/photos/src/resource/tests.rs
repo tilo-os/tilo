@@ -997,6 +997,7 @@ fn the_library_publishes_its_places_and_items_and_enumerating_writes_nothing() {
         "remove-photo",
         "merge-image-analysis",
         "refresh-imported-metadata",
+        "share-link",
     ] {
         assert!(
             photo.actions.iter().any(|action| action.id == verb),
