@@ -168,11 +168,7 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
             .cloned()
             .or_else(|| first_heading(&blocks))
             .unwrap_or_else(|| format!("Chapter {}", chapters.len() + 1));
-        chapters.push(Chapter {
-            title,
-            href: spine_href.to_string(),
-            blocks,
-        });
+        chapters.push(Chapter { title, blocks });
     }
 
     if chapters.is_empty() {
@@ -208,13 +204,11 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
             pkg.title
         },
         author: pkg.creator,
-        publisher: pkg.publisher,
         language: if pkg.language.is_empty() {
             "en".into()
         } else {
             pkg.language
         },
-        description: pkg.description,
         chapters,
         cover_tint,
         subject,

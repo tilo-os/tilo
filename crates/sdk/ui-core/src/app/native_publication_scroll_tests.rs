@@ -69,9 +69,6 @@ impl crate::widget::AppWidget for PublicationProbeRoot {
     fn app_icon(&self) -> crate::widget::IconDescriptor {
         crate::widget::IconDescriptor::Glyph("S")
     }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
-    }
 }
 
 impl crate::resources::PublishesResources for PublicationProbeRoot {
@@ -148,10 +145,7 @@ fn connected_native_long_document_wheel_publication_probe() {
     );
     app.surface_input(
         &region,
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(400.0, f64::from(viewport.1) / 2.0),
-        },
+        crate::synthetic_input::cursor_moved(400.0, f64::from(viewport.1) / 2.0),
         false,
     );
     for sample in 0..10 {
@@ -159,11 +153,7 @@ fn connected_native_long_document_wheel_publication_probe() {
         let started = crate::time::now();
         assert!(app.surface_input(
             &region,
-            WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: winit::event::MouseScrollDelta::LineDelta(0.0, wheel_step),
-                phase: winit::event::TouchPhase::Moved
-            },
+            crate::synthetic_input::mouse_wheel(0.0, wheel_step),
             false
         ));
         let input_ns = started.elapsed().as_nanos();
@@ -354,10 +344,7 @@ impl ViewScrollFixture {
         app.surface_frame(&region, &mut scene);
         app.surface_input(
             &region,
-            WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(400.0, f64::from(region.size.1) / 2.0),
-            },
+            crate::synthetic_input::cursor_moved(400.0, f64::from(region.size.1) / 2.0),
             false,
         );
         app.surface_frame(&region, &mut scene);
@@ -385,14 +372,10 @@ impl ViewScrollFixture {
         let started = crate::time::now();
         assert!(self.app.surface_input(
             &self.region,
-            WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: winit::event::MouseScrollDelta::LineDelta(
-                    0.0,
-                    if self.paragraphs == 180 { -1.0 } else { -0.25 }
-                ),
-                phase: winit::event::TouchPhase::Moved,
-            },
+            crate::synthetic_input::mouse_wheel(
+                0.0,
+                if self.paragraphs == 180 { -1.0 } else { -0.25 }
+            ),
             false
         ));
         let elapsed = started.elapsed().as_nanos();

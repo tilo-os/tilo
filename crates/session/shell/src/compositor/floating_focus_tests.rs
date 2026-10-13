@@ -188,10 +188,7 @@ impl Drop for Fixture {
 }
 
 fn route_float_pointer(fixture: &mut Fixture, fb: &mut FrameBuilder, point: (f64, f64)) {
-    let moved = winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(point.0, point.1),
-    };
+    let moved = ui::synthetic_input::cursor_moved(point.0, point.1);
     assert!(crate::compositor::client_input::route_input(
         &mut fixture.state,
         fb,

@@ -199,8 +199,7 @@ impl<R: Resource<Action = LevelAction>> Widget for LevelSlider<R> {
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if self.dragging {
                     let level = ((self.cursor.x - self.rect.x0) / self.rect.width() * 100.0)
                         .clamp(0.0, 100.0)

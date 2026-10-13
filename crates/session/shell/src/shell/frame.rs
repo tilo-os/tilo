@@ -5051,6 +5051,7 @@ impl FrameBuilder {
         }
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn focused_ime_edit_stamp(
         &self,
         focus: Option<NodeId>,
@@ -8286,7 +8287,7 @@ mod tests {
             frame
                 .host_mut()
                 .dictation_surface_mut()
-                .status(crate::compositor::dictation::DictationStatus::Idle);
+                .status(crate::compositor::dictation_status::DictationStatus::Idle);
         }
         for index in 0..2 {
             assert!(

@@ -562,13 +562,8 @@ impl ListSlot {
         let Some(table) = state.table.as_mut() else {
             return;
         };
-        let moved = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(
-                at.x * ctx.scale_factor,
-                at.y * ctx.scale_factor,
-            ),
-        };
+        let moved =
+            ui::synthetic_input::cursor_moved(at.x * ctx.scale_factor, at.y * ctx.scale_factor);
         let mut handled = false;
         let mut focus = None;
         let mut inner = ui::widget::EventCtx {

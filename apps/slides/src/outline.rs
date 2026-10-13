@@ -68,11 +68,6 @@ pub fn of_deck(deck: &Deck) -> String {
     out
 }
 
-/// What `read` and the deck's edits declare they return.
-pub fn result_schema() -> serde_json::Value {
-    serde_json::json!({"type": ["string", "null"]})
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

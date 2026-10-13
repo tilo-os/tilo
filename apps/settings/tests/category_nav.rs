@@ -52,20 +52,9 @@ fn rebuild(app: &mut Framed<SettingsApp>) {
 
 /// Drive a real pointer click at `center` through the production event path.
 fn click_at(app: &mut Framed<SettingsApp>, center: Point) {
-    let cursor = winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-    };
-    let press = winit::event::WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: winit::event::ElementState::Pressed,
-        button: winit::event::MouseButton::Left,
-    };
-    let release = winit::event::WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: winit::event::ElementState::Released,
-        button: winit::event::MouseButton::Left,
-    };
+    let cursor = ui::synthetic_input::cursor_moved(center.x, center.y);
+    let press = ui::synthetic_input::mouse_press();
+    let release = ui::synthetic_input::mouse_release();
     let mods = winit::event::Modifiers::default();
     for ev in [&cursor, &press, &release] {
         Framed::harness_mut(app).dispatch_to_root_with(ev, &mods);

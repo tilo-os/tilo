@@ -1855,10 +1855,7 @@ impl Widget for Toolbar {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
+            self.pointer = Some(ctx.logical(position));
         }
         if self.menu.is_open() {
             self.menu
@@ -3504,11 +3501,8 @@ mod lifecycle_tests {
                         .layout(&tree, node)
                         .send(host, &event);
                 };
-                let mouse_event = |button, state| WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    button,
-                    state,
-                };
+                let mouse_event =
+                    |button, state| crate::synthetic_input::mouse_input(state, button);
                 send(&mut host, mouse_event(button, ElementState::Pressed));
                 send(&mut host, mouse_event(button, ElementState::Released));
                 send(&mut host, key_event(NamedKey::Escape));
@@ -3522,10 +3516,7 @@ mod lifecycle_tests {
                     .center();
                 send(
                     &mut host,
-                    WindowEvent::CursorMoved {
-                        device_id: winit::event::DeviceId::dummy(),
-                        position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-                    },
+                    crate::synthetic_input::cursor_moved(point.x, point.y),
                 );
                 send(
                     &mut host,

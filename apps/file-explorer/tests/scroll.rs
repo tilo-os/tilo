@@ -29,9 +29,7 @@ use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Rect;
-use winit::event::{
-    ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
-};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 /// A temp dir with `n` uniformly-named files (sorted, so index maps to a
 /// predictable row).
@@ -90,28 +88,17 @@ impl Harness {
     fn wheel(&mut self, notches_down: f32) {
         // winit y-positive = scroll up; the Scrollable negates, so a negative
         // y scrolls DOWN (reveals content below).
-        let ev = WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, -notches_down),
-            phase: TouchPhase::Moved,
-        };
+        let ev = ui::synthetic_input::mouse_wheel(0.0, -notches_down);
         self.dispatch(&ev, Modifiers::default());
     }
 
     fn cursor(&mut self, x: f64, y: f64) {
-        let ev = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        };
+        let ev = ui::synthetic_input::cursor_moved(x, y);
         self.dispatch(&ev, Modifiers::default());
     }
 
     fn mouse(&mut self, state: ElementState) -> bool {
-        let ev = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        };
+        let ev = ui::synthetic_input::mouse_input(state, MouseButton::Left);
         self.dispatch(&ev, Modifiers::default())
     }
 

@@ -688,8 +688,7 @@ impl Widget for SearchField {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
         }
         // A field placed by `apply_layout_external` has no child node; the
         // input only uses the node to report a focus target.
@@ -1079,10 +1078,7 @@ mod tests {
     }
 
     fn move_to(point: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-        }
+        crate::synthetic_input::cursor_moved(point.x, point.y)
     }
 
     use crate::synthetic_input::mouse_press;

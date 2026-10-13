@@ -2054,11 +2054,7 @@ impl WordProcessorWidget {
     /// function Ctrl+K and agents invoke as a published operation — against
     /// this window's view, dispatch its envelopes and adopt its next view.
     ///
-    /// Returns `false` only while the primitive has not landed
-    /// (`NotYetImplemented`), so the caller runs its equivalent direct path;
-    /// the keyboard↔action parity tests pin the two byte-identical. Any other
-    /// refusal (no caret, needs a selection, stale arguments) is a no-op, as
-    /// it is for the direct path.
+    /// A refusal (no caret, needs a selection, stale arguments) is a no-op.
     fn edit_via_primitive(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -2066,39 +2062,24 @@ impl WordProcessorWidget {
             &crate::actions::participant::ParticipantView,
             &AutoCommit,
         ) -> crate::actions::editing::EditResult,
-    ) -> bool {
-        self.edit_with(state, primitive)
-    }
-
-    fn edit_with(
-        &mut self,
-        state: &mut ui::widget::Edits<'_>,
-        primitive: impl FnOnce(
-            &crate::actions::participant::ParticipantView,
-            &AutoCommit,
-        ) -> crate::actions::editing::EditResult,
-    ) -> bool {
+    ) {
         let view = self.local_edit_view();
-        match primitive(&view, state) {
-            Err(crate::actions::editing::EditingError::NotYetImplemented(_)) => false,
-            Err(_) => true,
-            Ok((envelopes, next)) => {
-                for action in &envelopes {
-                    self.perform_edits(state, action);
-                }
-                // A caret waiting on a block the edit created settles on the
-                // kept order, brought up to date, not on a listed body.
-                let next = if next.pending.is_some() {
-                    self.sync_source(state);
-                    let body = self.kept_body();
-                    next.settle_in(state, body.as_deref())
-                } else {
-                    next
-                };
-                self.adopt_local_view(&next, state);
-                true
-            }
+        let Ok((envelopes, next)) = primitive(&view, state) else {
+            return;
+        };
+        for action in &envelopes {
+            self.perform_edits(state, action);
         }
+        // A caret waiting on a block the edit created settles on the
+        // kept order, brought up to date, not on a listed body.
+        let next = if next.pending.is_some() {
+            self.sync_source(state);
+            let body = self.kept_body();
+            next.settle_in(state, body.as_deref())
+        } else {
+            next
+        };
+        self.adopt_local_view(&next, state);
     }
 
     /// Bring the kept state up to date with `state` in the middle of an edit;
@@ -2198,9 +2179,7 @@ impl WordProcessorWidget {
 
     /// Select the whole active region (Ctrl+A, context menu).
     fn select_all_via_primitive(&mut self, state: &mut ui::widget::Edits<'_>) {
-        if !self.edit_via_primitive(state, crate::actions::editing::select_all) {
-            self.inner.select_all(state);
-        }
+        self.edit_via_primitive(state, crate::actions::editing::select_all);
     }
 
     /// Insert ordinary typed text through the same serializable actions exposed
@@ -2212,43 +2191,8 @@ impl WordProcessorWidget {
     }
 
     fn insert_text_edits(&mut self, state: &mut ui::widget::Edits<'_>, text: &str) {
-        if self.edit_with(state, |view, doc| {
+        self.edit_via_primitive(state, |view, doc| {
             crate::actions::editing::type_text(view, doc, text)
-        }) {
-            return;
-        }
-        if let Some((start, end)) = self.inner.selection_span(state) {
-            let region = self.inner.region_kind();
-            self.perform_edits(
-                state,
-                &crate::actions::replace_selection_action(
-                    region,
-                    &start.block,
-                    start.offset,
-                    &end.block,
-                    end.offset,
-                    text,
-                ),
-            );
-            self.inner.set_caret(start);
-            self.inner.clear_anchor();
-            return;
-        }
-        let caret = self.inner.caret().clone();
-        let region = self.inner.region_kind();
-        self.perform_edits(
-            state,
-            &crate::actions::splice_text_action(
-                region,
-                &caret.block,
-                caret.offset,
-                caret.offset,
-                text,
-            ),
-        );
-        self.inner.set_caret(Caret {
-            block: caret.block,
-            offset: caret.offset.saturating_add(text.chars().count()),
         });
     }
 
@@ -2260,95 +2204,9 @@ impl WordProcessorWidget {
         // The paragraph that follows the caret is read off the kept order.
         self.sync_source(state);
         let body = self.kept_body();
-        if self.edit_via_primitive(state, |view, doc| {
+        self.edit_via_primitive(state, |view, doc| {
             crate::actions::editing::new_paragraph_in(view, doc, body.as_deref())
-        }) {
-            return;
-        }
-        if self.inner.has_selection() {
-            self.insert_text_via_action(state, "");
-        }
-        let caret = self.inner.caret().clone();
-        let region = self.inner.region_kind();
-        let block = self.blocks.iter().find(|entry| entry.id == caret.block);
-        let kind = block.map_or("paragraph", |entry| entry.kind.as_str());
-        if kind == "list_item" && block.is_some_and(|entry| entry.text.is_empty()) {
-            self.perform_action(
-                state,
-                &crate::actions::set_paragraph_style_action(
-                    region,
-                    vec![caret.block],
-                    "paragraph",
-                    None,
-                    None,
-                ),
-            );
-            return;
-        }
-        let ordered = block.and_then(|entry| match entry.attrs.get("ordered") {
-            Some(AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
-            _ => None,
         });
-        let new_kind = if kind == "list_item" {
-            "list_item"
-        } else {
-            "paragraph"
-        };
-        // The new paragraph follows the split one: in the body, read it off
-        // the kept paragraph order rather than listing the region twice.
-        let body = matches!(region, crate::actions::RegionKind::Body);
-        let before: std::collections::HashSet<String> = if body {
-            std::collections::HashSet::new()
-        } else {
-            self.inner.ordered_blocks(state).into_iter().collect()
-        };
-        // The kept order names the paragraph that follows, so the split is
-        // placed without the document listing its paragraphs.
-        let next = body
-            .then(|| {
-                self.with_live(|doc| {
-                    let order = doc.body();
-                    order
-                        .position(&caret.block)
-                        .and_then(|at| order.id_at(at.saturating_add(1)))
-                        .map(str::to_owned)
-                })
-            })
-            .flatten()
-            .flatten();
-        self.perform_action(
-            state,
-            &crate::actions::split_block_before_action(
-                region,
-                &caret.block,
-                caret.offset,
-                new_kind,
-                ordered,
-                next,
-            ),
-        );
-        let new_block = if body {
-            self.sync_source(state);
-            self.with_live(|doc| {
-                let order = doc.body();
-                order
-                    .position(&caret.block)
-                    .and_then(|at| order.id_at(at.saturating_add(1)))
-                    .map(str::to_owned)
-            })
-            .flatten()
-        } else {
-            self.inner
-                .ordered_blocks(state)
-                .into_iter()
-                .find(|id| !before.contains(id))
-        };
-        if let Some(new_block) = new_block {
-            self.inner.set_caret(Caret {
-                block: new_block,
-                offset: 0,
-            });
-        }
     }
 
     fn page_break_via_action(&mut self, state: &mut ui::widget::Edits<'_>) {
@@ -2463,110 +2321,16 @@ impl WordProcessorWidget {
         self.inner.clear_anchor();
     }
 
-    /// Backspace/Delete are expressed as absolute splices or one cross-block
-    /// replacement action. Selection/caret motion remains presentation-local.
-    /// Characters in the projected block `id`, or 0 when it is not projected.
-    fn block_char_len(&self, id: &str) -> usize {
-        self.blocks
-            .iter()
-            .find(|entry| entry.id == id)
-            .map_or(0, |entry| entry.text.chars().count())
-    }
-
+    /// Backspace/Delete run the published delete operation.
     fn delete_via_action(&mut self, state: &mut ui::widget::Edits<'_>, backward: bool) {
         let direction = if backward {
             crate::actions::editing::DeleteDirection::Backward
         } else {
             crate::actions::editing::DeleteDirection::Forward
         };
-        if self.edit_via_primitive(state, |view, doc| {
+        self.edit_via_primitive(state, |view, doc| {
             crate::actions::editing::delete(view, doc, direction, 1)
-        }) {
-            return;
-        }
-        if self.inner.has_selection() {
-            self.insert_text_via_action(state, "");
-            return;
-        }
-        let caret = self.inner.caret().clone();
-        let region = self.inner.region_kind();
-        let blocks = self.inner.ordered_blocks(state);
-        let Some(index) = blocks.iter().position(|id| id == &caret.block) else {
-            return;
-        };
-        let len = self.block_char_len(&caret.block);
-        if backward
-            && caret.offset == 0
-            && self
-                .blocks
-                .iter()
-                .find(|entry| entry.id == caret.block)
-                .is_some_and(|entry| entry.kind == "list_item")
-        {
-            self.perform_action(
-                state,
-                &crate::actions::set_paragraph_style_action(
-                    region,
-                    vec![caret.block],
-                    "paragraph",
-                    None,
-                    None,
-                ),
-            );
-            return;
-        }
-        if backward && caret.offset > 0 {
-            self.splice_via_action(
-                state,
-                region,
-                &caret.block,
-                caret.offset - 1,
-                caret.offset,
-                "",
-            );
-            self.inner.set_caret(Caret {
-                block: caret.block,
-                offset: caret.offset - 1,
-            });
-        } else if !backward && caret.offset < len {
-            self.splice_via_action(
-                state,
-                region,
-                &caret.block,
-                caret.offset,
-                caret.offset + 1,
-                "",
-            );
-        } else if backward && index > 0 {
-            let Some(previous) = blocks.get(index.saturating_sub(1)).cloned() else {
-                return;
-            };
-            let previous_len = self.block_char_len(&previous);
-            self.perform_action(
-                state,
-                &crate::actions::replace_selection_action(
-                    region,
-                    &previous,
-                    previous_len,
-                    &caret.block,
-                    0,
-                    "",
-                ),
-            );
-            self.inner.set_caret(Caret {
-                block: previous,
-                offset: previous_len,
-            });
-        } else if !backward && index + 1 < blocks.len() {
-            let Some(next) = blocks.get(index.saturating_add(1)) else {
-                return;
-            };
-            self.perform_action(
-                state,
-                &crate::actions::replace_selection_action(region, &caret.block, len, next, 0, ""),
-            );
-        }
-        self.inner.clear_anchor();
+        });
     }
 
     /// The context Ctrl+K needs to build the document's resource tree: the caret
@@ -2797,11 +2561,10 @@ impl WordProcessorWidget {
     /// Toggle an inline mark (bold/italic/underline/strike) over the selection,
     /// as one replayable action. A toggle with no selection is a no-op.
     fn dispatch_toggle_mark(&mut self, state: &mut ui::widget::Edits<'_>, name: &str) {
-        if let Some(mark) = inline_mark(name)
-            && self.edit_via_primitive(state, |view, doc| {
+        if let Some(mark) = inline_mark(name) {
+            self.edit_via_primitive(state, |view, doc| {
                 crate::actions::editing::toggle_mark(view, doc, mark)
-            })
-        {
+            });
             return;
         }
         let Some((spans, active)) = self.inner.plan_toggle_mark(state, name) else {
@@ -2825,11 +2588,10 @@ impl WordProcessorWidget {
         name: &str,
         sibling: &str,
     ) {
-        if let Some(mark) = inline_mark(name)
-            && self.edit_via_primitive(state, |view, doc| {
+        if let Some(mark) = inline_mark(name) {
+            self.edit_via_primitive(state, |view, doc| {
                 crate::actions::editing::toggle_mark(view, doc, mark)
-            })
-        {
+            });
             return;
         }
         let (spans, active) = self.inner.plan_exclusive_mark(state, name);
@@ -2861,36 +2623,16 @@ impl WordProcessorWidget {
         name: &str,
         value: crate::actions::MarkVal,
     ) {
-        let primitive_value = value.clone();
-        if self.edit_via_primitive(state, |view, doc| {
-            crate::actions::editing::set_mark(view, doc, name, primitive_value)
-        }) {
-            return;
-        }
-        let spans = self.inner.format_spans(state);
-        if spans.iter().all(|(_, s, e)| s >= e) {
-            return;
-        }
-        let region = self.inner.region_kind();
-        let action =
-            crate::actions::set_mark_action(region, to_spans(spans), name, Some(value), vec![]);
-        self.perform_action(state, &action);
+        self.edit_via_primitive(state, |view, doc| {
+            crate::actions::editing::set_mark(view, doc, name, value)
+        });
     }
 
     /// Clear a valued inline mark over the selection or caret block.
     fn dispatch_clear_mark(&mut self, state: &mut ui::widget::Edits<'_>, name: &str) {
-        if self.edit_via_primitive(state, |view, doc| {
+        self.edit_via_primitive(state, |view, doc| {
             crate::actions::editing::clear_mark(view, doc, name)
-        }) {
-            return;
-        }
-        let spans = self.inner.format_spans(state);
-        if spans.iter().all(|(_, s, e)| s >= e) {
-            return;
-        }
-        let region = self.inner.region_kind();
-        let action = crate::actions::set_mark_action(region, to_spans(spans), name, None, vec![]);
-        self.perform_action(state, &action);
+        });
     }
 
     /// Set the paragraph kind/level over the selection, as one replayable action.
@@ -2906,51 +2648,18 @@ impl WordProcessorWidget {
             level,
             ordered,
         };
-        if self.edit_via_primitive(state, |view, doc| {
+        self.edit_via_primitive(state, |view, doc| {
             crate::actions::editing::set_paragraph_style(view, doc, &style)
-        }) {
-            return;
-        }
-        let blocks = self.inner.paragraph_style_targets(state);
-        if blocks.is_empty() {
-            return;
-        }
-        let action = crate::actions::set_paragraph_style_action(
-            self.inner.region_kind(),
-            blocks,
-            kind,
-            level,
-            ordered,
-        );
-        self.perform_action(state, &action);
+        });
     }
 
     /// Apply a named paragraph style (a style-picker pick) over the current
     /// paragraph targets as one replayable action: the style attr plus, for a
     /// built-in, the structural kind / level / ordered.
     fn dispatch_apply_named_style(&mut self, state: &mut ui::widget::Edits<'_>, id: &str) {
-        if self.edit_via_primitive(state, |view, doc| {
+        self.edit_via_primitive(state, |view, doc| {
             crate::actions::editing::apply_named_style(view, doc, id)
-        }) {
-            return;
-        }
-        let blocks = self.inner.paragraph_style_targets(state);
-        if blocks.is_empty() {
-            return;
-        }
-        let (kind, level, ordered) = match crate::styles::structural_kind_for(id) {
-            Some((k, l, o)) => (Some(k), l, o),
-            None => (None, None, None),
-        };
-        let action = crate::actions::apply_named_style_action(
-            self.inner.region_kind(),
-            blocks,
-            id,
-            kind,
-            level,
-            ordered,
-        );
-        self.perform_action(state, &action);
+        });
     }
 
     /// Set a block attribute (alignment / line-spacing / style) over the current
@@ -10218,34 +9927,18 @@ impl Widget for WordProcessorWidget {
         })
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "the clamped target is compared exactly: identical means the scroll did not move"
-    )]
     fn apply_primary_vertical_scroll(
         &mut self,
         action: ui::widget::PrimaryScrollAction,
     ) -> ui::widget::PrimaryScrollResult {
-        use ui::widget::PrimaryScrollResult;
-        let Some(region) = self.primary_vertical_scroll() else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        let Some(next) = action.offset(region.metrics) else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        if next == region.metrics.offset {
-            return PrimaryScrollResult::Unchanged(region);
-        }
-        if self.styles_panel_full_window() {
-            self.panel_scroll = next;
-        } else {
-            self.scroll_y = next;
-        }
-        self.lifecycle.dirty = true;
-        self.primary_vertical_scroll().map_or(
-            PrimaryScrollResult::Unsupported,
-            PrimaryScrollResult::Changed,
-        )
+        action.apply_to(self, Self::primary_vertical_scroll, |doc, _, next| {
+            if doc.styles_panel_full_window() {
+                doc.panel_scroll = next;
+            } else {
+                doc.scroll_y = next;
+            }
+            doc.lifecycle.dirty = true;
+        })
     }
 
     fn native_input_snapshot(
@@ -12810,9 +12503,7 @@ impl WordProcessorWidget {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let pointer = match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor)
-            }
+            WindowEvent::CursorMoved { position, .. } => ctx.logical(position),
             _ => self.pointer,
         };
         let mut took = false;
@@ -13350,10 +13041,7 @@ impl WordProcessorWidget {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let pointer = match event {
-            WindowEvent::CursorMoved { position, .. } => Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            )),
+            WindowEvent::CursorMoved { position, .. } => Some(ctx.logical(position)),
             _ => None,
         };
         // The window's History control and the drawers' toggles answer for
@@ -13536,8 +13224,7 @@ impl WordProcessorWidget {
             || self.style_menu.is_open()
         {
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.pointer = ctx.logical(position);
             }
             let menu = if self.template_picker.is_open() {
                 self.template_picker.menu_mut()

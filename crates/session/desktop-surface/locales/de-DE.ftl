@@ -917,11 +917,6 @@ launchpad-activity-detail = Sehen, was sich geändert hat und warum
 launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Super+N zeigt alle Apps
 
 # Peers arriving in and leaving a workspace, batched into one toast
-peer-toast-joined-one = { $name } ist beigetreten
-peer-toast-left-one = { $name } hat verlassen
-peer-toast-joined-many = { $count } Personen sind beigetreten
-peer-toast-left-many = { $count } Personen haben verlassen
-peer-toast-overflow = { $first }, { $second }, { $third } und { $rest } weitere
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-here-now = { $count } gerade hier

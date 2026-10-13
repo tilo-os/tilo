@@ -1606,8 +1606,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let point = ctx.logical(position);
                 if self.reorder.is_tracking() {
                     self.momentum.stop();
                     self.update_reorder_pointer(point, crate::time::now());
@@ -2017,12 +2016,9 @@ mod tests {
     use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use winit::event::MouseScrollDelta;
 
     use crate::testing::Dispatch;
     use taffy::AvailableSpace;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::DeviceId;
 
     struct HugeList {
         count: usize,
@@ -2239,18 +2235,11 @@ mod tests {
     }
 
     fn cursor(y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(20.0, y),
-        }
+        crate::synthetic_input::cursor_moved(20.0, y)
     }
 
     fn left(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        crate::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
     fn dispatch<M: ListModel + 'static>(
@@ -2818,11 +2807,7 @@ mod tests {
             list.reduce_motion = true;
 
             dispatch(&mut list, &cursor(50.0), &taffy, node);
-            let wheel = WindowEvent::MouseWheel {
-                device_id: DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
             assert!(dispatch(&mut list, &wheel, &taffy, node));
             assert_eq!(list.scroll_offset(), 60.0);
             assert!(!list.momentum.is_active());
@@ -3040,11 +3025,7 @@ mod tests {
         dispatch(&mut list, &cursor(row_three), &taffy, node);
         assert!(dispatch(
             &mut list,
-            &WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-            },
+            &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
             &taffy,
             node,
         ));

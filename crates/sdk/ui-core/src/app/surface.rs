@@ -1492,8 +1492,7 @@ mod tests {
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.pointer =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.pointer = ctx.logical(position);
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
@@ -1528,9 +1527,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::IconDescriptor {
             crate::widget::IconDescriptor::Glyph("C")
-        }
-        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-            None
         }
     }
 
@@ -1648,22 +1644,18 @@ mod tests {
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
         PHYSICAL.with_borrow_mut(Vec::clear);
         let key = PhysicalKey::Code(KeyCode::KeyZ);
-        let event = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: winit::event::KeyEvent::synthetic(
-                winit::event::RawKeyEvent {
-                    physical_key: key,
-                    state: ElementState::Pressed,
-                },
-                Key::Character("z".into()),
-                None,
-                KeyLocation::Standard,
-                false,
-                None,
-                Key::Character("z".into()),
-            ),
-            is_synthetic: false,
-        };
+        let event = crate::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: key,
+                state: ElementState::Pressed,
+            },
+            Key::Character("z".into()),
+            None,
+            KeyLocation::Standard,
+            false,
+            None,
+            Key::Character("z".into()),
+        ));
         assert!(
             app.surface_input(&region, event.clone(), false),
             "framework Undo still handles the chord"
@@ -1710,24 +1702,20 @@ mod tests {
         PHYSICAL.with_borrow_mut(Vec::clear);
         app.surface_input(
             &region,
-            WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: winit::event::KeyEvent::synthetic(
-                    winit::event::RawKeyEvent {
-                        physical_key: winit::keyboard::PhysicalKey::Code(
-                            winit::keyboard::KeyCode::KeyY,
-                        ),
-                        state: ElementState::Pressed,
-                    },
-                    winit::keyboard::Key::Character("private-modal-input".into()),
-                    None,
-                    winit::keyboard::KeyLocation::Standard,
-                    false,
-                    None,
-                    winit::keyboard::Key::Character("private-modal-input".into()),
-                ),
-                is_synthetic: false,
-            },
+            crate::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(
+                        winit::keyboard::KeyCode::KeyY,
+                    ),
+                    state: ElementState::Pressed,
+                },
+                winit::keyboard::Key::Character("private-modal-input".into()),
+                None,
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                None,
+                winit::keyboard::Key::Character("private-modal-input".into()),
+            )),
             false,
         );
         PHYSICAL.with_borrow(|events| {
