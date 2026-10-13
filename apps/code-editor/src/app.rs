@@ -1638,7 +1638,6 @@ impl CodeApp {
             lsp: self.lsp_status.label(),
             lsp_working: self.lsp_status.is_working(),
             notice: notice.text,
-            notice_is_error: notice.is_error,
             dirty: self.session.active_buffer().is_some_and(|b| b.dirty),
         });
     }
