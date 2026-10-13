@@ -384,7 +384,6 @@ fn cache(selection: &SdkSelection, root: &Path, app: &Path, arch: &str) -> Resul
     let destination = parent.join(&selection.root);
     if destination.exists() {
         verify_selected(&original, selection, arch)?;
-        private_directory(&destination)?;
     } else {
         let (snapshot, manifest) = super::verified_snapshot(selection, &original, arch)?;
         let staged = tempfile::Builder::new()
@@ -404,8 +403,8 @@ fn cache(selection: &SdkSelection, root: &Path, app: &Path, arch: &str) -> Resul
         {
             return Err(error.into());
         }
-        private_directory(&destination)?;
     }
+    private_directory(&destination)?;
     verify_selected(&destination, selection, arch)?;
     Ok(destination)
 }

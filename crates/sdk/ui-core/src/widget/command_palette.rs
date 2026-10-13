@@ -1862,9 +1862,9 @@ impl CommandPalette {
         );
         let avail = (text_right - text_x).max(0.0);
 
+        let label =
+            text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
         if let Some(desc) = &entry.description {
-            let label =
-                text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
             let sub = elide_middle(text_renderer, desc, &desc_style, avail);
             let (_, label_height) = text_renderer.measure_style(&label, None, &label_style);
             let (_, desc_height) = text_renderer.measure_style(&sub, None, &desc_style);
@@ -1888,8 +1888,6 @@ impl CommandPalette {
                 &desc_style,
             );
         } else {
-            let label =
-                text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
             let (_, height) = text_renderer.measure_style(&label, None, &label_style);
             let ly = row.y0 + (row.height() - f64::from(height)) / 2.0;
             text_renderer.draw_style(

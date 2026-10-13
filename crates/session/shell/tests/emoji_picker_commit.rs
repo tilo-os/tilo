@@ -142,7 +142,7 @@ impl Dispatch<zwp_input_method_v2::ZwpInputMethodV2, ()> for Peer {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let zwp_input_method_v2::Event::Activate = event {
+        if matches!(event, zwp_input_method_v2::Event::Activate) {
             state.activated += 1;
         }
     }

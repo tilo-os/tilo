@@ -3185,8 +3185,7 @@ impl MapsApp {
                 header.center().y + side / 2.0,
             )
         };
-        let mut title_x = header.x0 + f64::from(sp.s3);
-        if directions {
+        let title_x = if directions {
             let back = button_at(header.x0 + s1);
             self.icon_button(
                 &mut PaintCtx::new(scene, t, tr, &ink),
@@ -3196,8 +3195,10 @@ impl MapsApp {
                 false,
                 Hit::PanelBack,
             );
-            title_x = back.x1 + s1;
-        }
+            back.x1 + s1
+        } else {
+            header.x0 + f64::from(sp.s3)
+        };
         let mut trailing = header.x1 - s1;
         if docked {
             let toggle = button_at(trailing - side);
@@ -4943,14 +4944,11 @@ impl Widget for MapsApp {
                     // above, but above the actual map surface.
                     if let Some(action) = self.map_controls.hit_test(p) {
                         self.dispatch_map_control(action);
-                        *ctx.handled = true;
                     } else if let Some(id) = self.marker_at(p) {
                         // Map interaction: marker select, POI select, or begin pan.
                         self.select_place(&id);
-                        *ctx.handled = true;
                     } else if let Some(pid) = self.poi_at(p) {
                         self.select_poi(&pid);
-                        *ctx.handled = true;
                     } else {
                         // Empty map: close any open POI card and begin a pan.
                         // Claim the press so the compositor/ui App treats the map
@@ -4958,8 +4956,8 @@ impl Widget for MapsApp {
                         self.selected_poi.take();
                         self.dragging = true;
                         self.drag_last = p;
-                        *ctx.handled = true;
                     }
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {

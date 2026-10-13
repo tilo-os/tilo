@@ -6095,7 +6095,7 @@ impl BooksApp {
     }
 
     fn handle_settings_escape_key(&mut self, key: &Key, doc: &mut ui::widget::Edits<'_>) -> bool {
-        if let Key::Named(NamedKey::Escape) = key {
+        if matches!(key, Key::Named(NamedKey::Escape)) {
             if self.color_picker.is_open() {
                 self.color_picker.cancel();
             } else if self.font_picker {
@@ -8924,11 +8924,12 @@ impl NoteCard {
         let probe = Rect::new(0.0, 0.0, width, 1.0e6);
         let body = face.body_rect(ctx.text, theme, probe);
         let layout = self.layout(ctx, body);
-        let mut bottom = layout.note_y - f64::from(theme.tokens.spacing.rhythm.related);
-        if !self.text.is_empty() {
+        let bottom = if self.text.is_empty() {
+            layout.note_y - f64::from(theme.tokens.spacing.rhythm.related)
+        } else {
             let wrap = Some(ui::num::f32_of_f64(body.width().max(1.0)));
-            bottom = layout.note_y + ctx.measure_role(&self.text, TextRole::Body, wrap).height;
-        }
+            layout.note_y + ctx.measure_role(&self.text, TextRole::Body, wrap).height
+        };
         face.height_for_body(ctx.text, theme, width, bottom - body.y0)
     }
 }

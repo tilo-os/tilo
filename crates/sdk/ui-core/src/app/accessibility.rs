@@ -209,7 +209,7 @@ impl App {
             return false;
         };
 
-        if let Key::Named(NamedKey::Insert) = ke.logical_key {
+        if ke.logical_key == Key::Named(NamedKey::Insert) {
             self.accessibility.screen_reader_modifier_down = ke.state == ElementState::Pressed;
             return false;
         }

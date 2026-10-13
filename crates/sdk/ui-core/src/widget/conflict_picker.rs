@@ -663,7 +663,7 @@ impl Widget for ConflictPicker {
                     ..
                 } = key_event;
                 if *element_state == ElementState::Pressed
-                    && let Key::Named(NamedKey::Escape) = logical_key
+                    && matches!(logical_key, Key::Named(NamedKey::Escape))
                 {
                     self.fire(PickerOutcome::Cancel);
                     *ctx.handled = true;
