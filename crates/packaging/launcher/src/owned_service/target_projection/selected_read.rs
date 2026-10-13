@@ -7,6 +7,7 @@ use super::{
     selected_lookup as lookup,
 };
 use crate::{ordinary_namespace::Handoff, owned_service::ServiceCancellation};
+use std::os::fd::AsFd;
 use std::{ffi::CString, time::Duration};
 const MAGIC: [u8; 4] = *b"TOR1";
 pub(super) struct ReadRequest<'a> {
@@ -22,7 +23,7 @@ pub(super) enum Response {
 }
 fn receive_file(io: &mut Handoff<'_>, marker: u8) -> io::Result<File> {
     let (bytes, fd) = io.retry(libc::POLLIN, |socket| {
-        runtime_portal::fd_transport::recv_with_owned_fd(socket.as_raw_fd())
+        runtime_portal::fd_transport::recv_with_fd(socket.as_fd())
     })?;
     if bytes != [marker] {
         return Err(refused("Selected read descriptor order differs"));
@@ -33,7 +34,7 @@ fn receive_file(io: &mut Handoff<'_>, marker: u8) -> io::Result<File> {
 }
 fn send_file(io: &mut Handoff<'_>, marker: u8, file: &File) -> io::Result<()> {
     io.retry(libc::POLLOUT, |socket| {
-        runtime_portal::fd_transport::send_with_fd(socket.as_raw_fd(), &[marker], file.as_raw_fd())
+        runtime_portal::fd_transport::send_with_fd(socket.as_fd(), &[marker], file.as_fd())
     })?;
     let mut ack = [0];
     io.read_exact(&mut ack)?;
@@ -236,6 +237,7 @@ pub(super) fn request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::AsFd;
     struct Fixture(std::path::PathBuf);
     impl Fixture {
         fn new() -> Self {
@@ -331,8 +333,7 @@ mod tests {
         let selected = fixture.selected();
         let (read, facts) = read_from_selected(&parent, &selected, b"selected").unwrap();
         let (mut root, peer) = UnixStream::pair().unwrap();
-        runtime_portal::fd_transport::send_with_fd(peer.as_raw_fd(), &[0], read.as_raw_fd())
-            .unwrap();
+        runtime_portal::fd_transport::send_with_fd(peer.as_fd(), &[0], read.as_fd()).unwrap();
         let cancellation = ServiceCancellation::default();
         let mut io = Handoff::new(&mut root, &cancellation, Duration::from_secs(1)).unwrap();
         let mut received = receive_file(&mut io, 0).unwrap();

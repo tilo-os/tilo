@@ -2,6 +2,7 @@
 //! No content access or source permission constructor exists.
 use super::*;
 use crate::{ordinary_namespace::Handoff, owned_service::ServiceCancellation};
+use std::os::fd::AsFd;
 use std::time::Duration;
 pub(super) const MAGIC: [u8; 4] = *b"TOM1";
 #[derive(Clone, Copy, Debug)]
@@ -138,7 +139,7 @@ pub(super) fn serve(mut stream: UnixStream, record: &Record) -> io::Result<()> {
             return Err(refused("Target observation context differs"));
         }
         let (bytes, fd) = io.retry(libc::POLLIN, |socket| {
-            runtime_portal::fd_transport::recv_with_owned_fd(socket.as_raw_fd())
+            runtime_portal::fd_transport::recv_with_fd(socket.as_fd())
         })?;
         if bytes != [0] {
             return Err(refused("Target observation descriptor framing differs"));
@@ -269,7 +270,7 @@ pub(super) fn request_exposure(
     io.write_all(&record.context_sha256)?;
     io.write_all(&record.source_view_sha256)?;
     io.retry(libc::POLLOUT, |socket| {
-        runtime_portal::fd_transport::send_with_fd(socket.as_raw_fd(), &[0], file.as_raw_fd())
+        runtime_portal::fd_transport::send_with_fd(socket.as_fd(), &[0], file.as_fd())
     })?;
     let mut ack = [0];
     io.read_exact(&mut ack)?;
@@ -328,7 +329,7 @@ fn request_with_magic(
     io.write_all(&record.context_sha256)?;
     io.write_all(&record.source_view_sha256)?;
     io.retry(libc::POLLOUT, |socket| {
-        runtime_portal::fd_transport::send_with_fd(socket.as_raw_fd(), &[0], file.as_raw_fd())
+        runtime_portal::fd_transport::send_with_fd(socket.as_fd(), &[0], file.as_fd())
     })?;
     let mut ack = [0];
     io.read_exact(&mut ack)?;

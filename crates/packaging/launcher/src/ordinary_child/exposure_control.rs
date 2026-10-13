@@ -1,11 +1,8 @@
 //! Fixed placement framing only; these descriptions cannot mint a source grant.
 //! Callers must already own the actual mutually authenticated managed helper.
 use crate::ordinary_namespace::Handoff;
-use std::{
-    fs::File,
-    io,
-    os::fd::{AsRawFd, OwnedFd},
-};
+use std::os::fd::AsFd;
+use std::{fs::File, io, os::fd::OwnedFd};
 const LIMIT: usize = 4096;
 const MAGIC: &[u8; 4] = b"TEP1";
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -95,7 +92,7 @@ pub(crate) fn receive_request(io: &mut Handoff<'_>) -> io::Result<(Operation, Pl
 }
 pub(crate) fn send_file(io: &mut Handoff<'_>, tag: u8, file: &File) -> io::Result<()> {
     io.retry(libc::POLLOUT, |s| {
-        runtime_portal::fd_transport::send_with_fd(s.as_raw_fd(), &[tag], file.as_raw_fd())
+        runtime_portal::fd_transport::send_with_fd(s.as_fd(), &[tag], file.as_fd())
     })?;
     let mut ack = [0];
     io.read_exact(&mut ack)?;
@@ -106,7 +103,7 @@ pub(crate) fn send_file(io: &mut Handoff<'_>, tag: u8, file: &File) -> io::Resul
 }
 pub(crate) fn receive_file(io: &mut Handoff<'_>, tag: u8) -> io::Result<File> {
     let (bytes, fd) = io.retry(libc::POLLIN, |s| {
-        runtime_portal::fd_transport::recv_with_owned_fd(s.as_raw_fd())
+        runtime_portal::fd_transport::recv_with_fd(s.as_fd())
     })?;
     if bytes != [tag] {
         return Err(io::ErrorKind::InvalidData.into());

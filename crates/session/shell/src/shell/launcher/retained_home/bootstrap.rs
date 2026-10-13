@@ -9,6 +9,7 @@ use runtime_portal::{
     request_rendezvous::{self, DirectoryPin},
 };
 use sha2::Digest;
+use std::os::fd::AsFd;
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
@@ -345,7 +346,7 @@ fn handoff(
     if !root.current() || cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
         return Err(refused());
     }
-    fd_transport::send_with_fd(stream.as_raw_fd(), &[tag], endpoint.as_raw_fd())?;
+    fd_transport::send_with_fd(stream.as_fd(), &[tag], endpoint.as_fd())?;
     let mut ack = [0];
     stream.read_exact(&mut ack)?;
     if ack != [tag]
@@ -794,7 +795,7 @@ impl AdmittedRootHelper {
             .reject_empty()
             .write(&mut gate, &expectation)
             .map_err(io::Error::other)?;
-        fd_transport::send_with_fd(gate.as_raw_fd(), &[0], self.peer.pidfd().as_raw_fd())?;
+        fd_transport::send_with_fd(gate.as_fd(), &[0], self.peer.pidfd())?;
         let mut ack = [0];
         gate.read_exact(&mut ack)?;
         if ack != [1] || !launcher.current() {
@@ -1040,7 +1041,7 @@ fn receive_daemon_delegation_control(
     {
         return Err(refused());
     }
-    let (tag, fd) = fd_transport::recv_with_owned_fd(stream.as_raw_fd())?;
+    let (tag, fd) = fd_transport::recv_with_fd(stream.as_fd())?;
     if tag != [61] {
         return Err(refused());
     }

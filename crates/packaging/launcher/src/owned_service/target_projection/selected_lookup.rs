@@ -5,6 +5,7 @@ use super::observation::{Facts, measure};
 use super::*;
 use crate::{ordinary_namespace::Handoff, owned_service::ServiceCancellation};
 use sha2::{Digest, Sha256};
+use std::os::fd::AsFd;
 use std::{ffi::CString, time::Duration};
 pub(super) const MAGIC: [u8; 4] = *b"TOL1";
 pub(super) struct LookupFacts {
@@ -222,11 +223,7 @@ pub(super) fn serve_request(
     io.write_all(&facts.selected_facts.encode())?;
     for (index, file) in [&facts.parent, &facts.selected].into_iter().enumerate() {
         io.retry(libc::POLLOUT, |socket| {
-            runtime_portal::fd_transport::send_with_fd(
-                socket.as_raw_fd(),
-                &[index as u8],
-                file.as_raw_fd(),
-            )
+            runtime_portal::fd_transport::send_with_fd(socket.as_fd(), &[index as u8], file.as_fd())
         })?;
         let mut ack = [0];
         io.read_exact(&mut ack)?;
@@ -260,7 +257,7 @@ pub(super) fn request(
     io.write_all(&record.context_sha256)?;
     io.write_all(&record.source_view_sha256)?;
     io.retry(libc::POLLOUT, |socket| {
-        runtime_portal::fd_transport::send_with_fd(socket.as_raw_fd(), &[0], view.as_raw_fd())
+        runtime_portal::fd_transport::send_with_fd(socket.as_fd(), &[0], view.as_fd())
     })?;
     let mut ack = [0];
     io.read_exact(&mut ack)?;
@@ -352,7 +349,7 @@ pub(super) fn receive_status(
 }
 fn receive_held(io: &mut Handoff<'_>, index: u8, facts: &Facts) -> io::Result<File> {
     let (bytes, fd) = io.retry(libc::POLLIN, |socket| {
-        runtime_portal::fd_transport::recv_with_owned_fd(socket.as_raw_fd())
+        runtime_portal::fd_transport::recv_with_fd(socket.as_fd())
     })?;
     if bytes != [index] {
         return Err(refused("Selected lookup descriptor order differs"));
@@ -550,12 +547,8 @@ mod tests {
         let facts = measure(&one).unwrap();
         for (marker, file) in [(1, &one), (0, &two), (0, &readable)] {
             let (mut root, peer) = UnixStream::pair().unwrap();
-            runtime_portal::fd_transport::send_with_fd(
-                peer.as_raw_fd(),
-                &[marker],
-                file.as_raw_fd(),
-            )
-            .unwrap();
+            runtime_portal::fd_transport::send_with_fd(peer.as_fd(), &[marker], file.as_fd())
+                .unwrap();
             let cancellation = ServiceCancellation::default();
             let mut io = Handoff::new(&mut root, &cancellation, Duration::from_secs(1)).unwrap();
             assert_eq!(

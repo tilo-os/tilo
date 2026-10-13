@@ -6,9 +6,10 @@ use runtime_collab::retained_person::{
     MAX_PROOF_BYTES, RetainedLaunchBinding, RetainedPersonClaims, SignedRetainedPersonProof,
 };
 use runtime_portal::process_binding;
+use std::os::fd::AsFd;
 use std::{
     io::{self, Read, Write},
-    os::{fd::AsRawFd, unix::net::UnixStream},
+    os::unix::net::UnixStream,
     sync::Arc,
     time::Duration,
 };
@@ -110,9 +111,9 @@ impl NativePersonalSession {
             tilo_files::native::atomic::StorageDirectory::from_file(directory.try_clone()?)?
                 .validate_privacy(tilo_files::native::atomic::Privacy::OwnerOnly)?;
             runtime_portal::fd_transport::send_with_fd(
-                stream.as_raw_fd(),
+                stream.as_fd(),
                 if copy { b"TILOCPD1" } else { b"TILORHD1" },
-                directory.as_raw_fd(),
+                directory.as_fd(),
             )?;
             self.check().map_err(io::Error::other)?;
             selection()?;

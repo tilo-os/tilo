@@ -1,6 +1,7 @@
 //! Canonical NamespaceOwner's target endpoint; no public path constructor.
 use super::*;
 use runtime_portal::process_binding::{self, ExecutingPeer};
+use std::os::fd::AsFd;
 
 /// The root owner retains this together with the actual service child. Exported
 /// view FDs are valid only while this endpoint/source authority remains current.
@@ -39,7 +40,7 @@ impl TargetProjectionEndpoint {
         }
         let mut held = Vec::new();
         for index in 0..4u8 {
-            let (bytes, fd) = runtime_portal::fd_transport::recv_with_owned_fd(stream.as_raw_fd())?;
+            let (bytes, fd) = runtime_portal::fd_transport::recv_with_fd(stream.as_fd())?;
             let fd = fd.ok_or_else(|| refused("Target root ready descriptor missing"))?;
             if bytes != [index] || !peer.current() {
                 return Err(refused("Target root ready descriptor differs"));

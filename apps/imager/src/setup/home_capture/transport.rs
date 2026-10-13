@@ -2,6 +2,7 @@
 //! received descriptor and process binding pins the executing task before data.
 use super::failure;
 use runtime_portal::{fd_transport, process_binding};
+use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt as _;
 use std::{
     fs::File,
@@ -97,7 +98,7 @@ impl HostChannel {
         if !self.peer.current() {
             return Err(failure("capture host exited"));
         }
-        fd_transport::send_with_fd(self.stream.as_raw_fd(), &[tag], file.as_raw_fd())?;
+        fd_transport::send_with_fd(self.stream.as_fd(), &[tag], file.as_fd())?;
         // One acknowledged descriptor per frame; adjacent Unix-stream rights
         // cannot coalesce into an ambiguous source/output/input declaration.
         let mut ack = [0];
@@ -116,7 +117,7 @@ impl HostChannel {
         let mut frame = [0; 9];
         frame[0] = 4;
         frame[1..].copy_from_slice(&quota.to_be_bytes());
-        fd_transport::send_with_fd(self.stream.as_raw_fd(), &frame, file.as_raw_fd())?;
+        fd_transport::send_with_fd(self.stream.as_fd(), &frame, file.as_fd())?;
         let mut ack = [0];
         self.stream.read_exact(&mut ack)?;
         if ack != [4] {
@@ -156,7 +157,7 @@ impl HostChannel {
     /// Distinct source-input receiver; output's directory-only gate stays intact.
     pub(super) fn receive_mounted_input(&mut self, tag: u8, directory: bool) -> io::Result<File> {
         self.validate_peer()?;
-        let (bytes, descriptor) = fd_transport::recv_with_owned_fd(self.stream.as_raw_fd())?;
+        let (bytes, descriptor) = fd_transport::recv_with_fd(self.stream.as_fd())?;
         let file =
             File::from(descriptor.ok_or_else(|| failure("mounted input descriptor missing"))?);
         let metadata = file.metadata()?;
@@ -190,7 +191,7 @@ impl HostChannel {
         if !self.peer.current() {
             return Err(failure("capture caller exited"));
         }
-        let (bytes, descriptor) = fd_transport::recv_with_owned_fd(self.stream.as_raw_fd())?;
+        let (bytes, descriptor) = fd_transport::recv_with_fd(self.stream.as_fd())?;
         let file =
             File::from(descriptor.ok_or_else(|| failure("capture output descriptor missing"))?);
         if bytes != [tag] || !file.metadata()?.is_dir() || !self.peer.current() {
@@ -258,7 +259,7 @@ impl WorkerChannel {
         {
             return Err(failure("capture broker is not authenticated"));
         }
-        fd_transport::send_with_fd(self.stream.as_raw_fd(), &[tag], file.as_raw_fd())?;
+        fd_transport::send_with_fd(self.stream.as_fd(), &[tag], file.as_fd())?;
         let mut ack = [0];
         self.stream.read_exact(&mut ack)?;
         if ack != [tag] {
@@ -271,7 +272,7 @@ impl WorkerChannel {
     }
 
     pub(super) fn receive(&mut self, tag: u8, directory: bool) -> io::Result<File> {
-        let (bytes, descriptor) = fd_transport::recv_with_owned_fd(self.stream.as_raw_fd())?;
+        let (bytes, descriptor) = fd_transport::recv_with_fd(self.stream.as_fd())?;
         let file = File::from(descriptor.ok_or_else(|| failure("capture descriptor missing"))?);
         if bytes != [tag]
             || file.metadata()?.is_dir() != directory
@@ -304,11 +305,9 @@ mod tests {
             stream: receiver,
             root: None,
         };
-        fd_transport::send_with_fd(sender.as_raw_fd(), &[2], original.as_file().as_raw_fd())
-            .unwrap();
+        fd_transport::send_with_fd(sender.as_fd(), &[2], original.as_file().as_fd()).unwrap();
         assert!(receiver.receive(1, false).is_err());
-        fd_transport::send_with_fd(sender.as_raw_fd(), &[1], original.as_file().as_raw_fd())
-            .unwrap();
+        fd_transport::send_with_fd(sender.as_fd(), &[1], original.as_file().as_fd()).unwrap();
         assert!(receiver.receive(1, true).is_err());
         assert_eq!(
             std::fs::read(original.path()).unwrap(),
@@ -331,7 +330,7 @@ mod tests {
             stream: receiver,
             root: None,
         };
-        fd_transport::send_with_fd(sender.as_raw_fd(), &[1], original.as_raw_fd()).unwrap();
+        fd_transport::send_with_fd(sender.as_fd(), &[1], original.as_fd()).unwrap();
         let received = receiver.receive(1, true).unwrap();
         let mut ack = [0];
         sender.read_exact(&mut ack).unwrap();
@@ -359,7 +358,7 @@ impl WorkerChannel {
     pub(super) fn receive_inventory_scratch(&mut self) -> io::Result<(File, u64)> {
         use std::os::unix::fs::MetadataExt;
         self.validate_root()?;
-        let (frame, descriptor) = fd_transport::recv_with_owned_fd(self.stream.as_raw_fd())?;
+        let (frame, descriptor) = fd_transport::recv_with_fd(self.stream.as_fd())?;
         let file = File::from(descriptor.ok_or(io::ErrorKind::InvalidData)?);
         if frame.len() != 9 || frame[0] != 4 {
             return Err(io::ErrorKind::InvalidData.into());
@@ -390,7 +389,7 @@ impl WorkerChannel {
     }
     pub(super) fn receive_read_only_media(&mut self) -> io::Result<File> {
         self.validate_root()?;
-        let (bytes, descriptor) = fd_transport::recv_with_owned_fd(self.stream.as_raw_fd())?;
+        let (bytes, descriptor) = fd_transport::recv_with_fd(self.stream.as_fd())?;
         let file = File::from(descriptor.ok_or(io::ErrorKind::InvalidData)?);
         if bytes != [81] {
             return Err(io::ErrorKind::InvalidData.into());

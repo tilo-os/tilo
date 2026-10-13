@@ -3,6 +3,7 @@
 use super::*;
 use serde::Deserialize;
 use std::io::{Read, Write};
+use std::os::fd::AsFd;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 const SLOT: i32 = 87;
@@ -187,9 +188,9 @@ impl Receiver {
             .check()?;
         let original = PinnedDirectory::open_absolute(home)?;
         runtime_portal::fd_transport::send_with_fd(
-            self.stream.as_raw_fd(),
+            self.stream.as_fd(),
             &[75],
-            original.file.as_raw_fd(),
+            original.file.as_fd(),
         )?;
         let mut ack = [0];
         self.stream.read_exact(&mut ack)?;
@@ -197,8 +198,7 @@ impl Receiver {
             return Err(denied());
         }
         drop(original);
-        let (tag, disk) =
-            runtime_portal::fd_transport::recv_with_owned_fd(self.stream.as_raw_fd())?;
+        let (tag, disk) = runtime_portal::fd_transport::recv_with_fd(self.stream.as_fd())?;
         if tag != [74] {
             return Err(denied());
         }
@@ -214,8 +214,7 @@ impl Receiver {
         drop(disk);
         self.stream
             .set_read_timeout(Some(std::time::Duration::from_secs(1200)))?;
-        let (tag, descriptor) =
-            runtime_portal::fd_transport::recv_with_owned_fd(self.stream.as_raw_fd())?;
+        let (tag, descriptor) = runtime_portal::fd_transport::recv_with_fd(self.stream.as_fd())?;
         if tag != [76] {
             return Err(denied());
         }
@@ -335,11 +334,7 @@ impl Receiver {
         self.stream
             .write_all(&(report.len() as u32).to_le_bytes())?;
         self.stream.write_all(&report)?;
-        runtime_portal::fd_transport::send_with_fd(
-            self.stream.as_raw_fd(),
-            &[83],
-            package.as_raw_fd(),
-        )?;
+        runtime_portal::fd_transport::send_with_fd(self.stream.as_fd(), &[83], package.as_fd())?;
         let mut ack = [0];
         self.stream.read_exact(&mut ack)?;
         if ack != [83] {
@@ -394,9 +389,9 @@ impl Receiver {
         let projection = authority.projection(&AtomicBool::new(false))?;
         projection.revalidate(&AtomicBool::new(false))?;
         runtime_portal::fd_transport::send_with_fd(
-            self.stream.as_raw_fd(),
+            self.stream.as_fd(),
             &[85],
-            projection.directory().as_raw_fd(),
+            projection.directory().as_fd(),
         )?;
         // UID1000 receiver alone opens and reads the leaf. Root neither reads
         // unreadable content nor lends an original-user app Write capability.

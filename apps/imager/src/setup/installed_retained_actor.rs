@@ -9,6 +9,7 @@ use runtime_collab::retained_person::{
     MAX_PROOF_BYTES, RetainedLaunchBinding, SignedRetainedPersonProof, VerifiedRetainedPersonEpoch,
 };
 use runtime_portal::process_binding::{self, ExecutingPeer};
+use std::os::fd::AsFd;
 use std::{
     fs::File,
     io::{self, Write},
@@ -450,9 +451,8 @@ impl ReviewedInstalledRetainedLaunch {
         let mut proof = ProofClient::connect(stream, &request, cancel)?;
         let held = proof.stream.try_clone()?;
         let directory = with_proof_deadline(&held, cancel, || {
-            use std::os::fd::AsRawFd;
             let (bytes, descriptor) =
-                runtime_portal::fd_transport::recv_with_owned_fd(proof.stream.as_raw_fd())?;
+                runtime_portal::fd_transport::recv_with_fd(proof.stream.as_fd())?;
             if bytes != b"TILORHD1" || !proof.peer.current() {
                 return Err(refused());
             }

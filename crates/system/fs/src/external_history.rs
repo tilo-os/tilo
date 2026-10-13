@@ -10,6 +10,7 @@ mod read_handle;
 mod revocations;
 pub use coordinator::ExternalHistoryRuntime;
 use runtime_fs::external_history::replacement_control;
+use std::os::fd::AsFd;
 
 use crate::{
     PeerCredentials, record_publisher::RecordPublisher, workspace_authority::WorkspaceAuthority,
@@ -103,7 +104,7 @@ fn frame() -> wire_frame::Framing {
     wire_frame::Framing::little_endian(2 * 1024 * 1024).reject_empty()
 }
 fn receive_file(stream: &mut UnixStream, tag: u8) -> io::Result<File> {
-    let (payload, descriptor) = fd_transport::recv_with_owned_fd(stream.as_raw_fd())?;
+    let (payload, descriptor) = fd_transport::recv_with_fd(stream.as_fd())?;
     if payload != [tag] {
         return Err(refused());
     }
