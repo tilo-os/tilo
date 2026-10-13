@@ -46,11 +46,7 @@ fn dispatch_with<T: 'static, M: TreeModel + 'static>(
 }
 
 fn right_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Right,
-    }
+    crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right)
 }
 
 fn typed(text: &str) -> WindowEvent {

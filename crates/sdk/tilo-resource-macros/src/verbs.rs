@@ -142,6 +142,7 @@ struct ActionOptions {
     destructive: bool,
     housekeeping: bool,
     external: bool,
+    incoming_message: bool,
     answers: bool,
     item: Option<syn::Ident>,
     /// The collections the item's collection sits in (`item = slides.elements`).
@@ -162,6 +163,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         destructive: false,
         housekeeping: false,
         external: false,
+        incoming_message: false,
         answers: false,
         item: None,
         within: Vec::new(),
@@ -179,10 +181,22 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.label = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("field") {
             options.field = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+        } else if meta.path.is_ident("moderation") {
+            // Acting on other people's content: placed under the `moderation`
+            // field node (`tilo_action_policy::roles::MODERATION_FIELD`), which
+            // role presets allow or deny with one rule.
+            if options.field.is_some() {
+                return Err(meta.error(
+                    "a `moderation` action sits under the `moderation` field; name no other `field`",
+                ));
+            }
+            options.field = Some("moderation".to_owned());
         } else if meta.path.is_ident("destructive") {
             options.destructive = true;
         } else if meta.path.is_ident("housekeeping") {
             options.housekeeping = true;
+        } else if meta.path.is_ident("incoming_message") {
+            options.incoming_message = true;
         } else if meta.path.is_ident("external") {
             options.external = true;
         } else if meta.path.is_ident("item") {
@@ -204,7 +218,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.writes.push(meta.value()?.parse::<syn::Ident>()?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `field`, `destructive`, `housekeeping`, `external`, `answers`, `writes = field`, `prepare = path`, `item = field` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `field`, `moderation`, `destructive`, `housekeeping`, `external`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -899,6 +913,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     let mut kinds = Vec::new();
     let mut fields_of = Vec::new();
     let mut change_kinds = Vec::new();
+    let mut incoming = Vec::new();
     let mut compensations = Vec::new();
     let mut item_arms = Vec::new();
     let mut compensating = Vec::new();
@@ -1048,6 +1063,9 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             change_kinds
                 .push(quote!(Self::#variant(..) => #krate::__private::ChangeKind::External,));
         }
+        if verb.options.incoming_message {
+            incoming.push(quote!(Self::#variant(..) => true,));
+        }
 
         let const_ident = format_ident!("{}", method.to_string().to_uppercase());
         let const_doc = format!("Bind or apply the `{id}` action: {label_text}.");
@@ -1189,7 +1207,14 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         }
 
         let destructive = verb.options.destructive;
-        let answering = verb.options.answers;
+        let answer = if verb.options.answers {
+            quote!(Made)
+        } else if outboxes.is_empty() {
+            quote!(Created)
+        } else {
+            quote!(Queued)
+        };
+        let incoming_message = verb.options.incoming_message;
         // Run where the verb is built from its arguments (the origin), never
         // when its recorded action replays: the action carries the result.
         let prepare = verb
@@ -1256,7 +1281,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 kind: #krate::ActionKind::#action_kind,
                 field: #field,
                 destructive: #destructive,
-                answering: #answering,
+                answer: #krate::__private::VerbAnswer::#answer,
+                incoming_message: #incoming_message,
                 collects: #collects,
                 content: #content,
                 item_field: #item_field,
@@ -1638,6 +1664,19 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     };
+    let incoming_fn = if incoming.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn incoming_message(&self) -> bool {
+                #[allow(unreachable_patterns, reason = "every other operation records no received message")]
+                match self {
+                    #(#incoming)*
+                    _ => false,
+                }
+            }
+        }
+    };
     // An action declared below one field is placed there whichever door it
     // comes through, the generic `apply` included.
     let field_fn = if fields_of.is_empty() {
@@ -1770,6 +1809,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
             #risk
             #change_kind
+            #incoming_fn
             #compensation_fns
 
             fn writes(&self) -> #krate::footprint::Writes {

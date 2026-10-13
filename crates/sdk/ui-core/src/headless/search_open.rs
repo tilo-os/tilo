@@ -180,9 +180,6 @@ mod tests {
             }
         }
         impl crate::widget::AppWidget for Launcher {
-            fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-                None
-            }
             fn app_kind(&self) -> crate::widget::AppKind {
                 crate::widget::AppKind::Editor
             }

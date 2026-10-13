@@ -1,7 +1,7 @@
 import {createMediaPump} from './voice-controls.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createDataLoader} from './data-loader.mjs';
-import {createFontDemandPump,createFontLoader,createIdleFontInstaller,createIdlePrewarm} from './font-loader.mjs';
+import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
 import {MountRegistry,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,pageWheelAsPixels} from './host-core.mjs';
 
@@ -19,6 +19,7 @@ import {createLegacyWindows} from './legacy-windows.mjs';
 import {createNodeApps} from './node-apps.mjs';
 import {createNativeCatalogueBridge} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
+import {browserSettings} from './browser-locale.mjs';
 // Page host for the Tilo browser runtime. Ported from the Tilo browser runtime
 // (PR 541) without its desktop host and action palette.
 // `mountDesktop` mounts the session desktop (tilo-desktop-surface over the
@@ -40,14 +41,6 @@ globalThis.__tiloRuntimePanic=raw=>{
 };
 const fontLoader=createFontLoader({baseURL:import.meta.url});
 const fonts=retryableMemo(()=>fontLoader.startup());
-// After the first presented frame, idle time fetches and verifies optional
-// fonts an app open may demand (emoji and symbol glyphs first), so opening an
-// app installs them from memory instead of the network. Bounded to 8 MiB.
-// The preferred ones (what Chat and Writer chrome demand) are then installed
-// into each live mount in idle slices, so an open does not install on its
-// first frames either.
-const APP_FONTS=['Noto-COLRv1.ttf','NotoSansSymbols[wght].ttf','NotoSansSymbols2-Regular.ttf','NotoSansMath-Regular.ttf'];
-const prewarmFonts=createIdlePrewarm(()=>fontLoader.prewarm({prefer:APP_FONTS}));
 const ready=retryableMemo(()=>init());
 // Streaming compile starts on import, while the page connects; a failure retries on mount.
 void ready().catch(()=>{});
@@ -87,6 +80,8 @@ export async function mountDesktop(target,options={}) {
   delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;
   // The desktop offers Invite only when the page takes it.
   config.invite=typeof options.onInvite==='function';delete config.onInvite;
+  // What only this page can do for the person (keeping their identity): offered in desktop search and on banners.
+  delete config.hostActions;delete config.onHostAction;
   let unsubscribeDesktopCommits;
   let liveOverlay,liveCursors,liveCarets,legacyWindows,nodeApps;
   // The room's live layer as this mount publishes through it (a certified
@@ -138,21 +133,22 @@ export async function mountDesktop(target,options={}) {
   function active(){return !closed&&!crashed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
   const nativeCatalogue = createNativeCatalogueBridge({current:active,
     actions:()=>options.peer?.actions,
+    membership:()=>options.peer?.membership,
     take:()=>JSON.parse(runtime.component_catalogue_requests?.(id) ?? '[]'),
     deliver:message=>runtime.component_catalogue_response(id,JSON.stringify(message)),
     onError:error=>report({catalogueError:String(error)})});
   const fontMountValid=()=>!closed&&!crashed&&registry.current(token)&&id!==undefined&&runtimeReady;
   fontDemands=createFontDemandPump({loader:fontLoader,valid:fontMountValid,report,install:(name,bytes)=>runtime.install_font(id,name,bytes),failed:()=>runtime.font_failed(id)});
-  const fontInstaller=createIdleFontInstaller({loader:fontLoader,names:APP_FONTS,valid:fontMountValid,install:(name,bytes)=>runtime.install_font(id,name,bytes)});
   function update(raw){
     if(closed||crashed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[])if(request==='invite')options.onInvite?.();
+    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
       desktopOwnership=Boolean(runtime.desktop_input_ownership&&runtime.desktop_navigation_snapshot?.(id));
       runtimeReady=true;
+      if(options.hostActions&&runtime.desktop_set_host_actions&&runtime.desktop_navigation_snapshot?.(id))runtime.desktop_set_host_actions(id,JSON.stringify(options.hostActions));
       if(runtime.desktop_navigation_snapshot(id)){
         navigation=createDesktopNavigation({snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>runtime.desktop_navigate(id,command),active});
         options.onNavigation?.(navigation.controller);
@@ -191,7 +187,7 @@ export async function mountDesktop(target,options={}) {
       if(document.activeElement===canvas)editor.focus({preventScroll:true});
     }else if(document.activeElement===editor){canvas.focus({preventScroll:true});}
     observeLocalActivation();
-    if(state.phase==='presented'){readyResolve();void persist().catch(()=>{});void loadAssets();void prewarmFonts().then(()=>{if(fontMountValid())fontInstaller.start();});}
+    if(state.phase==='presented'){readyResolve();void persist().catch(()=>{});void loadAssets();}
   }
   const assets=createAssetRecovery({active,report,
     retry:()=>false,
@@ -288,7 +284,7 @@ export async function mountDesktop(target,options={}) {
     if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
     const startupFonts=fonts();void startupFonts.catch(()=>{});
     await ready();if(!registry.current(token))throw Error('mount disposed');
-    const acquired=await durableHost.open(config.profile,config.device,{settings:options.settings});
+    const acquired=await durableHost.open(config.profile,config.device,{settings:options.settings??browserSettings()});
     if(closed||!registry.current(token)){await acquired.release();throw Error("mount disposed");}
     storage=acquired;
     // Apps' own files (OPFS) are mirrored before any app reads them.
@@ -298,6 +294,10 @@ export async function mountDesktop(target,options={}) {
     // starting the renderer (and its pipeline compilation) on top of them
     // stacks two peaks under Safari's 600 MB limit.
     if(config.conservativeGpu)await settleBeforeGpu();
+    if(!registry.current(token))throw Error('mount disposed');
+    // An app mounted alone has its code fetched first when the bundle loads
+    // it on demand; the session desktop fetches each app as its window opens.
+    if(config.app&&!await runtime.load_application(config.app))throw Error(`${config.app} could not be loaded`);
     if(!registry.current(token))throw Error('mount disposed');
     runtime.quarantine_windows?.(JSON.stringify(crashes.entries(config.room)));
     crashListeners.add(onCrash);
@@ -406,6 +406,9 @@ export async function mountDesktop(target,options={}) {
     return {retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,captureSource:capture.handle,observeSemanticTarget:target=>semanticPresentation.observe(target),get editor(){return editor;},semantics:accessibility,requestSemantics,
       get navigation(){return navigation?.controller;},
+      // Host actions (`[{id, title, subtitle?}]`) in place of earlier ones, and a banner offering one (`{action, title, body}`).
+      setHostActions:actions=>{if(active()&&runtime.desktop_set_host_actions)runtime.desktop_set_host_actions(id,JSON.stringify(actions));},
+      offerHostAction:offer=>{if(active()&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
 
       durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args),

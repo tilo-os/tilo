@@ -2,12 +2,7 @@
 //! only the device an entry names carries it out and records the result,
 //! the settlement is nobody's undo step, and undoing the verb that queued
 //! an entry queues its compensation for the same device.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use std::cell::{Cell, RefCell};
 
@@ -546,4 +541,32 @@ fn an_undo_that_queues_counts_once_its_entry_settled_done() {
         "the confirmed recall completes the undo"
     );
     assert!(!app.undo(), "nothing more to take back");
+}
+
+#[test]
+fn a_host_without_the_apps_types_settles_an_entry_through_a_field_edit() {
+    CARRIED.with(|carried| carried.borrow_mut().clear());
+    OFFLINE.with(|offline| offline.set(false));
+    let mut app = TestApp::<PostApp>::on_device("laptop").unwrap();
+    app.invoke(Post::SEND.with(("bot-host".to_owned(), "hi".to_owned())))
+        .unwrap();
+    app.settle();
+    let id = entry(&app, "hi");
+    let outcome = serde_json::to_value(Settled::Done("receipt:hi".to_owned())).unwrap();
+    let arguments =
+        tilo_app::tilo_resource::outbox_settle_arguments("outbox", id.as_str(), &outcome);
+    app.call(
+        tilo_app::tilo_resource::FIELD_EDIT,
+        serde_json::Value::Object(arguments),
+    )
+    .unwrap();
+    app.settle();
+    assert_eq!(
+        app.state().outbox.outcome(&id),
+        Some(&Settled::Done("receipt:hi".to_owned()))
+    );
+    assert!(
+        carried().is_empty(),
+        "the laptop carried nothing out itself"
+    );
 }

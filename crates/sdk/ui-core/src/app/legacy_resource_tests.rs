@@ -1,10 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "controlled native regression assertions"
-)]
 use super::*;
 use crate::bound_dispatch::legacy_document_tests::{Fixture, SetValue, address, registry};
 use crate::widget::Column;

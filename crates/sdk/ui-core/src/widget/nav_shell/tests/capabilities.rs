@@ -239,10 +239,7 @@ fn actions_collapse_to_icons_then_overflow_into_more() {
         .more
         .choose(row);
     // The choice runs with the event that made it.
-    h.send(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(10.0, 300.0),
-    });
+    h.send(&crate::synthetic_input::cursor_moved(10.0, 300.0));
     assert!(deleted.get(), "the chosen action ran through its door");
 }
 
@@ -478,18 +475,13 @@ impl Widget for Capturing {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::length(32.0),
-                height: Dimension::length(32.0),
-            },
+            size: Size::from_lengths(32.0, 32.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if matches!(event, WindowEvent::MouseInput { .. }) {
@@ -504,10 +496,6 @@ impl Widget for Capturing {
 
     fn name(&self) -> &'static str {
         "Capturing"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

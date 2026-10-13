@@ -201,6 +201,21 @@ launches the packaged app and should be checked with foreign-frame counters.
 invocation against an isolated compositor. `app-launch-proof.py` selects native
 applications by provider/ID and checks that a new surface actually paints.
 
+### Native mounted host-service regression tests
+
+Use `ui::framework::testing::drive_live_window` to exercise a resource app's
+actual mounted native root without starting its window event loop. With
+`test-support`, attach a socket pair through
+`App::test_floating_service_connection` and
+`FloatingSurfaceServiceClient::from_test_stream`, then send host messages and
+call `App::test_pump_floating_service`. This runs production dispatch and
+response serialization rather than invoking the app's handler directly.
+For device-shell operations, assert the request ID and successful outcome on
+the original connection, repeat on that same connection, and verify that an
+idle pump does not replay the operation. Terminal's
+`native_resource_terminal_inspector_is_acknowledged_through_the_mounted_root`
+test covers forwarding through the mounted component's `AppWidget` capability.
+
 ### Wire protocol (when you can't use the CLI)
 
 The socket accepts newline-delimited JSON. Every command returns one JSON response line.
@@ -513,7 +528,7 @@ a thread blocked again), above `IDLE_CPU_BUDGET` percent of a core, or if the
 compositor painted while nobody touched it. It also holds the in-process apps'
 collaboration shovel and the identity service's client thread to
 `KEY_ASK_BUDGET` together, so a route asking for its channel keys on a 1 s
-timer again (TIL-754) fails by name.
+timer again fails by name.
 
 ```bash
 cargo test --locked -p shell --test it idle_wakeups:: -- --nocapture
@@ -540,7 +555,7 @@ bar's clock repaint when a minute turns in the window. It counts the
 compositor's `paint-tick` lines (`TILO_PAINT_STATS=ticks`), one per loop
 iteration with what woke it, read inside the window: a 2-second `paint-stats`
 summary counts every tick since the previous one, so the first one printed in
-the window can carry startup's ticks (TIL-756). Pull requests run it whenever
+the window can carry startup's ticks. Pull requests run it whenever
 `shell` changes; the scheduled lane (`kpis=wakeups`) runs it with a 60 s window
 (`TILO_IDLE_WAKEUP_WINDOW_SECS`) and records `wakeups.*`. When a change
 removes a waker, lower `IDLE_WAKEUP_BUDGET` in the same pull request to the new
@@ -559,7 +574,7 @@ other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
 counts only voluntary switches, one per wakeup. Both gates in
 `idle_quiet_tests`, the lone desktop and the converged pair, use it, each
 together with a CPU bound that catches a thread spinning without blocking
-(TIL-749, TIL-752).
+.
 
 ## Idle memory
 
@@ -760,7 +775,7 @@ passes while proving nothing.
 
 ## Opening an app the machine does not have
 
-`scripts/demo/install-on-open.py` drives the one flow that cannot be
+`scripts/headless-examples/install-on-open.py` drives the one flow that cannot be
 exercised from an installed package, because its subject is a package
 that is not installed: typing the name of an app the configured
 registries offer, pressing Enter, and getting a tab.
@@ -769,8 +784,8 @@ registries offer, pressing Enter, and getting a tab.
 cargo build -p shell -p sheets -p install -p launcher
 cargo build -p app-cli --bins --examples
 
-scripts/demo/install-on-open.py --out target/install-on-open
-scripts/demo/install-on-open.py --backend winit --stage-only   # drive it yourself
+scripts/headless-examples/install-on-open.py --out target/install-on-open
+scripts/headless-examples/install-on-open.py --backend winit --stage-only   # drive it yourself
 ```
 
 It packs the real Sheets binary into a signed `.tapp`, serves it from a

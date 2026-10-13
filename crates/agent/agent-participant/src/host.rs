@@ -171,7 +171,7 @@ impl AgentHost {
         let snapshot = read_state(&self.state_file())?;
         let resume = self.supervisor.restore(snapshot, tilo_clock::unix_now_ns());
         for (identity, control) in resume {
-            tracing::info!(agent = %identity.delegation.agent_id, "agent resumes after a host restart");
+            tracing::info!(agent = %crate::control::agent_id(&identity.delegation), "agent resumes after a host restart");
             if let Err(error) = spawn_agent(&self.shared, identity, control.clone()) {
                 control.fail(&error);
             }
@@ -270,7 +270,7 @@ fn spawn_agent(
         .or_else(|| identity.delegation.scope.rooms.first().cloned())
         .ok_or("the agent has no room")?;
     let thread_shared = shared.clone();
-    let name = format!("agent-{}", identity.delegation.agent_id);
+    let name = format!("agent-{}", crate::control::agent_id(&identity.delegation));
     let thread_control = control.clone();
     let handle = std::thread::Builder::new()
         .name(name)
@@ -293,7 +293,7 @@ fn run_agent(
     identity: AgentIdentity,
     control: &Arc<AgentControl>,
 ) {
-    let agent_id = identity.delegation.agent_id.clone();
+    let agent_id = crate::control::agent_id(&identity.delegation).to_owned();
     let Some(runtime) = shared.runtime.get() else {
         control.fail("the agent host has not started");
         return;

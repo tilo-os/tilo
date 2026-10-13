@@ -13,7 +13,6 @@ use ui::tilo_resource::Effect as _;
 use ui::widget::TaffyTreeExt;
 
 use crate::command::{CommandSink, FileCommand, new_sink};
-use crate::history_panel::HistoryPanel;
 use crate::i18n::{arg, t, t_args};
 use crate::metadata_refresh;
 use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};
@@ -206,9 +205,6 @@ struct CollabPanel {
     summary: String,
     lines: Vec<String>,
     action: Option<CollabPanelAction>,
-    /// History has its own selectable timeline and detail pane instead of
-    /// being flattened into generic bullet lines.
-    history: Option<HistoryPanel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -461,8 +457,6 @@ pub struct StartupInputs {
 pub enum DocumentOpenRoute {
     /// This embedding deliberately provides no document owner.
     Unavailable,
-    /// Legacy synchronous host route, retained for standalone embeddings.
-    Immediate(Rc<RefCell<DocumentOpener>>),
     /// The shell drains a capability-bound request after the tile releases its
     /// record loan. A different app cannot construct the shell's matching
     /// capability.
@@ -1312,7 +1306,6 @@ impl FileExplorerWidget {
             (account.label.clone(), lines, None)
         };
         self.show_collab_panel(CollabPanel {
-            history: None,
             title,
             summary: String::new(),
             lines,
@@ -2790,7 +2783,6 @@ impl FileExplorerWidget {
             .map(t)
             .collect(),
             action: None,
-            history: None,
         });
     }
 
@@ -3667,7 +3659,6 @@ impl FileExplorerWidget {
                 });
                 if !safety_refusals.is_empty() {
                     self.show_collab_panel(CollabPanel {
-                        history: None,
                         title: t("files-destructive-eviction-title"),
                         summary: t_args(
                             "files-destructive-eviction-summary",
@@ -3883,7 +3874,6 @@ impl FileExplorerWidget {
                         ));
                     }
                     self.show_collab_panel(CollabPanel {
-                        history: None,
                         title: t_args("files-properties-title", &[arg("name", entry.name)]),
                         summary: if entry.record_id.is_some() {
                             t("files-properties-collab-summary")
@@ -3951,7 +3941,6 @@ impl FileExplorerWidget {
                         )
                     });
                     self.show_collab_panel(CollabPanel {
-                        history: None,
                         title: t_args("files-availability-title", &[arg("name", entry.name)]),
                         summary: residency,
                         lines: vec![policy, replicas, transfer],
@@ -4185,7 +4174,6 @@ impl FileExplorerWidget {
                         lines
                     };
                     self.show_collab_panel(CollabPanel {
-                        history: None,
                         title: t_args("files-sharing-title", &[arg("name", entry.name)]),
                         summary: t_args(
                             "files-sharing-summary",
@@ -4308,7 +4296,6 @@ impl FileExplorerWidget {
                 // before publishing, so reopening an old menu can never commit
                 // a merge whose members or base have changed.
                 self.show_collab_panel(CollabPanel {
-                    history: None,
                     title: t_args("files-merge-review-title", &[arg("name", entry.name)]),
                     summary: t("files-merge-review-checking"),
                     lines: vec![
@@ -4625,7 +4612,6 @@ impl FileExplorerWidget {
                 // Hold the exact paths in the modal action so a changed
                 // selection cannot silently change what gets destroyed.
                 self.show_collab_panel(CollabPanel {
-                    history: None,
                     title: t_args(
                         "files-permanent-delete-title",
                         &[arg("count", i64_of_usize(paths.len()))],
@@ -4744,7 +4730,6 @@ impl FileExplorerWidget {
             return true;
         }
         self.show_collab_panel(CollabPanel {
-            history: None,
             title: t("files-empty-trash-title"),
             summary: t_args(
                 "files-empty-trash-summary",
@@ -5856,7 +5841,6 @@ impl FileExplorerWidget {
             Some(DocumentOpenRoute::Unavailable) => {
                 Some(Err("Document opening is unavailable".into()))
             }
-            Some(DocumentOpenRoute::Immediate(open)) => Some(open.borrow_mut()(&path)),
             Some(DocumentOpenRoute::Deferred(capability)) => {
                 Some(self.request_deferred_document_open(path.clone(), capability))
             }
@@ -6335,19 +6319,6 @@ impl CommandRunner for SystemRunner {
         crate::model::fixture_io_guard::ambient_io("SystemRunner::open_default");
         ui::portal::LaunchRequest::open(path).send()
     }
-}
-
-/// Whether `path` is an editable document, per qdoc's codec registry.
-///
-/// A presentation fact only — it drives the document glyph in the icon
-/// column. It deliberately says nothing about *which* app opens the file:
-/// that is the desktop's answer, from the manifests of what is installed,
-/// and the explorer asks for it rather than deciding it (see
-/// [`set_document_opener`]).
-pub fn is_document(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(tilo_doc_codecs::is_supported_ext)
 }
 
 /// Presentation-side lower bound for the daemon's fail-closed merge codecs.
@@ -7458,7 +7429,7 @@ impl FileExplorerWidget {
                 }
                 return true;
             }
-            if let Some(FileCommand::OpenWithMenu) = cmd {
+            if cmd == Some(FileCommand::OpenWithMenu) {
                 let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
                 self.open_open_with_submenu(anchor);
                 return true;
@@ -7511,13 +7482,13 @@ impl FileExplorerWidget {
         } else {
             self.menu_commands.get(index).cloned().flatten()
         };
-        if let Some(FileCommand::OpenTemplatesMenu) = command {
+        if command == Some(FileCommand::OpenTemplatesMenu) {
             let rect = self.context_menu.get_rect();
             self.open_templates_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if let Some(FileCommand::OpenShortcutsMenu) = command {
+        } else if command == Some(FileCommand::OpenShortcutsMenu) {
             let rect = self.context_menu.get_rect();
             self.open_shortcuts_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if let Some(FileCommand::OpenWithMenu) = command {
+        } else if command == Some(FileCommand::OpenWithMenu) {
             let rect = self.context_menu.get_rect();
             let row = self
                 .context_menu
@@ -8747,18 +8718,6 @@ impl FileExplorerWidget {
 mod native_observer;
 
 impl FileExplorerWidget {
-    fn has_action_control_bindings_impl(&self) -> bool {
-        // Own accessibility actions are semantic; preserve the same modal child
-        // exposure as the complete binding inventory.
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = ui::widget::controls::has_action_control_bindings(child);
-            }
-        });
-        found
-    }
-
     fn native_input_snapshot_impl(
         &self,
         _doc: &automerge::AutoCommit,
@@ -8847,7 +8806,6 @@ impl Collaborative for FileExplorerWidget {
                                 handle: transfer.handle,
                             },
                         ),
-                        history: None,
                     });
                 }
                 crate::nearby_send::NearbyUiEffect::Failed(transfer) => {
@@ -8865,7 +8823,6 @@ impl Collaborative for FileExplorerWidget {
                         action: Some(CollabPanelAction::RetryNearby {
                             handle: transfer.handle,
                         }),
-                        history: None,
                     });
                 }
                 crate::nearby_send::NearbyUiEffect::Status(message) => {
@@ -9009,10 +8966,7 @@ impl Widget for FileExplorerWidget {
         let style = taffy::Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         // `new_with_children` only fails when a child belongs to a
@@ -9123,8 +9077,7 @@ impl Widget for FileExplorerWidget {
         let panel_was_open = self.collab_panel.is_some();
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
             // An armed press that has travelled far enough becomes a drag.
             if let Some((start, path, is_dir)) = self.armed_drag.clone()
                 && self.pin_drag.is_none()
@@ -9364,12 +9317,12 @@ impl Widget for FileExplorerWidget {
                     ))
                     .with_value(panel.lines.join(". "))
                     .with_live(Politeness::Polite)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.collab_panel_focused,
-                        modal: true,
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.collab_panel_focused)
+                            .modal(true),
+                    )
                     .with_children(children),
             );
         }
@@ -9386,10 +9339,7 @@ impl Widget for FileExplorerWidget {
             } else {
                 Politeness::Polite
             })
-            .with_state(AccessState {
-                busy: self.is_loading,
-                ..Default::default()
-            });
+            .with_state(AccessState::new().busy(self.is_loading));
         if let Some((title, detail, can_retry)) = self.state_surface_copy() {
             let mut state = AccessNode::new(Role::Group)
                 .with_name(title)
@@ -9399,10 +9349,7 @@ impl Widget for FileExplorerWidget {
                 } else {
                     Politeness::Polite
                 })
-                .with_state(AccessState {
-                    busy: self.is_loading,
-                    ..Default::default()
-                });
+                .with_state(AccessState::new().busy(self.is_loading));
             if can_retry {
                 state = state.with_children(vec![
                     AccessNode::new(Role::Button)
@@ -9516,7 +9463,8 @@ impl ui::widget::controls::ActionControls for FileExplorerWidget {
         })
     }
     fn has_action_control_bindings(&self) -> bool {
-        self.has_action_control_bindings_impl()
+        // Own accessibility actions are semantic; only children emit actions.
+        ui::widget::controls::children_have_action_control_bindings(self)
     }
     // A control a caller invoked through the door (a toolbar button) queued
     // its command; apply it now, as the click it stands for would.

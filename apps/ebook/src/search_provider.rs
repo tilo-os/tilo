@@ -821,7 +821,6 @@ mod tests {
                             spans: vec![crate::model::Span::plain("the unique needle is here")],
                         },
                     ],
-                    ..crate::model::Chapter::default()
                 }],
                 ..Book::default()
             }];
@@ -873,7 +872,6 @@ mod tests {
                             spans: vec![crate::model::Span::plain("gamma")],
                         },
                     ],
-                    ..crate::model::Chapter::default()
                 }],
                 ..Book::default()
             }];
@@ -957,7 +955,6 @@ mod tests {
                         source: format!("{} tail-needle", "x".repeat(1_000_000)),
                         display: false,
                     }],
-                    ..crate::model::Chapter::default()
                 }],
                 ..Book::default()
             })]);
@@ -1028,7 +1025,6 @@ mod tests {
                         blocks: vec![crate::model::Block::Paragraph {
                             spans: vec![crate::model::Span::plain("present words only")],
                         }],
-                        ..crate::model::Chapter::default()
                     }],
                     ..Book::default()
                 })
@@ -1163,7 +1159,6 @@ mod tests {
                             blocks: vec![crate::model::Block::Paragraph {
                                 spans: vec![crate::model::Span::plain(row.text)],
                             }],
-                            ..crate::model::Chapter::default()
                         }],
                     )
                 } else {
@@ -1181,10 +1176,6 @@ mod tests {
     }
 
     /// Body pages are clamped and complete and resume inside oversized blocks and spans without prose copies.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
     #[test]
     fn body_pages_clamp_and_resume_without_prose_copies() {
         // --- phase: body_pages_are_clamped_and_complete ---
@@ -1200,7 +1191,6 @@ mod tests {
                             source: "common body term".into(),
                             display: false,
                         }],
-                        ..crate::model::Chapter::default()
                     }],
                     ..Book::default()
                 })
@@ -1232,7 +1222,6 @@ mod tests {
                             "x".repeat(4_096)
                         ))],
                     }],
-                    ..crate::model::Chapter::default()
                 }],
                 ..Book::default()
             }];
@@ -1254,7 +1243,6 @@ mod tests {
                     blocks: vec![crate::model::Block::Paragraph {
                         spans: vec![crate::model::Span::plain("x".repeat(1_000_000)), tail],
                     }],
-                    ..crate::model::Chapter::default()
                 }],
                 ..Book::default()
             }];

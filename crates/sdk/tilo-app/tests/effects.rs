@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! Effects on the real component runtime: a typed vocabulary published on
 //! the resource, answered by the view or surface that registered it, its

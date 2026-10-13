@@ -51,6 +51,8 @@ mod history;
 #[cfg(target_arch = "wasm32")]
 mod host_services;
 #[cfg(target_arch = "wasm32")]
+mod link;
+#[cfg(target_arch = "wasm32")]
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;

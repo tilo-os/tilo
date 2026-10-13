@@ -5,16 +5,6 @@
 //! committing the document's pending changes: the observer is a witness, not
 //! a writer.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use crate::SettingsApp;
 use crate::categories::Category;
 use automerge::{AutoCommit, ChangeHash};
@@ -241,22 +231,18 @@ fn dispatch_preview_key(h: &mut Framed<SettingsApp>, state: ElementState) {
     let logical = winit::keyboard::Key::Character("z".into());
     dispatch_preview_event(
         h,
-        &WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            is_synthetic: false,
-            event: winit::event::KeyEvent::synthetic(
-                winit::event::RawKeyEvent {
-                    physical_key: PhysicalKey::Code(winit::keyboard::KeyCode::KeyY),
-                    state,
-                },
-                logical.clone(),
-                Some("z".into()),
-                winit::keyboard::KeyLocation::Standard,
-                false,
-                Some("z".into()),
-                logical,
-            ),
-        },
+        &ui::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: PhysicalKey::Code(winit::keyboard::KeyCode::KeyY),
+                state,
+            },
+            logical.clone(),
+            Some("z".into()),
+            winit::keyboard::KeyLocation::Standard,
+            false,
+            Some("z".into()),
+            logical,
+        )),
     );
 }
 

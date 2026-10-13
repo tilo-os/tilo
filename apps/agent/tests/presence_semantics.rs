@@ -1,7 +1,6 @@
 //! Presence semantics through the production Cap'n Proto broker.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
     reason = "integration-test setup and assertions"

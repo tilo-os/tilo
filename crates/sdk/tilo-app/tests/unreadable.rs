@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! A record that does not read as the resource shows why, never the last
 //! state as if it were current, and every action reports why it is

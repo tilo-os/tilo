@@ -1,8 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "controlled production headless drain regression"
-)]
 use super::*;
 use crate::bound_dispatch::legacy_document_tests::{SetValue, independent_batch_fixture};
 #[test]

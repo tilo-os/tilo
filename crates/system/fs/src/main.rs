@@ -141,7 +141,7 @@ mod share_mount_tests {
         }
     }
 
-    /// TIL-745. The persister writes the sync progress with each peer
+    /// #4113. The persister writes the sync progress with each peer
     /// beside the namespace document, and a restart resumes it; damaged
     /// progress, or progress beside a document recovered from an older
     /// generation, is ignored, so every exchange starts with a full sync.
@@ -1099,7 +1099,7 @@ fn resolve_acl(
 
 /// Keep the live mount's capability list current (`every == 0` disables
 /// reload): re-read on every change of the file, and poll every `every`
-/// seconds only when it cannot be watched (TIL-774).
+/// seconds only when it cannot be watched.
 fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task::JoinHandle<()>> {
     if every == 0 {
         println!(
@@ -1390,8 +1390,8 @@ async fn replica(config_path: PathBuf) -> Result<()> {
     validate_home_peer_set(&bundle)?;
     // Held for the life of the process: the relay honours a ready status
     // only while this lock is held (or its stamp is a few seconds old), so
-    // the status is written when it changes rather than every second
-    // (TIL-774). Taken before the status is touched, so a second replica
+    // the status is written when it changes rather than every second.
+    // Taken before the status is touched, so a second replica
     // refused here cannot clobber a running one's status.
     let _alive = fs::full_replica::ReplicaLiveness::hold(&bundle.status_file)?;
     save_status(
@@ -1651,7 +1651,7 @@ async fn replica_workspace(
     }
 }
 
-/// What the home-peer loop sleeps on between passes (TIL-774). A ready
+/// What the home-peer loop sleeps on between passes. A ready
 /// replica waits for the namespace to change; an incomplete or failed pass
 /// is retried after 1 s, doubling to a minute, and at once on a namespace
 /// change. It used to wake every second either way to restamp its proof.
@@ -1766,7 +1766,7 @@ async fn serve(
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
     // The relays wait until something means another party may dial this
-    // mount (TIL-774, `fs::reachability`): each trace of one wakes them.
+    // mount (#4224, `fs::reachability`): each trace of one wakes them.
     let (endpoint, lookup, reachability) =
         sync::bind_dormant_endpoint_with_key(device.secret.clone()).await?;
     if let Some(authority) = share_authority.as_ref()
@@ -2186,7 +2186,7 @@ async fn serve(
             // something is enqueued. What could not be delivered (the
             // recipient's devices offline) is retried with backoff from
             // 5 s to a minute, and at once when a new delivery arrives
-            // (TIL-750: an empty outbox no longer wakes every 5 s).
+            // (#4130: an empty outbox no longer wakes every 5 s).
             let mut retry = NAMED_DELIVERY_RETRY;
             loop {
                 let now = unix_now_ms();
@@ -2764,7 +2764,7 @@ async fn recipient_service(
     // Mounts every accepted envelope at once, and restarts a named mount
     // whose child died. While every one is running the restart pass backs
     // off from 2 s to a minute; one that had to start a mount (or was woken
-    // by a new envelope) goes back to 2 s (TIL-750: it used to run every
+    // by a new envelope) goes back to 2 s (#4130: it used to run every
     // 2 s for the life of the service).
     let named_mount_task = tokio::spawn(async move {
         let mut every = NAMED_MOUNT_REPAIR;
@@ -3838,7 +3838,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     // Keep the BackgroundSession under a supervisor instead of immediately
     // consuming it in `join()`: a rebind must unmount the old FUSE session and
     // wait for its worker before this process can return to systemd. The
-    // supervisor sleeps until one of the two happens (TIL-750).
+    // supervisor sleeps until one of the two happens.
     let mut mount_task = tokio::task::spawn_blocking(move || {
         let session = fuser::spawn_mount(fs, &mp, &config)?;
         if signal_recipient_ready {

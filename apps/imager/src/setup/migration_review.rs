@@ -379,10 +379,22 @@ impl SourceInventory {
         self.check_projected_root(relative, &directory.file)?;
         let before = Metadata::from_file(&directory.file)?;
         self.insert(relative, &before, cancel)?;
-        let opened = cap_std::fs::Dir::from_std_file(directory.file.try_clone()?);
-        for entry in opened.entries()? {
+        // Read the listing before descending so each level keeps only its
+        // pinned directory open. Holding the listing's descriptors across the
+        // recursion exhausts macOS's default limit of 256 well before the
+        // depth limit below can refuse the selection.
+        let names = cap_std::fs::Dir::from_std_file(directory.file.try_clone()?)
+            .entries()?
+            // One more than the inventory admits, so an oversized folder is
+            // refused by `insert` without buffering its whole listing.
+            .take(MAX_ENTRIES + 1)
+            .map(|entry| {
+                super::migration::check_cancel(cancel)?;
+                entry.map(|entry| entry.file_name())
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        for name in names {
             super::migration::check_cancel(cancel)?;
-            let name = entry?.file_name();
             let path = relative.join(&name);
             if self.excluded(&path)? {
                 continue;
@@ -656,7 +668,10 @@ mod tests {
             Ok(_) => panic!("deep inventory must require a smaller selection"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("select a smaller folder"));
+        assert!(
+            error.to_string().contains("select a smaller folder"),
+            "unexpected refusal: {error}"
+        );
     }
 }
 

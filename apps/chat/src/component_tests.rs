@@ -1022,9 +1022,10 @@ fn message_range_navigation_preserves_unicode_and_refuses_stale_offsets() {
         .first()
         .expect("seeded message")
         .clone();
+    // Only its author edits a message.
     crate::testing::apply_as(
         &mut doc,
-        &identity.id,
+        &message.author,
         crate::resource::Chat::EDIT_MESSAGE.with(crate::record::chat::EditMessage {
             message: ui::tilo_resource::Id::from_raw(message.id.clone()),
             text: "café notes".into(),
@@ -1111,7 +1112,7 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
             instance_id: 1,
             address: tilo_actions::ActionAddress::new(
                 crate::testing::item("messages", &shared.id),
-                "copy-resource-link",
+                "share-link",
             ),
         };
         let join = BoundActionAddress {
@@ -1137,8 +1138,8 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
         };
         assert!(catalogues.iter().any(|message| matches!(message,
             RemoteActionMessage::CatalogueRequest {query, ..}
-                if query.provider.as_deref() == Some("record:so.tilo.chat:")
-                    && query.view_resource.as_ref().is_some_and(|resource| resource.id == "chat.message:target"))));
+                if query.provider.as_deref().is_some_and(|provider| provider.starts_with("record:so.tilo.chat:"))
+                    && query.view_resource.as_ref().is_some_and(|resource| resource.id == crate::testing::item("messages", &shared.id)))));
         assert!(
             media
                 .iter()

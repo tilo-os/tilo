@@ -1,11 +1,6 @@
 //! The agent integration harness is compiled with `shell` as a normal dependency.
 //! These checks keep its fixture certificate authority attached in that exact graph.
 
-#![allow(
-    clippy::expect_used,
-    reason = "integration assertions report the exact harness boundary failure"
-)]
-
 use std::time::Duration;
 use ui::collaboration::CollabRequest;
 

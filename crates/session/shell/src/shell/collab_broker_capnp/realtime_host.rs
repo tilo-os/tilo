@@ -7,8 +7,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use tokio::sync::mpsc;
 
 use tilo_action_broker::services::{RealtimeRequestContext, RealtimeServices};
@@ -64,8 +62,7 @@ impl Default for RealtimeBridge {
 impl RealtimeBridge {
     fn new_token(&self) -> String {
         loop {
-            let mut bytes = [0_u8; 16];
-            UnwrapErr(SysRng).fill_bytes(&mut bytes);
+            let bytes = crate::random::bytes::<16>();
             let token = hex::encode(bytes);
             if !self.sessions.contains_key(&token) {
                 return token;

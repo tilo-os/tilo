@@ -254,6 +254,10 @@ fn fixture_runtime(root: &Path) -> ManagedRuntime {
         Some(identity.public_key_hex().as_str())
     );
     ManagedRuntime {
+        runtime_identity: runtime_bundle::component_pins::RetainedBundleTrust::from_verified(
+            &bundle,
+        )
+        .unwrap(),
         bundle_root,
         runtime_publisher: identity.public_key_hex(),
         sandbox_shim: env!("CARGO_BIN_EXE_tilo-launcher").into(),

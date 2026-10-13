@@ -3,12 +3,17 @@
 //! [`measure`], [`wrap`] and [`paint_entry`] lay out and paint a legend
 //! from the theme: each entry is a series swatch and its `Caption` label,
 //! measured by the renderer so long labels never overlap. [`layout`] is the
-//! older renderer-free estimate.
+//! older renderer-free estimate. [`SeriesToggles`] is the legend's
+//! interactive half: which series people hid and where to click to toggle
+//! them.
+
+use std::collections::HashSet;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Color, Fill};
 
+use crate::a11y::{AccessNode, AccessState, Role};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -119,6 +124,85 @@ pub fn paint_entry_emphasised(
         None,
         &style,
     );
+}
+
+/// The series a legend has hidden, where each entry was last painted, and
+/// the latest visibility change for the host to read.
+#[derive(Debug, Default)]
+pub(crate) struct SeriesToggles {
+    hidden: HashSet<String>,
+    hits: Vec<(String, Rect)>,
+    changed: Option<(String, bool)>,
+}
+
+impl SeriesToggles {
+    pub(crate) fn is_hidden(&self, id: &str) -> bool {
+        self.hidden.contains(id)
+    }
+
+    /// Forget hidden series the chart no longer has.
+    pub(crate) fn retain(&mut self, known: impl Fn(&str) -> bool) {
+        self.hidden.retain(|id| known(id));
+    }
+
+    /// Show or hide `id`, recording the change; false when it already was.
+    pub(crate) fn set(&mut self, id: &str, visible: bool) -> bool {
+        let changed = if visible {
+            self.hidden.remove(id)
+        } else {
+            self.hidden.insert(id.to_owned())
+        };
+        if changed {
+            self.changed = Some((id.to_owned(), visible));
+        }
+        changed
+    }
+
+    pub(crate) fn take_changed(&mut self) -> Option<(String, bool)> {
+        self.changed.take()
+    }
+
+    pub(crate) fn clear_hits(&mut self) {
+        self.hits.clear();
+    }
+
+    pub(crate) fn push_hit(&mut self, id: String, rect: Rect) {
+        self.hits.push((id, rect));
+    }
+
+    /// The series whose painted entry contains `point`.
+    pub(crate) fn hit(&self, point: Point) -> Option<String> {
+        self.hits
+            .iter()
+            .find(|(_, rect)| rect.contains(point))
+            .map(|(id, _)| id.clone())
+    }
+
+    /// The toggle a screen reader activates in place of clicking `id`'s entry.
+    pub(crate) fn access_node(&self, id: &str, name: &str) -> AccessNode {
+        AccessNode::new(Role::ToggleButton)
+            .with_action_target(target(id))
+            .with_name(format!("{name} series"))
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .checked(!self.is_hidden(id)),
+            )
+    }
+
+    /// The series among `ids` whose [`Self::access_node`] has action `key`.
+    pub(crate) fn activated<'a>(
+        ids: impl IntoIterator<Item = &'a str>,
+        key: u64,
+    ) -> Option<String> {
+        ids.into_iter()
+            .find(|id| crate::a11y::hash_key(&target(id)) == key)
+            .map(str::to_owned)
+    }
+}
+
+fn target(id: &str) -> String {
+    format!("legend:{id}")
 }
 
 pub const ROW_HEIGHT: f64 = 24.0;

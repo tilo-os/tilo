@@ -16,10 +16,7 @@ fn hovering_and_leaving_a_field_do_not_consume_a_siblings_pointer_movement() {
     input.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
     let mut doc = AutoCommit::new();
     for (x, hovered) in [(100.0, true), (250.0, false)] {
-        let moved = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, 20.0),
-        };
+        let moved = crate::synthetic_input::cursor_moved(x, 20.0);
         assert!(!drive(&mut input, &mut doc, &moved, Modifiers::default()));
         assert_eq!(input.is_hovered, hovered);
     }
@@ -1033,22 +1030,12 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
 
     // Case `disabled_input_ignores_pointer_input`.
     {
-        use winit::dpi::PhysicalPosition;
-        use winit::event::MouseButton;
-
         let mut ti = TextInput::local().disabled(true);
         ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
 
-        let moved = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(20.0, 20.0),
-        };
+        let moved = crate::synthetic_input::cursor_moved(20.0, 20.0);
         let moved = Dispatch::new().send(&mut ti, &moved);
-        let press = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        let press = crate::synthetic_input::mouse_press();
         let press = Dispatch::new().send(&mut ti, &press);
         let handled = moved.handled | press.handled;
         let focus_target = press.focus_target.or(moved.focus_target);
@@ -1093,17 +1080,9 @@ use crate::synthetic_input::char_key;
 /// Sends `CursorMoved` first so `last_mouse_pos`/`is_hovered` are set, matching real input order.
 #[cfg(test)]
 fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool {
-    use winit::dpi::PhysicalPosition;
     let mut sender = Dispatch::new().doc(doc);
-    let moved = WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: PhysicalPosition::new(x, y),
-    };
-    let press = WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Right,
-    };
+    let moved = crate::synthetic_input::cursor_moved(x, y);
+    let press = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
     sender.send(ti, &moved).handled | sender.send(ti, &press).handled
 }
 
@@ -1184,22 +1163,14 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
 
     // Case `left_click_outside_open_menu_dismisses_it`.
     {
-        use winit::dpi::PhysicalPosition;
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
         ti.set_focus(true);
         ti.open_context_menu([10.0, 18.0]);
         assert!(ti.context_menu.is_open());
 
-        let moved = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(280.0, 38.0),
-        };
-        let press = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        let moved = crate::synthetic_input::cursor_moved(280.0, 38.0);
+        let press = crate::synthetic_input::mouse_press();
         let handled = dispatch(&mut ti, &moved) | dispatch(&mut ti, &press);
         assert!(handled, "click consumed while menu open");
         assert!(
@@ -2276,11 +2247,7 @@ use crate::synthetic_input::cursor_moved;
 use crate::synthetic_input::mouse_press;
 use crate::synthetic_input::mouse_release;
 fn middle_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Middle,
-    }
+    crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Middle)
 }
 
 fn test_node() -> (TaffyTree<()>, NodeId) {

@@ -652,10 +652,7 @@ impl Widget for CodeEditor {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.hover = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
+            self.hover = Some(ctx.logical(position));
         }
         if let WindowEvent::CursorLeft { .. } = event {
             self.hover = None;
@@ -1191,7 +1188,7 @@ mod tests {
     use taffy::TaffyTree;
     use vello::Scene;
     use vello::kurbo::Affine;
-    use winit::event::{ElementState, Modifiers, WindowEvent};
+    use winit::event::{Modifiers, WindowEvent};
     use winit::keyboard::NamedKey;
 
     fn mods(ctrl: bool, shift: bool) -> Modifiers {
@@ -1500,20 +1497,13 @@ mod tests {
             drive(
                 &mut large,
                 &mut doc,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-                },
+                &crate::synthetic_input::cursor_moved(point.x, point.y),
                 mods(false, false),
             );
             assert!(drive(
                 &mut large,
                 &mut doc,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: winit::event::MouseButton::Left,
-                },
+                &crate::synthetic_input::mouse_press(),
                 mods(false, false),
             ));
             assert_eq!(

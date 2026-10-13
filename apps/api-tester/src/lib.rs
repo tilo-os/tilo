@@ -45,7 +45,6 @@ pub mod resource;
 mod response;
 mod seed;
 mod sidebar;
-mod swap;
 mod vars;
 
 pub use app::ApiTesterApp;

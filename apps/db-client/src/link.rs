@@ -66,7 +66,6 @@ pub struct ViewModel {
     /// Rows in the selected table, and the window of them `data` holds.
     pub data_total: i64,
     pub data_offset: usize,
-    pub data_page_size: usize,
     pub table: Option<Rc<TableInfo>>,
     pub dialog: Option<Dialog>,
     /// The statement waiting for confirmation.
@@ -93,7 +92,6 @@ impl Default for ViewModel {
             data_generation: 0,
             data_total: 0,
             data_offset: 0,
-            data_page_size: 100,
             table: None,
             dialog: None,
             pending_sql: String::new(),

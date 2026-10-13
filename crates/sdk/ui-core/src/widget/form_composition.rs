@@ -6,7 +6,6 @@
 //! dimensions on standard children remain owned by those children.
 use std::collections::HashMap;
 
-use automerge::ObjId;
 use taffy::style_helpers::{auto, fr, length, minmax, percent};
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;

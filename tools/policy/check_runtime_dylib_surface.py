@@ -4,7 +4,7 @@
 Every thin app maps one Rust dylib, ``libruntime_dylib.so``
 (crates/runtime/runtime-dylib), so each crate in it costs every app process
 its load-time relocations and the memory they dirty, and every device
-downloads it. Two rules hold for its dependency graph (TIL-353):
+downloads it. Two rules hold for its dependency graph:
 
 - **No OS internals.** The FUSE filesystem daemon, the sandbox launcher, the
   app host and the install CLI, the peer transport and the other daemons

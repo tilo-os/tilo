@@ -5,13 +5,6 @@
 //! name loaded that secret over D-Bus from inside the broker's runtime: the
 //! blocking call panicked and the session aborted.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 

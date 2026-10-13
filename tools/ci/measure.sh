@@ -33,6 +33,13 @@ for resource in cpu memory io; do
   pressure_before+=("$(read_cpu_metric "$resource.pressure")")
 done
 
+cache_metrics="$(dirname "${BASH_SOURCE[0]}")/compiler_cache_metrics.py"
+cache_wrapper="${RUSTC_WRAPPER:-}"
+cache_before='{"observed":false,"reason":"disabled"}'
+if [ "${cache_wrapper##*/}" = sccache ]; then
+  cache_before=$(python3 "$cache_metrics" snapshot 2>/dev/null || printf '{"observed":false}')
+fi
+
 status=0
 # Nested ci-run.sh retains streaming, failure summaries and heartbeat behavior,
 # while this wrapper owns the one resource measurement for the command.
@@ -45,6 +52,18 @@ else
   printf 'wall_seconds=%s\nuser_seconds=unavailable\nsystem_seconds=unavailable\nmax_rss_kib=unavailable\n' \
     "$(( $(date +%s) - start ))" > "$timing"
 fi
+
+cache_delta='{"observed":false,"reason":"disabled"}'
+if [ "${cache_wrapper##*/}" = sccache ]; then
+  # A failed first read cannot yield a delta; do not spend another timeout.
+  if [[ "$cache_before" == '{"observed":true,'* ]]; then
+    cache_after=$(python3 "$cache_metrics" snapshot 2>/dev/null || printf '{"observed":false}')
+    cache_delta=$(python3 "$cache_metrics" delta "$cache_before" "$cache_after" 2>/dev/null || printf '{"observed":false,"reason":"unavailable"}')
+  else
+    cache_delta='{"observed":false,"reason":"unavailable"}'
+  fi
+fi
+printf 'compiler_cache=%s\n' "$cache_delta" >> "$timing"
 
 # Record the actual inner job envelope. Pod/QEMU metrics cannot establish
 # Docker's quota or allowed CPU set, and interactive CRI exec may be unavailable.

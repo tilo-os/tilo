@@ -2901,10 +2901,6 @@ fn reveal_inspector_rect_for_test(app: &mut VideoEditorApp, r: &Regions, rect: R
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario: each former test is a labelled case block with its own fixture"
-)]
 fn resource_and_view_actions_target_exact_entities() {
     // Case `a_chosen_search_hit_brokers_the_exact_timeline_selection`:
     // A chosen search row resolves through the exported resource tree and the
@@ -4506,36 +4502,13 @@ fn dispatch(app: &mut VideoEditorApp, doc: &mut AutoCommit, ev: WindowEvent) {
 }
 
 fn move_to(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
-    dispatch(
-        app,
-        doc,
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        },
-    );
+    dispatch(app, doc, ui::synthetic_input::cursor_moved(x, y));
 }
 fn press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
-    dispatch(
-        app,
-        doc,
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-    );
+    dispatch(app, doc, ui::synthetic_input::mouse_press());
 }
 fn release(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
-    dispatch(
-        app,
-        doc,
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-    );
+    dispatch(app, doc, ui::synthetic_input::mouse_release());
 }
 /// A full click at (x,y): move (sets `last_mouse`, as the live loop does),
 /// then press.
@@ -4547,11 +4520,7 @@ fn right_press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
     dispatch(
         app,
         doc,
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Right,
-        },
+        ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
     );
 }
 fn char_ev(s: &str) -> WindowEvent {
@@ -4623,11 +4592,7 @@ fn shift_press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
     dispatch_mods(
         app,
         doc,
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
+        ui::synthetic_input::mouse_press(),
         ModifiersState::SHIFT,
     );
 }
@@ -4639,16 +4604,7 @@ fn shift_click(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
 }
 
 fn wheel(app: &mut VideoEditorApp, doc: &mut AutoCommit, dx: f32, dy: f32, mods: ModifiersState) {
-    dispatch_mods(
-        app,
-        doc,
-        WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(dx, dy),
-            phase: winit::event::TouchPhase::Moved,
-        },
-        mods,
-    );
+    dispatch_mods(app, doc, ui::synthetic_input::mouse_wheel(dx, dy), mods);
 }
 
 /// Run the app's real `draw` pass. No GPU and no window: the Vello scene is
@@ -9612,10 +9568,6 @@ fn walked_row_rect(l: &InspectorLayout, row: InspectorRow) -> Option<Rect> {
 )]
 fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
     // Case `two_x_text_scales_every_canvas_band_without_collisions`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one end-to-end 2× geometry regression keeps all cross-pane collision assertions together"
-    )]
     {
         // Regression for the first accessibility-scale pass: only the side
         // pane breakpoint used effective width, leaving 2× text painted
@@ -10522,11 +10474,17 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
         // region the link is not supposed to change.
         let body = Rect::new(cr.x0 + 6.0, cr.y0 + 24.0, cr.x1 - 6.0, cr.y1 - 4.0);
 
+        // Compared with a one-step allowance per channel: the GPU rasterizer
+        // has been seen to round an antialiased edge one step differently
+        // between renders on a busy macOS machine, which is not a mark.
+        let visibly_differ = |a: &[u8], b: &[u8], rect: Rect| {
+            let (a, b) = (crop(a, w, rect), crop(b, w, rect));
+            a.len() != b.len() || a.iter().zip(&b).any(|(a, b)| a.abs_diff(*b) > 1)
+        };
         let first = render_pixels(&mut app, w, h, &theme);
         let again = render_pixels(&mut app, w, h, &theme);
-        assert_eq!(
-            crop(&first, w, header),
-            crop(&again, w, header),
+        assert!(
+            !visibly_differ(&first, &again, header),
             "two renders of one state already differ; nothing below this can \
              be attributed to the link",
         );
@@ -10535,14 +10493,12 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
             app.project.clip_mut(id).expect("the clip").link = None;
         }
         let unlinked = render_pixels(&mut app, w, h, &theme);
-        assert_ne!(
-            crop(&first, w, header),
-            crop(&unlinked, w, header),
+        assert!(
+            visibly_differ(&first, &unlinked, header),
             "a linked clip is drawn no differently from an unlinked one",
         );
-        assert_eq!(
-            crop(&first, w, body),
-            crop(&unlinked, w, body),
+        assert!(
+            !visibly_differ(&first, &unlinked, body),
             "the mark belongs in the header, not over the clip's content",
         );
     }

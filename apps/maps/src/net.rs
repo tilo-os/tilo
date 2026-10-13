@@ -707,10 +707,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn text_parsers_extract_clocks_regions_steps_and_place_labels() {
         // Phase `hhmm_extracts_clock`.
         {

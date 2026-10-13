@@ -17,10 +17,6 @@ use crate::model::Artwork;
 use crate::tools::Tools;
 
 /// A layer as its row shows it.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "shown, held still and clipped are independent facts of a layer"
-)]
 #[derive(Clone, Default, PartialEq)]
 struct LayerRow {
     id: String,

@@ -57,26 +57,8 @@ fn add(total: &mut usize, bytes: usize) -> Result<(), Error> {
         .ok_or(Error::Capacity)?;
     Ok(())
 }
-struct Count(usize);
-impl postcard::ser_flavors::Flavor for Count {
-    type Output = usize;
-    fn try_push(&mut self, _: u8) -> postcard::Result<()> {
-        self.try_extend(&[0])
-    }
-    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-        self.0 = self
-            .0
-            .checked_add(bytes.len())
-            .filter(|n| *n <= POLICY_BYTES)
-            .ok_or(postcard::Error::SerializeBufferFull)?;
-        Ok(())
-    }
-    fn finalize(self) -> postcard::Result<usize> {
-        Ok(self.0)
-    }
-}
 fn counted<T: Serialize>(value: &T) -> Result<usize, Error> {
-    postcard::serialize_with_flavor(value, Count(0)).map_err(|_| Error::Capacity)
+    crate::postcard_sink::encoded_len(value, POLICY_BYTES).map_err(|_| Error::Capacity)
 }
 fn encode<T: Serialize>(value: &T, work: &mut Collections) -> Result<Vec<u8>, Error> {
     let length = counted(value)?;
@@ -88,28 +70,6 @@ fn encode<T: Serialize>(value: &T, work: &mut Collections) -> Result<Vec<u8>, Er
         return Err(Error::Capacity);
     }
     Ok(output)
-}
-struct Hash {
-    value: blake3::Hasher,
-    length: usize,
-}
-impl postcard::ser_flavors::Flavor for Hash {
-    type Output = ([u8; 32], usize);
-    fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
-        self.try_extend(&[byte])
-    }
-    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-        self.length = self
-            .length
-            .checked_add(bytes.len())
-            .filter(|n| *n <= POLICY_BYTES)
-            .ok_or(postcard::Error::SerializeBufferFull)?;
-        self.value.update(bytes);
-        Ok(())
-    }
-    fn finalize(self) -> postcard::Result<Self::Output> {
-        Ok((*self.value.finalize().as_bytes(), self.length))
-    }
 }
 trait Decode {
     fn grant(&self, bytes: &[u8]) -> Result<Grant, Error>;
@@ -300,12 +260,12 @@ where
     let expected = counted(&tuple)?;
     let mut value = blake3::Hasher::new();
     value.update(b"tilo-delivery-v3-room-policy-v3\0");
-    let (digest, length) = postcard::serialize_with_flavor(&tuple, Hash { value, length: 0 })
+    let length = crate::postcard_sink::hash_into(&tuple, &mut value, POLICY_BYTES)
         .map_err(|_| Error::Capacity)?;
     if length != expected {
         return Err(Error::Capacity);
     }
-    Ok(digest)
+    Ok(*value.finalize().as_bytes())
 }
 pub(crate) fn legacy<'a, I, J>(
     read: &LegacyRead<'_, AutoCommit>,

@@ -11,9 +11,8 @@
 // dissolve is not a special case: the outgoing clip is simply the layer
 // underneath, and the incoming clip's alpha does the mixing.
 //
-// `cs_present` copies the finished accumulation into the caller's target
-// at a pixel offset (the preview canvas rect). Export skips it and reads
-// the accumulation back directly.
+// The finished accumulation is read back directly; there is no separate
+// present pass.
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 const MAX_EFFECTS: i32 = 8;
@@ -36,7 +35,7 @@ struct Params {
     palette: vec4<f32>,
     // x: source width, y: source height, z: wipe enabled, w: wipe direction
     src: vec4<f32>,
-    // x: wipe progress, y: wipe softness, z/w: present-pass destination offset
+    // x: wipe progress, y: wipe softness, z/w unused
     wipe: vec4<f32>,
     // x: scale x, y: scale y, z: position x, w: position y
     // Position is in frame widths / heights; scale multiplies the
@@ -378,16 +377,4 @@ fn cs_layer(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     textureStore(dst, px, vec4<f32>(mix(base, col, cov), 1.0));
-}
-
-@compute @workgroup_size(8, 8)
-fn cs_present(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let w = u32(p.frame.x);
-    let h = u32(p.frame.y);
-    if (gid.x >= w || gid.y >= h) {
-        return;
-    }
-    let c = textureLoad(prev_tex, vec2<i32>(i32(gid.x), i32(gid.y)), 0);
-    let off = vec2<i32>(i32(p.wipe.z), i32(p.wipe.w));
-    textureStore(dst, vec2<i32>(i32(gid.x), i32(gid.y)) + off, c);
 }

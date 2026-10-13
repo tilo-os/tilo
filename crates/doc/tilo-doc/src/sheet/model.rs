@@ -15,6 +15,7 @@ use crate::sheet::snapshot::{CellType, CellView, SheetView, WorkbookSnapshot};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
+use tilo_automerge::ReadTyped as _;
 use tilo_automerge::read::{map_at, str_at, str_entries};
 
 /// The data written into a cell: its value + type, an optional preserved formula
@@ -113,13 +114,7 @@ fn sheet_obj(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<ObjId> {
 
 fn sheet_order(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<Vec<u8>> {
     let obj = sheet_obj(doc, c, id)?;
-    match doc.get(&obj, SHEET_ORDER) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
+    doc.bytes_at(&obj, SHEET_ORDER)
 }
 
 /// Sheet ids in tab order (by fractional order key, then id as a tiebreak so two
@@ -226,13 +221,7 @@ pub fn preserved_parts(doc: &AutoCommit, c: &SheetContainers) -> Vec<(String, Ve
 }
 
 pub fn preserved_part(doc: &AutoCommit, c: &SheetContainers, name: &str) -> Option<Vec<u8>> {
-    match doc.get(&c.preserved, name) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
+    doc.bytes_at(&c.preserved, name)
 }
 
 pub fn materialize(doc: &AutoCommit, c: &SheetContainers) -> WorkbookSnapshot {

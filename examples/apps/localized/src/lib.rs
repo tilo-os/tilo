@@ -23,7 +23,6 @@ pub const APP_TITLE: &str = "Localized";
 
 pub mod locales;
 
-use locales::keys;
 use ui::prelude::*;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -86,11 +85,11 @@ impl ResourceApp for App {
         let reader = cx
             .input(p.reader.clone())
             .with_id("reader-input")
-            .with_placeholder(keys::LOCALIZED_READER_PLACEHOLDER);
+            .with_placeholder("localized-reader-placeholder");
         let name = cx.value_at(&p.reader);
         let books = cx.value_at(&p.books);
-        let add = cx.button(keys::LOCALIZED_ADD, Shelf::ADD_BOOK.invoke());
-        let remove = cx.button(keys::LOCALIZED_REMOVE, Shelf::REMOVE_BOOK.invoke());
+        let add = cx.button("localized-add", Shelf::ADD_BOOK.invoke());
+        let remove = cx.button("localized-remove", Shelf::REMOVE_BOOK.invoke());
         Box::new(ui::column![
             Text::new("localized-title").with_role(TextRole::Title),
             labeled_field("localized-reader-label", reader),

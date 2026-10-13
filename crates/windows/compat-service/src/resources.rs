@@ -32,8 +32,7 @@ pub struct SystemResourceBroker {
 impl SystemResourceBroker {
     #[must_use]
     pub fn new() -> Self {
-        // SAFETY: `geteuid` has no preconditions and does not mutate memory.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         Self::for_uid(uid)
     }
 

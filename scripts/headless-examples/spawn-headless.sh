@@ -45,6 +45,21 @@
 set -euo pipefail
 
 SOCKET="${1:-${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset; pass a socket path in a private directory}/tilo-session/test-control.sock}"
+# Linux sockaddr_un.sun_path holds 108 bytes including the terminating NUL.
+# Reject an unusable address before provisioning a profile or booting a server.
+python3 - "$SOCKET" <<'EOF'
+import os
+import sys
+
+size = len(os.fsencode(sys.argv[1]))
+if size > 107:
+    print(
+        f"FAIL: control socket path is {size} bytes; Linux Unix sockets allow at most 107. "
+        "Choose a shorter path inside a private runtime directory.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+EOF
 BINARY="${TILO_HEADLESS_BINARY:-$(dirname "$0")/../../target/debug/shell}"
 TIMEOUT="${TILO_HEADLESS_TIMEOUT:-60}"
 

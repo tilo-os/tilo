@@ -502,10 +502,7 @@ impl DraftBodySeed {
 pub struct MessageRow {
     pub id: String,
     pub subject: String,
-    pub folder: Folder,
-    pub read: bool,
     pub starred: bool,
-    pub labels: Vec<String>,
     pub attachments: Vec<AttachmentRow>,
 }
 
@@ -523,10 +520,7 @@ pub(crate) fn message_row(message: &crate::model::Message) -> MessageRow {
     MessageRow {
         id: message.id.to_string(),
         subject: message.subject.clone(),
-        folder: message.folder,
-        read: message.read,
         starred: message.starred,
-        labels: message.labels.clone(),
         attachments: message
             .attachments
             .iter()
