@@ -1137,6 +1137,7 @@ impl PdfApp {
                 },
             );
 
+            self.draw_import_placeholder(scene, base, tr, theme, *origin, i);
             self.draw_form_fields(scene, base, tr, theme, page_num, *origin);
 
             // Raster backend: draw search-hit + selection bands over the page
@@ -1182,6 +1183,43 @@ impl PdfApp {
         // kernel so they match the other document apps (they appear only when
         // the content overflows the viewport on that axis).
         self.viewport.draw_scrollbars(scene, base, theme);
+    }
+
+    /// Cover a page-shaped imported occurrence whose verified bytes are not
+    /// here yet, so a page still waiting on a collaborator cannot be mistaken
+    /// for a blank page of the document.
+    fn draw_import_placeholder(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        origin: Point,
+        page_index: usize,
+    ) {
+        let Some(Some(imported)) = self.resource_page_imports.get(page_index) else {
+            return;
+        };
+        let label = match self.content.state(&imported.hash) {
+            ContentState::Resolved => return,
+            ContentState::Pending => "Imported page is loading…",
+            ContentState::Unavailable => "Imported page is unavailable",
+        };
+        let page_rect = Rect::new(
+            origin.x,
+            origin.y,
+            origin.x + self.pw() * self.zoom(),
+            origin.y + self.ph() * self.zoom(),
+        );
+        EmptyState::paint(
+            &mut PaintCtx::new(scene, base, tr, theme),
+            page_rect,
+            &EmptyStateContent {
+                icon: Some(Icon::Image),
+                ..EmptyStateContent::new(label)
+            },
+            Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        );
     }
 
     /// Form widgets on a page: a quiet outline so fields are discoverable,
