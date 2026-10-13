@@ -24,14 +24,15 @@ class BuildOrder(unittest.TestCase):
             run.assert_not_called()
             self.assertFalse((Path(scratch) / 'output').exists())
 
-    def exercise(self, reject=False):
+    def exercise(self, reject=False, build_only=False):
         with tempfile.TemporaryDirectory() as scratch:
             output = Path(scratch) / 'output'
             calls = []
             image = 'sha256:' + 'a' * 64
             env = dict(TILO_VERSION='0.1.0', TILO_CAPTURE_RUNTIME_IDENTITY='/operator/runtime',
                        TILO_CAPTURE_SERVICE_IDENTITY='/operator/service',
-                       TILO_CAPTURE_QUALIFIER_BASE=image, TILO_CAPTURE_SOURCE_ASSETS='/operator/assets')
+                       TILO_CAPTURE_QUALIFIER_BASE=image, TILO_CAPTURE_SOURCE_ASSETS='/operator/assets',
+                       TILO_CAPTURE_SIGNING_PURPOSE='developer-isolated')
 
             def assemble(context):
                 context.mkdir()
@@ -71,8 +72,17 @@ class BuildOrder(unittest.TestCase):
                         pipeline.prepare(output, 'host-media-writer', env)
                     self.assertFalse((output / 'environment.json').exists())
                     return
-                result = pipeline.prepare(output, 'host-media-writer', env)
+                result = pipeline.prepare(output, 'host-media-writer', env, build_only=build_only)
             commands = [row[0] for row in calls]
+            if build_only:
+                self.assertFalse(any(command[:2] == ['podman', 'build'] for command in commands))
+                self.assertFalse(any('qualify-capture-release.py' in command[1] for command in commands))
+                self.assertNotIn('TILO_CAPTURE_QUALIFIER_IMAGE', result)
+                self.assertEqual(result['TILO_CAPTURE_SIGNING_PURPOSE'], 'developer-isolated')
+                self.assertEqual(json.loads((output / 'build-inputs.json').read_text()), result)
+                self.assertFalse((output / 'environment.json').exists())
+                self.assertEqual(commands[-1][1], 'cohort')
+                return
             worker = next(i for i, cmd in enumerate(commands) if '--build-only' in cmd)
             assembly = next(i for i, cmd in enumerate(commands) if 'assemble' in cmd)
             host = next(i for i, cmd in enumerate(commands) if '--bin' in cmd and cmd[-1] == 'imager/host-media-writer')
@@ -92,6 +102,9 @@ class BuildOrder(unittest.TestCase):
 
     def test_actual_producers_precede_host_and_mandatory_full_gate(self):
         self.exercise()
+
+    def test_build_only_exposes_inputs_without_claiming_qualification(self):
+        self.exercise(build_only=True)
 
     def test_failed_full_gate_exposes_no_packaging_environment(self):
         self.exercise(reject=True)
@@ -156,11 +169,12 @@ class MediumLayer(unittest.TestCase):
         settings = {name: '/measured/' + name for name in (
             'TILO_CAPTURE_PINS', 'TILO_CAPTURE_SIDECAR', 'TILO_CAPTURE_QUALIFICATION_COHORT',
             'TILO_CAPTURE_QUALIFIER_IMAGE', 'TILO_CAPTURE_SOURCE_ASSETS', 'TILO_CAPTURE_BROWSER_RELEASE')}
-        settings['TILO_CAPTURE_SIGNING_PURPOSE'] = 'developer-qualification'
-        with patch.object(medium.release, 'run') as run:
-            with self.assertRaisesRegex(ValueError, 'confined'):
-                medium.layer(settings, 'sha256:' + 'b' * 64, Path('/unallocated/iid'), {})
-            run.assert_not_called()
+        for purpose in ('developer-qualification', 'developer-isolated'):
+            with self.subTest(purpose=purpose), patch.object(medium.release, 'run') as run:
+                settings['TILO_CAPTURE_SIGNING_PURPOSE'] = purpose
+                with self.assertRaisesRegex(ValueError, 'confined'):
+                    medium.layer(settings, 'sha256:' + 'b' * 64, Path('/unallocated/iid'), {})
+                run.assert_not_called()
 
 
 class NativePlatformArchive(unittest.TestCase):

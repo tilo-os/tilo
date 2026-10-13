@@ -62,7 +62,7 @@ def qualification_image(output, env, cohort):
     return image
 
 
-def prepare(output, feature, env):
+def prepare(output, feature, env, build_only=False):
     # Refuse missing operator authority before allocating a build or touching Cargo.
     for name in ('TILO_VERSION', 'TILO_CAPTURE_RUNTIME_IDENTITY',
                  'TILO_CAPTURE_SERVICE_IDENTITY', 'TILO_CAPTURE_QUALIFIER_BASE',
@@ -103,10 +103,22 @@ def prepare(output, feature, env):
     cohort = output / 'cohort.json'
     run([recorder, 'cohort', '--evidence', output / 'evidence', '--output', cohort], env)
     env['TILO_CAPTURE_QUALIFICATION_COHORT'] = str(cohort)
-    image = qualification_image(output, env, cohort)
-    env['TILO_CAPTURE_QUALIFIER_IMAGE'] = image
     env['TILO_CAPTURE_SIGNING_PURPOSE'] = env.get('TILO_CAPTURE_SIGNING_PURPOSE', 'operator-provided')
     env['TILO_CAPTURE_BROWSER_RELEASE'] = str(output / 'browser-release')
+    if build_only:
+        # A dependency container may compile as namespace UID0. Admission and
+        # native execution must subsequently run as the actual rootless operator.
+        # This file records inputs only, never a qualification or readiness claim.
+        names = ('TILO_CAPTURE_PINS', 'TILO_CAPTURE_SIDECAR',
+                 'TILO_CAPTURE_QUALIFICATION_COHORT', 'TILO_CAPTURE_SOURCE_ASSETS',
+                 'TILO_REQUIRE_CAPTURE', 'TILO_CAPTURE_BUILD_EVIDENCE',
+                 'TILO_CAPTURE_SIGNING_PURPOSE', 'TILO_CAPTURE_BROWSER_RELEASE',
+                 'TILO_CAPTURE_QUALIFIER_BASE')
+        settings = {name: env[name] for name in names}
+        (output / 'build-inputs.json').write_text(json.dumps(settings, sort_keys=True) + '\n')
+        return settings
+    image = qualification_image(output, env, cohort)
+    env['TILO_CAPTURE_QUALIFIER_IMAGE'] = image
     run(['python3', HERE / 'qualify-capture-release.py', '--host', ROOT / 'target/release/imager',
          '--pins', env['TILO_CAPTURE_PINS'], '--sidecar', env['TILO_CAPTURE_SIDECAR'],
          '--arch', os.uname().machine, '--cohort', cohort, '--image', image,
@@ -125,8 +137,10 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--feature', choices=('host-media-writer', 'flatpak-media-writer'), required=True)
     parser.add_argument('--github-env', type=Path)
+    parser.add_argument('--build-only', action='store_true',
+                        help='compile and sign inputs only; native qualification remains required')
     args = parser.parse_args()
-    settings = prepare(args.output, args.feature, dict(os.environ))
+    settings = prepare(args.output, args.feature, dict(os.environ), args.build_only)
     if args.github_env:
         with args.github_env.open('a') as destination:
             for name, value in settings.items():

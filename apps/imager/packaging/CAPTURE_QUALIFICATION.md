@@ -7,8 +7,10 @@ release. Candidate compilation and signature admission remain separate.
 
 The operator supplies `--cohort` (`TILO_CAPTURE_QUALIFICATION_COHORT`) and an
 actual immutable `--image sha256:…` (`TILO_CAPTURE_QUALIFIER_IMAGE`). The image must
-exist in rootful Podman, match the architecture and provide real loop devices,
-Btrfs, fanotify, Python, SQLite, tar and an ordinary non-root NSS account. The
+exist in the operator's rootless Podman store, match the architecture and provide
+Btrfs, fanotify tooling, Python, SQLite, tar and an ordinary non-root NSS account.
+Real kernel loop devices and privileged native operations belong to a separate
+owned host namespace, never rootful Podman. The
 qualifier never downloads an image, builds with Cargo, signs artifacts, changes
 caller Home or starts a graphical desktop.
 
@@ -56,12 +58,31 @@ and again after, rather than synthesizing them from this documentation. A new
 qualifier/source change requires a fresh producer graph (a genuine compiler
 cache hit is fine). The script does not mint compiler receipts.
 
+## Split compilation and native execution
+
+`prepare-capture-release.py --build-only` compiles and signs the complete fresh
+cohort and Browser/CEF graph, but does not construct the receiving image or run
+the gate. It emits only `build-inputs.json`, not a qualification receipt or the
+packaging environment. This allows compilation in a dependency container whose
+namespace UID0 maps to the rootless operator. Image admission and the canonical
+full gate must subsequently run as that actual non-root operator; native kernel
+work remains in the separately owned privileged namespaces below.
+
+Disposable keys may live in ignored `target/` storage with mode0600 and explicit
+`developer-isolated` signing provenance. They do not authorize production
+publishers; their receipts retain `publication_qualified: false`. Existing
+compiler receipts cannot be restamped after source changes.
+
 ## Execution and resources
 
 The script signature-admits the candidate, verifies immutable image identity,
-and stages only public artifacts into an owned directory. Inside each new
-rootful privileged/no-network container, the native actor copies them to
-root-owned `/owned/candidate`, enters private mount propagation, and uses the
+and stages only public artifacts into an owned directory. The image driver exports and retires a stopped rootless filesystem container,
+then the authorized operator creates fresh mount/PID/network namespaces. It
+pivots into the exported filesystem, retires the old root, and retains a held
+initial-PID-namespace witness. This preserves the real CEF sandbox, rather than
+using a chroot or disabling sandboxing. Inside that owned native root, the actor
+copies the inputs to root-owned `/owned/candidate`, enters private mount
+propagation, and uses the
 actual `tools/ci/native-stores.sh` to create disposable Btrfs stores. `/owned`
 allows the genuine non-root reviewer's traversal; private state remains0700.
 The opt-in native-store helper uses atomic `LOOP_CONFIGURE` with AUTOCLEAR
@@ -69,15 +90,19 @@ from the first attachment and holds its descriptor across formatting and mountin
 A root-owned0600 journal records each backing device/inode before attachment in
 a private evidence bind, surviving forced container teardown. Normal success
 requires strict store unmount/detach and no remaining owned children. After the
-case container is confirmed absent, a separate newly owned rootful no-network
-observer reads actual kernel loop status and refuses any association to either
+case namespace is retired, a separate newly owned privileged no-network
+observer namespace reads actual kernel loop status and refuses any association to either
 recorded backing device/inode. It also must retire; unavailable observation or
 a missing/incomplete journal cannot yield qualification. Default native-store
 callers retain their existing behavior; this safety mode is explicit.
 
 Both outer and inner command collectors bound output/deadlines and retain child
 PID custody with WNOWAIT until process-group retirement. Diagnostic logs stay
-0600. Original candidates, source inputs and signatures are rechecked after
+0600. Public archives and every inventory leaf are hash-verified before admitting
+mount coordinates and verified again while staging. Besides the existing input
+namespaces, only descendants of `/srv/rcargo/tasks/` are allowed as durable
+builder coordinates; sibling prefixes and the source/build stores are refused.
+Original candidates, source inputs and signatures are rechecked after
 execution. Failed or uncertain cases never issue a successful receipt.
 
 `--source-backend-only` runs the existing genuine signed export/import and
