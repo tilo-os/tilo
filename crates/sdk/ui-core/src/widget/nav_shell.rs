@@ -56,7 +56,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -2488,10 +2488,9 @@ impl NavShell {
     }
 
     fn take_requests(&mut self) -> bool {
-        let mut acted = false;
-        if self.requests.toggle.replace(false) {
+        let mut acted = self.requests.toggle.replace(false);
+        if acted {
             self.toggle_sidebar();
-            acted = true;
         }
         if self.requests.back.replace(false) {
             acted |= self.back();
@@ -3347,10 +3346,7 @@ impl Widget for NavShell {
         self.structure_dirty = false;
         self.invalidation.invalidate();
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &nodes, node_map, self)

@@ -766,8 +766,8 @@ impl<R: Resource> Widget for Each<R> {
         let width = taffy
             .layout(node)
             .map_or(0.0, |layout| f64::from(layout.size.width));
-        let mut measured = false;
-        if (width - self.width).abs() > 0.5 {
+        let mut measured = (width - self.width).abs() > 0.5;
+        if measured {
             // Heights measured at another width no longer hold.
             self.width = width;
             for row in &mut self.rows {
@@ -776,7 +776,6 @@ impl<R: Resource> Widget for Each<R> {
                 }
             }
             self.recount();
-            measured = true;
         }
         // The first row whose height moved: the rows before it stay put.
         let mut moved = None;

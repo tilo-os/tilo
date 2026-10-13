@@ -6,11 +6,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -148,10 +144,6 @@ renaming either away from it would hurt readability, not help it"
     reason = "state borrows out of guard and is used through the end of the test, \
 including the compliance-record recheck after compaction, so the guard \
 must stay held for the whole function"
-)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn signed_and_mls_ops_validate_replay_and_redact_without_decryption() {
     // Phase `signed_ops_accept_valid_reject_invalid_and_replay`.

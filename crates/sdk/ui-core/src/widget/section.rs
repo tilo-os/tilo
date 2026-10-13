@@ -428,9 +428,7 @@ impl Widget for CountPill {
         }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -459,10 +457,6 @@ impl Widget for CountPill {
         "SectionCount"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn accessibility(&self) -> Option<AccessNode> {
         Some(AccessNode::new(Role::StaticText).with_value(self.label.clone()))
     }
@@ -484,10 +478,7 @@ impl Widget for Chevron {
         let side = theme.tokens.metrics.icon_sm;
         let style = Style {
             flex_shrink: 0.0,
-            size: Size {
-                width: length(side),
-                height: length(side),
-            },
+            size: Size::from_lengths(side, side),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -1428,9 +1419,7 @@ impl Widget for StatusLine {
         }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1466,10 +1455,6 @@ impl Widget for StatusLine {
 
     fn name(&self) -> &'static str {
         "StatusLine"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
@@ -1644,9 +1629,7 @@ impl Widget for ObjectHeader {
         }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1716,10 +1699,6 @@ impl Widget for ObjectHeader {
 
     fn name(&self) -> &'static str {
         "ObjectHeader"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<AccessNode> {

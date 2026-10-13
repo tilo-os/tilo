@@ -7,7 +7,7 @@
 
 use crate::widget::ModelPath;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -20,7 +20,7 @@ use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
+    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,11 +75,8 @@ pub struct FunnelChart {
     title: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
-    hovered: Option<usize>,
+    inspection: ChartInspection<usize>,
     activated: Option<String>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
 }
 
 impl FunnelChart {
@@ -90,11 +87,8 @@ impl FunnelChart {
             title: String::new(),
             height: 380.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
+            inspection: ChartInspection::default(),
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
         }
     }
     #[must_use]
@@ -121,21 +115,20 @@ impl FunnelChart {
         self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.hovered = self.stages.iter().position(|stage| stage.id == id);
-        self.keyboard_inspection = self.hovered.is_some();
+        self.inspection.hovered = self.stages.iter().position(|stage| stage.id == id);
+        self.inspection.keyboard = self.inspection.hovered.is_some();
         if let Some(bounds) = self
             .geometry()
             .into_iter()
-            .find(|stage| Some(stage.index) == self.hovered)
+            .find(|stage| Some(stage.index) == self.inspection.hovered)
             .map(|stage| stage.bounds)
         {
-            self.pointer = bounds.center();
+            self.inspection.pointer = bounds.center();
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
     fn content_rect(&self) -> Rect {
         Rect::new(
@@ -336,25 +329,23 @@ impl FunnelChart {
 }
 
 impl InteractiveChart for FunnelChart {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = usize;
+    fn inspection(&mut self) -> &mut ChartInspection<usize> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
-        self.hovered = self
+        self.inspection.hovered = self
             .geometry()
             .into_iter()
-            .find(|stage| stage.bounds.contains(self.pointer))
+            .find(|stage| stage.bounds.contains(self.inspection.pointer))
             .map(|stage| stage.index);
     }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
-    }
     fn activate_hovered(&mut self) -> bool {
-        let Some(stage) = self.hovered.and_then(|index| self.stages.get(index)) else {
+        let Some(stage) = self
+            .inspection
+            .hovered
+            .and_then(|index| self.stages.get(index))
+        else {
             return false;
         };
         self.activated = Some(stage.id.clone());
@@ -362,26 +353,22 @@ impl InteractiveChart for FunnelChart {
     }
     fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
         let candidates = self.valid();
-        self.hovered = moved_item(self.hovered, &candidates, action);
+        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
         if let Some(bounds) = self
             .geometry()
             .into_iter()
-            .find(|stage| Some(stage.index) == self.hovered)
+            .find(|stage| Some(stage.index) == self.inspection.hovered)
             .map(|stage| stage.bounds)
         {
-            self.pointer = bounds.center();
+            self.inspection.pointer = bounds.center();
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
 impl Widget for FunnelChart {
     crate::widget::chart_navigation::chart_leaf!();
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the retained draw pass keeps stages, labels, conversions, and tooltip painting together"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -390,14 +377,14 @@ impl Widget for FunnelChart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.keyboard_inspection
+        if self.inspection.keyboard
             && let Some(bounds) = self
                 .geometry()
                 .into_iter()
-                .find(|stage| Some(stage.index) == self.hovered)
+                .find(|stage| Some(stage.index) == self.inspection.hovered)
                 .map(|stage| stage.bounds)
         {
-            self.pointer = bounds.center();
+            self.inspection.pointer = bounds.center();
         }
         if !self.title.is_empty() {
             tr.draw_style(
@@ -417,7 +404,7 @@ impl Widget for FunnelChart {
                 .color
                 .unwrap_or_else(|| Self::palette(theme, geometry.index));
             scene.fill(Fill::NonZero, transform, color, None, &geometry.path);
-            if self.hovered == Some(geometry.index) {
+            if self.inspection.hovered == Some(geometry.index) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -440,7 +427,7 @@ impl Widget for FunnelChart {
                 );
             }
         }
-        if let Some(index) = self.hovered.filter(|_| self.style.tooltip)
+        if let Some(index) = self.inspection.hovered.filter(|_| self.style.tooltip)
             && let Some(stage) = self.stages.get(index)
         {
             let detail = if stage.detail.is_empty() {
@@ -453,7 +440,7 @@ impl Widget for FunnelChart {
                 transform,
                 tr,
                 theme,
-                self.pointer,
+                self.inspection.pointer,
                 self.rect,
                 140.0,
                 (&stage.label, &detail),

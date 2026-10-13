@@ -2816,15 +2816,16 @@ impl App {
         std::fs::write(&facts_file, &facts_text)
             .map_err(CliError::io(format!("write {}", facts_file.display())))?;
         let mut next = vec![format!("tilo-vm vm upgrade --image {}", layout.display())];
-        let mut disk_path = None;
-        if disk {
+        let disk_path = if disk {
             let dest = move_built_disk(&scratch, &out)?;
             next.insert(
                 0,
                 format!("tilo-vm vm create <name> --image {}", dest.display()),
             );
-            disk_path = Some(dest.display().to_string());
-        }
+            Some(dest.display().to_string())
+        } else {
+            None
+        };
         let data = json!({
             "image": image,
             "digest": digest,

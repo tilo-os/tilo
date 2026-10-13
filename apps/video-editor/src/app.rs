@@ -17,7 +17,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -5110,7 +5110,7 @@ impl VideoEditorApp {
     /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
         self.import_notice = Some(Notice::ok("Choose media to import…"));
-        if crate::files::native_paths() {
+        if tilo_files::available(tilo_files::Feature::NativePaths) {
             self.import_rx = Some(portal::request_import());
         } else {
             self.import_contents_rx = Some(portal::request_import_contents());
@@ -6464,10 +6464,7 @@ impl Widget for VideoEditorApp {
         self.text_scale = f64::from(theme.text_scale);
         taffy.widget_leaf(
             Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             node_map,

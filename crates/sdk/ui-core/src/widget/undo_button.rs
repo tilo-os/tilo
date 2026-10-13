@@ -200,10 +200,6 @@ impl Widget for UndoButton {
         } else {
             Dimension::auto()
         };
-        #[allow(
-            clippy::expect_used,
-            reason = "a fixed-size leaf style is valid and Widget cannot return a layout error"
-        )]
         let style = Style {
             flex_shrink: 0.0,
             size: Size {

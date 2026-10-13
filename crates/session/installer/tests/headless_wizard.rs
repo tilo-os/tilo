@@ -6,10 +6,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    clippy::arithmetic_side_effects,
     clippy::too_many_lines,
     reason = "in a test these are the assertion, not a hazard; the wizard is walked in one ordered test"
 )]

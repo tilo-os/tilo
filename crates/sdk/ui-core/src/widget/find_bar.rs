@@ -900,9 +900,7 @@ impl Widget for FindBar {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1005,10 +1003,6 @@ impl Widget for FindBar {
 
     fn name(&self) -> &'static str {
         "FindBar"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -1318,10 +1312,7 @@ impl Widget for FindScope {
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
+                size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
                 flex_grow: 1.0,
                 ..Default::default()
             },

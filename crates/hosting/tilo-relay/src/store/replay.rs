@@ -1284,7 +1284,7 @@ impl WorkReclaimer {
     pub(crate) fn step(&mut self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
         let limit = limit.checked()?;
         if let Some(current) = &mut self.current {
-            if let Step::Done(()) = current.step(limit)? {
+            if current.step(limit)? == Step::Done(()) {
                 self.current = None;
             }
             return Ok(Step::More);

@@ -2958,10 +2958,7 @@ mod tests {
             let parent = taffy
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: length(300.0_f32),
-                            height: length(600.0_f32),
-                        },
+                        size: Size::from_lengths(300.0_f32, 600.0_f32),
                         ..Default::default()
                     },
                     &[node],

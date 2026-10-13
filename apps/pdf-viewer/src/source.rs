@@ -2511,7 +2511,7 @@ fn shared_worker_queue() -> Arc<WorkerQueue> {
             state: Mutex::new(QueueState::default()),
             ready: Condvar::new(),
         });
-        if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
+        if !ui::rt::available(ui::rt::Feature::Threads) {
             // A browser page: the UI thread serves the queue between frames.
             *INLINE_WORKER
                 .lock()

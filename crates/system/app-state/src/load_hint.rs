@@ -124,11 +124,6 @@ fn leading_document_chunk(bytes: &[u8]) -> Option<&[u8]> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::arithmetic_side_effects,
-        reason = "in a test these are the assertion, not a hazard"
-    )]
 
     use super::*;
     use automerge::transaction::Transactable;

@@ -9,7 +9,7 @@ use crate::shell::state::WorkspaceTree;
 use std::cell::RefCell;
 use std::collections::HashMap as StdHashMap;
 use std::rc::Rc;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use tilo_desktop::i18n::t as desktop_text;
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
@@ -48,10 +48,7 @@ impl Widget for RecordingContent {
         node_map: &mut StdHashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -229,10 +226,7 @@ pub(super) fn lay_out_host_with_theme(
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(ui::num::f32_of_f64(vw)),
-                    height: Dimension::length(ui::num::f32_of_f64(vh)),
-                },
+                size: Size::from_lengths(ui::num::f32_of_f64(vw), ui::num::f32_of_f64(vh)),
                 ..Default::default()
             },
             &[child],
@@ -2018,7 +2012,6 @@ fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f
 )]
 fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
     #[allow(
-        clippy::arithmetic_side_effects,
         clippy::unchecked_time_subtraction,
         reason = "the deterministic notification-age fixture subtracts known earlier test instants"
     )]
@@ -2306,10 +2299,6 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
 /// the normal event tests above.
 #[test]
 #[ignore = "visual review: needs an offscreen wgpu adapter and writes PNGs"]
-#[allow(
-    clippy::expect_used,
-    reason = "the opt-in visual harness must fail loudly for a missing GPU or output directory"
-)]
 fn render_notification_history_accessibility_matrix_at_1x() {
     use std::path::PathBuf;
     use ui::offscreen::OffscreenRenderer;
@@ -2389,10 +2378,6 @@ fn render_notification_history_accessibility_matrix_at_1x() {
 /// ground, so a row is a surface on the panel on both presets (HIG
 /// §9.5); the same holds for a notification-history row.
 #[test]
-#[allow(
-    clippy::expect_used,
-    reason = "a review fixture must fail loudly for a missing GPU or output directory"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "an end-to-end test scenario that reads top to bottom"

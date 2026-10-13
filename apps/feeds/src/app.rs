@@ -2210,10 +2210,7 @@ impl ui::widget::Decorator for FeedsApp {
             let root = ui::widget::TaffyTreeExt::parent_node(
                 taffy,
                 taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
+                    size: taffy::Size::from_percent(1.0, 1.0),
                     ..Default::default()
                 },
                 &children,

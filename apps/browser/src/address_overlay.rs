@@ -22,7 +22,7 @@
 //! the toolkit's `Dropdown` uses. `draw` itself is a no-op.
 
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -353,10 +353,7 @@ impl Widget for AddressSuggestions {
         // returns a bare `NodeId` across every implementor, so there is
         // nowhere to surface a theoretical error.
         let style = Style {
-            size: Size {
-                width: Dimension::length(self.width),
-                height: Dimension::length(self.panel_height() as f32),
-            },
+            size: Size::from_lengths(self.width, self.panel_height() as f32),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -616,10 +613,6 @@ mod tests {
 
     /// Rendering, sizing and accessibility of suggestion rows.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn suggestion_rows_render_and_expose_stable_accessible_targets() {
         // Phase `accessibility_target_uses_the_stable_row_identity`.
         {
@@ -715,10 +708,6 @@ mod tests {
 
     /// Keyboard, Escape and pointer input on the overlay.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn keyboard_escape_and_mouse_choose_or_dismiss_suggestions() {
         // Phase `keyboard_moves_selection_and_enter_chooses`.
         {

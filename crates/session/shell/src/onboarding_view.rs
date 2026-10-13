@@ -3202,14 +3202,14 @@ impl Widget for OnboardingView {
 
         // Choosing the nearby flow is the explicit request to pair, so the
         // screen opens with pairing already under way.
-        let mut start_nearby = false;
-        if self.pressed.take(KEY_CHOOSE_NEARBY) && self.flow.screen() == Screen::Existing {
+        let mut start_nearby =
+            self.pressed.take(KEY_CHOOSE_NEARBY) && self.flow.screen() == Screen::Existing;
+        if start_nearby {
             self.error = None;
             self.nearby_failure = None;
             self.nearby_status = None;
             self.nearby_code = None;
             self.flow.choose_nearby();
-            start_nearby = true;
         }
 
         if self.pressed.take(KEY_CONNECT_BROWSE)
@@ -3723,10 +3723,7 @@ impl Widget for OnboardingView {
             flex_direction: taffy::FlexDirection::Column,
             justify_content: Some(taffy::JustifyContent::Center),
             align_items: Some(taffy::AlignItems::Center),
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
                 left: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
                 right: taffy::LengthPercentage::length(VIEWPORT_GUTTER),

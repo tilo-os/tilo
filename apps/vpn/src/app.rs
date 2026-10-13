@@ -833,12 +833,13 @@ impl VpnApp {
                         cx.submit(added);
                     }
                 }
-                let mut saved = Ok(());
-                if !details.network_manager_uuid.is_empty() {
+                let saved = if details.network_manager_uuid.is_empty() {
+                    Ok(())
+                } else {
                     self.local_credentials.insert(id);
                     self.local_details.insert(id, details);
-                    saved = self.save_device();
-                }
+                    self.save_device()
+                };
                 self.select(id);
                 match saved {
                     Ok(()) => {

@@ -1111,10 +1111,6 @@ impl Session {
 
     /// Handle one completed call. `failed` records that an `invoke` of this
     /// turn did not succeed; the rest of the turn's invokes are then not run.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one completed call is checked, resolved, performed and recorded in a single auditable sequence"
-    )]
     fn handle_call(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -2844,10 +2840,6 @@ mod tests {
         execution_fixture(title, world, turns, pace, None)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one fixture wires the scripted model, the fake broker peer and the real Session"
-    )]
     fn execution_fixture(
         title: &str,
         world: World,

@@ -442,7 +442,6 @@ fn engine_fixture(name: &str) -> std::path::PathBuf {
 }
 
 #[serial_test::serial(pdfium)]
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn exports_are_deterministic_and_carry_page_operations() {
     eprintln!("phase export_is_deterministic_and_reloads_with_the_records");

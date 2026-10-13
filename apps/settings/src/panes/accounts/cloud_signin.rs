@@ -494,8 +494,7 @@ impl SignInFlow {
         let Stage::Waiting { urls, launch, .. } = &mut self.stage else {
             return (None, false);
         };
-        let mut changed = false;
-        if let Some(receiver) = urls
+        let changed = if let Some(receiver) = urls
             && let Ok(url) = receiver.try_recv()
         {
             *launch = Some(self.opener.open(&url));
@@ -505,8 +504,10 @@ impl SignInFlow {
                  updates when you are done."
                     .into(),
             );
-            changed = true;
-        }
+            true
+        } else {
+            false
+        };
         let mut launch_failed = None;
         if let Some(channel) = launch {
             match channel.try_recv() {

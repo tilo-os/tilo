@@ -2901,10 +2901,6 @@ fn reveal_inspector_rect_for_test(app: &mut VideoEditorApp, r: &Regions, rect: R
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario: each former test is a labelled case block with its own fixture"
-)]
 fn resource_and_view_actions_target_exact_entities() {
     // Case `a_chosen_search_hit_brokers_the_exact_timeline_selection`:
     // A chosen search row resolves through the exported resource tree and the
@@ -9612,10 +9608,6 @@ fn walked_row_rect(l: &InspectorLayout, row: InspectorRow) -> Option<Rect> {
 )]
 fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
     // Case `two_x_text_scales_every_canvas_band_without_collisions`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one end-to-end 2× geometry regression keeps all cross-pane collision assertions together"
-    )]
     {
         // Regression for the first accessibility-scale pass: only the side
         // pane breakpoint used effective width, leaving 2× text painted
@@ -10522,11 +10514,17 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
         // region the link is not supposed to change.
         let body = Rect::new(cr.x0 + 6.0, cr.y0 + 24.0, cr.x1 - 6.0, cr.y1 - 4.0);
 
+        // Compared with a one-step allowance per channel: the GPU rasterizer
+        // has been seen to round an antialiased edge one step differently
+        // between renders on a busy macOS machine, which is not a mark.
+        let visibly_differ = |a: &[u8], b: &[u8], rect: Rect| {
+            let (a, b) = (crop(a, w, rect), crop(b, w, rect));
+            a.len() != b.len() || a.iter().zip(&b).any(|(a, b)| a.abs_diff(*b) > 1)
+        };
         let first = render_pixels(&mut app, w, h, &theme);
         let again = render_pixels(&mut app, w, h, &theme);
-        assert_eq!(
-            crop(&first, w, header),
-            crop(&again, w, header),
+        assert!(
+            !visibly_differ(&first, &again, header),
             "two renders of one state already differ; nothing below this can \
              be attributed to the link",
         );
@@ -10535,14 +10533,12 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
             app.project.clip_mut(id).expect("the clip").link = None;
         }
         let unlinked = render_pixels(&mut app, w, h, &theme);
-        assert_ne!(
-            crop(&first, w, header),
-            crop(&unlinked, w, header),
+        assert!(
+            visibly_differ(&first, &unlinked, header),
             "a linked clip is drawn no differently from an unlinked one",
         );
-        assert_eq!(
-            crop(&first, w, body),
-            crop(&unlinked, w, body),
+        assert!(
+            !visibly_differ(&first, &unlinked, body),
             "the mark belongs in the header, not over the clip's content",
         );
     }

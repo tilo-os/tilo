@@ -773,11 +773,9 @@ fn draw_template(
                 );
                 x += dot + gap * 2.0;
             }
-            let mut right = x1;
-            if let Some(date) = date {
-                right =
-                    trailing(scene, transform, tr, date, ink.tertiary, x1, y, &meta) - gap * 2.0;
-            }
+            let right = date.as_deref().map_or(x1, |date| {
+                trailing(scene, transform, tr, date, ink.tertiary, x1, y, &meta) - gap * 2.0
+            });
             y += line(
                 scene,
                 transform,
@@ -856,11 +854,9 @@ fn draw_template(
             let lines =
                 height(&body, tr) + byline.as_ref().map_or(0.0, |_| gap + height(&caption, tr));
             let mut y = rect.y0 + ((rect.height() - lines) / 2.0).max(0.0);
-            let mut right = x1;
-            if let Some(duration) = duration {
-                right = trailing(scene, transform, tr, duration, ink.tertiary, x1, y, &meta)
-                    - gap * 2.0;
-            }
+            let right = duration.as_deref().map_or(x1, |duration| {
+                trailing(scene, transform, tr, duration, ink.tertiary, x1, y, &meta) - gap * 2.0
+            });
             y += line(
                 scene,
                 transform,
@@ -976,9 +972,7 @@ impl Widget for SearchResultsView {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1128,10 +1122,6 @@ impl Widget for SearchResultsView {
 
     fn test_id(&self) -> Option<&str> {
         self.test_id.as_deref()
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn perform_semantic_action(

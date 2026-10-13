@@ -444,7 +444,7 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(fixture.viewport(), (3840.0, 2160.0));
     assert_eq!(
         fixture.host().fixture_provider_ids(),
-        vec!["actions", "records"]
+        vec!["actions", "records", "file-picker"]
     );
 
     let chrome = fixture.chrome();

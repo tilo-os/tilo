@@ -685,10 +685,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn dll_repairs_never_follow_links_or_redirected_directories() {
         // Phase `changed_dll_is_repaired_even_with_valid_generation_hint`.
         {

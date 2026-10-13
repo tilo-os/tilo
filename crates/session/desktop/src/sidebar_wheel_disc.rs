@@ -1124,7 +1124,7 @@ impl Widget for SidebarWheelDisc {
                 .clamp(0.0, 1.0 / 30.0)
         });
         self.last_update_at = Some(now);
-        let mut keep = self.advance(dt);
+        let keep = self.advance(dt);
         // Clears the sub-detent residual `wheel_accumulator` once the
         // user pauses, so a partial scroll doesn't silently bias the
         // next gesture into a switch the user thought they'd cancelled.
@@ -1145,7 +1145,7 @@ impl Widget for SidebarWheelDisc {
             }
             // Even sub-threshold movement holds the redraw loop awake
             // until the idle timer clears the accumulator.
-            keep = true;
+            return true;
         }
         keep
     }

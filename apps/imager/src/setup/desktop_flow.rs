@@ -642,10 +642,6 @@ mod tests {
 
     /// Readiness, recheck, download, progress and authorization outcomes.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn desktop_install_rechecks_downloads_and_reports_distinct_outcomes() {
         // Phase `readiness_publishes_exact_host_version_and_already_installed_status`.
         {

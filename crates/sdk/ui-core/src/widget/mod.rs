@@ -165,6 +165,26 @@ pub fn layout_rect(
     placed(&taffy.layout(node).copied().unwrap_or_default(), origin)
 }
 
+/// Implements [`Widget::apply_layout`] and [`Widget::get_rect`] for a widget
+/// that keeps the box layout gives it in `self.rect`.
+#[macro_export]
+macro_rules! rect_geometry {
+    () => {
+        fn apply_layout(
+            &mut self,
+            taffy: &$crate::taffy::TaffyTree<()>,
+            node: $crate::taffy::NodeId,
+            origin: $crate::kurbo::Point,
+        ) {
+            self.rect = $crate::widget::layout_rect(taffy, node, origin);
+        }
+
+        fn get_rect(&self) -> $crate::kurbo::Rect {
+            self.rect
+        }
+    };
+}
+
 /// Let `node` share its row's main axis with its siblings by `grow`: it
 /// grows and shrinks from a zero basis instead of keeping its own width.
 pub fn share_row(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
@@ -2826,10 +2846,7 @@ pub trait TaffyTreeExt {
         widget: &mut (dyn Widget + 'static),
     ) -> NodeId {
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         self.widget_leaf(style, node_map, widget)
@@ -2856,10 +2873,7 @@ pub trait TaffyTreeExt {
             taffy::Style {
                 display: taffy::Display::Flex,
                 flex_grow: 1.0,
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
+                size: taffy::Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             &[child],

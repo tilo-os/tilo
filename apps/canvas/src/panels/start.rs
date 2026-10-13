@@ -174,10 +174,7 @@ impl Widget for Swatch {
         use ui::widget::TaffyTreeExt as _;
         let side = theme.tokens.metrics.min_pointer_target;
         let style = Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(side),
-                height: taffy::Dimension::length(side),
-            },
+            size: taffy::Size::from_lengths(side, side),
             flex_shrink: 0.0,
             ..Default::default()
         };

@@ -770,10 +770,6 @@ fn opml_portal_import_and_export_report_honestly() {
 
 /// A right click on a feed opens its menu on that row; the menu owns the
 /// keyboard and pointer while open and runs its actions.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario per menu interaction, kept together"
-)]
 #[test]
 fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     let mut mounted = framed(app());

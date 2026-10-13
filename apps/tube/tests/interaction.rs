@@ -1153,13 +1153,14 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         }
         let cid = model.videos[0].channel_id.clone();
         // Set the avatar URL on that uploader's channel record.
-        let mut found = false;
         // `channels` is walked via the model's public accessor; set through a fresh
         // channel upsert so the avatar URL lands on the record the card reads.
-        if let Some(ch) = model.channels.iter_mut().find(|c| c.id == cid) {
+        let found = if let Some(ch) = model.channels.iter_mut().find(|c| c.id == cid) {
             ch.avatar_url = avatar_url.to_string();
-            found = true;
-        }
+            true
+        } else {
+            false
+        };
         assert!(found, "seeded an avatar URL on the first video's uploader");
 
         let app = TubeApp::new()

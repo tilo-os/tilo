@@ -2608,10 +2608,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn result_groups_stay_contiguous_and_a_lone_group_is_never_trimmed() {
         // Phase `reordering_groups_keeps_each_kind_contiguous`.
         // Each kind renders as one contiguous block, not interleaved.
@@ -2708,10 +2704,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn an_installed_apps_name_offers_the_app_first_even_in_a_capped_palette() {
         // Phase `typing_an_installed_apps_name_offers_the_app_first`.
         // Driven through the applications provider against an installed-app

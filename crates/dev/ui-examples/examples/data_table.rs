@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -96,10 +96,7 @@ fn build() -> (DataTable<Proc>, TaffyTree<()>, NodeId) {
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
-                size: Size {
-                    width: Dimension::length(width_f32),
-                    height: Dimension::length(full_h),
-                },
+                size: Size::from_lengths(width_f32, full_h),
                 ..Default::default()
             },
             &[tnode],
