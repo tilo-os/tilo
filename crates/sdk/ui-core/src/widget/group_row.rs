@@ -3399,6 +3399,9 @@ impl Widget for GroupRow {
         for (g, &usable) in self.groups.iter_mut().zip(usable_per_group.iter()) {
             g.set_strip_usable_px(usable);
         }
+        for group in &mut self.groups {
+            group.set_fullscreen_presentation(self.fullscreen_group == Some(group.id));
+        }
         let group_nodes: Vec<NodeId> = self
             .groups
             .iter_mut()

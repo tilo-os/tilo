@@ -206,6 +206,8 @@ const FULLSCREEN_TARGET: &str = "window.fullscreen";
 )]
 pub struct WindowGroup {
     external_navigation: bool,
+    /// Transient presentation from the parent row; never a persisted maximize.
+    fullscreen_presentation: bool,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
@@ -440,6 +442,7 @@ impl WindowGroup {
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
             rect: Rect::ZERO,
             external_navigation: false,
+            fullscreen_presentation: false,
             resize_origin: None,
             hover_resize: false,
             resize_leading: false,
@@ -483,6 +486,17 @@ impl WindowGroup {
     }
     pub fn width(&self) -> WindowWidth {
         self.width
+    }
+
+    fn navigation_bar_visible(&self) -> bool {
+        !self.external_navigation && !self.fullscreen_presentation
+    }
+
+    pub(crate) fn set_fullscreen_presentation(&mut self, fullscreen: bool) {
+        if self.fullscreen_presentation != fullscreen {
+            self.fullscreen_presentation = fullscreen;
+            self.style_dirty = true;
+        }
     }
 
     pub fn set_external_navigation(&mut self, external: bool) {
@@ -684,7 +698,7 @@ impl WindowGroup {
     }
 
     pub fn should_show_maximized_chrome(&self, cursor_y: Option<f64>) -> bool {
-        !self.external_navigation
+        self.navigation_bar_visible()
             && self.maximized
             && cursor_y.is_some_and(|y| {
                 y <= MAXIMIZED_CHROME_REVEAL_Y
@@ -1126,6 +1140,7 @@ impl WindowGroup {
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
             rect: Rect::ZERO,
             external_navigation: false,
+            fullscreen_presentation: false,
             resize_origin: None,
             hover_resize: false,
             resize_leading: false,
@@ -1184,7 +1199,7 @@ impl WindowGroup {
     /// right-edge resize band. Used by [`GroupRow`](crate::widget::group_row::GroupRow) to arbitrate a press
     /// into a group-reorder drag vs. a tab/resize gesture.
     pub fn bar_grab_hit(&self, p: Point) -> bool {
-        if self.external_navigation {
+        if !self.navigation_bar_visible() {
             return false;
         }
         if !self.bar_rect().contains(p) {
@@ -1241,7 +1256,7 @@ impl WindowGroup {
         self.handle_direct_input(event, scale_factor, modifiers, handle_rect)
     }
 
-    /// Both edge zones, leading first. Empty while maximized.
+    /// Both edge zones, leading first. Empty while maximized or fullscreen.
     pub fn resize_grab_rects(&self) -> Vec<Rect> {
         [self.leading_resize_grab_rect(), self.resize_grab_rect()]
             .into_iter()
@@ -1253,7 +1268,7 @@ impl WindowGroup {
     /// width, inside the window. Between two groups the seam handle covers
     /// it; at the start of a lane the group itself answers.
     pub fn leading_resize_grab_rect(&self) -> Option<Rect> {
-        (!self.maximized).then(|| {
+        (!self.maximized && !self.fullscreen_presentation).then(|| {
             Rect::new(
                 self.rect.x0,
                 self.rect.y0,
@@ -1265,7 +1280,7 @@ impl WindowGroup {
 
     /// Painted trailing-edge grip, shared with compositor input admission.
     pub fn resize_grab_rect(&self) -> Option<Rect> {
-        (!self.maximized).then(|| {
+        (!self.maximized && !self.fullscreen_presentation).then(|| {
             Rect::new(
                 self.rect.x1 - RESIZE_HANDLE_PX,
                 self.rect.y0,
@@ -1317,7 +1332,7 @@ impl WindowGroup {
             group: self.rect,
             client: self.active_host().map(Widget::get_rect),
             tab_bar: self.bar.get_rect(),
-            maximize: (!self.maximized && !self.external_navigation)
+            maximize: (!self.maximized && self.navigation_bar_visible())
                 .then(|| self.active_maximize_rect())
                 .flatten()
                 .and_then(painted),
@@ -1588,7 +1603,7 @@ impl WindowGroup {
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        if !self.maximized || self.external_navigation {
+        if !self.maximized || !self.navigation_bar_visible() {
             self.clear_maximized_controls();
         }
         // System chrome keeps the active client's keyboard focus. It only
@@ -1665,10 +1680,12 @@ impl WindowGroup {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
-                // A maximized group owns the output; its former tiled-width
-                // grip must neither paint nor remain an active resize target.
-                let on_trailing = !self.maximized && handle_rect.contains(pt);
-                let on_leading = !self.maximized
+                // A maximized or fullscreen group owns the output; its former
+                // tiled-width grip must neither paint nor remain an active
+                // resize target.
+                let owns_output = self.maximized || self.fullscreen_presentation;
+                let on_trailing = !owns_output && handle_rect.contains(pt);
+                let on_leading = !owns_output
                     && self.leads_lane
                     && self
                         .leading_resize_grab_rect()
@@ -2587,7 +2604,7 @@ impl Widget for WindowGroup {
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = Vec::new();
-        if !self.maximized && !self.external_navigation {
+        if !self.maximized && self.navigation_bar_visible() {
             children.push(&self.bar);
         }
         let active = self.bar.active_id();
@@ -2601,7 +2618,7 @@ impl Widget for WindowGroup {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let active = self.bar.active_id();
         let mut children: Vec<&mut dyn Widget> = Vec::new();
-        if !self.maximized && !self.external_navigation {
+        if !self.maximized && self.navigation_bar_visible() {
             children.push(&mut self.bar);
         }
         if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
@@ -2646,8 +2663,9 @@ impl Widget for WindowGroup {
     ) -> NodeId {
         self.close_duration = theme.tokens.motion.durations.base();
         self.set_reduce_motion(theme.reduce_motion);
-        let bar_node =
-            (!self.external_navigation).then(|| self.bar.build_layout(taffy, theme, node_map));
+        let bar_node = self
+            .navigation_bar_visible()
+            .then(|| self.bar.build_layout(taffy, theme, node_map));
         let active_id = self.bar.active_id();
         for (id, host) in &mut self.hosts {
             if *id != active_id {
@@ -2658,7 +2676,7 @@ impl Widget for WindowGroup {
         // active tab switches.
         self.built_active = Some(active_id);
         let tile_node = if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
-            h.set_flush_edges(self.external_navigation);
+            h.set_flush_edges(self.external_navigation || self.fullscreen_presentation);
             h.build_layout(taffy, theme, node_map)
         } else {
             taffy.leaf_node(Style::default())
@@ -2689,8 +2707,9 @@ impl Widget for WindowGroup {
             // client header must stay below the revealed Restore/Close and
             // app label, including when captions grow with the text scale.
             // External navigation (including a fullscreen host) owns its
-            // own chrome and keeps the complete client area.
-            if !self.external_navigation {
+            // own chrome and keeps the complete client area, and so does a
+            // fullscreen presentation, which shows no maximized chrome.
+            if self.navigation_bar_visible() {
                 style.padding.top = length(f32_of_f64(maximized_chrome_height(theme)));
             }
             if let Some(bar_node) = bar_node {
@@ -2708,15 +2727,16 @@ impl Widget for WindowGroup {
         self.retarget_rect_spring();
         let children = taffy.children(node).unwrap_or_default();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        if !self.external_navigation {
+        if self.navigation_bar_visible() {
             if let Some(&bar_child) = children.first() {
                 self.bar.apply_layout(taffy, bar_child, new_origin);
             }
         }
         let active_id = self.bar.active_id();
+        let tile_index = usize::from(self.navigation_bar_visible());
         if let (Some((_, h)), Some(&tile_child)) = (
             self.hosts.iter_mut().find(|(i, _)| *i == active_id),
-            children.get(usize::from(!self.external_navigation)),
+            children.get(tile_index),
         ) {
             h.apply_layout(taffy, tile_child, new_origin);
         }
@@ -2807,7 +2827,7 @@ impl Widget for WindowGroup {
         let transform = self.rect_draw_affine(transform);
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
-        if !self.maximized && !self.external_navigation {
+        if !self.maximized && self.navigation_bar_visible() {
             self.bar
                 .set_group_focused(self.focused || self.search_active);
             self.bar.draw(scene, transform, tr, theme, presence);
@@ -2850,7 +2870,10 @@ impl Widget for WindowGroup {
         // the window's own trailing edge, over its content, where it reads
         // as that app's scrollbar (and stays put when the app's panels go).
         // The east-west cursor already marks the band before it shows.
-        if !self.maximized && (self.hover_resize || self.resize_origin.is_some()) {
+        if !self.maximized
+            && !self.fullscreen_presentation
+            && (self.hover_resize || self.resize_origin.is_some())
+        {
             self.draw_resize_grip(scene, transform, theme);
         }
 
@@ -2872,11 +2895,12 @@ impl Widget for WindowGroup {
             return;
         }
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let bar_child = (!self.external_navigation)
+        let bar_child = self
+            .navigation_bar_visible()
             .then(|| children.first().copied())
             .flatten();
         let tile_child = children
-            .get(usize::from(!self.external_navigation))
+            .get(usize::from(self.navigation_bar_visible()))
             .copied();
         self.handle_maximized_controls(event, ctx);
         if *ctx.handled {
@@ -2988,11 +3012,11 @@ impl Widget for WindowGroup {
     /// keep the group re-measuring; the default would walk `for_each_child`
     /// and include them.
     fn is_layout_dirty(&self) -> bool {
-        (!self.external_navigation && self.bar.is_layout_dirty())
+        (self.navigation_bar_visible() && self.bar.is_layout_dirty())
             || self.active_host().is_some_and(Widget::is_layout_dirty)
     }
     fn layout_needs_measure(&self) -> bool {
-        (!self.external_navigation && self.bar.layout_needs_measure())
+        (self.navigation_bar_visible() && self.bar.layout_needs_measure())
             || self.active_host().is_some_and(Widget::layout_needs_measure)
     }
     fn has_pending_visual_work(&self) -> bool {
@@ -3040,7 +3064,7 @@ impl Widget for WindowGroup {
             || group_close_in_flight
             || rect_in_flight
             || width_in_flight
-            || (!self.external_navigation && self.bar.needs_animation_frame())
+            || (self.navigation_bar_visible() && self.bar.needs_animation_frame())
             || host
     }
 }
