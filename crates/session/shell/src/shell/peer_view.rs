@@ -912,11 +912,7 @@ mod tests {
             let mut view = PeerView::new(42, 9);
             let send =
                 |view: &mut PeerView, event: WindowEvent| ui::testing::dispatch(view, &event);
-            let wheel = || WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let wheel = || ui::synthetic_input::mouse_wheel(0.0, 1.0);
             let commit = || WindowEvent::Ime(winit::event::Ime::Commit("é".into()));
 
             // Neither reaches a window the pointer is not over or that has

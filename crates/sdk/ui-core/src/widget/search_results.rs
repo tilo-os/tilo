@@ -1470,19 +1470,9 @@ mod tests {
 
             let mut handled = dispatch(
                 &mut v,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(target.x, target.y),
-                },
+                &crate::synthetic_input::cursor_moved(target.x, target.y),
             );
-            handled |= dispatch(
-                &mut v,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            handled |= dispatch(&mut v, &crate::synthetic_input::mouse_press());
             assert!(handled, "row click consumed");
             assert_eq!(
                 v.cursor(),

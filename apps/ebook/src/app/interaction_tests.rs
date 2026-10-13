@@ -9,8 +9,6 @@ use serial_test::serial;
 use ui::presence::PresenceCtx;
 use ui::testing::Dispatch;
 use ui::widget::Edits;
-use winit::dpi::PhysicalPosition;
-use winit::event::DeviceId;
 
 /// Point the compatibility `TILO_WORKSPACE_DIR` override at `path` until the
 /// returned scope is dropped, including during unwinding.
@@ -574,16 +572,9 @@ fn find_reading_hit(
 
 /// Route a real left-click at `p` (logical px) through `handle_event`.
 fn click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) -> bool {
-    let mv = WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: PhysicalPosition::new(p.x, p.y),
-    };
+    let mv = ui::synthetic_input::cursor_moved(p.x, p.y);
     let moved = Dispatch::new().doc(doc).send(app, &mv);
-    let press = WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    };
+    let press = ui::synthetic_input::mouse_press();
     Dispatch::new()
         .doc(doc)
         .focus_target(moved.focus_target)
@@ -593,22 +584,14 @@ fn click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) -> bool {
 
 /// Route a wheel event (`lines` positive == scroll up) through `handle_event`.
 fn wheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
-    let ev = WindowEvent::MouseWheel {
-        device_id: DeviceId::dummy(),
-        delta: MouseScrollDelta::LineDelta(0.0, lines),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let ev = ui::synthetic_input::mouse_wheel(0.0, lines);
     Dispatch::new().doc(doc).send(app, &ev).handled
 }
 
 /// Route a horizontal wheel/scroll through `handle_event`. Positive
 /// `lines` is a physical scroll-right, matching winit's `LineDelta` x sign.
 fn hwheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
-    let ev = WindowEvent::MouseWheel {
-        device_id: DeviceId::dummy(),
-        delta: MouseScrollDelta::LineDelta(lines, 0.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let ev = ui::synthetic_input::mouse_wheel(lines, 0.0);
     Dispatch::new().doc(doc).send(app, &ev).handled
 }
 
@@ -617,36 +600,13 @@ fn send(app: &mut BooksApp, doc: &mut AutoCommit, ev: &WindowEvent) {
     Dispatch::new().doc(doc).send(app, ev);
 }
 fn ptr_move(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) {
-    send(
-        app,
-        doc,
-        &WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(p.x, p.y),
-        },
-    );
+    send(app, doc, &ui::synthetic_input::cursor_moved(p.x, p.y));
 }
 fn ptr_down(app: &mut BooksApp, doc: &mut AutoCommit) {
-    send(
-        app,
-        doc,
-        &WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-    );
+    send(app, doc, &ui::synthetic_input::mouse_press());
 }
 fn ptr_up(app: &mut BooksApp, doc: &mut AutoCommit) {
-    send(
-        app,
-        doc,
-        &WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-    );
+    send(app, doc, &ui::synthetic_input::mouse_release());
 }
 
 /// Draw one settled frame into a `Scene` (for pixel-level assertions).

@@ -4434,34 +4434,22 @@ mod responsive_body_tests {
         }
 
         fn cursor(&mut self, x: f64, y: f64) {
-            self.dispatch(&winit::event::WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(x, y),
-            });
+            self.dispatch(&ui::synthetic_input::cursor_moved(x, y));
         }
 
         fn right_press(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Right,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_input(
+                winit::event::ElementState::Pressed,
+                winit::event::MouseButton::Right,
+            ));
         }
 
         fn left_release(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_release());
         }
 
         fn left_press(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_press());
         }
 
         /// The labels of the currently-open context/favourite menu, if any.
@@ -4517,11 +4505,7 @@ mod responsive_body_tests {
                 None,
                 winit::event::ElementState::Pressed,
             );
-            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            });
+            self.dispatch(&ui::synthetic_input::keyboard_input(ev));
         }
 
         fn type_char(&mut self, s: &str) {
@@ -4530,11 +4514,7 @@ mod responsive_body_tests {
                 Some(winit::keyboard::SmolStr::new(s)),
                 winit::event::ElementState::Pressed,
             );
-            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            });
+            self.dispatch(&ui::synthetic_input::keyboard_input(ev));
         }
     }
 

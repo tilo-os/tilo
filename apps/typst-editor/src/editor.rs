@@ -508,11 +508,7 @@ mod tests {
                     Some(SmolStr::new(ch)),
                     ElementState::Pressed,
                 );
-                let event = WindowEvent::KeyboardInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    event: ev,
-                    is_synthetic: false,
-                };
+                let event = ui::synthetic_input::keyboard_input(ev);
                 assert!(ed.handle_key(
                     &event,
                     &Modifiers::default(),

@@ -185,22 +185,18 @@ fn slash_opens_search_only_when_nothing_takes_the_text() {
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
 
-    let slash = WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event: KeyEvent::synthetic(
-            winit::event::RawKeyEvent {
-                physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
-                state: ElementState::Pressed,
-            },
-            Key::Character("/".into()),
-            Some("/".into()),
-            KeyLocation::Standard,
-            false,
-            None,
-            Key::Character("/".into()),
-        ),
-        is_synthetic: false,
-    };
+    let slash = crate::synthetic_input::keyboard_input(KeyEvent::synthetic(
+        winit::event::RawKeyEvent {
+            physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+            state: ElementState::Pressed,
+        },
+        Key::Character("/".into()),
+        Some("/".into()),
+        KeyLocation::Standard,
+        false,
+        None,
+        Key::Character("/".into()),
+    ));
     let mut app = mail_app(SearchRequest::this_app());
     assert!(app.handle_unconsumed_search_key(&slash));
     assert!(app.action_palette().is_some());

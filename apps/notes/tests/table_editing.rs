@@ -92,14 +92,7 @@ impl Fixture {
 
     fn key(&mut self, key: Key, modifiers: ModifiersState) -> Vec<ui::widget::BlockEditOp> {
         let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
-        self.event(
-            WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event,
-                is_synthetic: false,
-            },
-            modifiers,
-        )
+        self.event(ui::synthetic_input::keyboard_input(event), modifiers)
     }
 }
 

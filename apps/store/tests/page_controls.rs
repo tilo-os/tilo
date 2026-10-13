@@ -12,8 +12,7 @@ use ui::headless::Framed;
 use ui::tilo_resource::Resource as _;
 use ui::widget::{Widget, find_test_id};
 use vello::kurbo::{Point, Rect};
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton};
 
 fn lay_out(app: StoreApp) -> Framed<StoreApp> {
     Framed::new(
@@ -41,20 +40,14 @@ fn has_test_id(w: &dyn Widget, id: &str) -> bool {
 }
 
 fn cursor(app: &mut Framed<StoreApp>, at: Point) {
-    Framed::harness_mut(app).dispatch_to_root(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: PhysicalPosition::new(at.x, at.y),
-    });
+    Framed::harness_mut(app).dispatch_to_root(&ui::synthetic_input::cursor_moved(at.x, at.y));
 }
 
 fn click(app: &mut Framed<StoreApp>, at: Point) {
     cursor(app, at);
     for state in [ElementState::Pressed, ElementState::Released] {
-        Framed::harness_mut(app).dispatch_to_root(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        });
+        Framed::harness_mut(app)
+            .dispatch_to_root(&ui::synthetic_input::mouse_input(state, MouseButton::Left));
     }
 }
 

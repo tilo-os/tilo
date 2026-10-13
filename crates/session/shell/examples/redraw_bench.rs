@@ -36,8 +36,7 @@ use shell::compositor::backend::drm::paint::{
 };
 use shell::compositor::frame::FrameBuilder;
 use ui::taffy::NodeId;
-use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::Modifiers;
 
 const WIDTH: u32 = 3_840;
 const HEIGHT: u32 = 2_160;
@@ -2332,20 +2331,9 @@ fn dispatch_click(
     focus: &mut Option<NodeId>,
 ) -> Result<(), String> {
     let events = [
-        WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(center.x, center.y),
-        },
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
+        ui::synthetic_input::cursor_moved(center.x, center.y),
+        ui::synthetic_input::mouse_press(),
+        ui::synthetic_input::mouse_release(),
     ];
     // Pointer motion can be consumed merely by hover handling, so only a button event qualifies
     // the action as delivered. The motion still precedes it exactly as it does on the native wire.

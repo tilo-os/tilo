@@ -30,10 +30,7 @@ use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 fn cursor_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 use ui::synthetic_input::mouse_press;

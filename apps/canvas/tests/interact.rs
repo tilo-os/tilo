@@ -162,18 +162,15 @@ impl Desk {
 
     fn pointer(&mut self, x: f64, y: f64) {
         let (x, y) = self.at(x, y);
-        self.app.harness().send(&WindowEvent::CursorMoved {
-            device_id: ui::winit::event::DeviceId::dummy(),
-            position: ui::winit::dpi::PhysicalPosition::new(x, y),
-        });
+        self.app
+            .harness()
+            .send(&ui::synthetic_input::cursor_moved(x, y));
     }
 
     fn button(&mut self, state: ElementState) {
-        self.app.harness().send(&WindowEvent::MouseInput {
-            device_id: ui::winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        });
+        self.app
+            .harness()
+            .send(&ui::synthetic_input::mouse_input(state, MouseButton::Left));
     }
 
     /// Press at `from` and move through `path` without letting go.
@@ -1148,10 +1145,9 @@ fn pixel_pinch_zoom_keeps_the_cell_under_the_pointer() {
     desk.key("Ctrl+1");
     desk.key("=");
     let focal = (desk.canvas.center().x + 60.0, desk.canvas.center().y + 45.0);
-    desk.app.harness().send(&WindowEvent::CursorMoved {
-        device_id: ui::winit::event::DeviceId::dummy(),
-        position: ui::winit::dpi::PhysicalPosition::new(focal.0, focal.1),
-    });
+    desk.app
+        .harness()
+        .send(&ui::synthetic_input::cursor_moved(focal.0, focal.1));
     // Both axes overflow at 2x: no centering or scroll-edge clamp can move the anchor.
     // Paint, zoom, and paint again at the same screen point.
     desk.app.harness().click_at(focal.0, focal.1);
@@ -1341,21 +1337,16 @@ fn mouse_wheel_zoom_requests_frames_until_the_motion_settles() {
     desk.key("=");
     let canvas = desk.app.harness().targets()["canvas"];
     let focal = canvas.center();
-    desk.app.harness().send(&WindowEvent::CursorMoved {
-        device_id: ui::winit::event::DeviceId::dummy(),
-        position: ui::winit::dpi::PhysicalPosition::new(focal.x, focal.y),
-    });
+    desk.app
+        .harness()
+        .send(&ui::synthetic_input::cursor_moved(focal.x, focal.y));
     desk.hold(&["ctrl"]);
     // Observe scheduling at the actual input boundary. `scroll` also paints,
     // which can legitimately outlast the 130 ms interpolation on a busy host.
     assert!(
         desk.app
             .harness()
-            .dispatch_to_root(&WindowEvent::MouseWheel {
-                device_id: ui::winit::event::DeviceId::dummy(),
-                delta: ui::winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
-                phase: ui::winit::event::TouchPhase::Moved,
-            })
+            .dispatch_to_root(&ui::synthetic_input::mouse_wheel(0.0, 1.0))
     );
     assert!(
         desk.app.harness().frame_schedule().needs_animation_frame,
@@ -1396,10 +1387,10 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
     desk.key("Ctrl+1");
     desk.key("=");
     let canvas = desk.app.harness().targets()["canvas"];
-    desk.app.harness().send(&WindowEvent::CursorMoved {
-        device_id: ui::winit::event::DeviceId::dummy(),
-        position: ui::winit::dpi::PhysicalPosition::new(canvas.center().x, canvas.center().y),
-    });
+    desk.app.harness().send(&ui::synthetic_input::cursor_moved(
+        canvas.center().x,
+        canvas.center().y,
+    ));
     desk.hold(&["ctrl"]);
     // Inspect the actual wheel handler before the host's next layout/draw.
     // `scroll` also paints that frame, whose cost may exceed the ordinary
@@ -1408,11 +1399,7 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
     assert!(
         desk.app
             .harness()
-            .dispatch_to_root(&WindowEvent::MouseWheel {
-                device_id: ui::winit::event::DeviceId::dummy(),
-                delta: ui::winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
-                phase: ui::winit::event::TouchPhase::Moved,
-            })
+            .dispatch_to_root(&ui::synthetic_input::mouse_wheel(0.0, 1.0))
     );
     assert!(desk.app.harness().frame_schedule().needs_animation_frame);
     let mut theme = ui::Theme::dark();

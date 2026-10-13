@@ -31,7 +31,7 @@ use taffy::{Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
-use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -101,10 +101,7 @@ fn dispatch(widget: &mut dyn Widget, event: &WindowEvent) {
 }
 
 fn cursor_moved(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    tilo_ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 fn key_press(key: NamedKey) -> WindowEvent {
@@ -121,11 +118,7 @@ fn key_press(key: NamedKey) -> WindowEvent {
         None,
         key,
     );
-    WindowEvent::KeyboardInput {
-        device_id: DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    tilo_ui::synthetic_input::keyboard_input(event)
 }
 
 struct Rendered {

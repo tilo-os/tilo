@@ -1079,10 +1079,7 @@ mod tests {
     }
 
     fn move_to(point: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-        }
+        crate::synthetic_input::cursor_moved(point.x, point.y)
     }
 
     use crate::synthetic_input::mouse_press;

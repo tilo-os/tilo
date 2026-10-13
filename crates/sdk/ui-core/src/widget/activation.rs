@@ -865,11 +865,7 @@ mod tests {
     use crate::synthetic_input::cursor_moved;
 
     fn button(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        crate::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
     fn keys() -> PaintedTargets {

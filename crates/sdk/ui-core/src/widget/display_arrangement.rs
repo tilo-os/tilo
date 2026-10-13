@@ -877,10 +877,10 @@ mod tests {
             .get("display.arrangement")
             .copied()
             .expect("the actual arrangement is mounted");
-        host.send(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(rect.center().x, rect.center().y),
-        });
+        host.send(&crate::synthetic_input::cursor_moved(
+            rect.center().x,
+            rect.center().y,
+        ));
         assert!(!host.last_relayout().measured);
         host.verify_retained_geometry().unwrap();
         host.resize((1200, 720)).unwrap();

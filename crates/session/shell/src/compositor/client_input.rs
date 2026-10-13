@@ -2287,10 +2287,7 @@ mod tests {
                 display.handle(),
                 tree,
             );
-            let moved = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(1210.0, 70.0),
-            };
+            let moved = ui::synthetic_input::cursor_moved(1210.0, 70.0);
 
             assert!(
                 !route_input(&mut state, &mut fb, &moved, &Modifiers::default(),),
@@ -2685,10 +2682,7 @@ mod tests {
             route_input(
                 &mut state,
                 &mut fb,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(640.0, 610.0),
-                },
+                &ui::synthetic_input::cursor_moved(640.0, 610.0),
                 &mods,
             );
 
@@ -2716,10 +2710,7 @@ mod tests {
             route_input(
                 &mut state,
                 &mut fb,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(523.0, 339.0),
-                },
+                &ui::synthetic_input::cursor_moved(523.0, 339.0),
                 &mods,
             );
             assert_eq!(
@@ -2732,10 +2723,7 @@ mod tests {
             route_input(
                 &mut state,
                 &mut fb,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(880.0, 300.0),
-                },
+                &ui::synthetic_input::cursor_moved(880.0, 300.0),
                 &mods,
             );
             assert_eq!(
