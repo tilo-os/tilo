@@ -4,12 +4,12 @@
 # An accepted provider is not necessarily in the owner-authorized signed
 # catalogue yet. Retry only the package CLI's typed exact-runtime refusal;
 # every attempt re-verifies the newly fetched snapshot before it may produce
-# a signed app entry. Two collector opportunities (10 minutes each) bound the
-# wait, and an actually missing provider remains a visible failure.
+# a signed app entry. One caller-owned deadline covers the whole publication
+# phase: two collector opportunities (10 minutes each), even if multiple apps
+# or architectures wait. An actually missing provider remains a visible failure.
 await_registry_runtime_ready() {
-  local output=$1 refusal=$2
-  shift 2
-  local deadline=$((SECONDS + 1200))
+  local deadline=$1 output=$2 refusal=$3
+  shift 3
   local error_file="${refusal}.stderr"
   local missing
   while :; do
