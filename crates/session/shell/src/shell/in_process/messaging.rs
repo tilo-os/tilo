@@ -21,18 +21,32 @@ use ui::launch::LaunchError;
 
 pub(crate) mod activation;
 mod enrollment;
+// First-account enrollment and the default native providers are Linux-only:
+// the Signal provider runs as a signed service in the launcher's sandbox on a
+// tmpfs working profile, and SIMs are found through ModemManager. Elsewhere
+// Messages is lent no enrollment and no native account starts by default.
+#[cfg(target_os = "linux")]
 pub(super) mod first_account;
 pub(crate) mod native;
+#[cfg(target_os = "linux")]
 pub(crate) mod native_first;
+#[cfg(target_os = "linux")]
 pub(super) mod network;
+#[cfg(target_os = "linux")]
 pub(super) mod provider;
 pub mod records;
+#[cfg(target_os = "linux")]
 mod working_profile;
+#[cfg(target_os = "linux")]
 pub use provider::NativeSignalStorage;
+#[cfg(target_os = "linux")]
 pub use working_profile::NativeSignalWorkingProfile;
+#[cfg(target_os = "linux")]
 pub(super) mod sms;
+#[cfg(target_os = "linux")]
 mod sms_first;
 pub mod whatsapp;
+#[cfg(target_os = "linux")]
 mod whatsapp_first;
 pub use activation::NativeSignalActivation;
 pub use enrollment::{NativeSignalEnrollment, NativeVerifiedSignalEnrollment};
@@ -40,6 +54,7 @@ pub use enrollment::{NativeSignalEnrollment, NativeVerifiedSignalEnrollment};
 /// Hand an enrollment owner loop the request `request` builds around its
 /// reply channel, and wait up to `timeout` for the answer. A full or closed
 /// queue answers [`SendError::Unavailable`].
+#[cfg(target_os = "linux")]
 fn ask_owner<R, T: Send + 'static>(
     sender: &std::sync::mpsc::SyncSender<R>,
     wake: &crate::session_runtime::Wake,
