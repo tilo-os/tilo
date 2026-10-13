@@ -68,15 +68,6 @@ fn diff_open_request() -> PickRequest {
         .all_files()
 }
 
-/// Whether chosen files have native paths here; without them (a browser
-/// page) the chooser hands over their contents.
-fn native_paths() -> bool {
-    matches!(
-        tilo_files::availability(tilo_files::Feature::NativePaths),
-        tilo_files::Availability::Available
-    )
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Diff,
@@ -503,7 +494,7 @@ impl DiffMergeApp {
     /// file after the left is picked.
     fn request_open_via_portal(&mut self) {
         self.load_error = None;
-        if native_paths() {
+        if tilo_files::available(tilo_files::Feature::NativePaths) {
             self.portal_rx = Some(diff_open_request().send());
         } else {
             self.portal_contents_rx = Some(diff_open_request().send_contents());

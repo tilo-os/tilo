@@ -1985,7 +1985,7 @@ fn prepare_attachment_import(
 /// (a browser page, where the job's workspace reads fail fast). A native
 /// thread that cannot start leaves the reason on the status line.
 fn run_worker(name: &str, job: impl FnOnce() + Send + 'static, status: &mut Option<String>) {
-    if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
+    if !ui::rt::available(ui::rt::Feature::Threads) {
         job();
         return;
     }

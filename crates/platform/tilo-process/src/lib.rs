@@ -10,7 +10,7 @@
 
 #[cfg(feature = "native-editor")]
 pub mod editor;
-pub use tilo_platform_caps::{Availability, availability};
+pub use tilo_platform_caps::{Availability, availability, available};
 pub mod rendezvous;
 
 /// A capability of this crate.

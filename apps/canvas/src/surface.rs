@@ -2317,7 +2317,7 @@ impl CanvasSurface {
         select: crate::selection::Select,
         cx: &mut Reading,
     ) -> ui::framework::EffectAnswer {
-        if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
+        if !ui::rt::available(ui::rt::Feature::Threads) {
             return Err("image area finding needs background threads on this platform".into());
         }
         if self.finding.get() {
@@ -3494,7 +3494,7 @@ impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
         cx: &mut ui::framework::EffectCx<Artwork, Self>,
     ) -> ui::framework::EffectAnswer {
         if matches!(op, ViewOp::Look { .. } | ViewOp::Export { .. })
-            && ui::rt::availability(ui::rt::Feature::Threads) == ui::rt::Availability::Available
+            && ui::rt::available(ui::rt::Feature::Threads)
         {
             return self.picture_job(op, cx);
         }
