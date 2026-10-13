@@ -512,8 +512,7 @@ impl Widget for DatePicker {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,

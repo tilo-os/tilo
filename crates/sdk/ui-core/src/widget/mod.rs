@@ -1130,6 +1130,20 @@ impl EventCtx<'_> {
     pub fn pen(&self) -> Option<PenSample> {
         crate::pen::current()
     }
+
+    /// `position`, a pointer position in physical pixels, in this event's
+    /// logical coordinates.
+    #[must_use]
+    pub fn logical(
+        &self,
+        position: impl std::borrow::Borrow<winit::dpi::PhysicalPosition<f64>>,
+    ) -> vello::kurbo::Point {
+        let position = position.borrow();
+        vello::kurbo::Point::new(
+            position.x / self.scale_factor,
+            position.y / self.scale_factor,
+        )
+    }
 }
 
 /// One remote participant's live presence (caret/selection), published by a
@@ -3810,9 +3824,6 @@ pub(crate) mod control_result_probe {
         }
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Glyph("P")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 }

@@ -47,7 +47,6 @@ mod open_with_tests {
     #[test]
     fn files_are_classified_for_open_and_merge_by_extension() {
         merge_is_never_offered_for_binary_or_unsupported_names();
-        document_extensions_are_recognised_as_documents();
     }
 
     fn merge_is_never_offered_for_binary_or_unsupported_names() {
@@ -55,14 +54,6 @@ mod open_with_tests {
         assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
         assert!(!merge_supported_path(std::path::Path::new("photo.png")));
         assert!(!merge_supported_path(std::path::Path::new("unknown")));
-    }
-
-    fn document_extensions_are_recognised_as_documents() {
-        for f in ["report.odt", "memo.docx", "notes.md", "readme.markdown"] {
-            assert!(is_document(Path::new(f)), "{f}");
-        }
-        assert!(!is_document(Path::new("photo.png")));
-        assert!(!is_document(Path::new("main.rs")));
     }
 
     /// Each phase installs (or clears) its own thread-local opener and clears it

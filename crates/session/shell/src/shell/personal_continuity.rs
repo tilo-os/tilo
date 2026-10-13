@@ -1150,7 +1150,7 @@ mod tests {
             LaunchIntent::app("so.tilo.browser").unwrap(),
             Some(
                 ResumeMetadata::new(
-                    1,
+                    ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                     ResumeSensitivity::Syncable,
                     br#"{"url":"https://example.test/page/4"}"#.to_vec(),
                 )
@@ -1517,7 +1517,7 @@ mod tests {
                 );
                 app.resume = Some(
                     ResumeMetadata::new(
-                        1,
+                        ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                         ResumeSensitivity::Syncable,
                         serde_json::to_vec(&serde_json::json!({ "url": url })).unwrap(),
                     )
@@ -1554,7 +1554,7 @@ mod tests {
                 );
                 app.resume = Some(
                     ResumeMetadata::new(
-                        1,
+                        ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                         ResumeSensitivity::Syncable,
                         serde_json::to_vec(&serde_json::json!({ "url": url })).unwrap(),
                     )

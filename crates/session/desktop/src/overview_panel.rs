@@ -764,8 +764,7 @@ impl Widget for OverviewPanel {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let before = self.hovered();
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 // Others still see the pointer move, so their hover ends.
                 self.dirty |= before != self.hovered();
             }

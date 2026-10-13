@@ -4764,7 +4764,7 @@ impl Widget for MapsApp {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_mouse = p;
                 if self.navigation_placement.is_dragging() {
                     let source_region = self.navigation_rect().inflate(8.0, 8.0);

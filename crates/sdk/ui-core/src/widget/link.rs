@@ -312,7 +312,7 @@ impl Widget for Link {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 let hover = self.rect.contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;

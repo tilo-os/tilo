@@ -514,8 +514,6 @@ pub struct PlaylistResource {
 pub struct CatalogTrackResource {
     pub id: String,
     pub label: String,
-    /// Who performs the song: the row's secondary line in search.
-    pub artist: String,
     /// Canonical parent targets retained on the track resource, so an agent
     /// can navigate from a song to its exact album or artist without parsing a
     /// display label or guessing an id.
@@ -529,7 +527,6 @@ pub struct CatalogTrackResource {
 pub struct CatalogAlbumResource {
     pub id: String,
     pub label: String,
-    pub saved: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -595,7 +592,6 @@ impl MusicResourceCtx {
         let catalog_track = |track: &crate::model::Track| CatalogTrackResource {
             id: track.id.clone(),
             label: track_label(track),
-            artist: lib.artist_name(&track.artist_id).to_owned(),
             album_id: track.album_id.clone(),
             artist_id: track.artist_id.clone(),
             offline: false,
@@ -614,7 +610,6 @@ impl MusicResourceCtx {
             ctx.albums.push(CatalogAlbumResource {
                 id: album.id.clone(),
                 label: album.title.clone(),
-                saved: lib.is_album_saved(&album.id),
             });
             return Some(ctx);
         }
@@ -1465,7 +1460,6 @@ mod tests {
                 let id = format!("track-{number:03}");
                 ctx.tracks.push(CatalogTrackResource {
                     label: format!("Track {number}"),
-                    artist: String::new(),
                     id,
                     album_id: String::new(),
                     artist_id: String::new(),
@@ -1506,7 +1500,6 @@ mod tests {
             let track = CatalogTrackResource {
                 id: "track-1".into(),
                 label: "Song".into(),
-                artist: String::new(),
                 album_id: "album-9".into(),
                 artist_id: "artist-2".into(),
                 offline: false,
@@ -1776,7 +1769,6 @@ mod tests {
             let track = CatalogTrackResource {
                 id: "track-2".into(),
                 label: "Track 2".into(),
-                artist: String::new(),
                 album_id: String::new(),
                 artist_id: String::new(),
                 offline: false,
