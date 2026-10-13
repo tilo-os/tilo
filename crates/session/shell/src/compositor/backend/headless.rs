@@ -670,7 +670,7 @@ impl SimulatedVblankPresenter {
             (0..SIMULATED_SCANOUT_SLOTS)
                 .map(|_| {
                     let texture = device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some("simulated scanout buffer"),
+                        label: Some("simulated-scanout-buffer"),
                         size: wgpu::Extent3d {
                             width,
                             height,
