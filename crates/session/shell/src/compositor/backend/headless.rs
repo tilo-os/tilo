@@ -21,6 +21,10 @@ use std::time::{Duration, Instant};
 
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry, layout};
 use crate::shell::present::{DisplayTiming, OwedRetirement, Presenter};
+use crate::shell::render::paint::{
+    OutputSignal, OutputTarget, OutputView, SceneDamage, VelloDrmBridge,
+};
+use vello::wgpu;
 
 // Match the existing host-window fallback for blank scenes in both render paths.
 const FALLBACK_BG: Color = Color::from_rgb8(0x1A, 0x1B, 0x26);
@@ -484,19 +488,8 @@ impl Backend for HeadlessBackend {
     fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> {
         let interval = self.vblank_interval?;
         let (width, height) = self.frame_size();
-        let renderer = OffscreenRenderer::try_new(width, height).ok()?;
-        Some(Box::new(SimulatedVblankPresenter {
-            renderer,
-            interval,
-            epoch: Instant::now(),
-            owed: VecDeque::new(),
-            ready: Vec::new(),
-            rendered_revision: None,
-            queued_last: false,
-            last_render: Duration::ZERO,
-            last_painted: None,
-            target_pixels: u64::from(width).saturating_mul(u64::from(height)),
-        }))
+        SimulatedVblankPresenter::new(width, height, interval)
+            .map(|presenter| Box::new(presenter) as Box<dyn Presenter>)
     }
 
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
@@ -607,50 +600,113 @@ struct QueuedFlip {
     vblank: Instant,
 }
 
+/// Scanout buffers the simulated panel flips between, as the DRM presenter's
+/// direct targets: one shown, one queued, one rendered.
+const SIMULATED_SCANOUT_SLOTS: usize = 3;
+
+/// The longest one simulated frame may take on the GPU before its render is
+/// reported failed, as the DRM presenter's direct frame deadline.
+const SIMULATED_FRAME_DEADLINE: Duration = Duration::from_secs(1);
+
 /// Renders on the real GPU and shows frames on a simulated vblank grid.
 ///
-/// It behaves as the DRM presenter does on one output: a frame renders while
-/// the previous flip waits for its vblank, its own flip is queued once that one
-/// retired (a CRTC takes one flip at a time), and a queued flip retires on the
-/// first vblank after it was queued. The render waits for the GPU but copies
-/// nothing back.
+/// It behaves as the DRM presenter does on one output that renders straight
+/// into its scanout buffers: the same renderer ([`VelloDrmBridge`]) draws the
+/// frame into its retained surface, damage-limited, with client buffers drawn
+/// from their GPU textures, and the final pass copies it into a scanout-sized
+/// buffer. The frame renders while the previous flip waits for its vblank,
+/// its own flip is queued once that one retired (a CRTC takes one flip at a
+/// time), and a queued flip retires on the first vblank after it was queued.
+/// Nothing is read back.
 struct SimulatedVblankPresenter {
-    renderer: OffscreenRenderer,
+    bridge: VelloDrmBridge,
+    view: OutputView,
+    slots: Vec<(wgpu::Texture, wgpu::TextureView)>,
+    next_slot: usize,
     interval: Duration,
     /// Any vblank of the grid; the rest follow at whole intervals.
     epoch: Instant,
     owed: VecDeque<QueuedFlip>,
     /// Flips that retired while a later frame waited to queue its own.
     ready: Vec<OwedRetirement>,
-    /// The revision the offscreen target holds, for damage-limited renders.
-    rendered_revision: Option<u64>,
     /// The frame just presented queued a flip.
     queued_last: bool,
     /// How long the last frame took to render, GPU wait included.
     last_render: Duration,
-    /// What the last frame repainted when it was damage-limited (nothing
-    /// when it kept the image it had); `None` when it rendered the whole
-    /// target.
-    last_painted: Option<PaintedArea>,
-    /// Pixels of the whole target.
-    target_pixels: u64,
+    /// What the last frame repainted.
+    last_painted: PaintedArea,
 }
 
-/// The pixels a damage-limited frame was asked to repaint and the pixels the
-/// renderer rasterised for it.
+/// What one frame repainted and what it cost.
 #[derive(Clone, Copy, Default)]
 struct PaintedArea {
+    /// Pixels the frame's damage covers: the whole target for a dense frame,
+    /// none for one kept unchanged.
     damage: u64,
+    /// Pixels the sparse render wrote; the whole target for a dense frame.
     raster: u64,
-    /// Encoding, upload and submission on the CPU, the wait for the GPU to
-    /// finish, and the GPU's own time between its first and last pass (zero
-    /// where the device takes no timestamps).
+    /// The frame rendered the whole target.
+    dense: bool,
+    /// Encoding, uploads and submission on the CPU, and the wait for the GPU
+    /// to finish the render and the copy into the scanout buffer.
     submit_us: u128,
     settle_us: u128,
-    gpu_span_us: u128,
 }
 
 impl SimulatedVblankPresenter {
+    fn new(width: u32, height: u32, interval: Duration) -> Option<Self> {
+        let mut bridge = match VelloDrmBridge::new(width, height) {
+            Ok(bridge) => bridge,
+            Err(error) => {
+                tracing::warn!(%error, "headless: no renderer for the simulated display");
+                return None;
+            }
+        };
+        bridge.set_phase_timing_enabled(true);
+        let slots = {
+            let (device, _) = bridge.gpu();
+            (0..SIMULATED_SCANOUT_SLOTS)
+                .map(|_| {
+                    let texture = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("simulated scanout buffer"),
+                        size: wgpu::Extent3d {
+                            width,
+                            height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Bgra8Unorm,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::COPY_SRC,
+                        view_formats: &[],
+                    });
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    (texture, view)
+                })
+                .collect()
+        };
+        Some(Self {
+            bridge,
+            view: OutputView::at(OutputId(0), (0, 0), (width, height)),
+            slots,
+            next_slot: 0,
+            interval,
+            epoch: Instant::now(),
+            owed: VecDeque::new(),
+            ready: Vec::new(),
+            queued_last: false,
+            last_render: Duration::ZERO,
+            last_painted: PaintedArea::default(),
+        })
+    }
+
+    fn target_pixels(&self) -> u64 {
+        let (width, height) = self.view.target_size();
+        u64::from(width).saturating_mul(u64::from(height))
+    }
+
     /// The first vblank strictly after `at`.
     fn vblank_after(&self, at: Instant) -> Instant {
         let since = at.saturating_duration_since(self.epoch).as_nanos();
@@ -683,57 +739,98 @@ impl SimulatedVblankPresenter {
         }
     }
 
+    /// Render `frame` into the next scanout buffer, as the DRM presenter's
+    /// direct path does; `false` when it kept the image already shown.
     fn render(&mut self, frame: &crate::compositor::frame::FramePaint) -> bool {
-        let damage = (frame.revision != 0
-            && frame.backdrop.is_none()
-            && self.rendered_revision.is_some()
-            && self.rendered_revision == frame.previous_revision)
-            .then_some(frame.damage_regions.as_ref())
-            .flatten();
-        self.last_painted = None;
-        if let Some(regions) = damage {
-            if regions.is_empty() {
-                self.rendered_revision = Some(frame.revision);
-                self.last_painted = Some(PaintedArea::default());
-                return false;
-            }
-
-            let rects: Vec<vello::kurbo::Rect> = regions
-                .iter()
-                .map(|r| {
-                    vello::kurbo::Rect::new(
-                        f64::from(r.x),
-                        f64::from(r.y),
-                        f64::from(r.x.saturating_add(r.width)),
-                        f64::from(r.y.saturating_add(r.height)),
-                    )
-                })
-                .collect();
-            let (raster, timing) = self.renderer.render_damage_regions_gpu_wait_profiled(
-                &frame.scene,
-                FALLBACK_BG,
-                &rects,
-            );
-            self.last_painted = Some(PaintedArea {
-                damage: crate::shell::render::paint::damage_area(regions),
-                raster,
-                submit_us: timing.vello_submit_us,
-                settle_us: timing.settle_wait_us,
-                gpu_span_us: timing.gpu_timestamp_span_ns / 1_000,
-            });
-        } else {
-            self.renderer.set_backdrop(frame.backdrop.clone());
-            self.renderer.render_gpu_wait(&frame.scene, FALLBACK_BG);
-            self.renderer.set_backdrop(None);
+        let damage = (frame.revision != 0).then_some(SceneDamage {
+            revision: frame.revision,
+            previous_revision: frame.previous_revision,
+            regions: frame.damage_regions.as_deref(),
+        });
+        self.bridge.set_backdrop(frame.backdrop.clone());
+        self.bridge.stage_scroll_copies(
+            damage.map(|damage| damage.revision),
+            frame.scroll_copies.as_ref(),
+        );
+        if let Some(damage) = damage
+            && damage.regions.is_some_and(<[_]>::is_empty)
+            && frame.hdr_layers.is_empty()
+            && self.bridge.keep_unchanged_output(&self.view, damage)
+        {
+            self.last_painted = PaintedArea::default();
+            return false;
         }
-        self.rendered_revision = (frame.revision != 0).then_some(frame.revision);
+        let damage = damage.unwrap_or(SceneDamage {
+            revision: 1,
+            previous_revision: None,
+            regions: None,
+        });
+        let Some((_, slot)) = self.slots.get(self.next_slot) else {
+            return false;
+        };
+        self.next_slot = (self.next_slot + 1) % self.slots.len().max(1);
+        let started = Instant::now();
+        let painted = self.bridge.paint_output_into(
+            &frame.scene,
+            &self.view,
+            damage,
+            OutputTarget {
+                view: slot,
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                size: self.view.target_size(),
+                orientation: settings_store::hardware::OutputTransform::Normal,
+            },
+            started
+                .checked_add(SIMULATED_FRAME_DEADLINE)
+                .unwrap_or(started),
+            OutputSignal {
+                sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                hdr_layers: &frame.hdr_layers,
+                color_lut: None,
+                layers: frame.cache.as_ref(),
+            },
+        );
+        self.bridge.after_paint();
+        let target = self.target_pixels();
+        let timing = self.bridge.last_phase_timing().unwrap_or_default();
+        self.last_painted = match painted {
+            Ok(stats) => {
+                let sparse = stats.sparse_attempts > 0 && stats.full_attempts == 0;
+                PaintedArea {
+                    damage: if sparse {
+                        damage
+                            .regions
+                            .map_or(target, crate::shell::render::paint::damage_area)
+                    } else {
+                        target
+                    },
+                    raster: if sparse {
+                        self.bridge
+                            .last_sparse_render_stats()
+                            .map_or(target, |stats| stats.written_pixels)
+                    } else {
+                        target
+                    },
+                    dense: !sparse,
+                    submit_us: timing.submit_us,
+                    settle_us: timing.completed_readback_map_us,
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "headless: simulated frame failed to render");
+                PaintedArea::default()
+            }
+        };
         true
     }
 }
 
 impl Presenter for SimulatedVblankPresenter {
-    fn present(&mut self, scene: &Scene, _output: OutputId) {
-        self.renderer.render_gpu_wait(scene, FALLBACK_BG);
+    fn present(&mut self, scene: &Scene, output: OutputId) {
+        self.present_frame(
+            &crate::compositor::frame::FramePaint::full(scene.clone()),
+            output,
+        );
     }
 
     fn present_frame(&mut self, frame: &crate::compositor::frame::FramePaint, _: OutputId) {
@@ -777,21 +874,15 @@ impl Presenter for SimulatedVblankPresenter {
     }
 
     fn frame_detail(&mut self) -> Option<String> {
-        let full = PaintedArea {
-            damage: self.target_pixels,
-            raster: self.target_pixels,
-            ..PaintedArea::default()
-        };
-        let painted = self.last_painted.unwrap_or(full);
+        let painted = self.last_painted;
         Some(format!(
-            "gpu_us={} damage_px={} raster_px={} dense={} submit_us={} settle_us={} gpu_span_us={}",
+            "gpu_us={} damage_px={} raster_px={} dense={} submit_us={} settle_us={}",
             self.last_render.as_micros(),
             painted.damage,
             painted.raster,
-            u8::from(self.last_painted.is_none()),
+            u8::from(painted.dense),
             painted.submit_us,
             painted.settle_us,
-            painted.gpu_span_us,
         ))
     }
 
