@@ -408,8 +408,9 @@ palette-no-results = No results for “{ $query }”
 palette-no-results-hint = Try fewer words, or widen the scope
 
 # Calendar section headings in the workspace activity timeline.
-history-day-today = Today
-history-day-yesterday = Yesterday
+day-yesterday = Yesterday
+day-today = Today
+day-tomorrow = Tomorrow
 history-day-this-week = This week
 history-day-earlier = Earlier
 

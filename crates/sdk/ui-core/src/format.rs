@@ -211,6 +211,27 @@ pub fn relative_compact(secs_ago: i64) -> String {
     }
 }
 
+/// Name a calendar day next to today in the host's language — `Yesterday`,
+/// `Today`, `Tomorrow` — or `None` further out, where the caller shows its
+/// own date. `days_from_today` is negative for the past.
+///
+/// ```
+/// use tilo_ui::format::near_day;
+/// assert_eq!(near_day(0).as_deref(), Some("Today"));
+/// assert_eq!(near_day(-1).as_deref(), Some("Yesterday"));
+/// assert_eq!(near_day(2), None);
+/// ```
+#[must_use]
+pub fn near_day(days_from_today: i64) -> Option<String> {
+    let key = match days_from_today {
+        -1 => "day-yesterday",
+        0 => "day-today",
+        1 => "day-tomorrow",
+        _ => return None,
+    };
+    Some(crate::i18n::widget_format(key, &[]))
+}
+
 /// Abbreviate a large count to at most one fractional digit: `1.2K`, `3.4M`,
 /// `1.1B`. Exact tenths omit the redundant `.0` (`12K`, not `12.0K`) and a
 /// value that rounds into the next unit is promoted (`999_999` becomes `1M`,
