@@ -2336,6 +2336,77 @@ mod tests {
     }
 
     #[test]
+    fn replay_missing_selection_paints_no_replacement_metadata_or_accessible_value() {
+        let (tree, mut pane) = replay_fixture();
+        pane.apply_replay_request(ReplayRequest::Seek { position: 1 })
+            .unwrap();
+        let selected = pane.replay_position().selected;
+        let selected_id = pane.replay_frames[pane.replay_index].entry_id;
+        let mut rows = pane.scoped_tree_rows.clone();
+        rows.retain(|entry| entry.id != selected_id);
+        pane.rebuild_replay_frames(&tree, &rows, tree.active.raw());
+        assert!(pane.replay_selection_missing);
+
+        // Observe glyphs submitted by the production painter, not a label helper.
+        let mut tr = TextRenderer::new();
+        let mut before = Scene::new();
+        pane.draw_replay(&mut before, Affine::IDENTITY, &mut tr, &Theme::dark());
+        assert!(!before.encoding().resources.glyphs.is_empty());
+        pane.replay_index = (pane.replay_index + 1) % pane.replay_frames.len();
+        for frame in &mut pane.replay_frames {
+            frame.timestamp = SystemTime::UNIX_EPOCH;
+            frame.summary = "Replacement metadata must not be painted".into();
+        }
+        pane.sync_replay_slider();
+        let mut after = Scene::new();
+        pane.draw_replay(&mut after, Affine::IDENTITY, &mut tr, &Theme::dark());
+        let glyphs = |scene: &Scene| {
+            scene
+                .encoding()
+                .resources
+                .glyphs
+                .iter()
+                .map(|glyph| (glyph.id, glyph.x.to_bits(), glyph.y.to_bits()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            glyphs(&before),
+            glyphs(&after),
+            "missing selection must paint neither replacement ordinal nor time"
+        );
+        assert!(!pane.focus_order().contains(&ActivityFocus::ReplayScrub));
+        assert!(
+            pane.accessibility_control_node(&ActivityFocus::ReplayScrub, 0, 1)
+                .is_none()
+        );
+        assert!(
+            !pane
+                .replay_control_targets()
+                .iter()
+                .any(|(id, _)| *id == "activity-replay-timeline")
+        );
+        let detail = pane.replay_accessibility_detail();
+        assert_eq!(detail.name, Some(t("activity-replay-selection-missing")));
+        assert_eq!(
+            detail.description,
+            Some(t("activity-replay-selection-missing"))
+        );
+        assert_eq!(pane.replay_position().selected, selected);
+        assert_eq!(pane.replay_position().position, None);
+
+        let all_rows = pane.scoped_tree_rows.clone();
+        pane.rebuild_replay_frames(&tree, &all_rows, tree.active.raw());
+        paint(&mut pane);
+        assert_eq!(pane.replay_position().selected, selected);
+        assert!(!pane.replay_selection_missing);
+        assert!(pane.focus_order().contains(&ActivityFocus::ReplayScrub));
+        assert!(
+            pane.accessibility_control_node(&ActivityFocus::ReplayScrub, 0, 1)
+                .is_some()
+        );
+    }
+
+    #[test]
     fn replay_missing_selection_next_explicitly_replaces_pin() {
         let (tree, mut pane) = replay_fixture();
         pane.apply_replay_request(ReplayRequest::Seek { position: 0 })

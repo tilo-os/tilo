@@ -1525,7 +1525,8 @@ impl RoomActivityPane {
                     ],
                 )
             });
-        self.replay_slider.set_enabled(max > 0);
+        self.replay_slider
+            .set_enabled(max > 0 && !self.replay_selection_missing);
         self.replay_slider.set_value(f64::from(index));
     }
 
@@ -4900,6 +4901,8 @@ impl RoomActivityPane {
                 scene,
                 &t(if self.feed_coverage.pending_tree {
                     "activity-replay-pending"
+                } else if self.replay_selection_missing {
+                    "activity-replay-selection-missing"
                 } else if self.replay_unavailable > 0 {
                     "activity-replay-unavailable"
                 } else {
@@ -4976,6 +4979,18 @@ impl RoomActivityPane {
                     .disabled(disabled),
             );
         }
+        if self.replay_selection_missing {
+            tr.draw_style(
+                scene,
+                &t("activity-replay-selection-missing"),
+                theme.tokens.colors.text_dim,
+                at(transform, controls.x0, controls.y1 + 44.0),
+                Some(text_width(controls.width())),
+                &theme.text(TextRole::Caption),
+            );
+            // Neither a replacement ordinal nor its timestamp describes the pin.
+            return;
+        }
         tr.draw_style(
             scene,
             &t_args(
@@ -5016,20 +5031,12 @@ impl RoomActivityPane {
         };
         tr.draw_style(
             scene,
-            &t(if self.replay_selection_missing {
-                "activity-replay-selection-missing"
-            } else {
-                "activity-replay-topology-note"
-            }),
+            &t("activity-replay-topology-note"),
             theme.tokens.colors.text_dim,
             at(transform, controls.x0, controls.y1 + 44.0),
             Some(text_width(controls.width())),
             &theme.text(TextRole::Caption),
         );
-        if self.replay_selection_missing {
-            // The slider's fallback ordinal is not the selected checkpoint.
-            return;
-        }
         let info_h = 94.0;
         let canvas = Rect::new(
             self.sheet.x0 + 12.0,
@@ -6444,7 +6451,10 @@ impl RoomActivityPane {
         modifiers: Modifiers,
         cursor: Option<Point>,
     ) -> bool {
-        if self.view != ActivityView::Replay || self.replay_frames.len() < 2 {
+        if self.view != ActivityView::Replay
+            || self.replay_frames.len() < 2
+            || self.replay_selection_missing
+        {
             return false;
         }
         let chord = modifiers.state();
@@ -6540,7 +6550,7 @@ impl RoomActivityPane {
         {
             return false;
         }
-        if self.replay_frames.len() < 2 {
+        if self.replay_frames.len() < 2 || self.replay_selection_missing {
             return false;
         }
         let handled = self.replay_slider.perform_action(
@@ -6560,12 +6570,15 @@ impl RoomActivityPane {
         if self.view != ActivityView::Replay || self.replay_frames.is_empty() {
             return Vec::new();
         }
-        vec![
+        let mut targets = vec![
             ("activity-replay-previous", self.replay_back_rect),
             ("activity-replay-play", self.replay_play_rect),
             ("activity-replay-next", self.replay_forward_rect),
-            ("activity-replay-timeline", self.replay_slider.get_rect()),
-        ]
+        ];
+        if !self.replay_selection_missing {
+            targets.push(("activity-replay-timeline", self.replay_slider.get_rect()));
+        }
+        targets
     }
 
     fn handle_replay_click(&mut self, point: Point) -> Option<RoomActivityOutcome> {
@@ -7050,8 +7063,10 @@ impl RoomActivityPane {
                         ActivityFocus::ReplayBack,
                         ActivityFocus::ReplayPlay,
                         ActivityFocus::ReplayForward,
-                        ActivityFocus::ReplayScrub,
                     ]);
+                    if !self.replay_selection_missing {
+                        order.push(ActivityFocus::ReplayScrub);
+                    }
                 }
             }
         }
@@ -7613,7 +7628,9 @@ impl RoomActivityPane {
             return self.timeline.accessibility();
         }
         if *focus == ActivityFocus::ReplayScrub {
-            return self.replay_slider.accessibility();
+            return (!self.replay_selection_missing)
+                .then(|| self.replay_slider.accessibility())
+                .flatten();
         }
 
         let label = self.focus_label(focus)?;
