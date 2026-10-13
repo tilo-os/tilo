@@ -38,6 +38,24 @@ run's policy cannot be changed. The agent runner applies the admitted ceiling to
 generation and its overall deadline; deadline exhaustion does not manufacture a
 successful task result.
 
+## Closed applications
+
+An approved native run can activate a sandboxed application through the existing
+workspace launcher, without asking the person to open it first. Activation has its
+own durable custody, bound to the authenticated caller, exact task/run and applied
+instruction frontier. The current agent, task, starter and frozen authority must
+all permit opening that application. Stop and revocation fence both queued launch
+admission and subsequent resource-action admission.
+
+Retained catalogue entries are inert routes, not live publishers or grants. The
+broker waits for a fresh resource publication and invocation stream before
+admitting the action against that exact fresh contract. A retained contract that
+changed is refused; the planner must refresh the catalogue and choose a new
+invocation. A package with no retained catalogue can first use its governed open
+action, then discover and invoke its fresh registered resource and view actions.
+Navigation uses the application's action framework, not pointer input or the
+person's caret. Recovery never repeats an uncertain host activation automatically.
+
 ## Qualification boundary
 
 The public queue action and Activity draft handoff are coordination surfaces.
