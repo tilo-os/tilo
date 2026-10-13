@@ -227,9 +227,40 @@ fn guest_write(
     let heads = doc.get_heads();
     write(&mut doc);
     step(&mut doc, what, item);
-    // Signed as the author's device signs it, which a receiver does not
-    // trust to have checked its own grants.
-    let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&heads));
+    signed_write(&mut doc, &heads, key)
+}
+
+/// The guest's signed write, committed as `what` by `invoker`.
+fn guest_write_by(
+    peer: &StatePeer,
+    key: &SigningKey,
+    write: impl FnOnce(&mut AutoCommit),
+    what: Did,
+    invoker: tilo_actions::ActionInvoker,
+) -> NeighbourMsg {
+    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = doc.get_heads();
+    write(&mut doc);
+    let context = ActionContext {
+        what: Some(what),
+        ..ActionContext::for_resource(RECORD, KIND, "Test")
+    }
+    .with_invoker(invoker);
+    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    signed_write(&mut doc, &heads, key)
+}
+
+/// What `doc` changed since `heads`, signed as the author's device signs
+/// it, which a receiver does not trust to have checked its own grants.
+fn signed_write(
+    doc: &mut AutoCommit,
+    heads: &[automerge::ChangeHash],
+    key: &SigningKey,
+) -> NeighbourMsg {
+    let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(heads));
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().unwrap(),
@@ -483,4 +514,31 @@ fn an_op_naming_another_surface_than_its_record_is_refused() {
         },
     )
     .expect("an editor names the newer surface");
+}
+
+/// A person's device that writes a change showing another name, as only a
+/// bot allowed it may, is refused by every receiver.
+#[test]
+fn a_persons_change_showing_another_name_is_refused() {
+    let (mut peer, key, guest) = room_with(MemberRole::Editor);
+    let impostor = tilo_actions::ActionInvoker::actor("person:guest").with_appearance(Some(
+        tilo_actions::Appearance::new("Owner", None, None).unwrap(),
+    ));
+    let edited = guest_write_by(
+        &peer,
+        &key,
+        |doc| doc.put(ROOT, "value", "x").unwrap(),
+        edit_value(),
+        impostor,
+    );
+    let refused = receive(&mut peer, &guest, edited).unwrap_err();
+    assert!(refused.contains("appearance"), "{refused}");
+    let plain = guest_write_by(
+        &peer,
+        &key,
+        |doc| doc.put(ROOT, "value", "y").unwrap(),
+        edit_value(),
+        tilo_actions::ActionInvoker::actor("person:guest"),
+    );
+    receive(&mut peer, &guest, plain).expect("an editor's own edit is admitted");
 }

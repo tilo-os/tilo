@@ -133,6 +133,9 @@ pub fn store_card(
 /// The secondary line under a card's name: what kind of app it is and which
 /// version the source lists.
 pub fn provenance(item: &StoreItem) -> String {
+    if let Some(bot) = &item.bot {
+        return format!("{}, version {}", ui::i18n!("store-bot-label"), bot.version);
+    }
     let kind = match &item.source {
         StoreSource::Tilo { .. } => "Tilo app",
         StoreSource::Flathub => "Flatpak app",
@@ -190,6 +193,7 @@ mod tests {
         assert_eq!(category_label("Games"), "Games");
 
         let item = StoreItem {
+            bot: None,
             id: "org.example.Editor".into(),
             name: "Editor".into(),
             description: "Write without distractions.".into(),

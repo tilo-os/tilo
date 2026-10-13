@@ -227,9 +227,6 @@ document. Nine updates arrived and nine were dropped, which is exactly
 "presence crosses, the document does not" — presence rides the room
 cluster and passes the same check.
 
-The same fan-out defect hangs beat 9: the agent addresses the word
-processor, every app in the room answers, and it waits out its timeout.
-
 `scripts/demo/run.py` now hashes Xaver's screen before and after and
 raises a gap when the socket says yes and not a pixel moved — so this
 cannot pass silently again. **This beat is not claimed until a frame
@@ -269,55 +266,15 @@ pointer slowly enough for two processes to hand a drag between them, and
 none of the claims this cut supports is about drag and drop. It deserves
 its own minute rather than fifteen seconds of this one.
 
-## 9 · Claude does something ⏳ — blocked on the same broker defect
+## 9 · The agent acts by address ✅
 
-`tilo-agent` joins the document the way a second copy of the app would:
-same `(app, room, record)` route, asks the room for state, holds a live
-replica. No window, no pointer. Addressed inside the document — `Claude:
-make this a proper document` — it edits through the word processor's
-**own exported actions**, under its own actor, attributed in the history
-strip.
+The agent's session enumerates the actions it exports, invokes one by
+its `(provider, id)` address, and the harness asserts that no synthetic
+keystroke or click reached it. Enumerating is checked to be read-only.
 
-**A real model chooses the action.** One bounded call, given the
-document, the instruction, and the catalogue of actions the app exports;
-it answers with one catalogue id and a reason. Validated twice — a
-JSON-schema enum built at runtime from that catalogue, then re-checked
-against it before dispatch — and the catalogue itself is verified against
-the app's own `encode()` names, so the agent cannot offer an action the
-app does not have. Typical decision 2.8–4.2s.
-
-A refusal, a timeout, a missing key or an answer outside the vocabulary
-falls back to the keyword vocabulary, so the beat always completes. Every
-run records which path decided, and the harness asserts it — a fallback
-run can never be written up later as a live one. That matters more now
-that the name on screen is Claude.
-
-**It does not currently complete.** `tilo-agent` joins, receives the
-document, and then waits out its timeout without applying anything —
-because every app in the room answers a handshake addressed to the word
-processor, so it is offered documents it did not ask for. Same broker
-fan-out as beat 7; `scripts/demo/run.py` quotes the `room_wide=true`
-lines from the session log when the timeout fires, so nobody has to
-re-diagnose a hung process.
-
-Two endings, both live, both attributed, both from before that:
-
-- **The table** — bullets become a formatted table.
-  `…/scratchpad/table-03-after.png`
-- **The structural pass** — a flat draft becomes a document: title,
-  section headings, prose intact. `…/scratchpad/structure-03-after.png`.
-  The instruction was "make this a proper document"; it never named an
-  action.
-
-The edit arriving on a *second* session is asserted:
-`scripts/demo/run.py` reads Xaver's own word processor back over his
-session's broker and checks the row text survived into the table, not
-merely that a table exists. It is asserted and **not** filmed from his
-screen — the same edit lands in the document already on camera, and an
-agent's work turning up in *your* document the way a colleague's does is
-the claim. The agent's own copy is never the shot, and now cannot be:
-the run fails if any frame came from its session.
-
+The agent no longer edits the document on camera: `tilo-agent` only
+carries out broker-leased tasks (`--task-runs`), so there is no mode in
+which it joins a document from the demo rig.
 
 ---
 
@@ -347,7 +304,6 @@ the run fails if any frame came from its session.
 # refuses to record a binary older than the sources under test.
 cargo build --profile demo -p shell -p tilo-control --bin shell --bin tilo-control
 cargo build -p launcher --bin tilo-launcher
-cargo build -p agent --bin tilo-agent                # beat 9
 cargo build -p app-cli --bins --examples      # beat 5's registry
 cargo build -p tilo-install --bin tilo-install
 scripts/demo/apps-live.sh                           # the payload it serves

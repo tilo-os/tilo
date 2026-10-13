@@ -160,6 +160,8 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "agent-work",
     "agent-task",
     "agent-task-compact",
+    "agent-task-queued",
+    "agent-task-queued-compact",
     "narrow",
     "history",
     "compact",
@@ -231,7 +233,7 @@ impl ResourceApp for ChatShell {
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
-            Some("agent-task-compact") => (420, 680),
+            Some("agent-task-compact" | "agent-task-queued-compact") => (420, 680),
             _ => (1280, 800),
         }
     }

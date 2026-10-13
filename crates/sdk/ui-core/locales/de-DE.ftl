@@ -336,6 +336,7 @@ history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Kurzbefehl
 participant-app = { $name } · App
+participant-bot = { $name } · Bot
 # Ein Agent, ein Kurzbefehl oder eine App, die für eine Person handelt.
 participant-acting-for = { $name }, für { $person }
 interaction-agent = Agent
@@ -476,3 +477,9 @@ search-apps-group-media = Medien
 search-apps-group-system-tools = Systemwerkzeuge
 search-apps-group-more-apps = Weitere Apps
 search-apps-group-developer-tools = Entwicklerwerkzeuge
+
+author-bot-chip = BOT
+author-bot-details = { $bot } (Bot, hinzugefügt von { $installer })
+author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $installer })
+author-bot-linked = Mit { $person } auf Tilo verknüpft
+author-persona-suffix = { $name } · { $service }

@@ -666,7 +666,7 @@ pub(crate) mod tests {
     fn speaker_group(
         seed: u8,
         name: &str,
-        state: crate::shell::speaker_group::SpeakerMemberState,
+        state: crate::shell::speaker_group::SpeakerMemberStatus,
     ) -> crate::shell::speaker_group_runtime::SpeakerGroupView {
         use crate::shell::speaker_group::{
             EndpointSelector, SpeakerGroupId, SpeakerRole, SpeakerTrim, StereoSide,
@@ -691,11 +691,11 @@ pub(crate) mod tests {
 
     #[test]
     fn speaker_groups_are_output_targets_named_like_the_palette_and_revalidated() {
-        use crate::shell::speaker_group::{SpeakerGroupId, SpeakerMemberState};
+        use crate::shell::speaker_group::{SpeakerGroupId, SpeakerMemberStatus};
         let mut view = fabric();
         view.speaker_groups.groups = vec![
-            speaker_group(0x51, "Living room", SpeakerMemberState::Ready),
-            speaker_group(0x61, "Kitchen", SpeakerMemberState::AwaitingConsent),
+            speaker_group(0x51, "Living room", SpeakerMemberStatus::Ready),
+            speaker_group(0x61, "Kitchen", SpeakerMemberStatus::AwaitingConsent),
         ];
         let controller = |session: &str| {
             (session == "so.tilo.music:mpris:abc").then(|| "org.mpris.MediaPlayer2.music".into())
@@ -734,7 +734,7 @@ pub(crate) mod tests {
         );
 
         let mut fresh = view.clone();
-        fresh.speaker_groups.groups[0].members[0].state = SpeakerMemberState::AwaitingConsent;
+        fresh.speaker_groups.groups[0].members[0].state = SpeakerMemberStatus::AwaitingConsent;
         assert_eq!(
             resolve_output(&fresh, token, bus, &controller),
             None,

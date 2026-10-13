@@ -1650,7 +1650,7 @@ mod tests {
         // Phase `speaker_groups_project_consent_play_and_leave_without_disclosing_ids`.
         {
             use crate::shell::speaker_group::{
-                EndpointSelector, SpeakerGroupId, SpeakerMemberState, SpeakerRole, SpeakerTrim,
+                EndpointSelector, SpeakerGroupId, SpeakerMemberStatus, SpeakerRole, SpeakerTrim,
                 StereoSide,
             };
             use crate::shell::speaker_group_runtime::{
@@ -1708,7 +1708,7 @@ mod tests {
                     output_label: None,
                     role: SpeakerRole::Stereo(StereoSide::Left),
                     trim: SpeakerTrim::default(),
-                    state: SpeakerMemberState::Ready,
+                    state: SpeakerMemberStatus::Ready,
                 }],
             });
             let actions = device_actions(&view);

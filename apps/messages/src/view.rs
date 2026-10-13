@@ -235,9 +235,6 @@ fn answer(
             });
         }
         MessagesEffect::Back => state.set(Selection::default()),
-        MessagesEffect::ConfirmRecipient { .. } => {
-            return Err(CATALOG.t("messages-identity-unavailable"));
-        }
         MessagesEffect::ConfirmAccount { person, choice } => {
             confirm_account(sources, state, person, &choice)?;
         }
