@@ -514,6 +514,14 @@ fn a_settlement_reads_back_its_json_form() {
         serde_json::to_string(&Settled::<u8>::Done(3)).unwrap(),
         r#"{"state":"done","result":3}"#
     );
+    // Whoever settles without knowing `O` leaves out what was done: nothing.
+    assert_eq!(
+        Settled::<Vec<String>>::from_json_value(
+            serde_json::json!({"state": "failed", "result": {"reason": "refused"}})
+        )
+        .unwrap(),
+        Settled::failed("refused")
+    );
     for wrong in [
         serde_json::json!({"state": "maybe", "result": 1}),
         serde_json::json!({"result": 1}),

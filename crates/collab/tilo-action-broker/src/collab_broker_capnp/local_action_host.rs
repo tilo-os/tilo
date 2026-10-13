@@ -22,6 +22,9 @@ impl CapnpBrokerState {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Err(refused) = tilo_actions::appearance::refuse_here(request) {
+            return Pending::ready(Err(refused));
+        }
         if request.on_behalf_of.is_some()
             || caller.is_foreign_device()
             || !matches!(caller.principal(), CallerPrincipal::Person(_))
@@ -350,6 +353,9 @@ impl ActionHost for CertifiedLocalActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
+            return Pending::ready(Err(refused));
+        }
         let admitted = match self.check(caller) {
             Ok(admitted) => admitted,
             Err(error) => return Pending::ready(Err(error)),

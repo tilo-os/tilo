@@ -49,7 +49,8 @@ use tilo_agent_participant::{
     Replica, Seed, StepAction, record_provider,
 };
 use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerHandle};
-use tilo_relay_protocol::agents::{AgentDelegation, AgentScope, AgentStatus, TaskState};
+use tilo_relay_protocol::agents::{AgentStatus, TaskState};
+use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
@@ -150,7 +151,7 @@ fn page(
         &route.app_id,
         ROOM,
         "ada",
-        false,
+        tilo_agent_participant::ReplicaActor::Owner,
         Seed::Existing {
             record,
             changes: changes.to_vec(),
@@ -198,13 +199,15 @@ async fn every_web_app_over_the_session() {
         CertificationPolicy::agent().ceiling,
     );
     let now = tilo_clock::unix_now_ns();
-    let delegation = AgentDelegation::sign(
+    let delegation = Delegation::sign(
         &root,
         agent_device.cert.device_public_key,
-        "coverage",
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "coverage".into(),
+        },
         "Coverage agent",
         [0x7c, 0x3a, 0xed],
-        AgentScope {
+        DelegateScope {
             rooms: vec![ROOM.into()],
             apps: catalogue.iter().map(|d| d.app_id.to_owned()).collect(),
         },
@@ -496,6 +499,7 @@ async fn every_web_app_over_the_session() {
         confirmation: None,
         revision: None,
         wait_ms: None,
+        appearance: None,
     };
     let RemoteActionMessage::Receipt(receipt) = ask(
         &browser,
@@ -595,6 +599,7 @@ async fn every_web_app_over_the_session() {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         }),
         &mut documents,
     )
@@ -628,6 +633,7 @@ async fn every_web_app_over_the_session() {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         }),
         &mut documents,
     )
@@ -734,13 +740,15 @@ async fn a_task_reports_the_content_its_steps_produced() {
         CertificationPolicy::agent().ceiling,
     );
     let now = tilo_clock::unix_now_ns();
-    let delegation = AgentDelegation::sign(
+    let delegation = Delegation::sign(
         &root,
         agent_device.cert.device_public_key,
-        "carrier",
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "carrier".into(),
+        },
         "Carrier",
         [0x0f, 0x4c, 0x5c],
-        AgentScope {
+        DelegateScope {
             rooms: vec![ROOM.into()],
             apps: vec![CANVAS.into(), WRITER.into()],
         },
@@ -1067,13 +1075,15 @@ async fn a_task_is_planned_again_with_what_a_view_answered() {
         CertificationPolicy::agent().ceiling,
     );
     let now = tilo_clock::unix_now_ns();
-    let delegation = AgentDelegation::sign(
+    let delegation = Delegation::sign(
         &root,
         agent_device.cert.device_public_key,
-        "painter",
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "painter".into(),
+        },
         "Painter",
         [0x0f, 0x4c, 0x5c],
-        AgentScope {
+        DelegateScope {
             rooms: vec![ROOM.into()],
             apps: vec![CANVAS.into()],
         },
@@ -1285,13 +1295,15 @@ async fn an_agent_opens_another_agents_document_by_its_title() {
             &format!("Agent: {name}"),
             CertificationPolicy::agent().ceiling,
         );
-        let delegation = AgentDelegation::sign(
+        let delegation = Delegation::sign(
             &root,
             device.cert.device_public_key,
-            id,
+            tilo_relay_protocol::delegation::Delegate::Agent {
+                agent_id: id.into(),
+            },
             name,
             [0x0f, 0x4c, 0x5c],
-            AgentScope {
+            DelegateScope {
                 rooms: vec![ROOM.into()],
                 apps: vec![WRITER.into()],
             },
@@ -1507,13 +1519,15 @@ async fn model_agent(
 ) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
     let agent_device = enrol(root, "Agent: Planner", CertificationPolicy::agent().ceiling);
     let now = tilo_clock::unix_now_ns();
-    let delegation = AgentDelegation::sign(
+    let delegation = Delegation::sign(
         root,
         agent_device.cert.device_public_key,
-        "planner",
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "planner".into(),
+        },
         "Planner",
         [0x0f, 0x4c, 0x5c],
-        AgentScope {
+        DelegateScope {
             rooms: vec![ROOM.into()],
             apps: apps.iter().map(|app| (*app).to_owned()).collect(),
         },

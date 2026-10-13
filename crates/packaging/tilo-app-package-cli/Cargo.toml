@@ -33,6 +33,9 @@ app-registry = { path = "../app-registry" }
 # Signed `/entries` rows for `tilo-app-package entry`; `rand` for `keygen`.
 registry-types = { path = "../registry-types" }
 registry-client = { path = "../registry-client" }
+# `bot-entry` reads a Shortcut and encodes it canonically.
+tilo-automation = { path = "../../collab/automation" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 getrandom.workspace = true
 
 anyhow.workspace = true

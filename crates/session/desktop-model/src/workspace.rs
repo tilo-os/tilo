@@ -181,7 +181,7 @@ pub enum PresetMutationError {
 }
 
 /// The app id the workspace's own resources are published under.
-pub const WORKSPACE_GOVERNANCE_APP_ID: &str = "tilo.workspace";
+pub const WORKSPACE_GOVERNANCE_APP_ID: &str = tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER;
 /// Granting, published on the room: a grant of the room's tree to someone.
 pub const GRANT_ACTION_ID: &str = "grant";
 /// Revoking one grant.
@@ -215,7 +215,7 @@ pub fn governance_of(action: &str) -> Option<&'static str> {
 /// room `room`: the room itself (resource kind [`roles::ROOM_KIND`]).
 #[must_use]
 pub fn governance_resource_id(room: &RoomId) -> String {
-    format!("workspace.permissions:{room}")
+    tilo_actions::remote::room_governance_resource(&room.to_string())
 }
 
 /// A role's stable name, as a collaborator row records it
@@ -224,6 +224,7 @@ pub fn governance_resource_id(room: &RoomId) -> String {
 pub fn role_id(role: Role) -> &'static str {
     match role {
         Role::Owner => "owner",
+        Role::Moderator => "moderator",
         Role::Editor => "editor",
         Role::Commenter => "commenter",
         Role::Viewer => "viewer",

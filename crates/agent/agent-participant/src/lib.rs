@@ -6,7 +6,7 @@
 //! - **Identity.** Its own device key, a capability-less `DeviceCert`
 //!   issued under the user's root by ordinary device certification (the
 //!   approving device is where consent is given), and a root-signed
-//!   `tilo_relay_protocol::agents::AgentDelegation` naming its label, cursor
+//!   `tilo_relay_protocol::delegation::Delegation` naming its label, cursor
 //!   colour, rooms and apps. The host confines the device to those rooms and
 //!   treats it as its own principal ([`control::AgentIdentity`]).
 //! - **Apps.** Each record the agent works in is a replica of the app's
@@ -38,6 +38,7 @@
 
 pub mod anthropic;
 pub mod apps;
+pub mod bot;
 pub mod control;
 mod desk;
 pub mod host;
@@ -49,7 +50,7 @@ pub mod room_actions;
 mod web_apps;
 pub mod worker;
 
-pub use apps::{AppCatalogue, AppError, Replica, Seed, component_apps};
+pub use apps::{AppCatalogue, AppError, Replica, ReplicaActor, Seed, component_apps};
 pub use control::{
     AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone, GrantRecord,
     Spawner, SupervisorHost, SupervisorSnapshot, Witness,

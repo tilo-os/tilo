@@ -1,0 +1,19 @@
+[package]
+name = "tilo-bot-directory"
+description = "Install plans for bots listed in a Tilo registry: verified program, derived grant, connector state"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+app-cli = { path = "../app-cli" }
+registry-types = { path = "../registry-types" }
+tilo-automation = { path = "../../collab/automation" }
+tilo-action-policy = { path = "../../collab/action-policy" }
+serde_json.workspace = true
+thiserror.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

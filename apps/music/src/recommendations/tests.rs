@@ -13,6 +13,7 @@ fn library() -> Library {
 /// A replica of a document holding `lib`.
 fn replica(lib: &Library) -> Replica<Library> {
     let mut doc = ui::tilo_resource::Doc::new();
+    <Library as ui::tilo_resource::Resource>::initialize(&mut doc).unwrap();
     lib.write_fields(&mut doc, &automerge::ROOT).unwrap();
     doc.commit();
     Replica::from_doc(doc)

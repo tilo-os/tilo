@@ -127,8 +127,9 @@ pub use invite::{
     INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
 };
 pub use mls_governance::{
-    MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAckV1,
-    MlsGovernanceAction, MlsGovernanceContext, MlsGovernanceError, MlsGovernanceFrameV1,
+    Admission, JoinMaterial, Joining, MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION,
+    MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction, MlsGovernanceContext,
+    MlsGovernanceError, MlsGovernanceFrameV1,
 };
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
@@ -146,8 +147,8 @@ pub use person_room::{
     is_person_room, person_record_id, person_record_kind, person_room, person_room_of,
 };
 pub use receipt::{
-    Receipt, ReceiptRefusal, ReceiptSurface, Record, SurfaceSource, Surfaces, check_claims,
-    claim_node, decide_op, decide_op_pinned, record_node,
+    Receipt, ReceiptRefusal, ReceiptSurface, Record, SurfaceSource, Surfaces, check_appearances,
+    check_claims, claim_node, decide_op, decide_op_pinned, record_node,
 };
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,

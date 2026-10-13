@@ -136,6 +136,9 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             },
             allowed_origins: Vec::new(),
             plain_listen: None,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
         .await
         .unwrap();
@@ -222,7 +225,7 @@ fn approve_agents(relay: &Relay, root: SigningKey, laptop: &Device) -> tokio::ta
                     approver
                         .decide(
                             pending.request_digest,
-                            ApproverDecision::IssueAgent { cert, delegation }
+                            ApproverDecision::IssueDelegate { cert, delegation }
                         )
                         .await
                         .unwrap(),
@@ -308,6 +311,7 @@ impl Browser {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         }))
         .encode()
         .unwrap();
@@ -414,7 +418,7 @@ impl Browser {
                     app,
                     ROOM,
                     "ada",
-                    false,
+                    tilo_agent_participant::ReplicaActor::Owner,
                     Seed::Existing {
                         record: ui::record::RecordId::parse(&route.record).unwrap(),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),

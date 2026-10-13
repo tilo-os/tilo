@@ -7,6 +7,7 @@
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
+    clippy::panic,
     reason = "in a test these are the assertion, not a hazard; the PNG and zip \
               helpers read and write fixed-layout bytes"
 )]
@@ -55,7 +56,15 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
     let catalogue = catalogue();
     let app = "so.tilo.scratchpad";
     let note = common::scratchpad_body("").0;
-    let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
+    let mut page = Replica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
         panic!("a new record is published whole");
     };
@@ -64,7 +73,7 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
         app,
         ROOM,
         "writer",
-        true,
+        &tilo_agent_participant::ReplicaActor::Agent,
         Seed::Existing {
             record: page.record_id().clone(),
             changes: vec![snapshot],
@@ -121,7 +130,7 @@ fn bytes_that_are_not_automerge_never_reach_the_worker() {
         "so.tilo.scratchpad",
         ROOM,
         "writer",
-        true,
+        &tilo_agent_participant::ReplicaActor::Agent,
         Seed::New,
     )
     .unwrap();
@@ -148,7 +157,7 @@ fn a_dead_worker_is_replaced_from_what_the_host_holds() {
         "so.tilo.scratchpad",
         ROOM,
         "writer",
-        true,
+        &tilo_agent_participant::ReplicaActor::Agent,
         Seed::New,
     )
     .unwrap();
@@ -196,8 +205,15 @@ fn picture_at(path: &str) -> serde_json::Map<String, serde_json::Value> {
 }
 
 fn new_artwork(content: Option<&ContentStore>) -> ConfinedReplica {
-    let agent =
-        ConfinedReplica::open(&catalogue(), CANVAS, ROOM, "painter", true, Seed::New).unwrap();
+    let agent = ConfinedReplica::open(
+        &catalogue(),
+        CANVAS,
+        ROOM,
+        "painter",
+        &tilo_agent_participant::ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap();
     let agent = match content {
         Some(content) => agent.with_content(content.clone()),
         None => agent,
@@ -308,7 +324,15 @@ fn an_agent_sees_the_effects_its_grants_allow_or_ask_for() {
     );
 
     // A record that is not an agent's lists no effects.
-    let room = ConfinedReplica::open(&catalogue(), CANVAS, ROOM, "room", false, Seed::New).unwrap();
+    let room = ConfinedReplica::open(
+        &catalogue(),
+        CANVAS,
+        ROOM,
+        "room",
+        &tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     assert!(
         room.survey_with_effects()
             .iter()
@@ -322,7 +346,7 @@ fn an_agent_sees_the_effects_its_grants_allow_or_ask_for() {
         "so.tilo.calendar",
         ROOM,
         "planner",
-        true,
+        &tilo_agent_participant::ReplicaActor::Agent,
         Seed::New,
     )
     .unwrap();
@@ -522,9 +546,16 @@ const WRITER: &str = "so.tilo.word-processor";
 
 /// A new record of `app` held for an agent, lent `room`'s content.
 fn new_record(app: &str, room: &ContentStore) -> ConfinedReplica {
-    let agent = ConfinedReplica::open(&catalogue(), app, ROOM, "carrier", true, Seed::New)
-        .unwrap()
-        .with_content(room.clone());
+    let agent = ConfinedReplica::open(
+        &catalogue(),
+        app,
+        ROOM,
+        "carrier",
+        &tilo_agent_participant::ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap()
+    .with_content(room.clone());
     agent.take_mutation().unwrap();
     agent
 }
@@ -836,7 +867,7 @@ fn an_effect_is_given_the_content_its_record_refers_to() {
         WRITER,
         ROOM,
         "exporter",
-        true,
+        &tilo_agent_participant::ReplicaActor::Agent,
         Seed::Existing {
             record: placing.record_id().clone(),
             changes: vec![placing.read(|doc| doc.clone().save()).unwrap()],
@@ -950,4 +981,143 @@ fn kill(pid: u32) {
         .unwrap();
     assert!(status.success());
     std::thread::sleep(std::time::Duration::from_millis(200));
+}
+
+/// The appearances the context entries of `change`'s changes name; a
+/// snapshot, which an edit never is, names none.
+fn appearances(change: &DocumentMutation) -> Vec<Option<tilo_actions::Appearance>> {
+    let DocumentMutation::Incremental(bytes) = change else {
+        return Vec::new();
+    };
+    collab_types::parse_changes(bytes)
+        .unwrap()
+        .iter()
+        .filter_map(automerge::Change::message)
+        .filter_map(tilo_actions::ActionContext::from_change_message)
+        .filter_map(|context| context.invoker)
+        .map(|invoker| invoker.appearance)
+        .collect()
+}
+
+#[test]
+fn a_confined_bot_reads_posts_arriving_after_it_opened() {
+    let catalogue = catalogue();
+    let page = Replica::open(
+        &catalogue,
+        "so.tilo.chat",
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let mut doc = page.read(Clone::clone).unwrap();
+    chat::demo::apply_as(
+        &mut doc,
+        "ada",
+        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+            name: "Bridged".into(),
+        }),
+    )
+    .unwrap();
+    let projection = chat::projection::read(&doc);
+    let workspace = projection.workspace_rows()[0].id.clone();
+    let channel = projection.channel_rows()[0].id.clone();
+    let subject = policy::Subject::bot("b1");
+    let read = policy::Grant::new(
+        "bot:b1:read",
+        subject.clone(),
+        policy::TreePath::room(ROOM),
+        policy::KindSet::READ,
+        policy::Answer::Allow,
+        policy::Subject::person("ada"),
+    );
+    let bot = ConfinedReplica::open(
+        &catalogue,
+        page.app_id(),
+        ROOM,
+        "bot:b1",
+        &tilo_agent_participant::ReplicaActor::Bot {
+            installation: "b1".into(),
+            installer: "ada".into(),
+            standing: policy::Standing::person(policy::RoomPolicy::new(ROOM, "ada"), "ada")
+                .bounded_by(subject, vec![read]),
+        },
+        Seed::Existing {
+            record: page.record_id().clone(),
+            changes: vec![doc.save()],
+        },
+    )
+    .unwrap();
+    chat::demo::say(&mut doc, "ada", &channel, "hello").unwrap();
+    bot.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
+    let read = bot
+        .survey()
+        .into_iter()
+        .find(|action| action.address.action == "read-workspace")
+        .expect("a bot is still offered the record's read effects");
+    assert_eq!(read.kind, OperationKind::Effect);
+    let arguments = serde_json::json!({ "workspace": workspace, "channel": channel });
+    let output = bot
+        .invoke_with(
+            None,
+            None,
+            &read.address,
+            arguments.as_object().unwrap(),
+            false,
+        )
+        .unwrap();
+    let value = output.value.unwrap();
+    assert_eq!(
+        value.pointer("/messages/0/value/text"),
+        Some(&serde_json::json!("hello")),
+        "{value:#}"
+    );
+}
+
+#[test]
+fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
+    let catalogue = catalogue();
+    let app = "so.tilo.scratchpad";
+    let note = common::scratchpad_body("").0;
+    let mut page = Replica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
+        panic!("a new record is published whole");
+    };
+    let agent = ConfinedReplica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "writer",
+        &tilo_agent_participant::ReplicaActor::Agent,
+        Seed::Existing {
+            record: page.record_id().clone(),
+            changes: vec![snapshot],
+        },
+    )
+    .unwrap();
+    let alice = tilo_actions::Appearance::new("alice", None, None).unwrap();
+    agent
+        .invoke_appearing(&note, &edit("From Discord"), false, Some(&alice))
+        .unwrap();
+    let shown = appearances(&agent.take_mutation().unwrap().unwrap());
+    assert!(!shown.is_empty(), "the change names its invoker");
+    assert!(
+        shown.iter().all(|shown| shown.as_ref() == Some(&alice)),
+        "{shown:?}"
+    );
+
+    // A plain invocation shows none.
+    agent.invoke(&note, &edit("Plain"), false).unwrap();
+    let shown = appearances(&agent.take_mutation().unwrap().unwrap());
+    assert!(!shown.is_empty(), "the change names its invoker");
+    assert!(shown.iter().all(Option::is_none), "{shown:?}");
 }

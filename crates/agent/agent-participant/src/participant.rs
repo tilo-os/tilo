@@ -43,7 +43,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 
 pub mod actions;
 mod planning;
-mod unopened;
+pub(crate) mod unopened;
 
 pub(crate) use unopened::{SharedDesktop, desktop_route};
 
@@ -1040,7 +1040,7 @@ impl AgentParticipant {
             return refused();
         };
         let caller = tilo_actions::remote::Caller::delegated_agent(
-            self.identity.delegation.agent_id.clone(),
+            crate::control::agent_id(&self.identity.delegation).to_owned(),
             self.identity.cert.user_public_key,
             self.identity.cert.device_public_key,
         )
@@ -1076,6 +1076,7 @@ impl AgentParticipant {
             revision: None,
             on_behalf_of: None,
             wait_ms: None,
+            appearance: None,
         };
         let answer = Arc::new(std::sync::Mutex::new(None));
         let (arrived, control) = (Arc::clone(&answer), Arc::clone(&self.control));
@@ -1381,8 +1382,8 @@ impl AgentParticipant {
             &self.catalogue,
             app,
             &self.room,
-            &self.identity.delegation.agent_id,
-            true,
+            crate::control::agent_id(&self.identity.delegation),
+            &crate::ReplicaActor::Agent,
             Seed::New,
         );
         let descriptors = match record {
@@ -1533,8 +1534,8 @@ impl AgentParticipant {
             &self.catalogue,
             app_id,
             &self.room,
-            &self.identity.delegation.agent_id,
-            true,
+            crate::control::agent_id(&self.identity.delegation),
+            &crate::ReplicaActor::Agent,
             seed,
         )
         .map_err(|error| error.to_string())?
@@ -1706,7 +1707,10 @@ impl AgentParticipant {
             record: &record,
             beside: beside.as_deref(),
         };
-        let author = format!("agent:{}", self.identity.delegation.agent_id);
+        let author = format!(
+            "agent:{}",
+            crate::control::agent_id(&self.identity.delegation)
+        );
         let place = |doc: &automerge::AutoCommit| crate::desk::place_view(doc, &author, &view);
         let change = match self.unopened.desktop() {
             Some(doc) => place(doc),

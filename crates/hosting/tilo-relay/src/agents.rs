@@ -4,15 +4,15 @@
 //! [`RelayAgentLink`] is what the supervisor asks of the relay:
 //!
 //! - **Approval.** A new grant is a certification request for a fresh agent
-//!   key, queued by the host itself with the person's [`AgentProposal`]. A
+//!   key, queued by the host itself with the person's [`DelegateProposal`]. A
 //!   root-holding approver answers it with the agent's certificate and the
-//!   delegation together (`ApproverDecision::IssueAgent`), so consent is one
+//!   delegation together (`ApproverDecision::IssueDelegate`), so consent is one
 //!   step and the host never holds the root.
 //! - **Admission.** Approved delegations are registered in the relay's agent
 //!   register, which confines the device to its rooms; withdrawn ones are
 //!   refused from the next access audit on. Each room this relay governs
 //!   that the delegation names puts the agent on its governed roster
-//!   (`RoomOperation::AgentMembership`), and every change to its grant is
+//!   (`RoomOperation::DelegateMembership`), and every change to its grant is
 //!   carried onto those rosters: a withdrawn or narrowed grant takes it off
 //!   the room and its channels.
 //! - **Asking first.** An action the person's grants leave to them is put
@@ -39,7 +39,7 @@ use tilo_agent_participant::{
 };
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 
-use tilo_relay_protocol::agents::{AgentDelegation, AgentProposal};
+use tilo_relay_protocol::delegation::{DelegateProposal, Delegation};
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, DeviceCert,
 };
@@ -98,7 +98,7 @@ impl AgentHostLink for RelayAgentLink {
     fn request_approval(
         &self,
         key: &SigningKey,
-        proposal: &AgentProposal,
+        proposal: &DelegateProposal,
         done: ApprovalDone,
     ) -> Result<String, String> {
         let now = tilo_clock::unix_now_ns();
@@ -126,43 +126,43 @@ impl AgentHostLink for RelayAgentLink {
         .map_err(|error| error.to_string())?;
         let (digest, pairing_code) =
             self.certification
-                .enqueue_agent(request, proposal.clone(), now)?;
+                .enqueue_delegate(request, proposal.clone(), now)?;
         let certification = self.certification.clone();
         self.runtime.spawn(async move {
-            done(certification.agent_answer(&digest).await);
+            done(certification.delegate_answer(&digest).await);
         });
         Ok(pairing_code)
     }
 
-    fn register(&self, cert: &DeviceCert, delegation: &AgentDelegation) -> Result<(), String> {
+    fn register(&self, cert: &DeviceCert, delegation: &Delegation) -> Result<(), String> {
         delegation
             .verify(&self.user_public_key, tilo_clock::unix_now_ns())
             .map_err(|error| error.to_string())?;
         self.agents
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(delegation.agent_device_public_key, Some(delegation.clone()));
+            .insert(delegation.device_public_key, Some(delegation.clone()));
         // A replacement may narrow an earlier delegation's rooms.
         crate::authority_epoch::bump();
-        if cert.device_public_key != delegation.agent_device_public_key {
+        if cert.device_public_key != delegation.device_public_key {
             return Err("the delegation names another device".into());
         }
         // The governed rooms it names put it on their rosters.
-        self.reconcile_rooms(delegation.agent_device_public_key, Some(cert.clone()));
+        self.reconcile_rooms(delegation.device_public_key, Some(cert.clone()));
         Ok(())
     }
 
-    fn withdraw(&self, agent_device_public_key: [u8; 32]) {
+    fn withdraw(&self, device_public_key: [u8; 32]) {
         self.agents
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(agent_device_public_key, None);
+            .insert(device_public_key, None);
         crate::authority_epoch::bump();
         // Governed rooms take it off their channels and refuse its writes.
-        self.reconcile_rooms(agent_device_public_key, None);
+        self.reconcile_rooms(device_public_key, None);
     }
 
-    fn witness(&self, delegation: &AgentDelegation) -> Option<Witness> {
+    fn witness(&self, delegation: &Delegation) -> Option<Witness> {
         Some(Arc::new(RelayWitness {
             certification: self.certification.clone(),
             delegation: delegation.clone(),
@@ -176,7 +176,7 @@ impl AgentHostLink for RelayAgentLink {
 /// grants are approved on. It runs nothing itself.
 struct RelayWitness {
     certification: CertificationProtocol,
-    delegation: AgentDelegation,
+    delegation: Delegation,
     runtime: tokio::runtime::Handle,
 }
 
@@ -189,9 +189,14 @@ impl RelayWitness {
         request: &InvokeRequest,
     ) -> Result<PendingConfirmation, ActionHostError> {
         let agent = &self.delegation;
-        let its_own = caller.principal() == &CallerPrincipal::Agent(agent.agent_id.clone())
+        // Only agents ask their person; a bot runs unattended.
+        let agent_id = agent
+            .delegate
+            .agent_id()
+            .ok_or(ActionHostError::NotPermitted)?;
+        let its_own = caller.principal() == &CallerPrincipal::Agent(agent_id.to_owned())
             && caller.user_public_key() == Some(&agent.user_public_key)
-            && caller.device_public_key() == Some(&agent.agent_device_public_key);
+            && caller.device_public_key() == Some(&agent.device_public_key);
         if !its_own {
             return Err(ActionHostError::NotPermitted);
         }
@@ -207,7 +212,7 @@ impl RelayWitness {
         let context = request.context.as_ref();
         Ok(PendingConfirmation {
             id,
-            agent_id: agent.agent_id.clone(),
+            agent_id: agent_id.to_owned(),
             agent_label: agent.label.clone(),
             action_label: context
                 .and_then(|context| context.purpose.clone())
@@ -375,6 +380,18 @@ impl RoomRecordsLink for RelayRecordsLink {
             browser_page: self.browser_page.clone(),
         })
     }
+
+    fn bot_personas(&self, workspace: u64, installation: &str) -> bool {
+        self.rooms.as_ref().is_some_and(|rooms| {
+            self.member
+                .runtime
+                .block_on(rooms.bot_personas(workspace, installation))
+        })
+    }
+
+    // `content_blob` keeps refusing: the relay keeps no room content store
+    // an avatar could be read from, so an appearance naming an avatar is
+    // refused here while a name alone is admitted.
 }
 
 /// Start `cfg`'s relay with an agent supervisor as its app-serving plane,

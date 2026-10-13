@@ -33,7 +33,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 5;
+pub(crate) const PROTOCOL_VERSION: u32 = 6;
 
 /// What a worker is started to do. It decides what the worker prepares
 /// before it confines itself: a worker that mounts a component (a reader's
@@ -78,7 +78,9 @@ pub(crate) enum Request {
         app_id: String,
         room: String,
         participant: String,
-        agent: bool,
+        /// JSON `ReplicaActor`: a bot's standing nests maps postcard
+        /// cannot describe.
+        actor: String,
         seed: Option<(String, Vec<Vec<u8>>)>,
     },
     /// Every document operation the held record publishes now; with
@@ -94,6 +96,13 @@ pub(crate) enum Request {
         /// JSON object of arguments.
         arguments: String,
         confirm: bool,
+        /// JSON `ActionInvoker` admitted for this invocation, when not the
+        /// participant itself.
+        invoker: Option<String>,
+        /// JSON `ActionContext` of this invocation.
+        context: Option<String>,
+        /// JSON `Appearance` the door admitted, if any.
+        appearance: Option<String>,
     },
     /// Replace the held view's action policy with the supervisor's current
     /// standing. This is host-owned authority, never an invocation argument.

@@ -667,9 +667,22 @@ async fn run_owner(
             let mut state = shared
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Err(error) = state.reclaim_replay_step() {
-                tracing::warn!(%error, "replay reclamation failed");
+            // A released entry keeps its process-wide replay permit until it
+            // is gone, so new subscriptions wait on this. One bounded step
+            // per turn fell behind a room where every guest's arrival
+            // replays to them: spools grow with the room, permits ran out,
+            // and joins queued for seconds. Step for one slice instead.
+            let start = std::time::Instant::now();
+            loop {
+                if let Err(error) = state.reclaim_replay_step() {
+                    tracing::warn!(%error, "replay reclamation failed");
+                    break;
+                }
+                if start.elapsed() >= SLICE || !state.replays.reclaimable() {
+                    break;
+                }
             }
+            drop(state);
         })
         .await;
     }
@@ -1239,7 +1252,7 @@ mod tests {
     }
 
     async fn captured_replay(owner: &Persistence) -> ReplayTicket {
-        let ticket = ReplayTicket::reserve([2; 32], None).unwrap();
+        let ticket = ReplayTicket::reserve([2; 32], None).await.unwrap();
         let authority = ticket.authority.clone();
         receipt(
             owner

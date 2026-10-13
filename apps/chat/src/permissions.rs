@@ -86,6 +86,25 @@ impl ChatPermissions {
             .check(&PermissionScope::workspace(ActionKind::Undoable))
     }
 
+    /// The room this peer is in, as its host names it.
+    pub fn room(&self) -> &str {
+        self.ctx.standing().room()
+    }
+
+    /// May this peer remove other people's messages? Moderation in chat is
+    /// its `moderation` node, which the room's Moderators and owner hold.
+    pub fn can_moderate(&self) -> bool {
+        self.ctx.check(&PermissionScope::Action {
+            node: ui::permissions::TreePath::root()
+                .app("so.tilo.chat")
+                .kind("chat.workspace")
+                .any(ui::permissions::policy::Level::Resource)
+                .field(ui::tilo_actions::MODERATION_FIELD)
+                .action("remove-message"),
+            kind: ActionKind::Undoable,
+        })
+    }
+
     /// Join/listen requires Read; publication requires Write. This UI check
     /// complements native authority and local consent, never replaces them.
     /// Leave is always available after a permission downgrade.
@@ -144,6 +163,17 @@ mod tests {
         let view_ok = p.ctx.check(&PermissionScope::workspace(ActionKind::Read));
         assert!(view_ok, "a member can read the workspace");
         assert!(!p.can_participate(), "but cannot write to it");
+    }
+
+    #[test]
+    fn only_moderators_and_owners_moderate() {
+        let as_role =
+            |role| ChatPermissions::from_context(PermissionContext::member("u_someone", role));
+        assert!(as_role(Role::Moderator).can_moderate());
+        assert!(as_role(Role::Owner).can_moderate());
+        assert!(!as_role(Role::Editor).can_moderate());
+        assert!(!as_role(Role::Viewer).can_moderate());
+        assert!(as_role(Role::Moderator).can_participate());
     }
 
     #[test]

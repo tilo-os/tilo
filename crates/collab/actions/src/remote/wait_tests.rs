@@ -163,6 +163,7 @@ fn rename(invocation: InvocationId, wait_ms: Option<u32>) -> InvokeRequest {
         revision: None,
         on_behalf_of: None,
         wait_ms,
+        appearance: None,
     }
 }
 

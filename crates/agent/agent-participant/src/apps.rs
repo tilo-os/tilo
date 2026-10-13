@@ -95,6 +95,15 @@ impl AppCatalogue {
         (!name.is_empty() && name != kind.label()).then(|| name.to_owned())
     }
 
+    /// The app whose records are of `kind`: where a trigger that names a
+    /// record kind finds the records it watches.
+    #[must_use]
+    pub fn app_for_kind(&self, kind: &str) -> Option<&'static str> {
+        self.iter()
+            .find(|definition| definition.record_kind.as_str() == kind)
+            .map(|definition| definition.app_id)
+    }
+
     /// The resource type `app_id`'s records hold.
     fn kind(&self, app_id: &str) -> Option<ResourceKind> {
         let definition = self.get(app_id)?;
@@ -114,6 +123,26 @@ pub enum Seed {
         record: RecordId,
         /// Its Automerge changes (a snapshot, then increments), in order.
         changes: Vec<Vec<u8>>,
+    },
+}
+
+/// Whom a replica acts as, which decides what its door allows.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ReplicaActor {
+    /// The host's own device acting for its user (room actions): the
+    /// record's owner, as a browser tab of the owner is.
+    Owner,
+    /// A delegated agent, at Editor under the operator preset.
+    Agent,
+    /// An installed bot: its installer's standing bounded by the bot's
+    /// grants, built by the host from the room's policy before each run.
+    Bot {
+        /// The installation the bot runs as.
+        installation: String,
+        /// The person who installed it, whom its invocations are for.
+        installer: String,
+        /// The installer's standing bounded by the bot's grants.
+        standing: policy::Standing,
     },
 }
 
@@ -153,14 +182,15 @@ pub struct Replica {
     agent: bool,
     /// Where its last operation left it.
     place: Option<Place>,
+    /// It also offers the record's read effects (a workspace digest, a
+    /// route plan): a bot's steps read through them, where a person's
+    /// reads go through the record's mounted component.
+    offers_reads: bool,
 }
 
 impl Replica {
-    /// Hold a record of `app_id` in `room` as `participant` (its author id).
-    ///
-    /// `agent` makes the participant an agent principal holding the editor
-    /// role; otherwise it is a person holding the owner role, as a browser
-    /// tab of the record's owner does.
+    /// Hold a record of `app_id` in `room` as `participant` (its author id),
+    /// acting as `actor` ([`ReplicaActor`]).
     ///
     /// # Errors
     ///
@@ -172,10 +202,10 @@ impl Replica {
         app_id: &str,
         room: &str,
         participant: &str,
-        agent: bool,
+        actor: ReplicaActor,
         seed: Seed,
     ) -> Result<Self, AppError> {
-        Self::open_lending(catalogue, app_id, room, participant, agent, seed, None)
+        Self::open_lending(catalogue, app_id, room, participant, actor, seed, None)
     }
 
     /// Open the app's attached view with the room's content store, so both
@@ -185,7 +215,7 @@ impl Replica {
         app_id: &str,
         room: &str,
         participant: &str,
-        agent: bool,
+        actor: ReplicaActor,
         seed: Seed,
         content: Option<tilo_content::ContentStore>,
     ) -> Result<Self, AppError> {
@@ -195,16 +225,31 @@ impl Replica {
         let kind = catalogue
             .kind(app_id)
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
-        let permissions = if agent {
-            let operator = policy::roles::AgentPreset::Operator.grants(
-                room,
-                participant,
-                &policy::Subject::person(participant),
-            );
-            PermissionContext::member_of(room, participant, Role::Editor)
-                .acting_as(policy::Subject::agent(participant), operator)
-        } else {
-            PermissionContext::member_of(room, participant, Role::Owner)
+        let mut invoker = tilo_actions::ActionInvoker::actor(participant);
+        let agent = matches!(actor, ReplicaActor::Agent);
+        let offers_reads = matches!(actor, ReplicaActor::Bot { .. });
+        let permissions = match actor {
+            ReplicaActor::Agent => {
+                invoker = invoker.with_kind(tilo_actions::ActorKind::Agent);
+                let operator = policy::roles::AgentPreset::Operator.grants(
+                    room,
+                    participant,
+                    &policy::Subject::person(participant),
+                );
+                PermissionContext::member_of(room, participant, Role::Editor)
+                    .acting_as(policy::Subject::agent(participant), operator)
+            }
+            ReplicaActor::Owner => PermissionContext::member_of(room, participant, Role::Owner),
+            ReplicaActor::Bot {
+                installer,
+                standing,
+                ..
+            } => {
+                invoker = invoker
+                    .with_kind(tilo_actions::ActorKind::Bot)
+                    .acting_for(installer);
+                PermissionContext::from_standing(room, standing)
+            }
         };
         let permissions =
             permissions.with_policy_time_sampler(std::sync::Arc::new(live_policy_time));
@@ -239,11 +284,6 @@ impl Replica {
             kind.read(&doc)
                 .map_err(|error| AppError::Merge(error.to_string()))?;
         }
-        let invoker = tilo_actions::ActionInvoker::actor(participant).with_kind(if agent {
-            tilo_actions::ActorKind::Agent
-        } else {
-            tilo_actions::ActorKind::Person
-        });
         let opening = AttachedView::opening(definition, room, checkout, bytes)
             .for_invoker(&invoker)
             .with_permissions(permissions)
@@ -259,6 +299,7 @@ impl Replica {
             view,
             agent,
             place: None,
+            offers_reads,
         })
     }
 
@@ -323,10 +364,21 @@ impl Replica {
     }
 
     /// Every document operation the participant may perform through the
-    /// view now, as inert descriptors.
+    /// view now, as inert descriptors; for a bot, the record's read effects
+    /// too.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
-        self.view.operations()
+        if !self.offers_reads {
+            return self.view.operations();
+        }
+        tilo_actions::door::survey(&self.view.resources())
+            .into_iter()
+            .filter(|descriptor| {
+                descriptor.kind == tilo_actions::OperationKind::Document
+                    || (descriptor.kind == tilo_actions::OperationKind::Effect
+                        && descriptor.contract.kind == policy::ActionKind::Read)
+            })
+            .collect()
     }
 
     /// All operations of the attached view, including its reads and effects.
@@ -385,7 +437,73 @@ impl Replica {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
     ) -> Result<ActionOutput, DoorError> {
-        let output = self.view.invoke(address, arguments, confirm)?;
+        self.invoke_with(None, None, address, arguments, confirm)
+    }
+
+    /// [`Self::invoke`] showing the appearance a door admitted.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::invoke`].
+    pub fn invoke_appearing(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirm: bool,
+        appearance: Option<tilo_actions::Appearance>,
+    ) -> Result<ActionOutput, DoorError> {
+        self.invoke_within(None, None, appearance, address, arguments, confirm)
+    }
+
+    /// [`Self::invoke`] as `invoker`, with `context` as the ambient entry of
+    /// this one invocation (its source invocation and cause). `None`s act
+    /// as the participant with the view's own context.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::invoke`].
+    pub fn invoke_with(
+        &mut self,
+        invoker: Option<tilo_actions::ActionInvoker>,
+        context: Option<tilo_actions::ActionContext>,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirm: bool,
+    ) -> Result<ActionOutput, DoorError> {
+        self.invoke_within(invoker, context, None, address, arguments, confirm)
+    }
+
+    /// [`Self::invoke_with`] showing `appearance`. Only a door that admitted
+    /// it passes one; `None` clears any appearance the invoker or context
+    /// carried.
+    pub(crate) fn invoke_within(
+        &mut self,
+        invoker: Option<tilo_actions::ActionInvoker>,
+        context: Option<tilo_actions::ActionContext>,
+        appearance: Option<tilo_actions::Appearance>,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirm: bool,
+    ) -> Result<ActionOutput, DoorError> {
+        let previous = context.as_ref().map(|_| self.view.context().cloned());
+        if context.is_some() {
+            self.view.set_context(context);
+        }
+        let output = match invoker {
+            Some(invoker) => self.view.invoke_as(
+                invoker.with_appearance(appearance),
+                address,
+                arguments,
+                confirm,
+            ),
+            None => self
+                .view
+                .invoke_appearing(address, arguments, confirm, appearance),
+        };
+        if let Some(previous) = previous {
+            self.view.set_context(previous);
+        }
+        let output = output?;
         let landed = self.view.landed();
         self.place = landed
             .and_then(|envelope| self.read(|doc| self.kind.lands(doc, &envelope.action)))

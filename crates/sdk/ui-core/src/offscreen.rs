@@ -2250,6 +2250,58 @@ mod tests {
     use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 
     #[test]
+    fn an_image_after_text_and_an_empty_sub_scene_lands_where_it_is_painted() {
+        // Chat paints a line of text, appends a sub-scene that holds nothing,
+        // then an attachment. The text's glyph run leaves its own transform
+        // last in the stream; the empty append must not make the picture
+        // inherit it (that moved it off its card, so it never showed).
+        use std::sync::Arc;
+        use vello::peniko::{Blob, ImageAlphaType, ImageFormat};
+        const W: u32 = 256;
+        const H: u32 = 192;
+        let image = ImageData {
+            data: Blob::new(Arc::new(
+                [230_u8, 40, 40, 255]
+                    .into_iter()
+                    .cycle()
+                    .take(8 * 8 * 4)
+                    .collect::<Vec<u8>>(),
+            )),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 8,
+            height: 8,
+        };
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0, 0, 1),
+            None,
+            &Rect::new(0.0, 0.0, 4.0, 4.0),
+        );
+        crate::text_render::TextRenderer::new().draw_text(
+            &mut scene,
+            "Screen recording",
+            14.0,
+            Color::from_rgb8(0, 0, 2),
+            Affine::translate((10.0, 100.0)),
+            None,
+        );
+        scene.append(&Scene::new(), None);
+        let card = Rect::new(100.0, 20.0, 160.0, 80.0);
+        crate::image_store::paint_image_cover(&mut scene, Affine::IDENTITY, card, &image, 6.0);
+        let pixels = OffscreenRenderer::new(W, H).render(&scene, Color::BLACK);
+        let (r, g, b, _) = OffscreenRenderer::sample(&pixels, W, 130, 50);
+        assert!(
+            r > 200 && g < 80 && b < 80,
+            "the picture on its card: {r},{g},{b}"
+        );
+        let (r, ..) = OffscreenRenderer::sample(&pixels, W, 150, 170);
+        assert!(r < 20, "nothing under the text's transform: {r}");
+    }
+
+    #[test]
     fn offscreen_publication_is_send_resilient_and_decodable() {
         // Case `offscreen_renderer_stays_send`:
         // A `static Mutex<Option<OffscreenRenderer>>` (see the module docs)

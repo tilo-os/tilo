@@ -339,6 +339,7 @@ history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Shortcut
 participant-app = { $name } · App
+participant-bot = { $name } · Bot
 # An agent, a Shortcut or an app acting for a person.
 participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent
@@ -479,3 +480,11 @@ search-apps-group-media = Media
 search-apps-group-system-tools = System tools
 search-apps-group-more-apps = More apps
 search-apps-group-developer-tools = Developer tools
+
+approved-check-reports-disabled = Phase reports unavailable
+
+author-bot-chip = BOT
+author-bot-details = { $bot } (bot, added by { $installer })
+author-bot-details-as = { $name }, via { $bot } (bot, added by { $installer })
+author-bot-linked = Linked to { $person } on Tilo
+author-persona-suffix = { $name } · { $service }

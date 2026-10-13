@@ -1571,22 +1571,7 @@ impl Task {
                 true
             }
             Command::RemoteAction(workspace_id, to, frame) => {
-                if let Some(client) = client {
-                    let _ = client.send(Envelope::RemoteAction {
-                        workspace_id,
-                        version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-                        to_device_public_key: to,
-                        from_device_public_key: self.config.cert.device_public_key,
-                        from_user_public_key: self.config.cert.user_public_key,
-                        frame,
-                    });
-                } else {
-                    self.emit(&PeerEvent::RemoteActionUndeliverable {
-                        workspace_id,
-                        to,
-                        reason: "not connected to the host".into(),
-                    });
-                }
+                self.remote_action(workspace_id, to, frame, client);
                 true
             }
             Command::InstallCipher(route, cipher) => {
@@ -1663,6 +1648,31 @@ impl Task {
             }
             // Handled by the caller's loop.
             Command::Reconnect | Command::Refresh | Command::Close => true,
+        }
+    }
+
+    fn remote_action(
+        &self,
+        workspace_id: u64,
+        to: [u8; 32],
+        frame: Vec<u8>,
+        client: Option<&Link>,
+    ) {
+        if let Some(client) = client {
+            let _ = client.send(Envelope::RemoteAction {
+                workspace_id,
+                version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                to_device_public_key: to,
+                from_device_public_key: self.config.cert.device_public_key,
+                from_user_public_key: self.config.cert.user_public_key,
+                frame,
+            });
+        } else {
+            self.emit(&PeerEvent::RemoteActionUndeliverable {
+                workspace_id,
+                to,
+                reason: "not connected to the host".into(),
+            });
         }
     }
 

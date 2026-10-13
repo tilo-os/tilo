@@ -24,7 +24,7 @@ use super::proto::{
     CONTENT_BATCH_BYTES, FRAMING, MAX_CONTENT_ITEM_BYTES, Mode, PROTOCOL_VERSION, ProbeReport,
     Reply, Request, WireDoorError,
 };
-use crate::apps::{AppCatalogue, Replica, Seed};
+use crate::apps::{AppCatalogue, Replica, ReplicaActor, Seed};
 use crate::room_actions::ViewReadPolicy;
 
 /// Serve as a worker in `mode` on the socket that is this process's stdin.
@@ -95,6 +95,7 @@ struct Worker {
     replica: Option<Replica>,
     /// Whether an agent holds the record and may invoke its reads and effects.
     agent: bool,
+    bot: bool,
     views: Option<(String, automerge::AutoCommit)>,
     read: Option<ReadSession>,
     content: WorkerContent,
@@ -159,6 +160,7 @@ impl Worker {
             catalogue: AppCatalogue::native(),
             replica: None,
             agent: false,
+            bot: false,
             views: None,
             read: None,
             content: WorkerContent::new(),
@@ -174,22 +176,36 @@ impl Worker {
                 app_id,
                 room,
                 participant,
-                agent,
+                actor,
                 seed,
-            } => self.open(&app_id, &room, &participant, agent, seed),
+            } => match decode(&actor) {
+                Ok(actor) => self.open(&app_id, &room, &participant, actor, seed),
+                Err(reason) => Reply::Failed(reason),
+            },
             Request::Invoke {
                 address,
                 arguments,
                 confirm,
+                invoker,
+                context,
+                appearance,
             } => {
-                if self.replica.is_none() {
-                    return Reply::Failed("no record is held".into());
-                }
-                match (decode(&address), decode(&arguments)) {
-                    (Ok(address), Ok(arguments)) => {
-                        output(self.invoke(&address, &arguments, confirm), &address)
+                let invoker = invoker.as_deref().map(decode).transpose();
+                let context = context.as_deref().map(decode).transpose();
+                let appearance = appearance.as_deref().map(decode).transpose();
+                let scope = invoker.and_then(|invoker| {
+                    context.and_then(|context| {
+                        appearance.map(|appearance| (invoker, context, appearance))
+                    })
+                });
+                match (decode(&address), decode(&arguments), scope) {
+                    (Ok(address), Ok(arguments), Ok((invoker, context, appearance))) => output(
+                        self.invoke(&address, &arguments, confirm, invoker, context, appearance),
+                        &address,
+                    ),
+                    (Err(reason), ..) | (_, Err(reason), _) | (.., Err(reason)) => {
+                        Reply::Failed(reason)
                     }
-                    (Err(reason), _) | (_, Err(reason)) => Reply::Failed(reason),
                 }
             }
             Request::ViewsLoad { app_id, doc } => self.load_views(app_id, &doc),
@@ -241,7 +257,7 @@ impl Worker {
                     replica.survey()
                 };
                 for descriptor in &mut offered {
-                    if descriptor.kind != OperationKind::Document {
+                    if self.agent && descriptor.kind != OperationKind::Document {
                         descriptor.params.retain(|param| param.name != "path");
                     }
                 }
@@ -287,7 +303,7 @@ impl Worker {
         app_id: &str,
         room: &str,
         participant: &str,
-        agent: bool,
+        actor: ReplicaActor,
         seed: Option<(String, Vec<Vec<u8>>)>,
     ) -> Reply {
         if self.mode != Mode::Replica || self.replica.is_some() {
@@ -300,12 +316,14 @@ impl Worker {
                 None => return Reply::Failed("invalid record id".into()),
             },
         };
+        let agent = matches!(actor, ReplicaActor::Agent);
+        let bot = matches!(actor, ReplicaActor::Bot { .. });
         match Replica::open_lending(
             &self.catalogue,
             app_id,
             room,
             participant,
-            agent,
+            actor,
             seed,
             Some(self.content.store.clone()),
         ) {
@@ -313,6 +331,7 @@ impl Worker {
                 let record = replica.record_id().as_str().to_owned();
                 self.replica = Some(replica);
                 self.agent = agent;
+                self.bot = bot;
                 Reply::Opened { record }
             }
             Err(error) => Reply::Failed(error.to_string()),
@@ -327,6 +346,9 @@ impl Worker {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
+        invoker: Option<tilo_actions::ActionInvoker>,
+        context: Option<tilo_actions::ActionContext>,
+        appearance: Option<tilo_actions::Appearance>,
     ) -> Result<tilo_actions::ActionOutput, DoorError> {
         let Some(replica) = self.replica.as_mut() else {
             return Err(DoorError::Unknown(address.clone()));
@@ -336,10 +358,10 @@ impl Worker {
             .ok_or_else(|| DoorError::Unknown(address.clone()))?;
         if self.agent {
             admit_agent(spec, arguments)?;
-        } else if spec.kind != OperationKind::Document {
+        } else if !self.bot && spec.kind != OperationKind::Document {
             return Err(DoorError::Unknown(address.clone()));
         }
-        replica.invoke(address, arguments, confirm)
+        replica.invoke_within(invoker, context, appearance, address, arguments, confirm)
     }
 
     fn load_views(&mut self, app_id: String, bytes: &[u8]) -> Reply {

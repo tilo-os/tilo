@@ -157,6 +157,18 @@ pub fn admit_invited_member(
     if exact_redemption {
         return Ok(AdmissionOutcome::AlreadyApplied);
     }
+    // A banned person stays out whatever invitation they hold, an older one
+    // or a new one, until the room unbans them.
+    let banned = tilo_action_policy::roles::block_grant_id(&hex::encode(
+        redemption.certificate().user_public_key,
+    ));
+    if crate::room::policy::legacy(document)
+        .grants
+        .iter()
+        .any(|grant| grant.id == banned)
+    {
+        return Err("this person is banned from the room".into());
+    }
     let cert = redemption.certificate();
     let id = hex::encode(cert.device_public_key);
     let prior = governance
@@ -210,7 +222,7 @@ pub fn admit_invited_member(
     }
     // An agent identity stays bound to its delegation whatever else it
     // redeems: the delegation's window and withdrawal still apply.
-    let (revocations, mut admission, mut admissions, workspace_delegations, agent) = prior
+    let (revocations, mut admission, mut admissions, workspace_delegations, delegate) = prior
         .map_or_else(
             || (Vec::new(), None, Vec::new(), Vec::new(), None),
             |identity| {
@@ -219,7 +231,7 @@ pub fn admit_invited_member(
                     identity.admission,
                     identity.admissions,
                     identity.workspace_delegations,
-                    identity.agent,
+                    identity.delegate,
                 )
             },
         );
@@ -235,7 +247,7 @@ pub fn admit_invited_member(
         admission,
         admissions,
         workspace_delegations,
-        agent,
+        delegate,
     };
     candidate
         .put(

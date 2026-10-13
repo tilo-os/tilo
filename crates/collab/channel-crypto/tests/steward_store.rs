@@ -229,9 +229,18 @@ fn every_point_a_change_can_stop_at_reopens_whole() {
             channel,
             &browser,
         );
-        let frames = reopened.journal().frames().len();
+        // The journal keeps genesis and its head.
         let recorded = step >= 2;
-        assert_eq!(frames, if recorded { 2 } else { 1 }, "step {step}");
+        assert_eq!(
+            reopened.journal().frames().len(),
+            if recorded { 2 } else { 1 },
+            "step {step}"
+        );
+        assert_eq!(
+            reopened.journal().head_epoch(),
+            Some(u64::from(recorded)),
+            "step {step}"
+        );
         assert_eq!(reopened.epoch(), u64::from(recorded), "step {step}");
         assert_eq!(
             reopened.members().contains(&public(&laptop)),
@@ -261,4 +270,41 @@ fn member_from(member: &ChannelMember) -> ChannelMember {
         &vault(),
     )
     .unwrap()
+}
+
+#[test]
+fn an_admission_reaches_everyone_else_without_what_its_recipients_join_from() {
+    let channel = ChannelId::new();
+    let browser = SigningKey::from_bytes(&[7; 32]);
+    let laptop = SigningKey::from_bytes(&[8; 32]);
+    let phone = SigningKey::from_bytes(&[9; 32]);
+    let mut steward = open(MemoryStewardStore::new(), channel, &browser);
+    let mut first = waiting(channel, &laptop, &browser);
+    let requests = asked(&mut first, &laptop);
+    let allowed = BTreeSet::from([public(&laptop)]);
+    pollster::block_on(steward.reconcile_async(&allowed, &requests, &vault())).unwrap();
+    deliver(&steward, &mut first);
+    assert_eq!(first.access(), Access::Ready { epoch: 1 });
+
+    let mut second = waiting(channel, &phone, &browser);
+    let requests = asked(&mut second, &phone);
+    let allowed = BTreeSet::from([public(&laptop), public(&phone)]);
+    pollster::block_on(steward.reconcile_async(&allowed, &requests, &vault())).unwrap();
+    let admission = steward.journal().frames().last().unwrap().clone();
+    let withheld = admission
+        .withheld()
+        .unwrap()
+        .expect("an admission carries material");
+
+    // The member already in the channel applies the commit from the copy
+    // without the Welcome.
+    first.receive(withheld.clone(), &vault()).unwrap();
+    assert_eq!(first.access(), Access::Ready { epoch: 2 });
+    // The device it adds waits for its own copy, which then still joins.
+    assert_eq!(
+        second.receive(withheld, &vault()).unwrap(),
+        vec![channel_crypto::MemberEvent::Buffered]
+    );
+    second.receive(admission, &vault()).unwrap();
+    assert_eq!(second.access(), Access::Ready { epoch: 2 });
 }

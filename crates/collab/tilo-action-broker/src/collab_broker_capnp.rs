@@ -662,6 +662,19 @@ impl BrokerActor {
         }
     }
 
+    /// Installed bot `installation`, acting for the person who installed it:
+    /// it may do only what both its grant and that person may.
+    #[must_use]
+    pub fn bot(installation: &str, installer: impl Into<String>) -> Self {
+        Self {
+            id: format!("bot:{installation}"),
+            is_agent: false,
+            capped: false,
+            for_person: Some(installer.into()),
+            session_delegated: false,
+        }
+    }
+
     /// The same agent, acting for `person`.
     #[must_use]
     pub fn for_person(mut self, person: impl Into<String>) -> Self {
@@ -700,6 +713,11 @@ impl BrokerActor {
     fn delegate(&self) -> Option<Subject> {
         if let Some(app) = self.id.strip_prefix("app:") {
             return Some(Subject::App(app.to_owned()));
+        }
+        // A person's policy id is lowercase hex, so it never starts with
+        // `bot:` and the prefix cannot misread a person.
+        if let Some(bot) = self.id.strip_prefix("bot:") {
+            return Some(Subject::Bot(bot.to_owned()));
         }
         self.is_agent
             .then(|| Subject::agent(self.id.strip_prefix("agent:").unwrap_or(&self.id)))
@@ -8422,6 +8440,27 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
+    fn approved_check_reported_progress(
+        self: Rc<Self>,
+        params: channel_handle::ApprovedCheckReportedProgressParams,
+        mut results: channel_handle::ApprovedCheckReportedProgressResults,
+    ) -> Promise<(), capnp::Error> {
+        let request = params
+            .get()
+            .and_then(channel_handle::approved_check_reported_progress_params::Reader::get_request)
+            .map_err(|error| error.to_string())
+            .and_then(runtime_collab::approved_checks::Request::decode);
+        let stream = request
+            .and_then(|request| approved_checks::context(&self, request))
+            .and_then(approved_checks::reported_progress);
+        match stream {
+            Ok(stream) => {
+                results.get().set_stream(stream);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
     fn approved_check(
         self: Rc<Self>,
         params: channel_handle::ApprovedCheckParams,
@@ -14641,6 +14680,10 @@ pub mod tests {
     #[cfg(test)]
     include!("approved_check_rpc_tests.rs");
     #[cfg(test)]
+    include!("approved_check_progress_fixture.rs");
+    #[cfg(test)]
+    include!("approved_check_progress_rpc_tests.rs");
+    #[cfg(test)]
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
     include!("canonical_route_tests.rs");
@@ -15388,6 +15431,7 @@ pub mod tests {
                     revision: Some("directory-r1".into()),
                     on_behalf_of: None,
                     wait_ms: None,
+                    appearance: None,
                 };
                 let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
                 let admitted = tokio::time::timeout(Duration::from_secs(2), async {
@@ -15501,6 +15545,7 @@ pub mod tests {
                 argument: InvokeArgument::None, context: None, confirmation: None,
                 revision: None, on_behalf_of: None,
                 wait_ms: None,
+                appearance: None,
             };
             let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
             let PendingPoll::Ready(Ok(receipt)) = pending.poll_ready() else {

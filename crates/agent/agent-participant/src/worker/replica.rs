@@ -14,7 +14,7 @@ use ui::record::RecordId;
 
 use super::process::Process;
 use super::proto::{MAX_CONTENT_ITEM_BYTES, Mode, Reply, Request};
-use crate::apps::{AppCatalogue, AppError, Seed};
+use crate::apps::{AppCatalogue, AppError, ReplicaActor, Seed};
 
 /// How often a worker that died is replaced, from what the supervisor holds
 /// of its record, before the record is given up on: a document that crashes
@@ -53,6 +53,8 @@ pub struct ConfinedReplica {
     app_id: String,
     room: String,
     participant: String,
+    /// JSON [`ReplicaActor`], sent again to a revived worker.
+    actor: String,
     agent: bool,
     record: RecordId,
     content: Option<ContentStore>,
@@ -91,9 +93,12 @@ impl ConfinedReplica {
         app_id: &str,
         room: &str,
         participant: &str,
-        agent: bool,
+        actor: &ReplicaActor,
         seed: Seed,
     ) -> Result<Self, AppError> {
+        let agent = matches!(actor, ReplicaActor::Agent);
+        let actor =
+            serde_json::to_string(actor).map_err(|error| worker_error(error.to_string()))?;
         let definition = catalogue
             .get(app_id)
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
@@ -112,7 +117,7 @@ impl ConfinedReplica {
                 app_id: definition.app_id.to_owned(),
                 room: room.to_owned(),
                 participant: participant.to_owned(),
-                agent,
+                actor: actor.clone(),
                 seed,
             })
             .map_err(worker_error)?;
@@ -127,6 +132,7 @@ impl ConfinedReplica {
             app_id: definition.app_id.to_owned(),
             room: room.to_owned(),
             participant: participant.to_owned(),
+            actor,
             agent,
             record,
             content: None,
@@ -263,7 +269,7 @@ impl ConfinedReplica {
                 app_id: self.app_id.clone(),
                 room: self.room.clone(),
                 participant: self.participant.clone(),
-                agent: self.agent,
+                actor: self.actor.clone(),
                 seed: Some((self.record.as_str().to_owned(), vec![inner.mirror.save()])),
             })
             .map_err(worker_error)?
@@ -348,6 +354,53 @@ impl ConfinedReplica {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
     ) -> Result<ActionOutput, DoorError> {
+        self.invoke_with(None, None, address, arguments, confirm)
+    }
+
+    /// [`Self::invoke`] showing the appearance the door admitted:
+    /// [`crate::Replica::invoke_appearing`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::invoke`].
+    pub fn invoke_appearing(
+        &self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirm: bool,
+        appearance: Option<&tilo_actions::Appearance>,
+    ) -> Result<ActionOutput, DoorError> {
+        self.invoke_within(None, None, appearance, address, arguments, confirm)
+    }
+
+    /// [`Self::invoke`] as `invoker` within `context`:
+    /// [`crate::Replica::invoke_with`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::invoke`].
+    pub fn invoke_with(
+        &self,
+        invoker: Option<&tilo_actions::ActionInvoker>,
+        context: Option<&tilo_actions::ActionContext>,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirm: bool,
+    ) -> Result<ActionOutput, DoorError> {
+        self.invoke_within(invoker, context, None, address, arguments, confirm)
+    }
+
+    /// [`Self::invoke_with`] showing `appearance`, which only a door that
+    /// admitted it passes.
+    pub(crate) fn invoke_within(
+        &self,
+        invoker: Option<&tilo_actions::ActionInvoker>,
+        context: Option<&tilo_actions::ActionContext>,
+        appearance: Option<&tilo_actions::Appearance>,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirm: bool,
+    ) -> Result<ActionOutput, DoorError> {
         let unavailable = |reason: String| DoorError::Unavailable {
             code: "app_worker".into(),
             reason,
@@ -356,6 +409,18 @@ impl ConfinedReplica {
             address: serde_json::to_string(address).map_err(|e| unavailable(e.to_string()))?,
             arguments: serde_json::to_string(arguments).map_err(|e| unavailable(e.to_string()))?,
             confirm,
+            invoker: invoker
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| unavailable(e.to_string()))?,
+            context: context
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| unavailable(e.to_string()))?,
+            appearance: appearance
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| unavailable(e.to_string()))?,
         };
         let mut inner = self.lock();
         if let Some(content) = &self.content {
@@ -559,6 +624,12 @@ impl ConfinedReplica {
     /// worker and everything applied, as admitted here.
     pub fn read<R>(&self, read: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
         Some(read(&self.lock().mirror))
+    }
+
+    /// [`Self::read`] through the mirror's history: its heads and changes,
+    /// which a reader of events after a cursor needs.
+    pub fn read_history<R>(&self, read: impl FnOnce(&automerge::Automerge) -> R) -> R {
+        read(self.lock().mirror.document())
     }
 
     /// This participant's changes since the last call, or `None`:

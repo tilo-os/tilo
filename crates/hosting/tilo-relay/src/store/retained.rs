@@ -5,7 +5,9 @@
 //! receipt order; only proven raw Automerge ancestry permits collection. A
 //! replacement generation is collected only after its CURRENT selector is synced.
 //! An opaque checkpoint cannot prove that a queue entry is covered merely
-//! because its filename or timestamp is older.
+//! because its filename or timestamp is older, unless the retention
+//! classifier calls its message standalone: then it is the whole of its
+//! author's route, and replaces what that author retained there before.
 
 use super::{RETAINED_DIR, StoreError, WorkspaceStore};
 use crate::store::bounded::Invariant;
@@ -104,6 +106,30 @@ fn checkpoint_key(bytes: &[u8], workspace: u64) -> Option<blake3::Hash> {
     hash.update(&channel);
     hash.update(&body);
     Some(hash.finalize())
+}
+
+/// The author and channel of a checkpoint whose message is the whole of its
+/// route ([`tilo_peer_state::transport::standalone`]).
+fn standalone(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 32])> {
+    let (author, CoeditPayload::Checkpoint { channel, body }) = payload(bytes, workspace)? else {
+        return None;
+    };
+    let (message, rest) = postcard::take_from_bytes::<tilo_peer_state::NeighbourMsg>(&body).ok()?;
+    let routed = rest.is_empty()
+        && tilo_peer_state::transport::retention(&message, false)
+            == Some((channel, tilo_peer_state::transport::Retention::Checkpoint))
+        && tilo_peer_state::transport::standalone(&message);
+    routed.then_some((author, channel))
+}
+
+/// Whether standalone `checkpoint` replaces `prior`: retained earlier by the
+/// same author on the same channel.
+fn replaces(checkpoint: &[u8], prior: &[u8], workspace: u64) -> bool {
+    standalone(checkpoint, workspace).is_some_and(|(author, channel)| {
+        identity(prior, workspace).is_some_and(|(old_author, old_channel, _)| {
+            old_author == author && old_channel == channel
+        })
+    })
 }
 
 /// Frame the pinned Automerge chunk format only; Automerge itself validates
@@ -571,7 +597,11 @@ fn commit_generation(
     for (index, entry) in retained.iter().enumerate() {
         fs::hard_link(&entry.path, generation.join(format!("{index:016x}.delta")))?;
     }
-    sync_dir(&generation)?;
+    // A checkpoint alone was synced with its directory by `durable_write`,
+    // and an empty generation has no entries to sync.
+    if !retained.is_empty() {
+        sync_dir(&generation)?;
+    }
     durable_write(&lineage.join("CURRENT"), name.as_bytes())?;
     Ok(generation)
 }
@@ -581,6 +611,10 @@ pub(crate) struct GenerationGc {
     lineage: PathBuf,
     entries: super::bounded::DirectoryCursor,
     child: Option<(PathBuf, super::bounded::DirectoryCursor)>,
+    /// The next quantum's barrier already holds: the caller has just
+    /// written CURRENT with [`durable_write`], which synced it and the
+    /// lineage after the rename.
+    barrier_held: bool,
 }
 impl GenerationGc {
     pub(crate) fn new(lineage: PathBuf) -> Result<Self, StoreError> {
@@ -588,6 +622,15 @@ impl GenerationGc {
             entries: super::bounded::DirectoryCursor::open(&lineage)?,
             lineage,
             child: None,
+            barrier_held: false,
+        })
+    }
+    /// Collect after this process just wrote the lineage's CURRENT with
+    /// [`durable_write`]: the first quantum needs no barrier of its own.
+    fn after_commit(lineage: PathBuf) -> Result<Self, StoreError> {
+        Ok(Self {
+            barrier_held: true,
+            ..Self::new(lineage)?
         })
     }
     pub(crate) fn step(
@@ -597,8 +640,10 @@ impl GenerationGc {
         use super::bounded::Step;
         let limit = limit.checked()?;
         // Reestablish Task 1's mandatory barrier after reopen and before every quantum.
-        sync_file_once(&self.lineage.join("CURRENT"))?;
-        sync_dir_once(&self.lineage)?;
+        if !std::mem::take(&mut self.barrier_held) {
+            sync_file_once(&self.lineage.join("CURRENT"))?;
+            sync_dir_once(&self.lineage)?;
+        }
         let active = current(&self.lineage)?.ok_or_else(|| invalid("missing CURRENT during GC"))?;
         for _ in 0..limit.record_entries() {
             if let Some((path, entries)) = &mut self.child {
@@ -696,6 +741,9 @@ pub(crate) struct RetainBuild {
     last: u64,
     key: Option<blake3::Hash>,
     staged: Option<PathBuf>,
+    /// Every entry of `staged` is durable: the last change to it was a
+    /// [`durable_write`] into it, which synced it after its rename.
+    staged_synced: bool,
     staged_append: bool,
     survivors: u64,
     written: u64,
@@ -921,12 +969,14 @@ impl RetainBuild {
         } else if self.continuity.is_none()
             && self.checkpoint
             && !self.opaque
-            && covers(&self.bytes, &self.bytes, self.workspace)
+            && (covers(&self.bytes, &self.bytes, self.workspace)
+                || standalone(&self.bytes, self.workspace).is_some())
         {
             let staged = self.lineage.join(hex::encode(rand::random::<[u8; 16]>()));
             create_dir(&staged)?;
             durable_write(&staged.join("checkpoint.delta"), &self.bytes)?;
             self.staged = Some(staged);
+            self.staged_synced = true;
             #[cfg(test)]
             super::test_barrier::check(&self.lineage, "checkpoint-stage-after-allocation")?;
             self.phase = RetainPhase::Stage(fs::File::open(
@@ -1139,7 +1189,8 @@ impl RetainBuild {
                         // an unproved checkpoint keeps opaque receipt ordering.
                         self.opaque |= identity(&record.bytes, self.workspace)
                             .is_some_and(|(_, _, checkpoint)| checkpoint)
-                            && !covers(&record.bytes, &record.bytes, self.workspace);
+                            && !covers(&record.bytes, &record.bytes, self.workspace)
+                            && !replaces(&self.bytes, &record.bytes, self.workspace);
                     } else {
                         self.duplicate |= record.bytes == self.bytes;
                     }
@@ -1168,6 +1219,7 @@ impl RetainBuild {
                                 super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
                             }
                             durable_write(&path, &self.bytes)?;
+                            self.staged_synced = true;
                         }
                         self.phase = RetainPhase::Commit;
                         return Ok(Step::More);
@@ -1188,7 +1240,9 @@ impl RetainBuild {
                                     .ok_or_else(|| invalid("retained record name"))?,
                             ),
                         )
-                    } else if !covers(&self.bytes, &record.bytes, self.workspace) {
+                    } else if !covers(&self.bytes, &record.bytes, self.workspace)
+                        && !replaces(&self.bytes, &record.bytes, self.workspace)
+                    {
                         let path = self
                             .staged
                             .as_ref()
@@ -1202,6 +1256,7 @@ impl RetainBuild {
                     if let Some(destination) = destination {
                         let source = record.path.clone();
                         drop(record);
+                        self.staged_synced = false;
                         fs::hard_link(&source, &destination)?;
                         super::continuity::copy_measured(
                             &self.store,
@@ -1216,7 +1271,9 @@ impl RetainBuild {
             RetainPhase::Commit => {
                 let staged = self.staged.as_ref().invariant("staged missing")?;
                 tail_index::forget(&self.lineage);
-                sync_dir(staged)?;
+                if !self.staged_synced {
+                    sync_dir(staged)?;
+                }
                 durable_write(
                     &self.lineage.join("CURRENT"),
                     staged
@@ -1225,8 +1282,9 @@ impl RetainBuild {
                         .as_encoded_bytes(),
                 )?;
                 self.written = self.bytes.len() as u64;
-                self.phase =
-                    RetainPhase::Collect(Box::new(GenerationGc::new(self.lineage.clone())?));
+                self.phase = RetainPhase::Collect(Box::new(GenerationGc::after_commit(
+                    self.lineage.clone(),
+                )?));
             }
             RetainPhase::Collect(gc) => {
                 if gc.step(limit)? == Step::Done(()) {
@@ -1443,6 +1501,7 @@ impl WorkspaceStore {
             last: indexed.unwrap_or(0),
             key,
             staged: None,
+            staged_synced: false,
             staged_append: false,
             survivors: 0,
             written: 0,
@@ -2095,6 +2154,67 @@ pub(super) mod tests {
             .unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![first, second, tail]);
+    }
+
+    #[test]
+    fn a_standalone_checkpoint_replaces_its_authors_earlier_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let channel = collab_types::ChannelId::new();
+        let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
+        let ack = |through: u8, timestamp: u64| {
+            let message = tilo_peer_state::NeighbourMsg::MlsGovernanceAck {
+                room: "room".into(),
+                ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
+                    channel,
+                    device,
+                    [through; 32],
+                )),
+                delivery: 0,
+            };
+            let (route, _) = tilo_peer_state::transport::retention(&message, false).unwrap();
+            let bytes = crate::transport::encode(&Envelope::Delta {
+                workspace_id: 7,
+                author_device_public_key: [1; 32],
+                authored_at_ns: timestamp,
+                delta: CoeditPayload::Checkpoint {
+                    channel: route,
+                    body: postcard::to_stdvec(&message).unwrap(),
+                }
+                .encode()
+                .unwrap(),
+                signature: [0; 64],
+            })
+            .unwrap();
+            (route, bytes)
+        };
+        let (route, first) = ack(1, 1);
+        let (_, second) = ack(2, 2);
+        let (_, third) = ack(3, 3);
+        for checkpoint in [&first, &second, &third] {
+            let before = crate::store::thread_fsyncs();
+            store.retain_checkpoint(&route, checkpoint).unwrap();
+            if checkpoint == &third {
+                // Once the store's own directories have settled: the staged
+                // generation's directory, its checkpoint and that
+                // directory, CURRENT and the lineage, and the lineage once
+                // the replaced generation is gone; Apple repeats the
+                // directory barrier of each `durable_write`. That last
+                // lineage barrier is a `sync_dir_once`: on a filesystem whose
+                // change times are coarser than this test, the lineage's
+                // stamp still matches the one synced with CURRENT and the
+                // barrier is rightly skipped (collection is redone after a
+                // crash), so it may or may not be counted.
+                let barriers = if cfg!(target_vendor = "apple") { 8 } else { 6 };
+                let issued = crate::store::thread_fsyncs() - before;
+                assert!(
+                    (barriers - 1..=barriers).contains(&issued),
+                    "{issued} barriers, expected {barriers} or one fewer"
+                );
+            }
+        }
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        assert_eq!(store.load_retained().unwrap(), vec![third]);
     }
 
     #[test]

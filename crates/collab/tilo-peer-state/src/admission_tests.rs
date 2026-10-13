@@ -375,6 +375,77 @@ pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert,
     (native, a, b, bc, now)
 }
 
+/// Invite a second person into `peer` as an Editor with one device, as the
+/// governor `authority`: their device certificate and root.
+pub(crate) fn add_editor(
+    peer: &mut StatePeer,
+    authority: &SigningKey,
+    now: SystemTime,
+) -> (DeviceCert, [u8; 32]) {
+    use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
+    let root = SigningKey::from_bytes(&[5; 32]);
+    let device = SigningKey::from_bytes(&[6; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "Editor".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    let now_ns = u64::try_from(
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap();
+    let owner = peer.authority().clone();
+    let signed = issue_invitation(
+        InviteGrant {
+            workspace_id: 7,
+            room: peer.room().into(),
+            authority: owner.clone(),
+            issuer: owner,
+            delegation: None,
+            role: MemberRole::Editor,
+            nonce: [53; 16],
+            recipient_user_public_key: Some(cert.user_public_key),
+            invitee_name: Some("Editor".into()),
+            expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
+            transport: vec![],
+        },
+        authority,
+    )
+    .unwrap();
+    let join = crate::join::decode_and_verify_invitation(
+        &signed,
+        Some(cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let challenge = JoinChallenge::new(
+        &join,
+        &cert,
+        [54; 32],
+        [55; 32],
+        now_ns.checked_add(1_000_000_000).unwrap(),
+        now_ns,
+    )
+    .unwrap();
+    let proof = sign_join_proof(challenge.clone(), &device).unwrap();
+    let redemption =
+        crate::join::verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns)
+            .unwrap();
+    assert!(
+        peer.admit_invited_member(&redemption, authority, now)
+            .unwrap()
+    );
+    (cert, root.verifying_key().to_bytes())
+}
+
 pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -3021,3 +3092,121 @@ fn selective_publication_cannot_discard_prior_document_basis() {
 mod copy_on_write;
 #[path = "delivery_admission_tests.rs"]
 mod delivery_admission;
+
+/// An invitation for `guest_cert` with `nonce`, redeemed by its device.
+fn guest_redemption(
+    peer: &StatePeer,
+    authority_key: &SigningKey,
+    guest_key: &SigningKey,
+    guest_cert: &DeviceCert,
+    nonce: u8,
+    now: SystemTime,
+) -> crate::join::VerifiedRedemption {
+    use crate::join::{
+        InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
+        verify_join_proof,
+    };
+    let now_ns: u64 = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .try_into()
+        .unwrap();
+    let signed = issue_invitation(
+        InviteGrant {
+            workspace_id: 7,
+            room: peer.room().into(),
+            authority: peer.authority().clone(),
+            issuer: peer.authority().clone(),
+            delegation: None,
+            role: MemberRole::Editor,
+            nonce: [nonce; 16],
+            recipient_user_public_key: Some(guest_cert.user_public_key),
+            invitee_name: Some("Guest".into()),
+            expires_at_ns: now_ns.saturating_add(10_000_000_000),
+            transport: vec![],
+        },
+        authority_key,
+    )
+    .unwrap();
+    let join = crate::join::decode_and_verify_invitation(
+        &signed,
+        Some(guest_cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let challenge = JoinChallenge::new(
+        &join,
+        guest_cert,
+        [nonce.wrapping_add(1); 32],
+        [nonce.wrapping_add(2); 32],
+        now_ns.saturating_add(1_000_000_000),
+        now_ns,
+    )
+    .unwrap();
+    let proof = sign_join_proof(challenge.clone(), guest_key).unwrap();
+    verify_join_proof(
+        &proof,
+        &challenge,
+        guest_cert,
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let guest_root = SigningKey::from_bytes(&[61; 32]);
+    let guest_key = SigningKey::from_bytes(&[62; 32]);
+    let mut guest_cert = DeviceCert {
+        user_public_key: guest_root.verifying_key().to_bytes(),
+        device_public_key: guest_key.verifying_key().to_bytes(),
+        device_label: "Guest".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut guest_cert, &guest_root).unwrap();
+    let first = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 70, now);
+    let unused = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 80, now);
+    assert!(
+        peer.admit_invited_member(&first, &authority_key, now)
+            .unwrap()
+    );
+    let owner = hex::encode(peer.authority().user_public_key);
+    assert!(
+        peer.ban_member(guest_cert.user_public_key, &owner, &authority_key, now)
+            .unwrap()
+    );
+    assert!(peer.permissions(guest_cert.device_public_key, now).is_err());
+    assert!(
+        !peer
+            .governed_access(now)
+            .unwrap()
+            .member_user_roots
+            .contains(&guest_cert.user_public_key)
+    );
+    assert!(
+        peer.admit_invited_member(&unused, &authority_key, now)
+            .is_err(),
+        "an invitation issued before the ban does not let them back"
+    );
+    assert!(
+        peer.unban_member(guest_cert.user_public_key, &authority_key, now)
+            .unwrap()
+    );
+    assert!(
+        peer.admit_invited_member(&unused, &authority_key, now)
+            .unwrap()
+    );
+    assert_eq!(
+        peer.permissions(guest_cert.device_public_key, now)
+            .unwrap()
+            .role,
+        collab_types::Role::Editor
+    );
+}
