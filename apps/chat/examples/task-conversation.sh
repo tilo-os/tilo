@@ -19,13 +19,16 @@ if [[ -n "$image" ]]; then
         -v "$binary:/usr/local/bin/chat:ro" -v "$out:/capture:rw" \
         -e WGPU_BACKEND=vulkan \
         -e VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
-        -e XDG_RUNTIME_DIR=/tmp/chat-runtime -e XDG_CACHE_HOME=/tmp/chat-cache \
         "$image" bash -euc '
             unset DISPLAY WAYLAND_DISPLAY
-            mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CACHE_HOME"
-            chmod 700 "$XDG_RUNTIME_DIR"
+            runtime="$(mktemp -d)"
+            trap '\''rm -rf "$runtime"'\'' EXIT
+            export XDG_RUNTIME_DIR="$runtime" XDG_CACHE_HOME="$runtime/cache"
+            mkdir -p "$XDG_CACHE_HOME"
             chat --shots /capture/normal.png --scenario agent-task
             chat --shots /capture/compact.png --scenario agent-task-compact
+            chat --shots /capture/queued.png --scenario agent-task-queued
+            chat --shots /capture/queued-compact.png --scenario agent-task-queued-compact
         '
 else
     # Direct execution needs matching host libraries/fonts and an offscreen GPU
@@ -38,6 +41,8 @@ else
     unset DISPLAY WAYLAND_DISPLAY
     "$binary" --shots "$out/normal.png" --scenario agent-task
     "$binary" --shots "$out/compact.png" --scenario agent-task-compact
+    "$binary" --shots "$out/queued.png" --scenario agent-task-queued
+    "$binary" --shots "$out/queued-compact.png" --scenario agent-task-queued-compact
 fi
-[[ -s "$out/normal.png" && -s "$out/compact.png" ]]
-printf 'Captures: %s/{normal,compact}.png\n' "$out"
+[[ -s "$out/normal.png" && -s "$out/compact.png" && -s "$out/queued.png" && -s "$out/queued-compact.png" ]]
+printf 'Captures: %s/{normal,compact,queued,queued-compact}.png\n' "$out"
