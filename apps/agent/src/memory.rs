@@ -139,14 +139,6 @@ impl Memory {
         s.push('\n');
         s
     }
-
-    pub fn len(&self) -> usize {
-        self.exchanges.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.exchanges.is_empty()
-    }
 }
 
 #[cfg(test)]
@@ -165,7 +157,7 @@ mod tests {
         }
         let rendered = memory.render();
         assert!(rendered.len() <= MEMORY_CHARS, "{}", rendered.len());
-        assert!(memory.len() <= MEMORY_EXCHANGES);
+        assert!(memory.exchanges.len() <= MEMORY_EXCHANGES);
         assert!(rendered.contains("reply 19"));
         assert!(!rendered.contains("reply 0\n"));
         assert!(rendered.contains("older exchange(s) not shown"));
