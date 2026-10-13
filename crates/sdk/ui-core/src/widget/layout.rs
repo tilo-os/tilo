@@ -270,6 +270,10 @@ pub(super) unsafe fn compute_widget_layout_depth(
             taffy.mark_dirty(node)?;
         }
     }
+    // Outermost first: resetting a region dirties the regions inside it.
+    for (node, policy) in &policies {
+        super::manual::reset_region(policy, taffy, *node)?;
+    }
     for _ in 0..8 {
         taffy.compute_layout_with_measure(root, available, |known, available, node, _, _| {
             // SAFETY: caller owns the stable matching tree, each callback is
