@@ -2037,6 +2037,18 @@ fn render_strips_alone(
 /// rasterises only what it uncovered.
 #[cfg(target_os = "linux")]
 fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
+    // Notes' real save-status bubbles linger for 1.9 seconds after the
+    // fixture acknowledges startup writes. A GPU readback can cross that
+    // deadline between the retained and dense draws, comparing two distinct
+    // widget states. Pin the toolkit clock for this production-path oracle;
+    // the explicitly driven strip pans still advance on every frame.
+    ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        assert_pan_composites_like_full_renders_at_fixed_time(desktop);
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn assert_pan_composites_like_full_renders_at_fixed_time(desktop: PanDesktop) {
     let size = desktop.panel;
     let mut clock = tilo_test_env::ScopedEnv::new();
     let _ambient = DenyAmbientStarts::new();
