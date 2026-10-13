@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(handle.generation(), start.wrapping_add(2));
     }
 
-    /// the collaboration broker re-checks rosters, roles and
+    /// #4022: the collaboration broker re-checks rosters, roles and
     /// grants on the policy announcement a released write makes when it
     /// changed them, so no writer can change who may do what without it
     /// hearing; and the frame's writes to strips and records, which decide

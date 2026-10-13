@@ -3280,6 +3280,7 @@ impl ShellNetwork {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         );
         if self.send_remote_action(topic, endpoint, message) {
@@ -8619,6 +8620,7 @@ mod tests {
                     confirmation: None,
                     revision: None,
                     wait_ms: None,
+                    appearance: None,
                 },
             ),
         )
@@ -8729,6 +8731,7 @@ mod tests {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             });
 
             let mut round_trip = |request: RemoteActionMessage| {
@@ -10813,27 +10816,30 @@ mod tests {
         let registry = crate::shell::personal_continuity_registry::global_registry();
         {
             let mut reports = registry.lock().expect("continuation registry");
-            for (tab, app_id, metadata) in [
+            for (tab, app_id, schema_version, metadata) in [
                 (
                     browser_tab,
                     "so.tilo.browser",
+                    ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                     br#"{"url":"https://example.test/reading"}"#.to_vec(),
                 ),
                 (
                     ebook_tab,
                     "so.tilo.ebook",
+                    ui::collaboration::semantic_schema::PUBLICATION_POSITION_V1,
                     br#"{"book_id":"book-42","chapter":4,"page":9}"#.to_vec(),
                 ),
                 (
                     music_tab,
                     "so.tilo.music",
+                    ui::collaboration::semantic_schema::MEDIA_POSITION_V1,
                     br#"{"track_id":"track-42","position_ms":12345,"paused":true}"#.to_vec(),
                 ),
             ] {
                 let metadata = ui::app::compose_structural_continuation_metadata(
                     ui::view::View::default(),
                     Some(ui::collaboration::ContinuationMetadata {
-                        schema_version: 1,
+                        schema_version,
                         bytes: metadata,
                     }),
                 )

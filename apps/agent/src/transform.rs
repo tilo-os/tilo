@@ -729,25 +729,6 @@ pub fn invocation_of(id: u64) -> InvocationId {
     InvocationId(uuid::Uuid::from_u128(u128::from(id)))
 }
 
-/// Carry out one directed invocation to its terminal update.
-#[must_use]
-pub fn perform(
-    id: u64,
-    action: &str,
-    argument: Option<&str>,
-    content: &tilo_content::ContentStore,
-    model: &dyn TransformModel,
-) -> InvocationUpdate {
-    let invocation = invocation_of(id);
-    match bind_wire(action, argument, content).and_then(|call| run(&call, model)) {
-        Ok(output) => InvocationUpdate::Succeeded { invocation, output },
-        Err(error) => InvocationUpdate::Failed {
-            invocation,
-            error: *error,
-        },
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Serving invocations
 // ---------------------------------------------------------------------------
@@ -873,12 +854,6 @@ impl TransformService {
             }
         }
         done
-    }
-
-    /// How many transforms are running.
-    #[must_use]
-    pub fn running(&self) -> usize {
-        self.running.len()
     }
 }
 
@@ -1097,10 +1072,10 @@ mod tests {
             Some(InvocationUpdate::Cancelled { .. })
         ));
         let deadline = tilo_test_env::hang_deadline();
-        while service.running() > 0 && ui::time::now() < deadline {
+        while !service.running.is_empty() && ui::time::now() < deadline {
             assert!(service.finished().is_empty());
             std::thread::yield_now();
         }
-        assert_eq!(service.running(), 0);
+        assert!(service.running.is_empty());
     }
 }

@@ -205,10 +205,6 @@ mod tests {
     }
 
     /// Favourite defaults fall back to English or localised XDG dirs, keep their kind through persistence, dedup, pin home and persist reorders.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
     #[test]
     fn favourites_default_localise_edit_and_persist() {
         // --- phase: defaults_fall_back_to_english_when_no_xdg_dirs ---

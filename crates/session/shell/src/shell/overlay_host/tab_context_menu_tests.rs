@@ -14,8 +14,7 @@ use crate::shell::state::{
 use std::collections::HashMap as StdHashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, Role};
-use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 const TAB_A: u64 = 0xa1;
@@ -184,23 +183,18 @@ impl Harness {
     }
 
     fn move_to(&mut self, p: Point) {
-        let _ = self.send(&WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(p.x, p.y),
-        });
+        let _ = self.send(&ui::synthetic_input::cursor_moved(p.x, p.y));
     }
 
     fn press(&mut self, button: MouseButton) -> bool {
-        let pressed = self.send(&WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
+        let pressed = self.send(&ui::synthetic_input::mouse_input(
+            ElementState::Pressed,
             button,
-        });
-        let _ = self.send(&WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Released,
+        ));
+        let _ = self.send(&ui::synthetic_input::mouse_input(
+            ElementState::Released,
             button,
-        });
+        ));
         pressed
     }
 
@@ -217,11 +211,7 @@ impl Harness {
         let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         event.repeat = repeat;
         self.send_with_modifiers(
-            &WindowEvent::KeyboardInput {
-                device_id: DeviceId::dummy(),
-                event,
-                is_synthetic: false,
-            },
+            &ui::synthetic_input::keyboard_input(event),
             modifiers.into(),
         )
     }
@@ -1105,11 +1095,7 @@ fn tab_drag_escape_cancels_before_release_without_moving_windows() {
     let mut h = harness(2);
     let at = h.pill_centre(1);
     h.move_to(at);
-    assert!(h.send(&WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }));
+    assert!(h.send(&ui::synthetic_input::mouse_press()));
     h.move_to(Point::new(at.x + 40.0, at.y + 80.0));
     assert!(
         h.host
@@ -1131,11 +1117,7 @@ fn tab_drag_escape_cancels_before_release_without_moving_windows() {
             .drag_in_flight(),
         "the lifted tab is gone before the pointer is released"
     );
-    h.send(&WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    });
+    h.send(&ui::synthetic_input::mouse_release());
     assert_eq!(h.group_ids(), [h.group]);
     assert_eq!(
         h.tab_ids(0),
@@ -1150,11 +1132,7 @@ fn tab_drag_cancel_action_clears_the_gesture_and_refuses_locked_requests() {
     let mut h = harness(2);
     let at = h.pill_centre(1);
     h.move_to(at);
-    assert!(h.send(&WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }));
+    assert!(h.send(&ui::synthetic_input::mouse_press()));
     h.move_to(Point::new(at.x + 40.0, at.y + 80.0));
     assert!(
         h.host
@@ -1194,11 +1172,7 @@ fn tab_drag_cancel_action_clears_the_gesture_and_refuses_locked_requests() {
             .drag_in_flight()
     );
     h.move_to(Point::new(at.x + 150.0, at.y + 90.0));
-    h.send(&WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    });
+    h.send(&ui::synthetic_input::mouse_release());
     assert_eq!(h.group_ids(), [h.group]);
     assert_eq!(
         h.tab_ids(0),

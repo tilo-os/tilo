@@ -29,7 +29,6 @@ pub struct ThemePreview {
     show: Show,
     label: String,
     rect: Rect,
-    width: Option<f32>,
     height: f32,
     id: Option<String>,
 }
@@ -45,7 +44,6 @@ impl ThemePreview {
             theme: theme.with_your_colour(PresenceHue::Violet),
             show: Show::Desktop,
             rect: Rect::ZERO,
-            width: None,
             height,
             id: None,
         }
@@ -56,13 +54,6 @@ impl ThemePreview {
     pub fn presence(mut self) -> Self {
         self.show = Show::Presence;
         self.label = format!("Presence colours of {}", self.theme.name);
-        self
-    }
-
-    /// A fixed width instead of the parent's.
-    #[must_use]
-    pub fn with_width(mut self, width: f32) -> Self {
-        self.width = Some(width);
         self
     }
 
@@ -83,9 +74,7 @@ impl Widget for ThemePreview {
         let scale = theme.ui_scale;
         let style = Style {
             size: TaffySize {
-                width: self
-                    .width
-                    .map_or_else(|| percent(1.0_f32), |w| length(w * scale)),
+                width: percent(1.0_f32),
                 height: length(self.height * scale),
             },
             flex_shrink: 0.0,
@@ -94,9 +83,7 @@ impl Widget for ThemePreview {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -147,10 +134,6 @@ impl Widget for ThemePreview {
 
     fn test_id(&self) -> Option<&str> {
         self.id.as_deref()
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {

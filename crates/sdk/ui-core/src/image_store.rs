@@ -20,10 +20,7 @@ use crate::wake::WakeHandle;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
-use vello::peniko::{
-    BlendMode, Blob, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage,
-    ImageFormat as Format,
-};
+use vello::peniko::{BlendMode, Fill, ImageBrush, ImageData as PenikoImage};
 
 /// Fetches the raw encoded bytes for a URL, or `None` on failure. Invoked as
 /// background work, so it may block on I/O.
@@ -700,13 +697,11 @@ fn validated_slot(decoded: Option<tilo_image_codec::DecodedImage>, max_dimension
     if limits.validate(&decoded).is_err() {
         return Slot::Failed;
     }
-    Slot::Ready(PenikoImage {
-        data: Blob::new(Arc::new(decoded.rgba)),
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: decoded.width,
-        height: decoded.height,
-    })
+    Slot::Ready(crate::raster::rgba8(
+        decoded.rgba,
+        decoded.width,
+        decoded.height,
+    ))
 }
 
 fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
@@ -806,13 +801,7 @@ mod tests {
     }
 
     fn logical_image(width: u32, height: u32) -> PenikoImage {
-        PenikoImage {
-            data: Blob::new(Arc::new(vec![0, 0, 0, 0])),
-            format: Format::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width,
-            height,
-        }
+        crate::raster::rgba8(vec![0, 0, 0, 0], width, height)
     }
 
     /// Encode a solid `w`×`h` RGBA PNG in-memory (no network) so the store's

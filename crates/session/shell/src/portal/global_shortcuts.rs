@@ -116,26 +116,7 @@ pub trait GlobalShortcutsService: Send + Sync {
     fn cancel_bind(&self, _handle: &str) {}
 }
 
-#[derive(Clone)]
-pub struct GlobalShortcutsServiceHandle(Arc<dyn GlobalShortcutsService>);
-impl GlobalShortcutsServiceHandle {
-    pub fn new(service: Arc<dyn GlobalShortcutsService>) -> Self {
-        Self(service)
-    }
-    pub fn request_bind(
-        &self,
-        request: GlobalShortcutBindingRequest,
-        reply: oneshot::Sender<PortalResult<GlobalShortcutConsent>>,
-    ) -> PortalResult<()> {
-        self.0.request_bind(request, reply)
-    }
-    fn release_session(&self, session: &str) {
-        self.0.release_session(session)
-    }
-    pub fn cancel_bind(&self, handle: &str) {
-        self.0.cancel_bind(handle);
-    }
-}
+pub type GlobalShortcutsServiceHandle = Arc<dyn GlobalShortcutsService>;
 
 pub struct UnavailableGlobalShortcuts;
 impl GlobalShortcutsService for UnavailableGlobalShortcuts {
@@ -596,7 +577,7 @@ impl GlobalShortcutsHandle {
         Self {
             state: Arc::new(Mutex::new(state)),
             lifecycle: PortalLifecycle::new(),
-            service: GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
+            service: Arc::new(UnavailableGlobalShortcuts),
             wake: crate::idle_wake::IdleWake::default(),
         }
     }
@@ -659,11 +640,7 @@ impl GlobalShortcutsBackend {
     }
 
     pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
-        Self::with_service(
-            ctx,
-            GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
-            lifecycle,
-        )
+        Self::with_service(ctx, Arc::new(UnavailableGlobalShortcuts), lifecycle)
     }
 
     pub fn with_service(
@@ -1793,7 +1770,7 @@ mod tests {
         GlobalShortcutsHandle {
             state: Arc::new(Mutex::new(ShortcutState::default())),
             lifecycle: PortalLifecycle::new(),
-            service: GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
+            service: Arc::new(UnavailableGlobalShortcuts),
             wake: crate::idle_wake::IdleWake::default(),
         }
     }

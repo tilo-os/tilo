@@ -1,4 +1,4 @@
-//! One agent session: join the room, hold the replica, act on instructions.
+//! One agent session: join the room and carry out broker-leased tasks.
 
 use std::path::PathBuf;
 use ui::time::{Duration, Instant};
@@ -21,16 +21,6 @@ mod agent_loop;
 mod native_task;
 mod outstanding;
 
-/// Why [`Session::run`] refuses: watching documents for addressed
-/// instructions and Chat summons needs each app's document types.
-// TODO: not implemented yet: the agent will act through apps' published surfaces via the broker.
-pub const DOCUMENT_MODE_UNAVAILABLE: &str = "not implemented yet: the agent will act through \
-    apps' published surfaces via the broker (only --task-runs is available)";
-
-/// The default [`Config::pace`], in milliseconds: none. Demos that want the
-/// caret to be watched pass `--pace-ms`.
-pub const DEFAULT_PACE_MS: u64 = 0;
-
 /// How long a task waits for the broker's pushed action catalogue.
 const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
 const TASK_ACTION_WAIT: Duration = Duration::from_secs(30);
@@ -42,6 +32,7 @@ const FOLLOW_MOST_WAIT: Duration = Duration::from_millis(50);
 struct TaskAction {
     app: String,
     peer_id: u64,
+    provider: String,
     resource: String,
     resource_kind: String,
     resource_label: String,
@@ -107,7 +98,13 @@ const MAX_TASK_STEPS: usize = 64;
 /// job: following several at once shares only the waiting.
 struct Following {
     action: TaskAction,
+    /// The arguments it was started with: a native child is re-asked with
+    /// the identical request.
+    arguments: serde_json::Map<String, serde_json::Value>,
     invocation: tilo_actions::InvocationId,
+    /// How a native task's child is observed; `None` for a Task Center
+    /// invocation, observed through the action host.
+    reask: Option<native_task::Reask>,
     /// The latest state the host reported.
     update: tilo_actions::InvocationUpdate,
     /// The last semantic interaction sequence published for it.
@@ -135,6 +132,8 @@ fn validate_task_run(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String
         || run.task_id.len() > 256
         || run.title.trim().is_empty()
         || run.title.len() > 4 * 1024
+        || run.instruction().trim().is_empty()
+        || run.instruction().len() > 32 * 1024
         || run.lease.is_empty()
         || run.lease.len() > 128
     {
@@ -158,9 +157,11 @@ fn task_action_from_offer(
     offer: &surface::Offer,
     arguments: serde_json::Map<String, serde_json::Value>,
 ) -> Result<TaskAction, String> {
-    let peer_id = offer
-        .broker_peer_id
-        .ok_or_else(|| "Tasks cannot invoke a local-only action".to_string())?;
+    let peer_id = match (offer.broker_peer_id, offer.broker_provider.as_ref()) {
+        (Some(peer), _) => peer,
+        (None, Some(_)) => 0,
+        (None, None) => return Err("Tasks cannot invoke a local-only action".into()),
+    };
     if !matches!(
         offer.descriptor.contract.confirmation,
         tilo_actions::ConfirmationPolicy::None
@@ -174,6 +175,7 @@ fn task_action_from_offer(
     Ok(TaskAction {
         app: offer.app.clone(),
         peer_id,
+        provider: offer.broker_provider.clone().unwrap_or_default(),
         resource: offer.descriptor.address.resource.clone(),
         resource_kind: offer.descriptor.resource_kind.clone(),
         resource_label: offer.descriptor.resource_label.clone(),
@@ -205,31 +207,12 @@ pub struct Config {
     /// Display name used by name-addressed instructions. The admitted id
     /// remains the author and structured-mention target.
     pub name: String,
-    /// Pause after each visible action and edit, so people can watch the
-    /// caret work. A demo affordance: nothing waits on it, so the default
-    /// ([`DEFAULT_PACE_MS`]) is none.
-    pub pace: Duration,
-    /// Stop after the first instruction has been carried out.
-    pub once: bool,
     /// Let a model choose which exported action answers an instruction.
     /// False pins the run to the keyword vocabulary.
     pub model: bool,
     /// How long that call may take before the keyword vocabulary decides
     /// instead. Short on purpose: the work must not wait on the network.
     pub model_timeout: Duration,
-    /// How long to wait for somebody in the room to answer with the
-    /// document before giving up and saying which address went
-    /// unanswered. `Duration::ZERO` waits forever — right for an agent
-    /// left running against a room whose document nobody has opened yet,
-    /// wrong for a scripted run, where it turns a mismatched route into
-    /// a hang that names no cause.
-    pub await_document: Duration,
-    /// How long a paragraph's text must stop changing before it is read as
-    /// a finished request. `Duration::ZERO` acts on the first sight of it —
-    /// right for a page seeded before the agent joins, wrong for one a
-    /// person is actively typing into, where every keystroke would else
-    /// race the agent's own read.
-    pub settle: Duration,
     /// What the agent may enumerate and perform. A denied operation is
     /// absent from what it discovers, never merely refused — see
     /// [`crate::surface::offers`].
@@ -355,19 +338,9 @@ impl Session {
         })
     }
 
-    /// Handle addressed document instructions and Chat summons in the room.
-    ///
-    /// # Errors
-    ///
-    /// Always, for now: see [`DOCUMENT_MODE_UNAVAILABLE`].
-    pub fn run(&mut self) -> Result<()> {
-        anyhow::bail!(DOCUMENT_MODE_UNAVAILABLE)
-    }
-
-    /// Run only broker-addressed Task Center leases. This is deliberately a
-    /// separate mode from document listening: a title is not a document
-    /// instruction, and an unattended task may invoke only actions that the
-    /// authenticated broker currently publishes to this agent.
+    /// Run broker-addressed Task Center leases: an unattended task may invoke
+    /// only actions that the authenticated broker currently publishes to this
+    /// agent.
     ///
     /// # Errors
     ///
@@ -696,7 +669,7 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
     ) -> Result<(Vec<TaskAction>, Option<String>), String> {
         let catalogue = self.task_catalogue();
-        let (offer, arguments) = surface::from_verbs(&run.title, &catalogue.offers)
+        let (offer, arguments) = surface::from_verbs(run.instruction(), &catalogue.offers)
             .map_err(|error| format!("Rules-only planner could not choose an action: {error:?}"))?;
         task_action_from_offer(offer, arguments).map(|action| (vec![action], None))
     }
@@ -711,15 +684,6 @@ impl Session {
             Ok(following) => following,
             Err(stop) => return Ok(Err(stop)),
         };
-        if self.native_task.is_some() {
-            return self.follow_native_invocation(
-                run,
-                action,
-                arguments,
-                following.invocation,
-                following.update,
-            );
-        }
         let mut followed = [following];
         self.follow_invocations(run, &mut followed)?;
         let [following] = followed;
@@ -750,9 +714,11 @@ impl Session {
             run_id: run.run_id,
             lease: self.task_lease(run),
             peer_id: action.peer_id,
+            provider: action.provider.clone(),
             resource: action.resource.clone(),
             action: action.action.clone(),
             arguments: arguments.clone(),
+            wait: None,
         })?;
         let update = match self.wait_for_task_action_result(request_id)? {
             Ok((_, update)) => update,
@@ -763,7 +729,9 @@ impl Session {
         }
         Ok(Ok(Following {
             action: action.clone(),
+            arguments: arguments.clone(),
             invocation,
+            reask: self.native_task.is_some().then(native_task::Reask::default),
             update,
             sequence: 0,
             deadline: self.task_wait_deadline(TASK_ACTION_WAIT),
@@ -780,6 +748,9 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
         followed: &mut [Following],
     ) -> Result<()> {
+        if followed.iter().any(|following| following.reask.is_some()) {
+            return self.follow_native(run, followed);
+        }
         let mut wait = FOLLOW_FIRST_WAIT;
         loop {
             for following in followed.iter_mut() {
@@ -946,8 +917,13 @@ impl Session {
     }
 
     /// Ask the host to stop `following` without waiting for its answer: the
-    /// turn that started it ended before it settled.
+    /// turn that started it ended before it settled. A native child is not
+    /// the action host's to stop: the run's terminal report, which every
+    /// early end of a native run sends, cancels each child still running.
     fn abandon_following(&mut self, following: &Following) {
+        if following.reask.is_some() {
+            return;
+        }
         if let Err(error) = self.link.send(&CollabRequest::RemoteAction {
             message: RemoteActionMessage::Cancel {
                 invocation: following.invocation,
@@ -1264,6 +1240,7 @@ mod tests {
             version: 1,
             task_id: "task:review".into(),
             title: "Review draft".into(),
+            instruction: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::RulesOnly,
@@ -1375,12 +1352,8 @@ mod tests {
                         cluster: Uuid::from_u128(1),
                         record: None,
                         name: "agent-1".into(),
-                        pace: Duration::ZERO,
-                        once: false,
                         model: false,
                         model_timeout: Duration::ZERO,
-                        await_document: Duration::ZERO,
-                        settle: Duration::ZERO,
                         permissions: ui::permissions::PermissionContext::agent_granted_at(
                             "agent-1",
                             &[],
@@ -1404,6 +1377,7 @@ mod tests {
                 let action = TaskAction {
                     app: "app".into(),
                     peer_id: 2,
+                    provider: String::new(),
                     resource: "resource".into(),
                     resource_kind: "item".into(),
                     resource_label: "Resource".into(),
@@ -1499,10 +1473,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each case keeps its original fixture and assertions"
-    )]
     fn a_steps_arguments_bind_exactly_one_preceding_content_result_and_key_its_dispatch() {
         // Case `a_content_step_uses_only_the_immediately_preceding_application_result`.
         {

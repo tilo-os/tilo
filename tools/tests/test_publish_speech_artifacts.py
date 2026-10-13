@@ -2,6 +2,7 @@
 import importlib.util
 import io
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -41,12 +42,11 @@ class SpeechArtifactPublication(unittest.TestCase):
             build.return_value.open.side_effect = missing
             with self.assertRaises(ValueError):
                 publisher.publish(*self.fixture(directory), "")
-            uploaded = io.BytesIO()
-            uploaded.status = 201
-            build.return_value.open.side_effect = [missing, uploaded, io.BytesIO(b"public-object")]
-            publisher.publish(*self.fixture(directory), "test-token")
+            build.return_value.open.side_effect = [missing, io.BytesIO(b"public-object")]
+            with patch.object(publisher, "upload") as upload:
+                publisher.publish(*self.fixture(directory), "test-token")
+            upload.assert_called_once()
             calls = build.return_value.open.call_args_list
-            self.assertEqual(calls[-2].args[0].method, "PUT")
             self.assertIsInstance(calls[-1].args[0], str)
 
     def test_redirects_and_foreign_destinations_are_rejected(self):
@@ -57,6 +57,42 @@ class SpeechArtifactPublication(unittest.TestCase):
             with self.assertRaises(ValueError):
                 publisher.publish(path, "https://other.invalid/weights", size, digest, "test-token")
             build.assert_not_called()
+
+
+class UploadTransport(unittest.TestCase):
+    def test_credential_is_passed_on_stdin_only(self):
+        result = subprocess.CompletedProcess([], 0, stdout="201", stderr="")
+        with patch.object(publisher.subprocess, "run", return_value=result) as run:
+            publisher.upload(Path("/tmp/reviewed-model.bin"), "https://code.tilo.so/model", "private-token")
+        args = run.call_args.args[0]
+        self.assertIn("--upload-file", args)
+        self.assertIn("--fail", args)
+        self.assertIn("--config", args)
+        self.assertNotIn("private-token", " ".join(args))
+        self.assertEqual(run.call_args.kwargs["input"], 'header = "Authorization: token private-token"\n')
+
+    def test_redirect_or_http_error_never_count_as_publication(self):
+        for code, status in [(0, "302"), (22, "413"), (56, "000")]:
+            with self.subTest(code=code, status=status):
+                result = subprocess.CompletedProcess([], code, stdout=status, stderr="")
+                with patch.object(publisher.subprocess, "run", return_value=result):
+                    with self.assertRaisesRegex(ValueError, f"HTTP {status}"):
+                        publisher.upload(Path("/tmp/reviewed-model.bin"), "https://code.tilo.so/model", "private-token")
+
+    def test_credential_cannot_inject_curl_configuration(self):
+        with patch.object(publisher.subprocess, "run") as run:
+            with self.assertRaisesRegex(ValueError, "invalid package publication credential"):
+                publisher.upload(Path("/tmp/reviewed-model.bin"), "https://code.tilo.so/model", "bad\nheader")
+            run.assert_not_called()
+
+
+class WorkflowCredentialContract(unittest.TestCase):
+    def test_publication_uses_existing_package_scoped_credential(self):
+        workflow = (Path(__file__).resolve().parents[2]
+                    / ".forgejo/workflows/release-local-model-catalog.yml").read_text()
+        publish_job = workflow.split("\n  publish:\n", 1)[1]
+        self.assertIn("PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", publish_job)
+        self.assertNotIn("secrets.RELEASE_TOKEN", publish_job)
 
 
 if __name__ == "__main__":

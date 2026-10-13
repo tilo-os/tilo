@@ -116,24 +116,7 @@ pub(crate) fn parse<R: RoomRead, D: PolicyDecode>(
 }
 
 fn canonical_matches(policy: &RoomMediaV1, bytes: &[u8]) -> bool {
-    struct Compare<'a>(&'a [u8]);
-    impl postcard::ser_flavors::Flavor for Compare<'_> {
-        type Output = bool;
-        fn try_push(&mut self, value: u8) -> postcard::Result<()> {
-            self.try_extend(&[value])
-        }
-        fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-            self.0 = self
-                .0
-                .strip_prefix(bytes)
-                .ok_or(postcard::Error::SerializeBufferFull)?;
-            Ok(())
-        }
-        fn finalize(self) -> postcard::Result<bool> {
-            Ok(self.0.is_empty())
-        }
-    }
-    postcard::serialize_with_flavor(policy, Compare(bytes)).unwrap_or(false)
+    crate::postcard_sink::encodes_as(policy, bytes)
 }
 
 pub(super) fn legacy_error(error: Error) -> MediaPolicyError {

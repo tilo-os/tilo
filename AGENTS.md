@@ -302,9 +302,9 @@ This is an open-source repository; everything in it must stand on its own. Never
 internal documents, trackers or private links (issue-tracker ids, internal docs or wikis, chat
 threads) in code, comments, docs, tests, scripts, commit messages and bodies, PR titles and
 descriptions, branch names or fixture strings. State the reason itself where it is needed.
-`.githooks/pre-commit`, `.githooks/commit-msg` and the CI policy suite
-(`tools/policy/check_self_contained.py`) reject tracker ids and private-link hosts; only `vendor/`
-is exempt.
+`.githooks/pre-commit`, `.githooks/commit-msg` and CI (`tools/policy/check_public_references.py`,
+`check_commit_message.py --title`, `check_commit_policy.py`) reject tracker ids and private-document
+links in tracked files, commit messages, pull request titles and head branch names.
 
 ## Where to read first
 

@@ -152,7 +152,7 @@ def thread_groups(rows: list[dict]) -> list[dict]:
 
 # The compositor's threads that its GPU driver started. The compositor names the thread that
 # opens the device `tilo-gpu-driver` while it does, so threads the driver starts then take that
-# name (shell present.rs DRIVER_THREAD_NAME); Mesa's CPU rasteriser names its rasteriser
+# name (shell present.rs DRIVER_THREAD_NAME, #4085); Mesa's CPU rasteriser names its rasteriser
 # threads `llvmpipe-N` itself. On a GPU these threads hardly run. On lavapipe they are the
 # rasteriser: its unnamed compute-shader pool runs every Vello stage of every frame.
 GPU_DRIVER_GROUPS = ("llvmpipe", "tilo-gpu-driver")
@@ -932,8 +932,8 @@ def mem(ctx, res):
 AFTER_CLOSE_SETTLE_S = 5
 
 # The slot user's per-user runtime builds and app store, in bytes: what downloaded
-# runtimes and apps hold on disk once collection after each change ran.
-# A build is a directory under tilo-runtime whose name has no leading dot.
+# runtimes and apps hold on disk once collection after each change ran (#4114,
+# #4151). A build is a directory under tilo-runtime whose name has no leading dot.
 DISK = r"""
 data=${XDG_DATA_HOME:-$HOME/.local/share}
 for d in tilo-runtime tilo-apps; do

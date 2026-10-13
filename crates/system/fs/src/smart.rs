@@ -334,7 +334,7 @@ mod tests {
         }
     }
 
-    /// The policy monitor sleeps until a file is opened: the first
+    /// #4224. The policy monitor sleeps until a file is opened: the first
     /// open after a quiet interval wakes it, and opens are reported once
     /// per interval however many there were.
     #[tokio::test]

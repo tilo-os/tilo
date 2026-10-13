@@ -7,13 +7,6 @@
 //! nothing needs saying: every application message either device receives
 //! in that minute, and every repaint a peer's pointer causes, is waste.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -38,12 +31,13 @@ const IDLE: Duration = Duration::from_secs(60);
 /// actors, endpoints and drains; not the thread driving their frame loops)
 /// may block while idle, together.
 ///
-/// Counted as voluntary switches, one per wakeup, as the lone gate is: preemptions measure the runner. Counting both, this gate failed
+/// Counted as voluntary switches, one per wakeup, as the lone gate is:
+/// preemptions measure the runner. Counting both, this gate failed
 /// the shell shard at 15.45 to 17.31/s against 15/s while its threads
 /// blocked about 12.8 times a second (forge #4035), and nightly run 91200
 /// measured 15.68/s, 3.63 of it preemptions.
 ///
-/// Measured blocking on CI (focused): main `f744af88ad` 6.12 to
+/// Measured blocking on CI (focused, #4138): main `f744af88ad` 6.12 to
 /// 6.98/s (runs 92709-92713); with the upkeep tick and the gossip sweep
 /// armed only while there are peers, which this pair has, 5.84 to 7.17/s
 /// (runs 92724, 92787-92796). What remains is the two network runtimes'
@@ -52,7 +46,7 @@ const IDLE: Duration = Duration::from_secs(60);
 ///
 /// Where the gate runs, loaded, its threads block more than when focused:
 /// nightly's 12.05/s against about 10/s focused on the same code before
-/// the network runtime was quieted (`docs/benchmarks/idle-wakeups-2026-10-09.md`). The
+/// #4074 (#3983, `docs/benchmarks/idle-wakeups-2026-10-09.md`). The
 /// focused p95, 7.2/s, a third more for that, plus a quarter: 12/s.
 const IDLE_WAKEUP_BUDGET: f64 = 12.0;
 /// Most CPU the two desktops' own threads may use while idle, in percent of
@@ -73,7 +67,8 @@ pub(super) const LONE_IDLE: Duration = Duration::from_secs(20);
 /// topic every second (run 91402), 0.95/s and 1.05/s once it sweeps every
 /// 10 s (runs 91459, 91528), 0.90 to 1.05/s on main `f744af88ad` (runs
 /// 92709-92713). Most of that was the 5 s upkeep tick and the sweeps of the
-/// desktop's three topics, neither of which runs now while there is no peer: 0.30 to 0.45/s (runs 92724, 92787-92796, 92833), 0.25 to
+/// desktop's three topics, neither of which runs now while there is no peer:
+/// 0.30 to 0.45/s (runs 92724, 92787-92796, 92833), 0.25 to
 /// 0.40/s of it `tilo-net-rt`. A tracing probe (run 92833) names what is
 /// left: two iroh timers that ran whatever Tilo did, netwatch's 15 s
 /// wall-clock check and the socket's 20-26 s re-STUN tick, which with no

@@ -76,6 +76,7 @@ fn synth_demo_png(id: &str) -> Option<Vec<u8>> {
         "call-grid" => call_grid(),
         "shared-shot" => shared_shot(),
         "tile-promotion" => tile_promotion_poster(),
+        "avatar-bo" => avatar_bo(),
         _ => return None,
     };
     encode_png(w, h, buf)
@@ -229,6 +230,26 @@ fn shared_shot() -> (u32, u32, Vec<u8>) {
 /// The poster frame of the demo screen recording: a desktop of window tiles
 /// mid-way through promoting one of them, which grows out of its slot over
 /// its neighbours.
+/// The picture a person on another service set: a warm portrait-like
+/// gradient with a head and shoulders.
+fn avatar_bo() -> (u32, u32, Vec<u8>) {
+    let (w, h) = (96u32, 96u32);
+    let mut c = Canvas::new(w, h);
+    c.vgradient([246, 178, 107], [214, 98, 78]);
+    c.disc(48.0, 38.0, 18.0, [255, 236, 214]);
+    c.round_rect(
+        Rectf {
+            x: 18.0,
+            y: 62.0,
+            w: 60.0,
+            h: 48.0,
+        },
+        24.0,
+        [255, 236, 214],
+    );
+    (w, h, c.into_rgba())
+}
+
 fn tile_promotion_poster() -> (u32, u32, Vec<u8>) {
     let (w, h) = (640u32, 360u32);
     let mut c = Canvas::new(w, h);

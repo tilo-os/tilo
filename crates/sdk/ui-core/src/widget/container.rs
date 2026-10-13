@@ -2,10 +2,9 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
-use automerge::ObjId;
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -193,6 +192,13 @@ impl Container {
     pub fn with_width(mut self, px: f32) -> Self {
         self.fixed_width = Some(px);
         self
+    }
+
+    /// Update a fixed-width container without rebuilding its retained child.
+    /// Responsive top-layer surfaces use this during layout when text scale
+    /// changes after construction.
+    pub fn set_width(&mut self, px: f32) {
+        self.fixed_width = Some(px);
     }
 
     /// Keeps the container fluid in narrow spaces, while centring it at no
@@ -391,23 +397,6 @@ impl Widget for Container {
         dyn crate::permissions::capability::PermissionGated,
         dyn crate::presence::capability::PublishesPresence
     );
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        // This container owns no operation handler: offer each child once.
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        match &mut self.child {
-            Some(child) => child.update(state, path),
-            None => false,
-        }
-    }
 
     fn build_layout(
         &mut self,

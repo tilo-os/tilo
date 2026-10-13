@@ -7,7 +7,7 @@
 //! [`AclHandle`]; [`CapabilityFile::refresh`] re-reads on change and swaps
 //! the result in underneath the live mount, and
 //! [`CapabilityFile::spawn_reload`] calls it whenever the host reports the
-//! file changed (it used to poll once a second).
+//! file changed (#4224; it used to poll once a second).
 //!
 //! The three outcomes are deliberately not treated alike. A changed,
 //! parseable file swaps in — the point. A **gone** file binds an empty
@@ -369,7 +369,7 @@ mod tests {
         None
     }
 
-    /// The reloader the daemon runs, with its poll fallback and its
+    /// #4224. The reloader the daemon runs, with its poll fallback and its
     /// backstop both an hour away, so only the file watch can deliver a
     /// change. A revocation and a removal each reach the live mount within
     /// the old one-second bound, and a half-written file still keeps the

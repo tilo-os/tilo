@@ -28,9 +28,35 @@ pub struct RoomPolicy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Change {
-    AddMember { person: String, role: Role },
-    RemoveMember { person: String },
-    SetRole { person: String, role: Role },
+    AddMember {
+        person: String,
+        role: Role,
+    },
+    RemoveMember {
+        person: String,
+    },
+    /// Remove `person` (when a member) and keep them out until unbanned.
+    Ban {
+        person: String,
+    },
+    /// Let a banned `person` be admitted again.
+    Unban {
+        person: String,
+    },
+    /// Stop `person` changing anything until `until_ms` (Unix ms). A new
+    /// restriction replaces the one they hold.
+    Restrict {
+        person: String,
+        until_ms: u64,
+    },
+    /// Lift `person`'s restriction before it lapses.
+    Unrestrict {
+        person: String,
+    },
+    SetRole {
+        person: String,
+        role: Role,
+    },
     Grant(Grant),
     Revoke(GrantId),
 }
@@ -42,6 +68,10 @@ impl Change {
         match self {
             Self::AddMember { .. } => governance::ADD_MEMBER,
             Self::RemoveMember { .. } => governance::REMOVE_MEMBER,
+            Self::Ban { .. } => governance::BAN,
+            Self::Unban { .. } => governance::UNBAN,
+            Self::Restrict { .. } => governance::RESTRICT,
+            Self::Unrestrict { .. } => governance::UNRESTRICT,
             Self::SetRole { .. } => governance::SET_ROLE,
             Self::Grant(_) => governance::GRANT,
             Self::Revoke(_) => governance::REVOKE,
@@ -73,6 +103,21 @@ pub enum Refusal {
     },
     /// A grant on a node outside this room.
     OutsideRoom(TreePath),
+    /// A membership action on someone the actor does not outrank: a
+    /// Moderator reaches only members below Moderator, and nobody bans
+    /// themselves.
+    NotBelowActor {
+        actor: Option<Role>,
+        target: Role,
+    },
+    /// The person is banned: unban them first.
+    Banned(String),
+    /// The person is not banned.
+    NotBanned(String),
+    /// The person holds no live restriction.
+    NotRestricted(String),
+    /// A restriction ending at or before now restricts nothing.
+    InThePast(u64),
     NotAMember(String),
     AlreadyAMember(String),
     UnknownGrant(GrantId),
@@ -95,6 +140,14 @@ impl std::fmt::Display for Refusal {
                 kind.phrase()
             ),
             Self::OutsideRoom(node) => write!(f, "{node} is not in this room"),
+            Self::NotBelowActor { actor, target } => match actor {
+                Some(actor) => write!(f, "a {actor} cannot do this to a {target}"),
+                None => write!(f, "only members ranked above a {target} can do this"),
+            },
+            Self::Banned(person) => write!(f, "{person} is banned from the room"),
+            Self::NotBanned(person) => write!(f, "{person} is not banned"),
+            Self::NotRestricted(person) => write!(f, "{person} is not restricted"),
+            Self::InThePast(at) => write!(f, "{at} ms is not in the future"),
             Self::NotAMember(person) => write!(f, "{person} is not a member"),
             Self::AlreadyAMember(person) => write!(f, "{person} is already a member"),
             Self::UnknownGrant(id) => write!(f, "no grant {id}"),
@@ -196,14 +249,29 @@ impl RoomPolicy {
     /// The grant that blocks `person`, given by `granted_by`.
     #[must_use]
     pub fn block(&self, person: &str, granted_by: Subject) -> Grant {
-        Grant::new(
-            format!("block:{person}"),
-            Subject::Person(person.to_owned()),
-            self.node(),
-            crate::KindSet::ALL,
-            Answer::Deny,
-            granted_by,
-        )
+        roles::block_grant(&self.room, person, granted_by)
+    }
+
+    /// Whether `person` is banned: the room holds their `block:<person>`
+    /// grant. A banned person is not admitted again until `unban`.
+    #[must_use]
+    pub fn is_banned(&self, person: &str) -> bool {
+        let id = roles::block_grant_id(person);
+        self.grants.iter().any(|grant| grant.id == id)
+    }
+
+    /// Until when `person` is restricted, if a restriction of theirs is
+    /// live in `cx`.
+    #[must_use]
+    pub fn restricted_until(&self, person: &str, cx: &Context<'_>) -> Option<u64> {
+        let id = roles::restriction_grant_id(person);
+        self.grants
+            .iter()
+            .find(|grant| grant.id == id && grant.is_live(cx))
+            .and_then(|grant| match grant.lifetime {
+                Lifetime::Until(at) => Some(at),
+                _ => None,
+            })
     }
 
     #[must_use]
@@ -324,6 +392,11 @@ impl RoomPolicy {
     ) -> Result<Vec<GrantId>, Refusal> {
         let node = roles::governance_action(&self.room, action);
         let verdict = actor.decide(&node, roles::GOVERNANCE_KIND, cx);
+        let verdict = if roles::governance::is_privileged(action) {
+            verdict.privileged()
+        } else {
+            verdict
+        };
         match verdict.answer {
             Answer::Allow => Ok(verdict.spent()),
             Answer::Ask if approved => Ok(verdict.spent()),
@@ -386,6 +459,24 @@ impl RoomPolicy {
         Ok(())
     }
 
+    /// Whether `actor_person` (acting through `actor`) may make `change`,
+    /// without making it: what a door asks before it commits the change by
+    /// its own means.
+    ///
+    /// # Errors
+    /// As [`Self::apply`].
+    pub fn check(
+        &self,
+        actor_person: &str,
+        actor: &Authority<'_>,
+        change: &Change,
+        cx: &Context<'_>,
+        approved: bool,
+    ) -> Result<(), Refusal> {
+        self.admit_action(actor, change.action(), cx, approved)?;
+        self.check_change(actor_person, actor, change, cx)
+    }
+
     /// Applies a governance change made by `actor_person` through `actor`.
     ///
     /// # Errors
@@ -406,10 +497,29 @@ impl RoomPolicy {
             Change::AddMember { person, role } | Change::SetRole { person, role } => {
                 self.members.insert(person, role);
             }
-            Change::RemoveMember { person } => {
-                self.members.remove(&person);
-                self.grants
-                    .retain(|grant| grant.subject != Subject::Person(person.clone()));
+            Change::RemoveMember { person } => self.drop_member(&person),
+            Change::Ban { person } => {
+                self.drop_member(&person);
+                let block = self.block(&person, Subject::Person(actor_person.to_owned()));
+                self.grants.push(block);
+            }
+            Change::Unban { person } => {
+                let id = roles::block_grant_id(&person);
+                self.grants.retain(|grant| grant.id != id);
+            }
+            Change::Restrict { person, until_ms } => {
+                let id = roles::restriction_grant_id(&person);
+                self.grants.retain(|grant| grant.id != id);
+                self.grants.push(roles::restriction_grant(
+                    &self.room,
+                    &person,
+                    until_ms,
+                    Subject::Person(actor_person.to_owned()),
+                ));
+            }
+            Change::Unrestrict { person } => {
+                let id = roles::restriction_grant_id(&person);
+                self.grants.retain(|grant| grant.id != id);
             }
             Change::Grant(mut grant) => {
                 grant.granted_by = Subject::Person(actor_person.to_owned());
@@ -418,6 +528,43 @@ impl RoomPolicy {
             Change::Revoke(id) => self.grants.retain(|grant| grant.id != id),
         }
         Ok(())
+    }
+
+    /// The member and every grant naming them leave the room.
+    fn drop_member(&mut self, person: &str) {
+        self.members.remove(person);
+        let subject = Subject::Person(person.to_owned());
+        self.grants.retain(|grant| grant.subject != subject);
+    }
+
+    /// Whether `actor_person` reaches `person` with a membership action: the
+    /// owner reaches everyone else, anyone else only those they outrank (a
+    /// non-member target ranks lowest). Leaving, removing oneself, is always
+    /// in reach.
+    fn check_reach(&self, actor_person: &str, person: &str, ban: bool) -> Result<(), Refusal> {
+        if self.is_owner(person) {
+            return Err(Refusal::Owner);
+        }
+        let actor = self.role_of(actor_person);
+        if actor_person == person {
+            return if ban {
+                Err(Refusal::NotBelowActor {
+                    actor,
+                    target: actor.unwrap_or(Role::Viewer),
+                })
+            } else {
+                Ok(())
+            };
+        }
+        if self.is_owner(actor_person) {
+            return Ok(());
+        }
+        match self.role_of(person) {
+            Some(target) if !actor.is_some_and(|actor| actor.outranks(target)) => {
+                Err(Refusal::NotBelowActor { actor, target })
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Whether `grant` gives no more than `actor` holds on its node, for each
@@ -458,6 +605,9 @@ impl RoomPolicy {
                 if self.is_member(person) {
                     return Err(Refusal::AlreadyAMember(person.clone()));
                 }
+                if self.is_banned(person) {
+                    return Err(Refusal::Banned(person.clone()));
+                }
                 self.check_role_handout(actor_person, *role)
             }
             Change::SetRole { person, role } => {
@@ -476,7 +626,31 @@ impl RoomPolicy {
                 if !self.members.contains_key(person) {
                     return Err(Refusal::NotAMember(person.clone()));
                 }
+                self.check_reach(actor_person, person, false)
+            }
+            Change::Ban { person } => {
+                if self.is_banned(person) {
+                    return Err(Refusal::Banned(person.clone()));
+                }
+                self.check_reach(actor_person, person, true)
+            }
+            Change::Unban { person } => {
+                if !self.is_banned(person) {
+                    return Err(Refusal::NotBanned(person.clone()));
+                }
                 Ok(())
+            }
+            Change::Restrict { person, until_ms } => {
+                if *until_ms <= cx.now_unix_ms {
+                    return Err(Refusal::InThePast(*until_ms));
+                }
+                self.check_reach(actor_person, person, true)
+            }
+            Change::Unrestrict { person } => {
+                if self.restricted_until(person, cx).is_none() {
+                    return Err(Refusal::NotRestricted(person.clone()));
+                }
+                self.check_reach(actor_person, person, true)
             }
             Change::Grant(grant) => {
                 if grant.node.room_id() != Some(self.room.as_str()) {

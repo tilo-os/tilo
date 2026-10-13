@@ -1,6 +1,6 @@
 //! A field label aligned to its first control, independent of supporting rows.
 use super::{
-    Affine, HashMap, NodeId, ObjId, Parts, Point, PresenceCtx, Rect, Scene, Size, Style, TaffyTree,
+    Affine, HashMap, NodeId, Parts, Point, PresenceCtx, Rect, Scene, Size, Style, TaffyTree,
     TextRenderer, Theme, Widget, column_style, length, measure_owned, retained_parts,
 };
 

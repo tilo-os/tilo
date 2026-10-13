@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::expect_used, reason = "test assertions")]
 //! `tilo-app package --platform linux|macos|windows` builds one static executable
 //! for the platform's triple and packs it under a signed desktop `[target]`;
 //! `build`, `run` and `dev` take the same platforms and refuse what the host

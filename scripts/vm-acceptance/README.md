@@ -265,7 +265,7 @@ the store (docs/measurements/performance.md) and publishes the nightly run's.
 | `app.open.{request_to_spawn,spawn_to_map,map_to_first_present,request_to_first_present}_ms.<app>` | ms | A15 | the compositor's own split of the open |
 | `render.frame_cpu_ms` | ms | R04 | compositor CPU per painted frame during interactions |
 
-`idle.ram_mib` stays the guest-wide figure the KPI targets define. Beside it, R01, R02
+`idle.ram_mib` stays the guest-wide figure the KPI defines. Beside it, R01, R02
 and R03 write `R0x-footprint*.json` (`resources.footprint`): every user's processes by RSS
 split into anon, file and shmem (Tilo's kernel has no smaps, so there is no PSS), every
 cgroup's anon, file, shmem and kernel charge grouped into the buckets above, each tmpfs's

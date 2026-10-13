@@ -76,15 +76,10 @@ impl NullSpeaker {
 
 impl Speaker for NullSpeaker {
     fn speak_utterance(&mut self, utterance: Utterance) {
-        if utterance.interrupt {
-            // Model the real interrupt semantics so tests on the mock match the
-            // backends: an interrupting utterance cuts off whatever was "in
-            // flight". We don't drop the *record* (tests want the history), we
-            // just reflect that prior speech stopped.
-            self.speaking = true;
-        } else {
-            self.speaking = true;
-        }
+        // Interrupting or not, the new utterance is what is now speaking. An
+        // interrupt cuts off whatever was "in flight", but the mock keeps the
+        // *record* of earlier speech: tests want the history.
+        self.speaking = true;
         self.spoken.push(utterance.text.clone());
         self.utterances.push(utterance);
     }

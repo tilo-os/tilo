@@ -1,6 +1,7 @@
 # Reference hardware for the latency KPIs
 
-The KPI targets sets two latency targets:
+Tilo's performance KPIs, what it markets and how each is measured, set two
+latency targets:
 
 - **Input to photon:** p50 at most one refresh plus 8 ms, p99 at most two
   refreshes plus 8 ms.
@@ -58,7 +59,7 @@ path. A key the editor did not adopt, a frame without hardware presentation
 feedback or a chord the compositor did not report fails the run; a partial run
 never produces records. The records land in `<out>/records.jsonl`, compared
 read-only with the store and the budgets (`<out>/summary.md`). Attach both to the
-week's performance report; the KPI's rows are filled from them.
+week's performance report; the KPI figures are filled from them.
 
 To prove the bench sees the compositor, repeat a run on the dev image with
 `TILO_TEST_FRAME_STALL_MS=50` (as `os/dev/test-slow-frame-launch.sh` does): the

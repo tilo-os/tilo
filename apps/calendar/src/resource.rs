@@ -37,20 +37,7 @@ use crate::model::{
     Attendee, Calendar, Event, InviteStatus, Palette, Project, RemoteCopy, Removal, Upload, key,
 };
 
-/// The calendar's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
-
-/// The message `key` of the calendar's catalog, in the person's language.
-pub(crate) fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-/// [`t`] with arguments.
-pub(crate) fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
-}
+ui::embedded_catalog!(pub(crate) fn, ["en-US"]);
 
 /// The most items one import or one task delete takes.
 pub(crate) const MAX_ITEMS_PER_ACTION: usize = 4096;

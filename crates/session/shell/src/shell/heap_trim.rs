@@ -4,7 +4,7 @@
 //! after the allocator's dynamic mmap threshold rose past its size stays
 //! inside the arena it came from, and an arena returns only the free space
 //! at its very top. So after a window closed, its frames, its atlas space
-//! and the converted copies of its pixels stayed resident: the window
+//! and the converted copies of its pixels stayed resident: the #3971
 //! cycle test measured 61–75 MiB free inside glibc's arenas and still
 //! counted in the compositor's anonymous RSS.
 //!

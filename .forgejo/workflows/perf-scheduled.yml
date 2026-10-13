@@ -17,7 +17,7 @@ name: Perf / scheduled
 # perf-<group>; a group must produce records whenever it is selected, or the
 # comparison fails it as missing.
 #
-# `mode: ab` is the same-job A/B lane (DEVELOPMENT.md, "Proving a
+# `mode: ab` is the same-job A/B lane (#4078; DEVELOPMENT.md, "Proving a
 # performance change"): instead of the nightly jobs, one `ab` job per selected
 # group builds ab_base and ab_candidate in one checkout and runs that group's
 # benchmark on both, alternating, ab_rounds times on one runner, through
@@ -272,6 +272,27 @@ jobs:
           done
           tail -n 2 perf/agent.jsonl
 
+      # Native task steps (apps/agent, `native_task_benchmark`): the same
+      # plan as a native workspace task, whose steps are children the agent
+      # follows by held re-asks. Whole task wall time, pipelined and in
+      # order, and the host round trips per step that brought no news while
+      # a step ran (in order).
+      - name: Measure native agent task steps
+        run: |
+          set -euo pipefail
+          TILO_AGENT_NATIVE_REPS=30 TILO_AGENT_NATIVE_SAMPLES="$PWD/perf/native" \
+            bash scripts/ci-run.sh "native agent task steps" -- \
+            cargo test --locked --release -p agent --lib native_task_benchmark -- --nocapture
+          for plan in pipelined sequential; do
+            python3 tools/perf/record.py emit --kpi "agent.task.native.${plan}.wall" --unit ms \
+              --samples-file "perf/native/${plan}.txt" --env-json perf/env-pipeline.json \
+              --meta steps=3 --meta step_ms=100 >> perf/agent.jsonl
+          done
+          python3 tools/perf/record.py emit --kpi agent.task.native.idle_round_trips --unit count \
+            --samples-file perf/native/idle.txt --env-json perf/env-pipeline.json \
+            --meta steps=3 --meta step_ms=100 >> perf/agent.jsonl
+          tail -n 3 perf/agent.jsonl
+
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
@@ -318,7 +339,7 @@ jobs:
           python3 tools/perf/tapp_size_ratchet.py fleet "$RUNNER_TEMP/entries.json"
           --summary "$GITHUB_STEP_SUMMARY"
 
-      # The shared runtime (docs/measurements/runtime-size.md): the
+      # The shared runtime (#4000; docs/measurements/runtime-size.md): the
       # newest published libruntime_dylib.so of each architecture against
       # tools/perf/runtime-size-budget/, recorded as footprint.runtime.*.
       # Records are written before the gate's verdict, so a run over budget

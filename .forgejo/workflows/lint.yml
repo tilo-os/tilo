@@ -100,6 +100,14 @@ jobs:
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
+      # The title becomes the merge commit's subject on main. It reaches the
+      # script through the environment, never through the shell command.
+      - name: Pull request title names no internal tracker reference
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: python3 tools/policy/check_commit_message.py --title "$TITLE"
+
       - name: Repository policy suite
         run: bash tools/ci/measure.sh "repository policy tests" -- bash tools/policy/run.sh
 

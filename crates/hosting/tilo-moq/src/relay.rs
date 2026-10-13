@@ -501,10 +501,6 @@ impl Relay {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one select loop owns the session's authority, revocation and driver"
-    )]
     async fn run_session(&self, accepted: carrier::Accepted, scopes: RelayScopes) {
         let carrier::Accepted {
             session,

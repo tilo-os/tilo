@@ -19,7 +19,7 @@ sealing contract now has to reach all three, so this check fails when:
   * a `kernel` stage does not end in bootc's kernel split of the same root
     `split` builds on;
   * a `split` stage does not end in bootc's kernel split, optionally followed by
-    dropping the split-out initramfs the UKI carries (os/Containerfile),
+    dropping the split-out initramfs the UKI carries (os/Containerfile, #4055),
     or a `final` stage adds anything to the sealed rootfs beyond the UKI under
     /boot;
   * os/dev/uki-tools.packages is not in the frozen RPM snapshot's package set,

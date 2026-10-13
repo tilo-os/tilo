@@ -54,3 +54,48 @@ test('runtime delivery failure is reported and releases the pending slot', async
   assert.deepEqual(errors, ['closed runtime mount', 'closed runtime mount']);
   bridge.dispose();
 });
+
+test('an app\'s ban becomes the room\'s membership request and answers with a receipt', async () => {
+  const replies = [], calls = [];
+  const invocation = '00000000-0000-4000-8000-000000000001';
+  const target = action => ({provider:'tilo.workspace', address:{resource:'workspace.permissions:r', action}});
+  let requests = [
+    {Invoke:{invocation, target:target('ban'), argument:{Json:{person:'bb'.repeat(32)}}}},
+    {Invoke:{invocation:'other', target:{provider:'record:so.tilo.chat:', address:{resource:'x', action:'ban'}}}},
+  ];
+  const rooms = {ban:async person=>{calls.push(person); return {};}};
+  const bridge = createNativeCatalogueBridge({current:()=>true, actions:()=>undefined, membership:()=>rooms,
+    take:()=>requests.splice(0), deliver:reply=>replies.push(reply)});
+  bridge.pump();
+  await new Promise(done=>setImmediate(done));
+  assert.deepEqual(calls, ['bb'.repeat(32)]);
+  assert.deepEqual(replies[0], {Receipt:{invocation:'other', status:{Rejected:{error:{Unavailable:{
+    reason:'Only the room\'s membership actions run from an app here'}}}}}});
+  assert.deepEqual(replies[1], {Receipt:{invocation, status:{Completed:{output:{}}}}});
+  rooms.ban = async () => { throw Error('a Moderator cannot do this to a Moderator'); };
+  requests.push({Invoke:{invocation, target:target('ban'), argument:{Json:{person:'cc'.repeat(32)}}}});
+  bridge.pump();
+  await new Promise(done=>setImmediate(done));
+  assert.equal(replies[2].Receipt.status.Failed.error.message, 'a Moderator cannot do this to a Moderator');
+  bridge.dispose();
+});
+
+test('an app\'s share-link asks the room\'s host as the person and answers with the link', async () => {
+  const replies = [], asked = [];
+  const invocation = '00000000-0000-4000-8000-000000000002';
+  const target = {provider:'record:so.tilo.notes:', address:{resource:'notes.page:1', action:'share-link'}};
+  const requests = [{Invoke:{invocation, target, argument:{Json:{start:1, end:2}}}}];
+  const url = 'https://tilo.so/app/#/@h.example/w/r/so.tilo.notes/-/notes.page:1?chars=1-2';
+  const connection = {invoke(wanted, argument, options) {
+    asked.push({wanted, argument, options});
+    return {done:Promise.resolve({terminal:true, update:{state:'succeeded', output:{value:{url}, resources:[]}}})};
+  }};
+  const bridge = createNativeCatalogueBridge({current:()=>true, actions:()=>connection,
+    take:()=>requests.splice(0), deliver:reply=>replies.push(reply)});
+  bridge.pump();
+  await new Promise(done=>setTimeout(done, 10));
+  assert.deepEqual(asked, [{wanted:{provider:target.provider, address:target.address}, argument:{Json:{start:1, end:2}},
+    options:{invocation}}]);
+  assert.deepEqual(replies, [{Receipt:{invocation, status:{Completed:{output:{value:{url}, resources:[]}}}}}]);
+  bridge.dispose();
+});

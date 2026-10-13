@@ -30,11 +30,8 @@
 
 use std::fmt::Write as _;
 
-use automerge::AutoCommit;
+use tilo_actions::ActionParam;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
-use tilo_actions::{ActionContract, ActionKind, ActionParam, ActionRegistry, Resource};
-use ui::permissions::{Answer, PermissionContext, PermissionScope, TreePath};
-use ui::tilo_resource::ResourceKind;
 
 /// Separator between a resource id and an action id in an address.
 ///
@@ -64,17 +61,6 @@ pub fn decode_address(id: &str) -> Option<ActionAddress> {
     Some(ActionAddress::new(resource, action))
 }
 
-/// The app a resource id belongs to: the segment before the first `.`.
-///
-/// Resource ids are app-namespaced by convention (`word-processor.document`,
-/// `files.entry:/…`), which lets a capability question name the app being
-/// acted on without a second table of who owns what.
-pub fn app_of(resource_id: &str) -> &str {
-    resource_id
-        .split_once('.')
-        .map_or(resource_id, |(head, _)| head)
-}
-
 /// The action id an application exports so that it can be opened.
 pub const OPEN_ACTION: &str = "open";
 
@@ -84,14 +70,6 @@ pub const APP_RESOURCE: &str = "app";
 
 /// The stable kind tag on that resource, shared across every app.
 pub const APPLICATION_KIND: &str = "applications.app";
-
-/// The address that opens the app `namespace` names.
-///
-/// Inside the app's own namespace, so [`app_of`] answers it exactly as it
-/// answers every other address.
-pub fn open_address(namespace: &str) -> ActionAddress {
-    ActionAddress::new(format!("{namespace}.{APP_RESOURCE}"), OPEN_ACTION)
-}
 
 /// The app `address` would open, or `None` when it opens nothing.
 pub fn opens(address: &ActionAddress) -> Option<&str> {
@@ -105,83 +83,6 @@ pub fn opens(address: &ActionAddress) -> Option<&str> {
     (tail == APP_RESOURCE).then_some(namespace)
 }
 
-/// One app the agent speaks to.
-///
-/// What the app does is its resource kind's: the kind is registered once
-/// from the app's own [`ResourceApp`](ui::framework::ResourceApp), and the
-/// tree the agent surveys is the one the kind publishes for a document —
-/// the tree the app's own window publishes — asked afresh each time. Which
-/// app a document in the room is comes from the authenticated route it
-/// arrived on, never from its contents. The rest is how the agent talks
-/// about the app.
-pub struct AppContract {
-    /// The app's resource kind: its id and title, how its documents are
-    /// read and published, and the decoders its actions replay with.
-    pub kind: ResourceKind,
-    /// What this app is called, in the words a sentence about it would use
-    /// — "I'm not allowed to open the word processor here".
-    pub title: &'static str,
-    /// The namespace the app's nested resource ids start with, and the key
-    /// the agent holds its document under.
-    pub namespace: &'static str,
-    /// The app itself, whose view the agent holds each of its records in.
-    pub definition: fn() -> &'static ui::application::ApplicationDefinition,
-}
-
-impl AppContract {
-    /// What a launched copy of this app announces to the broker.
-    pub fn app_id(&self) -> &'static str {
-        self.kind.app_id().unwrap_or_else(|| self.kind.kind())
-    }
-}
-
-/// Every app the agent can speak to.
-///
-/// TODO: not implemented yet: the agent will act through apps' published
-/// surfaces via the broker instead of linking each app it speaks to.
-pub static CONTRACTS: &[AppContract] = &[];
-
-/// The contract whose resource ids start with `namespace`.
-pub fn for_namespace(namespace: &str) -> Option<&'static AppContract> {
-    CONTRACTS.iter().find(|c| c.namespace == namespace)
-}
-
-/// The namespace of the app a resource belongs to: the app whose resource
-/// kind `kind` is — a framework app publishes its document under its kind —
-/// else the one its id starts with ([`app_of`]).
-pub fn namespace_of<'a>(kind: Option<&str>, resource_id: &'a str) -> &'a str {
-    kind.and_then(|kind| {
-        CONTRACTS
-            .iter()
-            .find(|contract| contract.kind.kind() == kind)
-    })
-    .map_or_else(|| app_of(resource_id), |contract| contract.namespace)
-}
-
-/// The contract whose package-primary document `artifact` is, in the room
-/// `cluster_id`. The artifact is part of the authenticated envelope a
-/// document arrives in, so this names the app that wrote it without reading
-/// a byte of what it wrote.
-pub fn for_artifact(
-    cluster_id: &str,
-    artifact: collab_types::ArtifactId,
-) -> Option<&'static AppContract> {
-    CONTRACTS.iter().find(|contract| {
-        artifact == collab_types::document_artifact_id(contract.app_id(), cluster_id, "")
-    })
-}
-
-/// Decoders for every app the agent speaks to, in one registry: the door
-/// decodes an encoded action through it before dispatching, and a type no
-/// app registered is a refusal rather than a best-effort apply.
-pub fn registry() -> ActionRegistry {
-    let mut r = ActionRegistry::new();
-    for c in CONTRACTS {
-        c.kind.register(&mut r);
-    }
-    r
-}
-
 /// One operation the room exports right now.
 ///
 /// Inert: the address and the words the app puts on it, and nothing that
@@ -190,9 +91,11 @@ pub fn registry() -> ActionRegistry {
 pub struct Offer {
     /// The app that published it, by namespace.
     pub app: String,
-    /// Exact live publisher selected by the broker catalogue. `None` only
-    /// for the agent's local editorial/open helper offers.
+    /// Exact live publisher selected by the broker catalogue. A closed
+    /// application instead carries `broker_provider`, never publisher zero.
     pub broker_peer_id: Option<u64>,
+    /// Stable application/retained route, independent of a live connection.
+    pub broker_provider: Option<String>,
     pub descriptor: ActionDescriptor,
 }
 
@@ -200,6 +103,10 @@ impl Offer {
     /// The address, in the one-string form an answer names it by.
     pub fn id(&self) -> String {
         let address = encode_address(&self.descriptor.address);
+        if let Some(provider) = &self.broker_provider {
+            let provider = provider.replace('%', "%25").replace(':', "%3A");
+            return format!("broker:{provider}:{address}");
+        }
         self.broker_peer_id.map_or_else(
             || address.clone(),
             |peer| format!("broker:{peer}:{address}"),
@@ -287,16 +194,6 @@ impl Offer {
             .then(|| tilo_actions::PROMPTED_PARAM.to_owned())
     }
 
-    /// Whether performing it answers with content another operation takes:
-    /// its declared result is a `tilo.content` resource.
-    pub fn produces_content(&self) -> bool {
-        matches!(
-            &self.descriptor.contract.result,
-            tilo_actions::ResultSpec::Resource { resource_kind }
-                if resource_kind == tilo_actions::CONTENT_RESOURCE_KIND
-        )
-    }
-
     /// Deterministic floor for the common one-text-parameter action. Richer
     /// shapes are deliberately left to the structured planner; guessing how
     /// prose maps onto multiple or non-text fields would violate the schema.
@@ -380,44 +277,22 @@ impl BrokerCatalogue for Vec<ui::collaboration::BrokerActionSurface> {
     }
 }
 
-/// Offers from the broker's pushed surface directory: only live surfaces.
+/// Offers from the broker's pushed directory, including inert closed-app routes.
 fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
     surfaces
         .iter()
-        .filter(|surface| surface.live)
+        .filter(|surface| surface.live || surface.provider.is_some())
         .flat_map(|surface| {
-            surface.actions.iter().map(|action| {
-                let input = if action.input.kind == "text" {
-                    tilo_actions::InputSpec::Text {
-                        prompt: action.input.prompt.clone(),
-                        placeholder: action.input.placeholder.clone(),
-                        collects: if action.input.wants_content {
-                            tilo_actions::Collects::Content
-                        } else {
-                            tilo_actions::Collects::Words
-                        },
-                    }
-                } else {
-                    tilo_actions::InputSpec::None
-                };
-                Offer {
-                    app: surface.app_id.clone(),
-                    broker_peer_id: Some(surface.peer_id),
-                    descriptor: ActionDescriptor {
-                        semantic_identity: action.semantic_identity.clone(),
-                        address: ActionAddress::new(&action.resource, &action.action),
-                        resource_kind: action.resource_kind.clone(),
-                        resource_label: action.resource_label.clone(),
-                        action_label: action.action_label.clone(),
-                        description: action.description.clone(),
-                        locus: tilo_actions::ExecutionLocus::ServerPreferred,
-                        kind: action.operation_kind,
-                        contract: action.contract.clone(),
-                        params: action.params.clone(),
-                        input,
-                        view: None,
-                    },
-                }
+            surface.actions.iter().map(|action| Offer {
+                app: surface.app_id.clone(),
+                broker_peer_id: surface.provider.is_none().then_some(surface.peer_id),
+                broker_provider: surface.provider.clone(),
+                descriptor: ActionDescriptor {
+                    // The pushed directory routes invocations; it does not
+                    // open views.
+                    view: None,
+                    ..action.descriptor(tilo_actions::ExecutionLocus::ServerPreferred)
+                },
             })
         })
         .collect()
@@ -428,237 +303,25 @@ fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec
         .rows
         .iter()
         .filter_map(|entry| {
-            // A live application's actions name its broker connection; the
-            // workspace's own actions (governance, opening applications)
-            // keep the reserved publisher zero.
-            let peer = if let Ok(peer) = entry.provider.parse::<u64>() {
-                peer
-            } else {
-                tilo_actions::remote::workspace_provider_room(&entry.provider)?;
-                0
-            };
+            // A live action names a connection. Closed applications and
+            // workspace actions retain their explicit stable route instead.
+            let peer = entry.provider.parse::<u64>().ok();
+            if peer.is_none()
+                && tilo_actions::remote::workspace_provider_room(&entry.provider).is_none()
+                && !entry.provider.starts_with("launch:")
+                && tilo_actions::remote::application_provider(&entry.provider).is_none()
+            {
+                return None;
+            }
             let mut descriptor = entry.action.clone()?;
             descriptor.locus = tilo_actions::ExecutionLocus::ServerPreferred;
             Some(Offer {
                 app: entry.app_id.clone(),
-                broker_peer_id: Some(peer),
+                broker_peer_id: peer,
+                broker_provider: peer.is_none().then(|| entry.provider.clone()),
                 descriptor,
             })
         })
-        .collect()
-}
-
-/// Where `address` sits in the room, as the grants deciding it name it.
-///
-/// Phrased about the app the resource id names (by its app id, as every
-/// grant names an app), not about the agent's own namespace: a room grants
-/// per app, so folding every app's operations under one name would make a
-/// grant in one of them a grant in all.
-///
-/// * An operation sits at its app, resource and action: a grant there
-///   authorises that one operation in an app that is *already running*, and
-///   confers no ability to start one.
-/// * Opening an application is an undoable change of the app itself (a
-///   window appearing in the room): a grant on the app authorises both its
-///   operations and opening it, a grant on the room any of them.
-pub fn scope_for(address: &ActionAddress) -> PermissionScope {
-    if let Some(app) = opens(address) {
-        return PermissionScope::app(app_id_of(app), ActionKind::Undoable);
-    }
-    PermissionScope::Action {
-        node: TreePath::root()
-            .app(app_id_of(app_of(&address.resource)))
-            .resource(address.resource.clone())
-            .action(address.action.clone()),
-        kind: ActionKind::Undoable,
-    }
-}
-
-/// The app id permissions name for `app`: the id of the app whose
-/// namespace it is, or `app` itself when it already is an app id.
-fn app_id_of(app: &str) -> &str {
-    for_namespace(app).map_or(app, |contract| contract.app_id())
-}
-
-/// Whether the agent may perform what `scope` names, without asking first.
-/// Fail-closed: anything not affirmatively allowed is refused; an agent
-/// never gets past a grant that asks first on its own.
-fn allowed(perms: &PermissionContext, scope: &PermissionScope) -> bool {
-    match scope {
-        PermissionScope::Action { node, kind } => perms.answer(node, *kind) == Answer::Allow,
-        PermissionScope::Sandbox { .. } => perms.check(scope),
-    }
-}
-
-/// Whether the agent may perform `address`.
-pub fn permitted(perms: &PermissionContext, address: &ActionAddress) -> bool {
-    allowed(perms, &scope_for(address))
-}
-
-/// Whether the agent may perform `descriptor`, published by the app
-/// `app_id`, as the kind of action it declares: a read-only view is never
-/// upgraded, an outside effect never downgraded. The node names the app that
-/// published it, as the app's own host does, so an invitation to one app is
-/// never leave to act in another.
-pub(crate) fn permitted_descriptor(
-    perms: &PermissionContext,
-    app_id: &str,
-    descriptor: &ActionDescriptor,
-) -> bool {
-    if opens(&descriptor.address).is_some() {
-        return permitted(perms, &descriptor.address);
-    }
-    allowed(
-        perms,
-        &PermissionScope::Action {
-            node: tilo_actions::action_node(
-                &TreePath::root(),
-                app_id,
-                &descriptor.resource_kind,
-                &descriptor.address.resource,
-                descriptor.contract.field.as_deref(),
-                &descriptor.address.action,
-            ),
-            kind: descriptor.contract.kind,
-        },
-    )
-}
-
-/// The tree `contract` publishes for `doc` as it stands: the one its kind
-/// publishes, which is the one the app's own window publishes.
-///
-/// Rebuilt on every call, never cached — an app's tree changes with every
-/// edit, and the whole value of an address is that it names what is there
-/// *now*.
-pub fn tree(contract: &AppContract, doc: &AutoCommit) -> Vec<Resource> {
-    contract
-        .kind
-        .publish(contract.kind.kind(), doc)
-        .into_iter()
-        .collect()
-}
-
-/// Everything the room exports that the agent may perform.
-///
-/// The union across every document it holds, in the order the apps are
-/// declared and then depth-first within each.
-///
-/// An open is offered onto content when an operation here, or one `beside`
-/// says the room offers elsewhere, produces some.
-pub fn offers(
-    held: &[(&'static AppContract, &AutoCommit)],
-    beside: &[Offer],
-    perms: &PermissionContext,
-) -> Vec<Offer> {
-    let mut out = Vec::new();
-    for (contract, doc) in held {
-        out.extend(offers_in(contract, &tree(contract, doc), perms));
-    }
-    let onto = out.iter().chain(beside).any(Offer::produces_content);
-    out.extend(openable(held, onto, perms));
-    out
-}
-
-/// What `contract`'s app publishes in `resources` that the agent may
-/// perform. Denied means absent, so nothing downstream can decide to
-/// perform an operation it may not.
-pub fn offers_in(
-    contract: &'static AppContract,
-    resources: &[Resource],
-    perms: &PermissionContext,
-) -> Vec<Offer> {
-    tilo_actions::door::survey(resources)
-        .into_iter()
-        .filter(|descriptor| permitted_descriptor(perms, contract.app_id(), descriptor))
-        .map(|descriptor| Offer {
-            app: contract.namespace.to_string(),
-            broker_peer_id: None,
-            descriptor,
-        })
-        .collect()
-}
-
-/// Whether the room holds `namespace`'s state **with something in it**.
-///
-/// Two facts wear the same word. An application is *here* when a document it
-/// wrote has arrived on its route; it is **surveyable** when the tree it
-/// publishes for that document offers something to do by name — beyond the
-/// generic typed edits every resource takes. An app can be here and offer
-/// nothing — freshly opened, before it holds anything a request could act
-/// on — and a step that follows an open, asking what the open produced,
-/// needs the second answer while the first is what it was told.
-pub fn surveyable(held: &[(&'static AppContract, &AutoCommit)], namespace: &str) -> bool {
-    held.iter().any(|(c, doc)| {
-        c.namespace == namespace
-            && tilo_actions::door::survey(&tree(c, doc))
-                .iter()
-                .any(|descriptor| !descriptor.contract.is_programmatic())
-    })
-}
-
-/// The applications this room does not have open, as the operations that
-/// would open them.
-///
-/// Bounded by the contracts the agent speaks — an app it cannot read
-/// afterwards is one it could start and then have nothing to say about —
-/// and by the apps that are **not already here with something in them**. A
-/// held app with resources of its own needs no opening; offering it anyway
-/// would invite a second window over the first.
-///
-/// # An open application holding nothing
-///
-/// "Already here" is not the same as "has something to work on". An app
-/// present but exporting nothing is still openable: the open is what gives
-/// it something, and the operations it then publishes answer the rest of
-/// the request. An app with resources of its own stays excluded.
-fn openable(
-    held: &[(&'static AppContract, &AutoCommit)],
-    onto: bool,
-    perms: &PermissionContext,
-) -> Vec<Offer> {
-    // An open is offered content when an operation in the room produces
-    // some, on the terms every other content-taking operation is: the
-    // content is that operation's typed result, never read off a document.
-    let onto = if onto {
-        tilo_actions::InputSpec::Text {
-            prompt: "The content to open it onto".to_string(),
-            placeholder: String::new(),
-            collects: tilo_actions::Collects::Content,
-        }
-    } else {
-        tilo_actions::InputSpec::None
-    };
-    CONTRACTS
-        .iter()
-        .filter(|c| !surveyable(held, c.namespace))
-        .map(|c| Offer {
-            app: c.namespace.to_string(),
-            broker_peer_id: None,
-            descriptor: ActionDescriptor {
-                semantic_identity: None,
-                address: open_address(c.namespace),
-                resource_kind: APPLICATION_KIND.to_string(),
-                resource_label: c.title.to_string(),
-                action_label: format!("open {}", c.title),
-                description: Some(format!(
-                    "{} is not open in this room, so none of what it can do is \
-                     here to be named yet. Opening it is what puts its own \
-                     operations on this list.",
-                    c.title
-                )),
-                // Inert on this descriptor: `Session::perform` recognises
-                // the address before the door sees it and asks the session
-                // over the socket instead, since starting an application is
-                // work only the session hosting the room can do.
-                locus: tilo_actions::ExecutionLocus::ServerPreferred,
-                kind: tilo_actions::OperationKind::Effect,
-                contract: ActionContract::default(),
-                params: Vec::new(),
-                input: onto.clone(),
-                view: None,
-            },
-        })
-        .filter(|o: &Offer| permitted(perms, o.address()))
         .collect()
 }
 
@@ -676,34 +339,6 @@ pub struct ResourceFacts {
     pub label: String,
     /// The labels of the child resources that export nothing.
     pub notes: Vec<String>,
-}
-
-/// Every resource the room's apps are publishing, whether or not it exports
-/// anything. Rebuilt on every call for the same reason [`tree`] is.
-pub fn facts(held: &[(&'static AppContract, &AutoCommit)]) -> Vec<ResourceFacts> {
-    fn walk(r: &Resource, out: &mut Vec<ResourceFacts>) {
-        out.push(ResourceFacts {
-            id: r.id.as_str().to_string(),
-            kind: r.kind.clone(),
-            label: r.label.clone(),
-            notes: r
-                .children
-                .iter()
-                .filter(|c| c.actions.is_empty())
-                .map(|c| c.label.clone())
-                .collect(),
-        });
-        for c in &r.children {
-            walk(c, out);
-        }
-    }
-    let mut out = Vec::new();
-    for (contract, doc) in held {
-        for r in tree(contract, doc) {
-            walk(&r, &mut out);
-        }
-    }
-    out
 }
 
 /// What the room exports and what it says about itself, taken together, at
@@ -733,30 +368,9 @@ impl Catalogue {
     }
 }
 
-/// Everything the room exports and everything it says, in one survey.
-pub fn catalogue(
-    held: &[(&'static AppContract, &AutoCommit)],
-    perms: &PermissionContext,
-) -> Catalogue {
-    Catalogue {
-        offers: offers(held, &[], perms),
-        facts: facts(held),
-        held: held.iter().map(|(c, _)| c.namespace).collect(),
-    }
-}
-
 /// Find the offer an id names, in a freshly taken survey.
 pub fn find<'a>(offers: &'a [Offer], id: &str) -> Option<&'a Offer> {
     offers.iter().find(|offer| offer.id() == id)
-}
-
-/// The app's own words for the operation an id names.
-///
-/// `None` when the survey no longer carries it, so the caller says
-/// something that names no operation at all rather than falling back to the
-/// address — an identifier in a sentence tells a reader nothing.
-pub fn label_of(offers: &[Offer], id: &str) -> Option<String> {
-    find(offers, id).map(|o| o.descriptor.action_label.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -1205,21 +819,57 @@ fn collects_a_value_said(offer: &Offer) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::ActionContract;
     use tilo_actions::door::ActionAddress;
 
     #[test]
-    fn offer_addresses_round_trip_name_their_app_and_stay_distinct_per_publisher() {
+    fn closed_routes_remain_distinct_without_inventing_a_publisher() {
+        let make = |record: &str| {
+            serde_json::from_value::<ui::collaboration::BrokerActionSurface>(serde_json::json!({
+                "peer_id": 0,
+                "provider": format!("launch:room:so.tilo.notes:{record}"),
+                "app_id": "so.tilo.notes",
+                "cluster_id": "room",
+                "record_id": record,
+                "live": false,
+                "actions": [{
+                    "resource": "notes.document",
+                    "resource_kind": "notes.document",
+                    "resource_label": "Notes",
+                    "action": "rename",
+                    "action_label": "Rename",
+                    "description": null,
+                    "operation_kind": tilo_actions::OperationKind::Document,
+                    "params": [],
+                    "contract": tilo_actions::ActionContract::default(),
+                    "input": ui::collaboration::ExportedInput::None,
+                }],
+            }))
+            .unwrap()
+        };
+        let offers = broker_offers(&vec![make("first"), make("second")]);
+        assert_eq!(offers.len(), 2);
+        assert_ne!(offers[0].id(), offers[1].id());
+        for (offer, record) in offers.iter().zip(["first", "second"]) {
+            assert_eq!(
+                offer.broker_peer_id, None,
+                "an inert route has no publisher authority"
+            );
+            assert_eq!(
+                offer.broker_provider.as_deref(),
+                Some(format!("launch:room:so.tilo.notes:{record}").as_str())
+            );
+            assert_eq!(decode_address(&offer.id()), Some(offer.address().clone()));
+            assert_eq!(find(&offers, &offer.id()), Some(offer));
+        }
+    }
+
+    #[test]
+    fn offer_addresses_round_trip_and_stay_distinct_per_publisher() {
         // Case `an_address_with_a_path_in_it_round_trips`.
         {
             let a = ActionAddress::new("files.entry:/var/workspace/a.b/plan.md", "rename");
             assert_eq!(decode_address(&encode_address(&a)), Some(a));
-        }
-
-        // Case `the_app_is_read_off_the_resource_namespace`.
-        {
-            assert_eq!(app_of("word-processor.document"), "word-processor");
-            assert_eq!(app_of("files.entry:/var/workspace/plan.md"), "files");
-            assert_eq!(namespace_of(None, "files.entry:/plan.md"), "files");
         }
 
         // Case `duplicate_addresses_from_two_live_publishers_remain_distinct`.
@@ -1275,6 +925,7 @@ mod tests {
             let offer = Offer {
                 app: "so.tilo.diffmerge".into(),
                 broker_peer_id: Some(0),
+                broker_provider: None,
                 descriptor: ActionDescriptor {
                     semantic_identity: None,
                     address,
@@ -1470,6 +1121,7 @@ mod tests {
         Offer {
             app: app.to_string(),
             broker_peer_id: None,
+            broker_provider: None,
             descriptor: ActionDescriptor {
                 semantic_identity: None,
                 address: ActionAddress::new(resource, action),

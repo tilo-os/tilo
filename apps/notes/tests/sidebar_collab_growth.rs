@@ -5,16 +5,6 @@
 //! `sync → build_layout → compute → apply_layout → draw` cycle headless
 //! (no GPU — `draw` just fills a vello Scene).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use notes::NotesApp;
 use notes::model::PageMeta;
 use ui::headless::Framed;

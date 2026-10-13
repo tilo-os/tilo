@@ -471,7 +471,7 @@ def segment_series(results: list[dict]) -> dict[str, list[float]]:
 
 
 def kpi_p95_target(kpi: str) -> float | None:
-    """The KPI target's p95 ceiling for `kpi` (tools/perf/kpi-budgets.toml), if any."""
+    """The KPI's p95 ceiling for `kpi` (tools/perf/kpi-budgets.toml), if any."""
     budgets = tomllib.loads(KPI_BUDGETS.read_text(encoding="utf-8"))
     target = budgets.get("kpi", {}).get(kpi, {}).get("p95")
     return None if target is None else float(target)

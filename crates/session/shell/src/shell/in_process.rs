@@ -41,6 +41,7 @@ pub struct InProcessApps {
     /// session launched; `None` keeps them off any broker.
     broker: Option<SessionBroker>,
     messaging: Option<tilo_messaging::MessagingClient>,
+    #[cfg(target_os = "linux")]
     first_accounts: Option<Rc<dyn messaging::first_account::FirstAccounts>>,
     messaging_registry: Option<std::sync::Arc<dyn tilo_messaging::MessagingRegistry>>,
     credential_owner: Option<accounts::CredentialOwner>,
@@ -50,8 +51,11 @@ pub struct InProcessApps {
         Option<tokio::sync::oneshot::Receiver<crate::network::private_messages::Transport>>,
     native_messaging_transport: Option<crate::network::private_messages::Transport>,
     messaging_starts: Option<Rc<dyn messaging::activation::PendingAccounts>>,
+    #[cfg(target_os = "linux")]
     messaging_lifetime: std::sync::Arc<()>,
+    #[cfg(target_os = "linux")]
     messaging_network_prompts: Option<crate::portal::PromptQueueHandle>,
+    #[cfg(target_os = "linux")]
     messaging_providers: Vec<launcher::owned_service::ServiceCancellation>,
     messaging_native_accounts: Vec<std::sync::Arc<dyn messaging::NativeAccountCustody>>,
     native_messaging_peers: Option<crate::network::PeerIdentityStore>,
@@ -69,6 +73,7 @@ pub struct InProcessApps {
 pub type SessionBroker = Rc<dyn Fn(&str, &str) -> ui::collaboration::HostSessionConnector>;
 
 impl InProcessApps {
+    #[cfg(target_os = "linux")]
     pub(crate) fn bind_messaging_network_prompts(
         &mut self,
         prompts: crate::portal::PromptQueueHandle,
@@ -90,6 +95,7 @@ impl InProcessApps {
             author: UserId(author.to_owned()),
             broker: None,
             messaging: None,
+            #[cfg(target_os = "linux")]
             first_accounts: None,
             messaging_registry: None,
             credential_owner: None,
@@ -98,8 +104,11 @@ impl InProcessApps {
             messaging_transport: None,
             native_messaging_transport: None,
             messaging_starts: None,
+            #[cfg(target_os = "linux")]
             messaging_lifetime: std::sync::Arc::new(()),
+            #[cfg(target_os = "linux")]
             messaging_network_prompts: None,
+            #[cfg(target_os = "linux")]
             messaging_providers: Vec::new(),
             messaging_native_accounts: Vec::new(),
             native_messaging_peers: None,
@@ -158,6 +167,7 @@ impl InProcessApps {
         if let Some(starts) = &self.messaging_starts {
             starts.pump();
         }
+        #[cfg(target_os = "linux")]
         if let Some(first) = self.first_accounts.clone() {
             first.pump(self);
         }
@@ -443,6 +453,7 @@ impl InProcessApps {
                 None => tilo_desktop::feedback::unconfigured(&self.device_id, &self.author.0, tab),
             };
         }
+        #[cfg(target_os = "linux")]
         if definition.app_id == "so.tilo.messages" {
             if self.first_accounts.is_none()
                 && self.native_broker_socket.is_some()
@@ -504,6 +515,7 @@ impl InProcessApps {
             context.provide_person_records(person);
         }
         if definition.app_id == "so.tilo.messages" {
+            #[cfg(target_os = "linux")]
             if let Some(first) = &self.first_accounts {
                 context.lend(first.client());
             }
@@ -1484,6 +1496,7 @@ mod tests {
                     confirmation: None,
                     revision: Some(listed.revision),
                     wait_ms: None,
+                    appearance: None,
                 },
             );
             let mut outcome = None;

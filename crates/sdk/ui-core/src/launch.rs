@@ -65,7 +65,7 @@ type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 
 /// Parsed common launch arguments. Extra flags are retained for an app's
 /// screenshot factory after being explicitly allow-listed by [`LaunchSpec`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LaunchArgs {
     pub shots: Option<PathBuf>,
     /// `--shots-dir DIR`: one capture of every declared scenario, written to
@@ -110,26 +110,7 @@ impl LaunchArgs {
     /// The arguments of a component mounted by an in-process host: no
     /// screenshot, headless or audit mode and no app-specific arguments.
     pub fn component() -> Self {
-        Self {
-            shots: None,
-            shots_dir: None,
-            responsive_matrix: None,
-            viewport: None,
-            scenario: None,
-            headless: None,
-            native_audit: false,
-            pseudo_locale: false,
-            text_scale: None,
-            theme: None,
-            window: crate::theme::WindowAppearance::default(),
-            history: false,
-            search: None,
-            device_scale: None,
-            distinct_letters: None,
-            extras: Vec::new(),
-            values: Vec::new(),
-            positionals: Vec::new(),
-        }
+        Self::default()
     }
 
     pub fn has(&self, flag: &str) -> bool {
@@ -735,6 +716,7 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("app-launch-start");
+    tilo_process::raise_open_file_limit();
     let _ = tracing_subscriber::fmt::try_init();
     let args: Vec<String> = std::env::args().collect();
     run_with_args(spec, &args)
@@ -1327,26 +1309,7 @@ fn parse_args_extended(
     allowed_live_options: &[&str],
     max_positionals: usize,
 ) -> Result<LaunchArgs, LaunchError> {
-    let mut parsed = LaunchArgs {
-        shots: None,
-        shots_dir: None,
-        responsive_matrix: None,
-        viewport: None,
-        scenario: None,
-        headless: None,
-        native_audit: false,
-        pseudo_locale: false,
-        text_scale: None,
-        theme: None,
-        window: crate::theme::WindowAppearance::default(),
-        history: false,
-        search: None,
-        device_scale: None,
-        distinct_letters: None,
-        extras: Vec::new(),
-        values: Vec::new(),
-        positionals: Vec::new(),
-    };
+    let mut parsed = LaunchArgs::default();
     let mut index: usize = 1;
     while let Some(arg) = args.get(index) {
         let (flag, inline) = arg

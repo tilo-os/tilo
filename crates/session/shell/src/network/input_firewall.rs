@@ -139,6 +139,8 @@ pub struct ShellView {
     tiles: Vec<(SurfaceId, Rect)>,
     /// Compositor grip regions over these surfaces; never remote client input.
     chrome_regions: Vec<(SurfaceId, Rect)>,
+    /// Optional interactive bounds; the full tile remains the coordinate basis.
+    input_regions: Vec<(SurfaceId, Rect)>,
     /// The surface holding keyboard focus, or `None` when shell chrome owns it.
     keyboard_focus: Option<SurfaceId>,
     /// Shell chrome (overlay, palette, permission prompt) is drawn over the tiles and taking input.
@@ -164,6 +166,7 @@ impl ShellView {
         Self {
             tiles,
             chrome_regions: Vec::new(),
+            input_regions: Vec::new(),
             keyboard_focus,
             chrome_captures,
             overlay_open,
@@ -177,6 +180,13 @@ impl ShellView {
     #[must_use]
     pub fn chrome_regions(mut self, regions: Vec<(SurfaceId, Rect)>) -> Self {
         self.chrome_regions = regions;
+        self
+    }
+
+    /// Restrict pointer hit testing without changing surface-local coordinates.
+    #[must_use]
+    pub fn input_regions(mut self, regions: Vec<(SurfaceId, Rect)>) -> Self {
+        self.input_regions = regions;
         self
     }
 
@@ -225,6 +235,11 @@ impl ShellView {
             .iter()
             .find(|(id, rect)| {
                 rect.contains(p)
+                    && self
+                        .input_regions
+                        .iter()
+                        .find(|(owner, _)| owner == id)
+                        .is_none_or(|(_, input)| input.contains(p))
                     && !self
                         .chrome_regions
                         .iter()

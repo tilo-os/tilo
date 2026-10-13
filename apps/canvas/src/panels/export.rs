@@ -497,7 +497,7 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
     let open = tools
         .sheet
         .with(|sheet| *sheet == Some(crate::tools::Sheet::Export));
-    let threads = ui::rt::availability(ui::rt::Feature::Threads) == ui::rt::Availability::Available;
+    let threads = ui::rt::available(ui::rt::Feature::Threads);
     let bytes = (open && threads)
         .then(|| {
             let text = text.get_or_insert_with(TextRenderer::new);

@@ -42,6 +42,7 @@ fn local_host_request(directory: bool) -> tilo_actions::remote::InvokeRequest {
         revision: directory.then(|| "original-r1".into()),
         on_behalf_of: None,
         wait_ms: None,
+        appearance: None,
     }
 }
 
@@ -954,7 +955,7 @@ async fn certified_local_host_open_list_and_invoke_cost() {
                     let _lease = local_host_lease(&rig, &caller, request.invocation).await;
                 }
                 eprintln!(
-                    "certified local host, {receipts} receipts: open+list {:?}/call, \
+                    "#3911 certified local host, {receipts} receipts: open+list {:?}/call, \
                      open+invoke admission {:?}/call",
                     listing.checked_div(LISTINGS).unwrap_or_default(),
                     invoking.checked_div(INVOKES).unwrap_or_default(),

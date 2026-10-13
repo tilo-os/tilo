@@ -1,8 +1,7 @@
 # Universal version control: first slice and coverage audit
 
-**Status: history coverage and action workflow remain partial.** This describes
-the current native framework slice, not a claim that every resource has complete
-version control.
+**Status: partial.** This describes the current native
+framework slice, not a claim that every resource has complete version control.
 The goal is one history door for people, accessibility, scripts and agents:
 inspect old content, compare exact versions, then restore selected content as
 new, attributed, undoable work. History is not rewritten.
@@ -158,10 +157,10 @@ schema-evolution proof or universal redaction proof is delivered here. Closed
 resources, cold/remote hosts and restart routing need end-to-end tests for this
 new workflow. Broader coverage and UI review-action integration remain work.
 
-The Linear note that old **#3875 was closed unmerged** describes that old PR,
-not absence of the architecture: Git records **`d8bc16deea` — “feat: one
+That old **#3875 was closed unmerged** describes that PR, not absence of
+the architecture: Git records **`d8bc16deea` — “feat: one
 resource/action/view model”** as landed. Audit current code rather than treating
-that old issue disposition as the implementation inventory.
+that PR's disposition as the implementation inventory.
 
 Research leads only: Ink & Switch [local-first software](https://www.inkandswitch.com/local-first/)
 and [Patchwork](https://www.inkandswitch.com/patchwork/). They are pointers for

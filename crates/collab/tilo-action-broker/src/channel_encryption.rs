@@ -798,12 +798,20 @@ impl ChannelEncryption {
                 if !sent.insert(digest) {
                     continue;
                 }
-                self.delivery = self.delivery.wrapping_add(1);
-                let _ = transport.publish(NeighbourMsg::MlsGovernance {
-                    room: entry.room.to_string(),
-                    frame: Box::new(frame),
-                    delivery: self.delivery,
-                });
+                // An admission goes out whole for the devices it adds and
+                // without what they join from for everyone else; a host
+                // delivers the whole copy to those devices alone.
+                let Ok(deliveries) = frame.into_deliveries() else {
+                    continue;
+                };
+                for frame in deliveries {
+                    self.delivery = self.delivery.wrapping_add(1);
+                    let _ = transport.publish(NeighbourMsg::MlsGovernance {
+                        room: entry.room.to_string(),
+                        frame: Box::new(frame),
+                        delivery: self.delivery,
+                    });
+                }
             }
         }
     }
@@ -1054,9 +1062,20 @@ impl ChannelKeyAccess {
     ///
     /// # Errors
     ///
-    /// As [`Self::open_new_write`], except that an older epoch opens.
+    /// Refuses unavailable existing channel keys or epochs and invalid ciphertext.
+    /// This read never creates a channel, requests access or rejoins a group.
     pub fn open_history_write(&self, room: RoomId, envelope: &SignedOp) -> Result<Vec<u8>, String> {
-        let (keys, metadata, ciphertext) = self.sealed_parts(room, envelope)?;
+        let metadata = envelope.encryption.ok_or("the write is not sealed")?;
+        let ciphertext =
+            collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
+        let service = self
+            .inner
+            .lock()
+            .map_err(|_| "channel service unavailable")?;
+        let keys = service
+            .existing_keys(room, metadata.channel)
+            .ok_or("this device holds no existing key for the history's channel")?;
+        drop(service);
         keys.open_content(envelope.artifact, &metadata, &ciphertext)
             .map(|plaintext| plaintext.to_vec())
             .map_err(|error| error.to_string())
@@ -1835,7 +1854,7 @@ mod tests {
         }
     }
 
-    /// a member holding its keys has nothing to pump until a frame
+    /// #3998: a member holding its keys has nothing to pump until a frame
     /// arrives; a steward re-checks its policy once a reconcile interval.
     #[test]
     fn only_a_steward_or_an_unfinished_member_has_a_pump_deadline() {
@@ -1882,7 +1901,7 @@ mod tests {
         assert_eq!(wait_after_pass(None, now), None);
     }
 
-    /// a member the steward has not admitted asks again on its
+    /// #3998: a member the steward has not admitted asks again on its
     /// backoff, and is due exactly then.
     #[test]
     fn a_waiting_member_is_due_on_its_request_backoff() {
@@ -1909,7 +1928,7 @@ mod tests {
         );
     }
 
-    /// devices that park between deadlines reach the same outcome
+    /// #3998: devices that park between deadlines reach the same outcome
     /// in the same simulated time as devices pumped on a fixed tick:
     /// admission, then removal once the policy drops the member.
     #[test]
@@ -1958,7 +1977,7 @@ mod tests {
         ));
     }
 
-    /// with a directory that announces its changes, an idle steward
+    /// #4022: with a directory that announces its changes, an idle steward
     /// has no deadline at all, and a revocation is enforced as soon as it is
     /// announced, with no clock having run in between.
     #[test]
@@ -2003,7 +2022,7 @@ mod tests {
         ));
     }
 
-    /// announcements in quick succession cost at most one re-check
+    /// #4022: announcements in quick succession cost at most one re-check
     /// a reconcile interval, and none waits longer than that.
     #[test]
     fn announcements_in_quick_succession_coalesce() {
@@ -2028,7 +2047,7 @@ mod tests {
         );
     }
 
-    /// a grant that expires while nothing else happens is enforced
+    /// #4022: a grant that expires while nothing else happens is enforced
     /// when it expires: the steward registered the expiry, the process clock
     /// announces it, and the pump's watch wakes it. In between, the steward
     /// stays asleep.
@@ -2101,7 +2120,7 @@ mod tests {
         );
     }
 
-    /// an app endpoint waiting on its route's channel hears of its
+    /// #3964: an app endpoint waiting on its route's channel hears of its
     /// admission and its removal the moment this device's service records
     /// them, and of nothing that happens to another channel.
     #[test]
@@ -2545,6 +2564,69 @@ mod tests {
             waiting.renew_sealed(room_id, &write).is_err(),
             "a device still waiting for access renews nothing"
         );
+    }
+
+    #[test]
+    fn opening_history_never_creates_a_channel_without_an_existing_key() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let artifact = ArtifactId::new();
+        let owner_dir = tempfile::tempdir().unwrap();
+        let owner = device(
+            &room,
+            room_id,
+            0,
+            (1, 1),
+            &Policy::default(),
+            owner_dir.path(),
+        );
+        let keys = ChannelKeyAccess::new(owner.service);
+        let (ChannelAccess::Ready(held), _) = keys.access(room_id, channel) else {
+            panic!("explicit fixture admission provides the original key");
+        };
+        let sealed = sealed_op(
+            artifact,
+            held.seal_content(artifact, ContentRetention::Delta, b"existing history")
+                .unwrap(),
+            collab_types::OpKind::Change,
+        );
+        let generation = keys.generation();
+        assert_eq!(
+            keys.open_history_write(room_id, &sealed).unwrap(),
+            b"existing history"
+        );
+        assert_eq!(keys.generation(), generation);
+        assert!(keys.open_history_write(RoomId::new(), &sealed).is_err());
+        assert_eq!(keys.generation(), generation);
+
+        let fresh_dir = tempfile::tempdir().unwrap();
+        let fresh = device(
+            &room,
+            room_id,
+            0,
+            (1, 1),
+            &Policy::default(),
+            fresh_dir.path(),
+        );
+        let fresh = ChannelKeyAccess::new(fresh.service);
+        let generation = fresh.generation();
+        assert!(fresh.open_history_write(room_id, &sealed).is_err());
+        let state = fresh.inner.lock().unwrap();
+        assert!(
+            state.stewards.is_empty(),
+            "reading history must not mint replacement keys"
+        );
+        assert!(
+            state.members.is_empty(),
+            "reading history must not request access"
+        );
+        assert!(
+            !state.queued,
+            "reading history must not enqueue channel governance"
+        );
+        assert_eq!(state.generation(), generation);
+        drop(state);
     }
 
     /// A room whose steward this device learns of later, as the workspace

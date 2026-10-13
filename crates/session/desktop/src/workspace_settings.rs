@@ -1675,6 +1675,7 @@ fn draw_empty_state(
 pub fn role_label(role: CapRole) -> String {
     t(match role {
         CapRole::Owner => "workspace-settings-role-owner",
+        CapRole::Moderator => "workspace-settings-role-moderator",
         CapRole::Editor => "workspace-settings-role-editor",
         CapRole::Commenter => "workspace-settings-role-commenter",
         CapRole::Viewer => "workspace-settings-role-viewer",
@@ -1687,6 +1688,7 @@ pub fn role_label(role: CapRole) -> String {
 pub fn role_capability_preview(role: CapRole) -> String {
     t(match role {
         CapRole::Owner => "workspace-settings-role-owner-preview",
+        CapRole::Moderator => "workspace-settings-role-moderator-preview",
         CapRole::Editor => "workspace-settings-role-editor-preview",
         CapRole::Commenter => "workspace-settings-role-commenter-preview",
         CapRole::Viewer => "workspace-settings-role-viewer-preview",
@@ -1907,7 +1909,7 @@ pub fn grant_given_by_label(
             "workspace-settings-granted-by-agent",
             &[("id", member_name_or_short_id(ws, id).into())],
         )),
-        Who::Role(_) | Who::Task(_) | Who::Shortcut(_) | Who::ForeignDevice => None,
+        Who::Role(_) | Who::Task(_) | Who::Shortcut(_) | Who::Bot(_) | Who::ForeignDevice => None,
     }
 }
 
@@ -3769,6 +3771,13 @@ fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
         Who::Task(id) | Who::Shortcut(id) => GrantSubject {
             kind: SubjectKind::Other,
             id: short_id(id),
+        },
+        Who::Bot(id) => GrantSubject {
+            kind: SubjectKind::Other,
+            id: t_args(
+                "workspace-settings-subject-bot",
+                &[("id", short_id(id).into())],
+            ),
         },
         Who::ForeignDevice => GrantSubject {
             kind: SubjectKind::Other,

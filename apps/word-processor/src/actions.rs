@@ -27,8 +27,6 @@ use ui::tilo_resource::Effect as _;
 
 use crate::effects::WordProcessorEffect;
 
-/// Registry `type_id` for every word-processor action.
-pub use tilo_document::RICH_TEXT_ACTION_TYPE as WORD_PROCESSOR_ACTION_TYPE;
 pub use tilo_document::action::*;
 /// Register the word processor's action decoder for palette execution + remote
 /// replay.
@@ -83,9 +81,6 @@ pub struct SearchTarget {
 /// never allocates one resource object per occurrence forever.
 pub const MAX_RESOURCE_SEARCH_HITS: usize = 64;
 pub const MAX_RESOURCE_REVISIONS: usize = 64;
-/// Sections and images listed around the caret (and sixteen times as many
-/// table cells, so the nearest tables are whole).
-pub const MAX_RESOURCE_OBJECTS: usize = 64;
 
 /// A short label for a structural block in the palette.
 fn short(text: &str, fallback: &str) -> String {
@@ -1161,10 +1156,6 @@ mod tests {
     /// Selected text exposes a typed hyperlink action that replays; targets are limited to safe authored
     /// schemes; validation is enforced by both resource and executor.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
     fn hyperlinks_are_typed_safe_and_validated_on_both_sides() {
         // Phase: selected_text_exposes_a_typed_hyperlink_action_that_replays.
         {

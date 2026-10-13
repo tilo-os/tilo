@@ -10,7 +10,7 @@ import {mountChat} from './mount-chat.mjs';
 import {observe} from './observe.mjs';
 
 const bundle = resolve(process.argv[2]);
-assert.ok(existsSync(join(bundle, 'resource.html')), 'built resource entry is required');
+assert.ok(existsSync(join(bundle, 'app/index.html')), 'built full-tab entry page is required');
 // Ephemeral TLS material arrives only over the native fixture's stdin pipe.
 const input = createInterface({input: process.stdin});
 const lines = input[Symbol.asyncIterator]();
@@ -20,10 +20,12 @@ const types = {'.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/jav
 const server = createServer(credentials, (request, response) => {
   const path = new URL(request.url, 'https://localhost').pathname;
   if (path === '/fixture.html') {
-    response.writeHead(200, {'content-type': 'text/html'}).end('<!doctype html><link rel="stylesheet" href="/resource.css"><div id="surface"></div>');
+    response.writeHead(200, {'content-type': 'text/html'}).end('<!doctype html><style>html,body{margin:0;height:100%}#surface{position:fixed;inset:0}</style><div id="surface"></div>');
     return;
   }
-  const file = resolve(bundle, '.' + path);
+  // A followed link names the entry page by its directory (`/app/`), as a
+  // web host serves it.
+  const file = resolve(bundle, '.' + path + (path.endsWith('/') ? 'index.html' : ''));
   if (!file.startsWith(bundle + '/') || !existsSync(file)) { response.writeHead(404).end(); return; }
   response.writeHead(200, {'content-type': types[extname(file)] ?? 'application/octet-stream'}).end(readFileSync(file));
 });
@@ -108,23 +110,45 @@ try {
   assert.equal(context.sharing.output.value.videoCapture, false);
   assert.equal(context.stopped.output.value.sharing, false);
   stage('mounted-public-consent-and-stop-without-video');
-  const clickAction = async action => {
-    const response = await tab.send('Runtime.evaluate', {expression: `mount.invokeAction(fixture.shared, ${JSON.stringify(action)})`, returnByValue:true, userGesture:true});
+  // Chat's own controls under the message that shares the resource: they
+  // ask the resource's app for its share-link and copy or open the URL.
+  const press = async label => {
+    const response = await tab.send('Runtime.evaluate', {expression: `(() => {
+      const control = document.querySelector('[aria-label=${JSON.stringify(label)}]');
+      if (!control) return false;
+      control.click();
+      return true;
+    })()`, returnByValue:true, userGesture:true});
     assert.equal(response.result?.exceptionDetails, undefined, JSON.stringify(response.result?.exceptionDetails));
-    assert.equal(response.result?.result.value?.state, 'accepted');
+    return response.result?.result.value === true;
   };
-  await clickAction('copy-resource-link');
+  const pressWhenShown = async label => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (await press(label)) return;
+      await tab.evaluate('mount.requestSemantics()');
+      await new Promise(done => setTimeout(done, 100));
+    }
+    assert.fail(`Chat shows no "${label}" control`);
+  };
+  const linked = '(async()=> { const text = await navigator.clipboard.readText(); return text.includes("/app/#/@") && text.includes(fixture.room); })()';
+  await pressWhenShown('Copy resource link');
   try {
-    await tab.waitFor('(async()=> (await navigator.clipboard.readText()).includes("#resource="))()', {timeout:15_000});
+    // The host is asked for its web entry on every copy; Chat gives up after 30 s.
+    await tab.waitFor(linked, {timeout:40_000});
   } catch (error) {
-    console.error('Clipboard read result', await tab.evaluate('navigator.clipboard.readText().then(text=>({length:text.length, resource:text.includes("#resource=")})).catch(error=>String(error))'));
-    console.error('Copy diagnostic', await tab.evaluate('({catalogue:catalogueDiagnostic, bridge:mountDiagnostic, state:mount.state(), active:document.hasFocus()})'), tab.log);
+    console.error('Clipboard read result', await tab.evaluate('navigator.clipboard.readText().then(text=>({length:text.length, linked:text.includes("/app/#/@")})).catch(error=>String(error))'));
+    // Chat says under the message why it has no link.
+    await tab.evaluate('mount.requestSemantics()');
+    console.error('Shown text', await tab.evaluate('[...document.querySelectorAll("#surface [aria-label], #surface [role=status], #surface [role=alert]")].map(node => node.getAttribute("aria-label") || node.textContent).filter(Boolean).slice(-60)'));
+    console.error('Copy diagnostic', await tab.evaluate('({bridge:mountDiagnostic, state:mount.state(), active:document.hasFocus()})'), tab.log);
     throw error;
   }
   const copied = await tab.evaluate('navigator.clipboard.readText()');
-  assert.equal(new URL(copied).origin, origin);
+  assert.equal(new URL(copied).origin, origin, 'the link is under the web entry the host announces');
+  assert.match(new URL(copied).hash, /\/so\.tilo\.chat\/-\/chat\.workspace\.messages\/.+\?chars=6-7$/,
+    'the link names the shared message and its exact range');
   stage('native-copy-to-real-browser-clipboard');
-  await clickAction('open-resource-link');
+  await pressWhenShown('Open resource in browser');
   let opened;
   for (let attempt=0; attempt<50; attempt++) {
     const targets = await browser.send('Target.getTargets');
@@ -185,35 +209,44 @@ try {
     assert.equal(JSON.parse((await lines.next()).value).nativeReceivedOnce, true);
     stage('certified-retry-merges-both-original-posts-once');
   }
-  await tab.evaluate('(async()=>{await (await import("/resource-session.mjs")).closeResourceOperation(operation); return document.querySelectorAll("canvas").length;})()');
-  const link = await tab.evaluate('link');
+  await tab.evaluate('(async()=>{await mount.cleanup(); await peer.dispose(); return document.querySelectorAll("canvas").length;})()');
+  const link = copied;
+  // The full-tab entry page marks its outcome on <html data-entry>: open,
+  // refused (no access) or failed.
+  const entryOutcome = 'document.documentElement.dataset.entry';
+  const chooseAccount = async name => {
+    await tab.waitFor('document.querySelectorAll(".tilo-entry-card button").length === 2');
+    await tab.evaluate(`Array.from(document.querySelectorAll(".tilo-entry-card button")).find(button => button.textContent.includes(${JSON.stringify(name)})).click()`);
+  };
   observer.mark('navigate-link');
   await tab.navigate(link);
-  await tab.waitFor('document.querySelector("select")?.options.length === 2');
-  await tab.evaluate('document.querySelector("select").value = Array.from(document.querySelector("select").options).find(option=>option.textContent.includes("Unadmitted")).value; document.querySelector("#open").requestSubmit();');
-  await tab.waitFor('document.querySelector("#status").textContent.includes("no existing browser device")');
+  await chooseAccount('Unadmitted');
+  await tab.waitFor(`${entryOutcome} !== undefined`);
+  assert.equal(await tab.evaluate(entryOutcome), 'refused');
+  assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
   stage('explicit-unadmitted-account-refused-without-enrollment');
-  observer.mark('reader-submit');
-  await tab.evaluate('document.querySelector("select").value = Array.from(document.querySelector("select").options).find(option=>option.textContent === "Fixture reader").value; document.querySelector("#open").requestSubmit();');
-  await tab.waitFor('document.querySelector("#status").textContent !== "Checking your existing admission…" && document.querySelector("#status").textContent !== ""');
-  assert.equal(await tab.evaluate('document.querySelector("#status").textContent'),
-    'Shared resource open. Leave to close this session.', 'the admitted reader must reopen the shared resource');
-  assert.ok(await tab.evaluate('document.querySelector("#surface canvas")?.width > 0'));
-  stage('production-account-choice-and-resource-page-mount');
-  await tab.evaluate('document.querySelector("#leave").click()');
-  await tab.waitFor('document.querySelector("#status").textContent === "Left the shared resource." && !document.querySelector("canvas")');
-  stage('leave-releases-mounted-app-and-device-custody');
   await tab.navigate(origin + '/fixture.html');
   await tab.navigate(link);
-  await tab.waitFor('document.querySelector("select")?.options.length === 2');
+  observer.mark('reader-submit');
+  await chooseAccount('Fixture reader');
+  await tab.waitFor(`${entryOutcome} !== undefined`, {timeout:45_000});
+  assert.equal(await tab.evaluate(entryOutcome), 'open', 'the admitted reader must reopen the shared resource');
+  assert.ok(await tab.evaluate('document.querySelector("#surface canvas")?.width > 0'));
+  assert.equal(await tab.evaluate('location.href'), link, 'the opened page keeps the exact link in its address');
+  stage('production-account-choice-and-resource-page-mount');
+  await tab.navigate(origin + '/fixture.html');
+  assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
+  stage('leaving-the-page-releases-mounted-app-and-device-custody');
+  await tab.navigate(link);
+  await tab.waitFor('document.querySelectorAll(".tilo-entry-card button").length === 2');
   stage('page-navigation-reopens-existing-account-picker');
   stage('revoke');
   assert.equal(JSON.parse((await lines.next()).value).revoked, true);
   observer.mark('revoked-reader-submit');
-  await tab.evaluate('document.querySelector("select").value = Array.from(document.querySelector("select").options).find(option=>option.textContent === "Fixture reader").value; document.querySelector("#open").requestSubmit();');
-  await tab.waitFor('document.querySelector("#status").textContent !== "Checking your existing admission…" && document.querySelector("#status").textContent !== ""', {timeout:45_000});
+  await chooseAccount('Fixture reader');
+  await tab.waitFor(`${entryOutcome} !== undefined`, {timeout:45_000});
+  assert.equal(await tab.evaluate(entryOutcome), 'refused');
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
-  assert.notEqual(await tab.evaluate('document.querySelector("#status").textContent'), 'Shared resource open. Leave to close this session.');
   stage('governed-revocation-refuses-link-reopen');
   // A page that cannot run is not open. Created synchronously, vello's
   // pipelines held the browser's GPU thread and blocked the reopened page

@@ -37,6 +37,11 @@ on:
         type: string
         required: false
         default: ''
+      source_revision:
+        description: Optional exact protected-main ancestor for a source-pinned dev image
+        type: string
+        required: false
+        default: ''
   push:
     tags: ["v*"]
   workflow_dispatch:
@@ -122,7 +127,7 @@ concurrency:
   # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
-  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && 'tilo-os-image-lenovo-series' || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'orangepi-3b-v2-1') && format('tilo-os-image-orangepi-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || 'tilo-os-image-validate-2' }}
+  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && (inputs.source_revision || github.sha) || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && 'tilo-os-image-lenovo-series' || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'orangepi-3b-v2-1') && format('tilo-os-image-orangepi-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || 'tilo-os-image-validate-2' }}
   # A pull request's dev build is superseded by its next commit. Every main
   # commit's dev build runs at once, side by side; its moving tags only move
   # forward (os/dev/move-tag-forward.sh). Board jobs wait on a small runner
@@ -131,9 +136,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}
 
 env:
+  TILO_IMAGE_SOURCE: ${{ inputs.source_revision || github.sha }}
   TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
   TILO_DEV_INPUT_COHORT: ${{ (inputs.fex_payload_candidate != '' || inputs.windows_guest_candidate != '') && github.run_id || '' }}
-  # Content-based layers for the generic OS image ("Rechunk the
+  # Content-based layers for the generic OS image (#4190, "Rechunk the
   # image" below). The repository variable TILO_RECHUNK=0 turns it off without
   # a commit: the image then keeps one layer per Containerfile instruction.
   TILO_RECHUNK: ${{ vars.TILO_RECHUNK || '1' }}
@@ -158,6 +164,7 @@ jobs:
       - name: Checkout app input policy
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
           persist-credentials: false
       - name: Wait for the Release / apps run publishing this commit's apps
         env:
@@ -167,7 +174,7 @@ jobs:
           set -euo pipefail
           if [[ $COLLECTION_SOURCE =~ ^[0-9a-f]{40}$ ]] \
              && git fetch --quiet --no-tags --depth=1 origin "$COLLECTION_SOURCE" \
-             && bash tools/ci/check_app_collection_source.sh "$COLLECTION_SOURCE" "$GITHUB_SHA" >/dev/null 2>&1; then
+             && bash tools/ci/check_app_collection_source.sh "$COLLECTION_SOURCE" "$TILO_IMAGE_SOURCE" >/dev/null 2>&1; then
             echo "::notice::the published collection of $COLLECTION_SOURCE already has this commit's app inputs"
             exit 0
           fi
@@ -198,6 +205,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     outputs:
+      source-short: ${{ steps.source.outputs.source-short }}
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
       mode: ${{ steps.matrix.outputs.mode }}
       publish: ${{ steps.matrix.outputs.publish }}
@@ -220,6 +228,37 @@ jobs:
       desktop_payload_url_aarch64: ${{ steps.pins.outputs.desktop_payload_url_aarch64 }}
       desktop_payload_sha256_aarch64: ${{ steps.pins.outputs.desktop_payload_sha256_aarch64 }}
     steps:
+      - name: Checkout current source verification policy
+        if: inputs.source_revision != ''
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: source-policy
+          persist-credentials: false
+          sparse-checkout: tools/ci/verify_main_source.py
+          sparse-checkout-cone-mode: false
+
+      - name: Verify and resolve the exact image source
+        id: source
+        env:
+          REQUESTED_SOURCE: ${{ inputs.source_revision || '' }}
+          TOKEN: ${{ github.token }}
+          DEV_ARCHES: ${{ inputs.arches || '["x86_64","aarch64"]' }}
+        run: |
+          set -euo pipefail
+          if [[ -n $REQUESTED_SOURCE ]]; then
+            [[ $GITHUB_EVENT_NAME == workflow_call && $GITHUB_REF == refs/heads/main \
+               && $REQUESTED_SOURCE =~ ^[0-9a-f]{40}$ ]] || {
+              echo '::error::source_revision is only allowed for a main dev call'; exit 1;
+            }
+            jq -e '. == ["x86_64"]' <<< "$DEV_ARCHES" >/dev/null || {
+              echo '::error::source_revision requires the x86-only dev matrix'; exit 1;
+            }
+            python3 -I source-policy/tools/ci/verify_main_source.py \
+              --source "$REQUESTED_SOURCE" --head "$GITHUB_SHA"
+          fi
+          echo "source-short=${TILO_IMAGE_SOURCE:0:7}" >> "$GITHUB_OUTPUT"
+
       # Both lanes of a release must build from the same prebuilt inputs.
       # Each job reads repository variables when it starts, and Release / apps
       # moves the collection pins while a release runs (in run 48898 the two
@@ -281,12 +320,12 @@ jobs:
           integration=""
           if command -v skopeo >/dev/null; then
             integration="$(skopeo inspect --retry-times 3 \
-              "docker://registry.tilo.so/tilo/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64" 2>/dev/null \
+              "docker://registry.tilo.so/tilo/tilo-ci:main-${TILO_IMAGE_SOURCE:0:7}-x86_64" 2>/dev/null \
               | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" || integration=""
           fi
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
           echo "integration-revision=$integration" >> "$GITHUB_OUTPUT"
-          echo "::notice::latest published OS revision: ${revision:-unknown}; integration image: ${integration:-none}; main: $GITHUB_SHA"
+          echo "::notice::latest published OS revision: ${revision:-unknown}; integration image: ${integration:-none}; main: $TILO_IMAGE_SOURCE"
 
       - name: Select validation or native publication lanes
         id: matrix
@@ -355,14 +394,14 @@ jobs:
           elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then
             # Nightly publication: the protected manual main path, unless main
             # has not moved since the last published image.
-            if [[ -n ${PUBLISHED_REVISION:-} && $PUBLISHED_REVISION == "$GITHUB_SHA" ]]; then
+            if [[ -n ${PUBLISHED_REVISION:-} && $PUBLISHED_REVISION == "$TILO_IMAGE_SOURCE" ]]; then
               skip=true
-              echo "::notice::latest already publishes $GITHUB_SHA; skipping the nightly build"
+              echo "::notice::latest already publishes $TILO_IMAGE_SOURCE; skipping the nightly build"
             elif [[ ${PUBLICATION_CONFIGURED:-false} == true ]]; then
               publish=true
-            elif [[ -n ${INTEGRATION_REVISION:-} && $INTEGRATION_REVISION == "$GITHUB_SHA" ]]; then
+            elif [[ -n ${INTEGRATION_REVISION:-} && $INTEGRATION_REVISION == "$TILO_IMAGE_SOURCE" ]]; then
               skip=true
-              echo "::notice::the integration image of $GITHUB_SHA already exists and publication is not configured; skipping the nightly build"
+              echo "::notice::the integration image of $TILO_IMAGE_SOURCE already exists and publication is not configured; skipping the nightly build"
             else
               echo '::warning::OS publication is not configured (TILO_PCR_PREDICTION_SIGNER, TILO_EFI_SIGNING_CERT_SHA256, TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY); running a main integration build for dev images instead'
             fi
@@ -431,6 +470,7 @@ jobs:
         if: github.event_name != 'workflow_call' && steps.matrix.outputs.skip != 'true' && steps.matrix.outputs.signed-development-board != 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
           persist-credentials: false
 
       - name: Require the pinned apps to contain this commit's fixes
@@ -450,7 +490,7 @@ jobs:
             exit 1
           }
           git fetch --quiet --no-tags --depth=1 origin "$COLLECTION_SOURCE"
-          bash tools/ci/check_app_collection_source.sh "$COLLECTION_SOURCE" "$GITHUB_SHA"
+          bash tools/ci/check_app_collection_source.sh "$COLLECTION_SOURCE" "$TILO_IMAGE_SOURCE"
 
   signing-preflight:
     needs: plan
@@ -462,6 +502,8 @@ jobs:
       - name: Checkout signing policy
         if: (needs.plan.outputs.publish == 'true' || needs.plan.outputs.signed-development-board == 'true')
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
       - name: Validate signed board inputs before native build
         if: needs.plan.outputs.signed-development-board == 'true'
         run: python3 os/tests/test_signed_development_board.py
@@ -492,6 +534,8 @@ jobs:
       rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
       - name: Install snapshot verification tools
         run: |
           set -euo pipefail
@@ -538,6 +582,8 @@ jobs:
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
 
       - name: Require the selected native OS architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
@@ -647,7 +693,7 @@ jobs:
           set -euo pipefail
           if [[ $DEV_BUILD == true ]]; then
             [[ $COLLECTION_SOURCE =~ ^[0-9a-f]{40}$ ]] || { echo '::notice::no collection source recorded; compiling the apps'; exit 0; }
-            if [[ $COLLECTION_SOURCE != "$GITHUB_SHA" ]]; then
+            if [[ $COLLECTION_SOURCE != "$TILO_IMAGE_SOURCE" ]]; then
               git fetch --quiet --no-tags --depth=1 origin "$COLLECTION_SOURCE" \
                 || { echo "::notice::collection source $COLLECTION_SOURCE is not fetchable; compiling the apps"; exit 0; }
               # The inputs Release / apps publishes a new collection for.
@@ -656,7 +702,7 @@ jobs:
                 on && /^      - / { gsub(/^      - "|"$/, ""); print ":(glob)" $0; next }
                 on { exit }' .forgejo/workflows/release-apps.yml)
               (( ${#inputs[@]} > 10 ))
-              if ! git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"; then
+              if ! git diff --quiet "$COLLECTION_SOURCE" "$TILO_IMAGE_SOURCE" -- "${inputs[@]}"; then
                 echo "::notice::app inputs changed since the published collection ($COLLECTION_SOURCE); compiling the apps"
                 exit 0
               fi
@@ -862,10 +908,10 @@ jobs:
           # desktop from this source instead. Anything that cannot be shown
           # current is rebuilt.
           payload_source=$(jq -r '.source // empty' "$work/manifest.json")
-          if [[ $payload_source != "$GITHUB_SHA" ]]; then
+          if [[ $payload_source != "$TILO_IMAGE_SOURCE" ]]; then
             if [[ ! $payload_source =~ ^[0-9a-f]{40}$ ]] \
                 || ! git fetch --quiet --no-tags --depth=1 origin "$payload_source" \
-                || [[ -n $(git diff --name-only "$payload_source" "$GITHUB_SHA" -- \
+                || [[ -n $(git diff --name-only "$payload_source" "$TILO_IMAGE_SOURCE" -- \
                              Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor) ]]; then
               echo "::notice::desktop payload from ${payload_source:-an unknown revision} predates this commit's desktop inputs; building the desktop from source"
               exit 0
@@ -955,7 +1001,7 @@ jobs:
         if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
         uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
-          name: tilo-lenovo-firmware-import-${{ github.sha }}
+          name: tilo-lenovo-firmware-import-${{ env.TILO_IMAGE_SOURCE }}
           path: firmware-import.json
           if-no-files-found: error
 
@@ -1275,13 +1321,13 @@ jobs:
           series=""
           if [[ $validate == true && $GITHUB_REF == refs/heads/* ]]; then
             if [[ $GITHUB_REF == refs/heads/main ]]; then
-              series="main-${GITHUB_SHA:0:7}"
+              series="main-${TILO_IMAGE_SOURCE:0:7}"
             else
               branch=${GITHUB_REF_NAME//[^A-Za-z0-9_.-]/-}
-              series="${branch:0:100}-${GITHUB_SHA:0:7}"
+              series="${branch:0:100}-${TILO_IMAGE_SOURCE:0:7}"
             fi
           elif [[ $validate == true && $GITHUB_REF =~ ^refs/pull/([0-9]+)/ ]]; then
-            series="pr-${BASH_REMATCH[1]}-${GITHUB_SHA:0:7}"
+            series="pr-${BASH_REMATCH[1]}-${TILO_IMAGE_SOURCE:0:7}"
           fi
           series="$(bash os/dev/dev-image-cohort.sh "$series")"
           echo "dev-series=$series" >> "$GITHUB_OUTPUT"
@@ -1300,7 +1346,7 @@ jobs:
             [[ $validate != true ]] \
               || echo 'TILO_IMAGE_OUTPUT=type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' >> "$GITHUB_ENV"
           fi
-          # a generic image that leaves this job (tilo-ci, or a
+          # #4190: a generic image that leaves this job (tilo-ci, or a
           # release) is re-laid out by content before anything consumes it
           # ("Rechunk the image"). The dev lane's BuildKit then pushes the raw
           # image beside it as <series>-<arch>-layered.
@@ -1475,9 +1521,9 @@ jobs:
           fi
           if [[ $PUBLISH != true ]]; then
             export TILO_ALLOW_EMPTY_SERIES=1
-          elif [[ $SERIES_GENESIS_REVISION =~ ^[0-9a-f]{40}$ && $SERIES_GENESIS_REVISION == "$GITHUB_SHA" ]]; then
+          elif [[ $SERIES_GENESIS_REVISION =~ ^[0-9a-f]{40}$ && $SERIES_GENESIS_REVISION == "$TILO_IMAGE_SOURCE" ]]; then
             export TILO_ALLOW_EMPTY_SERIES=1
-            echo "::notice::TILO_OS_SERIES_GENESIS_REVISION authorizes $GITHUB_SHA to start an absent series at gen1"
+            echo "::notice::TILO_OS_SERIES_GENESIS_REVISION authorizes $TILO_IMAGE_SOURCE to start an absent series at gen1"
           fi
           gen="$(./os/dev/next-generation.sh)"
           echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
@@ -1516,17 +1562,18 @@ jobs:
           images: ${{ env.TILO_OS_REPOSITORY }}
           labels: |
             org.opencontainers.image.created=${{ env.SOURCE_DATE_ISO }}
+            org.opencontainers.image.revision=${{ env.TILO_IMAGE_SOURCE }}
           tags: |
-            type=raw,value=${{ needs.plan.outputs.hardware-profile }}-${{ github.sha }},enable=${{ needs.plan.outputs.hardware-profile != 'generic' }}
+            type=raw,value=${{ needs.plan.outputs.hardware-profile }}-${{ env.TILO_IMAGE_SOURCE }},enable=${{ needs.plan.outputs.hardware-profile != 'generic' }}
             type=raw,value=latest,enable=${{ steps.release-mode.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic' }}
-            type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' }}
+            type=raw,value=main-${{ needs.plan.outputs.source-short }},priority=100,enable=${{ github.ref == 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' }}
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') && needs.plan.outputs.hardware-profile == 'generic' }}
             type=ref,event=pr,enable=${{ needs.plan.outputs.hardware-profile == 'generic' }}
             # workflow_dispatch off a non-main branch — without this, the metadata
             # step emits zero tags and the push fails "tag is needed". Derives a
             # "<branch>-<sha>" tag so a manual dispatch from a feature branch still
             # produces a discoverable image without polluting the `latest` channel.
-            type=raw,value=${{ github.ref_name }}-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' }}
+            type=raw,value=${{ github.ref_name }}-${{ env.TILO_IMAGE_SOURCE }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' }}
             # The generation tag is what makes the series self-recording: the next
             # build reads these back to learn which numbers are taken. It is only
             # ever pushed on a run that publishes, so a number is consumed exactly
@@ -1578,7 +1625,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, env.TILO_IMAGE_SOURCE) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -1707,7 +1754,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, env.TILO_IMAGE_SOURCE) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -1768,7 +1815,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, env.TILO_IMAGE_SOURCE) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -1783,7 +1830,7 @@ jobs:
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
-            ENGINE_RUNTIME_PACKAGE_VERSION=0.1.${{ github.run_number }}+g${{ github.sha }}
+            ENGINE_RUNTIME_PACKAGE_VERSION=0.1.${{ github.run_number }}+g${{ env.TILO_IMAGE_SOURCE }}
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
             tapp_publisher_identity=TAPP_PUBLISHER_IDENTITY
@@ -1831,7 +1878,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, env.TILO_IMAGE_SOURCE) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -1890,7 +1937,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, env.TILO_IMAGE_SOURCE) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -1961,7 +2008,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, env.TILO_IMAGE_SOURCE) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -2032,7 +2079,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, env.TILO_IMAGE_SOURCE) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -2155,8 +2202,8 @@ jobs:
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
           revision="$(skopeo inspect "docker://registry.tilo.so/tilo/tilo-ci@$digest" \
             | jq -r '.Labels["org.opencontainers.image.revision"] // empty')"
-          [[ $revision == "$GITHUB_SHA" ]] || {
-            echo "::error::$ref carries revision '${revision}', expected $GITHUB_SHA"
+          [[ $revision == "$TILO_IMAGE_SOURCE" ]] || {
+            echo "::error::$ref carries revision '${revision}', expected $TILO_IMAGE_SOURCE"
             exit 1
           }
           # $ref is pushed again by a rerun or a later run of this series, and
@@ -2242,7 +2289,7 @@ jobs:
           file: os/Containerfile
           push: false
           outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar,rewrite-timestamp=true
-          tags: ${{ env.TILO_OS_REPOSITORY }}:repro-${{ github.sha }}
+          tags: ${{ env.TILO_OS_REPOSITORY }}:repro-${{ env.TILO_IMAGE_SOURCE }}
           # Identical labels: the manifests are compared byte for byte.
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -2257,7 +2304,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, env.TILO_IMAGE_SOURCE) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -2293,7 +2340,7 @@ jobs:
           [[ -n $EPOCH ]] || { echo '::error::the publication itself was not rechunked'; exit 1; }
           archive=/var/tmp/tilo-image-repro.tar
           digest="$(./os/dev/rechunk-image.sh --builder "$BUILDER_NAME" --source "oci-archive:$archive" \
-            --name "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" --epoch "$EPOCH" --archive "$archive" | tail -n1)"
+            --name "$TILO_OS_REPOSITORY:repro-${{ env.TILO_IMAGE_SOURCE }}" --epoch "$EPOCH" --archive "$archive" | tail -n1)"
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
@@ -2305,7 +2352,7 @@ jobs:
         run: |
           set -euo pipefail
           repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar \
-            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro-rechunk.outputs.digest || steps.repro.outputs.digest }}')"
+            "$TILO_OS_REPOSITORY:repro-${{ env.TILO_IMAGE_SOURCE }}" '${{ steps.repro-rechunk.outputs.digest || steps.repro.outputs.digest }}')"
           TMPDIR=/var/tmp skopeo copy --retry-times 3 --preserve-digests \
             "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" \
             'docker://registry.tilo.so/tilo/tilo-repro-debug:${{ github.run_id }}-${{ matrix.arch }}-reproduce'
@@ -2325,7 +2372,7 @@ jobs:
             [[ $role == primary ]] || archive=/var/tmp/tilo-image-repro.tar
             [[ -s $archive ]] || continue
             python3 os/scripts/oci-archive-layer-report.py "$archive" "oci-layer-report/$role.json" \
-              --source '${{ github.sha }}' --run-id '${{ github.run_id }}' \
+              --source '${{ env.TILO_IMAGE_SOURCE }}' --run-id '${{ github.run_id }}' \
               --arch '${{ matrix.arch }}' --role "$role"
           done
 
@@ -2348,7 +2395,7 @@ jobs:
           set -euo pipefail
           [[ $REPRO_OUTCOME == success ]] || { echo '::error::the independent rebuild failed'; exit 1; }
           repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar \
-            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro-rechunk.outputs.digest || steps.repro.outputs.digest }}')"
+            "$TILO_OS_REPOSITORY:repro-${{ env.TILO_IMAGE_SOURCE }}" '${{ steps.repro-rechunk.outputs.digest || steps.repro.outputs.digest }}')"
           manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" | sha256sum | awk '{print $1}')"
           [[ $manifest =~ ^[0-9a-f]{64}$ ]]
           echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
@@ -2491,7 +2538,7 @@ jobs:
               --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
               "${cache[@]}" \
               --label "org.opencontainers.image.version=$DEV_SERIES-ci" \
-              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.opencontainers.image.revision=$TILO_IMAGE_SOURCE" \
               --label "org.opencontainers.image.base.name=$base" \
               --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
               --label "org.opencontainers.image.base.child.digest=$DEV_BASE_DIGEST" \
@@ -2519,7 +2566,7 @@ jobs:
                   2> "$RUNNER_TEMP/tilo-board-$board.log")" \
                 && grep -F "$board:" "$RUNNER_TEMP/tilo-board-$board.log" | sed 's/^/  /' \
                 && { [[ $TILO_SIGNED_DEVELOPMENT_BOARD != 1 ]] \
-                     || SOURCE_REVISION="$GITHUB_SHA" ./os/dev/sign-development-board.sh "registry.tilo.so/tilo/tilo-vm@$sealed" "$board"; } \
+                     || SOURCE_REVISION="$TILO_IMAGE_SOURCE" ./os/dev/sign-development-board.sh "registry.tilo.so/tilo/tilo-vm@$sealed" "$board"; } \
                 && { [[ $TILO_SIGNED_DEVELOPMENT_BOARD == 1 || $GITHUB_REF != refs/heads/main ]] \
                      || ./os/dev/move-tag-forward.sh "registry.tilo.so/tilo/tilo-vm@$sealed" "registry.tilo.so/tilo/tilo-vm:$board-ci"; } \
                 && echo "::notice::$board dev image sealed and published in $(( $(date +%s) - started ))s: tilo-vm:$DEV_SERIES-$board" \
@@ -2527,8 +2574,8 @@ jobs:
             board_pids+=("$!")
           done
           if [[ $TILO_SIGNED_DEVELOPMENT_BOARD != 1 ]]; then
-            DEV_TAG="$DEV_SERIES-ci" PUSHED_DIGEST="$digest" SOURCE_REVISION="$GITHUB_SHA" \
-              DISK_TOOLING_REVISION="$GITHUB_SHA" IMAGE_ONLY=1 \
+            DEV_TAG="$DEV_SERIES-ci" PUSHED_DIGEST="$digest" SOURCE_REVISION="$TILO_IMAGE_SOURCE" \
+              DISK_TOOLING_REVISION="$TILO_IMAGE_SOURCE" IMAGE_ONLY=1 \
               BASE_REPOSITORY=registry.tilo.so/tilo/tilo-ci BASE_TRUST=integration \
               BASE_INDEX_DIGEST="$DEV_BASE_DIGEST" BASE_CHILD_DIGEST="$DEV_BASE_DIGEST" \
               ./os/dev/publish-dev-disk.sh
@@ -2595,7 +2642,7 @@ jobs:
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, github.sha) || '' }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile != 'generic' && format('code.tilo.so/tilo/tilo:{0}-{1}', needs.plan.outputs.hardware-profile, env.TILO_IMAGE_SOURCE) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
@@ -2755,7 +2802,7 @@ jobs:
           first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
           test -n "$first_tag"
           first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" '${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}')"
-          repro_image="$TILO_OS_REPOSITORY:repro-${GITHUB_SHA}"
+          repro_image="$TILO_OS_REPOSITORY:repro-${TILO_IMAGE_SOURCE}"
 
           if [[ $HARDWARE_PROFILE != generic ]]; then
             printf '%s' "$TILO_REGISTRY_TOKEN" | podman login code.tilo.so \
@@ -2797,7 +2844,7 @@ jobs:
             TILO_DEV_BASE="$dev_base" TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=1 \
               TILO_CARGO_FRESHNESS=clean TILO_OUTPUT="$DEV_OUTPUT" TILO_DISK="$DEV_OUTPUT/qcow2/disk.qcow2" \
               TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci" TILO_DISK_SIZE=64G \
-              TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$dev_base_digest --label org.opencontainers.image.base.digest=$dev_base_digest --label org.opencontainers.image.base.child.digest=$dev_base_digest --label sh.tilo.dev.base-trust=integration" \
+              TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$TILO_IMAGE_SOURCE --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$dev_base_digest --label org.opencontainers.image.base.digest=$dev_base_digest --label org.opencontainers.image.base.child.digest=$dev_base_digest --label sh.tilo.dev.base-trust=integration" \
               ./os/dev/build-dev-image.sh
             test -s "$DEV_OUTPUT/qcow2/disk.qcow2"
             # Gate a throwaway overlay so the disk published below is never
@@ -3259,7 +3306,7 @@ jobs:
             # verification, so update clients cannot observe a half-published
             # release through a channel tag.
             digest_file="$(mktemp /var/tmp/tilo-push-digest.XXXXXX)"
-            candidate="$TILO_OS_REPOSITORY:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}"
+            candidate="$TILO_OS_REPOSITORY:candidate-${TILO_IMAGE_SOURCE}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}"
             podman tag "$TILO_IMAGE" "$candidate"
             podman push --digestfile "$digest_file" "$candidate"
             digest="$(tr -d '[:space:]' < "$digest_file")"
@@ -3300,8 +3347,8 @@ jobs:
           DEV_IMAGE: localhost/tilo-vm:ci
           DEV_TAG: ${{ steps.release-mode.outputs.dev-series }}-ci
           ARCH: ${{ matrix.arch }}
-          SOURCE_REVISION: ${{ github.sha }}
-          DISK_TOOLING_REVISION: ${{ github.sha }}
+          SOURCE_REVISION: ${{ env.TILO_IMAGE_SOURCE }}
+          DISK_TOOLING_REVISION: ${{ env.TILO_IMAGE_SOURCE }}
           SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
           SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot
           DISK_FORMATS: qcow2
@@ -3426,7 +3473,7 @@ jobs:
           now="$(date -u +%s)"
           printf '%s' "$freshness" | jq -e \
             --arg digest '${{ steps.release.outputs.digest }}' \
-            --arg source "$GITHUB_SHA" \
+            --arg source "$TILO_IMAGE_SOURCE" \
             --argjson generation "$TILO_GENERATION" \
             --argjson now "$now" --arg repository "$TILO_OS_REPOSITORY" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
@@ -3458,7 +3505,7 @@ jobs:
             --arg arch '${{ matrix.arch }}' \
             --arg digest '${{ steps.release.outputs.digest }}' \
             --argjson generation "$TILO_GENERATION" \
-            --arg source "$GITHUB_SHA" \
+            --arg source "$TILO_IMAGE_SOURCE" \
             '{architecture:$arch,digest:$digest,generation:$generation,sourceRevision:$source}' \
             > "release-child/${{ matrix.arch }}.json"
           echo "::notice::verified signed generation $TILO_GENERATION child $image"
@@ -3481,9 +3528,9 @@ jobs:
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
             tag="${GITHUB_REF_NAME#v}"
           else
-            tag="main-${GITHUB_SHA:0:7}"
+            tag="main-${TILO_IMAGE_SOURCE:0:7}"
           fi
-          payload="$(jq -cn --arg ref "$GITHUB_REF_NAME" --arg source "$GITHUB_SHA" \
+          payload="$(jq -cn --arg ref "$GITHUB_REF_NAME" --arg source "$TILO_IMAGE_SOURCE" \
             --arg base "$IMAGE" --arg tag "$tag" --arg arch "$ARCH" \
             '{ref:$ref,inputs:{source_revision:$source,base_image:$base,tag:$tag,architectures:$arch,formats:"qcow2"}}')"
           curl --fail-with-body --silent --show-error -X POST \
@@ -3514,7 +3561,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
@@ -3550,7 +3597,7 @@ jobs:
             found=1
             cli="engine/engine-runtime-package-generic-$host_arch/bin/tilo-app-package"
             chmod 0755 "$cli"
-            VERSION="0.0.0-$GITHUB_SHA" TILO_PACKAGE_TOKEN="$jwt" \
+            VERSION="0.0.0-$TILO_IMAGE_SOURCE" TILO_PACKAGE_TOKEN="$jwt" \
               PACKAGE_API="$GITHUB_SERVER_URL/api/packages/${GITHUB_REPOSITORY%%/*}/generic" \
               REGISTRY_URL="${TILO_REGISTRY_URL%/}" OWNER="${GITHUB_REPOSITORY%%/*}" \
               REGISTRY_CLI="$cli" REGISTRY_IDENTITY="$identity" \
@@ -3567,6 +3614,8 @@ jobs:
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
       - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release-children
@@ -3612,7 +3661,7 @@ jobs:
             | if map(.architecture) == ["aarch64","x86_64"]
                  and (map(.digest) | unique | length) == 2
                  and (map(.generation) | unique | length) == 1
-                 and (map(.sourceRevision) | unique) == [env.GITHUB_SHA]
+                 and (map(.sourceRevision) | unique) == [env.TILO_IMAGE_SOURCE]
                  and all(.[]; (.digest | test("^sha256:[0-9a-f]{64}$"))
                               and (.generation | type == "number" and floor == . and . >= 1))
               then . else error("invalid or inconsistent native child descriptors") end
@@ -3631,7 +3680,7 @@ jobs:
             cosign verify --key keys/cosign.pub "$image" >/dev/null
             ./os/dev/verify-release-sbom.sh "$image"
             provenance="$(cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$image")"
-            printf '%s' "$provenance" | jq -e --arg digest "$digest" --arg source "$GITHUB_SHA" \
+            printf '%s' "$provenance" | jq -e --arg digest "$digest" --arg source "$TILO_IMAGE_SOURCE" \
               --argjson generation "$generation" '
                 [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
                 | any(.buildDefinition.externalParameters.generation == $generation
@@ -3645,7 +3694,7 @@ jobs:
               '. + [{architecture:$arch,digest:$digest}]' <<<"$child_dependencies")"
           done
 
-          candidate="registry.tilo.so/tilo/tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"
+          candidate="registry.tilo.so/tilo/tilo:index-candidate-${TILO_IMAGE_SOURCE}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"
           manifest="tilo-release-index-${GITHUB_RUN_ID}"
           podman manifest create "$manifest"
           for arch in x86_64 aarch64; do
@@ -3706,7 +3755,7 @@ jobs:
             --type https://tilo.sh/security/release-freshness/v1 "$index_image")"
           now="$(date -u +%s)"
           printf '%s' "$freshness" | jq -e --arg digest "$index_digest" \
-            --arg source "$GITHUB_SHA" --argjson generation "$generation" --argjson now "$now" '
+            --arg source "$TILO_IMAGE_SOURCE" --argjson generation "$generation" --argjson now "$now" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(.repository == "code.tilo.so/tilo/tilo"
                     and .schema == "https://tilo.sh/security/release-freshness/v1"
@@ -3729,7 +3778,7 @@ jobs:
             durable_tags+=("registry.tilo.so/tilo/tilo:$version")
           fi
           if [[ $GITHUB_REF == refs/heads/main ]]; then
-            durable_tags+=("registry.tilo.so/tilo/tilo:main-${GITHUB_SHA:0:7}")
+            durable_tags+=("registry.tilo.so/tilo/tilo:main-${TILO_IMAGE_SOURCE:0:7}")
           fi
 
           manifest_digest() {
@@ -3817,6 +3866,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
       - name: Install registry tools
         run: |
           set -euo pipefail
@@ -3843,12 +3894,12 @@ jobs:
         run: |
           set -euo pipefail
           if [[ $GITHUB_REF == refs/heads/main ]]; then
-            series="main-${GITHUB_SHA:0:7}"
+            series="main-${TILO_IMAGE_SOURCE:0:7}"
           elif [[ $GITHUB_REF =~ ^refs/pull/([0-9]+)/ ]]; then
-            series="pr-${BASH_REMATCH[1]}-${GITHUB_SHA:0:7}"
+            series="pr-${BASH_REMATCH[1]}-${TILO_IMAGE_SOURCE:0:7}"
           else
             branch=${GITHUB_REF_NAME//[^A-Za-z0-9_.-]/-}
-            series="${branch:0:100}-${GITHUB_SHA:0:7}"
+            series="${branch:0:100}-${TILO_IMAGE_SOURCE:0:7}"
           fi
           series="$(bash os/dev/dev-image-cohort.sh "$series")"
           jobs="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs"
@@ -3907,18 +3958,20 @@ jobs:
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
 
       - name: Name this commit's dev images
         id: series
         run: |
           set -euo pipefail
           if [[ $GITHUB_REF == refs/heads/main ]]; then
-            series="main-${GITHUB_SHA:0:7}"
+            series="main-${TILO_IMAGE_SOURCE:0:7}"
           elif [[ $GITHUB_REF =~ ^refs/pull/([0-9]+)/ ]]; then
-            series="pr-${BASH_REMATCH[1]}-${GITHUB_SHA:0:7}"
+            series="pr-${BASH_REMATCH[1]}-${TILO_IMAGE_SOURCE:0:7}"
           else
             branch=${GITHUB_REF_NAME//[^A-Za-z0-9_.-]/-}
-            series="${branch:0:100}-${GITHUB_SHA:0:7}"
+            series="${branch:0:100}-${TILO_IMAGE_SOURCE:0:7}"
           fi
           series="$(bash os/dev/dev-image-cohort.sh "$series")"
           echo "series=$series" >> "$GITHUB_OUTPUT"
@@ -4047,8 +4100,8 @@ jobs:
         if: github.ref == 'refs/heads/main'
         env:
           ARCH: aarch64
-          SOURCE_REVISION: ${{ github.sha }}
-          DISK_TOOLING_REVISION: ${{ github.sha }}
+          SOURCE_REVISION: ${{ env.TILO_IMAGE_SOURCE }}
+          DISK_TOOLING_REVISION: ${{ env.TILO_IMAGE_SOURCE }}
           DEV_TAG: ${{ matrix.board }}-ci
           DISK_VARIANT: ${{ matrix.board }}
           BASE_TRUST: integration
@@ -4071,6 +4124,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
       - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: tilo-os-child-aarch64
@@ -4110,19 +4165,19 @@ jobs:
             *) echo '::error::unsupported board publication profile'; exit 1 ;;
           esac
           child=release-child/aarch64.json
-          digest="$(jq -er --arg source "$GITHUB_SHA" '
+          digest="$(jq -er --arg source "$TILO_IMAGE_SOURCE" '
             select(.architecture == "aarch64" and .sourceRevision == $source and (.generation | type == "number" and floor == . and . >= 1))
             | .digest | select(test("^sha256:[0-9a-f]{64}$"))' "$child")"
           generation="$(jq -er .generation "$child")"
           image="code.tilo.so/tilo/tilo@$digest"
-          target="code.tilo.so/tilo/tilo:$HARDWARE_PROFILE-$GITHUB_SHA"
+          target="code.tilo.so/tilo/tilo:$HARDWARE_PROFILE-$TILO_IMAGE_SOURCE"
           cosign verify --key keys/cosign.pub "$image" >/dev/null
           ./os/dev/verify-release-sbom.sh "$image"
           freshness="$(cosign verify-attestation --key keys/cosign.pub \
             --type https://tilo.sh/security/release-freshness/v1 "$image")"
           now="$(date -u +%s)"
           printf '%s' "$freshness" | jq -e --arg digest "$digest" \
-            --arg source "$GITHUB_SHA" --argjson generation "$generation" --argjson now "$now" '
+            --arg source "$TILO_IMAGE_SOURCE" --argjson generation "$generation" --argjson now "$now" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(.repository == "code.tilo.so/tilo/tilo"
                     and .schema == "https://tilo.sh/security/release-freshness/v1"
@@ -4131,7 +4186,7 @@ jobs:
                     and .expiresAt > $now and (.expiresAt - .issuedAt) <= 604800)' >/dev/null
           provenance="$(cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$image")"
           printf '%s' "$provenance" | jq -e \
-            --arg source "git+ssh://code.tilo.so/tilo/tilo@$GITHUB_SHA" \
+            --arg source "git+ssh://code.tilo.so/tilo/tilo@$TILO_IMAGE_SOURCE" \
             --arg digest "$digest" --argjson generation "$generation" --arg profile "$HARDWARE_PROFILE" \
             --arg definition "$(sha256sum "os/hardware/profiles/$HARDWARE_PROFILE.json" | cut -d' ' -f1)" \
             --arg firmware "$FIRMWARE_CANDIDATE" \
@@ -4232,7 +4287,7 @@ jobs:
         id: lanes
         run: |
           set -euo pipefail
-          source="registry.tilo.so/tilo/tilo-vm:main-${GITHUB_SHA:0:7}-ci"
+          source="registry.tilo.so/tilo/tilo-vm:main-${TILO_IMAGE_SOURCE:0:7}-ci"
           if skopeo inspect --raw "docker://$source" 2>/dev/null \
               | jq -e '[.manifests[]?.platform.architecture] | sort == ["amd64","arm64"]' >/dev/null; then
             echo "both=true" >> "$GITHUB_OUTPUT"
@@ -4248,7 +4303,7 @@ jobs:
           children='[]'
           for arch in x86_64 aarch64; do
             case "$arch" in x86_64) platform=amd64 ;; aarch64) platform=arm64 ;; esac
-            ref="$repository:main-${GITHUB_SHA:0:7}-$arch"
+            ref="$repository:main-${TILO_IMAGE_SOURCE:0:7}-$arch"
             raw="$(skopeo inspect --raw "docker://$ref")"
             digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
             config="$(skopeo inspect "docker://$repository@$digest")"
@@ -4256,7 +4311,7 @@ jobs:
               echo "::error::$ref has the wrong architecture"
               exit 1
             }
-            [[ "$(jq -r '.Labels["org.opencontainers.image.revision"] // empty' <<< "$config")" == "$GITHUB_SHA" ]] || {
+            [[ "$(jq -r '.Labels["org.opencontainers.image.revision"] // empty' <<< "$config")" == "$TILO_IMAGE_SOURCE" ]] || {
               echo "::error::$ref does not bind the source revision"
               exit 1
             }
@@ -4272,7 +4327,7 @@ jobs:
           for digest in $(jq -r '.[].digest' <<< "$children"); do
             podman manifest add "$manifest" "docker://$repository@$digest"
           done
-          candidate="$repository:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"
+          candidate="$repository:index-candidate-${TILO_IMAGE_SOURCE}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"
           digest_file="$(mktemp /var/tmp/tilo-ci-index.XXXXXX)"
           podman manifest push --all --digestfile "$digest_file" "$manifest" "docker://$candidate"
           index_digest="$(tr -d '[:space:]' < "$digest_file")"
@@ -4291,7 +4346,7 @@ jobs:
             echo '::error::integration index does not contain exactly the verified native children'
             exit 1
           }
-          durable="$repository:main-${GITHUB_SHA:0:7}"
+          durable="$repository:main-${TILO_IMAGE_SOURCE:0:7}"
           children_of() { jq -ce '
             [.manifests[] | {
               architecture: (if .platform.architecture == "amd64" then "x86_64"
@@ -4314,7 +4369,7 @@ jobs:
             echo "::error::registry did not persist $durable with the verified native children"
             exit 1
           }
-          jq -n --arg image "$image" --arg source "$GITHUB_SHA" \
+          jq -n --arg image "$image" --arg source "$TILO_IMAGE_SOURCE" \
             '{image:$image,sourceRevision:$source}' > tilo-os-integration-index.json
           echo "::notice::published unsigned development index $durable ($index_digest)"
       # tilo-vm:main-ci follows main's dev images, both architectures: the
@@ -4327,7 +4382,7 @@ jobs:
         run: |
           set -euo pipefail
           repository=registry.tilo.so/tilo/tilo-vm
-          source="$repository:main-${GITHUB_SHA:0:7}-ci"
+          source="$repository:main-${TILO_IMAGE_SOURCE:0:7}-ci"
           moving="$repository:main-ci"
           raw="$(skopeo inspect --raw "docker://$source")"
           digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
@@ -4338,8 +4393,8 @@ jobs:
             history="$(mktemp -d "${RUNNER_TEMP:?}/tilo-main-history.XXXXXX")"
             git -c "http.extraheader=Authorization: token $GIT_TOKEN" clone -q --bare --filter=tree:0 \
               "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$history"
-            git -C "$history" merge-base --is-ancestor "$current" "$GITHUB_SHA" || {
-              echo "::notice::$moving names $current, which is not an ancestor of $GITHUB_SHA; leaving it"
+            git -C "$history" merge-base --is-ancestor "$current" "$TILO_IMAGE_SOURCE" || {
+              echo "::notice::$moving names $current, which is not an ancestor of $TILO_IMAGE_SOURCE; leaving it"
               exit 0
             }
           fi

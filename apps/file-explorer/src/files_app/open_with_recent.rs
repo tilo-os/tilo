@@ -309,10 +309,6 @@ impl FileExplorerWidget {
     /// Open-with actions for a file resource: the typed door (any claiming
     /// app, optionally made the default) and, while the app chooser is open
     /// on this file, one row action per app for the chooser to list.
-    #[allow(
-        clippy::expect_used,
-        reason = "the payload is two owned strings and a bool; JSON encoding cannot fail"
-    )]
     pub(super) fn append_open_with_actions(
         &self,
         entry: &Entry,
