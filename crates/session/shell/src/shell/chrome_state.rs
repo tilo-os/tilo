@@ -621,6 +621,8 @@ pub struct ChromeState {
     activity_focus_request: Option<ActivityFocus>,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     history_action_request: Option<String>,
+    pub(crate) history_editorial_request:
+        Option<crate::shell::overlay_host::history_editorial::Pending>,
     /// The portal D-Bus backend's prompt queue drains onto the back
     /// every frame; the overlay host renders `front()` and drains it
     /// on click. Entries carry the portal's reply channel when a D-Bus
@@ -874,6 +876,7 @@ impl ChromeState {
             activity_focus_request: None,
             workspace_view_request: None,
             history_action_request: None,
+            history_editorial_request: None,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
             local_user_id,

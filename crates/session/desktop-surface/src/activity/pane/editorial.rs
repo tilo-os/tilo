@@ -3,6 +3,21 @@ use crate::activity::{EditorialSession, HistoryEditorialOperation as Op, History
 use automerge::transaction::Transactable;
 
 impl RoomActivityPane {
+    /// Whether the request addresses the exact currently displayed local pane.
+    /// This observation grants neither writes nor remote admission.
+    pub fn history_editorial_matches(
+        &self,
+        tree: &impl ActivityTree,
+        request: &HistoryEditorialRequest,
+    ) -> bool {
+        self.scope == RoomScope::ThisRoom
+            && request.room == self.task_room
+            && request.origin == super::super::index::HistoryOrigin::DesktopTree
+            && request.frontier == self.last_heads
+            && self.last_active == Some(tree.active.raw())
+            && tree.local_history_groups_writable(&request.room)
+    }
+
     /// Canonical editorial door for UI and trusted in-process semantic callers.
     /// The native local host must hold the live tree's room-scoped projection
     /// capability. Admitted callers instead require current owner authorization;

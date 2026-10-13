@@ -2606,3 +2606,6 @@ agent-quick-stop = Aktuelle Aufgabe stoppen
 agent-quick-stopped = Aufgabe { $task }, Lauf { $run }, wurde gestoppt.
 agent-quick-stop-submitting = Task Center wird gebeten, die aktuelle Aufgabe zu stoppen…
 agent-quick-stop-outcome-unknown = Warten auf die Bestätigung von Task Center, ob die aktuelle Aufgabe gestoppt wurde…
+
+search-action-history-groups-edit = Verlaufsgruppen organisieren
+search-action-history-groups-inspect = Verlaufsgruppen untersuchen

@@ -246,6 +246,7 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "tab.menu",
     "tab.drag.cancel",
     "room.activity.morning.toggle",
+    crate::shell::overlay_host::history_editorial::INSPECT,
     "history.compare",
     "history.undo",
     "history.restore",
@@ -256,6 +257,16 @@ const VIEW_ACTION_IDS: &[&str] = &[
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{ActionContract, ActionKind, ConfirmationPolicy, RetryPolicy, RiskLevel};
 
+    if id == crate::shell::overlay_host::history_editorial::INSPECT {
+        return ActionContract::view();
+    }
+    if id == crate::shell::overlay_host::history_editorial::EDIT {
+        return ActionContract {
+            kind: ActionKind::Undoable,
+            retry: RetryPolicy::AtMostOnce,
+            ..ActionContract::default()
+        };
+    }
     if let Some(contract) = dedicated_contract(id) {
         return contract;
     }
@@ -3272,10 +3283,13 @@ impl ActionsProvider {
         ];
         #[cfg(test)]
         self.builds.set(self.builds.get().wrapping_add(1));
-        let mut out = Vec::new();
+        let mut out = crate::shell::overlay_host::history_editorial::rows();
         // Every row is built with its searchable text; a query ranks them
         // together to keep the matches and score them.
         let mut candidates = ActionCandidates::default();
+        for row in &out {
+            candidates.record(&row.title.to_lowercase(), "", &row.id);
+        }
         for action in Action::ALL {
             if action.id == "topbar.editor.open"
                 && ctx.chrome.fullscreen_group().is_some()

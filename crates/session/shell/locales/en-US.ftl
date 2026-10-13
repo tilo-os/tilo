@@ -2604,3 +2604,6 @@ agent-quick-stop = Stop current task
 agent-quick-stopped = Task { $task }, run { $run }, was stopped.
 agent-quick-stop-submitting = Asking Task Center to stop the current task…
 agent-quick-stop-outcome-unknown = Waiting for Task Center to confirm whether the current task was stopped…
+
+search-action-history-groups-edit = Organize history groups
+search-action-history-groups-inspect = Inspect history groups

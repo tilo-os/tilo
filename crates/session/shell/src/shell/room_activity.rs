@@ -1544,6 +1544,15 @@ mod morning_host_regression {
 
     #[test]
     fn native_local_group_ui_uses_live_tree_not_display_identity() {
+        struct DiscoveryWithoutAdmission;
+        impl ActivityHost for DiscoveryWithoutAdmission {
+            fn mutations_available(&self) -> bool {
+                true
+            }
+            fn history_edits_available(&self) -> bool {
+                true
+            }
+        }
         let (mut tree, mut pane, request) = native_named_group();
         let HistoryEditorialOperation::Name(name) = &request.operation else {
             unreachable!()
@@ -1593,15 +1602,6 @@ mod morning_host_regression {
             !pane.apply_history_editorial(&mut *live, &next),
             "read-only host cannot use local capability"
         );
-        struct DiscoveryWithoutAdmission;
-        impl ActivityHost for DiscoveryWithoutAdmission {
-            fn mutations_available(&self) -> bool {
-                true
-            }
-            fn history_edits_available(&self) -> bool {
-                true
-            }
-        }
         pane.set_host(Rc::new(DiscoveryWithoutAdmission));
         assert!(
             !pane.apply_history_editorial(&mut *live, &next),
@@ -1629,6 +1629,7 @@ mod morning_host_regression {
             "existing native Restore stays executable"
         );
         assert_eq!(live.active_workspace().unwrap().name, "First revision");
+        drop(live);
     }
 
     #[test]

@@ -13,6 +13,7 @@
 mod agent_actions;
 mod agent_markers;
 mod axis_navigation;
+pub(crate) mod history_editorial;
 pub(crate) use agent_markers::AccessibleAgentMarker;
 
 use crate::shell::state::WorkspaceAuthority as _;
@@ -21353,6 +21354,7 @@ impl ShellOverlayHost {
             let workspace = chrome.borrow().tree().desktop.active.raw();
             self.room_activity.finish_view(workspace);
         }
+        self.apply_pending_history_editorial();
         self.room_activity_was_open = visible;
         if visible {
             self.refresh_room_activity();
