@@ -2095,9 +2095,7 @@ impl Widget for CommandPalette {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -2313,10 +2311,6 @@ impl Widget for CommandPalette {
     /// lands inside the input row in all supported viewports.
     fn test_id(&self) -> Option<&str> {
         Some("command_palette_input")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_focusable(&self) -> bool {

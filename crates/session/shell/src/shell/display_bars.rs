@@ -146,9 +146,7 @@ impl Widget for DisplayBars {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -195,10 +193,6 @@ impl Widget for DisplayBars {
         if let Some((_, bar)) = self.bars.iter_mut().find(|(id, _)| *id == target) {
             bar.handle_event(event, ctx);
         }
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn needs_redraw(&self) -> bool {

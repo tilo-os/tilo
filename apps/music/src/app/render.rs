@@ -956,9 +956,7 @@ impl Widget for MusicApp {
         taffy.widget_node(style, &children, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1698,10 +1696,6 @@ impl Widget for MusicApp {
         };
         self.dispatch(action, state);
         true
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn tooltip(&self) -> Option<&str> {
