@@ -2009,24 +2009,20 @@ mod tests {
         } else {
             None
         };
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: winit::event::KeyEvent::synthetic(
-                winit::event::RawKeyEvent {
-                    physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                        winit::keyboard::NativeKeyCode::Unidentified,
-                    ),
-                    state: ElementState::Pressed,
-                },
-                key.clone(),
-                text.clone(),
-                winit::keyboard::KeyLocation::Standard,
-                false,
-                text,
-                key,
-            ),
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                ),
+                state: ElementState::Pressed,
+            },
+            key.clone(),
+            text.clone(),
+            winit::keyboard::KeyLocation::Standard,
+            false,
+            text,
+            key,
+        ))
     }
 
     /// A hosted calculator: the framework's live app with its resource.

@@ -8,7 +8,6 @@ use crate::widget::Text;
 use std::cell::Cell;
 use std::rc::Rc;
 use vello_encoding::DrawTag;
-use winit::event::MouseButton;
 
 const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1600.0, 1000.0);
 const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -88,10 +87,7 @@ impl Widget for CountingContent {
 }
 
 fn cursor_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    crate::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 use crate::synthetic_input::mouse_press;
@@ -993,11 +989,7 @@ fn open_dialog_captures_input_and_closed_dialog_is_inert() {
 }
 
 fn wheel(dy: f32) -> WindowEvent {
-    WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, dy),
-        phase: winit::event::TouchPhase::Moved,
-    }
+    crate::synthetic_input::mouse_wheel(0.0, dy)
 }
 
 /// The buttons a laid-out dialog's footer focus nodes expose.
@@ -1403,11 +1395,7 @@ fn an_immediate_sheet_paints_hit_tests_and_answers_without_a_renderer() {
     let overwrite = layout.actions[1].center();
     assert_eq!(sheet.handle(&cursor_at(overwrite), 1.0), None);
     assert_eq!(sheet.handle(&mouse_press(), 1.0), None);
-    let release = WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    };
+    let release = crate::synthetic_input::mouse_release();
     assert_eq!(sheet.handle(&release, 1.0), Some(SheetResponse::Action(1)));
     // The scrim swallows without answering when the spec says so.
     sheet.handle(&cursor_at(Point::new(5.0, 5.0)), 1.0);

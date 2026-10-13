@@ -1313,10 +1313,8 @@ pub(crate) mod tests {
                 return;
             }
             let at = body.center();
-            app.harness().send(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-            });
+            app.harness()
+                .send(&ui::synthetic_input::cursor_moved(at.x, at.y));
             app.harness()
                 .scroll(0.0, if target.y0 < body.y0 { 3.0 } else { -3.0 });
             settle(app);

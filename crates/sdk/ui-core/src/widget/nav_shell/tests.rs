@@ -341,15 +341,8 @@ fn an_open_drawer_is_modal_and_floats_over_the_content() {
 
     // A press on the scrim closes it.
     let point = Point::new(g.sidebar_column.x1 + 40.0, 300.0);
-    h.dispatch_to_root(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-    });
-    let handled = h.dispatch_to_root(&WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    });
+    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
+    let handled = h.dispatch_to_root(&crate::synthetic_input::mouse_press());
     assert!(handled);
     assert!(!h.root::<NavShell>().is_sidebar_open());
 }
@@ -797,15 +790,8 @@ fn narrowing_keeps_the_explicit_or_last_interacted_content_pane() {
         assert!(geometry(&h).overview_column.width() > 0.0);
         if clicked {
             let point = geometry(&h).overview_column.center();
-            h.dispatch_to_root(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-            });
-            h.dispatch_to_root(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            });
+            h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
+            h.dispatch_to_root(&crate::synthetic_input::mouse_press());
         } else {
             h.root_mut::<NavShell>().show(NavPane::Overview);
         }
@@ -844,10 +830,7 @@ fn scrolling_reuses_measured_panes_without_reloading_fonts() {
     };
     let before = text_rect(&h);
     let center = h.root::<NavShell>().geometry().content_column.center();
-    h.dispatch_to_root(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-    });
+    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(center.x, center.y));
     crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
     for _ in 0..4 {
         h.dispatch_to_root(&WindowEvent::MouseWheel {

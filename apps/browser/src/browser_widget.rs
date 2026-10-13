@@ -5925,10 +5925,7 @@ mod architecture_tests {
             widget.cursor = Point::new(850.0, 650.0);
             dispatch_back_event(
                 &mut widget,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
-                },
+                &ui::synthetic_input::cursor_moved(850.0, 650.0),
             );
             assert!(dispatch_back_event(
                 &mut widget,
@@ -6594,20 +6591,9 @@ mod tests {
             .layout(tree, node);
         let mut release_handled = false;
         for event in [
-            WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
+            ui::synthetic_input::cursor_moved(point.x, point.y),
+            ui::synthetic_input::mouse_press(),
+            ui::synthetic_input::mouse_release(),
         ] {
             release_handled = at.send(widget, &event).handled;
         }

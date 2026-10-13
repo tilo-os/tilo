@@ -2883,10 +2883,7 @@ mod tests {
             let mut doc = automerge::AutoCommit::new();
 
             assert!(p.handle_overlay_key(
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(row.center().x, row.center().y),
-                },
+                &crate::synthetic_input::cursor_moved(row.center().x, row.center().y),
                 &modifiers,
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
@@ -2897,11 +2894,7 @@ mod tests {
                 Some(winit::window::CursorIcon::Pointer)
             );
             assert!(p.handle_overlay_key(
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
+                &crate::synthetic_input::mouse_press(),
                 &modifiers,
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,

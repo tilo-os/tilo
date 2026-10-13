@@ -1759,11 +1759,7 @@ mod tests {
                 (col_width(&doc, &t, &cid0) - before).abs() < 0.5,
                 "the column follows the pointer; the owner gets the width when the drag ends"
             );
-            let release = WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            };
+            let release = crate::synthetic_input::mouse_release();
             dispatch(&mut table, &taffy, node, &mut doc, &t, &release, mods);
 
             let after = col_width(&doc, &t, &cid0);

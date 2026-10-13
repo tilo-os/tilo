@@ -688,10 +688,8 @@ mod interaction_tests {
     use crate::net::Request;
     use ui::headless::Framed;
     use vello::kurbo::Point as KPoint;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{
-        ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
-    };
+
+    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, NamedKey, SmolStr};
 
     use ui::synthetic_input::key_press;
@@ -747,50 +745,30 @@ mod interaction_tests {
         }
 
         fn move_to(&mut self, x: f64, y: f64) {
-            self.dispatch(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: PhysicalPosition::new(x, y),
-            });
+            self.dispatch(&ui::synthetic_input::cursor_moved(x, y));
         }
 
         fn click(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
-            self.dispatch(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            });
-            self.dispatch(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_press());
+            self.dispatch(&ui::synthetic_input::mouse_release());
         }
 
         fn press(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
-            self.dispatch(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_press());
         }
 
         fn release(&mut self) {
-            self.dispatch(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_release());
         }
 
         fn right_click(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
-            self.dispatch(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_input(
+                ElementState::Pressed,
+                MouseButton::Right,
+            ));
         }
 
         fn key(&mut self, logical_key: Key, text: Option<&str>) {
@@ -883,11 +861,7 @@ mod interaction_tests {
             // hourly strip, whose band owns the wheel for its own scroll.
             let content = h.app.nav.geometry().content_column;
             h.move_to(content.center().x, content.y0 + 120.0);
-            h.dispatch(&WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: TouchPhase::Moved,
-            });
+            h.dispatch(&ui::synthetic_input::mouse_wheel(0.0, -1.0));
             assert!(
                 h.app.core.borrow().scroll() > 0.0,
                 "wheel scrolls the forecast body down"
@@ -910,11 +884,7 @@ mod interaction_tests {
             let vp = h.app.core.borrow().hourly_viewport_rect();
             let p = vp.center();
             h.move_to(p.x, p.y);
-            h.dispatch(&WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(-2.0, 0.0),
-                phase: TouchPhase::Moved,
-            });
+            h.dispatch(&ui::synthetic_input::mouse_wheel(-2.0, 0.0));
             assert!(
                 h.app.core.borrow().hourly_scroll_x() > 0.0,
                 "a horizontal wheel scrolls the overflowing strip"

@@ -1406,7 +1406,6 @@ mod tests {
     use super::*;
     use crate::testing::dispatch;
     use std::collections::HashMap;
-    use winit::event::{ElementState, MouseButton};
 
     fn lay_out(stack: &mut ToastStack) {
         let mut tree = TaffyTree::<()>::new();
@@ -1750,14 +1749,7 @@ mod tests {
                     position: (160.0, 80.0).into(),
                 },
             );
-            dispatch(
-                &mut s,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            dispatch(&mut s, &crate::synthetic_input::mouse_press());
             assert_eq!(s.len(), 1);
             assert_eq!(s.iter().next().unwrap().text, "first");
         }
