@@ -5,7 +5,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     reason = "test fixtures: a failed lookup is the assertion"
 )]

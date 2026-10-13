@@ -387,7 +387,7 @@ impl HexView {
     /// Start the host file chooser to open a file, answering `reply` when
     /// it closes.
     fn begin_open(&mut self, reply: EffectReply) {
-        let io = if crate::file::native_paths() {
+        let io = if tilo_files::available(tilo_files::Feature::NativePaths) {
             FileIo::Open(file_open_request().send())
         } else {
             FileIo::OpenContents(file_open_request().send_contents())
@@ -399,7 +399,7 @@ impl HexView {
     /// device, answering `reply` when it closes.
     fn begin_save_as(&mut self, reply: EffectReply) {
         let name = self.suggested_name();
-        let io = if crate::file::native_paths() {
+        let io = if tilo_files::available(tilo_files::Feature::NativePaths) {
             FileIo::Save(file_save_request(&name).send())
         } else {
             FileIo::SaveContents(
@@ -721,8 +721,7 @@ impl HexView {
     ) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_mouse = ctx.logical(position);
                 let hovered = self.geo.toggle.contains(self.last_mouse);
                 if hovered != self.toggle_hovered {
                     self.toggle_hovered = hovered;

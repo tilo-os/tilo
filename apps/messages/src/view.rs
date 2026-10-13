@@ -878,10 +878,6 @@ fn capture_history() -> tilo_messaging::HistoryPage {
 
 #[cfg(test)]
 mod route_tests {
-    #![allow(
-        clippy::expect_used,
-        reason = "isolated shared-record fixtures must construct before routing assertions"
-    )]
     use super::*;
     use crate::MessagesShell;
     use ui::framework::testing::TestApp;

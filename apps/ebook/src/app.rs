@@ -37,9 +37,7 @@ use tilo_clock::unix_now_ms;
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{
-    BlendMode, Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as ImageFmt,
-};
+use vello::peniko::{BlendMode, Blob, Color, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -4418,7 +4416,7 @@ impl Continuable for BooksApp {
         }))
         .ok()?;
         Some(ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
+            schema_version: ui::collaboration::semantic_schema::PUBLICATION_POSITION_V1,
             bytes,
         })
     }
@@ -4429,7 +4427,7 @@ impl Continuable for BooksApp {
         _doc: &mut ui::widget::Edits<'_>,
         _path: &ObjId,
     ) -> bool {
-        if metadata.schema_version != 1 {
+        if metadata.schema_version != ui::collaboration::semantic_schema::PUBLICATION_POSITION_V1 {
             return false;
         }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&metadata.bytes) else {
@@ -4481,10 +4479,6 @@ impl Widget for BooksApp {
         self.deliver_effect_replies();
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "sync refreshes document-derived reader and search state"
-    )]
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, path) = ui::doc::document_ref(doc, path);
         // Hydrate the persisted library on the first frame (when the document is
@@ -4725,7 +4719,7 @@ impl Widget for BooksApp {
                 *ctx.handled = true;
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.handle_cursor_moved(p, &mut ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
@@ -6101,7 +6095,7 @@ impl BooksApp {
     }
 
     fn handle_settings_escape_key(&mut self, key: &Key, doc: &mut ui::widget::Edits<'_>) -> bool {
-        if let Key::Named(NamedKey::Escape) = key {
+        if matches!(key, Key::Named(NamedKey::Escape)) {
             if self.color_picker.is_open() {
                 self.color_picker.cancel();
             } else if self.font_picker {
@@ -7047,13 +7041,7 @@ impl BooksApp {
         if cover.rgba.len() != expected {
             return None;
         }
-        let img = PenikoImage {
-            data: Blob::new(cover.rgba.clone()),
-            format: ImageFmt::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: cover.width,
-            height: cover.height,
-        };
+        let img = ui::raster::rgba8(Blob::new(cover.rgba.clone()), cover.width, cover.height);
         self.cover_cache.insert(book.id.clone(), img.clone());
         Some(img)
     }
@@ -8936,11 +8924,12 @@ impl NoteCard {
         let probe = Rect::new(0.0, 0.0, width, 1.0e6);
         let body = face.body_rect(ctx.text, theme, probe);
         let layout = self.layout(ctx, body);
-        let mut bottom = layout.note_y - f64::from(theme.tokens.spacing.rhythm.related);
-        if !self.text.is_empty() {
+        let bottom = if self.text.is_empty() {
+            layout.note_y - f64::from(theme.tokens.spacing.rhythm.related)
+        } else {
             let wrap = Some(ui::num::f32_of_f64(body.width().max(1.0)));
-            bottom = layout.note_y + ctx.measure_role(&self.text, TextRole::Body, wrap).height;
-        }
+            layout.note_y + ctx.measure_role(&self.text, TextRole::Body, wrap).height
+        };
         face.height_for_body(ctx.text, theme, width, bottom - body.y0)
     }
 }

@@ -4667,9 +4667,6 @@ impl crate::widget::AppWidget for ComponentControlOwner {
     fn app_icon(&self) -> crate::widget::IconDescriptor {
         crate::widget::IconDescriptor::Glyph("C")
     }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
-    }
 }
 
 impl crate::widget::Widget for ComponentControlOwner {
@@ -7007,9 +7004,6 @@ impl crate::widget::AppWidget for CustodyControlsRoot {
     }
     fn app_icon(&self) -> crate::widget::IconDescriptor {
         crate::widget::IconDescriptor::Glyph("C")
-    }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
     }
 }
 

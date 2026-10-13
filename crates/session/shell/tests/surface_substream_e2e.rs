@@ -9,16 +9,6 @@
 //! In-process, no real Iroh: substream framing + backpressure is
 //! transport-agnostic. Real QUIC lives in `two_netns_share.rs`.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::time::Instant;
 
 use shell::collab::flatpak_share::SharedFlatpakSession;
@@ -68,10 +58,6 @@ fn gradient(width: u32, height: u32) -> Vec<u8> {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn substreams_carry_frames_while_gossip_carries_announcements_until_the_viewer_drops() {
     // Phase `substream_carries_frames_gossip_carries_announcements`.
     // Frames drain in order with monotonic sequence numbers.

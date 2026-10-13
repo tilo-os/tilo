@@ -4,10 +4,3 @@
 
 ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
-/// One constant per message of locales/en-US.ftl, for labels and placeholders.
-pub mod keys {
-    use ui::i18n::LabelKey;
-    pub const VPN_PROFILE_NAME: LabelKey = LabelKey::new("vpn-profile-name");
-    pub const VPN_PROFILE_TOR: LabelKey = LabelKey::new("vpn-profile-tor");
-    pub const VPN_VPN_CONNECTIONS: LabelKey = LabelKey::new("vpn-vpn-connections");
-}

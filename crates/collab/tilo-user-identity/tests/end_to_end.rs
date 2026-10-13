@@ -16,16 +16,6 @@
 //!    verifies the other's cert chains to the same user identity
 //!    — the "matching identities get owner permissions" check.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
     WorkspaceDirectory, decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,

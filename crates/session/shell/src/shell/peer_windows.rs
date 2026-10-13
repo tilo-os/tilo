@@ -1902,10 +1902,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn host_window_restores_retry_once_and_time_out_explicitly() {
         fn stale_missing_note_for_a_resolvable_host_app_is_retried_once() {
             let data = tempfile::tempdir().expect("temporary XDG data home");

@@ -1,12 +1,5 @@
 //! Exercise the production HTTP routes and authenticated native presence dispatcher.
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "in tests these are assertions"
-)]
-#![allow(
     clippy::too_many_lines,
     reason = "one authenticated cross-carrier scenario"
 )]

@@ -50,10 +50,8 @@ pub struct Book {
     pub id: String,
     pub title: String,
     pub author: String,
-    pub publisher: String,
     /// BCP-47 language from EPUB metadata, used for TeX/Liang hyphenation.
     pub language: String,
-    pub description: String,
     pub chapters: Vec<Chapter>,
     /// Index into the theme accent/semantic ramps used to tint the spine on
     /// the shelf. Purely cosmetic; resolved against the live `Theme`.
@@ -70,10 +68,6 @@ impl Book {
     pub fn block_count(&self) -> usize {
         self.chapters.iter().map(|c| c.blocks.len()).sum()
     }
-
-    pub fn chapter(&self, i: usize) -> Option<&Chapter> {
-        self.chapters.get(i)
-    }
 }
 
 /// One spine document (an XHTML file in the EPUB), parsed into blocks.
@@ -81,8 +75,6 @@ impl Book {
 pub struct Chapter {
     /// TOC label (from the nav/ncx), falling back to the first heading.
     pub title: String,
-    /// The XHTML href this chapter came from (used to resolve TOC targets).
-    pub href: String,
     pub blocks: Vec<Block>,
 }
 

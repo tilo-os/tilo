@@ -58,7 +58,7 @@ pub fn resolve_workspace_path(rel: &str) -> Result<PathBuf> {
         anyhow::bail!("workspace path must be relative, got {rel:?}");
     }
     for c in p.components() {
-        if let std::path::Component::ParentDir = c {
+        if c == std::path::Component::ParentDir {
             anyhow::bail!("workspace path {rel:?} must not contain `..`");
         }
     }

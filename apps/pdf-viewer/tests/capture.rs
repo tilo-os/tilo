@@ -1,5 +1,5 @@
 //! Exercise the production owner-worker backend, not the synchronous unit-test backend.
-#![allow(clippy::expect_used, clippy::panic, reason = "test assertions")]
+#![allow(clippy::expect_used, reason = "test assertions")]
 
 use std::time::Duration;
 use tilo_content::ContentStore;

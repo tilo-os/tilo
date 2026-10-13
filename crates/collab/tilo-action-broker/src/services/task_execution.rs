@@ -3,6 +3,10 @@
 use crate::collab_broker_capnp::InvocationJob;
 use tilo_peer_state::workspace_task::{WorkspaceTaskCommand, WorkspaceTaskSnapshot};
 
+#[cfg(test)]
+#[path = "task_execution_tests.rs"]
+mod tests;
+
 #[derive(Clone, Debug)]
 pub struct NativeTaskBinding {
     pub task_id: String,
@@ -14,6 +18,8 @@ pub struct NativeTaskBinding {
 /// A current published contract requirement, never a grant from task arguments.
 #[derive(Clone, Debug)]
 pub struct NativeTaskActionRequirement {
+    /// Supplied by the broker's authenticated run channel, never action arguments.
+    pub binding: Option<NativeTaskBinding>,
     pub app: String,
     pub resource_kind: String,
     pub resource: String,
@@ -23,8 +29,7 @@ pub struct NativeTaskActionRequirement {
 
 impl NativeTaskActionRequirement {
     /// Apply the room's grants for the agent to this action, on the live
-    /// admitted document, held to the grant set of every task the agent
-    /// runs. An unattended run has nobody to ask, so only an action the
+    /// admitted document, held to the exact task/run's frozen authority. An unattended run has nobody to ask, so only an action the
     /// agent and its task are allowed passes.
     ///
     /// # Errors
@@ -60,15 +65,44 @@ impl NativeTaskActionRequirement {
         } else {
             verdict
         };
-        // The run is held to its task's grant set too.
-        let tasks = tilo_desktop_model::projection::workspace_tasks_of(doc);
-        let task = tilo_desktop_model::task_bound(
-            &policy,
-            &tasks,
-            (Some(agent), None),
-            (&node, self.need.kind),
-            &cx,
-        );
+        let binding = self
+            .binding
+            .as_ref()
+            .ok_or("native task action binding absent")?;
+        if binding.agent_id != agent || self.need.privileged {
+            return Err("native task action binding invalid or action privileged".into());
+        }
+        let state = tilo_peer_state::workspace_task::snapshot(doc)?;
+        let task = state
+            .tasks
+            .iter()
+            .find(|task| task.id == binding.task_id)
+            .ok_or("native task absent")?;
+        let control = state
+            .controls
+            .get(&binding.task_id)
+            .ok_or("native task control absent")?;
+        let run = control.active_run.as_ref().ok_or("native task run ended")?;
+        if run.epoch != binding.epoch
+            || run.agent_id != agent
+            || task.status != tilo_desktop_model::WorkspaceTaskStatus::InProgress
+            || task.assigned_agent.as_deref() != Some(agent)
+        {
+            return Err("native task run replaced or stopped".into());
+        }
+        let approval = run.approval.as_ref().ok_or("native task starter absent")?;
+        let member = peer.permissions(approval.device, now)?;
+        if member.person != approval.person || !member.allows(&node, self.need.kind, now) {
+            return Err("native task action is no longer authorized by its starter".into());
+        }
+        let bound = control
+            .execution_authority
+            .as_ref()
+            .ok_or("native task authority absent")?;
+        if bound.epoch != binding.epoch || !bound.allows(&node, self.need.kind, now) {
+            return Err("native task action exceeds its frozen execution authority".into());
+        }
+        let task = policy.task_answer(&binding.task_id, &node, self.need.kind, &cx);
         if verdict.answer != Answer::Allow || task.is_some_and(|answer| answer != Answer::Allow) {
             return Err("native task action is no longer authorized by its owner".into());
         }

@@ -275,13 +275,11 @@ fn write_node(node: &Node, out: &mut String) {
                 out.push_str("root(");
                 write_row(idx, out);
                 out.push(',');
-                write_row(radicand, out);
-                out.push(')');
             } else {
                 out.push_str("sqrt(");
-                write_row(radicand, out);
-                out.push(')');
             }
+            write_row(radicand, out);
+            out.push(')');
         }
         Node::Paren { body } => write_paren(body, out),
         Node::Delimited { open, close, body } => {

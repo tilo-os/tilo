@@ -604,7 +604,7 @@ impl Widget for PermissionPrompt {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 let new_idx = if self.allow_rect.contains(p) {
                     Some(0)
@@ -707,12 +707,14 @@ impl Widget for PermissionPrompt {
                 AccessNode::new(Role::Button)
                     .with_name(self.button_label(*choice))
                     .with_key(Self::key_for_choice(*choice))
-                    .with_state(AccessState {
-                        focusable: self.choice_enabled(*choice),
-                        focused: self.has_keyboard_focus && self.focused_choice == Some(*choice),
-                        disabled: !self.choice_enabled(*choice),
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(self.choice_enabled(*choice))
+                            .focused(
+                                self.has_keyboard_focus && self.focused_choice == Some(*choice),
+                            )
+                            .disabled(!self.choice_enabled(*choice)),
+                    )
             })
             .collect();
         Some(
@@ -722,12 +724,12 @@ impl Widget for PermissionPrompt {
                     "capability" => self.capability_label.as_str(),
                     "app" => self.app_id.as_str()
                 ))
-                .with_state(AccessState {
-                    modal: self.local_input.as_ref().is_none_or(|local| local.modal),
-                    focusable: true,
-                    focused: self.has_keyboard_focus,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .modal(self.local_input.as_ref().is_none_or(|local| local.modal))
+                        .focusable(true)
+                        .focused(self.has_keyboard_focus),
+                )
                 .with_children(children),
         )
     }
@@ -1012,10 +1014,7 @@ mod tests {
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
 
     use crate::synthetic_input::mouse_press;

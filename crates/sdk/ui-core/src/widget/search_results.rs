@@ -773,11 +773,9 @@ fn draw_template(
                 );
                 x += dot + gap * 2.0;
             }
-            let mut right = x1;
-            if let Some(date) = date {
-                right =
-                    trailing(scene, transform, tr, date, ink.tertiary, x1, y, &meta) - gap * 2.0;
-            }
+            let right = date.as_deref().map_or(x1, |date| {
+                trailing(scene, transform, tr, date, ink.tertiary, x1, y, &meta) - gap * 2.0
+            });
             y += line(
                 scene,
                 transform,
@@ -856,11 +854,9 @@ fn draw_template(
             let lines =
                 height(&body, tr) + byline.as_ref().map_or(0.0, |_| gap + height(&caption, tr));
             let mut y = rect.y0 + ((rect.height() - lines) / 2.0).max(0.0);
-            let mut right = x1;
-            if let Some(duration) = duration {
-                right = trailing(scene, transform, tr, duration, ink.tertiary, x1, y, &meta)
-                    - gap * 2.0;
-            }
+            let right = duration.as_deref().map_or(x1, |duration| {
+                trailing(scene, transform, tr, duration, ink.tertiary, x1, y, &meta) - gap * 2.0
+            });
             y += line(
                 scene,
                 transform,
@@ -976,9 +972,7 @@ impl Widget for SearchResultsView {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1075,8 +1069,7 @@ impl Widget for SearchResultsView {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 self.hover = self.row_at(self.last_cursor);
             }
             WindowEvent::MouseInput {
@@ -1128,10 +1121,6 @@ impl Widget for SearchResultsView {
 
     fn test_id(&self) -> Option<&str> {
         self.test_id.as_deref()
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn perform_semantic_action(
@@ -1480,19 +1469,9 @@ mod tests {
 
             let mut handled = dispatch(
                 &mut v,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(target.x, target.y),
-                },
+                &crate::synthetic_input::cursor_moved(target.x, target.y),
             );
-            handled |= dispatch(
-                &mut v,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            handled |= dispatch(&mut v, &crate::synthetic_input::mouse_press());
             assert!(handled, "row click consumed");
             assert_eq!(
                 v.cursor(),

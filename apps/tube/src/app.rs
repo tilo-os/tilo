@@ -34,7 +34,7 @@ use ui::widget::{
     FullscreenProvider, NavItem, NavList, NavMode, NavSection, NavShell, VideoPlayer, Widget,
 };
 
-use crate::action::{self, Action, ActionBus, Invocations};
+use crate::action::{self, Action, ActionBus};
 use crate::actions::TubeEffect;
 use crate::api::{Request, Update, Worker};
 use crate::history::WatchHistory;
@@ -92,9 +92,6 @@ pub struct TubeApp {
     shell: NavShell,
     /// The current screen has been built into `shell` at least once.
     shell_built: bool,
-    /// Resource invocations raised by controls that report through a closure
-    /// (the navigation rail, the watch toolbar), handed to the host.
-    invocations: Invocations,
     /// The transient notice ("Link copied", a skipped segment) last shown
     /// as the shell's toast.
     toasted: u64,
@@ -113,9 +110,6 @@ pub struct TubeApp {
     /// accessibility and keyboard shortcuts) without creating an Automerge
     /// object that another collaborator could overwrite.
     search_query: ui::LocalState<String>,
-    /// Latched by the compact search button; the host drains it through
-    /// [`Widget::take_search_request`] and opens its search palette.
-    search_requested: bool,
 
     /// The user's explicit sidebar preference for this session, carried
     /// across the structural rebuilds that recreate the widget tree. `None`
@@ -221,7 +215,6 @@ impl TubeApp {
             shell,
             can_go_back,
             shell_built: false,
-            invocations: action::new_invocations(),
             toasted: 0,
             shell_stale: true,
             shell_key: None,
@@ -229,7 +222,6 @@ impl TubeApp {
             rect: Rect::ZERO,
             structure_dirty: false,
             search_query: ui::LocalState::new(String::new()),
-            search_requested: false,
             sidebar_open: None,
             force_sidebar_open_shot: false,
             online: false,
@@ -997,7 +989,6 @@ impl TubeApp {
             theme,
             bus: &self.bus,
             imgs: crate::images::Imgs(self.images.as_ref()),
-            invocations: &self.invocations,
             content_width: self.content_width(theme),
         }
     }
@@ -1232,11 +1223,8 @@ impl TubeApp {
         self.model.playhead = pos_ms as f64 / 1000.0;
         self.model.playing = playing;
 
-        let mut changed = false;
         // Auto-skip runs against the real playhead and seeks the engine.
-        if self.apply_auto_skip() {
-            changed = true;
-        }
+        let mut changed = self.apply_auto_skip();
         // On-video "Skip" overlay visibility: recompute which (if any) show-mode
         // segment the playhead sits in. A transition (enter/leave) must rebuild
         // the tree so the overlay appears/dismisses — the advancing playhead by
@@ -1524,14 +1512,6 @@ impl TubeApp {
     )]
     fn apply(&mut self, action: Action) -> bool {
         match action {
-            Action::ToggleSidebar => {
-                // Flip the rail relative to its current resolved openness, so
-                // the hamburger always does the visually-expected thing at the
-                // current width.
-                let now = self.sidebar_currently_open();
-                self.sidebar_open = Some(!now);
-                self.shell.toggle_sidebar();
-            }
             Action::Navigate(route) => {
                 if let Route::Search(q) = &route {
                     q.clone_into(&mut self.model.search_query);
@@ -1548,11 +1528,6 @@ impl TubeApp {
                 self.navigate_to(Route::Channel(id.clone()));
                 self.dismiss_overlay_rail();
                 self.request_live(Request::Channel(id));
-            }
-            Action::OpenPlaylist(id) => {
-                self.navigate_to(Route::Playlist(id.clone()));
-                self.dismiss_overlay_rail();
-                self.request_live(Request::PlaylistPage(id));
             }
             Action::ToggleSearchType(t) => {
                 self.model.search_type_filter.click(t);
@@ -1606,10 +1581,6 @@ impl TubeApp {
                 if matches!(&self.model.route, Route::Watch(current) if current == &id) {
                     let _ = self.perform(TubeEffect::Share { video: id });
                 }
-            }
-            Action::OpenSearch => {
-                self.search_requested = true;
-                return false;
             }
             Action::Edit(edit) => {
                 self.edit(edit);
@@ -2160,9 +2131,8 @@ impl Widget for TubeApp {
         // the toolkit layer with no app-specific gesture code.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                if let Some(ui::NavAction::Back) = self.back_gesture.pointer_move(self.last_pointer)
+                self.last_pointer = ctx.logical(position);
+                if self.back_gesture.pointer_move(self.last_pointer) == Some(ui::NavAction::Back)
                     && self.nav.can_go_back()
                 {
                     action::push(&self.bus, Action::Back);
@@ -2226,12 +2196,10 @@ impl Widget for TubeApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = std::mem::take(&mut self.structure_dirty);
+        let structure_dirty = std::mem::take(&mut self.structure_dirty);
         // Fold any results that arrived between events so live data still
         // lands when the user is idle.
-        if self.pump() {
-            dirty = true;
-        }
+        let dirty = self.pump() || structure_dirty;
         // Image loads must not force a structural rebuild: thumbnails, avatars
         // and banners resolve their decoded image *lazily* in their own `sync`
         // (they hold an `ImageStore` handle + URL) and repaint via
@@ -2339,7 +2307,7 @@ impl Widget for TubeApp {
     }
 
     fn take_search_request(&mut self) -> bool {
-        std::mem::take(&mut self.search_requested) || self.shell.take_search_request()
+        self.shell.take_search_request()
     }
 }
 

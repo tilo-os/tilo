@@ -10,8 +10,6 @@
 //! Every frame of the backtrace should name its function; `<unknown>` frames
 //! mean the release binary lost its symbol table.
 
-#![allow(clippy::panic, reason = "panicking is this probe's purpose")]
-
 #[inline(never)]
 fn reach_the_panic(depth: u32) {
     assert!(depth != 0, "crash_log_probe: deliberate panic");

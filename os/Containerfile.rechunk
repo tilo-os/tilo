@@ -1,4 +1,4 @@
-# Content-based layers for the published OS image (TIL-747).
+# Content-based layers for the published OS image.
 #
 # os/Containerfile makes one layer per instruction, and a layer is a new blob
 # whenever its RUN or COPY runs again, so an update between two commits that

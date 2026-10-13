@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{ActionRef, Doc, Invoke, Replica, Resource as _};
 
