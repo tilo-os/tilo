@@ -680,15 +680,25 @@ impl InputMethodServices {
     }
 
     pub fn tick(&mut self, state: &mut State) {
+        self.tick_with_steps(state, |_| {});
+    }
+
+    /// Keep the production input-phase trace tied to the actual refresh and
+    /// service calls, so a slow registry read is distinguishable from seat
+    /// arbitration or a service restart.
+    pub fn tick_with_steps(&mut self, state: &mut State, mut step: impl FnMut(&'static str)) {
         if self.installed_epoch != crate::shell::launcher::installed_apps_epoch()
             || self.installed_checked.elapsed() >= INSTALL_REFRESH
         {
             self.refresh_installed(state);
+            step("input-method-refresh");
             self.apply(state);
+            step("input-method-apply");
         }
         for service in &mut self.services {
             service.tick();
         }
+        step("input-method-service-ticks");
         // X11 displays connect the composer and discount its connection by
         // this group.
         super::xwayland_composer::set_composer_process_group(
@@ -697,6 +707,7 @@ impl InputMethodServices {
                 .find(|service| service.kind() == TrustedInputMethod::Composer)
                 .and_then(InputMethodService::process_group),
         );
+        step("input-method-xwayland");
     }
 
     /// The private display paths, for unlinking at teardown.
