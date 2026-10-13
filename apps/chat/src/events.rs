@@ -1361,7 +1361,7 @@ impl ChatApp {
 
     fn on_key(&mut self, key: &Key, modifiers: Modifiers, doc: &mut ui::widget::Edits<'_>) -> bool {
         // Escape unwinds the top-most layer.
-        if let Key::Named(NamedKey::Escape) = key {
+        if matches!(key, Key::Named(NamedKey::Escape)) {
             if self.attach_open {
                 self.attach_open = false;
             } else if self.menu.is_some() {

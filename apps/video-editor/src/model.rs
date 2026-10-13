@@ -2748,15 +2748,15 @@ impl Project {
             .clip(id)
             .and_then(|c| self.media(c.media))
             .map(|m| m.duration);
-        let mut applied = 0.0;
         if let (Some(c), Some(media_dur)) = (self.clip_mut(id), media_dur) {
             let max_out = media_dur;
             let min_out = c.in_point + MIN_CLIP;
             let before = c.out_point;
             c.out_point = (c.out_point + delta).clamp(min_out, max_out);
-            applied = c.out_point - before;
+            c.out_point - before
+        } else {
+            0.0
         }
-        applied
     }
 
     pub fn delete_clip(&mut self, id: ClipId) {

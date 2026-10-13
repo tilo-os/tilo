@@ -1496,13 +1496,11 @@ fn synchronize_fluent_entry(
             changed
         }
         (Entry::Term(source), Entry::Term(translation)) => {
-            let mut changed = false;
-            if reset_variables
+            let changed = reset_variables
                 && fluent_pattern_variables(&source.value)
-                    != fluent_pattern_variables(&translation.value)
-            {
+                    != fluent_pattern_variables(&translation.value);
+            if changed {
                 translation.value = source.value.clone();
-                changed = true;
             }
             changed
                 | synchronize_fluent_attributes(

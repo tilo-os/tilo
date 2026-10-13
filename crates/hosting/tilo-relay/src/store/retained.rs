@@ -351,12 +351,13 @@ fn inspect_delta(
         return Ok(());
     }
     let metadata = entry.metadata()?;
-    let mut known = None;
-    if let Some(collected) = collected {
+    let known = if let Some(collected) = collected {
         let record = record_digest(&entry.path(), &metadata)?;
         collected.insert(tail_index::short(&record));
-        known = Some(record);
-    }
+        Some(record)
+    } else {
+        None
+    };
     if metadata.len() != bytes.len() as u64 {
         return Ok(());
     }
@@ -859,7 +860,7 @@ impl CheckpointStage {
         super::test_barrier::check(&self.build.lineage, "checkpoint-stage-finish-gc")?;
         match &mut self.build.phase {
             RetainPhase::Collect(gc) => {
-                if let Step::Done(()) = gc.step(limit)? {
+                if gc.step(limit)? == Step::Done(()) {
                     self.build.phase = RetainPhase::Done;
                     Ok(Step::Done(()))
                 } else {
@@ -1021,7 +1022,7 @@ impl RetainBuild {
             return Ok(Step::More);
         }
         if let Some(reader) = &mut self.selected_read {
-            if let Step::Done(()) = reader.step()? {
+            if reader.step()? == Step::Done(()) {
                 if reader.obsolete(&self.bytes)? {
                     self.publication = Some(super::shell_selection::Publication::Suppress);
                     self.phase = RetainPhase::Done;
@@ -1228,7 +1229,7 @@ impl RetainBuild {
                     RetainPhase::Collect(Box::new(GenerationGc::new(self.lineage.clone())?));
             }
             RetainPhase::Collect(gc) => {
-                if let Step::Done(()) = gc.step(limit)? {
+                if gc.step(limit)? == Step::Done(()) {
                     self.phase = RetainPhase::Done;
                 }
             }
@@ -1741,12 +1742,12 @@ pub(super) mod tests {
             .unwrap();
         assert!(checkpoint.holds_scratch());
         assert!(checkpoint.scratch().is_dir());
-        while let Step::More = checkpoint.step(WorkLimit::default()).unwrap() {}
+        while checkpoint.step(WorkLimit::default()).unwrap() == Step::More {}
         assert!(checkpoint.holds_scratch());
         let mut delta = store
             .start_retain(&[9; 32], Some(1), message(false, 2))
             .unwrap();
-        while let Step::More = delta.step(WorkLimit::default()).unwrap() {}
+        while delta.step(WorkLimit::default()).unwrap() == Step::More {}
         assert!(!delta.holds_scratch());
         assert!(
             !delta.scratch().exists(),
