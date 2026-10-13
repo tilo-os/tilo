@@ -7529,15 +7529,19 @@ impl CapnpBrokerState {
         // Sampled before anything is read: an expiry between this sample
         // and a read is registered as well, so none is skipped.
         let before = self.policy_now_ns();
-        let mut clocked = false;
-        if let Err(error) = self.refresh_workspace_membership_services() {
-            tracing::debug!(%error, "native membership surface could not be refreshed");
-            clocked = true;
-        }
-        if let Err(error) = self.refresh_workspace_context_services() {
-            tracing::debug!(%error, "native membership context could not be refreshed");
-            clocked = true;
-        }
+        let surface_failed = self
+            .refresh_workspace_membership_services()
+            .inspect_err(|error| {
+                tracing::debug!(%error, "native membership surface could not be refreshed");
+            })
+            .is_err();
+        let context_failed = self
+            .refresh_workspace_context_services()
+            .inspect_err(|error| {
+                tracing::debug!(%error, "native membership context could not be refreshed");
+            })
+            .is_err();
+        let clocked = surface_failed || context_failed;
         let announced = self
             .membership
             .as_ref()

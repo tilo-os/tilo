@@ -734,13 +734,14 @@ pub fn paint_card(
     let text_x0 = rect.x0 + leading_column(theme);
 
     // Dismiss (X) button — a ghost `Button` face, top-right.
-    let mut text_right = rect.x1 - pad_x;
-    if let Some(close_rect) =
+    let mut text_right = if let Some(close_rect) =
         paint_dismiss_button(scene, transform, text_renderer, theme, rect, card, a)
     {
         hit.close_rect = close_rect;
-        text_right = close_rect.x0 - f64::from(theme.tokens.spacing.s1);
-    }
+        close_rect.x0 - f64::from(theme.tokens.spacing.s1)
+    } else {
+        rect.x1 - pad_x
+    };
     if card.single_action() {
         let action = paint_single_action(
             scene,

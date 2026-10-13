@@ -371,8 +371,7 @@ impl App {
     #[cfg(feature = "native")]
     fn drain_unhosted_floating_requests(&mut self) -> bool {
         self.floating.pending_ime_ids.clear();
-        let mut changed = false;
-        if let Some(intent) = self.take_native_host_intent() {
+        let mut changed = if let Some(intent) = self.take_native_host_intent() {
             match intent {
                 crate::widget::AppHostIntent::AllowHostShell { reply } => {
                     if let Some(reply) = reply.upgrade() {
@@ -389,8 +388,10 @@ impl App {
                 }
                 _ => {}
             }
-            changed = true;
-        }
+            true
+        } else {
+            false
+        };
         // Outside a Tilo session there is no trusted shell chooser to open.
         // Drain the edge so reconnecting later cannot replay a stale gesture.
         while self.root_widget.take_capture_studio_request().is_some() {}

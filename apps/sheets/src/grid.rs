@@ -1703,15 +1703,13 @@ impl Grid {
                 // cell; a subsequent drag grows it into a new rectangle.
                 self.extra_ranges.push(self.current_range());
                 self.anchor = addr;
-                self.active = addr;
-            } else if shift {
-                // Extend the live range; keep its anchor and any other ranges.
-                self.active = addr;
-            } else {
+            } else if !shift {
                 self.extra_ranges.clear();
                 self.anchor = addr;
-                self.active = addr;
             }
+            // Shift extends the live range: it keeps its anchor and any other
+            // ranges, and only the active cell moves.
+            self.active = addr;
             self.selecting = true;
             self.dirty = true;
             return true;

@@ -2011,11 +2011,12 @@ mod tests {
 
     fn old_enter(m: &WordProcessor, doc: &AutoCommit) -> Vec<RichTextAction> {
         let mut out = Vec::new();
-        let mut caret = m.caret().clone();
-        if let Some((start, _)) = m.selection_span(doc) {
+        let caret = if let Some((start, _)) = m.selection_span(doc) {
             out.extend(old_insert_text(m, doc, ""));
-            caret = start;
-        }
+            start
+        } else {
+            m.caret().clone()
+        };
         let region = m.region_kind();
         let block = body_block(doc, &caret.block);
         let kind = block
