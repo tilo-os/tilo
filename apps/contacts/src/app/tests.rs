@@ -1149,8 +1149,7 @@ fn saves_persist_and_refusals_never_claim_success() {
 // assertions prove the shipped behaviour.
 // =================================================================
 
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
 /// `text` is what a focused `TextInput` actually inserts.
@@ -1159,11 +1158,7 @@ fn key_input_event(logical_key: Key, text: Option<&str>) -> WindowEvent {
     // overwrite the ones we read below; the private field is inert for our widgets.
     let ev =
         ui::synthetic_input::key_event(logical_key, text.map(SmolStr::new), ElementState::Pressed);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ev)
 }
 
 /// Mounts the app in the production frame host so tests can pump events
@@ -1203,35 +1198,23 @@ impl Harness {
     }
 
     fn move_to(&mut self, p: Point) {
-        self.dispatch(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(p.x, p.y),
-        });
+        self.dispatch(&ui::synthetic_input::cursor_moved(p.x, p.y));
     }
 
     fn press_left(&mut self, p: Point) -> bool {
         self.move_to(p);
-        let press = self.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        let release = self.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        let press = self.dispatch(&ui::synthetic_input::mouse_press());
+        let release = self.dispatch(&ui::synthetic_input::mouse_release());
         self.app.settle();
         press || release
     }
 
     fn press_right(&mut self, p: Point) -> bool {
         self.move_to(p);
-        let handled = self.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Right,
-        });
+        let handled = self.dispatch(&ui::synthetic_input::mouse_input(
+            ElementState::Pressed,
+            MouseButton::Right,
+        ));
         self.app.settle();
         handled
     }
@@ -2590,22 +2573,14 @@ fn split_divider_and_compact_toolbar_fit_their_space() {
         let grab = h.app.shell.geometry().resize_handle.center();
         assert!(h.app.shell.geometry().resize_handle.width() > 0.0);
         h.move_to(grab);
-        assert!(h.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }));
+        assert!(h.dispatch(&ui::synthetic_input::mouse_press()));
         h.move_to(Point::new(grab.x + 60.0, grab.y));
         h.relayout();
         assert!(
             h.app.shell.geometry().sidebar_column.width() > before,
             "dragging the shared sidebar grip widens navigation"
         );
-        h.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        h.dispatch(&ui::synthetic_input::mouse_release());
         let released = h.app.shell.geometry().sidebar_column.width();
         h.move_to(Point::new(grab.x + 100.0, grab.y));
         h.relayout();
@@ -4327,11 +4302,7 @@ fn check_mouse_wheel_scrolls_the_overflowing_contact_list() {
     );
     let before = h.app.shared.borrow().painted.clone();
     h.move_to(h.app.shell.geometry().overview_column.center());
-    h.dispatch(&WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-        phase: winit::event::TouchPhase::Moved,
-    });
+    h.dispatch(&ui::synthetic_input::mouse_wheel(0.0, -3.0));
     h.relayout();
     assert!(
         h.app.shared.borrow().painted != before,

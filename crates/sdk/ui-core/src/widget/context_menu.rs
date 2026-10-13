@@ -2176,10 +2176,7 @@ mod tests {
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
     fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
@@ -2191,11 +2188,7 @@ mod tests {
         })
     }
     fn wheel_lines(y: f32) -> WindowEvent {
-        WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, y),
-            phase: TouchPhase::Moved,
-        }
+        crate::synthetic_input::mouse_wheel(0.0, y)
     }
 
     #[test]
@@ -2437,11 +2430,7 @@ mod tests {
             menu.layout_within(&mut TextRenderer::new(), &Theme::dark());
             let point = menu.get_rect().center();
             dispatch(&mut menu, &cursor_at(point));
-            let wheel = |y| WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, y),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let wheel = |y| crate::synthetic_input::mouse_wheel(0.0, y);
             assert!(dispatch(&mut menu, &wheel(-100.0)));
             assert_eq!(menu.scroll_offset, menu.max_scroll());
             let last = menu.item_rect(19).unwrap().center();
@@ -2718,10 +2707,7 @@ mod nested_and_anchored_tests {
     const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
     use crate::synthetic_input::mouse_press;
     use crate::synthetic_input::named_key;

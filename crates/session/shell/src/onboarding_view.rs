@@ -4309,11 +4309,7 @@ mod tests {
             None,
             ElementState::Pressed,
         );
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     fn dispatch_escape(view: &mut OnboardingView, document: &mut AutoCommit) -> bool {
@@ -4324,10 +4320,7 @@ mod tests {
     }
 
     fn pointer_event(position: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(position.x, position.y),
-        }
+        ui::synthetic_input::cursor_moved(position.x, position.y)
     }
 
     use ui::synthetic_input::mouse_press;

@@ -239,10 +239,7 @@ fn actions_collapse_to_icons_then_overflow_into_more() {
         .more
         .choose(row);
     // The choice runs with the event that made it.
-    h.send(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(10.0, 300.0),
-    });
+    h.send(&crate::synthetic_input::cursor_moved(10.0, 300.0));
     assert!(deleted.get(), "the chosen action ran through its door");
 }
 

@@ -1671,21 +1671,14 @@ mod event_tests {
         fn move_to(&mut self, p: (f64, f64)) {
             self.feed(
                 Modifiers::default(),
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: PhysicalPosition::new(p.0, p.1),
-                },
+                &ui::synthetic_input::cursor_moved(p.0, p.1),
             );
         }
 
         fn button(&mut self, state: ElementState, button: MouseButton) {
             self.feed(
                 Modifiers::default(),
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state,
-                    button,
-                },
+                &ui::synthetic_input::mouse_input(state, button),
             );
         }
 

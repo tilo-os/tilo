@@ -5231,26 +5231,15 @@ mod tests {
     }
 
     pub(super) fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
+        crate::synthetic_input::cursor_moved(x, y)
     }
 
     pub(super) fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
+        crate::synthetic_input::mouse_press()
     }
 
     pub(super) fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
+        crate::synthetic_input::mouse_release()
     }
 
     pub(super) fn key_press(logical_key: Key) -> WindowEvent {

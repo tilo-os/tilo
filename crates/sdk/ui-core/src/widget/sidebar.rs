@@ -1045,7 +1045,6 @@ mod tests {
 
     #[test]
     fn sidebar_trailing_edge_drag_resizes_and_collapses_the_actual_panel() {
-        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
         let mut drawer = SidebarDrawer::new().content_min_width(560.0);
         let theme = Theme::dark();
         drawer.scale_for(&theme);
@@ -1056,19 +1055,9 @@ mod tests {
         drawer.resolve(area);
         let edge = drawer.sidebar_rect().x1;
         let y = 200.0;
-        let motion = |x| WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        };
+        let motion = |x| crate::synthetic_input::cursor_moved(x, y);
         route(&mut drawer, &motion(edge));
-        assert!(route(
-            &mut drawer,
-            &WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            }
-        ));
+        assert!(route(&mut drawer, &crate::synthetic_input::mouse_press()));
         route(&mut drawer, &motion(edge + 40.0));
         drawer.resolve(area);
         assert_eq!(drawer.list_rect().width(), 320.0);
@@ -1077,14 +1066,7 @@ mod tests {
         assert_eq!(drawer.list_rect().width(), 420.0);
         route(&mut drawer, &motion(area.x0 + 100.0));
         assert!(!drawer.is_open());
-        assert!(route(
-            &mut drawer,
-            &WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            }
-        ));
+        assert!(route(&mut drawer, &crate::synthetic_input::mouse_release()));
         drawer.open();
         drawer.snap(true);
         drawer.resolve(area);
@@ -1093,7 +1075,7 @@ mod tests {
 
     #[test]
     fn sidebar_resize_hides_only_below_the_minimum_and_reopens_at_the_last_usable_width() {
-        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+        use winit::event::{ElementState, MouseButton};
         for side in [SidebarSide::Left, SidebarSide::Right] {
             let mut drawer = SidebarDrawer::new().side(side).content_min_width(560.0);
             drawer.scale_for(&Theme::dark());
@@ -1101,21 +1083,16 @@ mod tests {
             drawer.resolve(area);
             drawer.snap(true);
             drawer.resolve(area);
-            let motion = |width| WindowEvent::CursorMoved {
-                device_id: DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(
+            let motion = |width| {
+                crate::synthetic_input::cursor_moved(
                     match side {
                         SidebarSide::Left => area.x0 + width,
                         SidebarSide::Right => area.x1 - width,
                     },
                     200.0,
-                ),
+                )
             };
-            let button = |state| WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state,
-                button: MouseButton::Left,
-            };
+            let button = |state| crate::synthetic_input::mouse_input(state, MouseButton::Left);
             let initial_width = drawer.list_rect().width();
             route(&mut drawer, &motion(initial_width));
             assert!(route(&mut drawer, &button(ElementState::Pressed)));

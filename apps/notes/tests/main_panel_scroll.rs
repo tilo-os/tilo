@@ -267,11 +267,7 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         let key = |key| {
             let event =
                 ui::synthetic_input::key_event(winit::keyboard::Key::Named(key), None, Pressed);
-            WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event,
-                is_synthetic: false,
-            }
+            ui::synthetic_input::keyboard_input(event)
         };
         app.harness().relayout_at((1000, 600)).unwrap();
         dispatch(&mut app, &key(winit::keyboard::NamedKey::Home));
@@ -361,11 +357,7 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             None,
             winit::event::ElementState::Pressed,
         );
-        let arrow_down = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        };
+        let arrow_down = ui::synthetic_input::keyboard_input(event);
         for _ in 0..last {
             app.harness().relayout_at((1000, 400)).unwrap();
             dispatch(&mut app, &arrow_down);

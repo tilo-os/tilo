@@ -168,14 +168,7 @@ fn pan_and_zoom_follow_pointer_wheel_and_keys() {
         let before = a.model.zoom;
         // Cursor over the right-hand map area, clear of the docked panel.
         move_to(&mut a, 1100.0, 360.0);
-        let handled = feed(
-            &mut a,
-            &WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, 1.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
-        );
+        let handled = feed(&mut a, &ui::synthetic_input::mouse_wheel(0.0, 1.0));
         assert!(handled, "wheel over the map must be handled");
         assert!(a.model.zoom > before, "scroll up should zoom in");
     }
@@ -225,14 +218,7 @@ fn pan_and_zoom_follow_pointer_wheel_and_keys() {
         let scroll_before = a.scroll;
         let pr = a.panel_rect();
         move_to(&mut a, pr.center().x, pr.y0 + 120.0);
-        let handled = feed(
-            &mut a,
-            &WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
-        );
+        let handled = feed(&mut a, &ui::synthetic_input::mouse_wheel(0.0, -1.0));
         assert!(handled, "wheel over the panel must be handled");
         assert!(a.scroll > scroll_before, "panel content should scroll");
         assert_eq!(
@@ -944,14 +930,9 @@ fn platform_search_opens_finds_and_activates_places() {
             use winit::keyboard::ModifiersState;
             winit::event::Modifiers::from(ModifiersState::CONTROL)
         };
-        ui::testing::Dispatch::new().modifiers(ctrl).send(
-            &mut a,
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            },
-        );
+        ui::testing::Dispatch::new()
+            .modifiers(ctrl)
+            .send(&mut a, &ui::synthetic_input::keyboard_input(ev));
 
         assert_eq!(
             a.model.origin_query, sentinel,
@@ -2352,35 +2333,15 @@ fn feed(a: &mut MapsApp, ev: &WindowEvent) -> bool {
 }
 
 fn move_to(a: &mut MapsApp, x: f64, y: f64) -> bool {
-    feed(
-        a,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        },
-    )
+    feed(a, &ui::synthetic_input::cursor_moved(x, y))
 }
 
 fn press_left(a: &mut MapsApp) -> bool {
-    feed(
-        a,
-        &WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-    )
+    feed(a, &ui::synthetic_input::mouse_press())
 }
 
 fn release_left(a: &mut MapsApp) -> bool {
-    feed(
-        a,
-        &WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-    )
+    feed(a, &ui::synthetic_input::mouse_release())
 }
 
 #[test]
@@ -2623,14 +2584,7 @@ fn feed_key(a: &mut MapsApp, logical: Key) -> bool {
         _ => None,
     };
     let ev = ui::synthetic_input::key_event(logical, text, ElementState::Pressed);
-    feed(
-        a,
-        &WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        },
-    )
+    feed(a, &ui::synthetic_input::keyboard_input(ev))
 }
 
 fn key_char(a: &mut MapsApp, ch: &str) -> bool {

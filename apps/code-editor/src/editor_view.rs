@@ -3184,11 +3184,7 @@ mod tests {
         let row = ev.completion_list.row_rect(1).expect("second row in view");
         ev.last_cursor = row.center();
         let mut handled = false;
-        let press = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        let press = ui::synthetic_input::mouse_press();
         assert!(ev.handle_completion_pointer(
             &press,
             1.0,
@@ -3424,23 +3420,19 @@ mod tests {
     }
 
     fn move_to(ev: &mut EditorView, doc: &mut AutoCommit, p: Point) {
-        let win_ev = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        };
+        let win_ev = ui::synthetic_input::cursor_moved(p.x, p.y);
         ui::testing::Dispatch::new().doc(doc).send(ev, &win_ev);
     }
 
     fn left(ev: &mut EditorView, doc: &mut AutoCommit, pressed: bool, shift: bool) {
-        let win_ev = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: if pressed {
+        let win_ev = ui::synthetic_input::mouse_input(
+            if pressed {
                 ElementState::Pressed
             } else {
                 ElementState::Released
             },
-            button: MouseButton::Left,
-        };
+            MouseButton::Left,
+        );
         ui::testing::Dispatch::new()
             .modifiers(mods(false, shift))
             .doc(doc)
@@ -3449,11 +3441,7 @@ mod tests {
 
     fn key(ev: &mut EditorView, doc: &mut AutoCommit, k: Key, ctrl: bool, shift: bool) {
         let ke = ui::synthetic_input::key_event(k, None, ElementState::Pressed);
-        let win_ev = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ke,
-            is_synthetic: false,
-        };
+        let win_ev = ui::synthetic_input::keyboard_input(ke);
         ui::testing::Dispatch::new()
             .modifiers(mods(ctrl, shift))
             .doc(doc)

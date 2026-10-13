@@ -811,14 +811,7 @@ fn raw_root_dispatch_maps_history_composition_to_retained_input_and_returns_focu
     let heads = frame.state.doc.get_heads();
     let focused = frame.focused;
     frame.dispatch_to_root_outcome(&cursor_moved(center.x, center.y), &modifiers);
-    let result = frame.dispatch_to_root_outcome(
-        &WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        &modifiers,
-    );
+    let result = frame.dispatch_to_root_outcome(&crate::synthetic_input::mouse_press(), &modifiers);
     assert!(
         result.handled,
         "wrapped input receives the actual pointer press"

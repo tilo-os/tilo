@@ -3008,10 +3008,7 @@ fn bound_hover_carries_snapshots_only_across_unwritten_records() {
     for step in 0..50 {
         fixture.app.surface_input(
             &Surface,
-            WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(20.0 + f64::from(step), 20.0),
-            },
+            crate::synthetic_input::cursor_moved(20.0 + f64::from(step), 20.0),
             false,
         );
     }

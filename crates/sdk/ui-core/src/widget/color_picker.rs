@@ -1743,14 +1743,7 @@ mod tests {
 
     fn key(p: &mut ColorPicker, named: NamedKey) {
         let ev = crate::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
-        dispatch(
-            p,
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            },
-        );
+        dispatch(p, &crate::synthetic_input::keyboard_input(ev));
     }
 
     #[test]

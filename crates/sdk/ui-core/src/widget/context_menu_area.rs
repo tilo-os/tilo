@@ -370,18 +370,11 @@ mod tests {
     use crate::widget::Spacer;
 
     fn moved(at: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-        }
+        crate::synthetic_input::cursor_moved(at.x, at.y)
     }
 
     fn right_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Right,
-        }
+        crate::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right)
     }
 
     fn opening_menu() -> (ContextMenuArea, Rc<Cell<usize>>, Point) {

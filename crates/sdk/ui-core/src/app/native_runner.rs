@@ -3521,29 +3521,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         };
         match event {
             UserEvent::Hover { x, y } => {
-                let ev = WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: PhysicalPosition::new(x, y),
-                };
+                let ev = crate::synthetic_input::cursor_moved(x, y);
                 self.injected_window_event(event_loop, window_id, ev);
             }
             UserEvent::Click { x, y } => {
-                let moved = WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: PhysicalPosition::new(x, y),
-                };
+                let moved = crate::synthetic_input::cursor_moved(x, y);
                 self.injected_window_event(event_loop, window_id, moved);
-                let press = WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                };
+                let press = crate::synthetic_input::mouse_press();
                 self.injected_window_event(event_loop, window_id, press);
-                let release = WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                };
+                let release = crate::synthetic_input::mouse_release();
                 self.injected_window_event(event_loop, window_id, release);
             }
             UserEvent::Key(key) => {
@@ -3556,11 +3542,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
             }
             UserEvent::Wheel { dx, dy } => {
-                let ev = WindowEvent::MouseWheel {
-                    device_id: winit::event::DeviceId::dummy(),
-                    delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
-                    phase: winit::event::TouchPhase::Moved,
-                };
+                let ev = crate::synthetic_input::mouse_wheel(dx, dy);
                 self.injected_window_event(event_loop, window_id, ev);
             }
             UserEvent::External(payload) => {
@@ -3636,22 +3618,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             if let Some((x, y)) = click {
                                 let scale = window.scale_factor();
                                 let (px, py) = (x * scale, y * scale);
-                                let moved = WindowEvent::CursorMoved {
-                                    device_id: winit::event::DeviceId::dummy(),
-                                    position: PhysicalPosition::new(px, py),
-                                };
+                                let moved = crate::synthetic_input::cursor_moved(px, py);
                                 self.injected_window_event(event_loop, window_id, moved);
-                                let press = WindowEvent::MouseInput {
-                                    device_id: winit::event::DeviceId::dummy(),
-                                    state: ElementState::Pressed,
-                                    button: MouseButton::Left,
-                                };
+                                let press = crate::synthetic_input::mouse_press();
                                 self.injected_window_event(event_loop, window_id, press);
-                                let release = WindowEvent::MouseInput {
-                                    device_id: winit::event::DeviceId::dummy(),
-                                    state: ElementState::Released,
-                                    button: MouseButton::Left,
-                                };
+                                let release = crate::synthetic_input::mouse_release();
                                 self.injected_window_event(event_loop, window_id, release);
                             }
                             window.request_redraw();
