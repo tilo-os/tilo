@@ -540,15 +540,6 @@ pub fn bundled_book_entry() -> Option<LibraryEntry> {
     Some(prepare_imported_book(Path::new(BUNDLED_PATH), book).1)
 }
 
-/// Whether chosen files have native paths here; without them (a browser
-/// page) books are opened by their contents.
-pub fn native_paths() -> bool {
-    matches!(
-        tilo_files::availability(tilo_files::Feature::NativePaths),
-        tilo_files::Availability::Available
-    )
-}
-
 // --- Sample library: hermetic `--shots` / test content only -----------------
 
 /// The multi-book sample library used by the headless renderer and tests. Never

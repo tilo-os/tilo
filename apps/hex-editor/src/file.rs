@@ -1,16 +1,5 @@
 //! Reading and writing the file a buffer was opened from, on this device.
 
-use tilo_files::{Availability, Feature};
-
-/// Whether chosen files have native paths here; without them (a browser
-/// page) files are opened and saved by their contents.
-pub(crate) fn native_paths() -> bool {
-    matches!(
-        tilo_files::availability(Feature::NativePaths),
-        Availability::Available
-    )
-}
-
 /// The bytes of the file at `path`.
 pub(crate) fn read(path: &std::path::Path) -> Result<Vec<u8>, String> {
     tilo_files::file_at(path)

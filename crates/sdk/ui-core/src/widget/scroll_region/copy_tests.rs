@@ -45,9 +45,7 @@ impl Widget for Transcript {
         crate::widget::TaffyTreeExt::fill_leaf(taffy, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -103,10 +101,6 @@ impl Widget for Transcript {
 
     fn name(&self) -> &'static str {
         "Transcript"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn needs_redraw(&self) -> bool {
