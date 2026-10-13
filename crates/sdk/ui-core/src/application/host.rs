@@ -1384,6 +1384,16 @@ mod native_process_tests {
         let permissions = resolved.permissions;
         let own = TreePath::root().app(app).action("buy");
         assert_eq!(permissions.role(), Some(crate::permissions::Role::Viewer));
+        let record_write = TreePath::root()
+            .app(app)
+            .kind("host.probe")
+            .resource("fixture")
+            .action("edit");
+        assert_eq!(
+            permissions.answer(&record_write, ActionKind::Undoable),
+            Answer::Deny,
+            "read-only record participation must survive app action authority"
+        );
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
         assert_eq!(
             permissions.answer(

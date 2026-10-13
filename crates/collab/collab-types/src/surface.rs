@@ -58,17 +58,6 @@ impl SurfaceFile {
 #[derive(Clone, Debug)]
 pub struct KindSurface(pub Surface);
 
-/// The dotted field path of `path` (`comments.*.text`), items as `*`.
-fn dotted(path: &[PathStep]) -> String {
-    path.iter()
-        .map(|step| match step {
-            PathStep::Field(key) | PathStep::Key(key) => key.clone(),
-            PathStep::Item(_) | PathStep::Cell(..) => ANY_ITEM.to_owned(),
-        })
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
 impl KindSurface {
     /// Every unit of the resource, items as [`ANY_ITEM`], and the record.
     fn every_unit(&self) -> Vec<UnitPath> {
@@ -105,14 +94,12 @@ impl ReceiptSurface for KindSurface {
     }
 
     fn editable(&self, path: &[PathStep]) -> bool {
-        let fields = &self.0.fields;
         if path.is_empty() {
-            return fields.iter().any(|field| !field.readonly);
+            return self.0.fields.iter().any(|field| !field.readonly);
         }
-        let dotted = dotted(path);
-        fields
-            .iter()
-            .any(|field| field.path == dotted && !field.readonly)
+        // An edit inside a field (an outbox entry settled, a map's key)
+        // edits the field it reaches, as the app offers it.
+        self.0.editable(path)
     }
 
     fn footprint(&self, action: &ClaimedAction) -> Vec<UnitPath> {
@@ -281,6 +268,16 @@ writes = ["record", "comments.*"]
         );
         assert!(surface.editable(&[PathStep::Field("body".into())]));
         assert!(!surface.editable(&[PathStep::Field("created".into())]));
+        assert!(
+            surface.editable(&[
+                PathStep::Field("comments".into()),
+                PathStep::Item("c1".into()),
+            ]),
+            "an item of an editable collection is editable"
+        );
+        assert!(
+            !surface.editable(&[PathStep::Field("created".into()), PathStep::Key("x".into()),])
+        );
         let comment = ClaimedAction::Verb {
             action: ActionKey::new("notes", "notes.page", "comment"),
             item: Some("c1".into()),

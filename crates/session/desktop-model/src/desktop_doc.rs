@@ -449,20 +449,29 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
     let members = read_keyed_blob_map(doc, entry, MEMBERS_KEY).unwrap_or_default();
     let grants = read_blob_map(doc, entry, GRANTS_KEY).map(|mut grants: Vec<Grant>| {
         // Map keys are lexical, but the default role grants have a deliberate
-        // Viewer → Commenter → Editor → Owner order in `room_role_grants`.
-        // Rebuild that order before exposing the policy to the live tree.
-        fn role_order(grant: &Grant) -> u8 {
+        // order in `room_role_grants`: by role as `Role::ALL` lists them, then
+        // by the index in their `role:<role>:<index>` id. Rebuild that order
+        // (index 10 after 9, not after 1) before exposing the policy to the
+        // live tree.
+        fn role_order(grant: &Grant) -> usize {
             match grant.subject {
-                Subject::Role(Role::Viewer) => 0,
-                Subject::Role(Role::Commenter) => 1,
-                Subject::Role(Role::Editor) => 2,
-                Subject::Role(Role::Owner) => 3,
-                _ => 4,
+                Subject::Role(role) => Role::ALL
+                    .iter()
+                    .position(|r| *r == role)
+                    .unwrap_or(Role::ALL.len()),
+                _ => Role::ALL.len(),
+            }
+        }
+        fn role_index(grant: &Grant) -> Option<u64> {
+            match grant.subject {
+                Subject::Role(_) => grant.id.0.rsplit(':').next()?.parse().ok(),
+                _ => None,
             }
         }
         grants.sort_by(|left, right| {
             role_order(left)
                 .cmp(&role_order(right))
+                .then_with(|| role_index(left).cmp(&role_index(right)))
                 .then_with(|| left.id.cmp(&right.id))
         });
         grants

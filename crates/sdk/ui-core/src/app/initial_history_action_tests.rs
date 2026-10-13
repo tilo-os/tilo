@@ -788,6 +788,22 @@ fn ordinary_native_pump_exports_admission_before_any_action() {
             );
             std::thread::yield_now();
         }
+        // The directory RPC completes on the manager thread. Observe its one
+        // real reply before comparing the pump's checkpoint to a later live
+        // snapshot; otherwise the reply can land between those two reads.
+        while app
+            .native_admission_snapshot()
+            .directory
+            .transport_directory_rpc_successes
+            != Some(1)
+        {
+            app.pump_collab_presence();
+            assert!(
+                crate::time::now() < deadline,
+                "original action directory never answered"
+            );
+            std::thread::yield_now();
+        }
         // Ordinary idle servicing exports the real current admission, without
         // injecting a published invocation or synthetic scenario.
         app.pump_collab_presence();
@@ -802,6 +818,14 @@ fn ordinary_native_pump_exports_admission_before_any_action() {
                 serde_json::json!(app.native_admission_snapshot())
             );
             assert_eq!(checkpoint["native_admission"]["action_history_ready"], true);
+            assert_eq!(
+                checkpoint["native_admission"]["transport_directory_rpc_successes"],
+                1
+            );
+            assert_eq!(
+                checkpoint["native_admission"]["transport_directory_rpc_failures"],
+                0
+            );
         } else {
             assert!(
                 checkpoint.get("native_admission").is_none(),

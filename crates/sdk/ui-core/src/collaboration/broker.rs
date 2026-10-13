@@ -6781,6 +6781,7 @@ async fn dispatch_sdk_request(
             run_id,
             lease,
             peer_id,
+            provider,
             resource,
             action,
             arguments,
@@ -6799,6 +6800,7 @@ async fn dispatch_sdk_request(
                 );
                 let target = runtime_collab::TaskAction {
                     peer_id,
+                    provider: &provider,
                     resource: &resource,
                     action: &action,
                     argument: Some(&argument),
@@ -6833,6 +6835,7 @@ async fn dispatch_sdk_request(
             run_id,
             lease,
             peer_id,
+            provider,
             resource,
             action,
             arguments,
@@ -6845,6 +6848,7 @@ async fn dispatch_sdk_request(
             );
             let target = runtime_collab::TaskAction {
                 peer_id,
+                provider: &provider,
                 resource: &resource,
                 action: &action,
                 argument: Some(&argument),

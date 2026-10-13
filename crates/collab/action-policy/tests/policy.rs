@@ -1234,7 +1234,8 @@ fn grant_sets_read_as_sentences() {
     assert_eq!(
         describe(&editor, &Ids),
         "room r: reading and undoable changes allowed, outside effects ask first. \
-         room r › tilo.room: undoable changes and outside effects not allowed."
+         room r › tilo.room: undoable changes and outside effects not allowed. \
+         room r › anywhere › moderation: undoable changes and outside effects not allowed."
     );
 }
 
@@ -1471,4 +1472,235 @@ fn an_agents_role_never_exceeds_its_person_its_admission_or_the_cap() {
         Role::Commenter
     );
     assert_eq!(agent_policy::role(Role::Viewer, Role::Editor), Role::Viewer);
+}
+
+fn remove_message() -> TreePath {
+    TreePath::room("r")
+        .app("chat")
+        .kind("chat.workspace")
+        .resource("c1")
+        .field(roles::MODERATION_FIELD)
+        .action("remove-message")
+}
+
+#[test]
+fn only_moderators_and_the_owner_reach_the_moderation_node() {
+    let room = room_with(&[
+        (BOB, Role::Editor),
+        (CAROL, Role::Moderator),
+        ("v", Role::Viewer),
+    ]);
+    let answer_of = |person: &str| {
+        Authority::person(room.party(person))
+            .decide(&remove_message(), ActionKind::Undoable, &cx())
+            .answer
+    };
+    assert_eq!(answer_of(ALICE), Answer::Allow);
+    assert_eq!(answer_of(CAROL), Answer::Allow);
+    assert_eq!(answer_of(BOB), Answer::Deny);
+    assert_eq!(answer_of("v"), Answer::Deny);
+    let content = mail().kind("mail.message").resource("m1").action("archive");
+    let carol = Authority::person(room.party(CAROL));
+    assert_eq!(
+        carol.decide(&content, ActionKind::Undoable, &cx()).answer,
+        Answer::Allow,
+        "a Moderator edits like an Editor"
+    );
+    for action in [
+        governance::SET_ROLE,
+        governance::GRANT,
+        governance::SETTINGS,
+    ] {
+        assert!(
+            room.check_action(&carol, action, &cx(), true).is_err(),
+            "a Moderator does not govern beyond membership: {action}"
+        );
+    }
+    for action in roles::MODERATOR_GOVERNANCE {
+        assert_eq!(room.check_action(&carol, action, &cx(), false), Ok(()));
+    }
+}
+
+#[test]
+fn a_moderator_reaches_only_members_below_moderator() {
+    let mut room = room_with(&[
+        (BOB, Role::Editor),
+        (CAROL, Role::Moderator),
+        ("m2", Role::Moderator),
+    ]);
+    let policy = room.clone();
+    let carol = Authority::person(policy.party(CAROL));
+    for person in ["m2", ALICE] {
+        for change in [
+            Change::RemoveMember {
+                person: person.into(),
+            },
+            Change::Ban {
+                person: person.into(),
+            },
+        ] {
+            let before = room.clone();
+            assert!(room.apply(CAROL, &carol, change, &cx(), false).is_err());
+            assert_eq!(room, before, "nothing is written");
+        }
+    }
+    assert_eq!(
+        room.apply(
+            CAROL,
+            &carol,
+            Change::Ban {
+                person: CAROL.into()
+            },
+            &cx(),
+            false
+        ),
+        Err(Refusal::NotBelowActor {
+            actor: Some(Role::Moderator),
+            target: Role::Moderator
+        })
+    );
+    room.apply(
+        CAROL,
+        &carol,
+        Change::RemoveMember { person: BOB.into() },
+        &cx(),
+        false,
+    )
+    .unwrap();
+    assert!(!room.is_member(BOB));
+}
+
+#[test]
+fn a_ban_removes_and_blocks_until_unban() {
+    let mut room = room_with(&[(BOB, Role::Editor), (CAROL, Role::Moderator)]);
+    let policy = room.clone();
+    let carol = Authority::person(policy.party(CAROL));
+    let ban = Change::Ban { person: BOB.into() };
+    assert_eq!(room.check(CAROL, &carol, &ban, &cx(), false), Ok(()));
+    assert!(room.is_member(BOB), "check writes nothing");
+    room.apply(CAROL, &carol, ban.clone(), &cx(), false)
+        .unwrap();
+    assert!(!room.is_member(BOB));
+    assert!(room.is_banned(BOB));
+    assert!(room.is_blocked(BOB));
+    assert_eq!(
+        room.apply(CAROL, &carol, ban, &cx(), false),
+        Err(Refusal::Banned(BOB.into()))
+    );
+    let owner_policy = room.clone();
+    let owner = Authority::person(owner_policy.party(ALICE));
+    assert_eq!(
+        room.apply(
+            ALICE,
+            &owner,
+            Change::AddMember {
+                person: BOB.into(),
+                role: Role::Editor
+            },
+            &cx(),
+            false
+        ),
+        Err(Refusal::Banned(BOB.into())),
+        "a banned person cannot be added back"
+    );
+    room.apply(
+        CAROL,
+        &carol,
+        Change::Unban { person: BOB.into() },
+        &cx(),
+        false,
+    )
+    .unwrap();
+    assert!(!room.is_banned(BOB));
+    assert_eq!(
+        room.apply(
+            CAROL,
+            &carol,
+            Change::Unban { person: BOB.into() },
+            &cx(),
+            false
+        ),
+        Err(Refusal::NotBanned(BOB.into()))
+    );
+}
+
+#[test]
+fn editors_cannot_ban() {
+    let room = room_with(&[(BOB, Role::Editor), (CAROL, Role::Viewer)]);
+    let bob = Authority::person(room.party(BOB));
+    let ban = Change::Ban {
+        person: CAROL.into(),
+    };
+    assert!(matches!(
+        room.check(BOB, &bob, &ban, &cx(), true),
+        Err(Refusal::NotPermitted(_))
+    ));
+}
+
+#[test]
+fn a_restriction_stops_changes_until_it_lapses_and_leaves_reading() {
+    let mut room = room_with(&[(BOB, Role::Editor), (CAROL, Role::Moderator)]);
+    let policy = room.clone();
+    let carol = Authority::person(policy.party(CAROL));
+    let until = NOW + 60_000;
+    let restrict = Change::Restrict {
+        person: BOB.into(),
+        until_ms: until,
+    };
+    room.apply(CAROL, &carol, restrict, &cx(), false).unwrap();
+    assert!(room.is_member(BOB), "a restriction is not a removal");
+    assert!(!room.is_blocked(BOB), "nor a ban");
+    assert_eq!(room.restricted_until(BOB, &cx()), Some(until));
+    let bob = Authority::person(room.party(BOB));
+    let decide = |at: u64, kind| bob.decide(&archive(), kind, &Context::at(at)).answer;
+    assert_eq!(decide(NOW, ActionKind::Undoable), Answer::Deny);
+    assert_eq!(decide(NOW, ActionKind::Read), Answer::Allow);
+    assert_eq!(decide(until, ActionKind::Undoable), Answer::Allow, "lapsed");
+    assert_eq!(room.restricted_until(BOB, &Context::at(until)), None);
+}
+
+#[test]
+fn a_restriction_reaches_only_below_and_lifts_once() {
+    let mut room = room_with(&[(BOB, Role::Editor), (CAROL, Role::Moderator)]);
+    let policy = room.clone();
+    let carol = Authority::person(policy.party(CAROL));
+    let bob = Authority::person(policy.party(BOB));
+    let on = |person: &str| Change::Restrict {
+        person: person.into(),
+        until_ms: NOW + 1,
+    };
+    assert!(matches!(
+        room.check(BOB, &bob, &on(CAROL), &cx(), true),
+        Err(Refusal::NotPermitted(_))
+    ));
+    assert_eq!(
+        room.check(CAROL, &carol, &on(ALICE), &cx(), false),
+        Err(Refusal::Owner)
+    );
+    assert!(matches!(
+        room.check(CAROL, &carol, &on(CAROL), &cx(), false),
+        Err(Refusal::NotBelowActor { .. })
+    ));
+    assert_eq!(
+        room.check(
+            CAROL,
+            &carol,
+            &Change::Restrict {
+                person: BOB.into(),
+                until_ms: NOW
+            },
+            &cx(),
+            false
+        ),
+        Err(Refusal::InThePast(NOW))
+    );
+    room.apply(CAROL, &carol, on(BOB), &cx(), false).unwrap();
+    let lift = Change::Unrestrict { person: BOB.into() };
+    room.apply(CAROL, &carol, lift.clone(), &cx(), false)
+        .unwrap();
+    assert_eq!(room.restricted_until(BOB, &cx()), None);
+    assert_eq!(
+        room.apply(CAROL, &carol, lift, &cx(), false),
+        Err(Refusal::NotRestricted(BOB.into()))
+    );
 }

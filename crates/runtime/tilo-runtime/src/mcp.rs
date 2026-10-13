@@ -2067,6 +2067,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             confirmation: None,
             revision,
             wait_ms: None,
+            appearance: None,
         };
         let mut started = self.start_confirmed(&mut request).await;
         if current

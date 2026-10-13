@@ -113,7 +113,6 @@ pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLi
             &[
                 ("state", state.into()),
                 ("title", task.title.clone().into()),
-                ("task", task.task_id.clone().into()),
                 (
                     "run",
                     task.run_epoch
@@ -149,7 +148,7 @@ pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLi
         AgentTaskReceipt::Applied => Some(crate::i18n::t("chat-agent-direction-applied")),
         AgentTaskReceipt::Started => Some(crate::i18n::t("chat-agent-task-started")),
         AgentTaskReceipt::StopRequested => Some(crate::i18n::t("chat-agent-task-stopped")),
-        AgentTaskReceipt::Queued => Some(crate::i18n::t("chat-agent-task-queued")),
+        AgentTaskReceipt::Queued => Some(crate::i18n::t("chat-agent-task-saved")),
         AgentTaskReceipt::Refused => Some(crate::i18n::t("chat-agent-direction-refused")),
     };
     AgentTaskStatusLines { primary, receipt }
@@ -1692,10 +1691,10 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let label = self
-            .messages
-            .first()
-            .map_or_else(|| "Today".into(), |m| day_label(m.ts));
+        let label = self.messages.first().map_or_else(
+            || ui::format::near_day(0).unwrap_or_default(),
+            |m| day_label(m.ts),
+        );
         let style = theme.text(TextRole::Caption);
         let w = width_of(tr, &label, &style);
         let band = Rect::new(area.x0, y, area.x1, y + divider_h);
@@ -2592,10 +2591,10 @@ impl ChatApp {
         paint.text.draw_style(
             paint.scene,
             &lines.primary,
-            ink,
+            paint.theme.text_primary,
             paint.transform * Affine::translate((status.x0, status.y0)),
             Some((text_right - status.x0).max(1.0) as f32),
-            &caption,
+            &paint.theme.text(TextRole::Body),
         );
         if let Some((label, hit)) = action {
             let control = Rect::new(
@@ -2619,18 +2618,24 @@ impl ChatApp {
         if let Some(receipt) = lines.receipt {
             let row = Rect::new(
                 rect.x0,
-                (chooser_bottom - row_h).max(rect.y0),
+                (chooser_bottom
+                    - Self::agent_task_receipt_height(
+                        paint.text,
+                        paint.theme,
+                        rect.width(),
+                        tasks,
+                    ))
+                .max(rect.y0),
                 rect.x1,
                 chooser_bottom.max(rect.y0),
             );
-            line_in(
-                &mut paint,
+            paint.text.draw_style(
+                paint.scene,
                 &receipt,
-                &caption,
                 ink,
-                row.x0,
-                row,
-                row.width(),
+                paint.transform * Affine::translate((row.x0, row.y0)),
+                Some(row.width().max(1.0) as f32),
+                &caption,
             );
             chooser_bottom = row.y0 - gap;
         }
@@ -2732,9 +2737,26 @@ impl ChatApp {
         let (_, height) = tr.measure_style(
             &agent_task_status_lines(tasks).primary,
             Some((width - action_w).max(1.0) as f32),
-            &theme.text(TextRole::Caption),
+            &theme.text(TextRole::Body),
         );
         f64::from(height).max(SegmentedFace::height(ControlSize::Small, theme))
+    }
+
+    fn agent_task_receipt_height(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        width: f64,
+        tasks: &AgentTaskView,
+    ) -> f64 {
+        let Some(receipt) = agent_task_status_lines(tasks).receipt else {
+            return 0.0;
+        };
+        let (_, height) = tr.measure_style(
+            &receipt,
+            Some(width.max(1.0) as f32),
+            &theme.text(TextRole::Caption),
+        );
+        f64::from(height)
     }
 
     pub(crate) fn agent_task_controls_height(
@@ -2748,12 +2770,13 @@ impl ChatApp {
         };
         let chooser_rows = if tasks.tasks.len() > 1 { 2 } else { 0 };
         let receipt_rows = usize::from(agent_task_status_lines(tasks).receipt.is_some());
-        let rows = chooser_rows + receipt_rows + self.agent_intent_picker_rows(tr, theme, width);
+        let rows = chooser_rows + self.agent_intent_picker_rows(tr, theme, width);
         let row_h = SegmentedFace::height(ControlSize::Small, theme);
         let gap = f64::from(theme.tokens.spacing.s2);
         self.agent_task_status_height(tr, theme, width, tasks)
+            + Self::agent_task_receipt_height(tr, theme, width, tasks)
             + rows as f64 * row_h
-            + (rows + 1) as f64 * gap
+            + (rows + receipt_rows + 1) as f64 * gap
     }
 
     fn draw_agent_intent_picker(

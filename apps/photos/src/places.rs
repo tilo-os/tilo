@@ -202,7 +202,7 @@ mod tests {
     use crate::model::{LibraryPhoto, LocationProvenance, OpenImage};
 
     fn photo(id: &str, latitude: f64, longitude: f64, label: &str) -> LibraryPhoto {
-        let mut photo = LibraryPhoto::from_image(OpenImage::from_path(id, 10, 10));
+        let mut photo = LibraryPhoto::from_image(OpenImage::fixture(id, 10, 10));
         photo.location = Some(PhotoLocation {
             latitude,
             longitude,

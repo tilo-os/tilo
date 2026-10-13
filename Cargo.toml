@@ -58,7 +58,6 @@ members = [
     "crates/browser/paint-stream",
     "crates/hosting/tilo-room-service",
     "crates/hosting/tilo-moq",
-    "apps/hot-reload-demo",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",

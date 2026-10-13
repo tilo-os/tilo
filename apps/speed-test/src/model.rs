@@ -248,14 +248,7 @@ pub(crate) fn data_label(bytes: u64) -> String {
 
 /// How long ago a test finished.
 pub(crate) fn age_label(now: i64, at: i64) -> String {
-    let seconds = (now - at).max(0);
-    match seconds {
-        0..60 => "Just now".to_owned(),
-        60..3600 => format!("{} min ago", seconds / 60),
-        3600..86_400 => format!("{} h ago", seconds / 3600),
-        86_400..172_800 => "Yesterday".to_owned(),
-        _ => format!("{} days ago", seconds / 86_400),
-    }
+    ui::format::capitalize_first(&ui::format::relative(now.saturating_sub(at)))
 }
 
 #[cfg(test)]
@@ -402,7 +395,7 @@ mod tests {
     fn ages_read_naturally() {
         assert_eq!(age_label(1000, 990), "Just now");
         assert_eq!(age_label(1000 + 600, 1000), "10 min ago");
-        assert_eq!(age_label(10_000, 10_000 - 2 * 3600), "2 h ago");
+        assert_eq!(age_label(10_000, 10_000 - 2 * 3600), "2 hr ago");
         assert_eq!(age_label(200_000, 200_000 - 26 * 3600), "Yesterday");
         assert_eq!(age_label(1_000_000, 1_000_000 - 3 * 86_400), "3 days ago");
     }

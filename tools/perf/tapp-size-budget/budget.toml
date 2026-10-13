@@ -148,10 +148,6 @@ aarch64 = 3801088
 x86_64 = 851968
 aarch64 = 786432
 
-[apps."so.tilo.hot-reload-demo"]
-x86_64 = 720896
-aarch64 = 655360
-
 [apps."so.tilo.imager"]
 x86_64 = 4521984
 aarch64 = 4063232

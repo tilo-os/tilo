@@ -54,6 +54,7 @@ enum Operation {
 }
 enum Reply {
     Opened(Arc<Ticket>),
+    BindingPending,
     Sent,
     Left,
 }

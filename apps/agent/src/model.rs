@@ -1190,6 +1190,7 @@ mod tests {
         let offer = Offer {
             app: "calculator".to_string(),
             broker_peer_id: None,
+            broker_provider: None,
             descriptor: ActionDescriptor {
                 semantic_identity: None,
                 address: ActionAddress::new("calculator.range:main", "sample"),
@@ -1544,6 +1545,7 @@ mod tests {
             offers: vec![Offer {
                 app: "calculator".to_string(),
                 broker_peer_id: None,
+                broker_provider: None,
                 descriptor: ActionDescriptor {
                     semantic_identity: None,
                     address: ActionAddress::new("calculator.range:main", "sample"),
@@ -1916,7 +1918,6 @@ pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, St
     };
     let profile_id = field("profile_id")?;
     Ok(ProviderSelection {
-        profile_label: profile_id.clone(),
         profile_id,
         endpoint: String::new(),
         protocol,

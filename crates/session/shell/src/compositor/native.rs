@@ -6365,7 +6365,7 @@ fn portal_capture_event(
 }
 
 #[derive(Clone, Debug)]
-struct SpatialControlSession {
+pub(crate) struct SpatialControlSession {
     target: crate::shell::personal_continuity::DeviceId,
     lease_nonce: [u8; 16],
     output: Option<String>,
@@ -6398,7 +6398,7 @@ pub(crate) fn dispatch_spatial_input_batch(
     }
 }
 
-fn end_spatial_control(
+pub(crate) fn end_spatial_control(
     network: &crate::shell::network::ShellNetwork,
     active: &mut Option<SpatialControlSession>,
 ) {
@@ -6467,7 +6467,7 @@ fn spatial_coord(value: f64) -> i32 {
     clippy::cast_possible_truncation,
     reason = "wheel deltas are clamped to the bounded fabric wire representation"
 )]
-fn spatial_scroll(value: f64) -> i16 {
+pub(crate) fn spatial_scroll(value: f64) -> i16 {
     value
         .clamp(f64::from(i16::MIN), f64::from(i16::MAX))
         .round() as i16
@@ -6541,11 +6541,21 @@ fn move_spatial_pointer(
     }
 }
 
-fn move_observed_spatial_pointer(
+pub(crate) fn move_observed_spatial_pointer(
     cursor: Option<(f64, f64)>,
     network: &crate::shell::network::ShellNetwork,
     active: &mut Option<SpatialControlSession>,
     delta: (f64, f64),
+) -> Option<crate::compositor::spatial_pointer::SpatialMotion> {
+    move_observed_spatial_pointer_for_target(cursor, network, active, delta, None)
+}
+
+pub(crate) fn move_observed_spatial_pointer_for_target(
+    cursor: Option<(f64, f64)>,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+    delta: (f64, f64),
+    target: Option<&crate::shell::personal_continuity::DeviceId>,
 ) -> Option<crate::compositor::spatial_pointer::SpatialMotion> {
     use crate::compositor::spatial_pointer::{MotionPlan, PointerAt, SpatialMotion, plan_motion};
     use crate::shell::device_fabric_runtime::person_layout;
@@ -6581,8 +6591,10 @@ fn move_observed_spatial_pointer(
     } else {
         // Older leased peers remain reachable through their existing edge
         // protocol until all participating targets supply output metadata.
-        if view.legacy_targets.iter().any(|target| {
-            crate::shell::device_fabric_runtime::spatial_pointer_lease(network, target).is_some()
+        if view.legacy_targets.iter().any(|legacy| {
+            target.is_none_or(|target| target == legacy)
+                && crate::shell::device_fabric_runtime::spatial_pointer_lease(network, legacy)
+                    .is_some()
         }) {
             return None;
         }
@@ -6594,7 +6606,8 @@ fn move_observed_spatial_pointer(
         PointerAt::Local(cursor)
     };
     let plan = plan_motion(&view.layout, view.local.as_str(), at, delta, |display| {
-        person_layout::reachable(network, display)
+        (display.local || target.is_none_or(|target| display.device == target.as_str()))
+            && person_layout::reachable(network, display)
     });
     Some(match plan {
         MotionPlan::Local => SpatialMotion::Local,
@@ -7002,7 +7015,7 @@ fn forward_spatial_window_event(
     if let Some(consumed) = finish_nearby_drop(event, network, active) {
         return consumed;
     }
-    let Some(session) = active.as_ref() else {
+    let Some(_) = active.as_ref() else {
         return false;
     };
     if let WindowEvent::KeyboardInput { event, .. } = event
@@ -7012,7 +7025,6 @@ fn forward_spatial_window_event(
         end_spatial_control(network, active);
         return true;
     }
-    let target = session.target.clone();
     let fabric_event = match event {
         WindowEvent::CursorMoved { .. } => return true,
         WindowEvent::MouseInput { state, button, .. } => {
@@ -7058,6 +7070,29 @@ fn forward_spatial_window_event(
         }
         _ => return false,
     };
+    let _ = send_spatial_fabric_event(fabric_event, network, active);
+    true
+}
+
+pub(crate) fn spatial_control_is_current(
+    network: &crate::shell::network::ShellNetwork,
+    active: Option<&SpatialControlSession>,
+) -> bool {
+    active.is_some_and(|control| {
+        crate::shell::device_fabric_runtime::spatial_pointer_lease(network, &control.target)
+            .is_some_and(|lease| lease.nonce == control.lease_nonce)
+    })
+}
+
+pub(crate) fn send_spatial_fabric_event(
+    fabric_event: crate::shell::device_fabric::FabricInputEvent,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+) -> bool {
+    let Some(session) = active.as_ref() else {
+        return false;
+    };
+    let target = session.target.clone();
     if crate::shell::device_fabric_runtime::send_spatial_input_bound(
         network,
         &target,
@@ -7089,7 +7124,7 @@ fn forward_spatial_window_event(
             | crate::shell::device_fabric::FabricInputEvent::Scroll { .. } => {}
         }
     }
-    true
+    active.is_some()
 }
 
 fn is_power_key(event: &WindowEvent) -> bool {
@@ -7478,6 +7513,7 @@ fn install_device_fabric_bridge(
             {
                 return Ok(view.clone());
             }
+            let mut input_control_receipt = None;
             match action {
                 DeviceFabricUiAction::MoveDisplay(request) => {
                     crate::shell::device_fabric_runtime::move_device_display(
@@ -7753,6 +7789,28 @@ fn install_device_fabric_bridge(
                         &controller,
                     )?;
                 }
+                DeviceFabricUiAction::GrantControlBounded { controller } => {
+                    let lease = crate::shell::device_fabric_runtime::grant_input_control_bounded(
+                        &fabric_net,
+                        &controller,
+                    )?;
+                    input_control_receipt = Some(
+                        crate::shell::overlay_host::InputControlReceipt::Granted(lease),
+                    );
+                }
+                DeviceFabricUiAction::RevokeControlBound { controller, nonce } => {
+                    let removed = crate::shell::device_fabric_runtime::revoke_input_control_bound(
+                        &fabric_net,
+                        &controller,
+                        nonce,
+                    )?;
+                    input_control_receipt =
+                        Some(crate::shell::overlay_host::InputControlReceipt::Revoked {
+                            controller,
+                            nonce,
+                            removed,
+                        });
+                }
             }
             let audio_revision = local_audio.revision();
             let mut view = crate::shell::device_fabric_runtime::device_fabric_view(
@@ -7765,6 +7823,7 @@ fn install_device_fabric_bridge(
             view.remote_audio =
                 crate::shell::device_fabric_runtime::remote_audio_view(focus.as_ref());
             *fabric_cache.borrow_mut() = Some((Instant::now(), audio_revision, view.clone()));
+            view.input_control_receipt = input_control_receipt;
             Ok(view)
         })
     });
@@ -9662,6 +9721,29 @@ pub fn run() {
         &session,
         previous_onboarding_active,
     );
+    // Explicit host-desktop opt-in; it adds no enrollment, lease or unlock.
+    let capture_target = std::env::args().find_map(|argument| {
+        argument
+            .strip_prefix("--capture-host-input=")
+            .map(str::to_owned)
+    });
+    let host_input_capture = if backend_kind == BackendKind::Headless
+        && let Some(target) = capture_target
+    {
+        if let (Some(network), Some(lifecycle)) =
+            (peer_sync.as_ref(), local_session_lifecycle.as_ref())
+        {
+            crate::compositor::gnome_input_capture::start(Arc::clone(network), lifecycle, &target)
+                .map_err(|error| tracing::warn!(%error, "host input capture unavailable"))
+                .ok()
+        } else {
+            tracing::warn!("host input capture needs normal session networking and lifecycle");
+            None
+        }
+    } else {
+        None
+    };
+
     // Session-lock unlock: input + auth state machine. Verifier is the fixed
     // test password (`TILO_LOCK_TEST_PASSWORD`) or real greetd/PAM; fail-closed otherwise.
     let mut lock = LockController::new(
@@ -12065,6 +12147,9 @@ pub fn run() {
                     notif_bridge.clone(),
                 )
             });
+            if let Some(host) = host_input_capture.as_ref() {
+                runtime.set_host_display_observer(host.display_observer());
+            }
             if let Some(adapter) = realtime_fabric_bridge
                 .as_ref()
                 .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::adapter)
@@ -13028,6 +13113,7 @@ pub fn run() {
                 FramePaint::full(lock_scene)
             } else {
                 let mut frame_paint = if retained_damage_supported {
+                    frame_builder.set_retained_layer_width(backend.retained_layer_width());
                     frame_builder.paint_with_damage()
                 } else {
                     let scene = frame_builder.paint();

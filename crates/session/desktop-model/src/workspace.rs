@@ -224,6 +224,7 @@ pub fn governance_resource_id(room: &RoomId) -> String {
 pub fn role_id(role: Role) -> &'static str {
     match role {
         Role::Owner => "owner",
+        Role::Moderator => "moderator",
         Role::Editor => "editor",
         Role::Commenter => "commenter",
         Role::Viewer => "viewer",

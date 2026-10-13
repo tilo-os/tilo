@@ -160,6 +160,8 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "agent-work",
     "agent-task",
     "agent-task-compact",
+    "agent-task-queued",
+    "agent-task-queued-compact",
     "narrow",
     "history",
     "compact",
@@ -231,7 +233,7 @@ impl ResourceApp for ChatShell {
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
-            Some("agent-task-compact") => (420, 680),
+            Some("agent-task-compact" | "agent-task-queued-compact") => (420, 680),
             _ => (1280, 800),
         }
     }
@@ -419,11 +421,34 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
     }
 
     fn effect(&mut self, effect: ChatEffect, cx: &mut EffectCx<Chat, Self>) -> EffectAnswer {
+        if matches!(effect, ChatEffect::LiveContextStatus) {
+            let basis = cx.locus_basis()?;
+            let ui::framework::Effected::Done(mut output) = self.answer_effect(effect)? else {
+                return Err("Context observation did not finish".into());
+            };
+            if let Some(basis) = basis
+                && let Some(value) = output
+                    .value
+                    .as_mut()
+                    .and_then(serde_json::Value::as_object_mut)
+            {
+                value.insert(
+                    "nativeView".into(),
+                    serde_json::json!({
+                        "instance": basis.instance(),
+                        "room": basis.route().cluster_id.to_string(),
+                        "record": basis.route().record.as_deref().unwrap_or(""),
+                    }),
+                );
+            }
+            return Ok(ui::framework::Effected::Done(output));
+        }
         if matches!(
             effect,
             ChatEffect::CopyResourceLink { .. } | ChatEffect::OpenResourceLink { .. }
         ) {
-            return self.begin_resource_navigation(&effect, cx.reply());
+            let source = cx.live().clone();
+            return self.begin_resource_navigation(&effect, cx.reply(), source);
         }
         if let Some(url) = crate::external::browser_destination(&effect)? {
             return Ok(cx.thread(

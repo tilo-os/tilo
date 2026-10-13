@@ -1,8 +1,42 @@
 use super::*;
 use crate::network::HostIdentity;
+use crate::network::NetCmd;
 use crate::network::actor::native_ingress::NOT_CONNECTED;
 use crate::shell::native_workspace_owner::test_enrolled_owner;
 use crate::shell::state::RoomId;
+
+#[tokio::test]
+async fn pending_voice_binding_is_reobserved_but_authority_refusals_are_final() {
+    let (_directory, owner, room, _, _) = test_enrolled_owner();
+    let (commands, mut requests) = tokio::sync::mpsc::channel(1);
+    let actor = tokio::spawn(async move {
+        for result in [
+            Ok(Reply::BindingPending),
+            Err("current member denied".into()),
+        ] {
+            let Some(NetCmd::NativeMedia(command)) = requests.recv().await else {
+                panic!("the production open operation was not observed");
+            };
+            assert!(matches!(command.operation, Operation::Open { .. }));
+            assert!(command.reply.send(result).is_ok());
+        }
+        assert!(requests.try_recv().is_err());
+    });
+    let target = CallTarget {
+        workspace: room.to_string(),
+        app: "so.tilo.chat".into(),
+        record: String::new(),
+        channel: "voice".into(),
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        session::open_ticket(&commands, &owner, &target),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(result, Err(error) if error == "current member denied"));
+    actor.await.unwrap();
+}
 
 fn identity_for(
     owner: &NativeWorkspaceOwner,

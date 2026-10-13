@@ -688,6 +688,7 @@ fn a_running_invocation_sends_one_waiting_observe_not_a_poll() {
             [CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(InvokeRequest {
                     wait_ms: Some(INVOKE_WAIT_MS),
+                    appearance: None,
                     ..
                 }),
             }]

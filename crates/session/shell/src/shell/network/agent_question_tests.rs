@@ -72,6 +72,7 @@ fn clear_history() -> InvokeRequest {
         revision: None,
         on_behalf_of: None,
         wait_ms: None,
+        appearance: None,
     }
 }
 

@@ -530,7 +530,7 @@ impl Session {
         }
     }
 
-    /// The task catalogue — every live broker offer an unattended task may
+    /// The task catalogue — every broker route an unattended task may
     /// invoke — rebuilt only when the broker republished it, and shared
     /// rather than copied between rebuilds.
     pub(super) fn task_catalogue(&mut self) -> std::sync::Arc<surface::Catalogue> {
@@ -542,7 +542,7 @@ impl Session {
         let offers = surface::broker_offers(&self.broker_surfaces)
             .into_iter()
             .filter(|offer| {
-                offer.broker_peer_id.is_some()
+                (offer.broker_peer_id.is_some() || offer.broker_provider.is_some())
                     // The agent's own AI transforms are not task steps.
                     && !crate::transform::is_transform_kind(&offer.descriptor.resource_kind)
                     && matches!(
@@ -2155,6 +2155,7 @@ mod tests {
             let mut surfaces = vec![
                 BrokerActionSurface {
                     peer_id: PEER,
+                    provider: None,
                     app_id: "so.tilo.word-processor".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: "doc-1".into(),
@@ -2223,6 +2224,7 @@ mod tests {
                 },
                 BrokerActionSurface {
                     peer_id: CHAT_PEER,
+                    provider: None,
                     app_id: "so.tilo.chat".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: String::new(),
@@ -2270,6 +2272,7 @@ mod tests {
                 };
                 surfaces.push(BrokerActionSurface {
                     peer_id: DESKTOP_PEER,
+                    provider: None,
                     app_id: "so.tilo.desktop".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: String::new(),
@@ -2892,12 +2895,8 @@ mod tests {
                 cluster: Uuid::from_u128(1),
                 record: None,
                 name: "agent-1".into(),
-                pace: Duration::ZERO,
-                once: false,
                 model: true,
                 model_timeout: Duration::from_secs(5),
-                await_document: Duration::ZERO,
-                settle: Duration::ZERO,
                 permissions: ui::permissions::PermissionContext::agent_granted_at(
                     "agent-1",
                     &[],
