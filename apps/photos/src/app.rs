@@ -4415,7 +4415,7 @@ impl PhotosApp {
                     .mimetype("image/png")
                     .mimetype("image/jpeg")
                     .mimetype("image/webp");
-                if crate::files::native_paths() {
+                if tilo_files::available(tilo_files::Feature::NativePaths) {
                     self.picker = Some(
                         ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
                             .thread_name("photos-portal-open")
@@ -7116,8 +7116,8 @@ impl PhotosApp {
             control.bounds = Rect::ZERO;
         }
 
+        let mut y = frame.y0;
         if self.people_selection.is_none() {
-            let mut y = frame.y0;
             layout.recognition_heading = Some(Point::new(frame.x0, y));
             y += heading + related;
             layout.recognition_text = Rect::new(frame.x0, y, frame.x1, y + body);
@@ -7231,7 +7231,6 @@ impl PhotosApp {
             layout.lanes = viewport;
             layout.lanes_content = content_h;
         } else {
-            let mut y = frame.y0;
             let gap = f64::from(rhythm.related);
             let side = ((frame.width() - 3.0 * gap) / 4.0)
                 .min(ui::widget::MediaSize::Small.extent(theme))

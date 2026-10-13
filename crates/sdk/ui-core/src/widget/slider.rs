@@ -739,9 +739,7 @@ impl Widget for Slider {
         self.rect == Rect::ZERO
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -855,10 +853,6 @@ impl Widget for Slider {
 
     fn test_id(&self) -> Option<&str> {
         Some(self.id_override.as_deref().unwrap_or("slider"))
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_focusable(&self) -> bool {
@@ -1028,8 +1022,10 @@ mod tests {
                 > rect.height()
         );
         host.verify_retained_geometry().unwrap();
+        let nodes = host.layout_node_ids();
         host.resize((640, 120)).unwrap();
-        assert!(host.last_relayout().rebuilt);
+        assert!(!host.last_relayout().rebuilt && host.last_relayout().measured);
+        assert_eq!(host.layout_node_ids(), nodes, "resize keeps the tree");
         assert!(
             host.targets()
                 .get("slider")

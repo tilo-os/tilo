@@ -828,14 +828,15 @@ impl Daemon {
         let path = self.lease_path();
         let now = tilo_clock::unix_now();
         let (lease, write) = awake::renewal(awake::read(&path), now, change);
-        let mut problem = None;
-        if write
+        let mut problem = if write
             && let Err(error) = serde_json::to_vec(&lease)
                 .map_err(|e| DaemonError::InvalidParams(e.to_string()))
                 .and_then(|bytes| crate::fsutil::write_atomic(&path, &bytes))
         {
-            problem = Some(error.to_string());
-        }
+            Some(error.to_string())
+        } else {
+            None
+        };
         let applied = if lease.active(now) {
             self.apply.hold_awake(&path)
         } else {

@@ -1524,8 +1524,8 @@ impl Widget for Scrollable {
         node: NodeId,
         _text: &mut TextRenderer,
     ) -> bool {
-        let mut changed = false;
-        if self.height_limit_dirty {
+        let mut changed = self.height_limit_dirty;
+        if changed {
             let Ok(mut style) = taffy.style(node).cloned() else {
                 return false;
             };
@@ -1539,7 +1539,6 @@ impl Widget for Scrollable {
                 return false;
             }
             self.height_limit_dirty = false;
-            changed = true;
         }
         let Ok(layout) = taffy.layout(node).copied() else {
             return changed;

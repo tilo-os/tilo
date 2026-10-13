@@ -454,10 +454,11 @@ fn render_image(
 /// Compose the attribute string for a block element: the resolved style
 /// class plus a best-effort `text-align` from an `align` attr.
 fn block_attrs(block: &BlockView) -> String {
-    let mut class = None;
-    if let Some(AttrVal::Str(sid)) = block.attrs.get("style") {
-        class = Some(style_class(sid));
-    }
+    let class = if let Some(AttrVal::Str(sid)) = block.attrs.get("style") {
+        Some(style_class(sid))
+    } else {
+        None
+    };
     let mut style = String::new();
     if let Some(AttrVal::Str(a)) = block.attrs.get("align") {
         let _ = write!(style, "text-align: {};", css_value(a));

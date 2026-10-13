@@ -2661,12 +2661,10 @@ impl BlockEditor {
         // fresh trailing paragraph) so the user can keep typing.
         if is_divider && self.focused == Some(idx) {
             let next_idx = idx.saturating_add(1);
-            if next_idx < self.blocks.len() {
-                self.focus_block(next_idx, CursorPlacement::Start);
-            } else {
+            if next_idx >= self.blocks.len() {
                 self.blocks.push(Block::paragraph(""));
-                self.focus_block(next_idx, CursorPlacement::Start);
             }
+            self.focus_block(next_idx, CursorPlacement::Start);
         }
         true
     }
@@ -8543,19 +8541,20 @@ impl Widget for BlockEditor {
                     .text_renderer
                     .measure(b.text(), b.kind.font_size(), Some(line_rect.width() as f32))
                     .0;
-                let mut bounds = Rect::new(
-                    line_rect.x0 - 24.0,
-                    line_rect.y0 - 4.0,
-                    (line_rect.x0 + f64::from(text_width) + 24.0).min(line_rect.x1 + 8.0),
-                    line_rect.y1 + 4.0,
-                );
-                if let Some(Some(painted)) = paint_rects.get(idx)
+                let bounds = if let Some(Some(painted)) = paint_rects.get(idx)
                     && (*painted != line_rect
                         || matches!(b.kind, BlockKind::Quote)
                         || transclusion_target(b).is_some())
                 {
-                    bounds = painted.inflate(4.0, 4.0);
-                }
+                    painted.inflate(4.0, 4.0)
+                } else {
+                    Rect::new(
+                        line_rect.x0 - 24.0,
+                        line_rect.y0 - 4.0,
+                        (line_rect.x0 + f64::from(text_width) + 24.0).min(line_rect.x1 + 8.0),
+                        line_rect.y1 + 4.0,
+                    )
+                };
                 ctx.scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),

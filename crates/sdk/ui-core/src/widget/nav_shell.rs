@@ -2488,10 +2488,9 @@ impl NavShell {
     }
 
     fn take_requests(&mut self) -> bool {
-        let mut acted = false;
-        if self.requests.toggle.replace(false) {
+        let mut acted = self.requests.toggle.replace(false);
+        if acted {
             self.toggle_sidebar();
-            acted = true;
         }
         if self.requests.back.replace(false) {
             acted |= self.back();

@@ -19,7 +19,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
+    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
 };
 
 #[derive(Clone, Debug)]
@@ -116,11 +116,8 @@ pub struct CandlestickChart {
     title: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
-    hovered: Option<usize>,
+    inspection: ChartInspection<usize>,
     activated: Option<String>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
 }
 
 impl CandlestickChart {
@@ -131,11 +128,8 @@ impl CandlestickChart {
             title: String::new(),
             height: 380.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
+            inspection: ChartInspection::default(),
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
         }
     }
 
@@ -158,21 +152,20 @@ impl CandlestickChart {
         self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.hovered = self
+        self.inspection.hovered = self
             .candles
             .iter()
             .position(|candle| candle.id == id && candle.valid());
-        self.keyboard_inspection = self.hovered.is_some();
-        if let Some(index) = self.hovered
+        self.inspection.keyboard = self.inspection.hovered.is_some();
+        if let Some(index) = self.inspection.hovered
             && let Some(candle) = self.candles.get(index)
         {
-            self.pointer = Point::new(self.center_x(index), self.price_y(candle.close));
+            self.inspection.pointer = Point::new(self.center_x(index), self.price_y(candle.close));
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
 
     fn price_rect(&self) -> Rect {
@@ -247,7 +240,7 @@ impl CandlestickChart {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(index) = self.hovered.filter(|_| self.style.tooltip) else {
+        let Some(index) = self.inspection.hovered.filter(|_| self.style.tooltip) else {
             return;
         };
         let Some(candle) = self.candles.get(index) else {
@@ -292,13 +285,13 @@ impl CandlestickChart {
         };
         let (detail_width, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
         let width = f64::from(detail_width).max(236.0) + 28.0;
-        let mut x = self.pointer.x + 16.0;
-        let mut y = self.pointer.y + 16.0;
+        let mut x = self.inspection.pointer.x + 16.0;
+        let mut y = self.inspection.pointer.y + 16.0;
         if x + width > self.rect.x1 {
-            x = self.pointer.x - width - 16.0;
+            x = self.inspection.pointer.x - width - 16.0;
         }
         if y + 72.0 > self.rect.y1 {
-            y = self.pointer.y - 82.0;
+            y = self.inspection.pointer.y - 82.0;
         }
         let tooltip = Rect::new(x, y, x + width, y + 70.0);
         scene.fill(
@@ -330,42 +323,41 @@ impl CandlestickChart {
 }
 
 impl InteractiveChart for CandlestickChart {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = usize;
+    fn inspection(&mut self) -> &mut ChartInspection<usize> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
-        let inside = self.price_rect().contains(self.pointer)
+        let inside = self.price_rect().contains(self.inspection.pointer)
             || self
                 .volume_rect()
-                .is_some_and(|rect| rect.contains(self.pointer));
+                .is_some_and(|rect| rect.contains(self.inspection.pointer));
         if !inside {
-            self.hovered = None;
+            self.inspection.hovered = None;
             return;
         }
         let slot = self.slot_width();
-        self.hovered = self
+        self.inspection.hovered = self
             .candles
             .iter()
             .enumerate()
             .filter(|(_, candle)| candle.valid())
             .min_by(|(left, _), (right, _)| {
-                (self.center_x(*left) - self.pointer.x)
+                (self.center_x(*left) - self.inspection.pointer.x)
                     .abs()
-                    .total_cmp(&(self.center_x(*right) - self.pointer.x).abs())
+                    .total_cmp(&(self.center_x(*right) - self.inspection.pointer.x).abs())
             })
             .and_then(|(index, _)| {
-                ((self.center_x(index) - self.pointer.x).abs() <= slot / 2.0).then_some(index)
+                ((self.center_x(index) - self.inspection.pointer.x).abs() <= slot / 2.0)
+                    .then_some(index)
             });
     }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
-    }
     fn activate_hovered(&mut self) -> bool {
-        let Some(candle) = self.hovered.and_then(|index| self.candles.get(index)) else {
+        let Some(candle) = self
+            .inspection
+            .hovered
+            .and_then(|index| self.candles.get(index))
+        else {
             return false;
         };
         self.activated = Some(candle.id.clone());
@@ -379,13 +371,13 @@ impl InteractiveChart for CandlestickChart {
             .filter(|(_, candle)| candle.valid())
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        self.hovered = moved_item(self.hovered, &candidates, action);
-        if let Some(index) = self.hovered
+        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
+        if let Some(index) = self.inspection.hovered
             && let Some(candle) = self.candles.get(index)
         {
-            self.pointer = Point::new(self.center_x(index), self.price_y(candle.close));
+            self.inspection.pointer = Point::new(self.center_x(index), self.price_y(candle.close));
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
@@ -406,11 +398,11 @@ impl Widget for CandlestickChart {
     ) {
         let price = self.price_rect();
         let (min, max) = self.price_range();
-        if self.keyboard_inspection
-            && let Some(index) = self.hovered
+        if self.inspection.keyboard
+            && let Some(index) = self.inspection.hovered
             && let Some(candle) = self.candles.get(index)
         {
-            self.pointer = Point::new(self.center_x(index), self.price_y(candle.close));
+            self.inspection.pointer = Point::new(self.center_x(index), self.price_y(candle.close));
         }
         if !self.title.is_empty() {
             tr.draw_style(
@@ -488,7 +480,7 @@ impl Widget for CandlestickChart {
                 None,
                 &RoundedRect::from_rect(body, 2.0),
             );
-            if self.hovered == Some(index) {
+            if self.inspection.hovered == Some(index) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,

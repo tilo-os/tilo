@@ -1529,7 +1529,7 @@ mod tests {
     /// Search queries stay local and reach the field.
     #[test]
     fn search_query_is_local_and_reaches_the_field() {
-        // Case `search_query_is_local_and_flags_rebuild`.
+        // A local query narrows the retained navigation without recomposing the pane.
         {
             use automerge::ReadDoc;
             let config = crate::prefs::test_env::ScratchConfig::new();
@@ -1544,9 +1544,20 @@ mod tests {
             app.sync(&doc, &root);
             assert_eq!(app.search_query(), "night light");
             assert!(
-                app.take_structure_dirty(),
-                "a new query must flag a rebuild so the filtered sidebar recomposes"
+                !app.take_structure_dirty(),
+                "a new query filters navigation in place without rebuilding the pane"
             );
+            let nav = app
+                .shell
+                .as_mut()
+                .and_then(NavShell::sidebar_mut::<ui::widget::NavList>)
+                .expect("the actual sidebar is mounted");
+            assert_eq!(nav.filter(), "night light");
+            let filtered = nav.visible_item_ids();
+            nav.set_filter("");
+            assert!(nav.visible_item_ids().len() > filtered.len());
+            nav.set_filter("night light");
+            assert_eq!(nav.visible_item_ids(), filtered);
             // Re-syncing the same query is a no-op (no spurious rebuild).
             app.sync(&doc, &root);
             assert!(!app.take_structure_dirty());

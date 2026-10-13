@@ -315,9 +315,7 @@ impl Widget for TimeZoneMap {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -470,10 +468,6 @@ impl Widget for TimeZoneMap {
 
     fn test_id(&self) -> Option<&str> {
         Some("time.timezone-map")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

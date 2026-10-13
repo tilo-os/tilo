@@ -2403,12 +2403,12 @@ impl EditorView {
     /// F12 (go to definition) and F1 (hover — instant for an on-caret
     /// diagnostic, plus an LSP request). Returns `true` when consumed.
     fn handle_lsp_trigger_keys(&mut self, logical_key: &Key, handled: &mut bool) -> bool {
-        if let Key::Named(NamedKey::F12) = logical_key {
+        if matches!(logical_key, Key::Named(NamedKey::F12)) {
             self.lsp_ask = Some(LspAsk::Definition);
             *handled = true;
             return true;
         }
-        if let Key::Named(NamedKey::F1) = logical_key {
+        if matches!(logical_key, Key::Named(NamedKey::F1)) {
             // Instant, server-free hover: if the caret sits on a diagnostic,
             // show its message immediately. Also ask the LSP for a richer
             // hover (which supersedes this when it arrives).
@@ -2658,9 +2658,7 @@ impl Widget for EditorView {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -2806,10 +2804,6 @@ impl Widget for EditorView {
                         .multiline(true),
                 ),
         )
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

@@ -1013,24 +1013,15 @@ impl AccountsPane {
                         .unwrap_or_default()
                         .into(),
                 );
-                self.form_user.set(
-                    stored
-                        .config
-                        .get("username")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .into(),
-                );
-            } else {
-                self.form_user.set(
-                    stored
-                        .config
-                        .get("username")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .into(),
-                );
             }
+            self.form_user.set(
+                stored
+                    .config
+                    .get("username")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .into(),
+            );
             let server = stored
                 .config
                 .get(if kind == AccountKind::WebDav {

@@ -347,14 +347,15 @@ impl Credentials {
     }
 
     pub fn sync(&mut self, engine: &SharedEngine) -> bool {
-        let mut dirty = false;
-        if let Some(addresses) = self.opening.get() {
+        let mut dirty = if let Some(addresses) = self.opening.get() {
             self.opening.set(None);
             self.address_mode = addresses;
             let requests = self.open(engine.supports_native_filtering());
             Self::send(engine, requests);
-            dirty = true;
-        }
+            true
+        } else {
+            false
+        };
         if let Some(action) = self.action.get() {
             self.action.set(None);
             dirty = true;
