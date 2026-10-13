@@ -2698,6 +2698,17 @@ mod tests {
             TEXT_MIME,
             b"x11".to_vec(),
         );
+        assert!(
+            !adopt_complete_client_selection(&s, 999),
+            "the offered text alias is still being pulled"
+        );
+        record_client_bytes(
+            &s,
+            Target::Clipboard,
+            generation,
+            "UTF8_STRING",
+            b"x11".to_vec(),
+        );
         assert!(adopt_complete_client_selection(&s, 1_000));
         assert!(
             !offered(&s)

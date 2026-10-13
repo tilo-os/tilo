@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX};
@@ -147,9 +147,7 @@ impl Widget for IconWidget {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -169,10 +167,6 @@ impl Widget for IconWidget {
 
     fn name(&self) -> &'static str {
         "IconWidget"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     /// A leaf sized by the theme: layout is settled once the first

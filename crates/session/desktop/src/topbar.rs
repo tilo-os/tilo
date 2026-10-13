@@ -5066,7 +5066,7 @@ impl TopBarChrome {
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) -> bool {
-        if let WindowEvent::Focused(false) = event {
+        if matches!(event, WindowEvent::Focused(false)) {
             self.set_focus(false);
         }
         if let WindowEvent::KeyboardInput { event: key, .. } = event

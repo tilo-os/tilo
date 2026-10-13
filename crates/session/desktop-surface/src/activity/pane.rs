@@ -3448,8 +3448,8 @@ impl RoomActivityPane {
                 .clone()
                 .with_weight(ui::text_render::TextWeight::Medium),
         );
+        let width = text_width(bounds.width() - 24.0);
         if let Some(detail) = self.selection_detail() {
-            let width = text_width(bounds.width() - 24.0);
             if let Some(indexed) = self.selected_agent_run().cloned() {
                 self.draw_agent_task_detail(scene, transform, tr, theme, bounds, width, &indexed);
                 return;
@@ -3503,7 +3503,6 @@ impl RoomActivityPane {
                 actions_bottom + 14.0,
             );
         } else {
-            let width = text_width(bounds.width() - 24.0);
             tr.draw_style(
                 scene,
                 &t("activity-select-prompt"),

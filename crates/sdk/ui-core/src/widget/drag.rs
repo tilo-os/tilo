@@ -225,10 +225,9 @@ impl<Id: Clone> DragController<Id> {
             return false;
         };
         s.current = cursor;
-        let mut changed = false;
-        if !s.active && s.start.distance(cursor) >= threshold {
+        let mut changed = !s.active && s.start.distance(cursor) >= threshold;
+        if changed {
             s.active = true;
-            changed = true;
         }
         if s.active {
             let to = target_for(axis, s, metrics);

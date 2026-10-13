@@ -335,9 +335,7 @@ impl Widget for ActionButton {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -496,10 +494,6 @@ impl Widget for ActionButton {
 
     fn test_id(&self) -> Option<&str> {
         Some(self.test_id.as_deref().unwrap_or(self.label.as_str()))
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_focusable(&self) -> bool {

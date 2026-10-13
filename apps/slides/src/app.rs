@@ -2664,9 +2664,7 @@ impl Widget for SlidesApp {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -3141,10 +3139,6 @@ impl Widget for SlidesApp {
         } else {
             false
         }
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -3701,16 +3695,16 @@ impl SlidesApp {
         // (outside both panels) closes whichever flap is open — like tapping the
         // scrim in Adwaita's flap.
         if chrome.scrim.contains(p) && !chrome.rail.contains(p) && !chrome.inspector.contains(p) {
-            let mut dismissed = false;
-            if chrome.layout == SplitLayout::Overlay && self.rail_open() {
+            let rail = chrome.layout == SplitLayout::Overlay && self.rail_open();
+            let inspector =
+                chrome.inspector_layout == SplitLayout::Overlay && self.inspector_open();
+            if rail {
                 self.rail_drawer.close();
-                dismissed = true;
             }
-            if chrome.inspector_layout == SplitLayout::Overlay && self.inspector_open() {
+            if inspector {
                 self.inspector_drawer.close();
-                dismissed = true;
             }
-            if dismissed {
+            if rail || inspector {
                 *handled = true;
                 return;
             }
@@ -3842,13 +3836,12 @@ impl SlidesApp {
                     };
                 }
             }
-            *handled = true;
         } else {
             self.sel = None;
             self.editing_text = false;
             self.last_click = None;
-            *handled = true;
         }
+        *handled = true;
     }
 
     /// Hit-test the canvas elements front-to-back at screen point `p`.
@@ -4258,16 +4251,16 @@ impl SlidesApp {
             && !self.editing_notes
             && matches!(key, Key::Named(NamedKey::Escape))
         {
-            let mut dismissed = false;
-            if self.rail_layout() == SplitLayout::Overlay && self.rail_open() {
+            let rail = self.rail_layout() == SplitLayout::Overlay && self.rail_open();
+            let inspector =
+                self.inspector_layout() == SplitLayout::Overlay && self.inspector_open();
+            if rail {
                 self.rail_drawer.close();
-                dismissed = true;
             }
-            if self.inspector_layout() == SplitLayout::Overlay && self.inspector_open() {
+            if inspector {
                 self.inspector_drawer.close();
-                dismissed = true;
             }
-            if dismissed {
+            if rail || inspector {
                 *handled = true;
                 return;
             }

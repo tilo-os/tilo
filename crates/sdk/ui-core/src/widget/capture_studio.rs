@@ -4761,9 +4761,7 @@ impl Widget for CaptureStudio {
         map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
         n
     }
-    fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, o: Point) {
-        self.rect = crate::widget::layout_rect(t, n, o);
-    }
+    crate::rect_geometry!();
     fn draw(
         &mut self,
         s: &mut Scene,
@@ -5546,9 +5544,6 @@ impl Widget for CaptureStudio {
     }
     fn test_id(&self) -> Option<&str> {
         Some("shell.capture-studio")
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
     fn modal_capture(&self) -> Option<Rect> {
         (self.open

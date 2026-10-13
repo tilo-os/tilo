@@ -2035,18 +2035,12 @@ mod witness;
 pub use local_action_host::CertifiedPersonContext;
 
 pub use launchable::launchable_provider;
-#[path = "desktop_commands.rs"]
-mod desktop_commands;
-#[path = "document_imports.rs"]
-mod document_imports;
 #[path = "peer_action_broker.rs"]
 mod peer_action_broker;
 #[path = "policy_context.rs"]
 mod policy_context;
 #[path = "room_service.rs"]
 mod room_service;
-#[path = "workspace_collaboration.rs"]
-mod workspace_collaboration;
 
 impl CapnpBrokerState {
     fn registered_policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
@@ -3293,8 +3287,6 @@ pub struct CapnpBrokerState {
     admission_lock: Mutex<()>,
     journal: Mutex<Result<Option<InvocationJournal>, String>>,
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
-    /// The broker's own desktop command surface (not an app connection).
-    desktop_command_peer: Mutex<Option<u64>>,
     /// Broker-owned governed membership surface per native room.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
@@ -4084,7 +4076,6 @@ impl CapnpBrokerState {
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
-                desktop_command_peer: Mutex::new(None),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 checkpoint_jobs: Mutex::new(HashMap::new()),
@@ -7597,15 +7588,19 @@ impl CapnpBrokerState {
         // Sampled before anything is read: an expiry between this sample
         // and a read is registered as well, so none is skipped.
         let before = self.policy_now_ns();
-        let mut clocked = false;
-        if let Err(error) = self.refresh_workspace_membership_services() {
-            tracing::debug!(%error, "native membership surface could not be refreshed");
-            clocked = true;
-        }
-        if let Err(error) = self.refresh_workspace_context_services() {
-            tracing::debug!(%error, "native membership context could not be refreshed");
-            clocked = true;
-        }
+        let surface_failed = self
+            .refresh_workspace_membership_services()
+            .inspect_err(|error| {
+                tracing::debug!(%error, "native membership surface could not be refreshed");
+            })
+            .is_err();
+        let context_failed = self
+            .refresh_workspace_context_services()
+            .inspect_err(|error| {
+                tracing::debug!(%error, "native membership context could not be refreshed");
+            })
+            .is_err();
+        let clocked = surface_failed || context_failed;
         let announced = self
             .membership
             .as_ref()
@@ -12863,24 +12858,6 @@ async fn serve_broker_thread(
     socket_path_for_thread: PathBuf,
     quit: Arc<AtomicBool>,
 ) {
-    if let Err(error) = state.start_desktop_commands() {
-        if let Ok(mut failure) = state.owner_commit_failure.lock() {
-            failure.get_or_insert(error);
-        }
-        return;
-    }
-    if let Err(error) = state.start_document_imports() {
-        if let Ok(mut failure) = state.owner_commit_failure.lock() {
-            failure.get_or_insert(error);
-        }
-        return;
-    }
-    if let Err(error) = state.start_workspace_collaboration() {
-        if let Ok(mut failure) = state.owner_commit_failure.lock() {
-            failure.get_or_insert(error);
-        }
-        return;
-    }
     state.start_peer_action_bridge(Rc::clone(&directories));
     let listener = match tokio::net::UnixListener::from_std(std_listener) {
         Ok(l) => l,
