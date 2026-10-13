@@ -69,12 +69,10 @@ pub fn may_drop(old: &RegistryVersion, remaining: &[RegistryVersion]) -> bool {
     newer_in_group(old, remaining) >= MIN_RETAINED_PER_CHANNEL
 }
 
-/// Same target and channel.
+/// Same version group (target, or bot) and channel.
 #[must_use]
 pub fn same_group(left: &RegistryVersion, right: &RegistryVersion) -> bool {
-    left.target.platform == right.target.platform
-        && left.target.architecture == right.target.architecture
-        && is_prerelease(left) == is_prerelease(right)
+    left.group() == right.group() && is_prerelease(left) == is_prerelease(right)
 }
 
 fn is_prerelease(version: &RegistryVersion) -> bool {
@@ -94,30 +92,32 @@ fn newer_in_group(version: &RegistryVersion, versions: &[RegistryVersion]) -> us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RegistryTarget;
+    use crate::{RegistryTarget, TappArtifact, VersionArtifact};
 
     fn version(value: &str, architecture: &str) -> RegistryVersion {
         RegistryVersion {
             version: value.into(),
-            tapp_url: String::new(),
-            tapp_root_hash_hex: String::new(),
-            tapp_size_bytes: 0,
             released_at_unix: 0,
-            tapp_blake3_hex: String::new(),
-            target: RegistryTarget {
-                platform: crate::TILO_OS_PLATFORM.into(),
-                architecture: architecture.into(),
-                isa: String::new(),
-                runtime: None,
-                interfaces: Vec::new(),
-            },
+            artifact: VersionArtifact::Tapp(TappArtifact {
+                tapp_url: String::new(),
+                tapp_root_hash_hex: String::new(),
+                tapp_size_bytes: 0,
+                tapp_blake3_hex: String::new(),
+                target: RegistryTarget {
+                    platform: crate::TILO_OS_PLATFORM.into(),
+                    architecture: architecture.into(),
+                    isa: String::new(),
+                    runtime: None,
+                    interfaces: Vec::new(),
+                },
+            }),
         }
     }
 
     fn names(versions: &[RegistryVersion]) -> Vec<String> {
         versions
             .iter()
-            .map(|v| format!("{}/{}", v.version, v.target.architecture))
+            .map(|v| format!("{}/{}", v.version, v.tapp().unwrap().target.architecture))
             .collect()
     }
 

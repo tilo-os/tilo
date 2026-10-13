@@ -38,6 +38,10 @@ pub struct CheckError {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CheckErrorKind {
+    #[error("a bot's grant names `{0}`, which none of its steps or triggers use")]
+    UnusedRule(String),
+    #[error("a bot's grant leaves out `{0}`, which its steps or triggers need")]
+    MissingRule(String),
     #[error("{what} `{value}` must be non-empty ASCII letters, digits, `-` or `_`")]
     InvalidName { what: &'static str, value: String },
     #[error("the shortcut needs a name")]
@@ -107,6 +111,42 @@ impl ShortcutResolver for NoShortcuts {
 impl<F: Fn(&str) -> Option<Shortcut>> ShortcutResolver for F {
     fn shortcut(&self, id: &str) -> Option<Shortcut> {
         self(id)
+    }
+}
+
+/// The checks a bot program passes on top of [`check`]: its grant is exactly
+/// what its steps and triggers derive against `catalog`, no more and no
+/// less. A person's Shortcut may carry a hand-widened grant; a bot acts
+/// unattended under its own identity, so nobody may hand it more than its
+/// program shows.
+///
+/// # Errors
+/// Every structural error, then every unused and every missing rule.
+pub fn check_bot(shortcut: &Shortcut, catalog: &ActionCatalog) -> Result<(), Vec<CheckError>> {
+    let mut errors = check(shortcut, catalog, &NoShortcuts)
+        .err()
+        .unwrap_or_default();
+    let derived = crate::grant::derived_rules(shortcut, catalog);
+    for rule in &shortcut.grant {
+        if !derived.contains(rule) {
+            errors.push(CheckError {
+                path: StepPath::root(),
+                kind: CheckErrorKind::UnusedRule(rule.node.to_string()),
+            });
+        }
+    }
+    for rule in &derived {
+        if !shortcut.grant.contains(rule) {
+            errors.push(CheckError {
+                path: StepPath::root(),
+                kind: CheckErrorKind::MissingRule(rule.node.to_string()),
+            });
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
     }
 }
 
@@ -281,7 +321,13 @@ impl Checker<'_> {
                 action,
                 resource,
                 args,
-            } => self.invoke(path, scope, action, resource, args),
+                appearance,
+            } => {
+                if let Some(appearance) = appearance {
+                    self.value(appearance, scope, path);
+                }
+                self.invoke(path, scope, action, resource, args)
+            }
             StepKind::Ai { transform, input } => Some(self.ai(path, scope, transform, input)),
             StepKind::If {
                 cond,
@@ -481,6 +527,7 @@ impl Checker<'_> {
                 continue;
             };
             let fits = match binding {
+                Binding::Literal(Value::Null) if !param.required => Ok(()),
                 Binding::Literal(value) => literal_fits(value, param),
                 other => match self.value(other, scope, path) {
                     Some(ty) => assignable(&ty, param),
@@ -526,18 +573,20 @@ impl Checker<'_> {
         match binding {
             Binding::Literal(value) => Some(literal_ty(value)),
             Binding::Input(name) => {
-                let found = self.inputs.get(name).map(|param| Ty::of_param(param));
+                let (base, pointer) = Binding::named_part(name);
+                let found = self.inputs.get(base).map(|param| Ty::of_param(param));
                 if found.is_none() {
-                    self.fail(path, CheckErrorKind::UnknownInput(name.clone()));
+                    self.fail(path, CheckErrorKind::UnknownInput(base.to_owned()));
                 }
-                found
+                found.map(|ty| part_ty(ty, &pointer))
             }
             Binding::Var(name) => {
-                let found = scope.vars.get(name).cloned();
+                let (base, pointer) = Binding::named_part(name);
+                let found = scope.vars.get(base).cloned();
                 if found.is_none() {
-                    self.fail(path, CheckErrorKind::UnknownVariable(name.clone()));
+                    self.fail(path, CheckErrorKind::UnknownVariable(base.to_owned()));
                 }
-                found
+                found.map(|ty| part_ty(ty, &pointer))
             }
             Binding::StepOutput { step, pointer } => self.step_output(step, pointer, scope, path),
             Binding::Template(text) => {
@@ -775,4 +824,10 @@ fn recursion(root: &Shortcut, resolver: &impl ShortcutResolver) -> Vec<CheckErro
         }
     }
     errors
+}
+
+/// The type of the part of a `ty` value a pointer addresses: the value
+/// itself for an empty pointer, else whatever it holds there.
+fn part_ty(ty: Ty, pointer: &str) -> Ty {
+    if pointer.is_empty() { ty } else { Ty::Any }
 }

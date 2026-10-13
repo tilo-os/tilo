@@ -34,8 +34,8 @@ use ui::{LocalState, RemoteActions, TextKind};
 
 use crate::door::{self, Door, DoorCore, DoorEffect, DoorState, Loaded, Notice, RunStatus};
 use crate::editor::{self, Choice};
-use crate::grant::{self, Permission};
 use crate::model::{Draft, INPUT_TYPES, Workbench, block_at};
+use tilo_automation::grant::{self, Permission};
 
 /// The size of the controls that sit with text fields in a form. A text
 /// field is as tall as a `Large` control, so dropdowns and buttons beside or
@@ -140,6 +140,7 @@ fn shape_of(steps: &[Step], out: &mut String) {
                 action,
                 resource,
                 args,
+                ..
             } => {
                 let _ = write!(out, "{action}/{resource:?}");
                 for (name, binding) in args {
