@@ -57,7 +57,8 @@ What it starts (each piece is the production one; only TLS and origins differ):
 
 Building:
   Without --relay-bin/--room-service-bin it builds both release binaries with
-  `rcargo build` (else `cargo build`; see --cargo) and the image workflow's
+  `$CARGO build` (else `cargo build`; see --cargo, which may name any cargo
+  drop-in, such as one that builds remotely) and the image workflow's
   flags. Without --bundle it runs
   crates/browser/tilo-browser-runtime/scripts/build.sh <scratch>/bundles/<time>
   --bundle desktop, which needs a git checkout, cargo and the web toolchain
@@ -125,8 +126,8 @@ def parse_args():
     parser.add_argument('--bundle', type=pathlib.Path, help='a prebuilt desktop bundle (build.sh DIR --bundle desktop)')
     parser.add_argument('--bundle-profile', choices=['release', 'dev'], default='release',
                         help='build.sh --profile when building the bundle (default: release)')
-    parser.add_argument('--cargo', default='rcargo' if shutil.which('rcargo') else 'cargo',
-                        help='what builds the binaries (default: rcargo when installed, else cargo)')
+    parser.add_argument('--cargo', default=os.environ.get('CARGO', 'cargo'),
+                        help='what builds the binaries: cargo or any drop-in for it (default: $CARGO, else cargo)')
     parser.add_argument('--web-port', type=int, default=8080, help='the web entry (default: 8080)')
     parser.add_argument('--api-port', type=int, default=8790, help='the room API (TILO_ROOMS_API; default: 8790)')
     parser.add_argument('--port-base', type=int, default=9700,
