@@ -55,11 +55,14 @@ const WARM_THUMBNAIL_SLO: Duration = Duration::from_millis(12); // p99 5.76, p50
 /// as a seek to the end of a video asks for. Reads verify only the chunk
 /// groups they return; before, each loaded and verified the whole
 /// attachment, which the first `real-fuse` run measured at 464.5 ms.
-/// Provisional until CI runs give a p99: twice that first run, rounded up as
-/// above. The status ceiling stays above one scheduler slice, as for
-/// `IDLE_SYNC_SLO`.
+/// Provisional ceilings until CI runs give a p99. The status ceiling stays
+/// above one scheduler slice, as for `IDLE_SYNC_SLO`.
 const MEDIA_STATUS_SLO: Duration = Duration::from_millis(5); // first run 0.75
 const MEDIA_TAIL_READ_SLO: Duration = Duration::from_millis(40); // first run 17.6
+/// Also require the tail read to be no more than one eighth of loading the
+/// same blob whole in this run. This catches a whole-blob fallback even when
+/// both operations are fast, without replacing the absolute release limit.
+const MEDIA_TAIL_READ_SHARE_OF_WHOLE_LOAD: f64 = 1.0 / 8.0;
 
 /// Namespace changes behind the two writers of the idle anti-entropy pass.
 const IDLE_SYNC_HISTORY: u64 = 50_000;
@@ -121,6 +124,20 @@ fn report(name: &str, elapsed: Duration, ceiling: Duration) {
     assert!(
         elapsed <= ceiling,
         "{name} exceeded release SLO: {elapsed:?} > {ceiling:?}"
+    );
+}
+
+/// Additional same-run check after [`report`] enforces the absolute SLO.
+fn report_relative(name: &str, elapsed: Duration, baseline: (&str, Duration), share: f64) {
+    let (baseline_name, baseline) = baseline;
+    let ceiling = baseline.mul_f64(share);
+    eprintln!(
+        "RATIO {name}: {:.4} of {baseline_name} (at most {share:.4})",
+        elapsed.as_secs_f64() / baseline.as_secs_f64()
+    );
+    assert!(
+        elapsed <= ceiling,
+        "{name} exceeded its share of {baseline_name} in the same run: {elapsed:?} > {share} of {baseline:?}"
     );
 }
 
@@ -562,13 +579,14 @@ async fn document_media_cold_range_performance_gate() {
     );
 
     // The same blob loaded whole, as every read was answered before ranges
-    // were verified on their own; reported, not gated.
+    // were verified on their own: the tail read's baseline.
     let started = Instant::now();
     let whole = store.local(hash).await.expect("whole media blob");
+    let whole_time = started.elapsed();
     assert_eq!(whole.len(), len);
     eprintln!(
         "PERF document-media-whole-blob-load-64m: {:.3} ms (before ranged reads)",
-        started.elapsed().as_secs_f64() * 1_000.0
+        whole_time.as_secs_f64() * 1_000.0
     );
     store.store().shutdown().await.expect("close media store");
 
@@ -581,6 +599,12 @@ async fn document_media_cold_range_performance_gate() {
         "document-media-cold-64m-tail-4m-read",
         tail_time,
         MEDIA_TAIL_READ_SLO,
+    );
+    report_relative(
+        "document-media-cold-64m-tail-4m-read",
+        tail_time,
+        ("document-media-whole-blob-load-64m", whole_time),
+        MEDIA_TAIL_READ_SHARE_OF_WHOLE_LOAD,
     );
 }
 

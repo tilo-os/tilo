@@ -3,11 +3,11 @@
 //! Paragraphs become `paragraph`/`heading`/`list_item` per `w:pStyle`/`w:numPr`; runs map
 //! onto inline marks. Unmodeled body-level elements are captured verbatim as fidelity atoms.
 
-use super::container::DocxContainer;
 use super::styles::{
     StyleRegistry, attr_val, line_spacing_from_spacing, map_jc, mark_from_rpr_child,
 };
 use crate::format::CodecError;
+use crate::package::ZipPackage;
 use crate::preserve::{ATTR_FORMAT, MARK_DOCX_XML};
 use tilo_content::ContentInputs;
 use tilo_doc::document::MarkValue;
@@ -35,7 +35,7 @@ fn emu_to_px(emu: f64) -> i64 {
 }
 
 /// Build a `rId → media bytes` map from `word/_rels/document.xml.rels`, so the body parser can turn an `a:blip r:embed="rIdN"` into a stored image blob.
-pub(crate) fn build_image_map(container: &DocxContainer) -> BTreeMap<String, Vec<u8>> {
+pub(crate) fn build_image_map(container: &ZipPackage) -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
     let Some(rels) = container.get("word/_rels/document.xml.rels") else {
         return out;
@@ -96,7 +96,7 @@ pub(crate) struct RefMaps<'a> {
 
 /// Build an `rId → URL` map of the external hyperlink relationships in
 /// `word/_rels/document.xml.rels`, which `w:hyperlink r:id` references.
-pub(crate) fn build_link_map(container: &DocxContainer) -> BTreeMap<String, String> {
+pub(crate) fn build_link_map(container: &ZipPackage) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let Some(rels) = container
         .get("word/_rels/document.xml.rels")
@@ -1913,7 +1913,7 @@ mod tests {
 
     #[test]
     fn keeps_unmodeled_paragraph_content_inline_through_export() {
-        use super::super::container::DocxContainer;
+        use crate::package::ZipPackage;
         let field = concat!(
             r#"<w:r><w:fldChar w:fldCharType="begin"/></w:r>"#,
             r#"<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>"#,
@@ -1950,7 +1950,7 @@ mod tests {
         let out = DocxCodec
             .export(d.as_ref(), &tilo_content::NoContent)
             .unwrap();
-        let c = DocxContainer::read(&out).unwrap();
+        let c = ZipPackage::read(&out).unwrap();
         let xml = String::from_utf8(c.get("word/document.xml").unwrap().to_vec()).unwrap();
         let at = |needle: &str| {
             xml.find(needle)
@@ -1977,7 +1977,7 @@ mod tests {
         let out = DocxCodec
             .export(d.as_ref(), &tilo_content::NoContent)
             .unwrap();
-        let c = DocxContainer::read(&out).unwrap();
+        let c = ZipPackage::read(&out).unwrap();
         let xml = String::from_utf8(c.get("word/document.xml").unwrap().to_vec()).unwrap();
         assert!(
             !xml.contains("<w:sdt>") && xml.contains(" and CTL</w:t>"),

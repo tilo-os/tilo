@@ -2874,8 +2874,14 @@ impl TextRenderer {
         let Some(demands) = self.browser_font_demands.as_mut() else {
             return;
         };
-        let FontChoice::Named(name) = &style.family else {
-            return;
+        // A generic family demands the face it resolves to, so the page can
+        // start with the regular UI face alone and fetch the serif, the
+        // monospace and the italics when text first asks for them.
+        let name = match &style.family {
+            FontChoice::Named(name) => name.as_str(),
+            FontChoice::SansSerif => UI_SANS_FAMILY,
+            FontChoice::Serif => UI_SERIF_FAMILY,
+            FontChoice::Monospace => UI_MONOSPACE_FAMILY,
         };
         // A family drawn in optical cuts needs the cut for this size and the
         // smaller ones its superscripts and footnotes take.

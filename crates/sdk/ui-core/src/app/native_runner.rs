@@ -1550,7 +1550,7 @@ impl AppHandler {
         window_id: WindowId,
         event: WindowEvent,
         origin: native_input_isolation::EventOrigin,
-    ) {
+    ) -> bool {
         native_input_isolation::dispatch(
             self.native_input_route_isolation,
             origin,
@@ -1558,7 +1558,7 @@ impl AppHandler {
             |event| {
                 self.handle_routed_window_event(event_loop, window_id, event);
             },
-        );
+        )
     }
     /// Called before showing the window on Windows, and from the first
     /// `RedrawRequested` elsewhere so GPU init doesn't starve Wayland's
@@ -3397,9 +3397,6 @@ impl AppHandler {
 }
 
 impl ApplicationHandler<UserEvent> for AppHandler {
-    // SAFETY: the zeroed-DeviceId transmutes below are safe because winit's
-    // DeviceId is opaque and the dispatch chain never inspects it (same
-    // trick `shell::compositor::native` uses headless).
     #[allow(
         clippy::too_many_lines,
         reason = "winit requires the complete synthetic event dispatch at this callback boundary"
@@ -3858,17 +3855,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             None
         };
         self.note_host_appearance_event(&event);
-        self.route_window_event(
+        let admitted = self.route_window_event(
             event_loop,
             window_id,
             event,
             native_input_isolation::EventOrigin::Platform,
         );
         if let Some(input) = physical_input {
-            crate::native_scenario::log::emit_json(
-                "tilo-physical-input",
-                crate::physical_input_trace::Trace::effect(input, self.app.native_input_snapshot()),
-            );
+            let mut row =
+                crate::physical_input_trace::Trace::effect(input, self.app.native_input_snapshot());
+            let modifiers = self.app.input.modifiers.state();
+            row["input_route_admitted"] = serde_json::json!(admitted);
+            row["modifiers"] = serde_json::json!({
+                "shift": modifiers.shift_key(), "control": modifiers.control_key(),
+                "alt": modifiers.alt_key(), "super": modifiers.super_key(),
+            });
+            crate::native_scenario::log::emit_json("tilo-physical-input", row);
         }
     }
 
@@ -4893,9 +4895,9 @@ impl App {
             dispatching_touch_pointer: false,
             native_scenario,
             native_input_ids: Vec::new(),
-            physical_input_trace: std::env::var("TILO_PROFILE_PRESENTATION")
-                .is_ok_and(|value| value == "1")
-                .then(crate::physical_input_trace::Trace::default),
+            physical_input_trace: crate::physical_input_trace::Trace::when_enabled(
+                std::env::var("TILO_PROFILE_PRESENTATION").ok().as_deref(),
+            ),
             native_input_origin: None,
             native_input_pointer_passthrough: false,
             native_input_route_isolation: false,

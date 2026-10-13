@@ -26,21 +26,29 @@ itself; the page seeds its own desktop and documents.
 | request | answer |
 |---|---|
 | `POST /rooms` | `201 {roomId, origin, room, userPublicKey, expiresAt, pageTicket, joinUrl, admit, events, invitations, app}`; `503` when all rooms are in use |
-| `POST /rooms/<id>/invitations` | `201 {joinUrl, ticket}`: one more guest; `429` beyond `TILO_ROOMS_MAX_GUESTS` |
+| `POST /rooms/<id>/invitations` `{record?}` | `201 {joinUrl, ticket}`: one more guest, whose link opens `record` (else the room's Writer); `429` beyond `TILO_ROOMS_MAX_GUESTS`. The body may be empty |
 | `POST /rooms/<id>/admit` `{ticket, pairingCode}` | `200 {label, device, pairingCode, at}` once the room certified that browser; `403 {error}` for a spent, unknown or busy ticket, or when the room certified nobody for that code (no browser showed it within a minute, more than one did, or the policy refused it), which leaves the ticket usable |
 | `GET /rooms/<id>/events` | Server-sent events: `member` per certified device, earlier ones replayed first; `expired` when the room ends |
-| `GET /app/<path>` | the browser runtime bundle (page modules, `pkg/`, fonts, data), `rooms.mjs`, `join.html` and `page.html` |
+| `GET /app/<path>` | the browser runtime bundle (page modules, `pkg/`, fonts, data), `rooms.mjs` and `page.html` |
+| `GET /open/<path>` | the same bundle as the web entry guest links name: `index.html` (desktop), `app/index.html` (full tab) |
+| `GET /open/entry.json` | `{tickets}`: where the entry pages redeem a link's guest ticket (`<api>/rooms/`) |
 | `GET /healthz` | `{ok: true}` |
 
-`joinUrl` is `<api>/app/join.html#origin=…&user=…&room=…&ticket=…&admit=…`;
-`createInvitation(room, {record})` in `rooms.mjs` appends `&record=<id>`,
-which the join page opens full screen. The fragment never reaches a server.
+`joinUrl` is a link in the web link grammar
+(docs/architecture/web-routing.md):
+`<api>/open/app/#/@<relay host>/w/<room>/so.tilo.word-processor[/<record>]?ticket=…`.
+The entry page reads the room's root key from the relay, shows the pairing
+code and posts `{ticket, pairingCode}` to `<tickets><room>/admit`, then opens
+Writer full screen. The fragment never reaches a server, and the page strips
+the ticket from the address bar before anything else runs. The entry is
+`/open/` and not `/app/` because the grammar's `app/` segment means "full
+tab", so no entry may end in it.
 
 `web/rooms.mjs` is the page side, next to the bundle's `host.mjs` and
 `relay.mjs`: `createRoom`, `joinRoom`, `recordOf`, `createInvitation`,
 `watchMembers` (`useRegistry()` is kept for older pages and does nothing:
 the bundle carries every app). `web/page.html` does with a room what the site's page does
-(for review); `web/join.html` is the phone's page. The peer `joinRoom`
+(for review); the phone opens its guest link on the bundle's entry pages. The peer `joinRoom`
 returns joins the room's live plane too: its mounts publish this device's
 caret, selection and pointer and draw the other members' with their labels,
 and `peer.live` (`state`, `memberCount`, `remoteState()`, `onMember`, …)
@@ -58,7 +66,7 @@ exposes it to the page.
 | `TILO_ROOMS_PUBLIC_PORT` | none (443) | port in room origins when the front is not reached on 443 |
 | `TILO_ROOMS_TLS_CERT`, `TILO_ROOMS_TLS_KEY` | self-signed | PEM chain and key for `*.<domain>` |
 | `TILO_ROOMS_RELAY_BIN` | `/usr/local/bin/tilo-relay` | built with `--features web` |
-| `TILO_ROOMS_ASSETS` | `/srv/tilo-room-assets` | `/app/`: see `scripts/build-image.sh` |
+| `TILO_ROOMS_ASSETS` | `/srv/tilo-room-assets` | `/app/`: see Build and run |
 | `TILO_ROOMS_STATE` | `/run/tilo-rooms` | room directories; use a memory volume |
 | `TILO_ROOMS_MAX` | `8` | rooms at once (1–64) |
 | `TILO_ROOMS_TTL_SECS` | `1800` | room lifetime |
@@ -129,16 +137,123 @@ TCP port alone only carries the fallback.
      announces (`serverCertificateHashes`); no certificate exception is
      needed.
 
+## Persistent mode
+
+`TILO_ROOMS_PERSISTENT=<name>` runs a governed public room that survives
+restarts instead of throwaway rooms; `POST /rooms` is then disabled. It is a
+public workspace anyone can open. Its id is kept in
+`TILO_ROOMS_STATE/<name>/room-id` and the child relay's state beside it, so
+`TILO_ROOMS_STATE` must be a persistent volume. People see the room as
+`TILO_ROOMS_NAME` (else `<name>` with a capital first letter): the relay
+names its workspace and its Chat workspace so at every start, renaming a
+room created under another name.
+`TILO_ROOMS_CHAT_CHANNELS` (for example `general,help`) are the channels
+Chat starts with while the room's workspace has none, each with the id
+`c_<name>` (`-` becomes `_`) so a bridged Discord server maps onto the same
+channels on every start. Without it no channels are made, and a chat that
+has channels keeps exactly those.
+
+The service is the room's API and relay, never a page: the Tilo app lives
+at its web entry (`TILO_ROOMS_WEB_ENTRY`, e.g. `https://app.example/`), which
+opens the room as a workspace. `GET /` redirects there, or answers 404
+without a web entry. Admission runs in the app: each visitor is their own
+person with their own identity, `POST /join` pre-admits it (per-IP join
+windows, an online cap, a cooldown for addresses of removed members) and
+the browser redeems the bound invitation. A read-only embed joins as the
+room's spectator through `POST /spectate`. `GET /presence` answers
+`{online, watching}`. The owner root comes from a mounted secret; without
+it the service refuses to start. The full design is in
+`docs/architecture/discord-bridge.md` §9.
+
+**One origin.** The room API and the relay share one public origin
+(e.g. `https://rooms.example`). The relay serves browsers on its plain HTTP
+listener (`TILO_ROOMS_RELAY_PLAIN`) and every relay route starts with
+`/peer/` (`/peer/v1/…`, the live fallback's `/peer/v3/live/…`), so the
+ingress sends that prefix to the relay and everything else to the service
+(`TILO_ROOMS_API`); nothing the service answers starts with `/peer/`. Set
+`TILO_ROOMS_PUBLIC_API` and `TILO_ROOMS_RELAY_ORIGIN` to that origin.
+WebTransport needs UDP to the relay, which an HTTPS ingress does not carry,
+so the live plane uses the HTTPS stream fallback there.
+`TILO_ROOMS_SITE_ORIGINS` lists every page origin that opens the room
+(e.g. `https://app.example,https://site.example`): they may call the API, the relay
+accepts them, and they may frame the service's pages.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TILO_ROOMS_PERSISTENT` | unset | the room's name; turns persistent mode on |
+| `TILO_ROOMS_NAME` | `<name>`, capitalized | the name people see for the room (1–80 characters) |
+| `TILO_ROOMS_CHAT_CHANNELS` | unset: none | channels Chat starts with while it has none, comma-separated names of lowercase letters, digits and `-` |
+| `TILO_ROOMS_RELAY_ORIGIN` | required | the relay's public origin, e.g. `https://rooms.example` |
+| `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the relay's plain listener the ingress forwards `/peer/` to |
+| `TILO_ROOMS_WEB_ENTRY` | none | the Tilo app's web entry (e.g. `https://app.example/`), announced by the relay so `share-link` and bots mint links that open the room there; without it the room's resources cannot be shared as links |
+| `TILO_ROOMS_LIVE_ORIGIN` | unset | an `https://` origin (port allowed), e.g. `https://live.rooms.example` with UDP 443 forwarded to the listener, that reaches the relay's QUIC listener directly, for an ingress that passes HTTP only (a CDN): browsers try WebTransport there first and fall back within 2 s, silently, to the HTTPS stream through the ingress |
+| `TILO_ROOMS_LIVE_LISTEN` | `0.0.0.0:9781` | that listener: WebTransport on UDP (HTTPS on TCP too, unused) |
+| `TILO_ROOMS_LIVE_TLS_CERT`, `TILO_ROOMS_LIVE_TLS_KEY` | `/run/live-tls/tls.crt`, `/run/live-tls/tls.key` | its PEM certificate and key for the live origin's name; re-read within 30 s of a renewal, no restart |
+| `TILO_ROOMS_ROOT_FILE` | `/run/secrets/room-root` | 64 hex characters: the owner root |
+| `TILO_ROOMS_TRUSTED_PROXIES` | none | CIDRs whose `X-Forwarded-For` is believed |
+| `TILO_ROOMS_MAX_GUESTS` | `300` | people online at once (up to 10000) |
+| `TILO_ROOMS_MAX_SPECTATORS` | `1000` | watching sessions at once |
+| `TILO_ROOMS_OWNERS`, `TILO_ROOMS_MODERATORS` | none | user keys (hex), comma-separated |
+| `TILO_ROOMS_SEED_APPS` | `so.tilo.chat,so.tilo.notes,so.tilo.canvas` | apps added to the room once, comma-separated; notes and canvas start with a welcome note and starter shapes in the room's default record |
+| `TILO_ROOMS_BOTS` | none | bots installed at the first start, `;`-separated, each `<entry> key=value …`, where the entry is a directory bot or a program file such as the image's `/usr/local/share/tilo/bots/discord-bridge.json`; the Discord bridge takes `guild=<server id>`, optionally `channel=<channel id>` to bridge only that channel and `server=<name>`, and the host connects the room's Chat to that server before the bridge runs |
+| `TILO_ROOMS_DISCORD_TOKEN_FILE` | `/run/secrets/discord-bot-token` if present | the Discord bot token, read only when bots run |
+| `TILO_ROOMS_RESET_SECS` | `21600` | every this many seconds, snapshot the seeded notes and canvas (last 10 kept under `<state>/relay/snapshots/<app>/`) and reset them to their starting content; chat is never reset; `0` disables |
+
+Every guest and every spectator holds a web session on the child relay, so
+the service sizes the relay's caps from the room's: `TILO_RELAY_MAX_WEB_SESSIONS`
+is guests plus spectators plus 64, `TILO_RELAY_MAX_HANDSHAKES` 1024,
+`TILO_RELAY_MAX_LIVE_GRANTS` four and `TILO_RELAY_MAX_ROOM_GRANTS` sixteen
+per session. Any of them set in the environment wins. The child also runs
+with `MALLOC_ARENA_MAX=2` unless set, which halves its memory under load.
+
 ## Build and run
 
-```sh
-crates/hosting/tilo-room-service/scripts/build-image.sh /abs/context code.tilo.so/tilo/room-service:REV
-```
+The image is built by `.forgejo/workflows/room-service-image.yml`: the CI
+builder compiles `tilo-relay` (feature `agents`), `tilo-room-service` and
+the desktop bundle, and BuildKit assembles
+`container/Containerfile` from those outputs (`bin/`, `assets/`). Pushes to
+main and manual runs publish `registry.tilo.so/tilo/room-service:sha-<commit>`
+and a digest receipt; deployments pin the digest. `container/test-image.sh`
+is the image's smoke test. Run it on a branch with
+`fgj workflow run room-service-image.yml -R tilo/tilo --ref <branch>`.
 
-Locally, serve the output of
+Locally, `dev/run.py` runs the persistent room as production does: this
+service in persistent mode with its child relay, and the web entry laid out
+by the web entry image's `layout.py` with the `entry.json` that opens the
+room, on plain `localhost` origins (`TILO_ROOMS_LOCAL=1`). It builds what it
+needs or reuses prebuilt binaries and a bundle, prints the URL to open and
+stops everything on Ctrl-C; `dev/run.py --help` describes the edit loop and
+driving it with headless Chromium.
+
+For short-lived rooms, serve the output of
 `crates/browser/tilo-browser-runtime/scripts/build.sh DIR --bundle desktop`
 plus `web/*` as `TILO_ROOMS_ASSETS`, and run `target/release/tilo-room-service`
 with `TILO_ROOMS_RELAY_BIN=target/release/tilo-relay` and
 `TILO_ROOMS_LOCAL=1`. `http://localhost:8790/app/page.html` then creates a
-room in any browser; its phone link opens `join.html`. The site's dev server
+room in any browser; its phone link opens `/open/app/`. The site's dev server
 uses it with `PUBLIC_TILO_ROOMS_URL=http://localhost:8790`.
+
+## Operating it
+
+- **`GET /metrics`** (Prometheus text, in-cluster only: requests carrying
+  `X-Forwarded-For` get 404). `tilo_rooms_*`: rooms, online guests and
+  spectators, `joins_total`, `join_failures_total{reason}`, mode, browser
+  error counters, and the relay's own counters read from the snapshot each
+  relay persists every second (`relay_up`, `relay_sessions`,
+  `relay_live_drops_total`, `relay_records_total`, `relay_record_bytes_total`,
+  `relay_bytes_sent_total`). Other processes of the pod add their own by
+  writing Prometheus text to `<state>/metrics.d/<name>.prom`; each file is
+  appended with `tilo_rooms_textfile_age_seconds{file}` so a writer that
+  stopped shows. The Discord bridge writes `bridge.prom` with
+  `tilo_rooms_bridge_lag_seconds`, `tilo_rooms_bridge_queue_depth` and
+  `tilo_rooms_bridge_rate_limited_total`.
+- **`POST /errors`**: a page's uncaught error, at most 4 KiB, 20 a second in
+  total; logged to stderr as one `{"event":"browser_error",...}` JSON line,
+  never stored. The app's entry pages send them with `sendBeacon`.
+- **Kill switch**: `tilo-room-service mode [normal|spectator-only|back-soon]`
+  (run in the pod, with the same `TILO_ROOMS_STATE`) sets the mode and no
+  argument prints it; the service notices within a second. `TILO_ROOMS_MODE`
+  is the mode at start, the file wins once set. `spectator-only` refuses new
+  rooms, invitations and admissions with `503` and `Retry-After`;
+  `back-soon` also stops spectating (the persistent room's routes read
+  `ops::get().mode()`). `GET /mode` tells the page which.

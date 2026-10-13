@@ -130,6 +130,34 @@ class RollingCollection(unittest.TestCase):
         self.assertEqual(sum(line.startswith("tilo-native-") for line in captured), 500)
         self.assertLess(max(slot.output_sizes), 1048576)
 
+    def test_repeated_witness_frames_are_collected_incrementally_within_bound(self):
+        slot, captured = LocalSlot(), {}
+        cohorts = []
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "latest.log"
+            for number in range(1, 5):
+                base = sample(number, render_phases=True).splitlines()
+                cohort = [line for line in base if line.startswith(
+                    ("tilo-physical-input ", "tilo-physical-delivery "))]
+                for index in range(32):
+                    for line in base:
+                        tag, value = line.split(" ", 1)
+                        row = json.loads(value)
+                        if "cpu_frame_id" not in row:
+                            continue
+                        row["cpu_frame_id"] = number * 100 + index
+                        if tag.startswith("tilo-native-"):
+                            row["fixture_stage_fields"] = "x" * 1900
+                        cohort.append(tag + " " + json.dumps(row))
+                cohorts.extend(cohort)
+                log.write_text("\n".join(cohorts))
+                collect_trace(slot, str(log), "new-scratch-page", captured)
+        report = summarize_physical_notes_latency(list(captured), "new-scratch-page")
+        self.assertEqual(len(report["samples"]), 4)
+        self.assertEqual(sum(line.startswith("tilo-physical-frame ")
+                             for line in captured), 128)
+        self.assertLess(max(slot.output_sizes), 524288)
+
     def test_conflicting_duplicate_input_is_preserved_and_rejected(self):
         slot = LocalSlot()
         captured = {}

@@ -166,8 +166,54 @@ impl SeriesToggles {
         self.hits.clear();
     }
 
-    pub(crate) fn push_hit(&mut self, id: String, rect: Rect) {
-        self.hits.push((id, rect));
+    /// Paint a legend people click to hide and show series: each `(id,
+    /// name, colour)` entry's swatch and name, laid out by [`layout`] across
+    /// `area` from its top, faded while hidden. Remembers where each entry
+    /// landed for [`Self::hit`].
+    pub(crate) fn paint<'a>(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        entries: impl IntoIterator<Item = (&'a str, &'a str, Color)>,
+        area: Rect,
+    ) {
+        let entries: Vec<_> = entries.into_iter().collect();
+        let items = layout(
+            entries.iter().map(|(_, name, _)| *name),
+            area.x0,
+            area.x1,
+            area.y0,
+        );
+        let ink = theme.tokens.colors.text_dim;
+        self.hits.clear();
+        for ((id, name, colour), item) in entries.into_iter().zip(items) {
+            let hidden = self.is_hidden(id);
+            let fade = |colour: Color, alpha: u8| {
+                if hidden {
+                    crate::paint::with_alpha(colour, alpha)
+                } else {
+                    colour
+                }
+            };
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                fade(colour, 65),
+                None,
+                &Circle::new((item.x0 + 4.0, item.y0 + 6.0), 4.0),
+            );
+            text.draw_style(
+                scene,
+                name,
+                fade(ink, 90),
+                transform * Affine::translate((item.x0 + 14.0, item.y0)),
+                Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
+                &theme.text(TextRole::Caption),
+            );
+            self.hits.push((id.to_owned(), item));
+        }
     }
 
     /// The series whose painted entry contains `point`.

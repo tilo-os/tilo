@@ -91,22 +91,7 @@ impl NativeBroker {
         .map_err(|_| SendError::Revoked)?;
         crate::routing::check_native(&auth.accounts, &native, &self.owner, &auth.binding)
             .map_err(|_| SendError::Revoked)?;
-        let sender = tilo_contact_directory::routing::SenderAccount {
-            id: route.sender.clone(),
-            service: route.service.clone(),
-            scope: self.scope.clone(),
-            enabled: true,
-        };
-        if !tilo_contact_directory::routing::routes(
-            &auth.directory,
-            &route.person,
-            "tilo",
-            &[sender],
-        )
-        .contains(route)
-        {
-            return Err(SendError::Revoked);
-        }
+        auth.listed(route, &self.scope, true)?;
         Ok(auth)
     }
     /// The host derives `recipient` from the authenticated certificate/device.

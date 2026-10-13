@@ -127,8 +127,9 @@ pub use invite::{
     INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
 };
 pub use mls_governance::{
-    MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAckV1,
-    MlsGovernanceAction, MlsGovernanceContext, MlsGovernanceError, MlsGovernanceFrameV1,
+    Admission, JoinMaterial, Joining, MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION,
+    MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction, MlsGovernanceContext,
+    MlsGovernanceError, MlsGovernanceFrameV1,
 };
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,

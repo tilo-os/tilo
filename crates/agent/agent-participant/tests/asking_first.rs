@@ -36,7 +36,8 @@ use tilo_actions::remote::{
 use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig,
 };
-use tilo_relay_protocol::agents::{AgentDelegation, AgentScope, AgentStatus, TaskState};
+use tilo_relay_protocol::agents::{AgentStatus, TaskState};
+use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use support::{ROOM, enrol, start_host, wait_for};
@@ -151,13 +152,15 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         CertificationPolicy::agent().ceiling,
     );
     let now = tilo_clock::unix_now_ns();
-    let delegation = AgentDelegation::sign(
+    let delegation = Delegation::sign(
         &root,
         agent_device.cert.device_public_key,
-        "careful",
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "careful".into(),
+        },
         "Careful agent",
         [0x7c, 0x3a, 0xed],
-        AgentScope {
+        DelegateScope {
             rooms: vec![ROOM.into()],
             apps: vec![CALCULATOR.into()],
         },

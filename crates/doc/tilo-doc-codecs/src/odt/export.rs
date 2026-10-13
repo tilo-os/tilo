@@ -2,8 +2,8 @@
 //! the model, then splice it into the original container's preserved parts (styles.xml,
 //! images, meta.xml, manifest, …) so unmodeled content survives verbatim.
 
-use super::container::OdtContainer;
 use crate::format::CodecError;
+use crate::package::ZipPackage;
 use crate::preserve::MARK_ODT_XML;
 use crate::resolved::Resolved;
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,7 +49,7 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
     let head = ContentHead::preserved(&doc);
     let content = build_content_xml(snap, &existing_style_names, &head);
 
-    let mut c = OdtContainer { parts: Vec::new() };
+    let mut c = ZipPackage { parts: Vec::new() };
     let mut had_mimetype = false;
     let mut had_manifest = false;
     let mut had_meta = false;
@@ -101,7 +101,7 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
     }
 
     c.set("content.xml", content.into_bytes());
-    c.write()
+    c.write_odf()
 }
 
 /// Splice header/footer, multi-column layout, and default-language into `styles.xml`
@@ -109,7 +109,7 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
 /// anything is actually written, so the caller knows whether to add a manifest entry for it.
 fn splice_styles_xml(
     doc: &DocRef,
-    c: &mut OdtContainer,
+    c: &mut ZipPackage,
     original_styles: Option<&[u8]>,
     had_styles: &mut bool,
 ) {
@@ -156,7 +156,7 @@ fn splice_styles_xml(
 /// manifest entries it needs, seeded with meta.xml/styles.xml when those were (re)written.
 fn write_image_blobs(
     snap: &Resolved<'_>,
-    c: &mut OdtContainer,
+    c: &mut ZipPackage,
     had_meta: bool,
     had_styles: bool,
 ) -> Vec<(String, &'static str)> {
@@ -1394,8 +1394,9 @@ fn render_automatic_styles(
 #[cfg(test)]
 mod tests {
     use super::super::OdtCodec;
-    use super::super::container::{OdtContainer, minimal_odt, minimal_odt_styled};
+    use super::super::container::{minimal_odt, minimal_odt_styled};
     use crate::FormatProvider;
+    use crate::package::ZipPackage;
     use std::collections::BTreeMap;
     use tilo_doc::{AttrVal, DocSnapshot, Document};
 
@@ -1483,7 +1484,7 @@ mod tests {
             let m1 = norm(&d.materialize());
 
             let exported = export_odt(&d);
-            let c = OdtContainer::read(&exported).unwrap();
+            let c = ZipPackage::read(&exported).unwrap();
             assert_eq!(c.parts[0].0, "mimetype", "exported .odt has mimetype first");
             assert!(c.get("content.xml").is_some());
 
@@ -1542,7 +1543,7 @@ mod tests {
             }
 
             let exported = export_odt(&d);
-            let c = OdtContainer::read(&exported).unwrap();
+            let c = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
             assert!(
                 content.contains(r##"fo:background-color="#ffff00""##),
@@ -1644,7 +1645,7 @@ mod tests {
                 dm.add_mark(&p, 0, 6, "fontSize", 20_i64);
             }
             let exported = export_odt(&d);
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
             assert!(
                 content.contains(r#"fo:text-align="justify""#),
@@ -1706,7 +1707,7 @@ mod tests {
             }
 
             let exported = export_odt(&d);
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
             assert!(
                 content.contains(r#"text:style-name="Fancy""#),
@@ -1774,7 +1775,7 @@ mod tests {
             d.as_mut().add_mark(&id, 3, 7, "link", "https://tilo.so/");
 
             let exported = export_odt(&d);
-            let c = OdtContainer::read(&exported).unwrap();
+            let c = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
             assert!(
                 content.contains(r#"<text:a xlink:href="https://tilo.so/">home</text:a>"#),
@@ -1806,7 +1807,7 @@ mod tests {
             d.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
 
             let exported = export_odt(&d);
-            let c = OdtContainer::read(&exported).unwrap();
+            let c = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
             assert!(
                 content.contains(r#"<text:bookmark-start text:name="intro"/>"#),
@@ -1872,7 +1873,7 @@ mod tests {
             d.as_mut().add_mark(&id, 0, 4, "link", "https://x/?a=1&b=2");
 
             let exported = export_odt(&d);
-            let c = OdtContainer::read(&exported).unwrap();
+            let c = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
             assert!(
                 content.contains("a=1&amp;b=2"),
@@ -1963,7 +1964,7 @@ mod tests {
 
             let exported = OdtCodec.export(d.as_ref(), &inputs).unwrap();
 
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let pic = cont
                 .parts
                 .iter()
@@ -2047,7 +2048,7 @@ mod tests {
             }
 
             let exported = OdtCodec.export(d.as_ref(), &inputs).unwrap();
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
             assert!(
                 content.contains(r#"text:anchor-type="paragraph""#),
@@ -2117,7 +2118,7 @@ mod tests {
             d.splice_text(&item_c, 0, 0, "c");
 
             let exported = export_odt(&d);
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
             assert!(
             content.contains(r"<text:list-item><text:p>b</text:p><text:list><text:list-item><text:p>nested</text:p></text:list-item></text:list></text:list-item>"),
@@ -2168,7 +2169,7 @@ mod tests {
             }
 
             let exported = export_odt(&d);
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
             assert!(
                 content.contains(r#"style:num-format="I""#),
@@ -2240,7 +2241,7 @@ mod tests {
             d.set_doc_prop("generator", "qdoc/1.0");
 
             let exported = export_odt(&d);
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let meta =
                 std::str::from_utf8(cont.get("meta.xml").expect("meta.xml written")).unwrap();
             assert!(
@@ -2319,9 +2320,9 @@ mod tests {
             let meta = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><office:meta><dc:title>Old</dc:title><meta:editing-cycles>7</meta:editing-cycles></office:meta></office:document-meta>"#;
             let base = minimal_odt_styled("", "<text:p>hi</text:p>");
-            let mut c = OdtContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set("meta.xml", meta.as_bytes().to_vec());
-            let odt = c.write().unwrap();
+            let odt = c.write_odf().unwrap();
 
             let mut d = Document::new();
             import_odt(&odt, &mut d);
@@ -2334,7 +2335,7 @@ mod tests {
             d.set_doc_prop("keywords", "k");
 
             let exported = export_odt(&d);
-            let out = OdtContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             let meta_out = std::str::from_utf8(out.get("meta.xml").unwrap()).unwrap();
             assert!(
                 meta_out.contains("<dc:title>New</dc:title>"),
@@ -2359,7 +2360,7 @@ mod tests {
             let p = d.insert_block(None, "paragraph");
             d.splice_text(&p, 0, 0, "plain");
             let exported = export_odt(&d);
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             assert!(
                 cont.get("meta.xml").is_none(),
                 "no metadata part synthesised for a doc with no properties"
@@ -2368,18 +2369,18 @@ mod tests {
         // Phase `preserves_unmodeled_parts`.
         {
             let base = minimal_odt_styled("", "<text:p>hi</text:p>");
-            let mut c = OdtContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set(
                 "settings.xml",
                 b"<office:settings>custom</office:settings>".to_vec(),
             );
-            let odt = c.write().unwrap();
+            let odt = c.write_odf().unwrap();
 
             let mut d = Document::new();
             import_odt(&odt, &mut d);
             let exported = export_odt(&d);
 
-            let out = OdtContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             assert_eq!(
                 out.get("settings.xml"),
                 Some(&b"<office:settings>custom</office:settings>"[..]),
@@ -2393,7 +2394,7 @@ mod tests {
         // import→export codec path even though it is now stored as per-atom segments, not one blob.
         {
             let odt = odt_with_two_style_atoms();
-            let original_styles = OdtContainer::read(&odt)
+            let original_styles = ZipPackage::read(&odt)
                 .unwrap()
                 .get("styles.xml")
                 .unwrap()
@@ -2402,7 +2403,7 @@ mod tests {
             let mut d = Document::new();
             import_odt(&odt, &mut d);
             let exported = export_odt(&d);
-            let out = OdtContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             assert_eq!(
                 out.get("styles.xml").unwrap(),
                 original_styles.as_slice(),
@@ -2467,7 +2468,7 @@ mod tests {
             // Both replicas export an identical styles.xml that carries BOTH edits.
             for (d, who) in [(&a, "A"), (&b, "B")] {
                 let exported = export_odt(d);
-                let out = OdtContainer::read(&exported).unwrap();
+                let out = ZipPackage::read(&exported).unwrap();
                 let styles = String::from_utf8(out.get("styles.xml").unwrap().to_vec()).unwrap();
                 assert!(
                     styles.contains("QuoteFont-EDITED"),
@@ -2489,12 +2490,12 @@ mod tests {
                 );
             }
             // Convergence: identical exported styles.xml on both replicas.
-            let sa = OdtContainer::read(&export_odt(&a))
+            let sa = ZipPackage::read(&export_odt(&a))
                 .unwrap()
                 .get("styles.xml")
                 .unwrap()
                 .to_vec();
-            let sb = OdtContainer::read(&export_odt(&b))
+            let sb = ZipPackage::read(&export_odt(&b))
                 .unwrap()
                 .get("styles.xml")
                 .unwrap()
@@ -2519,7 +2520,7 @@ mod tests {
             d.insert_footer_page_number(&f, 5);
 
             let exported = export_odt(&d);
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let styles =
                 std::str::from_utf8(cont.get("styles.xml").expect("styles.xml written")).unwrap();
             assert!(
@@ -2589,9 +2590,9 @@ mod tests {
             let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"><style:header><text:p>Old Header</text:p></style:header></style:master-page></office:master-styles></office:document-styles>"#;
             let base = minimal_odt_styled("", "<text:p>hi</text:p>");
-            let mut c = OdtContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set("styles.xml", styles_xml.as_bytes().to_vec());
-            let odt = c.write().unwrap();
+            let odt = c.write_odf().unwrap();
 
             let mut d = Document::new();
             import_odt(&odt, &mut d);
@@ -2600,7 +2601,7 @@ mod tests {
             d.splice_header_text(&hid, 0, 9, "New Header"); // replace "Old Header"
 
             let exported = export_odt(&d);
-            let out = OdtContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
             assert!(
                 styles_out.contains(r#"style:page-layout-name="pm1""#),
@@ -2685,7 +2686,7 @@ mod tests {
             d.splice_note_text(&enote_id, &enote_block, 0, 0, "an endnote");
 
             let exported = export_odt(&d);
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
             assert!(
                 content.contains(r#"text:note-class="footnote""#),
@@ -2816,7 +2817,7 @@ mod tests {
             let _ = cid;
 
             let exported = export_odt(&d);
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
             assert!(
                 content.contains("<office:annotation"),
@@ -2902,7 +2903,7 @@ mod tests {
             let d = build_tracked_changes_doc();
 
             let exported = export_odt(&d);
-            let cont = OdtContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
             assert_tracked_changes_xml(content);
 
@@ -3037,7 +3038,7 @@ mod tests {
             d.set_columns(2, Some(48.0)); // 48 px ≈ 1.27 cm
 
             let exported = export_odt(&d);
-            let out = OdtContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             let styles =
                 std::str::from_utf8(out.get("styles.xml").expect("styles.xml synthesised"))
                     .unwrap();
@@ -3072,9 +3073,9 @@ mod tests {
             let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="21cm" fo:margin-left="2cm"/></style:page-layout></office:automatic-styles></office:document-styles>"#;
             let base = minimal_odt_styled("", "<text:p>hi</text:p>");
-            let mut c = OdtContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set("styles.xml", styles_xml.as_bytes().to_vec());
-            let odt = c.write().unwrap();
+            let odt = c.write_odf().unwrap();
 
             let mut d = Document::new();
             import_odt(&odt, &mut d);
@@ -3082,7 +3083,7 @@ mod tests {
             d.set_columns(3, None);
 
             let exported = export_odt(&d);
-            let out = OdtContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
             assert!(
                 styles_out.contains(r#"fo:page-width="21cm""#),
@@ -3111,9 +3112,9 @@ mod tests {
             let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties><style:columns style:column-count="4"/></style:page-layout-properties></style:page-layout></office:automatic-styles></office:document-styles>"#;
             let base = minimal_odt_styled("", "<text:p>hi</text:p>");
-            let mut c = OdtContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set("styles.xml", styles_xml.as_bytes().to_vec());
-            let odt = c.write().unwrap();
+            let odt = c.write_odf().unwrap();
 
             let mut d = Document::new();
             import_odt(&odt, &mut d);
@@ -3121,7 +3122,7 @@ mod tests {
             d.set_columns(2, None);
 
             let exported = export_odt(&d);
-            let out = OdtContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
             assert_eq!(
                 styles_out.matches("<style:columns").count(),
@@ -3146,9 +3147,9 @@ mod tests {
             r#"</office:styles></office:document-styles>"#,
         );
         let base = minimal_odt_styled("", "<text:p>hi</text:p>");
-        let mut c = OdtContainer::read(&base).unwrap();
+        let mut c = ZipPackage::read(&base).unwrap();
         c.set("styles.xml", styles_xml.as_bytes().to_vec());
-        c.write().unwrap()
+        c.write_odf().unwrap()
     }
 
     /// The id + current bytes of the preserved `styles.xml` atom containing `needle`.
@@ -3170,11 +3171,11 @@ mod tests {
             r#"<style:footer><text:p>Page <text:page-number>1</text:page-number> of <text:page-count>2</text:page-count></text:p></style:footer>"#,
             r#"</style:master-page></office:master-styles></office:document-styles>"#,
         );
-        let mut c = OdtContainer::read(&minimal_odt("<text:p>body</text:p>")).unwrap();
+        let mut c = ZipPackage::read(&minimal_odt("<text:p>body</text:p>")).unwrap();
         c.set("styles.xml", styles.as_bytes().to_vec());
-        let odt = c.write().unwrap();
+        let odt = c.write_odf().unwrap();
         let styles_of = |bytes: &[u8]| {
-            let c = OdtContainer::read(bytes).unwrap();
+            let c = ZipPackage::read(bytes).unwrap();
             String::from_utf8(c.get("styles.xml").unwrap().to_vec()).unwrap()
         };
 
@@ -3249,7 +3250,7 @@ mod tests {
         let exported = OdtCodec
             .export(d.as_ref(), &tilo_content::NoContent)
             .unwrap();
-        let cont = OdtContainer::read(&exported).unwrap();
+        let cont = ZipPackage::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         for kept in [
             r#"<text:p text:style-name="P1">A <text:span text:style-name="T1"><text:span text:style-name="qdoc-strong">spaced</text:span></text:span>"#,
@@ -3309,7 +3310,7 @@ mod tests {
         let exported = OdtCodec
             .export(d.as_ref(), &tilo_content::NoContent)
             .unwrap();
-        let cont = OdtContainer::read(&exported).unwrap();
+        let cont = ZipPackage::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
             content.contains("<text:p>removed words</text:p></text:deletion>"),
@@ -3358,7 +3359,7 @@ mod tests {
         let exported = OdtCodec
             .export(d.as_ref(), &tilo_content::NoContent)
             .unwrap();
-        let cont = OdtContainer::read(&exported).unwrap();
+        let cont = ZipPackage::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
             content.contains(r#"<table:table-cell table:number-columns-spanned="2" table:number-rows-spanned="2"><text:p>big</text:p></table:table-cell><table:covered-table-cell/>"#),
@@ -3389,7 +3390,7 @@ mod tests {
         let exported = OdtCodec
             .export(d.as_ref(), &tilo_content::NoContent)
             .unwrap();
-        let cont = OdtContainer::read(&exported).unwrap();
+        let cont = ZipPackage::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert_eq!(content.matches("<text:list ").count(), 2, "{content}");
 

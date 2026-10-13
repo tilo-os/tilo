@@ -201,6 +201,21 @@ launches the packaged app and should be checked with foreign-frame counters.
 invocation against an isolated compositor. `app-launch-proof.py` selects native
 applications by provider/ID and checks that a new surface actually paints.
 
+### Native mounted host-service regression tests
+
+Use `ui::framework::testing::drive_live_window` to exercise a resource app's
+actual mounted native root without starting its window event loop. With
+`test-support`, attach a socket pair through
+`App::test_floating_service_connection` and
+`FloatingSurfaceServiceClient::from_test_stream`, then send host messages and
+call `App::test_pump_floating_service`. This runs production dispatch and
+response serialization rather than invoking the app's handler directly.
+For device-shell operations, assert the request ID and successful outcome on
+the original connection, repeat on that same connection, and verify that an
+idle pump does not replay the operation. Terminal's
+`native_resource_terminal_inspector_is_acknowledged_through_the_mounted_root`
+test covers forwarding through the mounted component's `AppWidget` capability.
+
 ### Wire protocol (when you can't use the CLI)
 
 The socket accepts newline-delimited JSON. Every command returns one JSON response line.
@@ -760,7 +775,7 @@ passes while proving nothing.
 
 ## Opening an app the machine does not have
 
-`scripts/demo/install-on-open.py` drives the one flow that cannot be
+`scripts/headless-examples/install-on-open.py` drives the one flow that cannot be
 exercised from an installed package, because its subject is a package
 that is not installed: typing the name of an app the configured
 registries offer, pressing Enter, and getting a tab.
@@ -769,8 +784,8 @@ registries offer, pressing Enter, and getting a tab.
 cargo build -p shell -p sheets -p install -p launcher
 cargo build -p app-cli --bins --examples
 
-scripts/demo/install-on-open.py --out target/install-on-open
-scripts/demo/install-on-open.py --backend winit --stage-only   # drive it yourself
+scripts/headless-examples/install-on-open.py --out target/install-on-open
+scripts/headless-examples/install-on-open.py --backend winit --stage-only   # drive it yourself
 ```
 
 It packs the real Sheets binary into a signed `.tapp`, serves it from a
