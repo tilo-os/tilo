@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -125,9 +125,7 @@ impl Widget for Divider {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -153,10 +151,6 @@ impl Widget for Divider {
     fn name(&self) -> &'static str {
         "Divider"
     }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 }
 
 #[cfg(test)]
@@ -180,7 +174,7 @@ mod tests {
         taffy
             .compute_layout(parent, taffy::Size::max_content())
             .unwrap();
-        d.apply_layout(&taffy, child, Point::ZERO);
+        d.apply_layout(&taffy, child, vello::kurbo::Point::ZERO);
         let r = d.get_rect();
         (d, r)
     }

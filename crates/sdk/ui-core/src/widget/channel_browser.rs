@@ -1220,12 +1220,7 @@ impl Widget for ChannelBrowser {
         Some(winit::window::ImePurpose::Normal)
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 }
 
 #[cfg(test)]

@@ -585,9 +585,7 @@ impl Widget for ReaderPane {
         fill_leaf(taffy, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -671,9 +669,5 @@ impl Widget for ReaderPane {
 
     fn name(&self) -> &'static str {
         "FeedsReader"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
