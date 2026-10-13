@@ -410,14 +410,16 @@ struct Swipe {
 
 /// A wheel event's sideways direction when horizontal motion dominates
 /// (positive is forward, like Super+Right), and whether it is past the step
-/// threshold: half a line, a pixel delta counting 40 px to the line. The
+/// threshold: half a line, a pixel delta counting 40 px to the line. Winit's
+/// deltas are negative for a wheel turned (or fingers scrolling) rightward,
+/// which scrolls content toward its later columns and so steps forward. The
 /// shell's overlay host classifies wheel input the same way.
 fn sideways(delta: MouseScrollDelta) -> Option<(i32, bool)> {
     let (dx, dy) = match delta {
         MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
         MouseScrollDelta::PixelDelta(p) => (p.x / 40.0, p.y / 40.0),
     };
-    (dx.abs() > dy.abs()).then_some((if dx > 0.0 { 1 } else { -1 }, dx.abs() > 0.5))
+    (dx.abs() > dy.abs()).then_some((if dx < 0.0 { 1 } else { -1 }, dx.abs() > 0.5))
 }
 
 impl DesktopSurface {
@@ -2413,8 +2415,10 @@ mod tests {
         start.checked_add(Duration::from_millis(ms)).unwrap()
     }
 
-    fn lines(dx: f32) -> MouseScrollDelta {
-        MouseScrollDelta::LineDelta(dx, 0.0)
+    /// A sideways wheel turned `rightward` lines (negative: leftward), as
+    /// winit reports it: negated.
+    fn lines(rightward: f32) -> MouseScrollDelta {
+        MouseScrollDelta::LineDelta(-rightward, 0.0)
     }
 
     #[test]
@@ -2493,7 +2497,7 @@ mod tests {
         }
         assert_eq!(focused(&mut surface, &handle), 0);
         assert!(
-            surface.route_swipe(MouseScrollDelta::LineDelta(1.0, 0.0), 1.0, ms(t, 1000)),
+            surface.route_swipe(lines(1.0), 1.0, ms(t, 1000)),
             "a mouse's sideways wheel click steps like the shell's"
         );
         assert_eq!(focused(&mut surface, &handle), 1);

@@ -224,3 +224,20 @@ test('mounted semantic watch latches with pixels and preserves input through dis
  watch.close();assert.equal(requests.at(-1).observe,false);assert.equal(watch.read(),null);
  observer.close();await f.host.cleanup();assert.throws(()=>f.host.observeSemanticTarget(target),/closed/);
 });
+test('desktop chords typed in a focused text field reach the desktop, other modified keys stay the browser\'s',async()=>{
+ const f=await fixture();f.host.editor.focus();
+ const canvasKeys=[];f.host.canvas.addEventListener('keydown',event=>canvasKeys.push([event.key,Boolean(event.metaKey),Boolean(event.ctrlKey),Boolean(event.altKey)]));
+ // The fixture is a Mac: Super is Cmd, the stand-in Ctrl+Option.
+ for(const init of [{key:'ArrowRight',code:'ArrowRight',metaKey:true},{key:'ArrowLeft',code:'ArrowLeft',ctrlKey:true,altKey:true},{key:'PageDown',code:'PageDown',metaKey:true},{key:'¡',code:'Digit1',ctrlKey:true,altKey:true}]){
+  const event=new DomEvent('keydown',init);f.host.editor.dispatchEvent(event);
+  assert.equal(event.defaultPrevented,true,`${init.code} is the desktop's, not the page's`);
+  f.host.editor.dispatchEvent(new DomEvent('keyup',{key:init.key,code:init.code}));
+ }
+ assert.deepEqual(canvasKeys,[['ArrowRight',true,false,false],['ArrowLeft',false,true,true],['PageDown',true,false,false],['¡',false,true,true]]);
+ canvasKeys.length=0;
+ for(const init of [{key:'ArrowLeft',code:'ArrowLeft',altKey:true},{key:'ArrowLeft',code:'ArrowLeft',altKey:true,shiftKey:true},{key:'l',code:'KeyL',metaKey:true}]){
+  const event=new DomEvent('keydown',init);f.host.editor.dispatchEvent(event);
+  assert.equal(event.defaultPrevented,false,`${JSON.stringify(init)} stays native`);
+ }
+ assert.deepEqual(canvasKeys,[],'word movement and browser chords are not desktop chords');
+});

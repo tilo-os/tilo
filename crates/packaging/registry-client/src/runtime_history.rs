@@ -7,6 +7,29 @@
 use anyhow::{Result, bail};
 use ed25519_dalek::SigningKey;
 use registry_types::{RegistryEntry, RegistryVersion};
+use std::fmt;
+
+/// An exact runtime is absent from the verified public catalogue while a
+/// pending app release still needs it for rollback.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MissingRuntime {
+    pub package_id: String,
+    pub version: String,
+    pub architecture: String,
+    pub runtime: String,
+}
+
+impl fmt::Display for MissingRuntime {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}@{} ({}) needs exact runtime {}; fewer than four newer offered releases remain; restore the runtime instead",
+            self.package_id, self.version, self.architecture, self.runtime
+        )
+    }
+}
+
+impl std::error::Error for MissingRuntime {}
 
 /// Re-sign `entry` after reconciling obsolete, unpublished SDK dependencies.
 /// The caller must first verify the catalogue against its existing owner pin.
@@ -84,18 +107,20 @@ pub fn reconcile(
         .collect();
     for version in &dropped {
         if !registry_types::retention::may_drop(version, &installable) {
-            bail!(
-                "{}@{} ({}) needs exact runtime {}; fewer than four newer offered releases remain; restore the runtime instead",
-                entry.package_id,
-                version.version,
-                version
+            return Err(MissingRuntime {
+                package_id: entry.package_id.clone(),
+                version: version.version.clone(),
+                architecture: version
                     .target()
-                    .map_or("", |target| target.architecture.as_str()),
-                version
+                    .map_or("", |target| target.architecture.as_str())
+                    .to_owned(),
+                runtime: version
                     .target()
                     .and_then(|target| target.runtime.as_deref())
-                    .unwrap_or_default(),
-            );
+                    .unwrap_or_default()
+                    .to_owned(),
+            }
+            .into());
         }
     }
     if !dropped.is_empty() {

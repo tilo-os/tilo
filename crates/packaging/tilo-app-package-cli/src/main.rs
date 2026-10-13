@@ -408,6 +408,11 @@ struct EntryArgs {
     /// Existing registry owner pin used with --runtime-catalogue.
     #[arg(long, requires = "runtime_catalogue")]
     registry_owner_pubkey: Option<String>,
+    /// Write a machine-readable exact-runtime refusal for a publisher's
+    /// bounded signed-catalogue readiness wait. No file is written for any
+    /// other verification or packaging failure.
+    #[arg(long, requires = "runtime_catalogue")]
+    missing_runtime_output: Option<PathBuf>,
     /// Payload objects of a thin .tapp, as `split` wrote them; they are
     /// hosted beside the .tapp at `--url`.
     #[arg(long)]
@@ -1232,6 +1237,49 @@ fn reconcile_entry_history(
     Ok(())
 }
 
+fn record_missing_runtime(path: Option<&Path>, error: &anyhow::Error) -> Result<()> {
+    if let (Some(path), Some(missing)) = (
+        path,
+        error.downcast_ref::<registry_client::runtime_history::MissingRuntime>(),
+    ) {
+        let record = serde_json::json!({
+            "package_id": missing.package_id,
+            "version": missing.version,
+            "architecture": missing.architecture,
+            "runtime": missing.runtime,
+        });
+        std::fs::write(path, serde_json::to_vec(&record)?)
+            .with_context(|| format!("write exact-runtime refusal to {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod runtime_readiness_tests {
+    use super::record_missing_runtime;
+
+    #[test]
+    fn writes_only_typed_exact_runtime_refusals() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("missing.json");
+        let missing = registry_client::runtime_history::MissingRuntime {
+            package_id: "so.tilo.agent".into(),
+            version: "1.0.8".into(),
+            architecture: "aarch64".into(),
+            runtime: "tilo-runtime/exact".into(),
+        };
+        record_missing_runtime(Some(&path), &missing.into()).unwrap();
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(record["runtime"], "tilo-runtime/exact");
+        assert_eq!(record["architecture"], "aarch64");
+
+        std::fs::remove_file(&path).unwrap();
+        record_missing_runtime(Some(&path), &anyhow::anyhow!("invalid signature")).unwrap();
+        assert!(!path.exists());
+    }
+}
+
 fn load_previous_entry(path: &Path) -> Result<registry_types::RegistryEntry> {
     let bytes =
         std::fs::read(path).with_context(|| format!("read previous entry {}", path.display()))?;
@@ -1388,7 +1436,10 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
             &retention,
         )?
     };
-    reconcile_entry_history(args, &mut entry, &signer)?;
+    if let Err(error) = reconcile_entry_history(args, &mut entry, &signer) {
+        record_missing_runtime(args.missing_runtime_output.as_deref(), &error)?;
+        return Err(error);
+    }
     print_entry(&entry, action, &signer)?;
     // `build_entry` always builds exactly one version; `.first()`
     // avoids indexing so a future refactor there can't turn this into a panic.
