@@ -19,6 +19,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+fluent.workspace = true
 lru.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
@@ -59,7 +60,8 @@ tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 base64.workspace = true
 flate2.workspace = true
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
-app-host = { path = "../../crates/packaging/app-host", default-features = false, features = ["test-support"] }
+app-host = { path = "../../crates/packaging/app-host", default-features = false, features = ["test-support", "service"] }
+runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }
 capnp.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
