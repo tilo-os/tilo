@@ -349,11 +349,7 @@ pub fn export_edited_content(
     let photo = library
         .photo(photo_id)
         .ok_or_else(|| "that photograph is no longer in the library".to_string())?;
-    let source_content = photo
-        .image
-        .content
-        .as_deref()
-        .ok_or_else(|| "the photograph's bytes are not kept as content".to_string())?;
+    let source_content = &photo.image.content;
     let edits = photo.edits;
     let source = store
         .read(source_content)

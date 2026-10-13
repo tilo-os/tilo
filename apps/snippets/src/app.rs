@@ -736,81 +736,23 @@ fn selection_of(id: &str) -> Option<Selection> {
     }
 }
 
-/// The sidebar: the shared [`NavList`], kept in step with the library.
-struct SidebarNav {
-    list: NavList,
-    core: Shared,
-    sections: Vec<NavSection>,
-    selected: Option<String>,
-}
-
-impl SidebarNav {
-    fn new(core: &Shared, requests: &Requests) -> Self {
-        let requests = Rc::clone(requests);
-        let (sections, selected) = {
-            let core = core.borrow();
-            (core.nav_sections(), nav_id(&core.selection))
-        };
-        let list = NavList::new(sections.clone())
-            .with_id("snippets.sidebar")
-            .with_accessible_name(tr("snippets-library"))
-            .selected(&selected)
-            .on_select(move |id| {
-                if let Some(selection) = selection_of(&id) {
-                    requests.borrow_mut().push(Action::Select(selection));
-                }
-            });
-        Self {
-            list,
-            core: Rc::clone(core),
-            sections,
-            selected: Some(selected),
-        }
-    }
-
-    /// Follow the library and the chosen place.
-    fn refresh(&mut self) {
-        let (sections, selected) = {
-            let core = self.core.borrow();
-            (core.nav_sections(), nav_id(&core.selection))
-        };
-        if sections != self.sections {
-            self.list.set_sections(sections.clone());
-            self.sections = sections;
-        }
-        if self.selected.as_deref() != Some(selected.as_str())
-            || self.list.selected_id().as_deref() != Some(selected.as_str())
-        {
-            self.list.set_selected(Some(&selected));
-            self.selected = Some(selected);
-        }
-    }
-}
-
-impl ui::widget::Decorator for SidebarNav {
-    type Inner = NavList;
-
-    fn inner(&self) -> &NavList {
-        &self.list
-    }
-
-    fn inner_mut(&mut self) -> &mut NavList {
-        &mut self.list
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.refresh();
-        Widget::sync(&mut self.list, state, path);
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.refresh();
-        Widget::update(&mut self.list, state, path)
-    }
-
-    fn name(&self) -> &'static str {
-        "SnippetsSidebar"
-    }
+/// The sidebar: the shared [`NavList`], following the library and the
+/// chosen place.
+fn sidebar(core: &Shared, requests: &Requests) -> NavList {
+    let requests = Rc::clone(requests);
+    let core = Rc::clone(core);
+    NavList::new(Vec::new())
+        .with_id("snippets.sidebar")
+        .with_accessible_name(tr("snippets-library"))
+        .on_select(move |id| {
+            if let Some(selection) = selection_of(&id) {
+                requests.borrow_mut().push(Action::Select(selection));
+            }
+        })
+        .follow(move || {
+            let core = core.try_borrow().ok()?;
+            Some((core.nav_sections(), Some(nav_id(&core.selection))))
+        })
 }
 
 /// Result of routing an event to the variables dialog.
@@ -866,7 +808,7 @@ impl SnippetsApp {
         };
         let mut shell = NavShell::new()
             .with_id("snippets.shell")
-            .sidebar(Box::new(SidebarNav::new(&core, &requests)))
+            .sidebar(Box::new(sidebar(&core, &requests)))
             .content(detail_pane::build(&core, &requests))
             .overview_header(
                 titles.0.clone(),

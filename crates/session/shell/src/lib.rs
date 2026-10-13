@@ -32,6 +32,7 @@ pub mod onboarding_view;
 pub mod polkit_agent;
 pub mod portal;
 pub mod priority_contacts;
+mod random;
 #[cfg(test)]
 #[path = "../tests/runtime_host.rs"]
 mod runtime_host_tests;
