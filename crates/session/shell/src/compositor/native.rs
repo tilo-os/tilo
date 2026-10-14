@@ -135,14 +135,27 @@ fn insert_preedit_route(row: &mut serde_json::Value, route: &str, source: u64) {
     }
 }
 
+/// The workspace hosts of each room this session holds, by room, when the
+/// backend is headless: their viewers (web members) watch that room's
+/// windows through them.
+type RoomHosts =
+    std::collections::BTreeMap<tilo_desktop_model::RoomId, std::collections::HashSet<u64>>;
+
+/// Every host in `hosts`, whichever room it hosts.
+fn all_hosts(hosts: &RoomHosts) -> std::collections::HashSet<u64> {
+    hosts.values().flatten().copied().collect()
+}
+
 /// The legacy windows to encode for viewers: none while nobody watches the
 /// backend, so a headless machine's encoders stop and receivers get
 /// `SurfaceStreamEnd` at once.
 ///
-/// `viewer_hosts` are the peer handles of the active room's workspace hosts
-/// when the backend is headless: its viewers watch through that host (which
-/// decides which of them see and control what), so every legacy window of
-/// the active workspace is shared with it, not only the explicitly shared.
+/// `viewer_hosts` are each room's workspace hosts when the backend is
+/// headless: its viewers watch through that host (which decides which of
+/// them see and control what), so every legacy window of a workspace whose
+/// room has one is shared with it, not only the explicitly shared. A headless
+/// machine's "active" workspace is nobody's screen, so every room counts; a
+/// room's windows go only to that room's hosts.
 ///
 /// `personal` are the person's other devices showing a tab, by tab: a legacy
 /// window streams to each device showing its tab, in whichever workspace it
@@ -152,12 +165,13 @@ fn insert_preedit_route(row: &mut serde_json::Value, route: &str, source: u64) {
 fn desired_legacy_shares(
     tree: &crate::shell::state::WorkspaceTree,
     watched: bool,
-    viewer_hosts: &std::collections::HashSet<u64>,
+    viewer_hosts: &RoomHosts,
     personal: &PersonalViewers,
 ) -> DesiredShares {
     if !watched {
         return HashMap::new();
     }
+    let hosts = all_hosts(viewer_hosts);
     let mut desired = HashMap::new();
     for workspace in &tree.desktop.workspaces {
         let active = workspace.id == tree.desktop.active;
@@ -171,15 +185,16 @@ fn desired_legacy_shares(
                 continue;
             };
             let mut peers = std::collections::HashSet::new();
-            if active {
-                if let Some(shared) = workspace
+            if active
+                && let Some(shared) = workspace
                     .shared_surfaces
                     .iter()
                     .find_map(|(surface, peers)| (surface == *surface_id).then(|| peers.clone()))
-                {
-                    peers.extend(shared);
-                }
-                peers.extend(viewer_hosts);
+            {
+                peers.extend(shared);
+            }
+            if let Some(room_hosts) = viewer_hosts.get(&workspace.room) {
+                peers.extend(room_hosts);
             }
             let mut decode_limits = HashMap::new();
             if let Some(viewers) = personal.get(&tab.id) {
@@ -191,7 +206,7 @@ fn desired_legacy_shares(
             if !peers.is_empty() {
                 // Hosts bridge the window to web members, which draw pages
                 // themselves; any other viewer decodes video.
-                let paint = peers.iter().all(|peer| viewer_hosts.contains(peer));
+                let paint = peers.iter().all(|peer| hosts.contains(peer));
                 desired.insert(
                     *surface_id,
                     (
@@ -217,7 +232,7 @@ struct LegacyShareInputs {
     tree: u64,
     /// Whether the backend was watched once the plan had asked for it.
     watched: bool,
-    viewer_hosts: std::collections::HashSet<u64>,
+    viewer_hosts: RoomHosts,
     personal: PersonalViewers,
 }
 
@@ -245,7 +260,7 @@ impl LegacySharePlan {
     fn refresh(
         &mut self,
         tree: &crate::shell::state::WorkspaceTreeHandle,
-        viewers: (std::collections::HashSet<u64>, PersonalViewers),
+        viewers: (RoomHosts, PersonalViewers),
         watched: bool,
         watch: impl FnOnce(bool) -> bool,
     ) -> bool {
@@ -263,12 +278,11 @@ impl LegacySharePlan {
         }
         let (desired, watched) = {
             let tree = tree.read();
-            // A headless session whose active room has a host shows its
-            // legacy windows to the host's viewers (browsers that opened
-            // them), and the person's other devices the windows they show:
-            // it paints and encodes while it has a viewer, and stops with
-            // the last.
-            let for_host = (!viewer_hosts.is_empty() && has_legacy_windows(&tree))
+            // A headless session whose rooms have hosts shows their legacy
+            // windows to the hosts' viewers (browsers that opened them), and
+            // the person's other devices the windows they show: it paints and
+            // encodes while it has a viewer, and stops with the last.
+            let for_host = has_hosted_legacy_windows(&tree, &viewer_hosts)
                 || hosts_viewed_window(&tree, &personal);
             let watched = watch(for_host);
             let desired = desired_legacy_shares(&tree, watched, &viewer_hosts, &personal);
@@ -295,7 +309,7 @@ impl LegacySharePlan {
 
     /// The headless host viewers and the person's devices the shares were
     /// derived for.
-    fn viewers(&self) -> Option<(&std::collections::HashSet<u64>, &PersonalViewers)> {
+    fn viewers(&self) -> Option<(&RoomHosts, &PersonalViewers)> {
         self.inputs
             .as_ref()
             .map(|inputs| (&inputs.viewer_hosts, &inputs.personal))
@@ -392,14 +406,18 @@ fn shown_hosted_windows(
 }
 
 /// Whether the active workspace shows a legacy window.
-fn has_legacy_windows(tree: &crate::shell::state::WorkspaceTree) -> bool {
-    tree.desktop.active_workspace().is_some_and(|workspace| {
-        workspace
-            .strips
-            .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .any(|tab| matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. }))
+/// Whether a workspace whose room has a host holds a legacy window.
+fn has_hosted_legacy_windows(tree: &crate::shell::state::WorkspaceTree, hosts: &RoomHosts) -> bool {
+    tree.desktop.workspaces.iter().any(|workspace| {
+        hosts
+            .get(&workspace.room)
+            .is_some_and(|room| !room.is_empty())
+            && workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|tab| matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. }))
     })
 }
 use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
@@ -12549,19 +12567,23 @@ pub fn run() {
             );
             let personal_viewers =
                 crate::shell::device_fabric_runtime::window_viewers(continuity_policy.current());
-            let viewer_hosts = if backend_kind == BackendKind::Headless {
-                let active_room = {
+            let viewer_hosts: RoomHosts = if backend_kind == BackendKind::Headless {
+                let rooms = {
                     let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                     let tree = tree_handle.read();
                     tree.desktop
-                        .active_workspace()
+                        .workspaces
+                        .iter()
                         .map(|workspace| workspace.room)
+                        .collect::<Vec<_>>()
                 };
-                active_room.map_or_else(std::collections::HashSet::new, |room| {
-                    net.viewer_hosts(room)
-                })
+                rooms
+                    .into_iter()
+                    .map(|room| (room, net.viewer_hosts(room)))
+                    .filter(|(_, hosts)| !hosts.is_empty())
+                    .collect()
             } else {
-                std::collections::HashSet::new()
+                RoomHosts::new()
             };
             let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
             let watched_before = backend.watched();
@@ -12585,6 +12607,7 @@ pub fn run() {
             // so it is told only when they were derived again.
             if replanned && let Some((viewer_hosts, personal_viewers)) = legacy_shares.viewers() {
                 let desired = &legacy_shares.desired;
+                let viewer_hosts = all_hosts(viewer_hosts);
                 state.set_headless_host_viewers(
                     desired
                         .iter()
@@ -16083,7 +16106,8 @@ mod tests {
             focus_history: Vec::new(),
         });
         workspace.shared_surfaces.share(7, 9);
-        let none = std::collections::HashSet::new();
+        let room = workspace.room;
+        let none = RoomHosts::new();
         let nobody = std::collections::BTreeMap::new();
         let share = |app_id: &str, tab: u64, viewers: &[u64], paint: bool| {
             crate::compositor::state::LegacyShare {
@@ -16104,7 +16128,7 @@ mod tests {
             !watched.contains_key(&8),
             "without a viewer host only explicit shares stream"
         );
-        let hosts = [42].into_iter().collect();
+        let hosts: RoomHosts = [(room, [42].into_iter().collect())].into_iter().collect();
         let through_host = desired_legacy_shares(&tree, true, &hosts, &nobody);
         assert_eq!(
             through_host.get(&7).map(|(share, _)| share),
@@ -16113,7 +16137,17 @@ mod tests {
         assert_eq!(
             through_host.get(&8).map(|(share, _)| share),
             Some(&share("org.chromium.Chromium", 14, &[42], true)),
-            "a viewer host receives every legacy window of the active workspace"
+            "a viewer host receives every legacy window of the workspace whose room it hosts"
+        );
+        let elsewhere: RoomHosts = [(
+            tilo_desktop_model::RoomId::new(),
+            [43].into_iter().collect(),
+        )]
+        .into_iter()
+        .collect();
+        assert!(
+            !desired_legacy_shares(&tree, true, &elsewhere, &nobody).contains_key(&8),
+            "another room's host receives none of this room's windows"
         );
         assert!(
             desired_legacy_shares(&tree, false, &hosts, &nobody).is_empty(),
@@ -16145,12 +16179,7 @@ mod tests {
             });
         tree.desktop.workspaces[0].shared_surfaces.share(7, 9);
         let tree = tree.shared();
-        let nobody = || {
-            (
-                std::collections::HashSet::new(),
-                std::collections::BTreeMap::new(),
-            )
-        };
+        let nobody = || (RoomHosts::new(), std::collections::BTreeMap::new());
         let viewers_of = |plan: &LegacySharePlan| {
             plan.shares.get(&7).map(|share| {
                 share
@@ -16200,7 +16229,7 @@ mod tests {
                 decode_limits: std::collections::BTreeMap::new(),
             }],
         )]);
-        let with_device = || (std::collections::HashSet::new(), personal.clone());
+        let with_device = || (RoomHosts::new(), personal.clone());
         assert!(plan.refresh(&tree, with_device(), true, |for_host| {
             assert!(
                 for_host,
@@ -16264,7 +16293,7 @@ mod tests {
             tree.desktop.workspaces.push(workspace);
         }
         tree.desktop.active = WorkspaceId(100);
-        let nobody = std::collections::HashSet::new();
+        let nobody = RoomHosts::new();
         let no_device = std::collections::BTreeMap::new();
 
         let started = Instant::now();
