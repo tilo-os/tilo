@@ -135,17 +135,11 @@ pub fn thin_runtime_available() -> bool {
 /// The directories fonts are installed in, as the XDG base directories and
 /// fontconfig's defaults name them.
 fn font_dirs() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let data_home = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home.as_ref().map(|home| home.join(".local/share")));
-    let data_dirs = std::env::var_os("XDG_DATA_DIRS")
-        .unwrap_or_else(|| OsString::from("/usr/local/share:/usr/share"));
-    data_home
+    tilo_paths::xdg::data_home()
         .into_iter()
-        .chain(std::env::split_paths(&data_dirs))
+        .chain(tilo_paths::xdg::data_dirs())
         .map(|dir| dir.join("fonts"))
-        .chain(home.map(|home| home.join(".fonts")))
+        .chain(tilo_paths::home().map(|home| home.join(".fonts")))
         .collect()
 }
 
