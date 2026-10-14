@@ -71,6 +71,7 @@ NON_COMPILING_DOCS = {
     "tools/dev/remote-source-prepare.md",
     "docs/ci-emergency-relief.md",
     "docs/headless-testing.md",
+    "docs/policies.md",
 }
 # These orchestration/validation helpers are exercised by the mandatory quality
 # job's tools/policy/run.sh unittest discovery. They are not Rust build
@@ -104,6 +105,9 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/suites.py": "tools/tests/test_suites.py",
     "tools/ci/suites.toml": "tools/tests/test_suites.py",
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
+    "tools/policy/added_line_policy.py": "tools/tests/test_added_line_policy.py",
+    "tools/policy/check_commit_policy.py": "tools/tests/test_commit_hooks.py",
+    "scripts/scan-secrets.sh": "tools/tests/test_added_line_policy.py",
     "tools/policy/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/policy/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
     "tools/policy/check_workflow_actions.py": "tools/tests/test_workflow_actions.py",
