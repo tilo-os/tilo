@@ -908,9 +908,13 @@ impl Rooms {
         let workspace_id = room.workspace_id();
         let open = host.workspaces.lock().await.contains_key(&workspace_id);
         if !open {
-            let store =
-                crate::store::WorkspaceStore::open(host.access.state_root(), workspace_id, true)
-                    .map_err(|error| error.to_string())?;
+            let store = crate::store::WorkspaceStore::open_with_payloads(
+                host.access.state_root(),
+                workspace_id,
+                true,
+                host.access.shell_payloads().clone(),
+            )
+            .map_err(|error| error.to_string())?;
             if store
                 .load_snapshot()
                 .map_err(|error| error.to_string())?
@@ -930,6 +934,7 @@ impl Rooms {
         let workspace = crate::workspace_io::get_or_initialize(
             &host.workspaces,
             host.access.state_root().to_path_buf(),
+            host.access.shell_payloads(),
             workspace_id,
             true,
             crate::room_access::AdmissionMode::Governed,
