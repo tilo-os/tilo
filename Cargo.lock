@@ -17953,6 +17953,7 @@ dependencies = [
  "tilo-clock",
  "tilo-connector",
  "tilo-delivery-protocol",
+ "tilo-desktop-model",
  "tilo-doc",
  "tilo-environment",
  "tilo-files",

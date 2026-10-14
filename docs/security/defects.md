@@ -915,6 +915,22 @@ by `os/tests/kernel_hardening_invariants.sh`) still applies; the MAC layer does 
 enforcing allow-set, drop `typepermissive`, and add an invariant that fails while the domain is
 permissive.
 
+**Resolved.** `tilo-base.cil` no longer makes `tilo_fs_t` permissive; its allow-set names each
+type fs uses, grouped by subsystem with the reason for each rule.
+`os/tests/kernel_hardening_invariants.sh` ("root FUSE daemon SELinux domain enforces with named
+types") fails if a `typepermissive` returns, if the FUSE device grant disappears, or if a rule
+grants `tilo_fs_t` a whole attribute, an unconfined domain or every permission of a class.
+Receipt: on a dev VM (image `tilo-vm:main-f4c9380-ci`, aarch64) with fs.service running under a
+certified device identity, the AVCs were collected with the domain permissive and dontaudit rules
+disabled, then this module was loaded and the same workload re-run enforcing: mounting
+`/var/workspace`, file create/write/append/rename/copy/truncate/chmod/xattr/delete as two local
+accounts, a 5 MB content round trip, the storage socket's snapshot and eviction requests, Iroh
+waking (relays, net report, DNS), a stop and start, and the native data plane's probes on a Btrfs
+store volume. No `tilo_fs_t` denial was logged and every operation matched the permissive run.
+Peer sync with a second device was not part of that run. The shipped kernel has no fanotify, so
+the native data plane itself cannot start there (fs serves FUSE); its own rules will come from
+AVCs on a kernel that has it.
+
 ## P1-11 — A Read Deny below the room does not withhold that record's channel key
 
 `docs/architecture/permissions.md` §5.3. Room grants can deny Read on one app or record, and every

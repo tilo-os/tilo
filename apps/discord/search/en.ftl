@@ -3,4 +3,4 @@
 # merely near its category. Desktop search matches every language's words
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
-search-keywords = discord bridge, discord server, connector, bridge a server
+search-keywords = voice chat, communities, community servers

@@ -152,6 +152,10 @@ Chat starts with while the room's workspace has none, each with the id
 `c_<name>` (`-` becomes `_`) so a bridged Discord server maps onto the same
 channels on every start. Without it no channels are made, and a chat that
 has channels keeps exactly those.
+`TILO_ROOMS_STRIPS` (for example `Main,Games,Quiet`) are the strips, the
+named places people gather in, of the room's shared desktop: each is added
+to its first workspace at start where none has that name, so the first
+person in finds them in the top bar. The strips people make are kept.
 
 The service is the room's API and relay, never a page: the Tilo app lives
 at its web entry (`TILO_ROOMS_WEB_ENTRY`, e.g. `https://app.example/`), which
@@ -183,6 +187,7 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_PERSISTENT` | unset | the room's name; turns persistent mode on |
 | `TILO_ROOMS_NAME` | `<name>`, capitalized | the name people see for the room (1–80 characters) |
 | `TILO_ROOMS_CHAT_CHANNELS` | unset: none | channels Chat starts with while it has none, comma-separated names of lowercase letters, digits and `-` |
+| `TILO_ROOMS_STRIPS` | unset: none | strips the shared desktop has, comma-separated names of up to 48 characters |
 | `TILO_ROOMS_RELAY_ORIGIN` | required | the relay's public origin, e.g. `https://rooms.example` |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the relay's plain listener the ingress forwards `/peer/` to |
 | `TILO_ROOMS_WEB_ENTRY` | none | the Tilo app's web entry (e.g. `https://app.example/`), announced by the relay so `share-link` and bots mint links that open the room there; without it the room's resources cannot be shared as links |

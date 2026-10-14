@@ -438,6 +438,10 @@ pub struct StoreApp {
     flatpak_available: bool,
     flatpak_error: Option<String>,
     flatpak_checking: bool,
+    /// Enabled native repositories that have not answered the current
+    /// refresh. An installed app none of the others lists says so once, on
+    /// its details page.
+    unanswered_repositories: Vec<String>,
     /// Which item the user has expanded in the responsive detail sheet.
     /// Keyed by [`StoreItem::id`] and retained across window rebuilds so the
     /// document-backed route does not disappear during a responsive reflow.
@@ -516,6 +520,7 @@ impl StoreApp {
             flatpak_available: false,
             flatpak_error: Some(ui::i18n!("store-flatpak-checking")),
             flatpak_checking: true,
+            unanswered_repositories: Vec::new(),
             focused_detail: None,
             technical_details_open: false,
             structure_dirty: true,
@@ -759,6 +764,13 @@ impl StoreApp {
         self.focused_detail = None;
         self.pending_detail = None;
         self.structure_dirty = true;
+    }
+
+    pub fn set_unanswered_repositories(&mut self, repositories: Vec<String>) {
+        if self.unanswered_repositories != repositories {
+            self.unanswered_repositories = repositories;
+            self.structure_dirty = true;
+        }
     }
 
     pub fn set_remotes(&mut self, remotes: Vec<crate::flathub_client::Remote>) {
@@ -1306,6 +1318,7 @@ impl StoreApp {
         self.set_flatpak_available(snap.flatpak_available);
         self.flatpak_error = snap.flatpak_error;
         self.set_remotes(snap.remotes);
+        self.set_unanswered_repositories(snap.unanswered_repositories);
         if current_detail && current_query {
             self.set_status_line(snap.status_line);
             self.set_operation_error(snap.operation_error);
@@ -1365,6 +1378,9 @@ impl StoreApp {
                             "supported_language_count".into(),
                             serde_json::json!(item.supported_languages.len()),
                         );
+                        if let Some(notice) = self.local_only_notice(item) {
+                            fields.insert("notice".into(), serde_json::json!(notice));
+                        }
                         Ok(detail)
                     })
             })
@@ -2506,6 +2522,7 @@ mod tests {
                 flatpak_available: true,
                 flatpak_error: None,
                 operation_error: Some("Earlier detail request failed".into()),
+                unanswered_repositories: Vec::new(),
             });
             assert_eq!(
                 app.focused_detail, selected,
@@ -2557,6 +2574,7 @@ mod tests {
             flatpak_available: true,
             flatpak_error: None,
             operation_error: error,
+            unanswered_repositories: Vec::new(),
         };
         app.apply_worker_snapshot(snapshot(
             crate::worker::DetailUpdate::Requested {
@@ -2613,6 +2631,7 @@ mod tests {
             flatpak_available: true,
             flatpak_error: None,
             operation_error: error.map(str::to_owned),
+            unanswered_repositories: Vec::new(),
         };
         app.apply_worker_snapshot(snapshot("notes", Vec::new(), Some("Earlier search failed")));
         assert_eq!(
@@ -2680,6 +2699,7 @@ mod tests {
                 flatpak_available: true,
                 flatpak_error: None,
                 operation_error: None,
+                unanswered_repositories: Vec::new(),
             });
         })
         .unwrap();
@@ -2786,6 +2806,7 @@ mod tests {
                 flatpak_available: true,
                 flatpak_error: None,
                 operation_error: None,
+                unanswered_repositories: Vec::new(),
             });
             store.set_worker_busy(true);
         })
