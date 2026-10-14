@@ -2901,6 +2901,9 @@ struct TestControlConn {
     /// Wakes the compositor loop when request bytes arrive on this stream;
     /// removed from the loop together with the connection.
     wake: Option<calloop::RegistrationToken>,
+    /// Wakes the loop when the stream can take more of a response the
+    /// socket did not take whole; registered only while one is unfinished.
+    output_wake: Option<calloop::RegistrationToken>,
     closed: bool,
     /// An `actions_invoke` answered once it is admitted, or once it settles.
     pending_invocation: Option<ControlInvocation>,
@@ -2989,6 +2992,7 @@ impl TestControlConn {
             agent,
             admin: false,
             wake: None,
+            output_wake: None,
             closed: false,
             pending_invocation: None,
             pending_listing: None,
@@ -3020,6 +3024,55 @@ impl TestControlConn {
         ) {
             Ok(token) => self.wake = Some(token),
             Err(error) => eprintln!("tilo compositor: test_control conn wake source: {error}"),
+        }
+    }
+
+    /// Keep a wake on the stream's room for output exactly while a response
+    /// is partly written. A response larger than the socket's send buffer
+    /// (a full action listing is megabytes) is written as far as the socket
+    /// takes it and the rest retained; the read wake never fires for the
+    /// driver draining it, so without this an idle compositor sent the next
+    /// piece only when something unrelated woke it, seconds apart, and a
+    /// listing took a minute to arrive. Level-triggered: every pump writes
+    /// until the socket would block, so it fires again only once the driver
+    /// has read, and a driver that stops reading leaves it quiet.
+    fn watch_output(&mut self, handle: &calloop::LoopHandle<'static, State>) {
+        let unfinished = !self.closed && self.output_offset < self.output.len();
+        match (unfinished, self.output_wake.is_some()) {
+            (true, false) => {
+                let clone = match self.reader.get_ref().try_clone() {
+                    Ok(clone) => clone,
+                    Err(error) => {
+                        eprintln!("tilo compositor: test_control output wake clone: {error}");
+                        return;
+                    }
+                };
+                match handle.insert_source(
+                    Generic::new(clone, Interest::WRITE, Mode::Level),
+                    |_, _, _| Ok(PostAction::Continue),
+                ) {
+                    Ok(token) => self.output_wake = Some(token),
+                    Err(error) => {
+                        eprintln!("tilo compositor: test_control output wake source: {error}");
+                    }
+                }
+            }
+            (false, true) => {
+                if let Some(token) = self.output_wake.take() {
+                    handle.remove(token);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Remove every wake this connection registered with the loop.
+    fn unwatch(&mut self, handle: &calloop::LoopHandle<'static, State>) {
+        for token in [self.wake.take(), self.output_wake.take()]
+            .into_iter()
+            .flatten()
+        {
+            handle.remove(token);
         }
     }
 
@@ -13811,6 +13864,7 @@ pub fn run() {
             } else if std::mem::take(&mut test_control_ctx.client_input_only) {
                 metrics.note_input(Instant::now());
             }
+            conn.watch_output(&event_loop.handle());
             // An agent at work is the person's activity on a hosted machine:
             // without this it locks under its agents after the idle timeout.
             if injected && conn.agent {
@@ -13828,10 +13882,8 @@ pub fn run() {
         // only watching cannot click one.
         chooser_attended.store(!test_control_ctx.agents.is_empty(), Ordering::Release);
         test_control_conns.retain_mut(|conn| {
-            if conn.closed
-                && let Some(token) = conn.wake.take()
-            {
-                event_loop.handle().remove(token);
+            if conn.closed {
+                conn.unwatch(&event_loop.handle());
             }
             !conn.closed
         });
@@ -14169,9 +14221,7 @@ pub fn run() {
     // Close accepted control clients and their duplicated wake descriptors,
     // not merely the socket names, before publishing an unlocked handoff.
     for conn in &mut test_control_conns {
-        if let Some(token) = conn.wake.take() {
-            event_loop.handle().remove(token);
-        }
+        conn.unwatch(&event_loop.handle());
     }
     drop(test_control_conns);
     for token in [
@@ -18004,6 +18054,97 @@ mod tests {
             "the request did not wake the loop (slept {:?})",
             woke.elapsed()
         );
+    }
+
+    /// A response larger than the socket's send buffer (a full action
+    /// listing) goes out in pieces. Each piece the driver drains must wake an
+    /// otherwise idle loop to send the next, so the whole answer arrives
+    /// promptly; and a driver that is not reading must not keep it awake.
+    #[test]
+    fn a_response_larger_than_the_socket_buffer_reaches_a_reading_driver_while_idle() {
+        use std::io::Read as _;
+
+        let mut event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, mut client) = UnixStream::pair().expect("socket pair");
+        client.set_nonblocking(true).expect("nonblocking driver");
+        let mut conn = TestControlConn::new(server, false).expect("server connection");
+        conn.watch(&event_loop.handle());
+        let response = test_control::Response::Answer(serde_json::json!({
+            "blob": "x".repeat(4 * 1024 * 1024),
+        }));
+        let mut expected = serialise_response(&response).into_bytes();
+        expected.push(b'\n');
+        assert_eq!(
+            queue_test_control_response(&mut conn, &response),
+            PendingConnectionProgress::OutputPending,
+            "the response must not fit the socket, or this proves nothing"
+        );
+        conn.watch_output(&event_loop.handle());
+
+        // The driver has not read yet: the full socket must not spin the loop.
+        let unread = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_millis(200)), &mut state)
+            .expect("dispatch before the driver reads");
+        assert!(
+            unread.elapsed() >= Duration::from_millis(150),
+            "a full socket woke the loop before the driver read anything"
+        );
+
+        let started = Instant::now();
+        let mut received = Vec::with_capacity(expected.len());
+        let mut chunk = vec![0_u8; 64 * 1024];
+        loop {
+            loop {
+                match client.read(&mut chunk) {
+                    Ok(0) => panic!("the connection closed mid-response"),
+                    Ok(read) => received.extend_from_slice(&chunk[..read]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("read the response: {error}"),
+                }
+            }
+            if received.len() == expected.len() {
+                break;
+            }
+            // Nothing but the drained socket can wake this loop.
+            let slept = Instant::now();
+            event_loop
+                .dispatch(Some(Duration::from_secs(30)), &mut state)
+                .expect("dispatch");
+            assert!(
+                slept.elapsed() < Duration::from_secs(10),
+                "the drained socket did not wake the idle loop (slept {:?})",
+                slept.elapsed()
+            );
+            let _ = flush_test_control_output(&mut conn);
+            conn.watch_output(&event_loop.handle());
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the response is still not through after {:?}",
+                started.elapsed()
+            );
+        }
+        assert_eq!(
+            received, expected,
+            "the response arrived whole and in order"
+        );
+        assert!(
+            conn.output_wake.is_none(),
+            "a finished response keeps no output wake"
+        );
+
+        // Done: the loop sleeps again.
+        let after = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_millis(200)), &mut state)
+            .expect("idle dispatch after the response");
+        assert!(
+            after.elapsed() >= Duration::from_millis(150),
+            "the loop kept waking after the response was through"
+        );
+        conn.unwatch(&event_loop.handle());
     }
 
     // publishing the socket name for the nested dev loop
