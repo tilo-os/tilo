@@ -437,6 +437,13 @@ pub fn crop_frame(frame: crate::Frame, width: u32, height: u32) -> crate::Frame 
     }
 }
 
+/// Run on a media thread each time a [`RealtimeDecoder`] has a picture
+/// out, so a loop that does not wait for pictures (see
+/// [`RealtimeDecoder::set_picture_wait`]) is woken to collect it with
+/// [`RealtimeDecoder::take_late_picture`] instead of polling. It must not
+/// block: a wake-up ping, not the work itself.
+pub type PictureWake = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 /// One decoded picture from a [`RealtimeDecoder`].
 #[derive(Clone, Debug)]
 pub struct DecodedPicture {
@@ -756,6 +763,10 @@ mod unavailable {
 
         pub fn set_stream_color(&mut self, _color: Option<super::StreamColor>) {}
 
+        pub fn set_picture_wait(&mut self, _wait: Duration) {}
+
+        pub fn set_picture_wake(&mut self, _wake: Option<super::PictureWake>) {}
+
         /// # Errors
         ///
         /// Always [`RealtimeError::NotCompiled`].
@@ -765,6 +776,17 @@ mod unavailable {
             _keyframe_hint: Option<bool>,
         ) -> Result<Option<DecodedPicture>, RealtimeError> {
             Err(RealtimeError::NotCompiled)
+        }
+
+        pub fn picture_pending(&self) -> bool {
+            match self.never {}
+        }
+
+        /// # Errors
+        ///
+        /// Never returns: no decoder exists to drain.
+        pub fn take_late_picture(&mut self) -> Result<Option<DecodedPicture>, RealtimeError> {
+            match self.never {}
         }
     }
 

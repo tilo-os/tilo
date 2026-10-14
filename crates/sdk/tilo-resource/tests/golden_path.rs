@@ -438,11 +438,9 @@ fn apply_and_group_name_the_declared_actions_instead_of_repeating_them() {
         tilo_resource::FIELD_EDIT,
         "a gesture's field edits are members too"
     );
-    // An `apply` member is read as `apply` reads its value: it refers to
-    // `apply`'s schema, published once, rather than copying it.
     assert_eq!(
         group["items"]["oneOf"][2]["properties"]["args"]["properties"][tilo_resource::APPLY_PARAM],
-        json!({"type": "object", "description": tilo_resource::resource::APPLY_MEMBER})
+        tilo_resource::schema::undescribed(&apply)
     );
 
     let invoke = |value: serde_json::Value| {

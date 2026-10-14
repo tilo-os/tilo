@@ -2719,7 +2719,7 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
         .map(Link::Https),
         #[cfg(feature = "iroh")]
         Host::Iroh { addr, relay_url } => {
-            use tilo_relay_session::{ClientError, RelayClient};
+            use tilo_relay_session::RelayClient;
             let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal);
             if let Some(url) = relay_url {
                 builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));
@@ -2743,11 +2743,36 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
             )
             .await
             .map(Link::Iroh)
-            .map_err(|error| match error {
-                ClientError::Iroh(reason) => LinkError::Unavailable(reason),
-                ClientError::Sign(reason) => LinkError::Sign(reason),
-                other => LinkError::Refused(other.to_string()),
-            })
+            .map_err(iroh_link_error)
+        }
+    }
+}
+
+/// How a failed iroh dial reads to the session loop: reachability
+/// (`Unavailable`, retried with backoff) or a host that answered and turned
+/// this device away (`Refused`/`Malformed`, which fail the session after
+/// `REFUSALS_BEFORE_FAILING` in a row). Every variant is named, so a new
+/// client error must be classified here rather than fall into a default.
+#[cfg(feature = "iroh")]
+fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
+    use tilo_relay_session::ClientError;
+    match error {
+        ClientError::UnsupportedProtocol => {
+            LinkError::Unavailable("host does not speak tilo-relay/1".into())
+        }
+        ClientError::Iroh(reason) => LinkError::Unavailable(reason),
+        // Only the v2 private channel closes this way; a v1 dial never
+        // produces it, and if one did the transport is simply gone.
+        ClientError::PrivateTransportClosed => {
+            LinkError::Unavailable(ClientError::PrivateTransportClosed.to_string())
+        }
+        ClientError::Sign(reason) => LinkError::Sign(reason),
+        ClientError::Codec(reason) => LinkError::Malformed(reason),
+        // A host that rejects the device either fails its ack (auth) or
+        // closes the handshake stream, which surfaces as an I/O error on the
+        // next frame read.
+        error @ (ClientError::Auth(_) | ClientError::Io(_)) => {
+            LinkError::Refused(error.to_string())
         }
     }
 }
@@ -2956,3 +2981,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "iroh"))]
+mod iroh_connect_tests;

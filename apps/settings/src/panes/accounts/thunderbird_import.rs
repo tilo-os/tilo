@@ -10,7 +10,7 @@ use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, SettingsSection, caption, card_with_action, note, row, rows};
+use crate::widgets::{El, caption, card_with_action, rows};
 
 pub(super) fn discover(
     app: &SettingsApp,
@@ -136,7 +136,7 @@ impl AccountsPane {
         vec![root]
     }
 
-    pub(super) fn thunderbird_import_card(&self) -> SettingsSection {
+    pub(super) fn thunderbird_import_card(&self) -> El {
         let button = Box::new(self.bound(
             Button::new(
                 "settings.accounts.import.choose",
@@ -144,15 +144,15 @@ impl AccountsPane {
             ),
             AccountsEffect::ChooseThunderbirdMetadata,
         ));
-        let mut body = vec![note(&t("accounts-import-about"))];
+        let mut body = vec![caption(&t("accounts-import-about"))];
         if let Some(status) = &self.import_review.status {
-            body.push(note(status));
+            body.push(caption(status));
         }
         for choice in &self.import_review.choices {
-            body.extend(self.import_choice_widgets(choice).into_iter().map(row));
+            body.extend(self.import_choice_widgets(choice));
         }
         if !self.import_review.choices.is_empty() {
-            body.push(row(Box::new(self.bound(
+            body.push(Box::new(self.bound(
                 Button::new(
                     "settings.accounts.import.commit",
                     &t("accounts-import-continue"),
@@ -160,14 +160,14 @@ impl AccountsPane {
                 AccountsEffect::CommitThunderbirdImport {
                     revision: self.import_review.revision,
                 },
-            ))));
-            body.push(row(Box::new(self.bound(
+            )));
+            body.push(Box::new(self.bound(
                 Button::new(
                     "settings.accounts.import.cancel",
                     &t("accounts-import-cancel"),
                 ),
                 AccountsEffect::CancelThunderbirdImport,
-            ))));
+            )));
         }
         card_with_action(&t("accounts-import-title"), button, rows(body))
     }

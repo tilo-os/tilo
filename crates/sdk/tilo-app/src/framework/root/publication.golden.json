@@ -237,8 +237,7 @@
                       ],
                       "properties": {
                         "action": {
-                          "type": "object",
-                          "description": "One action value, as the `apply` action's `apply` parameter describes it"
+                          "type": "object"
                         }
                       },
                       "additionalProperties": false

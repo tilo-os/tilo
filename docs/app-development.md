@@ -1,7 +1,10 @@
 # Build a Tilo app
 
-Install the `tilo-app` CLI once. It needs rustup and nothing else: no Tilo
-checkout, no capnp, and no system development packages.
+Install the `tilo-app` CLI once. It needs rustup and Python 3.11 or newer
+and nothing else: no Tilo checkout, no capnp, and no system development
+packages. Building the SDK stages its pinned fonts with a Python script;
+macOS's own `/usr/bin/python3` is too old, and `brew install python` provides
+one (or name an interpreter with `$PYTHON`).
 
 ```bash
 cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli
@@ -131,8 +134,10 @@ development packages. Wayland, X11 and xkbcommon are loaded when the app
 starts, and fonts are found without fontconfig's C library. The first Cargo
 command inside the app installs the compiler its `rust-toolchain.toml` pins,
 through rustup. An app's tests lay out text, so `check` and `test` need one
-installed font; every desktop has several, and on a bare machine or container
-`check` names the package (`google-noto-sans-fonts` on Fedora,
+installed font; every desktop has several (`check` looks in the XDG font
+directories, macOS's `/System/Library/Fonts`, `/Library/Fonts` and
+`~/Library/Fonts`, and the Windows font folder), and on a bare machine or
+container `check` names the package (`google-noto-sans-fonts` on Fedora,
 `fonts-noto-core` on Debian and Ubuntu).
 
 A thin Tilo OS package, which `tilo-app package` builds by default, links the

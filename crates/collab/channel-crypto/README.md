@@ -77,7 +77,9 @@ history.
 - **Granularity: per channel.** A channel is one document route (app,
   workspace room, record), so per-channel keys are already per-resource. A
   finer split would add key-management state without narrowing who can read
-  what, because channel membership is the access boundary.
+  what, because channel membership is the access boundary. Membership itself
+  is still decided per room, not per record: see "Record-scoped admission"
+  under Remaining work.
 
 ### Security properties
 
@@ -186,7 +188,8 @@ plaintext path.
   broker admitted it before the gate closed. Live plaintext on an encrypted
   route is refused as a downgrade.
 - **Access policy** (`shell/channel_policy.rs`). A channel is readable by:
-  - every person on the room's roster whose role can read, through each of
+  - every person on the room's roster, or named by a grant (a share, a
+    time-limited reader), who may Read the room node now, through each of
     their certified devices (root-signed, unexpired, not revoked, admitted
     by the room's governor);
   - the governing identity's own fleet;
@@ -317,6 +320,13 @@ If the lost machine was the room's governor, see the known limit above.
 - **Route-scoped service members.** A service member reads every channel of
   its room. Narrowing a grant to single documents needs the steward to know
   which route a channel belongs to.
+- **Record-scoped admission.** The steward admits a device to every channel
+  of a room once its person may Read the room node
+  (`shell/channel_policy.rs`, `allowed_devices`), so a person denied Read on
+  one record still receives that record's channel key. The Deny binds every
+  honest client and door, but against a modified client the room is the
+  confidentiality boundary until admission asks Read per route
+  ([permissions.md](../../../docs/architecture/permissions.md) §5.3).
 - **Multiple ciphersuites / negotiation.** There is one fixed suite.
 
 ## Cipher suite

@@ -46,13 +46,11 @@ impl GuestLedger {
         self.stored.cooldowns.retain(|_, until| *until > now_ms);
     }
 
-    /// Writes beside the ledger and renames, so a crash mid-write never
-    /// leaves a torn file that would refuse the next start.
+    /// Replaces the ledger atomically, so a crash mid-write never leaves a
+    /// torn file that would refuse the next start.
     fn save(&self) -> Result<()> {
-        let temporary = self.path.with_extension("json.new");
-        std::fs::write(&temporary, serde_json::to_vec(&self.stored)?)
-            .with_context(|| format!("write {}", temporary.display()))?;
-        std::fs::rename(&temporary, &self.path).context("save the guest ledger")
+        tilo_files::native::atomic::write(&self.path, &serde_json::to_vec(&self.stored)?)
+            .context("save the guest ledger")
     }
 
     pub fn record_join(&mut self, user_public_key: &str, ip_hash: &str, now_ms: u64) -> Result<()> {

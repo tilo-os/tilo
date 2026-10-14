@@ -170,6 +170,20 @@ room; members refuse its later writes on their own. Room administration
 refuses agent devices. Other users' agents are not admitted, and agents
 never call the host's room actions.
 
+Room administration on a relay (the `tilo-room-admin/1` ALPN, the `/rooms`
+pages, call control) is one decision, `Rooms::authorize`
+(`crates/hosting/tilo-relay/src/rooms/authority.rs`). The caller's
+certificate must be current and unrevoked, and not one of the relay's
+agents. A device of the relay's own user administers every room. Any other
+device administers a room only as far as the room's governance lets its
+person: inviting needs the room's `invite` action and never hands out more
+than the inviter's role, membership changes are the room's policy checks
+(a Moderator reaches those ranked below), and running a call needs the
+`call` action, which no role preset below the owner's holds. What no room
+decides stays the host person's (`host_authority.rs`): creating, listing
+and entering rooms, pre-admission, room grants, administrators, bots,
+application authorship and the host's compute control.
+
 A room the desktop hosts itself applies the same rule through its action
 broker: an agent session takes the role its membership preset grants,
 capped by its person's role (`admit_agent_delegation_at`,
@@ -396,6 +410,40 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
   screen is not locked. There is deliberately no UI affordance for clearing the
   latch; restoring a guest's write access requires starting a new share rather
   than silently reviving the stopped session.
+
+## What a workspace host reads and originates
+
+A workspace host (`tilo-relay`) is not a passive pipe, and a threat model that
+treats it as one underestimates a compromised or buggy host. Devices'
+deltas are authenticated, retained and forwarded, but the host also acts as
+a peer in its own right. Under its own device key it originates:
+
+- **Governance commits for the rooms it governs.** The host is the room
+  governor (`crates/hosting/tilo-relay/src/rooms*`): it admits members,
+  assigns roles and starts calls, and signs those commits itself. Members
+  verify them against the room's pinned authority like any governance change.
+- **Its retained `IdentityHello` certificate frame**, so a replay carries the
+  host certificate before the host-signed state it leads to (`compaction`).
+- **Folded snapshots of unsealed document channels.** Compaction verifies each
+  device-signed frame, merges what it can read into one Automerge snapshot
+  and signs that snapshot as the host device (`compaction`). Sealed channels
+  are compacted by a member device instead, and the host removes only the
+  entries the member's signed statement names.
+- **Legacy-window input on behalf of browsers.** The browser bridge publishes
+  `RemoteInput` into a desktop's shared legacy windows as the host device
+  (`web::legacy`), behind the desktop's input firewall like any remote input.
+
+To decide retention, replay and compaction it reads the desktop's peer-sync
+messages inside co-edit bodies: whether a body is a document frame and which
+document it names, whether a checkpoint is governance, a member's own
+continuity checkpoint or complete on its own, and which devices a governance
+step is addressed to (`payloads::ShellPayloads`), plus the retained-proof
+inputs of native shell replay (`store::shell_selection`). It also refuses a
+document change its app's published surface does not allow, or that
+the room's governor did not grant its author (`surfaces`). The content of a
+sealed document stays opaque to it. Cross-device actions are signed by their
+source device, so routing them confers no power to forge one (see
+"Encryption" below).
 
 ## Encryption
 

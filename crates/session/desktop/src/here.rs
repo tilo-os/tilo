@@ -43,6 +43,10 @@ pub struct LiveMember {
     /// An agent's own activity line.
     #[serde(default)]
     pub activity: Option<String>,
+    /// Where within the room's desktop a person is: the id of the strip
+    /// they are on, as their presence names it.
+    #[serde(default)]
+    pub place: Option<String>,
 }
 
 /// One person's line from the host.
@@ -175,6 +179,27 @@ impl HereState {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// The strips the room's other people are on, one per person whose
+    /// presence names one. Agents work in records, not strips.
+    pub fn strip_places(&self) -> Vec<tilo_desktop_model::StripId> {
+        let own = self.own_id();
+        let mut seen: Vec<&str> = Vec::new();
+        let mut places = Vec::new();
+        for member in self.members.iter().flatten() {
+            if Some(member.publisher.as_str()) == own
+                || member.kind == "agent"
+                || seen.contains(&member.publisher.as_str())
+            {
+                continue;
+            }
+            seen.push(&member.publisher);
+            if let Some(strip) = member.place.as_deref().and_then(|p| p.parse().ok()) {
+                places.push(tilo_desktop_model::StripId(strip));
+            }
+        }
+        places
     }
 
     fn own_id(&self) -> Option<&str> {
@@ -429,7 +454,36 @@ mod tests {
             color: Some("#112233".into()),
             focus: None,
             activity: Some("Reading the notes".into()),
+            place: None,
         }
+    }
+
+    /// The strips other people are on come from their presence: this page
+    /// and agents are left out, and a person without a strip counts nowhere.
+    #[test]
+    fn strip_places_are_the_other_people_on_strips() {
+        let mut here = HereState::default();
+        let on = |publisher: &str, kind: &str, place: Option<&str>| LiveMember {
+            place: place.map(str::to_owned),
+            ..member(publisher, kind, publisher)
+        };
+        here.set_members(
+            Some(on("me", "person", Some("10"))),
+            Some(vec![
+                on("me", "person", Some("10")),
+                on("ada", "person", Some("11")),
+                on("lin", "person", Some("11")),
+                on("sam", "person", None),
+                on("bot", "agent", Some("10")),
+            ]),
+        );
+        assert_eq!(
+            here.strip_places(),
+            [
+                tilo_desktop_model::StripId(11),
+                tilo_desktop_model::StripId(11)
+            ]
+        );
     }
 
     fn host(device: &str, status: &str, generated: bool) -> HostLine {
