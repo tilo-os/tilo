@@ -86,6 +86,12 @@ impl DeviceFleet {
     }
 
     pub(crate) fn verify_projection(&self, user: [u8; 32]) -> io::Result<()> {
+        if self.certificates.len() > 256 || self.revocations.len() > 256 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fleet projection exceeds its entry bound",
+            ));
+        }
         if self.schema_version != FLEET_SCHEMA_VERSION || self.identity_id != hex::encode(user) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

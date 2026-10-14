@@ -65,7 +65,8 @@ containerfile="$repo/os/Containerfile"
 # copied unchanged, so it no longer needs the compile stage's intermediate
 # cache.
 # tilo-esp-write and its unit, the only writer of the read-only ESP, are
-# deliberate additions.
+# deliberate additions. The helper is now compiled: it arrives from the
+# esp-write component at the same path and mode instead of from the context.
 # The virtio-only Cage session wrapper is installed as a single executable;
 # physical GPU sessions still use the ordinary greeter command.
 # tilo-hidepid.service is a deliberate removal: a global hidepid /proc hides
@@ -163,7 +164,7 @@ containerfile="$repo/os/Containerfile"
 # The identity CLI adds exactly one component output at /usr/bin/tilo-identity.
 # The boot audit's image signature policy checker is one intentional payload
 # addition beside the audit in the existing libexec COPY instruction.
-expected_contract=04b38edbd63e4a46d841b7cbeb22e0a765b2abc46b4790ba3e86effc90e6b03b
+expected_contract=5af7f5f7daa66ce22cae4ad536d9dcce3e545b04d9c6db40a5e24483689e2fab
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

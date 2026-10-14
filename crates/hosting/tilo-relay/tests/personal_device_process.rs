@@ -46,6 +46,19 @@ fn require_root_and_person_account() {
     );
 }
 
+// These fixtures cross uid boundaries. A runner's TMPDIR can be below a
+// root-only container directory, so use the world-traversable system scratch
+// directory and expose only this freshly allocated fixture to the test person.
+fn person_scope() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scope = tempfile::Builder::new()
+        .prefix("tilo-person-test-")
+        .tempdir_in("/var/tmp")
+        .unwrap();
+    std::fs::set_permissions(scope.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    scope
+}
+
 const FILE_WORKSPACE: u64 = 42;
 fn wait_for_file(path: &std::path::Path, what: &str) {
     tilo_test_env::wait_until(format_args!("{what} at {}", path.display()), || {
@@ -837,8 +850,7 @@ fn a_root_run_approval_reads_the_persons_fleet_only_as_the_person() {
     use std::os::unix::fs::PermissionsExt as _;
     const PERSON: u32 = 65_534;
     require_root_and_person_account();
-    let scope = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(scope.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let scope = person_scope();
     let approver_root = scope.path().join("approver/tilo");
     let approver_identities = scope.path().join("approver/identities");
     let root = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -928,8 +940,7 @@ fn a_root_run_headless_join_writes_the_persons_files_only_as_the_person() {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     const PERSON: u32 = 65_534;
     require_root_and_person_account();
-    let workspace = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(workspace.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let workspace = person_scope();
     let approver_root = workspace.path().join("approver-tilo");
     let approver_identities = workspace.path().join("approver-identities");
     let recipient_root = workspace.path().join("recipient-tilo");
@@ -1060,4 +1071,90 @@ fn a_root_run_headless_join_writes_the_persons_files_only_as_the_person() {
             .uid(),
         0
     );
+}
+
+#[test]
+fn another_account_cannot_remove_a_consumed_nonce_and_redeem_again() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::process::CommandExt as _;
+    use tilo_identity_host::enrollment::{EnrollmentRole, NonceStore, Redemption, redeem};
+
+    require_root_and_person_account();
+    let scope = person_scope();
+    let directory = scope.path().join("enrollment-nonces");
+    std::fs::create_dir(&directory).unwrap();
+    let policy = include_str!("../../../../os/usr/lib/tmpfiles.d/tilo.conf");
+    let mode = policy
+        .lines()
+        .find(|line| line.split_whitespace().nth(1) == Some("/var/lib/tilo/enrollment-nonces"))
+        .and_then(|line| line.split_whitespace().nth(2))
+        .map(|mode| u32::from_str_radix(mode, 8).unwrap())
+        .expect("the shipped nonce directory must be provisioned");
+    let path = std::ffi::CString::new(directory.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: path is NUL-terminated; the root runner owns this isolated fixture.
+    assert_eq!(unsafe { libc::chown(path.as_ptr(), 0, 65534) }, 0);
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(mode)).unwrap();
+
+    let root = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let issuer = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let admitted = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let issuer_cert = signed_cert(&root, &issuer, "Issuer", DeviceCapabilities::primary());
+    let token = tilo_user_identity::mint_enrollment_token(
+        root.verifying_key().to_bytes(),
+        DeviceCapabilities::joined(),
+        10,
+        100,
+        [17; 16],
+        &issuer,
+    )
+    .unwrap();
+    let nonces = NonceStore::under(scope.path());
+    let sign = |digest: &[u8]| {
+        use ed25519_dalek::Signer as _;
+        Ok(root.sign(digest).to_bytes())
+    };
+    let request = Redemption {
+        token: &token,
+        role: EnrollmentRole::PersonalDevice,
+        device_public_key: admitted.verifying_key().to_bytes(),
+        label: "Laptop",
+        now_ns: 20,
+        valid_from_ns: 20,
+        local_issuer: Some(&issuer_cert),
+    };
+    redeem(None, &nonces, &request, &sign).unwrap();
+    let marker = directory.join(hex::encode(token.nonce));
+    for (permission, path) in [("-r", &marker), ("-w", &directory)] {
+        assert!(
+            Command::new("test")
+                .arg(permission)
+                .arg(path)
+                .uid(65534)
+                .gid(65534)
+                .status()
+                .unwrap()
+                .success(),
+            "the other account must reach the shared nonce store"
+        );
+    }
+    let removal = Command::new("rm")
+        .arg("--")
+        .arg(&marker)
+        .uid(65534)
+        .gid(65534)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!removal.success(), "a different account removed the nonce");
+    assert!(nonces.is_consumed(&token.nonce).unwrap());
+    let replay = Redemption {
+        device_public_key: SigningKey::generate(&mut UnwrapErr(SysRng))
+            .verifying_key()
+            .to_bytes(),
+        ..request
+    };
+    let error = redeem(None, &nonces, &replay, &sign).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(error.to_string().contains("already been consumed"));
 }

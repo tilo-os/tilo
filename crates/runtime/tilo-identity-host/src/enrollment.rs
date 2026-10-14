@@ -780,6 +780,41 @@ mod tests {
     }
 
     #[test]
+    fn transaction_refuses_a_fleet_the_recipient_cannot_accept() {
+        let fixture = fixture();
+        let store = &fixture.store;
+        let now = fixture.issued_at_ns;
+        let (_, token) = fixture.mint();
+        let (root, _) = store
+            .root_identity(&fixture.identity_id, RootOnly::AdmitDevice, now)
+            .unwrap();
+        let sign = |digest: &[u8]| {
+            root.sign(digest)
+                .map_err(|error| io::Error::other(error.to_string()))
+        };
+        let mut fleet = store.load(&fixture.identity_id).unwrap();
+        fleet
+            .certificates
+            .resize(256, fleet.certificates[0].clone());
+        let nonces = store.nonces();
+        let request = Redemption {
+            token: &token,
+            role: EnrollmentRole::PersonalDevice,
+            device_public_key: device(74),
+            label: "Laptop",
+            now_ns: now,
+            valid_from_ns: now,
+            local_issuer: None,
+        };
+        let error = redeem_in_transaction(&mut fleet, &nonces, &request, &sign, &mut |_| {
+            panic!("an oversized fleet must never reach publication")
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!nonces.is_consumed(&token.nonce).unwrap());
+    }
+
+    #[test]
     fn nonce_markers_spend_once_and_record_idempotently() {
         let directory = tempfile::tempdir().expect("temp");
         let nonces = NonceStore::under(directory.path());

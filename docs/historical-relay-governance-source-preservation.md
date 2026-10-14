@@ -67,4 +67,23 @@ pump's no-clone assertion also pass.
 
 The merged OS COPY contract retains both projector user units from main and
 the historical identity CLI. Its exact delta is two unit rows over the prior
-candidate and one CLI row over main, with no removed rows.
+candidate and one CLI row over main, with no removed rows. The later compiled
+ESP writer retains its component source, installed path and mode alongside the
+identity CLI.
+
+Current room-policy administration and record-scoped channel admission remain
+in place. Revoked-relay refusal applies at their shared authority decision;
+retained history remains readable. Enrollment uses the identity host's shared
+redemption rules while a dropped-uid child holds the checked fleet-directory
+lock through snapshot and durable publication. Root signing and the shared
+nonce ledger stay in the approving process, and no response leaves before the
+nonce is claimed and the fleet is published. The nonce directory is sticky so
+another account cannot unlink a consumed nonce. A multi-account process test
+proves shared-directory access, denied removal and replay refusal; transaction
+controls prove lock contention, publication failure, bounds and cancellation.
+
+Locked affected-package test compilation, focused paired-device, governance,
+identity and enrollment tests, and all-target shell, relay, peer-state and
+identity-host Clippy qualify the composed source locally. Exact-head CI remains
+the integration gate; the dependency hold and source-branch ownership are
+unchanged.

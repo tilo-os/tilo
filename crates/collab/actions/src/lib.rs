@@ -160,8 +160,8 @@ pub use context::{
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy,
     DOCUMENT_READ_TAG, ExecutionMode, INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG,
-    LOCAL_DEVICE_ONLY, PROGRAMMATIC_TAG, ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG,
-    action_node,
+    LOCAL_DEVICE_ONLY, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, PROGRAMMATIC_TAG, ResultSpec,
+    RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG, action_node,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use entry::{
@@ -190,8 +190,8 @@ pub use outcome::{
     InvocationUpdate, content_hash, content_resource,
 };
 pub use params::{
-    ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, CONTENT_ANNOTATION,
-    PLACE_ANNOTATION, ParamType, place_schema, validate_json_schema,
+    ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ArgViolation,
+    CONTENT_ANNOTATION, PLACE_ANNOTATION, ParamType, place_schema, validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};

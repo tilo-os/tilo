@@ -33,6 +33,7 @@
 //! nothing else.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::Route;
 use crate::payloads::ShellPayloads;
@@ -46,16 +47,19 @@ type BodyHash = [u8; 32];
 /// process.
 pub(super) struct Signatures {
     /// Reads the route and envelope of a document frame.
-    payloads: &'static dyn ShellPayloads,
+    payloads: Arc<dyn ShellPayloads>,
     /// Verified bodies, as of the previous round.
     verified: HashSet<BodyHash>,
     /// Verified bodies this round has read so far.
     current: HashSet<BodyHash>,
 }
 
+/// Tests read the desktop's frames, as a relay started with
+/// [`Relay::start`](crate::daemon::Relay::start) does.
+#[cfg(test)]
 impl Default for Signatures {
     fn default() -> Self {
-        Self::with_payloads(crate::payloads::shell())
+        Self::with_payloads(crate::payloads::neighbour())
     }
 }
 
@@ -101,7 +105,7 @@ impl<'a> Checked<'a> {
 
 impl Signatures {
     /// A record that reads document frames with `payloads`.
-    pub(super) fn with_payloads(payloads: &'static dyn ShellPayloads) -> Self {
+    pub(super) fn with_payloads(payloads: Arc<dyn ShellPayloads>) -> Self {
         Self {
             payloads,
             verified: HashSet::new(),

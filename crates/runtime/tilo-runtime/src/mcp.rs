@@ -122,8 +122,8 @@ fn take_images(value: &mut Value) -> Vec<Value> {
     images
 }
 
-/// The instance each file last went to through an app's own `open` or
-/// `import-<extension>`, shared by every session of an endpoint: opening
+/// The instance each file last went to through the action its app declares
+/// as opening paths, shared by every session of an endpoint: opening
 /// that file again returns that instance instead of starting another that
 /// opens it a second time.
 #[derive(Default)]
@@ -157,13 +157,76 @@ impl OpenFiles {
     }
 }
 
-/// The path an app's own file-opening action was given, by the directory's
-/// convention [`McpServer::path_opener`] follows.
-fn opened_file<'a>(action: &str, arguments: &'a serde_json::Map<String, Value>) -> Option<&'a str> {
-    (action == tilo_actions::remote::APPLICATION_OPEN_ACTION || action.starts_with("import-"))
-        .then(|| arguments.get("path").and_then(Value::as_str))
-        .flatten()
+/// Why a step of this bridge did not happen: the action host's refusal,
+/// kept typed so the bridge decides by its variant and never by its
+/// wording, or the bridge's own words. It becomes text only where an MCP
+/// answer is made of it ([`From<BridgeError> for String`]).
+#[derive(Debug)]
+enum BridgeError {
+    Host(tilo_actions::remote::ActionHostError),
+    Bridge(String),
+}
+
+impl From<String> for BridgeError {
+    fn from(message: String) -> Self {
+        Self::Bridge(message)
+    }
+}
+
+impl From<&str> for BridgeError {
+    fn from(message: &str) -> Self {
+        Self::Bridge(message.to_owned())
+    }
+}
+
+/// The one place a refusal becomes the text an MCP client reads.
+impl From<BridgeError> for String {
+    fn from(error: BridgeError) -> Self {
+        match error {
+            BridgeError::Host(error) => error.to_string(),
+            BridgeError::Bridge(message) => message,
+        }
+    }
+}
+
+/// The `path` an invocation names, when it names one: the file an action
+/// its app declares as opening paths opened ([`McpServer::opens_path`]).
+fn named_path(arguments: &serde_json::Map<String, Value>) -> Option<&str> {
+    arguments
+        .get("path")
+        .and_then(Value::as_str)
         .filter(|path| !path.is_empty())
+}
+
+/// Add `note` to the `hint` an answer carries: what the caller may do
+/// differently. A hint never means the bridge ran anything again.
+fn add_hint(value: &mut Value, note: &str) {
+    let Some(fields) = value.as_object_mut() else {
+        return;
+    };
+    let hint = match fields.get("hint").and_then(Value::as_str) {
+        Some(earlier) => format!("{earlier}; {note}"),
+        None => note.to_owned(),
+    };
+    fields.insert("hint".into(), hint.into());
+}
+
+/// What a failed update says about an argument out of its declared range,
+/// from the bound its failure carries as data
+/// ([`tilo_actions::DoorError::failure_details`]).
+fn range_hint(value: &Value) -> Option<String> {
+    let details = value.pointer("/update/error/details")?;
+    let param = details.get("param")?.as_str()?;
+    let violation =
+        serde_json::from_value::<tilo_actions::ArgViolation>(details.get("violation")?.clone())
+            .ok()?;
+    let bound = match &violation {
+        tilo_actions::ArgViolation::Minimum { bound }
+        | tilo_actions::ArgViolation::Maximum { bound } => bound,
+    };
+    Some(format!(
+        "{param} {violation}; call again with a value in range, such as {bound}"
+    ))
 }
 
 /// The action an app declared as reading its open document's first page,
@@ -1134,7 +1197,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         )
     }
     /// One catalogue page from the action host, as this bridge's caller.
-    async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, String> {
+    async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, BridgeError> {
         // The whole catalogue's rows and the workspace's own are assembled
         // synchronously by the broker. Who publishes is cheap, and an app's
         // directory answers later on the broker's own set: asking either
@@ -1148,9 +1211,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             self.at_host(eager, move |host, caller| host.query(caller, query)),
         )
         .await
-        .map_err(|_| "TimedOut".to_string())?
-        .ok_or_else(|| "Unavailable".to_string())?
-        .map_err(|error| error.to_string())
+        .map_err(|_| BridgeError::from("TimedOut"))?
+        .ok_or_else(|| BridgeError::from("Unavailable"))?
+        .map_err(BridgeError::Host)
     }
     /// The answer `ask` gives the host as this bridge's caller. With
     /// `blocking`, the host is asked on a blocking thread: every session of an
@@ -1255,7 +1318,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 ..CatalogueQuery::default()
             })
             .await
-            .map_err(|reason| format!("existing {app_id} window is not ready: {reason}"))?;
+            .map_err(|reason| {
+                format!(
+                    "existing {app_id} window is not ready: {}",
+                    String::from(reason)
+                )
+            })?;
         let address = page.rows.into_iter().filter_map(|row| row.action)
             .find(|action| action.address.action == tilo_actions::remote::APPLICATION_ACTIVATE_ACTION
                 && action.kind == tilo_actions::OperationKind::View)
@@ -1547,7 +1615,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
     /// The revision `provider`'s directory is at now, for a caller that
     /// named none.
-    async fn current_revision(&self, provider: &str) -> Result<String, String> {
+    async fn current_revision(&self, provider: &str) -> Result<String, BridgeError> {
         self.ask(CatalogueQuery {
             provider: Some(provider.to_owned()),
             max_results: 1,
@@ -1666,7 +1734,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 let invocation = invocation_id(&a.invocation_id)?;
                 self.host()
                     .cancel(&self.caller(), &invocation)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(BridgeError::Host)?;
                 self.status(invocation)
             }
             _ => Err("Unknown tool".into()),
@@ -1829,9 +1897,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .provider
             .parse::<u64>()
             .ok()
-            .zip(opened_file(&target.address.action, &a.arguments).map(str::to_owned));
+            .zip(named_path(&a.arguments).map(str::to_owned));
         self.record_producer(invocation, app_id.as_deref());
-        let not_offered = tilo_actions::remote::ActionHostError::UnknownAction.to_string();
         let mut value = match self
             .run_with_handles(
                 target.clone(),
@@ -1844,7 +1911,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         {
             // Nothing ran: the instance may have gone since this session
             // saw it, or the resource be named by its kind or label.
-            Err(error) if error.contains(&not_offered) => {
+            Err(BridgeError::Host(tilo_actions::remote::ActionHostError::UnknownAction)) => {
                 if let Ok(peer) = target.provider.parse::<u64>() {
                     self.addressed(Some(peer), None, false).await?;
                 }
@@ -1856,7 +1923,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .run_with_handles(target.clone(), a.arguments, invocation, a.revision, wait)
                     .await
                 {
-                    Err(error) if error.contains(&not_offered) => {
+                    Err(BridgeError::Host(
+                        tilo_actions::remote::ActionHostError::UnknownAction,
+                    )) => {
                         return Err(self.not_offered(&target).await?);
                     }
                     ran => ran?,
@@ -1866,7 +1935,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         };
         self.attach_images(invocation, &mut value, false, Some(&target))
             .await;
-        if let Some((peer, path)) = file.filter(|_| may_have_opened(&value)) {
+        if let Some((peer, path)) = file.filter(|_| may_have_opened(&value))
+            && self.opens_path(&target).await
+        {
             self.open_files.record(&path, peer);
         }
         let Some(app_id) = launching else {
@@ -1984,7 +2055,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 }
             },
             Err(error) => {
-                answer.insert("error".into(), error.into());
+                answer.insert("error".into(), String::from(error).into());
             }
         }
         Value::Object(answer)
@@ -1992,7 +2063,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// [`Self::run`], with the session handles `arguments` name expanded
     /// where the action takes a resource. Text arguments stay literal: a
     /// failed invocation may already have mutated state, so a text handle
-    /// is never grounds to replay it under a fresh invocation id.
+    /// is never grounds to replay it under a fresh invocation id. A failed
+    /// answer says which text was a handle, in its `hint`.
     async fn run_with_handles(
         &self,
         target: RemoteActionTarget,
@@ -2000,19 +2072,32 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         invocation: tilo_actions::InvocationId,
         revision: Option<String>,
         wait: std::time::Duration,
-    ) -> Result<Value, String> {
-        self.expand_handles(&target, revision.clone(), &mut arguments)
+    ) -> Result<Value, BridgeError> {
+        let literal = self
+            .expand_handles(&target, revision.clone(), &mut arguments)
             .await;
-        self.run(target, arguments, invocation, revision, wait)
-            .await
+        let mut value = self
+            .run(target, arguments, invocation, revision, wait)
+            .await?;
+        if value.pointer("/update/state").and_then(Value::as_str) == Some("failed") {
+            for (name, handle, id) in &literal {
+                add_hint(
+                    &mut value,
+                    &format!(
+                        "{name} `{handle}` is a session handle for {id}; pass that id if you meant the resource"
+                    ),
+                );
+            }
+        }
+        Ok(value)
     }
     /// Start one invocation of `target` and answer with its update once it
     /// is terminal or `wait` has passed. An omitted revision is the
     /// directory as it is now.
     ///
-    /// A number the action refused as outside its range is recoverable: the
-    /// call runs once more with the bound it named, and the answer says so
-    /// in `adjusted`.
+    /// One call is one invocation: a number the action refused as outside
+    /// its declared range is never run again with another value. The
+    /// failure carries the bound as data, and its answer a `hint` naming it.
     async fn run(
         &self,
         target: RemoteActionTarget,
@@ -2020,36 +2105,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         invocation: tilo_actions::InvocationId,
         revision: Option<String>,
         wait: std::time::Duration,
-    ) -> Result<Value, String> {
-        let value = self
-            .run_once(
-                target.clone(),
-                arguments.clone(),
-                invocation,
-                revision.clone(),
-                wait,
-            )
-            .await?;
-        let Some((name, bound)) = out_of_range(&value, &arguments) else {
-            return Ok(value);
-        };
-        let given = arguments.get(&name).cloned().unwrap_or_default();
-        let mut arguments = arguments;
-        arguments.insert(name.clone(), bound.clone());
+    ) -> Result<Value, BridgeError> {
         let mut value = self
-            .run_once(
-                target,
-                arguments,
-                tilo_actions::InvocationId::new(),
-                revision,
-                wait,
-            )
+            .run_once(target, arguments, invocation, revision, wait)
             .await?;
-        if let Some(fields) = value.as_object_mut() {
-            fields.insert(
-                "adjusted".into(),
-                format!("{name} {given} is out of range; used {bound}").into(),
-            );
+        if let Some(hint) = range_hint(&value) {
+            add_hint(&mut value, &hint);
         }
         Ok(value)
     }
@@ -2060,7 +2121,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         invocation: tilo_actions::InvocationId,
         revision: Option<String>,
         wait: std::time::Duration,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, BridgeError> {
         if revision.as_deref() == Some("") {
             return Err("revision must not be empty".into());
         }
@@ -2085,10 +2146,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         };
         let mut started = self.start_confirmed(&mut request).await;
         if current
-            && started.as_ref().is_err_and(|error| {
-                error.contains(STALE)
-                    || error.contains(tilo_actions::remote::CONFIRMED_ACTION_NEEDS_REVISION)
-            })
+            && matches!(
+                &started,
+                Err(BridgeError::Host(error))
+                    if *error == tilo_actions::remote::ActionHostError::StaleRevision
+                        || error.needs_revision()
+            )
         {
             // An app built before revisionless resolution refuses none as a
             // moved revision, and an action asking for confirmation needs
@@ -2097,17 +2160,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             started = self.start_confirmed(&mut request).await;
         }
         started?;
-        self.settled(invocation, wait).await
+        Ok(self.settled(invocation, wait).await?)
     }
     /// Open `path` in instance `peer` through the app's own action, so the
-    /// app reads it inside its sandbox, under the file grants it holds: an
-    /// `open` taking a `path`, else an `import-<extension>` taking one.
+    /// app reads it inside its sandbox, under the file grants it holds: the
+    /// action the app declares as opening paths ([`Self::path_opener`]).
     async fn open_path(&self, peer: u64, path: &str, wait: std::time::Duration) -> Value {
         let provider = peer.to_string();
         let opener = match self.path_opener(&provider, path).await {
             Ok(Some(opener)) => opener,
             Ok(None) => return json!({"error":OPENED_NO_ACTION}),
-            Err(error) => return json!({"error":error}),
+            Err(error) => return json!({"error":String::from(error)}),
         };
         let resource = self.handles().short(&opener.resource);
         let action = opener.action.clone();
@@ -2128,7 +2191,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .await;
         let mut value = match outcome {
             Ok(value) => value,
-            Err(error) => json!({"error":error}),
+            Err(error) => json!({"error":String::from(error)}),
         };
         if value.get("error").is_none() && may_have_opened(&value) {
             self.open_files.record(path, peer);
@@ -2156,26 +2219,27 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
     /// Replace each argument naming a session handle with the resource id
     /// it stands for, where the action takes a resource there. Leave other
-    /// arguments as given: text may mean the handle literally.
+    /// arguments as given: text may mean the handle literally. Answers the
+    /// ones left so (argument, handle, id).
     async fn expand_handles(
         &self,
         target: &RemoteActionTarget,
         revision: Option<String>,
         arguments: &mut serde_json::Map<String, Value>,
-    ) {
-        let named: Vec<(String, String)> = {
+    ) -> Vec<(String, String, String)> {
+        let named: Vec<(String, String, String)> = {
             let handles = self.handles();
             arguments
                 .iter()
                 .filter_map(|(name, value)| {
                     let handle = value.as_str()?;
                     let id = handles.issued(handle)?;
-                    Some((name.clone(), id.to_owned()))
+                    Some((name.clone(), handle.to_owned(), id.to_owned()))
                 })
                 .collect()
         };
         if named.is_empty() {
-            return;
+            return named;
         }
         let params = match self.revision_for(&target.provider, revision).await {
             Ok((revision, _)) => self
@@ -2187,50 +2251,79 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .unwrap_or_default(),
             Err(_) => Vec::new(),
         };
-        for (name, id) in named {
+        let mut literal = Vec::new();
+        for (name, handle, id) in named {
             let takes_resource = params.iter().any(|param| {
                 param.name == name.as_str() && param.ty == tilo_actions::ParamType::Resource
             });
             if takes_resource {
                 arguments.insert(name, id.into());
+            } else {
+                literal.push((name, handle, id));
             }
         }
+        literal
     }
-    /// The action of `provider` that opens `path`, by the directory's
-    /// convention.
+    /// Whether `target`, as its directory is now, is an action its app
+    /// declares as opening the file its `path` names
+    /// ([`tilo_actions::OPENS_PATH_TAG`]).
+    async fn opens_path(&self, target: &RemoteActionTarget) -> bool {
+        let Ok(revision) = self.current_revision(&target.provider).await else {
+            return false;
+        };
+        self.ask(CatalogueQuery::resolve(target, revision))
+            .await
+            .ok()
+            .and_then(|page| page.rows.into_iter().find_map(|row| row.action))
+            .is_some_and(|action| action.contract.opens_path())
+    }
+    /// The action of `provider` that opens `path`: one its app declares as
+    /// opening paths ([`tilo_actions::OPENS_PATH_TAG`]) and that takes a
+    /// `path`, declared for the file's extension before one declared for any
+    /// file. An action that only takes a `path` (an installer image's
+    /// import, an export) is never chosen by its name.
     async fn path_opener(
         &self,
         provider: &str,
         path: &str,
-    ) -> Result<Option<tilo_actions::ActionAddress>, String> {
+    ) -> Result<Option<tilo_actions::ActionAddress>, BridgeError> {
         let extension = std::path::Path::new(path)
             .extension()
             .and_then(|extension| extension.to_str())
             .map(str::to_ascii_lowercase);
-        let names = std::iter::once(tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned())
-            .chain(extension.map(|extension| format!("import-{extension}")));
-        for name in names {
-            let page = self
-                .ask(CatalogueQuery {
-                    provider: Some(provider.to_owned()),
-                    needle: name.clone(),
-                    max_results: 64,
-                    ..CatalogueQuery::default()
-                })
-                .await?;
-            let found = page.rows.into_iter().find_map(|row| {
-                row.action
-                    .filter(|action| {
-                        action.address.action == name
-                            && action.params.iter().any(|param| param.name == "path")
-                    })
-                    .map(|action| action.address)
-            });
-            if found.is_some() {
-                return Ok(found);
+        let mut any_file = None;
+        let mut query = CatalogueQuery {
+            provider: Some(provider.to_owned()),
+            // Rows whose parameters name `path`, as every opener's do.
+            needle: "path".into(),
+            max_results: 64,
+            ..CatalogueQuery::default()
+        };
+        for _ in 0..EVERY_ACTION_PAGES {
+            let page = self.ask(query.clone()).await?;
+            for action in page.rows.into_iter().filter_map(|row| row.action) {
+                if !action.contract.opens_path()
+                    || !action.params.iter().any(|param| param.name == "path")
+                {
+                    continue;
+                }
+                let mut declared = action.contract.opened_extensions().peekable();
+                if declared.peek().is_none() {
+                    any_file.get_or_insert(action.address);
+                } else if extension
+                    .as_deref()
+                    .is_some_and(|extension| declared.any(|declared| declared == extension))
+                {
+                    return Ok(Some(action.address));
+                }
             }
+            if page.exhausted || page.next_cursor.is_empty() {
+                break;
+            }
+            query.revision = Some(page.revision);
+            query.cursor = page.next_cursor;
         }
-        Ok(None)
+        Ok(any_file)
     }
     /// A just-opened instance's [`Self::directory`] once it lists a
     /// resource, or as it is after [`FIRST_DIRECTORY_WAIT`]. An app may
@@ -2331,12 +2424,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Start `request`. An action that asks for confirmation is put to the
     /// person this agent acts for, on their own device, and started again
     /// with their answer; the agent never confirms by its own word.
-    async fn start_confirmed(&self, request: &mut InvokeRequest) -> Result<(), String> {
-        let Err(error) = self.start(request.clone()).await else {
-            return Ok(());
-        };
-        if error != tilo_actions::remote::ActionHostError::ConfirmationRequired.to_string() {
-            return Err(error);
+    async fn start_confirmed(&self, request: &mut InvokeRequest) -> Result<(), BridgeError> {
+        match self.start(request.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(BridgeError::Host(tilo_actions::remote::ActionHostError::ConfirmationRequired)) => {
+            }
+            Err(error) => return Err(error),
         }
         // The person confirms the action as the directory is at this
         // revision.
@@ -2351,9 +2444,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             self.at_host(false, move |host, caller| host.confirm(caller, &asked)),
         )
         .await
-        .map_err(|_| "ConfirmationRequired; the person did not answer in time".to_string())?
-        .ok_or_else(|| "Unavailable".to_string())?
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| BridgeError::from("ConfirmationRequired; the person did not answer in time"))?
+        .ok_or_else(|| BridgeError::from("Unavailable"))?
+        .map_err(BridgeError::Host)?;
         request.confirmation = Some(witnessed);
         self.start(request.clone()).await
     }
@@ -2412,7 +2505,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         &self.host
     }
     /// Start one invocation, reporting the host's refusal verbatim.
-    async fn start(&self, request: InvokeRequest) -> Result<(), String> {
+    async fn start(&self, request: InvokeRequest) -> Result<(), BridgeError> {
         // The workspace's own actions are admitted and started synchronously
         // (a launch among them); an app's action is resolved on the broker's
         // set and answers later.
@@ -2424,11 +2517,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         )
         .await
         .map_err(|_| {
-            "TimedOut; admission may be unknown; retry with the same invocation_id".to_string()
+            BridgeError::from(
+                "TimedOut; admission may be unknown; retry with the same invocation_id",
+            )
         })?
-        .ok_or_else(|| "Unavailable".to_string())?
+        .ok_or_else(|| BridgeError::from("Unavailable"))?
         .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(BridgeError::Host)
     }
     fn context(&self) -> Option<tilo_actions::ActionContext> {
         self.agent_run().map(|run| tilo_actions::ActionContext {
@@ -2579,8 +2674,6 @@ const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 /// How long an invocation waits for the person to confirm it on their
 /// device.
 const CONFIRMATION_PATIENCE: std::time::Duration = std::time::Duration::from_secs(300);
-/// What the host says when a target changed since the revision named.
-const STALE: &str = "changed since that revision";
 /// What `instances` asks: no provider and no rows, which a host answers with
 /// its publishers alone instead of assembling every row it offers.
 fn instances_query() -> CatalogueQuery {
@@ -2607,32 +2700,6 @@ fn state_json(
 const RESOURCE_NAME_BYTES: usize = 64;
 /// How many resources an error names before it stops.
 const LISTED_RESOURCES: usize = 16;
-/// The numeric argument a failed update refused as outside its range, with
-/// the bound the refusal named (`argument `pageSize` must be at most 64`).
-fn out_of_range(
-    value: &Value,
-    arguments: &serde_json::Map<String, Value>,
-) -> Option<(String, Value)> {
-    let error = value.pointer("/update/error")?;
-    if error.get("code")?.as_str()? != "invalid_arguments" {
-        return None;
-    }
-    let (name, rest) = error
-        .get("message")?
-        .as_str()?
-        .strip_prefix("argument `")?
-        .split_once("` must be at ")?;
-    let bound = rest
-        .strip_prefix("most ")
-        .or_else(|| rest.strip_prefix("least "))?;
-    let bound = bound
-        .parse::<i64>()
-        .map(Value::from)
-        .or_else(|_| bound.parse::<f64>().map(Value::from))
-        .ok()?;
-    arguments.get(name)?.as_f64()?;
-    Some((name.to_owned(), bound))
-}
 
 fn empty_object() -> Value {
     json!({})

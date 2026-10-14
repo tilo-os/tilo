@@ -512,10 +512,8 @@ fn with_local_fleet<T>(
     }
     // Same directory flock as the session's DeviceFleetStore. Fail busy rather
     // than letting an account that holds the lock indefinitely stall a signer.
-    // SAFETY: directory is an open directory descriptor, retained throughout.
-    if unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("fleet is busy; retry enrollment");
-    }
+    let _lock = advisory_lock::FileLock::try_exclusive(std::fs::File::from(directory.try_clone()?))
+        .context("fleet is busy; retry enrollment")?;
     let snapshot = local::read_owned_file(&directory, name, uid, MAX_FILE_BYTES)?;
     operation(snapshot, &mut |bytes| {
         if bytes.len() > MAX_FILE_BYTES {
@@ -644,6 +642,9 @@ fn run_fleet_child<T>(
             .context("start the person's fleet transaction")?,
         reaped: false,
     };
+    // Command retains its configured stdin/stdout descriptors after spawn.
+    // Release our copies so helper exit is immediately observable as EOF.
+    drop(command);
     let mut channel = FleetChannel { socket, deadline };
     let snapshot = decode_read(&read_frame(&mut channel)?, MAX_FILE_BYTES)?;
     if child.process.try_wait()?.is_some() {
@@ -1697,38 +1698,31 @@ mod tests {
 
     #[test]
     fn fleet_transaction_locks_snapshot_through_publication() {
-        use std::os::fd::AsRawFd as _;
         let scope = tempfile::tempdir().unwrap();
         let home = PersonHome::Direct;
         home.write_fleet(scope.path(), USER, b"old").unwrap();
         home.with_fleet(scope.path(), USER, |snapshot, publish| {
             assert_eq!(snapshot.as_deref(), Some(b"old".as_slice()));
             let competitor = open_owned_dir(&scope.path().join(FLEETS_DIR), me())?;
-            // SAFETY: competitor is an open, independent directory descriptor.
-            assert_eq!(
-                unsafe { libc::flock(competitor.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-                -1
-            );
-            assert_eq!(
-                std::io::Error::last_os_error().kind(),
-                std::io::ErrorKind::WouldBlock
-            );
+            assert!(matches!(
+                advisory_lock::FileLock::try_exclusive(std::fs::File::from(
+                    competitor.try_clone()?
+                )),
+                Err(advisory_lock::TryLockError::WouldBlock)
+            ));
             publish(b"new")?;
             assert_eq!(std::fs::read(fleet_file(scope.path()))?, b"new");
-            // SAFETY: publication must not have released the transaction lock.
-            assert_eq!(
-                unsafe { libc::flock(competitor.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-                -1
-            );
+            // Publication must not have released the transaction lock.
+            assert!(matches!(
+                advisory_lock::FileLock::try_exclusive(std::fs::File::from(competitor)),
+                Err(advisory_lock::TryLockError::WouldBlock)
+            ));
             Ok(())
         })
         .unwrap();
         let next = open_owned_dir(&scope.path().join(FLEETS_DIR), me()).unwrap();
-        // SAFETY: next is open; the preceding transaction has ended.
-        assert_eq!(
-            unsafe { libc::flock(next.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        // The preceding transaction has ended: another holder succeeds.
+        let _next_lock = advisory_lock::FileLock::try_exclusive(std::fs::File::from(next)).unwrap();
     }
 
     #[test]

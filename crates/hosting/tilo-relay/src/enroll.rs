@@ -3887,11 +3887,17 @@ mod tests {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         const PERSON: u32 = 4001;
         // SAFETY: geteuid has no preconditions.
-        if unsafe { libc::geteuid() } != 0 {
-            // Only root can leave a marker another account then meets.
-            return;
-        }
-        let scope = tempfile::tempdir().unwrap();
+        assert_eq!(
+            unsafe { libc::geteuid() },
+            0,
+            "requires the root test runner"
+        );
+        // The child must traverse the fixture as another uid even when the
+        // runner's TMPDIR lives below a root-only container directory.
+        let scope = tempfile::Builder::new()
+            .prefix("tilo-person-recovery-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
         std::fs::set_permissions(scope.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let identity_root = scope.path().join("root");
         let identity_dir = scope.path().join("identities");
@@ -4431,7 +4437,7 @@ mod tests {
             user,
             EnrollmentRole::PersonalDevice.preset(),
             now,
-            now + 60_000_000_000,
+            now.saturating_add(60_000_000_000),
             [87; 16],
             &identity.device,
         )

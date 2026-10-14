@@ -466,8 +466,8 @@ def run_browser(ctx: RunContext) -> list[record.Record]:
     report = ctx.dir / "browser.json"
     call(["node", "scripts/perf/browser_qualification.mjs", ctx.bins["browser-bundle"], "--out", report,
           "--renderer", ctx.env["renderer"], "--expect-revision", ctx.env["commit"],
-          # As the nightly job: no demo on SwiftShader (perf-scheduled.yml).
-          "--demo-seconds", "0"],
+          # As the nightly job on SwiftShader (perf-scheduled.yml).
+          "--demo-seconds", "0", "--rounds", "1", "--activations", "10", "--viewport", "960x540"],
          ctx.dir / "bench.log", ctx.repo)
     return adapters.browser_qualification(json.loads(report.read_text(encoding="utf-8")), ctx.env,
                                           require_clean=False)
