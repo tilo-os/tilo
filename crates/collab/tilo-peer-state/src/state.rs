@@ -13,7 +13,7 @@ use collab_types::{
 };
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Grant, GrantId, RoomPolicy, Subject, TreePath,
 };
@@ -1079,6 +1079,52 @@ impl StatePeer {
             member_devices,
             member_user_roots,
         })
+    }
+
+    /// The governed member devices a Read Deny keeps out of one record's
+    /// channel, by channel: for every record the room's grants name
+    /// ([`collab_types::named_records`]), each device of
+    /// [`Self::governed_access`] that may not read it
+    /// ([`Self::check_document_read`], the decision every door applies).
+    /// A steward admits a device to a record's channel only when it reads
+    /// the room and is not withheld here, so the denied record's key never
+    /// reaches it and the room's other records are unaffected. Records no
+    /// grant names are read as the room is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if room governance is missing or malformed.
+    pub fn withheld_record_readers(
+        &self,
+        now: SystemTime,
+    ) -> Result<std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>, String>
+    {
+        let access = self.governed_access(now)?;
+        let policy = self
+            .core
+            .room_doc
+            .as_ref()
+            .ok_or("room governance missing")?
+            .policy()
+            .room_policy(&self.core.room);
+        let records: BTreeSet<(&str, &str)> =
+            collab_types::named_records(&policy.grants, &self.core.room).collect();
+        let mut withheld = std::collections::HashMap::new();
+        for (app, record) in records {
+            let denied: BTreeSet<[u8; 32]> = access
+                .member_devices
+                .iter()
+                .copied()
+                .filter(|device| self.check_document_read(*device, app, record, now).is_err())
+                .collect();
+            if !denied.is_empty() {
+                withheld.insert(
+                    collab_types::document_channel_id(app, &self.core.room, record),
+                    denied,
+                );
+            }
+        }
+        Ok(withheld)
     }
 
     /// Authority-authored collaborator projection. The structural owner is

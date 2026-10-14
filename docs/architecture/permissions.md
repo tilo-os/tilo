@@ -181,13 +181,34 @@ whole legacy delivery rather than given a filtered one, because an automerge
 change graph cannot be served in part ([rooms.md](rooms.md)).
 
 What carries a read decision to the bytes is the record's channel key, and
-channel stewards admit devices per room: a device whose person may read the
-room node receives the key of every record channel in it
-(`ChannelDirectory::allowed_devices`). A Deny below the room therefore binds
-every honest device and every door, but it is not yet a confidentiality
-boundary against a member's own modified client, which holds the key of the
-record it was denied. Until stewards admit per record, the room is that
-boundary: to keep a record from someone, keep it in a room they are not in
+channel stewards admit devices per channel, that is per record
+(`ChannelDirectory::allowed_devices(room, channel, now)`). A channel id is a
+hash of its record's route, so a steward names a channel's record from the
+grants that name it: a grant on `room › app › resource`, or below it
+(`collab_types::named_record_of_channel`). For such a record a device is
+admitted only while its person reads the room and the same read decision
+allows the record (`Workspace::answer_at` on a desktop steward,
+`StatePeer::withheld_record_readers` over `check_document_read` on a relay
+steward). So a Read Deny naming a record withholds that record's key: the
+steward never admits the denied person's devices, and a device that already
+held the key is removed in a new epoch of that channel alone, while every
+other channel of the room keeps its epoch and its readers. As with any
+removal, the device keeps what it could read before. Lifting the Deny admits
+it again when it asks. Records no grant names, including records nobody has
+written yet, are read as the room is.
+
+Two Denies still bind only honest devices and doors, not a member's own
+modified client:
+
+- A Deny over a pattern, such as "Finance: Deny Read" on an app or every
+  resource of a kind, names no record. A steward cannot tell which unnamed
+  channel belongs to that app, so it admits the room's readers to them. To
+  withhold a record's key, deny that record by name.
+- A Deny below a record, on an item or a field, cannot be carried by a key
+  that opens the whole record.
+
+For those, the room is the confidentiality boundary: to keep content from
+someone, deny the record by name or keep it in a room they are not in
 ([rooms.md](rooms.md), "Rooms hold references, not copies").
 
 The sandbox's capabilities ([security.md](security.md)) keep the opposite
