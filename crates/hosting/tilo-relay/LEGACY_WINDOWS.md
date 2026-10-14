@@ -78,6 +78,7 @@ Run plain Cargo with inherited budget/sccache settings, unsetting an inherited
 
 ```sh
 cargo test --locked -p tilo-relay-protocol --lib legacy_window
+cargo test --locked -p tilo-relay-shell --features web --lib legacy::
 cargo test --locked -p tilo-relay --features web --lib web::
 cargo test --locked -p tilo-relay --features web --lib rooms::tests::legacy_window_write_respects_current_owner_capability_restrictions
 cargo test --locked -p tilo-browser-peer --test legacy_windows
