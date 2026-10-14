@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, randomDisplayName, rememberEntered, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {CustodyError} from './device-custody.mjs';
 
 const identity = key => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(key), userPublicKey: key.toString(16).padStart(2, '0').repeat(32), sign: async () => new Uint8Array(64)});
 
@@ -64,6 +65,47 @@ test('a person who was pruned is pre-admitted again as the same person', async (
   const {calls, options} = harness({person: identity(0x11), membership: {origin: 'o', room: 'ROOM', userPublicKey: '11'.repeat(32)}, connectFails: true});
   await joinViaHost(options);
   assert.equal(calls.posted[0].body.userPublicKey, '11'.repeat(32));
+});
+
+test('a kept membership the host refuses once the session starts is joined again as the same person', async () => {
+  // A host that started its room anew answers the old certificate only when
+  // the session begins, after connecting resolved.
+  const membership = {origin: 'https://rooms.example', room: 'OLD', userPublicKey: '11'.repeat(32)};
+  const {calls, options, store} = harness({person: identity(0x11), membership});
+  let disposed = false;
+  options.connect = async connected => {
+    calls.connected.push(connected);
+    return {room: connected.room, dispose: async () => { disposed = true; },
+      whenReady: async () => { throw new Error('The host no longer accepts this browser. Certify it again.'); }};
+  };
+  const peer = await joinViaHost(options);
+  assert.ok(disposed);
+  assert.equal(calls.posted[0].body.userPublicKey, '11'.repeat(32));
+  assert.equal(peer.room, 'ROOM');
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)});
+});
+
+test('a host that has not answered a kept membership yet keeps it and is not asked to admit again', async () => {
+  const membership = {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)};
+  const {calls, options, store} = harness({person: identity(0x11), membership});
+  options.connect = async connected => ({room: connected.room, dispose: async () => {},
+    whenReady: async () => { throw new DOMException('Room admission timed out', 'TimeoutError'); }});
+  await assert.rejects(joinViaHost(options), {name: 'TimeoutError'});
+  assert.equal(calls.posted.length, 0);
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
+});
+
+test('another tab holding the device key keeps the membership and asks the host nothing', async () => {
+  // Not the host's refusal: a second tab of this browser while the first is
+  // open. Joining again would spend a seat and the address's join window,
+  // then fail the same way.
+  const membership = {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)};
+  const {calls, options, store} = harness({person: identity(0x11), membership});
+  options.connect = async () => { throw new CustodyError('custody-busy', 'Another tab holds this device key'); };
+  await assert.rejects(joinViaHost(options), {name: 'CustodyError', code: 'custody-busy'});
+  assert.equal(calls.posted.length, 0);
+  assert.equal(calls.joined.length, 0);
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
 });
 
 test('a membership kept for another person is not reused for this one', async () => {

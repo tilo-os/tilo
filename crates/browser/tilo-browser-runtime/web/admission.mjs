@@ -93,6 +93,9 @@ export async function admit({scope, secrets = {}, tickets, deps, onProgress = ()
     // once the peer is certified: that, too, is no access.
     return await ready(await deps.connectMember({origin, room, account}));
   } catch (error) {
+    // This browser's own device key could not be used (another tab holds
+    // it): not the host's answer, and not no access.
+    if (error?.name === 'CustodyError') throw error;
     // The host's reason could tell "no such room" from "not a member".
     console.warn('admission: connecting failed', error?.code ?? error?.name ?? 'error');
     throw new AdmissionError('no-access', NO_ACCESS);

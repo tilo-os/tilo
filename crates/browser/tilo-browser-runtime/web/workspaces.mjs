@@ -299,11 +299,26 @@ export async function joinViaHost({
   }
   if (!identity?.userPublicKey) throw new TypeError("joining through a host needs the person's identity");
   if (known?.userPublicKey === identity.userPublicKey) {
+    let peer;
     try {
-      return await connect({...connectOptions, origin: known.origin, room: known.room, identity, displayName});
+      peer = await connect({...connectOptions, origin: known.origin, room: known.room, identity, displayName});
+      // A host refuses a membership it no longer has once the session
+      // starts, not when connecting: wait for its answer here.
+      await peer?.whenReady?.();
+      return peer;
     } catch (error) {
-      // The membership is gone (pruned after a long absence): ask the host
-      // to admit the same person again rather than stop at an error.
+      await peer?.dispose?.().catch(() => {});
+      // This browser could not use its own device key (another tab holds
+      // it), or the host has not answered yet: nothing the host refused,
+      // so the membership stays, and joining again would spend a seat and
+      // a join to fail the same way.
+      if (error?.name === 'CustodyError' || error?.name === 'TimeoutError') throw error;
+      // Another host answers at this origin now: joining it again would only
+      // meet the pin on what this browser kept for the previous one.
+      if (error?.code === 'host-changed') throw error;
+      // The membership is gone (pruned after a long absence, or the host
+      // started its room anew): ask the host to admit the same person again
+      // rather than stop at an error.
       console.warn('host admission: reconnecting failed, asking to join again', error);
       keepMembership(memberships, workspace, null);
     }

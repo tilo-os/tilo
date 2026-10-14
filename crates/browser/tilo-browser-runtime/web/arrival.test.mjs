@@ -186,6 +186,14 @@ test('a failure says what happened in plain words, never as a raw error', () => 
   for (const said of [failureMessage(host), general]) assert.doesNotMatch(said, /Failed|HTTP|Error/);
 });
 
+test('a page whose device key another tab holds says to use that tab', () => {
+  const busy = Object.assign(new Error('Another tab holds this device key'), {name: 'CustodyError', code: 'custody-busy'});
+  assert.equal(failureMessage(busy, {workspace: 'Lounge'}),
+    'Lounge is already open in another tab of this browser. Use that tab, or close it and try again.');
+  assert.equal(failureMessage(busy),
+    'The workspace is already open in another tab of this browser. Use that tab, or close it and try again.');
+});
+
 test('a tip reads after its label, a joke bare', () => {
   const rotation = createRotation({jokes: ['Herding agents…'], tips: ['Ctrl+K finds any app']});
   const joke = rotation.next();
