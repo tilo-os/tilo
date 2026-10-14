@@ -69,13 +69,33 @@ case ${COSIGN_KEY_REF:-} in
       0) ;;
       *) echo 'Forgejo returned a malformed OIDC token' >&2; exit 1 ;;
     esac
-    tilo_oidc_subject=$(printf '%s' "$tilo_oidc_payload" | base64 -d 2>/dev/null | jq -er .sub) || {
+    tilo_oidc_claims=$(printf '%s' "$tilo_oidc_payload" | base64 -d 2>/dev/null) || {
+      echo 'Forgejo returned a malformed OIDC token' >&2
+      exit 1
+    }
+    tilo_oidc_subject=$(printf '%s' "$tilo_oidc_claims" | jq -er .sub) || {
       echo 'Forgejo OIDC token has no valid subject' >&2
       exit 1
     }
     printf 'Using Forgejo OIDC subject: %s\n' "$tilo_oidc_subject"
+    # STS validates the issuer and audience before any role trust policy: an
+    # issuer with no IAM OIDC provider, or an audience missing from that
+    # provider's client IDs, fails as InvalidIdentityToken; a trust policy that
+    # rejects the subject or audience fails as AccessDenied. Print both so a
+    # failed exchange names what IAM saw.
+    tilo_oidc_issuer=$(printf '%s' "$tilo_oidc_claims" | jq -er '.iss | strings | select(length > 0)') || {
+      echo 'Forgejo OIDC token has no valid issuer' >&2
+      exit 1
+    }
+    tilo_oidc_audience=$(printf '%s' "$tilo_oidc_claims" \
+      | jq -er '.aud | (if type == "array" then join(",") else strings end) | select(length > 0)') || {
+      echo 'Forgejo OIDC token has no valid audience' >&2
+      exit 1
+    }
+    printf 'Forgejo OIDC issuer: %s audience: %s\n' "$tilo_oidc_issuer" "$tilo_oidc_audience"
     export AWS_REGION AWS_DEFAULT_REGION AWS_ROLE_ARN AWS_ROLE_SESSION_NAME \
       AWS_WEB_IDENTITY_TOKEN_FILE
-    unset tilo_kms_arn tilo_kms_region tilo_kms_account tilo_oidc_payload tilo_oidc_subject
+    unset tilo_kms_arn tilo_kms_region tilo_kms_account tilo_oidc_payload tilo_oidc_claims \
+      tilo_oidc_subject tilo_oidc_issuer tilo_oidc_audience
     ;;
 esac
