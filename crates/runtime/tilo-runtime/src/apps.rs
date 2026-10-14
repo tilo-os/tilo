@@ -58,7 +58,7 @@ impl Apps {
     /// the environment names.
     #[must_use]
     pub fn from_env(profile: &Path, room: &str) -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = tilo_paths::home();
         Self::new(
             package_store::Catalog::from_env().ok(),
             profile,

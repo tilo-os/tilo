@@ -239,9 +239,9 @@ pub(super) fn folder_in(home: &Path, workspace: &str) -> PathBuf {
 
 /// The folder of the workspace named `workspace` in this user's home.
 pub(super) fn folder(workspace: &str) -> io::Result<PathBuf> {
-    let home = std::env::var_os("HOME")
+    let home = tilo_paths::home()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is missing"))?;
-    Ok(folder_in(Path::new(&home), workspace))
+    Ok(folder_in(&home, workspace))
 }
 
 #[cfg(test)]
