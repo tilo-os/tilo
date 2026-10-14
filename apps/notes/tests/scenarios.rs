@@ -146,6 +146,14 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
                 .ok_or_else(|| format!("block {} has no rendered bounds", block.id))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let marks_another = observed(driver, |node| {
+        node.role == ui::a11y::Role::TreeItem
+            && node.state.selected
+            && node.name.as_deref() != Some(title)
+    });
+    if marks_another {
+        return Err(format!("the page tree marks a note other than {title:?}"));
+    }
     if reached(driver, scenario, blocks, &rects) {
         Ok(())
     } else {

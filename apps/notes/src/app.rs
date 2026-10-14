@@ -2468,17 +2468,24 @@ impl Widget for NotesApp {
         // Moving to another note writes nothing, so it is taken up here, in
         // the frame that asked; edits wait for the settle pass.
         let mut pending = std::mem::take(&mut self.pending_events);
+        let mut moved = false;
         pending.retain(|event| match event {
             OutEvent::Select(id) => {
                 if self.workspace.get(*id).is_some() {
                     self.workspace.set_selected(Some(*id));
                     self.record_current_route();
+                    moved = true;
                 }
                 false
             }
             _ => true,
         });
         self.pending_events = pending;
+        if moved {
+            // A presented window takes no projection for a move, so the
+            // page tree marks the note it now shows here.
+            self.sidebar.sync_from_workspace(&self.workspace);
+        }
         // Project the workspace only when its inputs moved: committed
         // heads, an open transaction (a settle pass may have written),
         // the selected page or the tag filter. Re-projecting every frame
