@@ -16998,6 +16998,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-extension"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "reqwest 0.13.4",
+ "rustix 1.1.4",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "tilo-advisory-lock",
+ "tilo-net",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-feedback"
 version = "0.1.0"
 dependencies = [
