@@ -1414,6 +1414,14 @@ impl Drop for NotificationService {
 /// checked against an installed desktop entry before a per-app rule is used.
 #[cfg(target_os = "linux")]
 fn verified_foreign_notification_identity(pid: u32) -> Option<String> {
+    verified_flatpak_app_id(pid)
+}
+
+/// The installed Flatpak `pid` demonstrably runs in, by the proof described
+/// at [`verified_foreign_notification_identity`]. The tray uses it to tell
+/// which app keeps an icon there.
+#[cfg(target_os = "linux")]
+pub(crate) fn verified_flatpak_app_id(pid: u32) -> Option<String> {
     let entries = &desktop_entry::cache::cached_scan().entries;
     verified_foreign_notification_identity_from(Path::new("/proc"), pid, entries)
 }
