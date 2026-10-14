@@ -334,6 +334,7 @@ members = [
     "crates/system/content",
     "crates/system/durable-store",
     "crates/system/endpoint-reachability",
+    "crates/system/esp-write",
     "crates/system/fs",
     "crates/system/fs-content",
     "crates/system/fs-protocol",

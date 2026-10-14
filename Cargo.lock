@@ -16957,6 +16957,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-esp-write"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "regex",
+ "rustix 1.1.4",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-feedback"
 version = "0.1.0"
 dependencies = [
