@@ -120,6 +120,7 @@ fn control_json(
     let result = remote.call(Control {
         slot: slot.to_owned(),
         args: args.to_vec(),
+        private_args: None,
     })?;
     *worst = (*worst).max(started.elapsed());
     if result.exit_code != 0 {
@@ -685,15 +686,49 @@ impl App {
     /// that is not on this network, at its address or by name, is reached
     /// over the peer network instead ([`Self::connect_peer`]).
     fn connect(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
-        self.connect_with_wake(vm, false)
+        self.connect_with_wake(vm, false, false)
     }
 
     /// Swaps may resume a managed VM before transport; status remains observational.
     fn connect_for_swap(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
-        self.connect_with_wake(vm, true)
+        self.connect_with_wake(vm, true, false)
     }
 
-    fn connect_with_wake(&mut self, vm: &Resolved, wake: bool) -> Result<Remote, CliError> {
+    fn connect_component(
+        &mut self,
+        vm: &Resolved,
+        component: &str,
+        wake: bool,
+    ) -> Result<Remote, CliError> {
+        self.connect_with_wake(vm, wake, component == "vmd")
+    }
+
+    fn prepare_swap_connection(
+        &mut self,
+        vm: &Resolved,
+        component: &str,
+        source: &ci::Source,
+        builder: Option<Builder>,
+    ) -> Result<Remote, CliError> {
+        let mut remote = self.connect_component(vm, component, true)?;
+        if remote.hello.protocol == 5
+            && (!matches!(source, ci::Source::Worktree)
+                || !matches!(builder, Some(Builder::Host | Builder::Remote)))
+        {
+            return Err(CliError::InvalidInput("protocol-5 bootstrap requires swap vmd --slot vm --from worktree with --builder host or remote".into()));
+        }
+        self.receipt
+            .set("bootstrap_protocol", remote.hello.protocol);
+        self.check_vm_space(&mut remote, vm)?;
+        Ok(remote)
+    }
+
+    fn connect_with_wake(
+        &mut self,
+        vm: &Resolved,
+        wake: bool,
+        bootstrap: bool,
+    ) -> Result<Remote, CliError> {
         self.peer = None;
         if let Some(route) = vm.entry.peer.clone()
             && vm.entry.hypervisor == hypervisor::DEVICE
@@ -713,7 +748,12 @@ impl App {
         let (endpoint, connected) = loop {
             let endpoint = self.endpoint(vm)?;
             let transport = || {
-                Remote::connect(
+                let connect = if bootstrap {
+                    Remote::connect_bootstrap
+                } else {
+                    Remote::connect
+                };
+                connect(
                     &vm.name,
                     &endpoint,
                     vm.entry.key.as_deref(),
@@ -4048,6 +4088,10 @@ impl App {
         remote: Remote,
         layer: &str,
     ) -> Result<Remote, CliError> {
+        let mut remote = remote;
+        let layers = remote.call(LayerList {})?;
+        let provenance = daemon_import_receipt(&layers, layer, &remote.hello.arch)?;
+        self.receipt.set("daemon_import", provenance);
         let command =
             remote::imported_daemon_command(vm.entry.daemon.as_deref(), &remote.hello.root, layer)?;
         let command: Vec<String> = command.iter().map(|word| vmbuild::sh_quote(word)).collect();
@@ -4055,9 +4099,15 @@ impl App {
         let line = remote::ssh_command(&endpoint, vm.entry.key.as_deref(), &command, false);
         let adapter = Self::adapter(vm)?;
         let debug = Self::debug_commands(adapter.as_ref(), &vm.name);
-        let imported = self.receipt.phase("daemon-handoff", || {
+        let mut imported = self.receipt.phase("daemon-handoff", || {
             remote.handoff(&vm.name, &line, &endpoint, debug)
         })?;
+        let verified = imported.call(tilo_vm_protocol::LayerVerify { hash: layer.into() })?;
+        if verified.hash != layer {
+            return Err(CliError::InvalidInput(
+                "replacement daemon refused imported layer integrity".into(),
+            ));
+        }
         // End the old RPC only after the replacement handshake succeeded.
         drop(remote);
         self.receipt.set("applying_daemon_layer", layer);
@@ -4124,8 +4174,7 @@ impl App {
         }
         let cohort_inputs = self.cohort_inputs(&component, &source)?;
         let vm = self.resolve_vm(None)?;
-        let mut remote = self.connect_for_swap(&vm)?;
-        self.check_vm_space(&mut remote, &vm)?;
+        let mut remote = self.prepare_swap_connection(&vm, &component, &source, builder)?;
         let layer = if let ci::Source::Layer(hash) = source {
             hash
         } else {
@@ -4148,7 +4197,7 @@ impl App {
         }
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
-        remote = self.connect_for_swap(&vm)?;
+        remote = self.connect_component(&vm, &component, true)?;
         if component == "vmd" {
             remote = self.handoff_daemon(&vm, remote, &layer)?;
         }
@@ -4783,7 +4832,7 @@ impl App {
         assembled?;
         // A build can outlast an idle SSH connection (a release shell takes
         // most of an hour): talk to the daemon on a fresh one.
-        *remote = self.connect(vm)?;
+        *remote = self.connect_component(vm, &component.name, false)?;
         let features = component.build_features(&extra);
         let provenance = build::provenance(
             &mut self.runner,
@@ -4809,9 +4858,10 @@ impl App {
         let cached = self
             .receipt
             .phase("layer_lookup", || remote.call(LayerList {}))?;
-        if cached
-            .iter()
-            .any(|layer| layer.hash == hash && layer.provenance.component == provenance.component)
+        if remote.hello.protocol != 5
+            && cached.iter().any(|layer| {
+                layer.hash == hash && layer.provenance.component == provenance.component
+            })
         {
             self.receipt.set("upload", "skipped");
             self.receipt.set("layer_reused", &hash);
@@ -4919,9 +4969,26 @@ impl App {
     fn control(&mut self, slot: Option<String>, args: &[String]) -> Result<Outcome, CliError> {
         let slot = self.slot_name(slot)?;
         let vm = self.resolve_vm(None)?;
+        let private_args = if args.iter().any(|arg| arg == "--args-stdin") {
+            if !matches!(args, [actions, invoke, _, _, stdin] if actions == "actions" && invoke == "invoke" && stdin == "--args-stdin")
+            {
+                return Err(CliError::InvalidInput(
+                    "private arguments require actions invoke PROVIDER ID --args-stdin".into(),
+                ));
+            }
+            Some(tilo_vm_protocol::DeviceActions {
+                line: serde_json::Value::Object(crate::device_actions::private_action_input(
+                    std::io::stdin().lock(),
+                )?)
+                .to_string(),
+            })
+        } else {
+            None
+        };
         let result = self.connect(&vm)?.call(Control {
             slot,
             args: args.to_vec(),
+            private_args,
         })?;
         if result.exit_code != 0 {
             return Err(CliError::CommandFailed {
@@ -5269,6 +5336,35 @@ fn checkout_root(dir: &Path) -> Option<PathBuf> {
     dir.ancestors()
         .find(|d| d.join(imageup::BUILD_SCRIPT).is_file())
         .map(Path::to_path_buf)
+}
+
+/// Require the imported daemon to match the guest and identify its build source.
+fn daemon_import_receipt<'a>(
+    layers: &'a [tilo_vm_protocol::LayerInfo],
+    hash: &str,
+    arch: &str,
+) -> Result<&'a tilo_vm_protocol::Provenance, CliError> {
+    let provenance = layers
+        .iter()
+        .find(|candidate| candidate.hash == hash)
+        .map(|candidate| &candidate.provenance)
+        .ok_or_else(|| CliError::InvalidInput("daemon layer has no import receipt".into()))?;
+    let nonempty = |field: &Option<String>| {
+        field
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    if provenance.component != "vmd"
+        || provenance.target.as_deref() != Some(format!("{arch}-unknown-linux-gnu").as_str())
+        || !nonempty(&provenance.source_commit)
+        || !nonempty(&provenance.cargo_lock_hash)
+        || !nonempty(&provenance.toolchain)
+    {
+        return Err(CliError::InvalidInput(
+            "daemon import receipt lacks matching architecture and source provenance".into(),
+        ));
+    }
+    Ok(provenance)
 }
 
 /// What `image build` runs: `--from local`'s build, the base rebuilt only
@@ -6762,6 +6858,41 @@ mod host_layer_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daemon_import_receipt_refuses_wrong_layer_architecture_and_unknown_source() {
+        use tilo_vm_protocol::{LayerInfo, Provenance};
+        let hash = "ab".repeat(32);
+        let mut provenance = Provenance::local("vmd");
+        provenance.source_commit = Some("cd".repeat(20));
+        provenance.target = Some("x86_64-unknown-linux-gnu".into());
+        provenance.cargo_lock_hash = Some("ef".repeat(32));
+        provenance.toolchain = Some("rustc 1.97.1".into());
+        let receipt = |provenance| {
+            vec![LayerInfo {
+                hash: hash.clone(),
+                provenance,
+            }]
+        };
+        assert!(daemon_import_receipt(&receipt(provenance.clone()), &hash, "x86_64").is_ok());
+        assert!(
+            daemon_import_receipt(&receipt(provenance.clone()), &"ff".repeat(32), "x86_64")
+                .is_err()
+        );
+        assert!(daemon_import_receipt(&receipt(provenance.clone()), &hash, "aarch64").is_err());
+        let mut wrong = provenance.clone();
+        wrong.component = "shell".into();
+        assert!(daemon_import_receipt(&receipt(wrong), &hash, "x86_64").is_err());
+        for field in ["source", "lock", "toolchain"] {
+            let mut unknown = provenance.clone();
+            match field {
+                "source" => unknown.source_commit = None,
+                "lock" => unknown.cargo_lock_hash = Some(String::new()),
+                _ => unknown.toolchain = None,
+            }
+            assert!(daemon_import_receipt(&receipt(unknown), &hash, "x86_64").is_err());
+        }
+    }
 
     /// `image build` runs `--from local`'s build with or without the disk, keeps its scratch next
     /// to (never inside) the output it leaves to be fetched, and finds a checkout without git.

@@ -321,7 +321,7 @@ impl HttpsLink {
             return Err(LinkError::Refused("host is not the pinned device".into()));
         }
         let sig_over_server_nonce = signer
-            .sign(auth::challenge_digest(&challenge.ack.server_nonce).to_vec())
+            .sign(auth::client_challenge_digest(&challenge.ack.server_nonce).to_vec())
             .await
             .map_err(|error| LinkError::Sign(error.0))?;
         let (grant, features) = decode_grant(

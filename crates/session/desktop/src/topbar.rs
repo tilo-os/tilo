@@ -299,6 +299,8 @@ struct CacheFingerprint {
     clock_activity: Option<(String, u64, bool, bool)>,
     app_tray_revision: u64,
     continuity: Option<String>,
+    tilo_mark: Option<bool>,
+    host_label: Option<String>,
 }
 
 /// One application tray icon as last painted: where, and what a click on
@@ -527,6 +529,29 @@ enum BarVariant {
     Compact,
 }
 
+/// The Tilo mark: three dots in a row, violet, blue and teal from the
+/// theme's presence hues, centred in `rect`.
+pub fn paint_tilo_mark(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    use ui::tokens::PresenceHue;
+    let side = rect.width().min(rect.height());
+    let step = side * 0.3;
+    let radius = side * 0.13;
+    let center = rect.center();
+    for (offset, hue) in [
+        (-step, PresenceHue::Violet),
+        (0.0, PresenceHue::Blue),
+        (step, PresenceHue::Teal),
+    ] {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.presence.hue(hue),
+            None,
+            &vello::kurbo::Circle::new((center.x + offset, center.y), radius),
+        );
+    }
+}
+
 /// `DesktopTree`, not `TopBar`, lets `build_tilo_root` stay a pure
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
@@ -571,7 +596,14 @@ pub struct TopBarChrome {
     /// Copied off the chrome each draw; empty until the host reports.
     telemetry: TelemetrySnapshot,
     synced_revision: u64,
+    /// `Some(menu open)` when the bar leads with the Tilo mark
+    /// ([`TopBarChrome::with_tilo_mark`]).
+    tilo_mark: Option<bool>,
+    /// Where the shown workspace is hosted, as a quiet pill before its name;
+    /// `None` on the person's own desktop.
+    host_label: Option<String>,
     // Click geometry — recomputed every frame so it tracks DPI/resize.
+    tilo_mark_rect: Rect,
     overview_btn_rect: Rect,
     up_btn_rect: Rect,
     down_btn_rect: Rect,
@@ -924,6 +956,9 @@ impl TopBarChrome {
             clock: ClockSnapshot::default(),
             telemetry: TelemetrySnapshot::default(),
             synced_revision: 0,
+            tilo_mark: None,
+            host_label: None,
+            tilo_mark_rect: Rect::ZERO,
             overview_btn_rect: Rect::ZERO,
             up_btn_rect: Rect::ZERO,
             down_btn_rect: Rect::ZERO,
@@ -1025,6 +1060,8 @@ impl TopBarChrome {
             }),
             app_tray_revision: self.app_tray_revision(),
             continuity: self.continuity_label(),
+            tilo_mark: self.tilo_mark,
+            host_label: self.host_label.clone(),
         }
     }
 
@@ -1222,6 +1259,39 @@ impl TopBarChrome {
         self.rect
     }
 
+    /// Lead the bar with the Tilo mark, which asks for
+    /// [`ChromeIntent::ToggleTiloMenu`]: a host with no other place for
+    /// what Tilo is (the browser) offers it there. Off by default.
+    #[must_use]
+    pub fn with_tilo_mark(mut self) -> Self {
+        self.tilo_mark = Some(false);
+        self
+    }
+
+    /// The menu the mark opens is shown or gone; the mark reads as pressed
+    /// while it is.
+    pub fn set_tilo_menu_open(&mut self, open: bool) {
+        if let Some(shown) = self.tilo_mark.as_mut() {
+            *shown = open;
+        }
+    }
+
+    /// Where the Tilo mark was last drawn, for anchoring its menu; zero
+    /// without the mark.
+    pub fn tilo_mark_rect(&self) -> Rect {
+        if self.tilo_mark.is_some() {
+            self.control_rect(Self::CONTROL_TILO_MARK)
+        } else {
+            Rect::ZERO
+        }
+    }
+
+    /// Name the host of the workspace shown (`example.org`) in a quiet
+    /// pill before its name; `None` (the person's own desktop) shows none.
+    pub fn set_host_label(&mut self, host: Option<String>) {
+        self.host_label = host.filter(|host| !host.trim().is_empty());
+    }
+
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         let rev = chrome.snapshot().revision;
@@ -1414,6 +1484,7 @@ impl TopBarChrome {
     /// Synthetic control ids are deliberately stable: unlike a child index,
     /// they survive the optional avatar/media controls appearing and
     /// disappearing between frames.
+    const CONTROL_TILO_MARK: &'static str = "topbar:tilo-mark";
     const CONTROL_OVERVIEW: &'static str = "topbar:overview";
     const CONTROL_WORKSPACE_UP: &'static str = "topbar:workspace-up";
     const CONTROL_WORKSPACE_DOWN: &'static str = "topbar:workspace-down";
@@ -1741,12 +1812,16 @@ impl TopBarChrome {
     }
 
     fn control_targets(&self) -> Vec<&'static str> {
-        let mut controls = vec![
+        let mut controls = Vec::new();
+        if self.tilo_mark.is_some() {
+            controls.push(Self::CONTROL_TILO_MARK);
+        }
+        controls.extend([
             Self::CONTROL_OVERVIEW,
             Self::CONTROL_WORKSPACE_UP,
             Self::CONTROL_WORKSPACE_DOWN,
             Self::CONTROL_WORKSPACE_SETTINGS,
-        ];
+        ]);
         controls.extend(
             self.widget_config
                 .widgets
@@ -1790,6 +1865,7 @@ impl TopBarChrome {
             return self.responsive.rect_for(target);
         }
         match target {
+            Self::CONTROL_TILO_MARK => self.tilo_mark_rect,
             Self::CONTROL_OVERVIEW => self.overview_btn_rect,
             Self::CONTROL_WORKSPACE_UP => self.up_btn_rect,
             Self::CONTROL_WORKSPACE_DOWN => self.down_btn_rect,
@@ -1846,6 +1922,7 @@ impl TopBarChrome {
 
     fn control_name(&self, target: &str) -> String {
         match target {
+            Self::CONTROL_TILO_MARK => t("topbar-tilo-menu"),
             Self::CONTROL_OVERVIEW => t("topbar-open-overview"),
             Self::CONTROL_WORKSPACE_UP => t("topbar-previous-workspace"),
             Self::CONTROL_WORKSPACE_DOWN => t("topbar-next-workspace"),
@@ -2135,7 +2212,7 @@ impl TopBarChrome {
         let icon_size = 18.0_f64;
         let control = BAR_CONTROL_PX;
 
-        let mut x = self.rect.x0 + pad_x;
+        let mut x = self.draw_tilo_mark(scene, transform, theme, center_y, self.rect.x0 + pad_x);
         // The switches are square targets of the shared control height.
         let switch_w = BAR_CONTROL_PX;
         let nav_width = control
@@ -2274,6 +2351,97 @@ impl TopBarChrome {
         // probes sample its glyphs — so the padding fix moved the capsule,
         // not the text.
         x + switch_w + f64::from(tokens.spacing.s3)
+    }
+
+    /// The Tilo mark as the bar's leading control, starting at `x`; returns
+    /// where the next control starts (`x` itself without the mark).
+    fn draw_tilo_mark(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        center_y: f64,
+        x: f64,
+    ) -> f64 {
+        let Some(open) = self.tilo_mark else {
+            self.tilo_mark_rect = Rect::ZERO;
+            return x;
+        };
+        let control = BAR_CONTROL_PX;
+        self.tilo_mark_rect = Rect::new(
+            x,
+            center_y - control / 2.0,
+            x + control,
+            center_y + control / 2.0,
+        );
+        if open {
+            let selected = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
+            ui::chrome::shell::paint_glass_body(
+                scene,
+                transform,
+                self.tilo_mark_rect,
+                ui::chrome::ChromeRole::Selector.radius(theme, control),
+                theme,
+                &selected,
+                1.0,
+            );
+        }
+        let side = f64::from(theme.tokens.metrics.icon_md);
+        paint_tilo_mark(
+            scene,
+            transform,
+            Rect::from_center_size(self.tilo_mark_rect.center(), (side, side)),
+            theme,
+        );
+        x + control + f64::from(theme.tokens.spacing.s2)
+    }
+
+    /// The quiet pill naming where the workspace is hosted, at the label x
+    /// the workspace pill would have had; returns where that pill's label
+    /// starts after it (`x` itself without a host).
+    fn draw_host_pill(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        x: f64,
+    ) -> f64 {
+        let Some(host) = self.host_label.as_deref() else {
+            return x;
+        };
+        let tokens = &theme.tokens;
+        let pad = f64::from(tokens.spacing.s2);
+        let style = tokens.typography.style(TextRole::Caption);
+        // A short name's worth at most: the workspace's own name matters more.
+        let host = text_renderer.elide_to_width_style(host, 140.0, &style);
+        let (w, h) = text_renderer.measure_style(&host, None, &style);
+        let pill = Rect::new(
+            x - pad,
+            center_y - BAR_CONTROL_PX / 2.0,
+            x + f64::from(w) + pad,
+            center_y + BAR_CONTROL_PX / 2.0,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            ui::chrome::chrome_hairline(theme),
+            None,
+            &RoundedRect::from_rect(
+                pill.inset(-0.5),
+                ui::chrome::ChromeRole::Selector.radius(theme, pill.height()),
+            ),
+        );
+        text_renderer.draw_style(
+            scene,
+            &host,
+            tokens.colors.text_dim,
+            at(transform, (x, center_y - f64::from(h) / 2.0)),
+            None,
+            &style,
+        );
+        pill.x1 + f64::from(tokens.spacing.s1) + pad
     }
 
     fn workspace_label(
@@ -4199,7 +4367,9 @@ impl TopBarChrome {
         let Some(p) = self.last_cursor else {
             return;
         };
-        let intent = if self.overview_btn_rect.contains(p) {
+        let intent = if self.tilo_mark.is_some() && self.tilo_mark_rect.contains(p) {
+            ChromeIntent::ToggleTiloMenu
+        } else if self.overview_btn_rect.contains(p) {
             ChromeIntent::ToggleOverview
         } else if self.up_btn_rect.contains(p) {
             ChromeIntent::SwitchWorkspace(-1)
@@ -4542,7 +4712,8 @@ impl TopBarChrome {
                 };
                 true
             }
-            Self::CONTROL_OVERVIEW
+            Self::CONTROL_TILO_MARK
+            | Self::CONTROL_OVERVIEW
             | Self::CONTROL_WORKSPACE_UP
             | Self::CONTROL_WORKSPACE_DOWN
             | Self::CONTROL_WORKSPACE_SETTINGS
@@ -4553,6 +4724,9 @@ impl TopBarChrome {
                     return false;
                 };
                 let intent = match target {
+                    Self::CONTROL_TILO_MARK if self.tilo_mark.is_some() => {
+                        ChromeIntent::ToggleTiloMenu
+                    }
                     Self::CONTROL_OVERVIEW => ChromeIntent::ToggleOverview,
                     Self::CONTROL_WORKSPACE_UP => ChromeIntent::SwitchWorkspace(-1),
                     Self::CONTROL_WORKSPACE_DOWN => ChromeIntent::SwitchWorkspace(1),
@@ -5621,6 +5795,14 @@ impl Widget for TopBarChrome {
             self.draw_responsive(scene, text_renderer, theme, presence);
         } else {
             let after_chevrons = self.draw_workspace_nav(scene, transform, theme, center_y);
+            let after_chevrons = self.draw_host_pill(
+                scene,
+                transform,
+                theme,
+                text_renderer,
+                center_y,
+                after_chevrons,
+            );
             self.draw_workspace_pill(
                 scene,
                 transform,
@@ -5783,6 +5965,7 @@ impl Widget for TopBarChrome {
             .iter()
             .map(|slot| (format!("topbar_tray_item_{}", slot.id), slot.rect));
         let mut rects = vec![
+            ("topbar_tilo_mark".to_string(), self.tilo_mark_rect()),
             (
                 "topbar_overview_button".to_string(),
                 self.control_rect(Self::CONTROL_OVERVIEW),
@@ -5929,6 +6112,14 @@ impl Widget for TopBarChrome {
                             ("position", self.workspace_index.saturating_add(1).into()),
                             ("total", self.workspace_total.into()),
                         ],
+                    ));
+                }
+                if target == Self::CONTROL_WORKSPACE_SETTINGS
+                    && let Some(host) = self.host_label.as_deref()
+                {
+                    node = node.with_description(t_args(
+                        "topbar-workspace-host",
+                        &[("host", host.into())],
                     ));
                 }
                 node
@@ -6962,6 +7153,87 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_eq!(bar.center_widget, CenterWidget::Calendar);
+    }
+
+    #[test]
+    fn the_tilo_mark_is_opt_in_leads_the_bar_and_asks_for_its_menu() {
+        let tree = two_workspace_tree();
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        let mut plain = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        lay_out_and_draw(&mut plain, 1280.0);
+        assert!(
+            !plain
+                .control_targets()
+                .contains(&TopBarChrome::CONTROL_TILO_MARK)
+        );
+        assert_eq!(plain.tilo_mark_rect(), Rect::ZERO);
+
+        let mut bar = TopBarChrome::from_tree(&tree)
+            .with_chrome(chrome.clone())
+            .with_tilo_mark();
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert_eq!(
+            bar.control_targets().first().copied(),
+            Some(TopBarChrome::CONTROL_TILO_MARK)
+        );
+        let mark = bar.tilo_mark_rect();
+        assert!(mark.width() >= 32.0 && mark.height() >= 32.0, "{mark:?}");
+        assert!(mark.x1 <= bar.overview_btn_rect.x0, "the mark leads");
+        assert!(
+            bar.test_rects()
+                .iter()
+                .any(|(id, rect)| id == "topbar_tilo_mark" && *rect == mark)
+        );
+        let node = bar.accessibility().expect("topbar semantics");
+        let child = node
+            .children
+            .iter()
+            .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_TILO_MARK))
+            .expect("the mark is a semantic child");
+        assert_eq!(child.name.as_deref(), Some("Tilo menu"));
+        assert_eq!(child.role, ui::a11y::Role::Button);
+
+        bar.last_cursor = Some(mark.center());
+        let mut handled = false;
+        bar.handle_left_click(&mut handled);
+        assert!(handled);
+        bar.set_focus(true);
+        bar.focused_control = Some(TopBarChrome::CONTROL_TILO_MARK.to_string());
+        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
+        let asked = chrome
+            .borrow()
+            .intents
+            .iter()
+            .filter(|intent| matches!(intent, ChromeIntent::ToggleTiloMenu))
+            .count();
+        assert_eq!(asked, 2, "a click and Enter each ask once");
+    }
+
+    #[test]
+    fn a_room_host_is_named_beside_the_workspace_and_nothing_on_ones_own() {
+        let tree = two_workspace_tree();
+        let mut own = TopBarChrome::from_tree(&tree);
+        own.set_host_label(Some(String::new()));
+        lay_out_and_draw(&mut own, 1280.0);
+        let mut hosted = TopBarChrome::from_tree(&tree);
+        hosted.set_host_label(Some("example.org".into()));
+        lay_out_and_draw(&mut hosted, 1280.0);
+        assert!(
+            hosted.ws_pill_rect.x0 > own.ws_pill_rect.x0,
+            "the host pill sits before the workspace pill"
+        );
+        let described = |bar: &TopBarChrome| {
+            bar.accessibility()
+                .expect("topbar semantics")
+                .children
+                .into_iter()
+                .find(|child| {
+                    child.action_target.as_deref() == Some(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
+                })
+                .and_then(|child| child.description)
+        };
+        assert_eq!(described(&hosted).as_deref(), Some("Hosted at example.org"));
+        assert!(!described(&own).is_some_and(|text| text.contains("Hosted")));
     }
 
     #[test]
@@ -8670,6 +8942,43 @@ mod responsive_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn responsive_primary_bar_leads_with_the_painted_tilo_mark() {
+        use ui::a11y::Action;
+        let workspace =
+            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Design review");
+        let tree = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        let bar = TopBarChrome::from_tree_with_local_user(&tree, "fixture-person".into())
+            .with_chrome(chrome.clone())
+            .with_tilo_mark();
+        let mut frame = Framed::new(ui::State::new(), bar, (320, 480), Theme::dark());
+        assert!(frame.responsive.active);
+        let mark = frame.tilo_mark_rect();
+        assert!(!mark.is_zero_area(), "the mark stays on a narrow bar");
+        let overview = frame.control_rect(TopBarChrome::CONTROL_OVERVIEW);
+        assert!(mark.x1 <= overview.x0, "{mark:?} leads {overview:?}");
+        Framed::harness_mut(&mut frame).click_at(mark.center().x, mark.center().y);
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.item.0", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        let intents = &chrome.borrow().intents;
+        assert_eq!(intents.len(), 2, "{intents:?}");
+        assert!(
+            intents
+                .iter()
+                .all(|intent| matches!(intent, ChromeIntent::ToggleTiloMenu))
+        );
+        let audit = Framed::harness(&frame).native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
     }
 
     #[test]

@@ -238,7 +238,7 @@ pub struct ResourceAddress { pub kind: String, pub id: String, pub span: Option<
 pub enum Mode { Desktop, App }
 
 /// Never rendered outside the fragment; `Debug` and `Display` redact.
-pub struct LinkSecrets { pub invite: Option<Secret>, pub ticket: Option<Secret>, pub token: Option<Secret>, pub pair: Option<Secret> }
+pub struct LinkSecrets { pub invite: Option<Secret>, pub ticket: Option<Secret>, pub token: Option<Secret>, pub pair: Option<Secret>, pub install: Option<Secret> }
 
 pub struct Link { pub mode: Mode, pub target: LinkTarget, pub secrets: LinkSecrets }
 
@@ -421,8 +421,9 @@ the page.
 ### 6.2 Secrets
 
 Secrets are `invite` (invitation text), `ticket` (a room service guest
-ticket), `token` (a pre-admission token) and `pair` (the user root, hex, of
-the person whose new device this browser asks to become). Rules:
+ticket), `token` (a pre-admission token), `pair` (the user root, hex, of
+the person whose new device this browser asks to become) and `install` (a
+machine waiting for its owner, §6.3). Rules:
 
 - They only ever appear in the fragment. `LinkSecrets` has no path or query
   rendering; there is no API that could put one there.
@@ -430,7 +431,7 @@ the person whose new device this browser asks to become). Rules:
   the secrets into page memory and calls `history.replaceState` with the
   public URL before any module loads. Copying from the address bar, a crash
   report, a screenshot of the address bar or a later `share-link` never sees
-  them. It is the one JavaScript parser, and it only splits off the four
+  them. It is the one JavaScript parser, and it only splits off the five
   known keys; the corpus tests (§9) hold it to the Rust parser's split.
 - Secrets are read once by admission and dropped after use.
 - Entry pages set `<meta name="referrer" content="no-referrer">` (as
@@ -447,6 +448,40 @@ resource exist, which the room's members already know and which the host's
 admission check makes useless to anyone else. A link with a secret is a
 capability and should be sent as one; the share sheet says so when
 `share-invite-link` is used.
+
+### 6.3 Setting up a machine
+
+A node provisioned without a certificate (`tilo-relay run --web …
+--install-token-file PATH`, see browser-runtime.md, "A browser-held root")
+waits for its owner: it prints its device key and answers only its install
+route. Making it the person's is a host action of the desktop and a link
+form, both in `web/machine-setup.mjs`; neither is admission, so `install`
+never opens a room and admission never reads it.
+
+- **"Set up a machine"** (`set-up-machine`) is a host action on every
+  desktop the page mounts, listed in desktop search beside the identity
+  actions. It asks for the machine's HTTPS address, its key (the
+  `devicePublicKey` it printed) and its install token.
+- **The link** is `#/me?install=<secret>`: the secret is base64url of the
+  JSON `{origin, devicePublicKey, installToken}` (`installSecret`). It obeys
+  §6.2 like every secret: the scrubber takes it before any module runs,
+  `boot` hands it to the page instead of admission, and the page reads it
+  once. A damaged one is said, never acted on.
+
+Either way the page shows the same form, filled in from the link, with what
+setting up means, and does nothing until the person presses "Set up": a
+link alone never makes a person certify a machine. The root this page holds
+(the one unlocked, else this browser's own, made on a first visit) then
+certifies the node and the session beside it and installs both
+(`installNode`), while the form says each step. A wrong token, a machine
+already set up (a serving host has no install route), a key that is not
+the machine's, an unreachable machine or one that does not allow this page's
+origin, and a browser that holds no root of the person it is (a device
+paired to someone kept elsewhere) are each said in the form, which stays
+open to correct and try again. A machine that took the certificate is
+remembered as a host the person owns (`keepOwnedHost` in
+`web/workspaces.mjs`): like a host they joined, it keeps their envelope and
+profile.
 
 ## 7. Native handling
 
@@ -521,7 +556,10 @@ written from the environment when the container starts:
 `TILO_WEB_HOME_HOST` (the workspace host's name), `TILO_WEB_HOME_NAME`
 (required with a host) and `TILO_WEB_HOME_APP` (optional) make that host's
 workspace the home; without them a bare visit opens the person's own
-desktop. The bundle lives under `v/<content hash>/` and is cached as
+desktop. `TILO_WEB_ABOUT_NOTIFY`, `TILO_WEB_ABOUT_SOURCE` and
+`TILO_WEB_ABOUT_COMMUNITY` (https URLs) become `about`, the links the
+About sheet behind the top bar's Tilo mark offers; an unset one is not
+offered. The bundle lives under `v/<content hash>/` and is cached as
 immutable; only the entry pages and `entry.json` revalidate.
 
 `?embed=1` on an entry page is the page inside another site (the

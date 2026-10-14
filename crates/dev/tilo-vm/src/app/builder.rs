@@ -33,6 +33,28 @@ fn build_header<T>(
     Ok(header)
 }
 
+fn check_bootstrap_hash(remote: &Remote, packed: &builderlayer::Packed) -> Result<(), CliError> {
+    if remote.hello.protocol == 5 && packed.layer_hash.is_none() {
+        return Err(CliError::InvalidInput(
+            "legacy daemon bootstrap requires an assembler content hash".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn check_import_hash(packed: &builderlayer::Packed, imported: &str) -> Result<(), CliError> {
+    if packed
+        .layer_hash
+        .as_deref()
+        .is_some_and(|hash| hash != imported)
+    {
+        return Err(CliError::InvalidInput(
+            "imported layer content differs from the remote assembler".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn start_builder(
     line: &hypervisor::CommandLine,
     root: &std::path::Path,
@@ -225,7 +247,7 @@ impl App {
             .path()
             .strip_prefix(&worktree.root)
             .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-        let cached = if reuse {
+        let cached = if reuse && remote.hello.protocol != 5 {
             self.receipt
                 .phase("layer_lookup", || verified_layers(remote, &component.name))?
         } else {
@@ -271,8 +293,9 @@ impl App {
             &remote.hello.arch,
             &cached,
         )?;
+        check_bootstrap_hash(remote, &packed)?;
         // The build can outlast an idle connection: a fresh one for delivery.
-        *remote = self.connect(vm)?;
+        *remote = self.connect_component(vm, &component.name, false)?;
         let delivered = self.receipt.phase("transfer", || {
             deliver_layer(remote, &mut stream, &packed, &component.name)
         });
@@ -298,21 +321,13 @@ impl App {
             }
             Delivery::Uploaded(upload) => upload,
         };
-        let expected_hash = packed.layer_hash.clone();
         let imported = self.receipt.phase("import", || {
             remote.call(LayerImport {
                 source: LayerSource::Upload(upload),
                 provenance: Box::new(provenance.clone()),
             })
         })?;
-        if expected_hash
-            .as_deref()
-            .is_some_and(|hash| hash != imported.hash)
-        {
-            return Err(CliError::InvalidInput(
-                "imported layer content differs from the remote assembler".into(),
-            ));
-        }
+        check_import_hash(&packed, &imported.hash)?;
         Ok(userspace_member(
             component,
             imported.hash,

@@ -1969,24 +1969,14 @@ fn prepare_attachment_import(
     let Ok((dir, name)) = tilo_files::file_at(path) else {
         return fail("file is unavailable");
     };
-    let Ok(metadata) = tilo_files::blocking::metadata(&dir, &name) else {
-        return fail("file is unavailable");
-    };
-    if metadata.kind != tilo_files::Kind::File || metadata.len > crate::record::MAX_ATTACHMENT_BYTES
-    {
-        return fail("file is not shareable or exceeds 32 MiB");
-    }
-    let Ok(bytes) = tilo_files::blocking::read(&dir, &name) else {
-        return fail("could not read file");
+    let limit = usize::try_from(crate::record::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
+    let bytes = match tilo_files::blocking::read_bounded(&dir, &name, limit) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return fail("file exceeds 32 MiB"),
+        Err(_) => return fail("could not read file"),
     };
     if bytes.is_empty() {
         return fail("file is empty");
-    }
-    if u64::try_from(bytes.len())
-        .ok()
-        .is_none_or(|size| size > crate::record::MAX_ATTACHMENT_BYTES)
-    {
-        return fail("file exceeds 32 MiB");
     }
     let name = path
         .file_name()

@@ -14,6 +14,7 @@
 
 mod navigation;
 
+pub mod about;
 pub mod authority;
 pub mod backdrop;
 pub mod chrome;

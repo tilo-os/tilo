@@ -115,8 +115,10 @@ pub fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, 
         std::fs::remove_dir_all(&dest)?;
     }
     std::fs::create_dir_all(&dest)?;
-    zip.archive_mut()
-        .extract(&dest)
+    // Bounded on the way to disk: the declared sizes checked above are the
+    // package's own claim, and a header that lies small must not fill the
+    // extensions directory through an unbounded inflate.
+    zip.extract_to(&dest)
         .map_err(|e| ExtensionError::Archive(e.to_string()))?;
     info.path = dest;
     Ok(info)
