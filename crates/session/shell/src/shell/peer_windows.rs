@@ -1747,11 +1747,10 @@ mod tests {
         crate::shell::catalogue::CatalogueApp {
             package_id: package_id.into(),
             display_name: display_name.into(),
-            description: String::new(),
-            category: None,
             version: "1.0.0".into(),
             registry: "main".into(),
             trust: "verified".into(),
+            ..Default::default()
         }
     }
 

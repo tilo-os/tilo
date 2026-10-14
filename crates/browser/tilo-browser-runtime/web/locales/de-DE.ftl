@@ -40,9 +40,11 @@ arrival-joke-shy-gpu = Die GPU taut auf (sie ist schüchtern)…
 arrival-joke-recycling = Mülltrennung läuft…
 
 ## Tipps
+# Gedimmt vor jedem Tipp; Witze haben keins.
+arrival-label-tip = Tipp
 arrival-desktop-tip-find-app = Strg+K findet jede App
 arrival-desktop-tip-find-app-mac = ⌘K findet jede App
-arrival-desktop-tip-sideways-wheel = Mit dem Seitwärtsrad die Leiste entlang
+arrival-desktop-tip-scroll-sideways = Seitwärts scrollen wechselt das Fenster
 arrival-tip-saved = Alles hier wird laufend gespeichert
 arrival-tip-operating-system = Tilo ist ein Betriebssystem. Dieses läuft in deinem Browser.
 # Künftige Tipps: siehe en-US.ftl.

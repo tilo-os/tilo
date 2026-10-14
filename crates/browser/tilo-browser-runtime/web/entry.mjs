@@ -208,7 +208,10 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const host = scopeHost(scope);
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop,
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
-      ...(entry.about ? {about: entry.about} : {}), ...diagnostics},
+      ...(entry.about ? {about: entry.about} : {}),
+      // The room service's spectator count, for the desktop's "watching".
+      ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
+      ...diagnostics},
     onStatus: titled(window, diagnostics.onStatus)});
   if (shown.redirect) {
     window.location.replace(link.format({mode: shown.redirect, target: route.target}));

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {arrivalLines, arrivalLocale, createArrival, createRotation, isCoffeeHost, parseMessages, progressIn,
-  SEGMENTS, segmentOf, STEP_NOTES} from './arrival.mjs';
+import {existsSync} from 'node:fs';
+import {arrivalLines, arrivalLocale, createArrival, createRotation, failureMessage, isCoffeeHost, lineParts,
+  parseMessages, progressIn, SEGMENTS, segmentOf, STEP_NOTES} from './arrival.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const locale = name => parseMessages(readFileSync(here(`locales/${name}.ftl`), 'utf8'));
@@ -17,7 +18,7 @@ test('a visit opens with a joke, mixes two jokes to a tip and never repeats a li
   for (let seed = 1; seed < 50; seed++) {
     const rotation = createRotation({jokes, tips}, seeded(seed));
     const shown = [];
-    for (let line; (line = rotation.next()) !== null;) shown.push(line);
+    for (let line; (line = rotation.next()) !== null;) shown.push(line.text);
     assert.equal(new Set(shown).size, shown.length, 'no repeats');
     assert.equal(shown.length, jokes.length + tips.length, 'every line once');
     assert.match(shown[0], /^joke/);
@@ -32,13 +33,13 @@ test('lines rotate every 2.5 s from the first second, and the last stays once al
   assert.equal(arrival.update(opening, 0).line, null);
   assert.equal(arrival.update(opening, 999).line, null, 'nothing before a second');
   assert.equal(arrival.update(opening, 999).bar, false, 'no bar before a second either');
-  const first = arrival.update(opening, 1000).line;
+  const first = arrival.update(opening, 1000).line?.text;
   assert.ok(['a', 'b'].includes(first));
-  assert.equal(arrival.update(opening, 3400).line, first);
-  const second = arrival.update(opening, 3500).line;
+  assert.equal(arrival.update(opening, 3400).line.text, first);
+  const second = arrival.update(opening, 3500).line.text;
   assert.notEqual(second, first);
-  assert.equal(arrival.update(opening, 6000).line, 'c');
-  assert.equal(arrival.update(opening, 20_000).line, 'c');
+  assert.deepEqual(arrival.update(opening, 6000).line, {kind: 'tip', text: 'c'});
+  assert.deepEqual(arrival.update(opening, 20_000).line, {kind: 'tip', text: 'c'});
 });
 
 test('a load done within the first second never shows a line or bar', () => {
@@ -131,7 +132,6 @@ test('both locales have jokes and the same tips, in lines short enough to read a
   // The owner's own lines, kept as written though longer.
   const longer = new Set(['Best viewed in Netscape Navigator 4.0 at 800×600',
     'I’d like to interrupt for a moment. What you are referring to as Li…',
-    'Spin the sideways wheel to move along the strip',
     'Tilo is an operating system. This one runs in your browser.',
     'Tilo ist ein Betriebssystem. Dieses läuft in deinem Browser.']);
   const tipIds = name => [...locale(name).keys()].filter(id => id.includes('tip-')).sort();
@@ -164,4 +164,36 @@ test('every step note the entry pages write is one the screen leaves to screen r
   for (const shown of ['Waiting for the workspace owner to let you in…', 'Pairing code']) {
     assert.ok(![...STEP_NOTES].some(note => note.startsWith(shown)));
   }
+});
+
+test('every locale the page can pick has its file beside the module', () => {
+  const picked = new Set([[], ['de-DE'], ['en-US'], ['fr']].map(arrivalLocale));
+  for (const name of picked) assert.ok(existsSync(here(`locales/${name}.ftl`)), name);
+});
+
+test('a failure says what happened in plain words, never as a raw error', () => {
+  const host = Object.assign(new Error('admit: HTTP 502'), {name: 'HostAdmissionError', code: 'unavailable'});
+  assert.equal(failureMessage(host, {workspace: 'Lounge'}),
+    'Can’t reach Lounge right now. Check your connection, then try again.');
+  assert.equal(failureMessage(new TypeError('Failed to fetch'), {loaded: false}),
+    'Can’t reach Tilo right now. Check your connection, then try again.');
+  assert.equal(failureMessage(new Error('WebSocket connection closed')),
+    'Can’t reach the workspace right now. Check your connection, then try again.');
+  const refused = Object.assign(new Error('You did not join'), {name: 'AdmissionError', code: 'declined'});
+  assert.equal(failureMessage(refused, {workspace: 'Lounge'}), 'You did not join');
+  const general = failureMessage(new Error('RuntimeError: unreachable executed at 0x1f'), {workspace: 'Lounge'});
+  assert.equal(general, 'Something went wrong opening Lounge. Try again, or come back later.');
+  for (const said of [failureMessage(host), general]) assert.doesNotMatch(said, /Failed|HTTP|Error/);
+});
+
+test('a tip reads after its label, a joke bare', () => {
+  const rotation = createRotation({jokes: ['Herding agents…'], tips: ['Ctrl+K finds any app']});
+  const joke = rotation.next();
+  const tip = rotation.next();
+  assert.deepEqual(lineParts(joke, 'Tip'), {label: null, text: 'Herding agents…'});
+  assert.deepEqual(lineParts(tip, 'Tip'), {label: 'Tip', text: 'Ctrl+K finds any app'});
+  assert.equal(locale('en-US').get('arrival-label-tip'), 'Tip');
+  assert.equal(locale('de-DE').get('arrival-label-tip'), 'Tipp');
+  // The label is no tip of its own.
+  assert.ok(!arrivalLines(locale('de-DE')).tips.includes('Tipp'));
 });

@@ -1621,6 +1621,7 @@ mod tests {
             version: "0.1.0".to_string(),
             registry: "Tilo main".to_string(),
             trust: "verified".to_string(),
+            ..Default::default()
         }
     }
 
@@ -2625,11 +2626,10 @@ mod tests {
                     } else {
                         "common source app".into()
                     },
-                    description: String::new(),
-                    category: None,
                     version: "1".into(),
                     registry: "fixture".into(),
                     trust: "verified".into(),
+                    ..Default::default()
                 })
                 .collect(),
             Vec::new(),
