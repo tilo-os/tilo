@@ -69,8 +69,20 @@ path = "src/relay_offers_cli.rs"
 #   keypair + a signed cert (capability `can_act_as_host`) issued by
 #   the user's root. Every inbound peer must present a valid cert
 #   chaining to the same user identity.
-# - Passive CRDT peer — the relay never *originates* mutations, only
-#   receives, stores, and forwards.
+# - Mostly a store-and-forward peer, not a passive one. Device deltas are
+#   received, retained and forwarded, but the host also originates, under
+#   its own device key:
+#   - governance commits for the rooms it governs (`rooms*`);
+#   - its retained `IdentityHello` certificate frame (`compaction`);
+#   - legacy-window input on behalf of browsers (`web::legacy`);
+#   - folded snapshots of unsealed document channels (`compaction`).
+#   It reads the desktop's peer-sync messages inside co-edit bodies to
+#   decide retention, replay and compaction: document frames, checkpoint
+#   kinds and audiences through `payloads::ShellPayloads`, and native
+#   shell replay through `store::shell_selection`; it refuses document
+#   changes an app's surface does not allow (`surfaces`). Sealed document
+#   content stays opaque. `docs/architecture/security.md` ("What a
+#   workspace host reads and originates") lists the same powers.
 # - Multi-host by construction — several relays bound to the same
 #   workspace merge like any other automerge peers.
 # - Fully in-process testable — `Relay::start` binds a random-port

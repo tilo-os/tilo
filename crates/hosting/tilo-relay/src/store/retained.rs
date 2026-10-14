@@ -109,17 +109,15 @@ fn checkpoint_key(bytes: &[u8], workspace: u64) -> Option<blake3::Hash> {
 }
 
 /// The author and channel of a checkpoint whose message is the whole of its
-/// route ([`tilo_peer_state::transport::standalone`]).
+/// route ([`crate::payloads::Checkpoint::standalone`]).
 fn standalone(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 32])> {
     let (author, CoeditPayload::Checkpoint { channel, body }) = payload(bytes, workspace)? else {
         return None;
     };
-    let (message, rest) = postcard::take_from_bytes::<tilo_peer_state::NeighbourMsg>(&body).ok()?;
-    let routed = rest.is_empty()
-        && tilo_peer_state::transport::retention(&message, false)
-            == Some((channel, tilo_peer_state::transport::Retention::Checkpoint))
-        && tilo_peer_state::transport::standalone(&message);
-    routed.then_some((author, channel))
+    crate::payloads::shell()
+        .checkpoint(&channel, &body)?
+        .standalone
+        .then_some((author, channel))
 }
 
 /// Whether standalone `checkpoint` replaces `prior`: retained earlier by the
