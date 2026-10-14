@@ -1196,3 +1196,99 @@ fn an_image_description_is_set_and_cleared_only_on_an_image() {
         .unwrap();
     assert!(block_alts(&replica).iter().all(|(_, _, alt)| alt.is_none()));
 }
+
+/// The path to `obj` as the document itself answers it, root first.
+fn path_from_document(doc: &Doc, obj: &ObjId) -> tilo_resource::ObjPath {
+    let mut path: tilo_resource::ObjPath = doc
+        .parents(obj)
+        .unwrap()
+        .map(|parent| (parent.obj, parent.prop))
+        .collect();
+    path.reverse();
+    path
+}
+
+/// A field read whole is read in one walk over its body: every paragraph,
+/// headings included, comes out as reading it by its id does, and once an
+/// edit reaches the field each paragraph's objects are placed where the
+/// document says they are.
+#[test]
+fn a_field_read_whole_equals_reading_each_paragraph_and_places_its_objects() {
+    use automerge::transaction::Transactable;
+    let mut doc = Doc::new();
+    let notes = doc
+        .put_object(automerge::ROOT, "notes", automerge::ObjType::Map)
+        .unwrap();
+    let field = doc
+        .put_object(&notes, "n1", automerge::ObjType::Map)
+        .unwrap();
+    RichText::initialize_under(&mut doc, &field).unwrap();
+    RichTextAction::ReplaceBody {
+        markdown: "# Title\n\nOne **bold** line.\n\n## Part\n\n- item\n- [ ] task\n\nLast words."
+            .into(),
+    }
+    .apply_under(&mut doc, &field)
+    .unwrap();
+    doc.commit();
+
+    let everything = Demand::range(0..usize::MAX);
+    let mut whole = RichText::read_under(&doc, &field).unwrap();
+    RichText::load(&mut whole, &doc, &everything).unwrap();
+    let ids = body_ids(&whole);
+    assert!(ids.len() >= 5, "{ids:?}");
+    assert_eq!(whole.headings().len(), 2, "the outline is read");
+    for id in &ids {
+        let mut one = RichText::read_under(&doc, &field).unwrap();
+        RichText::load(&mut one, &doc, &Demand::none().with_keys([id.clone()])).unwrap();
+        assert_eq!(whole.block(id), one.block(id), "paragraph {id}");
+        assert!(whole.block(id).is_some(), "paragraph {id} is read");
+    }
+    assert_eq!(whole.objects.len(), one_objects(&doc, &field, &ids));
+
+    let mut tracker = tilo_resource::Tracker::new();
+    tracker.start(&mut doc);
+    RichTextAction::SpliceText {
+        region: RegionKind::Body,
+        block: ids[1].clone(),
+        at: 0,
+        del: 0,
+        ins: "Now ".into(),
+    }
+    .apply_under(&mut doc, &field)
+    .unwrap();
+    doc.commit();
+    let delta = tracker.delta_located(&mut doc, &|obj| RichText::locate(&whole, obj));
+    RichText::refresh_under(&mut whole, &doc, &delta).unwrap();
+    RichText::load(&mut whole, &doc, &everything).unwrap();
+    assert!(whole.block(&ids[1]).unwrap().text.starts_with("Now One"));
+    let c = whole.containers().clone();
+    for id in &ids {
+        let block = model::region_block_obj(&doc, &c, Region::Body, id).unwrap();
+        let text = match doc.get(&block, BLOCK_TEXT).unwrap() {
+            Some((Value::Object(_), text)) => text,
+            other => panic!("paragraph {id} has no text: {other:?}"),
+        };
+        for obj in [&block, &text] {
+            assert_eq!(
+                RichText::locate(&whole, obj),
+                Some(path_from_document(&doc, obj)),
+                "paragraph {id}"
+            );
+        }
+    }
+}
+
+/// How many objects the paragraphs `ids` are stored in: each one's map and
+/// whichever of its text and attributes it has.
+fn one_objects(doc: &Doc, field: &ObjId, ids: &[String]) -> usize {
+    let c = model::open(doc, field).unwrap();
+    ids.iter()
+        .map(|id| {
+            let block = model::region_block_obj(doc, &c, Region::Body, id).unwrap();
+            1 + [BLOCK_TEXT, BLOCK_ATTRS]
+                .into_iter()
+                .filter(|key| matches!(doc.get(&block, *key), Ok(Some((Value::Object(_), _)))))
+                .count()
+        })
+        .sum()
+}
