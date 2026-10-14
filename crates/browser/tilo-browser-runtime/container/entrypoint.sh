@@ -9,6 +9,9 @@
 #   TILO_WEB_ABOUT_NOTIFY     where to sign up to hear when Tilo comes out
 #   TILO_WEB_ABOUT_SOURCE     the source code
 #   TILO_WEB_ABOUT_COMMUNITY  the community
+# Only the app itself may frame it, and the one site that embeds it as a live
+# preview, if any (an embed reports its state to that site alone):
+#   TILO_WEB_EMBEDDER   that site's https:// origin (unset: none)
 set -eu
 host=${TILO_WEB_HOME_HOST:-}
 name=${TILO_WEB_HOME_NAME:-}
@@ -40,5 +43,20 @@ for link in notify:${TILO_WEB_ABOUT_NOTIFY:-} source:${TILO_WEB_ABOUT_SOURCE:-} 
   about="$about${about:+,}\"$key\":\"$url\""
 done
 [ -z "$about" ] || fields="$fields${fields:+,}\"about\":{$about}"
+embedder=${TILO_WEB_EMBEDDER:-}
+ancestors="'self'"
+if [ -n "$embedder" ]; then
+  case "$embedder" in
+    https://*) ;;
+    *) echo "TILO_WEB_EMBEDDER must be an https:// origin: $embedder" >&2; exit 2 ;;
+  esac
+  # An origin: scheme, host and optional port, no path; it lands in JSON and
+  # in the CSP header as it is.
+  case "${embedder#https://}" in '' | *[!a-z0-9.:-]*) echo "TILO_WEB_EMBEDDER must be an origin like https://site.example: $embedder" >&2; exit 2 ;; esac
+  fields="$fields${fields:+,}\"embedder\":\"$embedder\""
+  ancestors="$ancestors $embedder"
+fi
+# Read by the Caddyfile.
+export TILO_WEB_FRAME_ANCESTORS="$ancestors"
 printf '{%s}\n' "$fields" > /tmp/tilo-web/entry.json
 exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
