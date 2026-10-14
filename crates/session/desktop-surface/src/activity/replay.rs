@@ -56,11 +56,10 @@ impl RoomActivityPane {
     /// immediately; every retained frame remains an exact Automerge fork.
     ///
     /// Forking the document is O(history) and runs on the compositor thread
-    /// whenever the desktop document moves (a workspace switch writes it).
-    /// Checkpoints are therefore kept per entry and only entries new since
-    /// the last rebuild are forked; switching workspaces or scope reuses
-    /// them, and the change a switch writes shares the checkpoint of the
-    /// change before it.
+    /// whenever the rows move. Checkpoints are therefore kept per entry and
+    /// only entries new since the last rebuild are forked; switching
+    /// workspaces or scope reuses them, and a switch's own change is no
+    /// entry (the history source passes over it).
     pub(super) fn rebuild_replay_frames(
         &mut self,
         tree: &impl ActivityTree,
@@ -80,36 +79,15 @@ impl RoomActivityPane {
         let mut checkpoints = std::mem::take(&mut self.replay_checkpoints);
         let mut frames = Vec::with_capacity(ordered.len().min(REPLAY_FRAMES));
         for entry in ordered.into_iter().skip(skip) {
-            if !checkpoints.contains_key(&entry.id) {
-                // A change that only chose which workspace shows (every
-                // switch writes one) leaves every workspace's strips as the
-                // change before it did: its desktop is that change's, and
-                // forking the room for it was a workspace switch's first
-                // frame forking a document of the room's whole history.
-                let mut source = entry.id;
-                while !checkpoints.contains_key(&source)
-                    && self.only_shows_another_workspace(&source)
-                    && let Some(previous) = self.history_log.previous(&source)
-                {
-                    source = previous;
-                }
-                // The entry's heads come from the history log, which read
-                // them with the change: looking them up in the document
-                // lists every change of the room again.
-                let checkpoint = checkpoints
-                    .entry(source)
-                    .or_insert_with(|| {
-                        replay_checkpoint(
-                            baseline.get_or_insert_with(|| tree.clone()),
-                            self.history_log.heads_for_entry(&source),
-                        )
-                    })
-                    .clone();
-                checkpoints.insert(entry.id, checkpoint);
-            }
-            let Some(checkpoint) = checkpoints.get(&entry.id) else {
-                continue;
-            };
+            // The entry's heads come from the history log, which read them
+            // with the change: looking them up in the document lists every
+            // change of the room again.
+            let checkpoint = checkpoints.entry(entry.id).or_insert_with(|| {
+                replay_checkpoint(
+                    baseline.get_or_insert_with(|| tree.clone()),
+                    self.history_log.heads_for_entry(&entry.id),
+                )
+            });
             let Some(snapshot) = checkpoint.as_ref() else {
                 self.replay_unavailable = self.replay_unavailable.saturating_add(1);
                 continue;
