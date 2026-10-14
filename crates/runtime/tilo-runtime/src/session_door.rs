@@ -97,8 +97,7 @@ pub fn in_tilo_login(
 /// This process's login runtime directory ([`session_runtime_dir`]).
 #[must_use]
 pub fn current_runtime_dir() -> Option<PathBuf> {
-    // SAFETY: `geteuid` has no failure mode.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     session_runtime_dir(std::env::var_os("XDG_RUNTIME_DIR"), uid, Path::is_dir)
 }
 

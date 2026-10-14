@@ -1758,8 +1758,7 @@ pub fn runtime_dir() -> PathBuf {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // SAFETY: getuid always succeeds.
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         PathBuf::from(format!("/run/user/{uid}"))
     }
 }

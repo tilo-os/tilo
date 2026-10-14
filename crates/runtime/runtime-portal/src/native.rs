@@ -207,8 +207,7 @@ mod unix {
             .map(PathBuf::from)
             .filter(|dir| dir.is_absolute())
             .unwrap_or_else(|| {
-                // SAFETY: `geteuid` has no failure mode.
-                PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }))
+                PathBuf::from(format!("/run/user/{}", rustix::process::geteuid().as_raw()))
             });
         ["agent.sock", "admin-control.sock"].iter().any(|name| {
             std::fs::symlink_metadata(runtime.join("tilo-session").join(name))

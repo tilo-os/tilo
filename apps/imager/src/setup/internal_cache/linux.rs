@@ -167,8 +167,7 @@ mod native {
     }
     fn security(file: &File, directory: bool, private: bool) -> Result<Security> {
         let m = file.metadata().map_err(io)?;
-        // SAFETY: geteuid has no pointer/lifetime preconditions.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         require(
             if directory {
                 m.is_dir()

@@ -341,8 +341,10 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
         // host database. Require the complete single-record contents, then
         // attempt a real write and check both the sandbox and host bytes.
         let host_accounts = std::fs::read("/etc/passwd").expect("host account database");
-        // SAFETY: these calls only read this process's effective identity.
-        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let (uid, gid) = (
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+        );
         let expected_account = format!(
             "OK /etc/passwd app:x:{uid}:{gid}:Sandbox application:/run/tilo/app:/sbin/nologin"
         );

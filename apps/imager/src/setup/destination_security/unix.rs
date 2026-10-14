@@ -14,8 +14,7 @@ use super::refusal;
 mod macos_acl;
 
 fn effective_uid() -> u32 {
-    // SAFETY: geteuid has no input pointers or preconditions.
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 
 fn trusted_owner(uid: u32, current: u32) -> bool {
