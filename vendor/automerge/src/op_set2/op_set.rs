@@ -841,7 +841,10 @@ impl OpSet {
         let found = match self.id_index.find(id) {
             Some(None) => None,
             Some(Some(pos)) if self.op_id_at(pos) == Some(id) => Some(pos),
-            _ => return self.scan_op_id_pos(id),
+            _ => {
+                self.id_index.searched(self.cols.id_ctr.slab_count());
+                return self.scan_op_id_pos(id);
+            }
         };
         #[cfg(any(test, feature = "slow_path_assertions"))]
         assert_eq!(found, self.scan_op_id_pos(id), "op id index for {id:?}");
