@@ -2268,8 +2268,14 @@ impl DrmDispatchState {
         self.touch_output_bindings.insert(id, output_name);
     }
 
-    /// Route one gesture: to the shell when the finger count says so, otherwise on to the focused client.
+    /// [`Self::handle_gesture_at`] for a gesture event arriving now.
+    #[cfg(test)]
     fn handle_gesture(&mut self, ev: GestureEvent) {
+        self.handle_gesture_at(ev, std::time::Instant::now());
+    }
+
+    /// Route one gesture, reported `at`: to the shell when the finger count says so, otherwise on to the focused client.
+    fn handle_gesture_at(&mut self, ev: GestureEvent, at: std::time::Instant) {
         // Decide ownership *before* touching the tracker. Only `begin`
         // carries a finger count, so every later event asks what the
         // gesture in flight belongs to — and `end` clears that, which
@@ -2304,7 +2310,7 @@ impl DrmDispatchState {
             }
         };
         if let Some(action) = action {
-            self.push(BackendEvent::ShellGesture(action));
+            self.push(BackendEvent::ShellGesture(action, at));
             // A navigation gesture changes what is on screen.
             self.push(BackendEvent::Redraw);
         }
@@ -3455,50 +3461,80 @@ impl DrmDispatchState {
     /// The touchpad-gesture arms of [`Self::handle_libinput_event`] — split
     /// out to keep that dispatcher short.
     fn handle_libinput_gesture_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        // libinput stamps each event with its kernel `CLOCK_MONOTONIC` time
+        // in microseconds. A strip pan resamples the finger path on that
+        // clock, so a batch drained late keeps the spacing it was made with.
+        let at = |usec: u64| {
+            super::scanout::instant_from_monotonic(std::time::Duration::from_micros(usec))
+        };
         match event {
             InputEvent::GestureSwipeBegin { event } => {
-                self.handle_gesture(GestureEvent::SwipeBegin {
-                    fingers: event.fingers(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::SwipeBegin {
+                        fingers: event.fingers(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GestureSwipeUpdate { event } => {
-                self.handle_gesture(GestureEvent::SwipeUpdate {
-                    dx: event.delta_x(),
-                    dy: event.delta_y(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::SwipeUpdate {
+                        dx: event.delta_x(),
+                        dy: event.delta_y(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GestureSwipeEnd { event } => {
-                self.handle_gesture(GestureEvent::SwipeEnd {
-                    cancelled: event.cancelled(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::SwipeEnd {
+                        cancelled: event.cancelled(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GesturePinchBegin { event } => {
-                self.handle_gesture(GestureEvent::PinchBegin {
-                    fingers: event.fingers(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::PinchBegin {
+                        fingers: event.fingers(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GesturePinchUpdate { event } => {
-                self.handle_gesture(GestureEvent::PinchUpdate {
-                    dx: event.delta_x(),
-                    dy: event.delta_y(),
-                    scale: event.scale(),
-                    rotation: event.rotation(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::PinchUpdate {
+                        dx: event.delta_x(),
+                        dy: event.delta_y(),
+                        scale: event.scale(),
+                        rotation: event.rotation(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GesturePinchEnd { event } => {
-                self.handle_gesture(GestureEvent::PinchEnd {
-                    cancelled: event.cancelled(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::PinchEnd {
+                        cancelled: event.cancelled(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GestureHoldBegin { event } => {
-                self.handle_gesture(GestureEvent::HoldBegin {
-                    fingers: event.fingers(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::HoldBegin {
+                        fingers: event.fingers(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GestureHoldEnd { event } => {
-                self.handle_gesture(GestureEvent::HoldEnd {
-                    cancelled: event.cancelled(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::HoldEnd {
+                        cancelled: event.cancelled(),
+                    },
+                    at(event.time()),
+                );
             }
             _ => {}
         }
@@ -7828,7 +7864,7 @@ mod tests {
                 .events
                 .iter()
                 .filter_map(|e| match e {
-                    BackendEvent::ShellGesture(a) => Some(*a),
+                    BackendEvent::ShellGesture(a, _) => Some(*a),
                     _ => None,
                 })
                 .collect();
@@ -7858,7 +7894,7 @@ mod tests {
                 .events
                 .iter()
                 .filter_map(|event| match event {
-                    BackendEvent::ShellGesture(action) => Some(*action),
+                    BackendEvent::ShellGesture(action, _) => Some(*action),
                     _ => None,
                 })
                 .collect();
@@ -7956,7 +7992,7 @@ mod tests {
                 !state
                     .events
                     .iter()
-                    .any(|e| matches!(e, BackendEvent::ShellGesture(_))),
+                    .any(|e| matches!(e, BackendEvent::ShellGesture(..))),
                 "two fingers is the client's gesture"
             );
         }
@@ -7977,7 +8013,7 @@ mod tests {
             assert!(
                 state.events.iter().any(|e| matches!(
                     e,
-                    BackendEvent::ShellGesture(GestureAction::SwitchStrip(1))
+                    BackendEvent::ShellGesture(GestureAction::SwitchStrip(1), _)
                 )),
                 "the same preference that inverts scrolling inverts gestures"
             );
