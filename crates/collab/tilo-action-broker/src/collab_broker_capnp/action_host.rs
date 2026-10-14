@@ -258,7 +258,13 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
         description: Some(description.into()),
         locus: ExecutionLocus::default(),
         kind: tilo_actions::OperationKind::Effect,
-        contract: tilo_actions::ActionContract::default(),
+        // It answers once the instance it started is up, naming it by
+        // `peer_id` (see `workspace_open`).
+        contract: tilo_actions::ActionContract {
+            execution: tilo_actions::ExecutionMode::Background { cancellable: false },
+            result: tilo_actions::ResultSpec::Job,
+            ..tilo_actions::ActionContract::default()
+        },
         // An invocation may carry the content hash of bytes to open
         // read-only as its text argument; without one the app opens empty.
         input: InputSpec::None,
@@ -602,7 +608,7 @@ impl CapnpBrokerState {
     /// workspace to host services (which read the host's authority
     /// themselves) and so cannot run under the borrow; only the caller's
     /// own workspaces are copied.
-    fn workspaces_for(&self, caller: &Caller) -> Vec<(Workspace, BrokerActor, u64)> {
+    pub(super) fn workspaces_for(&self, caller: &Caller) -> Vec<(Workspace, BrokerActor, u64)> {
         let Some(membership) = self.membership.as_ref() else {
             return Vec::new();
         };
@@ -2999,28 +3005,31 @@ impl CapnpBrokerState {
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match launcher.launch_content(app_id, workspace, content, place) {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(error) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "launch_failed".into(),
-                    message: error,
-                    details: None,
-                    retryable: false,
+        match launcher.launch_content(app_id, workspace, content, place) {
+            // Answered with the instance it started, once that instance
+            // connects with the launch's ticket and publishes.
+            Ok(launched) => self.record_launch(
+                (id, invocation),
+                &actor.id,
+                (app_id, &workspace.room.to_string()),
+                launched,
+            ),
+            Err(error) => self.record_completion(
+                id,
+                InvocationOwner::Local {
+                    actor: actor.id.clone(),
                 },
-            },
-        };
-        self.record_completion(
-            id,
-            InvocationOwner::Local {
-                actor: actor.id.clone(),
-            },
-            update,
-        );
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "launch_failed".into(),
+                        message: error,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            ),
+        }
         Ok(id)
     }
 

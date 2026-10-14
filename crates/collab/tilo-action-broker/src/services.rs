@@ -458,6 +458,24 @@ impl ObservedApplicationLaunch {
 pub struct AuthenticatedApplicationLaunch {
     pub creation: Option<ApplicationCreationEvidence>,
     pub continuation_instance: Option<u64>,
+    /// The ticket [`LauncherServices::launch_content`] answered for the
+    /// launch that started this process ([`Launched::Started`]), read from
+    /// the host's own launch record. Correlation only, never authority.
+    pub launch_ticket: Option<u64>,
+}
+
+/// What [`LauncherServices::launch_content`] started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Launched {
+    /// A new instance, whose collaboration connection presents `ticket`
+    /// when it is authenticated
+    /// ([`AuthenticatedApplicationLaunch::launch_ticket`]): the launch can
+    /// name the instance it started without guessing.
+    Started { ticket: u64 },
+    /// Something the host cannot tie to a connection: an app another device
+    /// opens (a governed room), a host application, a launcher keeping no
+    /// tickets.
+    Unconfirmed,
 }
 
 /// Content-free progress of the existing executing-process custody handshake.
@@ -536,6 +554,9 @@ pub trait LauncherServices: Send + Sync {
     /// calling application's own scope. An empty hash is a plain launch. A
     /// host that cannot stage content refuses one.
     ///
+    /// Answers what it started: a ticket the started instance presents when
+    /// it connects, where the host keeps one.
+    ///
     /// # Errors
     ///
     /// Returns a message when the launch fails or content staging is unsupported.
@@ -545,9 +566,10 @@ pub trait LauncherServices: Send + Sync {
         workspace: &Workspace,
         content: LaunchContent<'_>,
         place: &LaunchPlace,
-    ) -> Result<(), String> {
+    ) -> Result<Launched, String> {
         if content.hash.is_empty() {
             self.launch(app, workspace, None, place)
+                .map(|()| Launched::Unconfirmed)
         } else {
             Err("opening launch content is unsupported on this host".into())
         }
@@ -570,6 +592,7 @@ pub trait LauncherServices: Send + Sync {
         Ok(Some(AuthenticatedApplicationLaunch {
             creation: self.application_creation_evidence(pid, app, room)?,
             continuation_instance: None,
+            launch_ticket: None,
         }))
     }
 
