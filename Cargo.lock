@@ -3500,6 +3500,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-clock",
  "tilo-connector",
  "tilo-net",
  "tilo-relay",
@@ -4162,6 +4163,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "serde_json",
+ "tilo-clock",
  "tokio",
  "tokio-websockets",
  "workspace-hack",
@@ -8015,6 +8017,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-clock",
  "tilo-desktop-entry",
+ "tilo-files",
  "tilo-paths",
  "tilo-rt",
  "tilo-sandbox-core",
@@ -8905,8 +8908,10 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "settings",
  "taffy",
  "tempfile",
+ "test-http",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
@@ -9271,6 +9276,7 @@ dependencies = [
  "hex",
  "image",
  "reqwest 0.13.4",
+ "rquickjs",
  "runtime-dylib",
  "rustypipe",
  "serde",
@@ -10695,6 +10701,7 @@ dependencies = [
  "tilo-rt",
  "tilo-test-env",
  "tracing",
+ "uuid",
  "workspace-hack",
  "zbus",
  "zeroize",
@@ -13088,6 +13095,7 @@ dependencies = [
  "tilo-clock",
  "tilo-test-env",
  "tokio",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -16397,7 +16405,6 @@ name = "tilo-browser-runtime"
 version = "0.1.0"
 dependencies = [
  "accounts",
- "chrono",
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -16559,6 +16566,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-clock",
  "tilo-files",
  "tilo-secrets",
  "tokio",
@@ -16953,6 +16961,19 @@ dependencies = [
  "tilo-app-package",
  "tilo-automerge-fork",
  "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-esp-write"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "regex",
+ "rustix 1.1.4",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
  "workspace-hack",
 ]
 
@@ -17921,7 +17942,6 @@ dependencies = [
  "iroh-relay",
  "launcher",
  "libc",
- "moq-net",
  "n0-future",
  "neighbour-wire",
  "notes",
@@ -17966,6 +17986,7 @@ dependencies = [
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
+ "tilo-relay-shell",
  "tilo-resource",
  "tilo-rt",
  "tilo-runtime",
@@ -18060,6 +18081,27 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-relay-shell"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "collab-types",
+ "hex",
+ "moq-net",
+ "postcard",
+ "tilo-moq",
+ "tilo-peer-state",
+ "tilo-relay-protocol",
+ "tilo-relay-session",
+ "tilo-test-env",
+ "tilo-user-identity",
+ "tokio",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -22004,6 +22046,7 @@ dependencies = [
  "tilo-net",
  "tilo-paths",
  "tokio",
+ "uuid",
  "workspace-hack",
 ]
 

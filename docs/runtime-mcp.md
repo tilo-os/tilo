@@ -285,16 +285,23 @@ first keeps the named revision, each later one reads the directory as it
 is then, and the first that does not succeed stops the rest. The answer is
 `results`, plus `stopped` at that call's index. The same `invocation_id`
 never runs the batch twice: the first step uses it, and each later step's
-id is derived from it. A number outside the range its
-action declares (`pageSize: 200` where the signature says `1..64`) fails
-validation before the action runs; the bridge then runs the call once more
-with the bound the refusal named and adds `adjusted` to the answer
-(`"pageSize 200 is out of range; used 64"`), so the caller need not retry.
+id is derived from it. One call is one invocation: the bridge never runs
+it again under another id. A number outside the range its action declares
+(`pageSize: 200` where the signature says `1..64`) fails validation before
+the action runs, and the failure carries the bound as data
+(`update.error.details`: `{"param": "pageSize", "violation": {"kind":
+"maximum", "bound": 64}}`) beside its message; the answer's `hint` names it
+(`"pageSize must be at most 64; call again with a value in range, such as
+64"`) and the caller decides whether to call again. The bridge decides by the
+host's typed refusal, never its wording: a target not offered, an action
+asking for confirmation and a stale revision (`stale_revision`) are each a
+variant of their own.
 Pass content resource references returned by one successful action as typed
 arguments to a freshly discovered action in another app. The runtime contains
 no Photos/Writer workflow branch and never treats `Accepted` as `Succeeded`.
 A failed invocation is not replayed merely because a text argument matches a
-session handle.
+session handle: the answer's `hint` names the handle and the id it stands
+for, for the caller to pass if it meant the resource.
 
 ### Opening an app
 
@@ -313,9 +320,12 @@ nothing, so the reply waits up to 3 s more for one that lists a resource.
 `arguments: {"path": "/abs/file"}` also opens that file. The workspace's own
 launch opens content only by hash, read through an authenticated app's scope,
 and a launch argument would bypass the instance's typed surface, so the bridge
-launches the app empty and then invokes the instance's own `open` action taking
-a `path` (or, for an app with none, `import-<extension>`, as Sheets offers for
-CSV). The app reads the file inside its sandbox, so only files the workspace
+launches the app empty and then invokes the action the instance declares as
+opening paths (`ActionSpec::opens_path`, `#[effect(opens_path = "csv")]`;
+tagged `open:path`, with `open:path-ext:<extension>` for the types it is
+declared for), preferring one declared for the file's extension, as Sheets
+declares its imports. An action is never chosen by its name: one that only
+takes a `path`, such as Windows' ISO import, is not an opener. The app reads the file inside its sandbox, so only files the workspace
 granted it open; nothing is granted on the way. The reply's `opened` carries
 that invocation's update and the resource and action it used, or an `error`
 naming why the file is not open (the app started empty either way). Workspace

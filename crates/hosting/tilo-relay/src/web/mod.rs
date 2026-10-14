@@ -23,7 +23,6 @@
 mod envelopes;
 mod here;
 pub mod install;
-mod legacy;
 mod live;
 #[cfg(feature = "mcp")]
 mod mcp;
@@ -33,6 +32,9 @@ mod tests;
 mod tls;
 
 pub use tls::TlsSource;
+// The legacy-window bridge decodes the desktop's messages, so it lives with
+// the shell payload adapter.
+use tilo_relay_shell::legacy;
 
 use std::convert::Infallible;
 use std::net::SocketAddr;

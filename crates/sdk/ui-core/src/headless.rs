@@ -396,6 +396,11 @@ pub struct FrameHarness {
     profiler: Option<crate::profiling::FrameProfiler>,
     /// Whether the latest `send_host_event` was inert pointer motion that skipped relayout.
     last_send_skipped_relayout: bool,
+    /// Opt-in: a wheel event's frame is left to the host's next frame
+    /// ([`Self::set_coalesce_wheel_frames`]).
+    coalesce_wheel_frames: bool,
+    /// A coalesced wheel event was dispatched since the last frame.
+    wheel_frame_pending: bool,
     /// Opt-in diagnostics: dirty widget paths observed when pointer motion still demanded a frame.
     pointer_redraw_diagnostics: bool,
     pointer_redraw_sources: Vec<String>,
@@ -1469,6 +1474,8 @@ impl FrameHarness {
             invocation_results: None,
             profiler: None,
             last_send_skipped_relayout: false,
+            coalesce_wheel_frames: false,
+            wheel_frame_pending: false,
             pointer_redraw_diagnostics: false,
             pointer_redraw_sources: Vec::new(),
             layout_built: false,
@@ -2100,6 +2107,7 @@ impl FrameHarness {
     pub fn frame_schedule(&self) -> FrameSchedule {
         self.drain_component_wakes();
         let queued_work = self.layout_requested
+            || self.wheel_frame_pending
             || self.owner_service_layout_retired
             || self
                 .owner_wake_queue
@@ -2190,6 +2198,40 @@ impl FrameHarness {
             }
             out
         })
+    }
+
+    /// The widgets that make a retained frame re-solve sizes rather than
+    /// only re-apply positions: each widget reporting `layout_needs_measure`
+    /// that none of its children explains, as the path of widget names from
+    /// the root (a test id in brackets). Empty when the next retained frame
+    /// would solve no size.
+    ///
+    /// A diagnostic, like [`Self::frame_requesters`]: a host names what made
+    /// a frame measure, so a widget that claims a size change it did not
+    /// make (on a pan, a hover) can be found. It walks only the asking
+    /// branches.
+    pub fn layout_measure_requesters(&self) -> Vec<String> {
+        fn visit(widget: &dyn Widget, path: &mut Vec<String>, out: &mut Vec<String>) {
+            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+                return;
+            };
+            if !widget.layout_needs_measure() {
+                return;
+            }
+            path.push(match widget.test_id() {
+                Some(id) => format!("{}[{id}]", widget.name()),
+                None => widget.name().to_owned(),
+            });
+            let before = out.len();
+            widget.for_each_child(&mut |child| visit(child, path, out));
+            if out.len() == before {
+                out.push(path.join("/"));
+            }
+            path.pop();
+        }
+        let mut out = Vec::new();
+        visit(self.root.as_ref(), &mut Vec::new(), &mut out);
+        out
     }
 
     /// Drain optional canonical font assets demanded by the most recent
@@ -2593,6 +2635,7 @@ impl FrameHarness {
             self.try_relayout_content()
         };
         if result.is_ok() {
+            self.wheel_frame_pending = false;
             self.pending_app_activation = None;
             self.owner_service_layout_retired = false;
             // This exclusive &mut frame completed the entire original
@@ -5696,7 +5739,15 @@ impl FrameHarness {
             self.pointer_redraw_sources = self.redraw_sources();
         }
         self.last_send_skipped_relayout = inert;
-        if !inert {
+        // A host on its own frame clock takes a wheel event's frame there:
+        // wheels arrive faster than frames, and each frame composed here
+        // would be replaced unseen by the next.
+        let coalesced = self.coalesce_wheel_frames
+            && !history_input
+            && matches!(event, WindowEvent::MouseWheel { .. });
+        if coalesced {
+            self.wheel_frame_pending = true;
+        } else if !inert {
             self.relayout();
         }
         // Frames restore the thread-wide flag they captured, so they must
@@ -5707,6 +5758,17 @@ impl FrameHarness {
             let _framework_frame = FrameworkInputFrame::new(&self.framework_input, true);
             self.relayout();
         }
+    }
+
+    /// Leave the frame a wheel event asks for to the host's next
+    /// [`Self::poll_frame`] instead of composing, laying out and drawing it
+    /// inside [`Self::send_host_event`]. For a host that presents on its own
+    /// frame clock, as a browser page does on animation frames: a trackpad
+    /// sends wheel events faster than frames, so every frame but the last
+    /// would be replaced unseen. The event is still dispatched at once,
+    /// against the last frame's layout, as a native window dispatches it.
+    pub fn set_coalesce_wheel_frames(&mut self, coalesce: bool) {
+        self.coalesce_wheel_frames = coalesce;
     }
 
     fn frame_schedule_demands_frame(&self) -> bool {

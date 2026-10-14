@@ -227,13 +227,15 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // A listed workspace is shown under its listed name, not its room id.
   const scope = route.target.scope;
   const listed = scope.kind === 'room' ? workspaceAt(workspaces, scope.host) : null;
+  // The desktop offers Invite in a room the page can invite to.
+  const invite = peer?.room && deps.onInvite ? {onInvite: deps.onInvite} : {};
   const host = scopeHost(scope);
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop,
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
       // The room service's spectator count, for the desktop's "watching".
       ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
-      ...diagnostics},
+      ...invite, ...diagnostics},
     onStatus: titled(window, diagnostics.onStatus)});
   if (shown.redirect) {
     window.location.replace(link.format({mode: shown.redirect, target: route.target}));

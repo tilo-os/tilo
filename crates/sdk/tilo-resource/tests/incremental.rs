@@ -17,8 +17,8 @@ use tilo_automerge::ApplyIncoming;
 use tilo_resource::__private::{ObjId, Value};
 use tilo_resource::history;
 use tilo_resource::{
-    ActionCx, Collection, Doc, Grid, Id, Model, ModelError, Reader, Replica, Resource, Slot,
-    resource,
+    ActionCx, Collection, Doc, Grid, Id, Identified, Keyed, Model, ModelError, Ordered, Reader,
+    Replica, Resource, Set, Slot, resource,
 };
 
 thread_local! {
@@ -595,5 +595,265 @@ fn a_grid_refreshes_only_the_cells_a_change_touched() {
         let live = replica.live().unwrap();
         assert_eq!(loads() - before, 1, "one cell read again");
         assert_eq!(live.grid.cell(&rows[100], &column).unwrap().0, "changed");
+    }
+}
+
+#[test]
+fn a_reader_whose_state_a_view_holds_copies_one_chunk_of_a_grid() {
+    let mut replica = Replica::<Sheet>::new();
+    replica.apply(Sheet::ADD_COLUMN.with(())).unwrap();
+    for _ in 0..1000 {
+        replica.apply(Sheet::ADD_ROW.with(())).unwrap();
+    }
+    let state = replica.state().unwrap();
+    let rows: Vec<Id> = state.grid.rows().cloned().collect();
+    let column = state.grid.columns().next().cloned().unwrap();
+    for (n, row) in rows.iter().enumerate() {
+        replica
+            .apply(Sheet::WRITE.with((cell(row, &column), format!("cell {n}"))))
+            .unwrap();
+    }
+    let mut reader = Reader::<Sheet>::open(replica.doc_mut()).unwrap();
+    // A view keeps the state it was shown, as a surface's `present` may.
+    let shown = Rc::clone(reader.state());
+
+    replica
+        .apply(Sheet::WRITE.with((cell(&rows[500], &column), "changed".into())))
+        .unwrap();
+    let before = clones();
+    assert!(reader.sync(replica.doc()).unwrap());
+    let copied = clones() - before;
+    assert!(
+        copied <= 64,
+        "{copied} cells copied: one chunk of rows at most, not the sheet"
+    );
+
+    let now = reader.state();
+    assert!(!Rc::ptr_eq(now, &shown), "the shown state was not changed");
+    assert_eq!(shown.grid.cell(&rows[500], &column).unwrap().0, "cell 500");
+    assert_eq!(now.grid.cell(&rows[500], &column).unwrap().0, "changed");
+    assert_eq!(now.as_ref(), &replica.state().unwrap());
+    let shared = rows
+        .iter()
+        .filter(|row| {
+            std::ptr::eq(
+                now.grid.cell(row, &column).unwrap(),
+                shown.grid.cell(row, &column).unwrap(),
+            )
+        })
+        .count();
+    assert!(shared >= 1000 - 64, "{shared} of 1000 cells still shared");
+}
+
+#[test]
+fn a_held_grid_stays_as_it_was_shown_while_the_reader_follows() {
+    let mut rng = Lcg(29);
+    let mut replica = Replica::<Sheet>::new();
+    for step in 0..60 {
+        random_sheet_action(&mut replica, &mut rng, step);
+    }
+    let mut reader = Reader::<Sheet>::open(replica.doc_mut()).unwrap();
+    let mut held: Vec<(Rc<Sheet>, Sheet)> = Vec::new();
+    for step in 60..360 {
+        held.push((Rc::clone(reader.state()), replica.state().unwrap()));
+        random_sheet_action(&mut replica, &mut rng, step);
+        reader.sync(replica.doc()).unwrap();
+        assert_eq!(
+            reader.state().as_ref(),
+            &replica.state().unwrap(),
+            "after step {step}"
+        );
+    }
+    for (at, (shown, read)) in held.iter().enumerate() {
+        assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 60);
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Card {
+    pub id: String,
+    pub body: Counted,
+}
+
+impl Identified for Card {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Board {
+    pub cards: Keyed<Card>,
+    pub archive: Keyed<Card>,
+    pub stack: Ordered<Card>,
+    pub seen: Set<Counted>,
+}
+
+#[resource(kind = "test.board", label = "Board")]
+impl Board {
+    /// Add a card, to the archive when asked.
+    #[action]
+    pub fn add_card(&mut self, cx: &mut ActionCx, body: String, archived: bool) {
+        let card = Card {
+            id: cx.id().as_str().to_owned(),
+            body: Counted(body),
+        };
+        if archived {
+            self.archive.push(card);
+        } else {
+            self.cards.push(card);
+        }
+    }
+
+    /// Edit a card's text, wherever it is.
+    #[action(item = cards)]
+    pub fn edit_card(&mut self, card: &Id, body: String) -> Result<(), &'static str> {
+        let found = match self.cards.find_mut(card) {
+            Some(found) => found,
+            None => self.archive.find_mut(card).ok_or("no such card")?,
+        };
+        found.body = Counted(body);
+        Ok(())
+    }
+
+    /// Archive a card.
+    #[action(item = cards)]
+    pub fn archive_card(&mut self, card: &Id) -> Result<(), &'static str> {
+        let card = self.cards.take(card).ok_or("no such card")?;
+        self.archive.push(card);
+        self.archive.settle();
+        Ok(())
+    }
+
+    /// Stack a card at a place, the top when past it.
+    #[action]
+    pub fn stack_card(&mut self, cx: &mut ActionCx, body: String, under: usize) {
+        let card = Card {
+            id: cx.id().as_str().to_owned(),
+            body: Counted(body),
+        };
+        let at = under.min(self.stack.len());
+        self.stack.insert(at, card);
+    }
+
+    /// Drop the card at the bottom of the stack.
+    #[action]
+    pub fn unstack(&mut self) {
+        if !self.stack.is_empty() {
+            self.stack.remove(0);
+        }
+    }
+
+    /// Mark a word seen, or unseen.
+    #[action]
+    pub fn see(&mut self, word: String, seen: bool) {
+        if seen {
+            self.seen.insert(Counted(word));
+        } else {
+            self.seen.remove(&Counted(word));
+        }
+    }
+}
+
+fn random_board_action(replica: &mut Replica<Board>, rng: &mut Lcg, step: usize) {
+    let state = replica.state().unwrap();
+    let ids: Vec<Id> = state
+        .cards
+        .iter()
+        .chain(state.archive.iter())
+        .map(Identified::id)
+        .collect();
+    let live: Vec<Id> = state.cards.iter().map(Identified::id).collect();
+    let result = match rng.next(9) {
+        0 | 1 => replica.apply(Board::ADD_CARD.with((format!("card {step}"), rng.next(3) == 0))),
+        2 | 3 => match ids.get(rng.next(ids.len())) {
+            Some(id) => replica.apply(Board::EDIT_CARD.with((id.clone(), format!("edit {step}")))),
+            None => return,
+        },
+        4 => match live.get(rng.next(live.len())) {
+            Some(id) => replica.apply(Board::ARCHIVE_CARD.with(id.clone())),
+            None => return,
+        },
+        5 => replica.apply(Board::STACK_CARD.with((format!("stacked {step}"), rng.next(8)))),
+        6 => replica.apply(Board::UNSTACK.with(())),
+        _ => replica.apply(Board::SEE.with((format!("w{}", rng.next(90)), rng.next(3) != 0))),
+    };
+    result.unwrap();
+}
+
+#[test]
+fn a_reader_whose_state_a_view_holds_copies_only_the_touched_items() {
+    let mut replica = Replica::<Board>::new();
+    for n in 0..300 {
+        replica
+            .apply(Board::ADD_CARD.with((format!("card {n}"), n % 2 == 1)))
+            .unwrap();
+        replica
+            .apply(Board::SEE.with((format!("word {n:03}"), true)))
+            .unwrap();
+    }
+    let mut reader = Reader::<Board>::open(replica.doc_mut()).unwrap();
+    let target = reader.state().cards[75].id();
+    let was = reader.state().cards[75].body.0.clone();
+    // A view keeps the state it was shown, as a surface's `present` may.
+    let shown = Rc::clone(reader.state());
+
+    // Editing one card copies the cards once, and no other field.
+    replica
+        .apply(Board::EDIT_CARD.with((target.clone(), "changed".into())))
+        .unwrap();
+    let before = clones();
+    assert!(reader.sync(replica.doc()).unwrap());
+    assert_eq!(clones() - before, 150, "the 150 cards are copied once");
+    let now = Rc::clone(reader.state());
+    assert_eq!(shown.cards.find(&target).unwrap().body.0, was);
+    assert_eq!(now.cards.find(&target).unwrap().body.0, "changed");
+    assert!(
+        std::ptr::eq(now.archive.as_ptr(), shown.archive.as_ptr()),
+        "the archive the edit did not touch is shared, not copied"
+    );
+    assert_eq!(now.as_ref(), &replica.state().unwrap());
+
+    // Marking a word seen copies one chunk of the set, and no card.
+    replica
+        .apply(Board::SEE.with(("word 150a".into(), true)))
+        .unwrap();
+    let before = clones();
+    assert!(reader.sync(replica.doc()).unwrap());
+    let copied = clones() - before;
+    assert!(
+        copied <= 64,
+        "{copied} words copied: one chunk, not the set"
+    );
+    assert_eq!(shown.seen.len(), 300);
+    assert_eq!(reader.state().seen.len(), 301);
+    assert!(std::ptr::eq(
+        reader.state().cards.as_ptr(),
+        now.cards.as_ptr()
+    ));
+    assert_eq!(reader.state().as_ref(), &replica.state().unwrap());
+}
+
+#[test]
+fn held_items_and_sets_stay_as_they_were_shown_while_the_reader_follows() {
+    let mut rng = Lcg(31);
+    let mut replica = Replica::<Board>::new();
+    for step in 0..40 {
+        random_board_action(&mut replica, &mut rng, step);
+    }
+    let mut reader = Reader::<Board>::open(replica.doc_mut()).unwrap();
+    let mut held: Vec<(Rc<Board>, Board)> = Vec::new();
+    for step in 40..340 {
+        held.push((Rc::clone(reader.state()), replica.state().unwrap()));
+        random_board_action(&mut replica, &mut rng, step);
+        reader.sync(replica.doc()).unwrap();
+        assert_eq!(
+            reader.state().as_ref(),
+            &replica.state().unwrap(),
+            "after step {step}"
+        );
+    }
+    for (at, (shown, read)) in held.iter().enumerate() {
+        assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 40);
     }
 }

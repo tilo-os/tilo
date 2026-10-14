@@ -115,8 +115,19 @@ fn classifying_a_routed_checkpoint_does_not_copy_it() {
     assert!(delta.len() > SIZE);
 
     // The compactor sees every delta a session admits.
-    assert!(tilo_relay::compaction::Compactor::observe(&delta).is_some());
-    let observed = heap::allocated_by(|| tilo_relay::compaction::Compactor::observe(&delta));
+    assert!(
+        tilo_relay::compaction::Compactor::observe_with(
+            &tilo_relay::payloads::NeighbourPayloads,
+            &delta
+        )
+        .is_some()
+    );
+    let observed = heap::allocated_by(|| {
+        tilo_relay::compaction::Compactor::observe_with(
+            &tilo_relay::payloads::NeighbourPayloads,
+            &delta,
+        )
+    });
     assert!(
         observed < BUDGET,
         "observing a {SIZE}-byte checkpoint allocated {observed} bytes"

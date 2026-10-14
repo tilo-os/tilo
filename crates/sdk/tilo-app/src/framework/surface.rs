@@ -83,11 +83,12 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// The resource state to show.
     ///
     /// Keeping `state` past this call is allowed but not free: while it is
-    /// held, the next change brings a copy up to date. A copy shares every
-    /// [`Collection`](tilo_resource::Collection) item it did not touch, but
-    /// fields held whole (a `Vec`, a map, `Keyed` items) are copied whole on
-    /// every change, so a surface keeps the parts it needs rather than the
-    /// `Rc` when the state has such fields.
+    /// held, the next change brings a copy up to date. A copy shares what
+    /// the change did not touch — every [`Collection`](tilo_resource::Collection)
+    /// item, untouched `Keyed`/`Ordered` fields, the untouched chunks of a
+    /// `Set` or `Grid` — but plain fields (a `Vec`, a `BTreeMap`) are copied
+    /// whole on every change, so a surface keeps the parts it needs rather
+    /// than the `Rc` when the state has large ones.
     fn present(&mut self, state: &Rc<R::State>);
 
     fn supports_device_shell(&self) -> bool {

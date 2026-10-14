@@ -426,6 +426,7 @@ impl ScheduleStore {
                     caller: Some(caller),
                     badge_count: None,
                     contact_endpoint: None,
+                    sender_name: None,
                     sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
                 },
                 target,

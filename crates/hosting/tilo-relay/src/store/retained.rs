@@ -109,12 +109,16 @@ fn checkpoint_key(bytes: &[u8], workspace: u64) -> Option<blake3::Hash> {
 }
 
 /// The author and channel of a checkpoint whose message is the whole of its
-/// route ([`crate::payloads::Checkpoint::standalone`]).
-fn standalone(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 32])> {
+/// route ([`crate::payloads::Checkpoint::standalone`]), as `payloads` reads it.
+fn standalone(
+    payloads: &dyn crate::payloads::ShellPayloads,
+    bytes: &[u8],
+    workspace: u64,
+) -> Option<([u8; 32], [u8; 32])> {
     let (author, CoeditPayload::Checkpoint { channel, body }) = payload(bytes, workspace)? else {
         return None;
     };
-    crate::payloads::shell()
+    payloads
         .checkpoint(&channel, &body)?
         .standalone
         .then_some((author, channel))
@@ -122,8 +126,13 @@ fn standalone(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 32])> {
 
 /// Whether standalone `checkpoint` replaces `prior`: retained earlier by the
 /// same author on the same channel.
-fn replaces(checkpoint: &[u8], prior: &[u8], workspace: u64) -> bool {
-    standalone(checkpoint, workspace).is_some_and(|(author, channel)| {
+fn replaces(
+    payloads: &dyn crate::payloads::ShellPayloads,
+    checkpoint: &[u8],
+    prior: &[u8],
+    workspace: u64,
+) -> bool {
+    standalone(payloads, checkpoint, workspace).is_some_and(|(author, channel)| {
         identity(prior, workspace).is_some_and(|(old_author, old_channel, _)| {
             old_author == author && old_channel == channel
         })
@@ -1061,7 +1070,7 @@ impl RetainBuild {
             && self.checkpoint
             && !self.opaque
             && (covers(&self.bytes, &self.bytes, self.workspace)
-                || standalone(&self.bytes, self.workspace).is_some());
+                || standalone(&**self.store.payloads(), &self.bytes, self.workspace).is_some());
         if let Some(parent) = unsynced_parent.as_deref()
             && (self.duplicate || !stage_checkpoint)
         {
@@ -1133,7 +1142,11 @@ impl RetainBuild {
                 durable_write(&self.lineage.join("CURRENT"), name.as_encoded_bytes())?;
             }
             if let Some(receipt) = &self.continuity {
-                super::continuity::account_validation(&mut self.sorter.stats, self.bytes.len());
+                super::continuity::account_validation(
+                    &**self.store.payloads(),
+                    &mut self.sorter.stats,
+                    self.bytes.len(),
+                );
                 super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
             }
             durable_write(&path, &self.bytes)?;
@@ -1317,7 +1330,12 @@ impl RetainBuild {
                         self.opaque |= identity(&record.bytes, self.workspace)
                             .is_some_and(|(_, _, checkpoint)| checkpoint)
                             && !covers(&record.bytes, &record.bytes, self.workspace)
-                            && !replaces(&self.bytes, &record.bytes, self.workspace);
+                            && !replaces(
+                                &**self.store.payloads(),
+                                &self.bytes,
+                                &record.bytes,
+                                self.workspace,
+                            );
                     } else {
                         self.duplicate |= record.bytes == self.bytes;
                     }
@@ -1340,6 +1358,7 @@ impl RetainBuild {
                                 .join(format!("{next:016x}.delta"));
                             if let Some(receipt) = &self.continuity {
                                 super::continuity::account_validation(
+                                    &**self.store.payloads(),
                                     &mut self.sorter.stats,
                                     self.bytes.len(),
                                 );
@@ -1368,7 +1387,12 @@ impl RetainBuild {
                             ),
                         )
                     } else if !covers(&self.bytes, &record.bytes, self.workspace)
-                        && !replaces(&self.bytes, &record.bytes, self.workspace)
+                        && !replaces(
+                            &**self.store.payloads(),
+                            &self.bytes,
+                            &record.bytes,
+                            self.workspace,
+                        )
                     {
                         let path = self
                             .staged
@@ -2365,6 +2389,106 @@ pub(super) mod tests {
         }
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![third]);
+    }
+
+    /// A payload adapter that recognises nothing.
+    struct Unclassified;
+
+    impl crate::payloads::ShellPayloads for Unclassified {
+        fn is_document(&self, _: &[u8]) -> bool {
+            false
+        }
+        fn open_document(
+            &self,
+            _: &[u8],
+        ) -> Option<(crate::payloads::Route, Box<collab_types::SignedOp>)> {
+            None
+        }
+        fn document_body(
+            &self,
+            _: &[u8; 32],
+            _: &crate::payloads::Route,
+            _: collab_types::SignedOp,
+        ) -> Result<Vec<u8>, String> {
+            Err("unclassified".into())
+        }
+        fn host_identity(
+            &self,
+            _: &tilo_user_identity::DeviceCert,
+        ) -> Result<([u8; 32], Vec<u8>), String> {
+            Err("unclassified".into())
+        }
+        fn checkpoint(&self, _: &[u8; 32], _: &[u8]) -> Option<crate::payloads::Checkpoint> {
+            None
+        }
+        fn audience(&self, _: &[u8]) -> Option<std::collections::BTreeSet<[u8; 32]>> {
+            None
+        }
+        fn decoded_overhead(&self) -> usize {
+            0
+        }
+    }
+
+    /// Checkpoint replacement asks the adapter the store was opened with,
+    /// not a process-wide one: through an adapter that classifies nothing,
+    /// the governance acknowledgements the desktop adapter lets replace one
+    /// another are all kept.
+    #[test]
+    fn checkpoint_replacement_asks_the_stores_own_adapter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel = collab_types::ChannelId::new();
+        let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
+        let ack = |through: u8| {
+            let message = tilo_peer_state::NeighbourMsg::MlsGovernanceAck {
+                room: "room".into(),
+                ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
+                    channel,
+                    device,
+                    [through; 32],
+                )),
+                delivery: 0,
+            };
+            let (route, _) = tilo_peer_state::transport::retention(&message, false).unwrap();
+            let bytes = crate::transport::encode(&Envelope::Delta {
+                workspace_id: 7,
+                author_device_public_key: [1; 32],
+                authored_at_ns: u64::from(through),
+                delta: CoeditPayload::Checkpoint {
+                    channel: route,
+                    body: postcard::to_stdvec(&message).unwrap(),
+                }
+                .encode()
+                .unwrap(),
+                signature: [0; 64],
+            })
+            .unwrap();
+            (route, bytes)
+        };
+        let (route, first) = ack(1);
+        let (_, second) = ack(2);
+        let unclassified = WorkspaceStore::open_with_payloads(
+            tmp.path(),
+            7,
+            false,
+            std::sync::Arc::new(Unclassified),
+        )
+        .unwrap();
+        unclassified.retain_checkpoint(&route, &first).unwrap();
+        unclassified.retain_checkpoint(&route, &second).unwrap();
+        assert_eq!(
+            unclassified.load_retained().unwrap(),
+            vec![first, second],
+            "nothing it cannot classify is replaced"
+        );
+
+        let (_, third) = ack(3);
+        let desktop = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        desktop.retain_checkpoint(&route, &third).unwrap();
+        assert_eq!(
+            desktop.load_retained().unwrap(),
+            vec![third],
+            "the desktop adapter lets the newest acknowledgement replace the rest"
+        );
     }
 
     #[test]

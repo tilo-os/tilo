@@ -109,13 +109,15 @@ fn tilo_app_registry_blobs(registry: &str) -> app_registry::http_blobs::HttpBlob
 /// one writing a unit outside its action's footprint, or, where the room's
 /// governor projected its members' standings (`standings`), an action the
 /// author is not granted. Ops whose surface has not arrived here yet are
-/// left to the room's devices, which hold them.
+/// left to the room's devices, which hold them. `payloads` reads the
+/// document frame.
 pub(crate) fn refusal(
+    payloads: &dyn crate::payloads::ShellPayloads,
     delta: &[u8],
     standings: Option<&crate::workspace::Standings>,
 ) -> Option<String> {
     let (_, _, body) = crate::coedit::retention_view(delta)?;
-    let (route, envelope) = crate::payloads::shell().open_document(body)?;
+    let (route, envelope) = payloads.open_document(body)?;
     let record = collab_types::Record {
         room: &route.cluster_id,
         app: &route.app_id,

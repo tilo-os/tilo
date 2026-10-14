@@ -10,7 +10,7 @@
 //          --renderer gpu|swiftshader [--rounds N]
 //          [--activations N] [--demo-seconds S] [--idle-seconds S]
 //          [--expect-revision SHA] [--allow-dev] [--max-load L] [--cpu-throttle F]
-//          [--frame-timeout S] [--enforce-goals]
+//          [--frame-timeout S] [--viewport WxH] [--enforce-goals]
 //
 // Each round is a fresh browser context (empty HTTP cache and storage) at FHD
 // (1920x1080, DPR 1), and measures, in order:
@@ -79,12 +79,29 @@ export const GOALS = {
 export const DEMO_APPS = ['so.tilo.notes', 'so.tilo.sheets', 'so.tilo.word-processor', 'so.tilo.calendar',
   'so.tilo.calculator', 'so.tilo.slides'];
 export const RENDERERS = ['gpu', 'swiftshader'];
+// FHD, the older-hardware target; --viewport overrides it.
 const VIEWPORT = {width: 1920, height: 1080, deviceScaleFactor: 1};
 const USAGE = 'usage: browser_qualification.mjs BUNDLE_DIR --out REPORT_JSON --renderer gpu|swiftshader '
   + '[--rounds N] [--activations N] [--demo-seconds S] [--idle-seconds S] [--expect-revision SHA] [--allow-dev] '
-  + '[--max-load L] [--cpu-throttle F] [--frame-timeout S] [--enforce-goals]';
+  + '[--max-load L] [--cpu-throttle F] [--frame-timeout S] [--viewport WxH] [--enforce-goals]';
 
 export class Invalid extends Error {}
+
+/** `WIDTHxHEIGHT` in CSS pixels at DPR 1. */
+export function parseViewport(text) {
+  const match = /^(\d{3,4})x(\d{3,4})$/.exec(text ?? '');
+  if (!match) throw Error('--viewport is WIDTHxHEIGHT, for example 1920x1080');
+  return {width: Number(match[1]), height: Number(match[2]), deviceScaleFactor: 1};
+}
+
+/** `promise`, or an Invalid run after `ms`: a step that never answers must fail, not hang. */
+export function within(promise, ms, what) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Invalid(`${what} did not answer within ${Math.round(ms / 1000)} s`)), ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
 
 export function parseArgs(argv) {
   const options = {rounds: 3, activations: 20, demoSeconds: 5, idleSeconds: 3, cpuThrottle: 1, allowDev: false,
@@ -103,6 +120,7 @@ export function parseArgs(argv) {
       options[numbers[arg]] = value;
     } else if (arg === '--out') options.out = argv[++i];
     else if (arg === '--renderer') options.renderer = argv[++i];
+    else if (arg === '--viewport') options.viewport = parseViewport(argv[++i]);
     else if (arg === '--expect-revision') options.expectRevision = argv[++i];
     else if (arg === '--allow-dev') options.allowDev = true;
     else if (arg === '--enforce-goals') options.enforceGoals = true;
@@ -115,6 +133,7 @@ export function parseArgs(argv) {
   // A software rasterizer compiles each new pipeline on the CPU when it is
   // first used; one frame can then take tens of seconds.
   options.frameTimeout ??= options.renderer === 'gpu' ? 10 : 120;
+  options.viewport ??= VIEWPORT;
   for (const name of ['rounds', 'activations']) {
     if (!Number.isInteger(options[name])) throw Error(`--${name} must be a whole number`);
   }
@@ -349,8 +368,15 @@ const demoExpression = seconds => `(async () => {
   const stages = {};
   for (const {stage, ms} of samples) { const entry = stages[stage] ??= {n: 0, ms: 0}; entry.n++; entry.ms += ms; }
   const dropped = metrics.reduce((sum, mount) => sum + (mount.dropped ?? 0), 0);
+  // Layout passes that re-solved sizes, by the widget that asked: a pan
+  // moves laid-out windows, so any entry here is a widget to fix.
+  // A runtime that does not report it leaves it null, not empty.
+  const measuredBy = metrics.some(mount => mount.measuredBy) ? {} : null;
+  for (const mount of metrics) {
+    for (const [widget, n] of Object.entries(mount.measuredBy ?? {})) measuredBy[widget] = (measuredBy[widget] ?? 0) + n;
+  }
   const during = times.filter(t => t <= inputEnd + 50);
-  return {times: during, work, stages, dropped, wheels: sent, seconds: (inputEnd - start) / 1000,
+  return {times: during, work, stages, measuredBy, dropped, wheels: sent, seconds: (inputEnd - start) / 1000,
     distinctOffsets: offsets.size, max};
 })()`;
 
@@ -362,7 +388,7 @@ const idleExpression = seconds => `(async () => {
 
 // --- one round ----------------------------------------------------------------
 
-async function freshPage(browser, {cpuThrottle, frameTimeout}) {
+async function freshPage(browser, {cpuThrottle, frameTimeout, viewport}) {
   const {result: {browserContextId}} = await browser.send('Target.createBrowserContext', {disposeOnDetach: true});
   const {result: {targetId}} = await browser.send('Target.createTarget', {url: 'about:blank', browserContextId});
   const {result: {sessionId}} = await browser.send('Target.attachToTarget', {targetId, flatten: true});
@@ -376,7 +402,10 @@ async function freshPage(browser, {cpuThrottle, frameTimeout}) {
   });
   const send = (method, params = {}) => browser.send(method, params, sessionId);
   const evaluate = async expression => {
-    const reply = await send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true, timeout: (2 * frameTimeout + 60) * 1000});
+    // The page's own timeout does not cover a page blocked by its renderer.
+    const limit = (2 * frameTimeout + 60) * 1000;
+    const reply = await within(send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true, timeout: limit}),
+      limit + 30_000, 'the page');
     if (reply.error) throw Error(reply.error.message);
     if (reply.result.exceptionDetails) {
       const details = reply.result.exceptionDetails;
@@ -386,7 +415,7 @@ async function freshPage(browser, {cpuThrottle, frameTimeout}) {
   };
   await send('Runtime.enable');
   await send('Page.enable');
-  await send('Emulation.setDeviceMetricsOverride', {...VIEWPORT, mobile: false});
+  await send('Emulation.setDeviceMetricsOverride', {...viewport, mobile: false});
   await send('Emulation.setFocusEmulationEnabled', {enabled: true});
   if (cpuThrottle > 1) await send('Emulation.setCPUThrottlingRate', {rate: cpuThrottle});
   await send('Page.addScriptToEvaluateOnNewDocument', {source: PHASE_PROBE});
@@ -425,7 +454,8 @@ async function measureDemo(page, windows, options, index) {
     throw new Invalid(`round ${index}: frame metrics incomplete (${demo.work.length} samples, ${demo.dropped} dropped)`);
   }
   return {intervals: intervals(demo.times), work: demo.work, stages: demo.stages, frames: demo.times.length,
-    wheels: demo.wheels, seconds: demo.seconds, fps: demo.times.length / demo.seconds, distinctOffsets: demo.distinctOffsets};
+    wheels: demo.wheels, seconds: demo.seconds, fps: demo.times.length / demo.seconds, distinctOffsets: demo.distinctOffsets,
+    measuredBy: demo.measuredBy};
 }
 
 async function round(browser, url, options, index) {
@@ -539,6 +569,16 @@ export function formatSummary(report) {
     report.attribution.length ? `  demo stages (ms per presented frame, share of wall time): ${report.attribution.slice(0, 8)
       .map(a => `${a.stage} ${a.msPerFrame} (${a.busyPercent}%)`).join(', ')}` : '  demo not run',
   ];
+  if (report.rounds.some(r => r.demo.measuredBy)) {
+    const measuredBy = {};
+    for (const r of report.rounds) {
+      for (const [widget, n] of Object.entries(r.demo.measuredBy ?? {})) measuredBy[widget] = (measuredBy[widget] ?? 0) + n;
+    }
+    const askers = Object.entries(measuredBy).sort((a, b) => b[1] - a[1]);
+    lines.push(askers.length
+      ? `  demo layout re-measured for: ${askers.slice(0, 5).map(([widget, n]) => `${widget} (${n})`).join(', ')}`
+      : '  demo layout re-measured for: nothing (pans only moved laid-out windows)');
+  }
   for (const goal of report.goals) {
     const extra = goal.fps ? ` (${goal.fps} fps)` : goal.capacityFps ? ` (capacity ${goal.capacityFps} fps)` : '';
     lines.push(`  ${goal.met ? 'MET ' : 'MISS'} ${goal.name}: ${goal.measured} vs ${Math.round(goal.target * 100) / 100}${extra}${goal.met ? '' : `, gap ${goal.gap}`}`);
@@ -578,7 +618,7 @@ async function main() {
     const summary = summarize(rounds);
     const report = {schema: 1, measuredAt: new Date().toISOString(), bundle, renderer: options.renderer,
       adapter: rounds[0].adapter, browser: {product: version.product, userAgent: version.userAgent},
-      viewport: VIEWPORT, host: {...before, before, after, maxLoad: options.maxLoad ?? null, platform: `${os.platform()} ${os.release()} ${os.arch()}`},
+      viewport: options.viewport, host: {...before, before, after, maxLoad: options.maxLoad ?? null, platform: `${os.platform()} ${os.release()} ${os.arch()}`},
       workload: {rounds: options.rounds, activations: options.activations, demoSeconds: options.demoSeconds,
         idleSeconds: options.idleSeconds, cpuThrottle: options.cpuThrottle, apps: rounds[0].apps, inputHz: 120, chromeFlags: flags},
       summary, goals: judgeGoals(summary), attribution: attribute(rounds),
@@ -589,7 +629,8 @@ async function main() {
         demo_work_ms: rounds.flatMap(r => r.demo.work), idle_per_s: rounds.map(r => r.idlePerS),
       },
       rounds: rounds.map(({resources, ...r}) => ({...r, demo: {frames: r.demo.frames, wheels: r.demo.wheels,
-        seconds: r.demo.seconds, fps: r.demo.fps, distinctOffsets: r.demo.distinctOffsets, stages: r.demo.stages}})),
+        seconds: r.demo.seconds, fps: r.demo.fps, distinctOffsets: r.demo.distinctOffsets, stages: r.demo.stages,
+        measuredBy: r.demo.measuredBy}})),
     };
     writeFileSync(options.out, JSON.stringify(report, null, 1) + '\n');
     console.log(formatSummary(report));

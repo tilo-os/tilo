@@ -743,8 +743,12 @@ impl ApplicationHandler<u64> for Runner {
                         _ => {}
                     }
                     let start = m.metric_start();
+                    let passes = m.frame.relayout_frames();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.metric_end("input", start);
+                    if m.frame.relayout_frames() != passes {
+                        m.note_measured();
+                    }
                     m.pending = true;
                     m.window.request_redraw();
                 }
@@ -1220,6 +1224,10 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             .map_err(|e| error(format!("{e:?}")))?;
     }
     frame.set_input_scale(dpr).map_err(error)?;
+    // Every input asks for a redraw on the next animation frame, which
+    // presents what the harness last laid out: a trackpad's wheel events
+    // outpace frames, so each is dispatched at once and laid out there.
+    frame.set_coalesce_wheel_frames(true);
     if desktop.is_some() {
         // The desktop's own search answers the command chord.
         frame.set_caller_palette_enabled(false);
@@ -1569,6 +1577,17 @@ impl Mount {
         self.metrics.borrow_mut().end(stage, start);
     }
 
+    /// With frame metrics on, name the widgets that made the layout pass
+    /// just run re-solve sizes, when it did without recomposing: a pass
+    /// that only moved laid-out content (a pan) names none.
+    fn note_measured(&self) {
+        let stats = self.frame.last_relayout();
+        if stats.measured && !stats.rebuilt && self.metrics.borrow().enabled() {
+            let requesters = self.frame.layout_measure_requesters();
+            self.metrics.borrow_mut().measured(requesters);
+        }
+    }
+
     // ResizeObserver/winit is the sole source of viewport notifications.
     // Reading the pair again at redraw also covers scale/size event ordering
     // and changes that occurred while GPU initialization was pending.
@@ -1763,6 +1782,9 @@ impl Mount {
             },
             stage,
         );
+        if polled {
+            self.note_measured();
+        }
         if host_changed && !polled {
             let stage = self.metric_start();
             self.frame
@@ -2433,11 +2455,21 @@ pub fn desktop_set_host_actions(id: u64, actions: &str) -> Result<(), JsValue> {
     let actions: Vec<tilo_desktop_surface::HostAction> =
         serde_json::from_str(actions).map_err(error)?;
     with_mount(id, |m| {
-        m.desktop
+        let desktop = m
+            .desktop
             .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?
-            .handle
-            .set_host_actions(actions);
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        // An ask for an action no longer offered was answered some other way.
+        let mut withdrew = false;
+        for gone in desktop.handle.set_host_actions(actions) {
+            withdrew |= desktop
+                .persistence
+                .notifications
+                .withdraw_host_action(&gone);
+        }
+        if withdrew {
+            m.window.request_redraw();
+        }
         Ok(())
     })
 }
@@ -3263,7 +3295,7 @@ pub fn take_frame_metrics() -> Result<String, JsValue> {
             .iter_mut()
             .map(|(id, mount)| {
                 let mut metrics = mount.metrics.borrow_mut();
-                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "layoutPasses": mount.frame.take_profile_samples(), "lastRelayout": format!("{:?}", mount.frame.last_relayout())})
+                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "measuredBy": metrics.take_measured_by(), "layoutPasses": mount.frame.take_profile_samples(), "lastRelayout": format!("{:?}", mount.frame.last_relayout())})
             })
             .collect();
         serde_json::to_string(&samples).map_err(error)

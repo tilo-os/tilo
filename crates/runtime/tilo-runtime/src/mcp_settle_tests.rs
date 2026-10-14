@@ -78,9 +78,7 @@ impl ActionHost for GatedHost {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         if self.stale_without_revision && request.revision.is_none() {
-            return Pending::ready(Err(ActionHostError::InvalidRequest {
-                reason: "the action changed since that revision; list it again".into(),
-            }));
+            return Pending::ready(Err(ActionHostError::StaleRevision));
         }
         if self.confirmed_needs_revision && request.revision.is_none() {
             return Pending::ready(Err(ActionHostError::InvalidRequest {

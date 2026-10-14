@@ -9,9 +9,9 @@
 //! without polling either.
 
 use std::str::FromStr;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -59,7 +59,15 @@ const DECODE_WAIT: Duration = Duration::from_millis(150);
 
 /// The decoder's [`PictureWake`], shared with the sink of every element it
 /// starts.
-type SharedWake = std::sync::Arc<Mutex<Option<PictureWake>>>;
+type SharedWake = Arc<Mutex<Option<PictureWake>>>;
+
+/// Run the wake in `slot`, if one is set.
+fn ring(slot: Option<&SharedWake>) {
+    let wake = slot.and_then(|slot| slot.lock().ok().and_then(|wake| wake.clone()));
+    if let Some(wake) = wake {
+        wake();
+    }
+}
 
 enum Event {
     Sample(gst::Sample),
@@ -435,7 +443,7 @@ struct Running {
 }
 
 impl Running {
-    /// `wake` runs after each sample is queued for the caller.
+    /// `wake` runs after each sample or error is queued for the caller.
     fn start(
         pipeline: gst::Pipeline,
         appsrc: gst_app::AppSrc,
@@ -444,6 +452,7 @@ impl Running {
     ) -> Result<Self, String> {
         let (tx, rx) = mpsc::channel::<Event>();
         let sample_tx = Mutex::new(tx.clone());
+        let sample_wake = wake.clone();
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
@@ -451,12 +460,7 @@ impl Running {
                     if let Ok(tx) = sample_tx.lock() {
                         let _ = tx.send(Event::Sample(sample));
                     }
-                    let wake = wake
-                        .as_ref()
-                        .and_then(|slot| slot.lock().ok().and_then(|wake| wake.clone()));
-                    if let Some(wake) = wake {
-                        wake();
-                    }
+                    ring(sample_wake.as_ref());
                     Ok(gst::FlowSuccess::Ok)
                 })
                 .propose_allocation(|_sink, query| {
@@ -481,7 +485,13 @@ impl Running {
             if let Some(event) = event
                 && let Ok(tx) = bus_tx.lock()
             {
+                let failed = matches!(event, Event::Error(_));
                 let _ = tx.send(event);
+                // A failure is news too: a caller that does not wait for
+                // pictures hands the stream to the next element at once.
+                if failed {
+                    ring(wake.as_ref());
+                }
             }
             gst::BusSyncReply::Drop
         });
@@ -558,9 +568,6 @@ pub struct RealtimeEncoder {
     spec: &'static CodecElement,
     running: Running,
     encoder: gst::Element,
-    /// The bitstream parser after the encoder, whose caps carry the coded
-    /// size.
-    parser: gst::Element,
     /// The element in front of the encoder (`vapostproc` on the dmabuf path),
     /// asked whether it can import a given dmabuf layout.
     convert: gst::Element,
@@ -702,7 +709,6 @@ impl RealtimeEncoder {
         let encoder = make(spec.element)?;
         tune_encoder(&encoder, spec, config);
         let parser = make(config.codec.parser())?;
-        let parser_handle = parser.clone();
         // Repeat parameter sets with every keyframe so a receiver can join at
         // any of them.
         set_number(&parser, "config-interval", -1);
@@ -737,7 +743,6 @@ impl RealtimeEncoder {
             running,
             encoder,
             convert: convert_handle,
-            parser: parser_handle,
             dmabuf_path: use_vapostproc,
             current_caps: raw_caps.clone(),
             raw_caps,
@@ -786,19 +791,6 @@ impl RealtimeEncoder {
     /// bitrate).
     pub fn config(&self) -> &EncoderConfig {
         &self.config
-    }
-
-    /// The frame size the encoder actually codes, read from the bitstream
-    /// parser once output has flowed. It can exceed the configured size when
-    /// an encoder pads to its alignment without signalling the display size
-    /// (see [`DecoderConfig::display_size`]); a sender whose transport
-    /// carries the size should announce the configured one.
-    pub fn coded_size(&self) -> Option<(u32, u32)> {
-        let caps = self.parser.static_pad("src")?.current_caps()?;
-        let s = caps.structure(0)?;
-        let w = s.get::<i32>("width").ok()?;
-        let h = s.get::<i32>("height").ok()?;
-        Some((u32::try_from(w).ok()?, u32::try_from(h).ok()?))
     }
 
     /// Whether [`InputFrame::Dmabuf`] is imported without a CPU copy.
@@ -1255,24 +1247,53 @@ impl DmabufAllocator {
 // Decoder
 // ---------------------------------------------------------------------------
 
+/// The most units a decoder that never waits keeps for replay while its
+/// element has produced nothing (see `RealtimeDecoder::replay`): a keyframe
+/// and its first deltas, about half a second of a 60 fps stream. An element
+/// refuses a stream on its first unit, so a failure arrives well within
+/// this; past it, the next element waits for the next keyframe, as it would
+/// without replay.
+const REPLAY_LIMIT: usize = 32;
+
+/// One unit kept for replay into the next element.
+struct ReplayUnit {
+    data: Vec<u8>,
+    keyframe: bool,
+}
+
+/// What a start-up worker hands back: the running element, or why it would
+/// not start.
+type Built = Result<(Running, gst::Element), String>;
+
+/// An element starting on a worker thread.
+struct Starting {
+    spec: &'static CodecElement,
+    built: Receiver<Built>,
+}
+
 /// A low-latency decoder: one access unit in, its picture out.
 pub struct RealtimeDecoder {
     config: DecoderConfig,
     /// Candidates still to try, best first; the head is the running one.
     candidates: Vec<&'static CodecElement>,
     running: Option<(Running, &'static CodecElement)>,
+    /// The candidate starting on a worker, for a decoder that never waits;
+    /// the units it is given meanwhile wait in `replay`.
+    starting: Option<Starting>,
     /// The decoder element, whose output caps carry the stream's colour
     /// before any conversion to RGB.
     decoder_element: Option<gst::Element>,
     /// The colour the sender announced out of band; see
     /// [`Self::set_stream_color`]. Shared with the decoder's pad probe.
-    stream_color: std::sync::Arc<Mutex<Option<StreamColor>>>,
+    stream_color: Arc<Mutex<Option<StreamColor>>>,
     /// Nothing is decodable until a keyframe arrives, after start and after
-    /// every fall-through to another element.
+    /// every fall-through to another element that has nothing to replay.
     awaiting_keyframe: bool,
     first_output_seen: bool,
     /// Units handed to the running element whose pictures have not come out
     /// yet: elements here are one-in-one-out, so each sample settles one.
+    /// For a decoder that never waits this counts the units kept for an
+    /// element still starting, too.
     units_in_flight: u32,
     /// How long a call waits for its unit's picture once output has started;
     /// see [`Self::set_picture_wait`].
@@ -1281,6 +1302,19 @@ pub struct RealtimeDecoder {
     /// element that produced nothing within it is not waited for that long
     /// again, unit after unit.
     startup_waited: bool,
+    /// For a decoder that never waits, every unit since the keyframe the
+    /// current element began at, kept until that element produces its first
+    /// picture. An element that refuses the stream (its size, its profile)
+    /// or produces nothing hands them to the next candidate, so the stream
+    /// goes on from the same keyframe instead of waiting for the sender's
+    /// next one, which may be a long way off. Bounded by [`REPLAY_LIMIT`].
+    replay: Vec<ReplayUnit>,
+    /// For a decoder that never waits, since when the current element has
+    /// been starting or decoding without a picture to show for it; it is
+    /// given up `startup_limit` later.
+    startup_began: Option<Instant>,
+    /// How long an element may take to produce its first picture.
+    startup_limit: Duration,
     picture_wake: SharedWake,
     tried: Vec<String>,
     pts: Duration,
@@ -1303,26 +1337,61 @@ impl RealtimeDecoder {
     /// [`RealtimeError::Unavailable`] when no candidate is installed or none
     /// will start.
     pub fn new(config: DecoderConfig) -> Result<Self, RealtimeError> {
+        let mut dec = Self::unstarted(config)?;
+        dec.start_next()?;
+        Ok(dec)
+    }
+
+    /// A decoder whose calls never wait, for a thread that must never stall
+    /// on a decode (a compositor loop): [`Self::new`] with
+    /// [`Self::set_picture_wait`] at zero, except that the element also
+    /// starts off the caller's thread.
+    ///
+    /// Opening a hardware decoder (loading its driver, opening the render
+    /// node, creating a context) happens on a worker thread, and the units
+    /// given meanwhile are handed over once it is up. Until an element shows
+    /// its first picture the units it was given are kept, so one that
+    /// refuses the stream's first keyframe, or shows nothing within
+    /// start-up, passes that keyframe and what followed to the next
+    /// candidate. The caller learns of all of it through its
+    /// [`PictureWake`] and collects with [`Self::take_late_picture`].
+    ///
+    /// # Errors
+    ///
+    /// [`RealtimeError::Unavailable`] when no candidate is installed. One
+    /// that is installed but will not start is passed over later; once every
+    /// candidate has failed, [`Self::decode`] and [`Self::take_late_picture`]
+    /// say so.
+    pub fn new_without_waiting(config: DecoderConfig) -> Result<Self, RealtimeError> {
+        let mut dec = Self::unstarted(config)?;
+        dec.picture_wait = Duration::ZERO;
+        dec.start_next()?;
+        Ok(dec)
+    }
+
+    fn unstarted(config: DecoderConfig) -> Result<Self, RealtimeError> {
         init()?;
         let candidates =
             realtime_candidates(realtime_decoders(config.codec), config.policy, registry_has);
-        let mut dec = Self {
+        Ok(Self {
             config,
             candidates,
             running: None,
+            starting: None,
             decoder_element: None,
-            stream_color: std::sync::Arc::new(Mutex::new(None)),
+            stream_color: Arc::new(Mutex::new(None)),
             awaiting_keyframe: true,
             first_output_seen: false,
             units_in_flight: 0,
             picture_wait: DECODE_WAIT,
             startup_waited: false,
-            picture_wake: std::sync::Arc::new(Mutex::new(None)),
+            replay: Vec::new(),
+            startup_began: None,
+            startup_limit: startup_timeout(),
+            picture_wake: Arc::new(Mutex::new(None)),
             tried: Vec::new(),
             pts: Duration::ZERO,
-        };
-        dec.start_next()?;
-        Ok(dec)
+        })
     }
 
     /// Set the size the sender announced; see [`DecoderConfig::display_size`].
@@ -1345,21 +1414,25 @@ impl RealtimeDecoder {
     /// How long [`Self::decode`] waits for its unit's picture once the
     /// element has produced its first one (150 ms unless set). A caller
     /// whose thread must never stall on a decode (a compositor loop) sets
-    /// [`Duration::ZERO`]: the unit is handed to the decoder and the call
-    /// returns whatever picture is already out, and the unit's own picture
-    /// arrives with the next call or [`Self::take_late_picture`], with
-    /// [`Self::picture_pending`] holding meanwhile. Pair it with
-    /// [`Self::set_picture_wake`] to be told when to collect.
+    /// [`Duration::ZERO`], or builds with [`Self::new_without_waiting`]: the
+    /// unit is handed to the decoder and the call returns whatever picture
+    /// is already out, and the unit's own picture arrives with the next call
+    /// or [`Self::take_late_picture`], with [`Self::picture_pending`]
+    /// holding meanwhile. Pair it with [`Self::set_picture_wake`] to be told
+    /// when to collect.
     ///
-    /// The first unit an element is given still waits for start-up (up to
-    /// 5 s), so an element that rejects the stream's first keyframe hands
-    /// that keyframe straight to the next candidate.
+    /// With a wait, the first unit an element is given waits for start-up
+    /// (up to 5 s), so an element that rejects the stream's first keyframe
+    /// hands that keyframe straight to the next candidate. Without one,
+    /// nothing waits for start-up either: the next candidate starts on a
+    /// worker and is handed the units the failed one was given.
     pub fn set_picture_wait(&mut self, wait: Duration) {
         self.picture_wait = wait;
     }
 
-    /// Run `wake` on the decoder's thread each time a picture comes out,
-    /// for this element and every candidate it falls through to.
+    /// Run `wake` on a media thread each time a picture comes out, an
+    /// element fails or a candidate finishes starting, for this element and
+    /// every candidate it falls through to.
     pub fn set_picture_wake(&mut self, wake: Option<PictureWake>) {
         if let Ok(mut slot) = self.picture_wake.lock() {
             *slot = wake;
@@ -1371,49 +1444,218 @@ impl RealtimeDecoder {
         self.running.as_ref().map(|(_, e)| *e)
     }
 
-    /// Start the next candidate that will build and reach `PLAYING`.
+    /// For a decoder that never waits, when the current element is given up
+    /// if it has shown no picture by then. A caller with nothing else to
+    /// bring it back (a picture, a failure and a finished start-up each run
+    /// the [`PictureWake`]) calls [`Self::take_late_picture`] then. `None`
+    /// once output has started, and for a decoder that waits.
+    pub fn startup_deadline(&self) -> Option<Instant> {
+        if self.first_output_seen || !self.never_waits() {
+            return None;
+        }
+        self.startup_began
+            .and_then(|began| began.checked_add(self.startup_limit))
+    }
+
+    fn never_waits(&self) -> bool {
+        self.picture_wait.is_zero()
+    }
+
+    fn unavailable(&self) -> RealtimeError {
+        RealtimeError::Unavailable {
+            codec: self.config.codec,
+            tried: self.tried.clone(),
+        }
+    }
+
+    /// Start the next candidate that will build and reach `PLAYING`: here,
+    /// or for a decoder that never waits, on a worker thread.
     fn start_next(&mut self) -> Result<(), RealtimeError> {
         self.running = None;
-        self.awaiting_keyframe = true;
+        self.starting = None;
         self.first_output_seen = false;
         self.startup_waited = false;
+        self.startup_began = None;
+        if self.never_waits() {
+            // What the failed element was given goes to this one.
+            self.awaiting_keyframe = self.replay.is_empty();
+            self.units_in_flight = u32::try_from(self.replay.len()).unwrap_or(u32::MAX);
+            return self.start_in_background();
+        }
+        self.replay.clear();
+        self.awaiting_keyframe = true;
         self.units_in_flight = 0;
         while !self.candidates.is_empty() {
             let spec = self.candidates.remove(0);
-            match self.build(spec) {
-                Ok((r, element)) => {
-                    tracing::info!(
-                        codec = self.config.codec.wire_label(),
-                        element = %spec.describe(),
-                        "media: real-time decoder selected"
-                    );
-                    if !spec.is_hardware() {
-                        crate::hw::fallback::report_realtime(
-                            crate::hw::fallback::Direction::Decode,
-                            self.config.codec,
-                            self.config.policy,
-                            realtime_decoders(self.config.codec),
-                            registry_has,
-                            &self.tried,
-                            None,
-                        );
-                    }
-                    self.running = Some((r, spec));
-                    self.decoder_element = Some(element);
+            match Self::build(self.config, &self.stream_color, &self.picture_wake, spec) {
+                Ok((running, element)) => {
+                    self.install(spec, running, element);
                     return Ok(());
                 }
                 Err(e) => self.tried.push(format!("{}: {e}", spec.element)),
             }
         }
-        Err(RealtimeError::Unavailable {
-            codec: self.config.codec,
-            tried: self.tried.clone(),
-        })
+        Err(self.unavailable())
     }
 
-    fn build(&self, spec: &'static CodecElement) -> Result<(Running, gst::Element), String> {
+    /// Build the next candidate on a worker thread, which wakes the caller
+    /// once it is done; [`Self::advance_start`] takes it from there.
+    fn start_in_background(&mut self) -> Result<(), RealtimeError> {
+        if self.candidates.is_empty() {
+            return Err(self.unavailable());
+        }
+        let spec = self.candidates.remove(0);
+        let (tx, built) = mpsc::channel::<Built>();
+        let config = self.config;
+        let color = Arc::clone(&self.stream_color);
+        let wake = Arc::clone(&self.picture_wake);
+        let spawned = std::thread::Builder::new()
+            .name("media-rt-start".into())
+            .spawn(move || {
+                let result = Self::build(config, &color, &wake, spec);
+                // A decoder dropped meanwhile has nobody to wake.
+                if tx.send(result).is_ok() {
+                    ring(Some(&wake));
+                }
+            });
+        let built = match spawned {
+            Ok(_) => built,
+            Err(e) => {
+                tracing::debug!(
+                    "media: no start-up thread ({e}); starting {} here",
+                    spec.element
+                );
+                let (tx, built) = mpsc::channel::<Built>();
+                let _ = tx.send(Self::build(
+                    config,
+                    &self.stream_color,
+                    &self.picture_wake,
+                    spec,
+                ));
+                built
+            }
+        };
+        self.starting = Some(Starting { spec, built });
+        self.startup_began = Some(Instant::now());
+        Ok(())
+    }
+
+    fn install(&mut self, spec: &'static CodecElement, running: Running, element: gst::Element) {
+        tracing::info!(
+            codec = self.config.codec.wire_label(),
+            element = %spec.describe(),
+            "media: real-time decoder selected"
+        );
+        if !spec.is_hardware() {
+            crate::hw::fallback::report_realtime(
+                crate::hw::fallback::Direction::Decode,
+                self.config.codec,
+                self.config.policy,
+                realtime_decoders(self.config.codec),
+                registry_has,
+                &self.tried,
+                None,
+            );
+        }
+        self.running = Some((running, spec));
+        self.decoder_element = Some(element);
+    }
+
+    /// For a decoder that never waits, without waiting: install a candidate
+    /// whose start-up finished and hand it what it missed; pass over one
+    /// that would not start, or that has shown no picture within start-up,
+    /// for the next.
+    fn advance_start(&mut self) -> Result<(), RealtimeError> {
+        loop {
+            if let Some(starting) = self.starting.as_ref() {
+                let spec = starting.spec;
+                let built = match starting.built.try_recv() {
+                    // A start-up that hangs (a driver stuck opening its
+                    // device) is given up like a silent element.
+                    Err(TryRecvError::Empty) => {
+                        if !self.startup_overdue() {
+                            return Ok(());
+                        }
+                        Err(format!("did not start within {:?}", self.startup_limit))
+                    }
+                    Ok(built) => built,
+                    Err(TryRecvError::Disconnected) => Err("its start-up thread stopped".into()),
+                };
+                self.starting = None;
+                match built {
+                    Ok((running, element)) => {
+                        self.install(spec, running, element);
+                        match self.replay_missed() {
+                            Ok(()) => return Ok(()),
+                            Err(e) => self.fall_through(&e)?,
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("media: decoder {} would not start: {e}", spec.element);
+                        self.tried.push(format!("{}: {e}", spec.element));
+                        self.start_next()?;
+                    }
+                }
+                continue;
+            }
+            if self.running.is_none() || !self.startup_overdue() {
+                return Ok(());
+            }
+            self.fall_through(&format!("no picture within {:?}", self.startup_limit))?;
+        }
+    }
+
+    /// Whether the current element's start-up deadline has passed.
+    fn startup_overdue(&self) -> bool {
+        self.startup_deadline()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    /// Hand the units kept for replay to the element that just started.
+    fn replay_missed(&mut self) -> Result<(), String> {
+        let replay = std::mem::take(&mut self.replay);
+        let buffers: Vec<_> = replay
+            .iter()
+            .map(|unit| self.next_buffer(&unit.data, unit.keyframe))
+            .collect();
+        // Start-up is timed from the element's first unit: here, or the
+        // first one pushed to it.
+        self.startup_began = (!replay.is_empty()).then(Instant::now);
+        self.replay = replay;
+        let (running, _) = self.running.as_ref().ok_or("no decoder is running")?;
+        for buffer in buffers {
+            running.push(buffer)?;
+        }
+        Ok(())
+    }
+
+    /// Keep `unit` for replay; whether it was kept. A keyframe starts the
+    /// replay afresh; a unit past [`REPLAY_LIMIT`] ends it, and nothing is
+    /// kept again before the next keyframe.
+    fn remember(&mut self, unit: &[u8], keyframe: bool) -> bool {
+        if keyframe {
+            self.replay.clear();
+        } else if self.replay.is_empty() {
+            return false;
+        } else if self.replay.len() >= REPLAY_LIMIT {
+            self.replay.clear();
+            return false;
+        }
+        self.replay.push(ReplayUnit {
+            data: unit.to_vec(),
+            keyframe,
+        });
+        true
+    }
+
+    fn build(
+        config: DecoderConfig,
+        stream_color: &Arc<Mutex<Option<StreamColor>>>,
+        picture_wake: &SharedWake,
+        spec: &'static CodecElement,
+    ) -> Built {
         let pipeline = gst::Pipeline::new();
-        let in_caps = gst::Caps::from_str(self.config.codec.stream_caps())
+        let in_caps = gst::Caps::from_str(config.codec.stream_caps())
             .map_err(|e| format!("stream caps: {e}"))?;
         let appsrc = gst_app::AppSrc::builder()
             .caps(&in_caps)
@@ -1422,14 +1664,14 @@ impl RealtimeDecoder {
             .do_timestamp(false)
             .stream_type(gst_app::AppStreamType::Stream)
             .build();
-        let parser = make(self.config.codec.parser())?;
+        let parser = make(config.codec.parser())?;
         let decoder = make(spec.element)?;
         tune_decoder(&decoder);
         let decoder_handle = decoder.clone();
         // Rewrite the decoder's output colorimetry to the announced one, so
         // the conversion downstream uses the sender's colour.
         if let Some(pad) = decoder.static_pad("src") {
-            let hint = std::sync::Arc::clone(&self.stream_color);
+            let hint = Arc::clone(stream_color);
             pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
                 let announced = hint.lock().ok().and_then(|slot| *slot);
                 let (Some(color), Some(gst::PadProbeData::Event(event))) =
@@ -1460,7 +1702,7 @@ impl RealtimeDecoder {
         // on radeonsi at 720p it took about 23 ms per frame against 4-8 ms,
         // and its YUV-to-RGB matrix disagreed with the stream's (29 dB PSNR
         // against 50 dB for the same stream).
-        let out_caps = match self.config.output {
+        let out_caps = match config.output {
             DecodeOutput::Rgba => Some("video/x-raw, format=(string)RGBA"),
             DecodeOutput::P010 => Some("video/x-raw, format=(string)P010_10LE"),
             DecodeOutput::Native if spec.is_hardware() => None,
@@ -1486,7 +1728,7 @@ impl RealtimeDecoder {
             .add_many(&chain)
             .map_err(|e| format!("assemble: {e}"))?;
         gst::Element::link_many(&chain).map_err(|e| format!("link: {e}"))?;
-        let wake = std::sync::Arc::clone(&self.picture_wake);
+        let wake = Arc::clone(picture_wake);
         Ok((
             Running::start(pipeline, appsrc, &appsink, Some(wake))?,
             decoder_handle,
@@ -1499,7 +1741,8 @@ impl RealtimeDecoder {
     /// `None` makes the decoder read the bitstream. Units before the first
     /// keyframe are dropped without touching the decoder. A decoder element
     /// that fails is replaced by the next candidate, which then waits for
-    /// the next keyframe.
+    /// the next keyframe, unless it can be handed the units the failed one
+    /// was given (see [`Self::new_without_waiting`]).
     ///
     /// # Errors
     ///
@@ -1513,19 +1756,16 @@ impl RealtimeDecoder {
             return Ok(None);
         }
         let keyframe = keyframe_hint.unwrap_or(false) || is_keyframe(self.config.codec, unit);
+        if self.never_waits() {
+            return self.decode_without_waiting(unit, keyframe);
+        }
         if self.awaiting_keyframe && !keyframe {
             return Ok(None);
         }
         self.awaiting_keyframe = false;
         loop {
             match self.push_and_pull(unit, keyframe) {
-                Ok(sample) => {
-                    let picture = sample.and_then(|s| self.picture_from_sample(&s));
-                    if picture.is_some() {
-                        self.first_output_seen = true;
-                    }
-                    return Ok(picture);
-                }
+                Ok(sample) => return Ok(self.take_picture(sample.as_ref())),
                 Err(e) => {
                     self.fall_through(&e)?;
                     // A keyframe can start the next element right away (a
@@ -1541,6 +1781,44 @@ impl RealtimeDecoder {
         }
     }
 
+    /// [`Self::decode`] for a decoder that never waits: the unit is handed
+    /// over, or kept for a candidate still starting, and nothing blocks.
+    fn decode_without_waiting(
+        &mut self,
+        unit: &[u8],
+        keyframe: bool,
+    ) -> Result<Option<DecodedPicture>, RealtimeError> {
+        self.advance_start()?;
+        if self.awaiting_keyframe && !keyframe {
+            return Ok(None);
+        }
+        self.awaiting_keyframe = false;
+        let kept = !self.first_output_seen && self.remember(unit, keyframe);
+        if self.starting.is_some() {
+            if kept {
+                self.units_in_flight = self.units_in_flight.saturating_add(1);
+            } else {
+                // Past the replay limit: the units this one follows are
+                // gone, so the element begins at the next keyframe.
+                self.units_in_flight = 0;
+                self.awaiting_keyframe = true;
+            }
+            return Ok(None);
+        }
+        match self.push_and_pull(unit, keyframe) {
+            Ok(sample) => Ok(self.take_picture(sample.as_ref())),
+            Err(e) => {
+                // An element that fails on a keyframe after its first
+                // picture hands that keyframe on, as a waiting decoder does.
+                if self.replay.is_empty() && keyframe {
+                    self.remember(unit, keyframe);
+                }
+                self.fall_through(&e)?;
+                Ok(None)
+            }
+        }
+    }
+
     /// Whether a unit this decoder accepted is still being decoded: its
     /// picture took longer than the call's wait and will come out of a later
     /// [`Self::decode`] or [`Self::take_late_picture`]. A `decode` that
@@ -1552,7 +1830,10 @@ impl RealtimeDecoder {
     /// The newest picture that came out after its `decode` call returned,
     /// without waiting and without feeding the decoder anything. A receiver
     /// whose stream has gone quiet calls this so the last unit's picture is
-    /// shown rather than stranded until the next unit arrives.
+    /// shown rather than stranded until the next unit arrives. For a decoder
+    /// that never waits this also carries start-up forward: a candidate
+    /// that finished starting is handed its units, and one that failed or
+    /// stayed silent past [`Self::startup_deadline`] is passed over.
     ///
     /// # Errors
     ///
@@ -1561,26 +1842,35 @@ impl RealtimeDecoder {
         if self.units_in_flight == 0 {
             return Ok(None);
         }
+        if self.never_waits() {
+            self.advance_start()?;
+        }
         let Some((running, _)) = self.running.as_ref() else {
             return Ok(None);
         };
         match running.drain() {
             Ok(samples) => {
                 self.settle(samples.len());
-                let picture = samples
-                    .last()
-                    .and_then(|sample| self.picture_from_sample(sample));
-                if picture.is_some() {
-                    self.first_output_seen = true;
-                }
-                Ok(picture)
+                Ok(self.take_picture(samples.last()))
             }
             Err(e) => {
-                // The next element starts at the next keyframe.
+                // The next element starts at the next keyframe, or for a
+                // decoder that never waits, at the units kept for it.
                 self.fall_through(&e)?;
                 Ok(None)
             }
         }
+    }
+
+    /// The picture in `sample`, if any; the first one proves the element.
+    fn take_picture(&mut self, sample: Option<&gst::Sample>) -> Option<DecodedPicture> {
+        let picture = sample.and_then(|s| self.picture_from_sample(s));
+        if picture.is_some() {
+            self.first_output_seen = true;
+            self.replay.clear();
+            self.startup_began = None;
+        }
+        picture
     }
 
     /// Replace a failed element with the next candidate.
@@ -1597,13 +1887,8 @@ impl RealtimeDecoder {
         self.units_in_flight = self.units_in_flight.saturating_sub(pictures);
     }
 
-    /// Push one unit into the running element and collect the newest
-    /// picture it has.
-    fn push_and_pull(
-        &mut self,
-        unit: &[u8],
-        keyframe: bool,
-    ) -> Result<Option<gst::Sample>, String> {
+    /// `unit` as the next buffer of the stream.
+    fn next_buffer(&mut self, unit: &[u8], keyframe: bool) -> gst::Buffer {
         // A monotonically increasing timestamp keeps every element's
         // bookkeeping happy; the caller's own timing travels separately.
         self.pts = self.pts.saturating_add(Duration::from_millis(1));
@@ -1611,12 +1896,24 @@ impl RealtimeDecoder {
         if !keyframe && let Some(b) = buffer.get_mut() {
             b.set_flags(gst::BufferFlags::DELTA_UNIT);
         }
+        buffer
+    }
+
+    /// Push one unit into the running element and collect the newest
+    /// picture it has.
+    fn push_and_pull(
+        &mut self,
+        unit: &[u8],
+        keyframe: bool,
+    ) -> Result<Option<gst::Sample>, String> {
+        let buffer = self.next_buffer(unit, keyframe);
         // Start-up (opening a render node, creating a context) is waited for
         // once per element; after that a unit waits only the picture wait.
-        let timeout = if self.first_output_seen || self.startup_waited {
+        // A decoder that never waits does not wait for start-up either.
+        let timeout = if self.first_output_seen || self.startup_waited || self.never_waits() {
             self.picture_wait
         } else {
-            startup_timeout()
+            self.startup_limit
         };
         let (running, _) = self.running.as_ref().ok_or("no decoder is running")?;
         // Anything that arrived late from the previous unit first.
@@ -1624,6 +1921,9 @@ impl RealtimeDecoder {
         running.push(buffer)?;
         let waited = running.next_sample(timeout)?;
         self.startup_waited = true;
+        if self.never_waits() && !self.first_output_seen && self.startup_began.is_none() {
+            self.startup_began = Some(Instant::now());
+        }
         let mut after = running.drain()?;
         let pictures = late
             .len()
@@ -1661,13 +1961,13 @@ impl RealtimeDecoder {
 mod late_picture_tests {
     use super::{
         DECODE_WAIT, DecodeOutput, DecoderConfig, EncodedUnit, EncoderConfig, InputFrame,
-        RealtimeDecoder, RealtimeEncoder, StreamCodec, gst,
+        RealtimeDecoder, RealtimeEncoder, Starting, StreamCodec, gst, startup_timeout,
     };
     use crate::FramePayload;
     use crate::hw::realtime::RealtimePolicy;
     use gstreamer::prelude::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
     use std::time::{Duration, Instant};
 
     const WIDTH: u32 = 320;
@@ -1723,15 +2023,20 @@ mod late_picture_tests {
         units
     }
 
-    /// A software VP9 decoder that has shown `keyframe`'s picture.
-    fn vp9_decoder_at(keyframe: &EncodedUnit) -> RealtimeDecoder {
-        let mut decoder = RealtimeDecoder::new(DecoderConfig {
+    /// Software VP9 at the test size.
+    fn vp9_config() -> DecoderConfig {
+        DecoderConfig {
             codec: StreamCodec::Vp9,
             output: DecodeOutput::Rgba,
             policy: RealtimePolicy::SoftwareOnly,
             display_size: Some((WIDTH, HEIGHT)),
-        })
-        .expect("the royalty-free VP9 decoder is installed");
+        }
+    }
+
+    /// A software VP9 decoder that has shown `keyframe`'s picture.
+    fn vp9_decoder_at(keyframe: &EncodedUnit) -> RealtimeDecoder {
+        let mut decoder =
+            RealtimeDecoder::new(vp9_config()).expect("the royalty-free VP9 decoder is installed");
         let picture = decoder
             .decode(&keyframe.data, Some(keyframe.keyframe))
             .expect("decode")
@@ -1886,5 +2191,288 @@ mod late_picture_tests {
             FRAMES.saturating_sub(1),
             "the last unit, collected",
         );
+    }
+
+    /// A decoder that never waits, with a counter of its wakes.
+    fn decoder_without_waiting() -> (RealtimeDecoder, Arc<AtomicUsize>) {
+        let mut decoder = RealtimeDecoder::new_without_waiting(vp9_config())
+            .expect("the royalty-free VP9 decoder is installed");
+        let wakes = Arc::new(AtomicUsize::new(0));
+        decoder.set_picture_wake(Some({
+            let wakes = Arc::clone(&wakes);
+            Arc::new(move || {
+                wakes.fetch_add(1, Ordering::SeqCst);
+            })
+        }));
+        (decoder, wakes)
+    }
+
+    /// Let the element starting on its worker come up, as the caller's
+    /// wake would.
+    fn wait_started(decoder: &mut RealtimeDecoder) {
+        let deadline = tilo_test_env::hang_deadline();
+        while decoder.element().is_none() && Instant::now() < deadline {
+            decoder
+                .advance_start()
+                .expect("the software decoder starts");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(decoder.element().is_some(), "the element started");
+    }
+
+    /// Collect late pictures until none is pending; the newest one.
+    fn collect_newest(decoder: &mut RealtimeDecoder) -> Option<crate::DecodedPicture> {
+        let mut newest = None;
+        let deadline = tilo_test_env::hang_deadline();
+        while decoder.picture_pending() && Instant::now() < deadline {
+            if let Some(picture) = decoder.take_late_picture().expect("drain") {
+                newest = Some(picture);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!decoder.picture_pending(), "every unit's picture came out");
+        newest
+    }
+
+    /// Make the running element take every unit and fail on it, as a
+    /// hardware decoder refuses a stream's size or profile, or with
+    /// `silently` take every unit and never answer.
+    fn break_element(decoder: &RealtimeDecoder, silently: bool) {
+        decoder
+            .decoder_element
+            .as_ref()
+            .and_then(|element| element.static_pad("sink"))
+            .expect("the decoder's sink pad")
+            .add_probe(gst::PadProbeType::BUFFER, move |pad, _| {
+                if !silently && let Some(element) = pad.parent_element() {
+                    let refusal =
+                        gst::message::Error::builder(gst::CoreError::Failed, "refused the stream")
+                            .src(&element)
+                            .build();
+                    let _ = element.post_message(refusal);
+                }
+                gst::PadProbeReturn::Drop
+            })
+            .expect("intercept the decoder's input");
+    }
+
+    /// Without a wait the first keyframe costs the caller no start-up: the
+    /// call hands it over and returns at once even while the element holds
+    /// its picture back, where a waiting decoder stalls its caller for the
+    /// whole start-up (5 s in production). The picture then wakes the
+    /// caller and is collected.
+    #[test]
+    fn the_first_keyframe_without_a_wait_never_waits_for_start_up() {
+        let units = vp9_units();
+        let constructed = Instant::now();
+        let (mut decoder, wakes) = decoder_without_waiting();
+        let construction = constructed.elapsed();
+        wait_started(&mut decoder);
+        let (src, hold) = hold_output(&decoder);
+
+        let (keyframe, _) = units.split_first().expect("a keyframe");
+        let started = Instant::now();
+        let picture = decoder
+            .decode(&keyframe.data, Some(true))
+            .expect("a slow element is not a failed one");
+        let first = started.elapsed();
+        assert!(picture.is_none(), "nothing leaves a held decoder");
+        assert!(decoder.picture_pending(), "the keyframe is still decoding");
+        let mut slowest = first;
+        for (n, unit) in (1_u8..).zip(units.iter().skip(1)) {
+            let started = Instant::now();
+            let picture = decoder
+                .decode(&unit.data, Some(unit.keyframe))
+                .expect("a slow element is not a failed one");
+            slowest = slowest.max(started.elapsed());
+            assert!(picture.is_none(), "unit {n}: nothing leaves a held decoder");
+            assert!(decoder.picture_pending(), "unit {n} is still decoding");
+        }
+        eprintln!(
+            "decoder without a wait: built in {construction:?}; first keyframe's decode \
+             call with start-up held {first:?}, slowest of all {slowest:?}"
+        );
+        assert!(
+            slowest < DECODE_WAIT,
+            "no unit waits for start-up: {slowest:?}"
+        );
+
+        let before = wakes.load(Ordering::SeqCst);
+        let pictures = before.saturating_add(usize::from(FRAMES));
+        src.remove_probe(hold);
+        let deadline = tilo_test_env::hang_deadline();
+        while wakes.load(Ordering::SeqCst) < pictures && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            wakes.load(Ordering::SeqCst) >= pictures,
+            "each picture woke the caller"
+        );
+        let newest = collect_newest(&mut decoder).expect("the held pictures came out");
+        assert_shows(
+            &newest,
+            FRAMES.saturating_sub(1),
+            "the last unit, collected",
+        );
+        assert!(decoder.startup_deadline().is_none(), "output has started");
+    }
+
+    /// Units given while the element is still starting are kept and handed
+    /// to it once it is up, so its first picture needs no second keyframe.
+    /// The worker's start-up is held by standing in for it.
+    #[test]
+    fn units_given_while_the_element_starts_are_handed_over_once_it_is_up() {
+        let units = vp9_units();
+        let (mut decoder, _wakes) = decoder_without_waiting();
+        let spec = realtime_vp9_spec();
+        // The worker's own result is dropped with its receiver.
+        let (start, built) = mpsc::channel();
+        decoder.starting = Some(Starting { spec, built });
+
+        for (n, unit) in (0_u8..).zip(&units) {
+            let picture = decoder
+                .decode(&unit.data, Some(unit.keyframe))
+                .expect("a starting element is not a failed one");
+            assert!(picture.is_none(), "unit {n}: nothing is running yet");
+            assert!(
+                decoder.picture_pending(),
+                "unit {n} is kept for the element"
+            );
+        }
+        assert!(decoder.take_late_picture().expect("drain").is_none());
+        assert!(decoder.startup_deadline().is_some(), "start-up is timed");
+
+        start
+            .send(RealtimeDecoder::build(
+                decoder.config,
+                &decoder.stream_color,
+                &decoder.picture_wake,
+                spec,
+            ))
+            .expect("the decoder takes its element");
+        let newest = collect_newest(&mut decoder).expect("the kept units decoded");
+        assert_shows(
+            &newest,
+            FRAMES.saturating_sub(1),
+            "the last unit given while starting",
+        );
+    }
+
+    /// An element that refuses the stream's first keyframe wakes the caller,
+    /// and the next candidate is handed that keyframe and what followed it,
+    /// so the stream shows without the sender's next keyframe.
+    #[test]
+    fn a_refused_first_keyframe_decodes_on_the_next_candidate() {
+        let units = vp9_units();
+        let (mut decoder, wakes) = decoder_without_waiting();
+        wait_started(&mut decoder);
+        let spec = decoder.element().expect("running");
+        // The next candidate: a fresh copy of the same software decoder.
+        decoder.candidates.insert(0, spec);
+        break_element(&decoder, false);
+
+        let (keyframe, rest) = units.split_first().expect("a keyframe");
+        assert!(keyframe.keyframe);
+        let started = Instant::now();
+        assert!(
+            decoder
+                .decode(&keyframe.data, Some(true))
+                .expect("the refusal is not the caller's to wait for")
+                .is_none()
+        );
+        let first_call = started.elapsed();
+        assert!(
+            first_call < DECODE_WAIT,
+            "the refused keyframe did not hold the caller: {first_call:?}"
+        );
+        let deadline = tilo_test_env::hang_deadline();
+        while wakes.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            wakes.load(Ordering::SeqCst) > 0,
+            "the refusal woke the caller"
+        );
+
+        for unit in rest {
+            assert!(!unit.keyframe, "no second keyframe is given");
+            decoder
+                .decode(&unit.data, Some(false))
+                .expect("the next candidate takes over");
+        }
+        let newest = collect_newest(&mut decoder).expect("the next candidate decoded");
+        assert_shows(
+            &newest,
+            FRAMES.saturating_sub(1),
+            "the last unit, on the next candidate",
+        );
+        assert!(
+            decoder
+                .tried
+                .iter()
+                .any(|t| t.contains("refused the stream")),
+            "the refusal was recorded: {:?}",
+            decoder.tried
+        );
+    }
+
+    /// An element that takes the stream and never shows a picture is given
+    /// up once start-up has passed, found without waiting, and the next
+    /// candidate is handed what it was given.
+    #[test]
+    fn a_silent_element_is_passed_over_after_start_up_with_its_units() {
+        const LIMIT: Duration = Duration::from_secs(1);
+        let units = vp9_units();
+        let (mut decoder, _wakes) = decoder_without_waiting();
+        wait_started(&mut decoder);
+        let spec = decoder.element().expect("running");
+        decoder.candidates.insert(0, spec);
+        decoder.startup_limit = LIMIT;
+        break_element(&decoder, true);
+
+        for unit in &units {
+            assert!(
+                decoder
+                    .decode(&unit.data, Some(unit.keyframe))
+                    .expect("silence is not yet failure")
+                    .is_none()
+            );
+        }
+        let deadline = decoder
+            .startup_deadline()
+            .expect("a silent element has a deadline");
+        assert!(decoder.take_late_picture().expect("drain").is_none());
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(decoder.take_late_picture().expect("drain").is_none());
+        assert!(
+            decoder
+                .tried
+                .iter()
+                .any(|t| t.contains("no picture within")),
+            "the silent element was passed over: {:?}",
+            decoder.tried
+        );
+        // The replacement has the full start-up on a loaded runner.
+        decoder.startup_limit = startup_timeout();
+        let newest = collect_newest(&mut decoder).expect("the next candidate decoded");
+        assert_shows(
+            &newest,
+            FRAMES.saturating_sub(1),
+            "the last unit, on the next candidate",
+        );
+    }
+
+    /// The software VP9 decoder's table entry.
+    fn realtime_vp9_spec() -> &'static super::CodecElement {
+        super::realtime_candidates(
+            super::realtime_decoders(StreamCodec::Vp9),
+            RealtimePolicy::SoftwareOnly,
+            super::registry_has,
+        )
+        .into_iter()
+        .next()
+        .expect("a software VP9 decoder is installed")
     }
 }

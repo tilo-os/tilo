@@ -26,7 +26,7 @@ test-support = []
 # plane. Needs the browser listener for steering from pages.
 agents = ["mcp", "dep:tilo-agent-participant", "dep:tilo-desktop-model", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:notes", "dep:canvas", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
 mcp = ["web", "dep:tilo-runtime"]
-web = ["dep:tilo-moq", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
+web = ["tilo-relay-shell/web", "dep:tilo-moq", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 
 [[bin]]
 name = "tilo-relay"
@@ -75,11 +75,12 @@ path = "src/relay_offers_cli.rs"
 #   its own device key:
 #   - governance commits for the rooms it governs (`rooms*`);
 #   - its retained `IdentityHello` certificate frame (`compaction`);
-#   - legacy-window input on behalf of browsers (`web::legacy`);
+#   - legacy-window input on behalf of browsers (`tilo_relay_shell::legacy`);
 #   - folded snapshots of unsealed document channels (`compaction`).
 #   It reads the desktop's peer-sync messages inside co-edit bodies to
 #   decide retention, replay and compaction: document frames, checkpoint
-#   kinds and audiences through `payloads::ShellPayloads`, and native
+#   kinds and audiences through the injected `payloads::ShellPayloads`
+#   (`tilo-relay-shell`), and native
 #   shell replay through `store::shell_selection`; it refuses document
 #   changes an app's surface does not allow (`surfaces`). Sealed document
 #   content stays opaque. `docs/architecture/security.md` ("What a
@@ -235,10 +236,16 @@ collab-types = { path = "../../collab/collab-types" }
 # A node stewards the encrypted channels of the rooms it governs.
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
+# The seam the core asks about opaque co-edit bodies, the desktop's adapter
+# `Relay::start` injects, and (with `web`) the browser legacy-window bridge.
+tilo-relay-shell = { path = "../tilo-relay-shell" }
 # Owners pre-admit people by the SHA-256 of a token someone else hands them.
 sha2.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
+# Nearby pairing redeems enrollment tokens through the identity host's one
+# redemption: its issuer checks, nonce store and device fleet.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 socket2 = "0.6"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
@@ -265,12 +272,9 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 iroh-relay = { version = "1.0.3", features = ["server"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
-moq-net.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
-# Mints an approver the way onboarding does: the root only in its record.
-tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 
 [[test]]
 name = "it"

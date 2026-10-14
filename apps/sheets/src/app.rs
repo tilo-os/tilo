@@ -3156,6 +3156,14 @@ impl Widget for SheetsApp {
         self.pending.redraw = false;
         self.grid.mark_drawn();
     }
+
+    /// The grid fills its node and places everything in it in
+    /// `apply_layout`: there is never a size for the layout solver to
+    /// measure, so a frame that only moves the window (a strip pan) solves
+    /// none.
+    fn layout_needs_measure(&self) -> bool {
+        false
+    }
 }
 
 impl ui::presence::capability::PublishesPresence for SheetsApp {
@@ -4781,6 +4789,31 @@ pub(crate) mod tests {
                 "{id} is published"
             );
         }
+        // Each import opens the file a launch names, for its own type only.
+        for (id, extension) in [
+            ("import-csv", "csv"),
+            ("import-xlsx", "xlsx"),
+            ("import-ods", "ods"),
+        ] {
+            let import = workbook
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap();
+            assert!(import.contract.opens_path(), "{id} opens a path");
+            assert_eq!(
+                import.contract.opened_extensions().collect::<Vec<_>>(),
+                [extension]
+            );
+        }
+        assert!(
+            workbook
+                .actions
+                .iter()
+                .filter(|action| action.id.starts_with("export-"))
+                .all(|action| !action.contract.opens_path()),
+            "an export takes a path but opens nothing"
+        );
         let sales = workbook
             .children
             .iter()

@@ -1178,6 +1178,11 @@ impl BatchApply {
 
     pub(crate) fn apply(&mut self, doc: &mut Automerge, log: &mut PatchLog) -> Result<(), Refusal> {
         let new_actors = self.insert_new_actors(doc);
+        // TILO(op-id-index): the check and the walks look ops up by id. (A
+        // load applies its trailing changes, often none, through here.)
+        if !self.changes.is_empty() {
+            doc.ops_mut().index_op_ids();
+        }
 
         // TILO(map-apply-skip): the objects this batch makes, looked up before
         // the document's own, rather than a copy of every object's info.

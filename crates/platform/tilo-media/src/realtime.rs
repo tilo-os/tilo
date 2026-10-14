@@ -438,10 +438,11 @@ pub fn crop_frame(frame: crate::Frame, width: u32, height: u32) -> crate::Frame 
 }
 
 /// Run on a media thread each time a [`RealtimeDecoder`] has a picture
-/// out, so a loop that does not wait for pictures (see
-/// [`RealtimeDecoder::set_picture_wait`]) is woken to collect it with
-/// [`RealtimeDecoder::take_late_picture`] instead of polling. It must not
-/// block: a wake-up ping, not the work itself.
+/// out (or an element failed, or a candidate finished starting), so a loop
+/// that does not wait for pictures (see [`RealtimeDecoder::set_picture_wait`])
+/// is woken to collect it with [`RealtimeDecoder::take_late_picture`]
+/// instead of polling. It must not block: a wake-up ping, not the work
+/// itself.
 pub type PictureWake = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// One decoded picture from a [`RealtimeDecoder`].
@@ -714,10 +715,6 @@ mod unavailable {
             false
         }
 
-        pub fn coded_size(&self) -> Option<(u32, u32)> {
-            None
-        }
-
         /// # Errors
         ///
         /// Always [`RealtimeError::NotCompiled`].
@@ -753,6 +750,17 @@ mod unavailable {
         /// Always [`RealtimeError::NotCompiled`].
         pub fn new(_config: DecoderConfig) -> Result<Self, RealtimeError> {
             Err(RealtimeError::NotCompiled)
+        }
+
+        /// # Errors
+        ///
+        /// Always [`RealtimeError::NotCompiled`].
+        pub fn new_without_waiting(_config: DecoderConfig) -> Result<Self, RealtimeError> {
+            Err(RealtimeError::NotCompiled)
+        }
+
+        pub fn startup_deadline(&self) -> Option<std::time::Instant> {
+            match self.never {}
         }
 
         pub fn element(&self) -> Option<&'static CodecElement> {

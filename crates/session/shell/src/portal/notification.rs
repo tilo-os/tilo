@@ -381,6 +381,7 @@ impl NotificationBackend {
             caller: Some(auth.caller),
             badge_count: None,
             contact_endpoint: None,
+            sender_name: None,
             sound: Self::sound(&notification),
         });
     }
