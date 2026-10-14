@@ -2826,9 +2826,11 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # Because the tilo-kernel repo is a distinct OCI image (KERNEL_RPMS_REF),
 # we mount it alongside the frozen repo, write a two-repo dnf config on
 # the fly, and swap kernel-core → tilo-kernel-core.  --nogpgcheck: our
-# in-house RPMs aren't signed by Fedora's key; provenance for the whole
-# image is verified via cosign against the existing registry.tilo.so/tilo/tilo-kernel repository
-# (see os/etc/containers/policy.json).
+# in-house RPMs aren't signed by Fedora's key. The image build verifies the
+# digest-pinned tilo-kernel image's cosign signature and provenance before
+# consuming it (os/dev/verify-kernel-provenance.sh, run by build-image.yml);
+# os/etc/containers/policy.json has no tilo-kernel scope, and an installed
+# machine never pulls that image.
 #
 # An initramfs is mandatory, and the static drivers do not remove the need
 # for one: unlocking an encrypted root takes early USERSPACE (device-mapper

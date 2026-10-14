@@ -1673,6 +1673,27 @@ pub(crate) fn verified_launch_installation(
     payload_root: &Path,
     expected: &str,
 ) -> Result<ManifestView, RunError> {
+    // Re-read on every launch, as `tilo-install run` does: a publisher
+    // revoked after install must not keep launching from the shell. An
+    // unreadable list refuses rather than reading as "nothing revoked".
+    let revoked = match tilo_app_package::default_revoked_keys_path() {
+        Some(path) => tilo_app_package::RevocationList::load(&path).map_err(|error| {
+            RunError::InvalidServiceLaunch(format!(
+                "the publisher revocation list is unreadable ({error})"
+            ))
+        })?,
+        None => tilo_app_package::RevocationList::empty(),
+    };
+    verified_launch_installation_against(installed, manifest_path, payload_root, expected, &revoked)
+}
+
+pub(crate) fn verified_launch_installation_against(
+    installed: &package_store::InstalledPackage,
+    manifest_path: &Path,
+    payload_root: &Path,
+    expected: &str,
+    revoked: &tilo_app_package::RevocationList,
+) -> Result<ManifestView, RunError> {
     let refusal =
         || RunError::InvalidServiceLaunch("original signed package launch changed".into());
     if installed.package_id_hex != expected
@@ -1692,6 +1713,12 @@ pub(crate) fn verified_launch_installation(
         expected,
     )
     .map_err(|_| refusal())?;
+    if let Some(entry) = revoked.find(&record.root.publisher_identity) {
+        return Err(RunError::InvalidServiceLaunch(format!(
+            "the package's publisher key is revoked ({})",
+            entry.reason
+        )));
+    }
     let manifest: ManifestView =
         toml::from_str(std::str::from_utf8(&record.manifest_bytes).map_err(|_| refusal())?)
             .map_err(|_| refusal())?;
