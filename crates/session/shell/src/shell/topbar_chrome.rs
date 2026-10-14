@@ -226,6 +226,8 @@ impl DesktopChromeSource for NativeChrome {
                 overlay: activity.overlay,
             }),
             active_exposures: state.active_exposures().to_vec(),
+            // Native presence has no spectator role yet.
+            watching: 0,
             topbar_widgets: Some(self.widgets.borrow().clone()),
         }
     }

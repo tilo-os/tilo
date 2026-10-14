@@ -49,7 +49,14 @@ const TRACE_FLUSH: Duration = Duration::from_millis(1_050);
 
 /// A switch's frame run is 400 ms; anything it brought in after that (an
 /// app's next frame) lands well inside this.
+const SWITCH_WINDOW: Duration = Duration::from_millis(1_000);
+
+/// How long a switch is left alone before the harness asks the loop anything
+/// again. Longer than [`SWITCH_WINDOW`], so the requests that flush the trace
+/// afterwards (and whatever deferred app work their wake runs) start after the
+/// measured window has closed and are never read as the switch's.
 const SWITCH_SETTLE: Duration = Duration::from_millis(1_500);
+const _: () = assert!(SWITCH_WINDOW.as_millis() + 250 <= SWITCH_SETTLE.as_millis());
 
 /// How long the apps must go without painting before the switches start.
 const APPS_QUIET: Duration = Duration::from_secs(2);
@@ -73,6 +80,8 @@ fn ms(us: u64) -> f64 {
 #[derive(Debug)]
 struct Tick {
     seq: u64,
+    /// When the tick began, in microseconds on the loop's own clock.
+    start_us: u64,
     painted: bool,
     /// Wall time of each of [`PHASES`], in microseconds.
     phases: Vec<u64>,
@@ -122,8 +131,9 @@ fn read_trace(path: &Path) -> Vec<Tick> {
             .position(|column| *column == name)
             .unwrap_or_else(|| panic!("the frame trace has no {name} column: {header}"))
     };
-    let (seq, painted, cpu, step, reasons) = (
+    let (seq, start, painted, cpu, step, reasons) = (
         at("seq"),
+        at("start_us"),
         at("painted"),
         at("cpu_us"),
         at("input_step"),
@@ -137,6 +147,7 @@ fn read_trace(path: &Path) -> Vec<Tick> {
             let number = |index: usize| field(index).parse::<u64>().ok();
             Some(Tick {
                 seq: number(seq)?,
+                start_us: number(start)?,
                 painted: field(painted) == "1",
                 phases: phases
                     .iter()
@@ -221,26 +232,42 @@ fn switch(desktop: &Desktop, trace: &Path, key: &str, to: &serde_json::Value) ->
         "Super+{key} did not switch to workspace {to}. Log:\n{}",
         desktop.log_tail()
     );
-    // The preceding modifier and key requests are synthetic control-socket
-    // setup. Begin at the first compositor transition frame, which includes
-    // the switch's structural update and first app paint. Keep every tick
-    // after that frame, including non-painted service work during settling.
-    let first = ticks
-        .iter()
-        .position(|tick| {
-            tick.painted
-                && tick
-                    .paint_reasons
-                    .split('+')
-                    .any(|reason| reason == "transition")
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "Super+{key} produced no transition frame:\n{}",
-                table(&ticks)
-            )
-        });
-    ticks.into_iter().skip(first).collect()
+    switch_window(ticks).unwrap_or_else(|ticks| {
+        panic!(
+            "Super+{key} produced no transition frame:\n{}",
+            table(&ticks)
+        )
+    })
+}
+
+/// The ticks that belong to one switch, out of everything traced between the
+/// harness's requests: from its first transition frame for [`SWITCH_WINDOW`].
+///
+/// The preceding modifier and key requests are synthetic control-socket
+/// setup. Begin at the first compositor transition frame, which includes the
+/// switch's structural update and first app paint, and keep every tick that
+/// starts within the window, painted or not, including service work while the
+/// switch settles. The harness's own trace-flushing requests come
+/// [`SWITCH_SETTLE`] after the key, past the window; the ticks that answer
+/// them (and the deferred app work their wake runs) are the measurement's,
+/// not the switch's. Without a transition frame, returns every tick.
+fn switch_window(ticks: Vec<Tick>) -> Result<Vec<Tick>, Vec<Tick>> {
+    let Some(first) = ticks.iter().position(|tick| {
+        tick.painted
+            && tick
+                .paint_reasons
+                .split('+')
+                .any(|reason| reason == "transition")
+    }) else {
+        return Err(ticks);
+    };
+    let window_us = u64::try_from(SWITCH_WINDOW.as_micros()).unwrap_or(u64::MAX);
+    let end_us = ticks[first].start_us.saturating_add(window_us);
+    Ok(ticks
+        .into_iter()
+        .skip(first)
+        .take_while(|tick| tick.start_us < end_us)
+        .collect())
 }
 
 fn table(ticks: &[Tick]) -> String {
@@ -329,6 +356,7 @@ fn assert_switch_back_budget(peak: &Tick, report: &str) {
 fn sampling_keeps_a_repeated_expensive_first_tick_but_not_one_outlier() {
     let make = |cpu_us, reasons: &str| Tick {
         seq: 0,
+        start_us: 0,
         painted: true,
         phases: vec![0; PHASES.len()],
         cpu_us: Some(cpu_us),
@@ -363,6 +391,7 @@ fn relative_gate_tracks_runner_speed_as_a_supplement() {
     let round = |peak_us, animation_us| {
         let mut ticks = vec![Tick {
             seq: 0,
+            start_us: 0,
             painted: true,
             phases: vec![0; PHASES.len()],
             cpu_us: Some(peak_us),
@@ -371,6 +400,7 @@ fn relative_gate_tracks_runner_speed_as_a_supplement() {
         }];
         ticks.extend((0..20).map(|seq| Tick {
             seq,
+            start_us: 0,
             painted: true,
             phases: vec![0; PHASES.len()],
             cpu_us: Some(animation_us),
@@ -398,6 +428,7 @@ fn a_uniformly_slow_switch_fails_the_absolute_budget_even_if_relative_passes() {
     let round = vec![
         Tick {
             seq: 0,
+            start_us: 0,
             painted: true,
             phases: vec![0; PHASES.len()],
             cpu_us: Some(36_000),
@@ -406,6 +437,7 @@ fn a_uniformly_slow_switch_fails_the_absolute_budget_even_if_relative_passes() {
         },
         Tick {
             seq: 1,
+            start_us: 0,
             painted: true,
             phases: vec![0; PHASES.len()],
             cpu_us: Some(6_000),
@@ -424,6 +456,7 @@ fn a_uniformly_slow_switch_fails_the_absolute_budget_even_if_relative_passes() {
 fn one_painted_outlier_fails_the_switch_back_budget() {
     let make = |cpu_us| Tick {
         seq: 0,
+        start_us: 0,
         painted: true,
         phases: vec![0; PHASES.len()],
         cpu_us: Some(cpu_us),
@@ -442,6 +475,48 @@ fn one_painted_outlier_fails_the_switch_back_budget() {
     let remounted = vec![observed, make(2_000), make(2_000)];
     let peak = worst_tick(&[&ordinary, &ordinary, &remounted, &ordinary, &ordinary]);
     assert_switch_back_budget(peak, "one painted outlier");
+}
+
+/// The harness's trace-flushing requests after a switch are not the switch:
+/// CI run 108721 failed on such a tick (45.44 ms, pump 36.43 ms, control
+/// 7.63 ms, not painted), 1.5 s after the key. Every tick of the switch itself
+/// still counts, so a slow animation frame inside the window still fails.
+#[test]
+fn the_window_ends_before_the_harness_asks_again_but_keeps_the_whole_switch() {
+    let tick = |seq, start_ms: u64, cpu_us, reasons: &str| Tick {
+        seq,
+        start_us: start_ms * 1_000,
+        painted: !reasons.is_empty(),
+        phases: vec![0; PHASES.len()],
+        cpu_us: Some(cpu_us),
+        input_step: "services".into(),
+        paint_reasons: reasons.into(),
+    };
+    let traced = vec![
+        // The modifier request before the key.
+        tick(380, 0, 3_000, ""),
+        tick(381, 5, 21_830, "session+animation+transition+apps"),
+        tick(382, 300, 36_610, "animation"),
+        tick(383, 410, 9_000, "animation"),
+        // Service work while the switch settles, unpainted, still the switch's.
+        tick(384, 900, 12_000, ""),
+        // The harness's first trace-flushing request and the frame it causes.
+        tick(403, 1_520, 45_440, ""),
+        tick(404, 1_540, 24_440, "session"),
+    ];
+    let window = switch_window(traced).expect("a transition frame");
+    assert_eq!(
+        window.iter().map(|tick| tick.seq).collect::<Vec<_>>(),
+        [381, 382, 383, 384]
+    );
+    let rounds = [window.as_slice(); SWITCH_ROUNDS];
+    let worst = worst_tick(&rounds);
+    assert_eq!(worst.cpu_us, Some(36_610));
+    assert!(
+        worst.cpu_ms().unwrap() > SWITCH_BACK_TICK_CPU_BUDGET_MS,
+        "a slow frame inside the switch must still be over the budget"
+    );
+    assert!(switch_window(vec![tick(1, 0, 1_000, "animation")]).is_err());
 }
 
 #[test]
