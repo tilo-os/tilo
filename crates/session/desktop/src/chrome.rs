@@ -200,6 +200,28 @@ pub struct DesktopChromeSnapshot {
     pub active_exposures: Vec<ActiveExposure>,
     /// The person's centre widgets; `None` until the host has read them.
     pub topbar_widgets: Option<TopBarWidgets>,
+    /// The active workspace's strips as named places with who is in each;
+    /// `None` keeps the bar from showing a strip switcher.
+    pub strip_places: Option<StripPlaces>,
+}
+
+/// Which people are on which strip of the active workspace.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct StripPlaces {
+    /// People whose focus is on each strip, counting this person; strips
+    /// nobody is on may be left out.
+    pub present: Vec<(tilo_desktop_model::StripId, usize)>,
+    /// Whether the bar offers adding a named strip.
+    pub can_add: bool,
+}
+
+impl StripPlaces {
+    pub fn people_on(&self, strip: tilo_desktop_model::StripId) -> usize {
+        self.present
+            .iter()
+            .find(|(id, _)| *id == strip)
+            .map_or(0, |(_, count)| *count)
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChromeIntent {
@@ -222,6 +244,12 @@ pub enum ChromeIntent {
     AcceptContinuity,
     /// Hide the continuity offer until that device's focus moves again.
     DismissContinuity,
+    /// Move to another strip of the active workspace.
+    SwitchStrip(tilo_desktop_model::StripId),
+    /// Add a strip with this name to the active workspace and move to it.
+    AddStrip {
+        name: String,
+    },
     /// Deliver a click to a running application's tray item.
     AppTray {
         key: String,
