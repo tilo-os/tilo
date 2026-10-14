@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -50,6 +51,20 @@ class PlanTest(unittest.TestCase):
                          ["spect-s500", "spect-s1000", "spect-s2000", "spect-s4000"])
         with self.assertRaises(ValueError):
             room_capacity.plan("nothing-matches")
+
+
+class BenchTest(unittest.TestCase):
+    def test_a_run_past_its_time_is_stopped_and_named(self):
+        with tempfile.TemporaryDirectory() as directory:
+            code, _, stopped = room_capacity.bench([sys.executable, "-c", "import time; time.sleep(30)"],
+                                                   Path(directory) / "log", timeout_s=1)
+        self.assertIsNone(code)
+        self.assertEqual(stopped, "stopped after 1 s")
+
+    def test_a_run_has_its_ramps_hold_and_join_timeout(self):
+        caps = next(item for item in room_capacity.plan("full") if item.name == "caps")
+        # 2000 spectators at 50/s outlast 500 guests at 20/s.
+        self.assertEqual(room_capacity.run_seconds(caps), 40 + 60 + 60 + 300)
 
 
 class SummaryTest(unittest.TestCase):

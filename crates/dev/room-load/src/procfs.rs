@@ -34,7 +34,7 @@ pub fn process_cpu(pid: u32) -> Option<f64> {
 /// Resident bytes of `pid` with shared pages split among their sharers
 /// (`Pss`), so a tree's sum counts each page once; `VmRSS` where the kernel
 /// has no `smaps_rollup`.
-fn proportional_bytes(pid: u32) -> Option<u64> {
+pub fn proportional_bytes(pid: u32) -> Option<u64> {
     let (path, key) = if std::path::Path::new(&format!("/proc/{pid}/smaps_rollup")).exists() {
         (format!("/proc/{pid}/smaps_rollup"), "Pss:")
     } else {
