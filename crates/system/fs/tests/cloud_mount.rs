@@ -171,21 +171,105 @@ fn drive_mount_syncs_remote_edits_and_local_writes() {
     assert_eq!(server.bytes(&id).unwrap(), b"local edit");
     volume.sync_once().unwrap();
     assert_eq!(read_all(&volume, "document.txt"), b"local edit");
-    let link_name = names(&volume, "")
-        .into_iter()
-        .find(|name| name.starts_with("Essay."))
-        .unwrap();
-    let link: serde_json::Value = serde_json::from_slice(&read_all(&volume, &link_name)).unwrap();
-    assert_eq!(link["mime"], "application/vnd.google-apps.document");
-    assert!(link["url"].as_str().unwrap().starts_with("https://"));
-    assert!(
-        link["exports"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|ext| ext == "docx")
-    );
+    assert_eq!(read_all(&volume, "Essay.docx"), OFFICE_DOCX);
+    let attr = volume.lookup(ROOT_INO, "Essay.docx").unwrap();
+    assert_eq!(attr.size, OFFICE_DOCX.len() as u64);
+    assert_eq!(attr.perm, 0o444);
 }
+
+const OFFICE_DOCX: &[u8] = {
+    mod fixture {
+        include!("../../cloud-source-gdrive/tests/fixtures/docx.rs");
+    }
+    fixture::BYTES
+};
+const OFFICE_XLSX: &[u8] = {
+    mod fixture {
+        include!("../../cloud-source-gdrive/tests/fixtures/xlsx.rs");
+    }
+    fixture::BYTES
+};
+const OFFICE_PPTX: &[u8] = {
+    mod fixture {
+        include!("../../cloud-source-gdrive/tests/fixtures/pptx.rs");
+    }
+    fixture::BYTES
+};
+
+#[test]
+fn native_office_exports_are_read_only_but_can_be_renamed_and_deleted() {
+    use cloud_source_gdrive::{
+        GDrive,
+        fake::{FakeDrive, SOURCE_TOKEN},
+    };
+    let server = FakeDrive::start();
+    let dir = tempfile::tempdir().unwrap();
+    let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
+    let volume = oauth_volume(Arc::new(source), dir.path());
+    for (kind, extension, bytes) in [
+        ("document", "docx", OFFICE_DOCX),
+        ("spreadsheet", "xlsx", OFFICE_XLSX),
+        ("presentation", "pptx", OFFICE_PPTX),
+    ] {
+        let id = server.put_native(
+            &server.root_id(),
+            "Native",
+            &format!("application/vnd.google-apps.{kind}"),
+        );
+        volume.sync_once().unwrap();
+        let name = format!("Native.{extension}");
+        let attr = volume.lookup(ROOT_INO, &name).unwrap();
+        assert_eq!(attr.size, bytes.len() as u64);
+        assert_eq!(attr.perm, 0o444);
+        assert!(bytes.starts_with(b"PK\x03\x04"));
+        assert_eq!(read_all(&volume, &name), bytes);
+        assert_eq!(volume.read_ino(attr.ino, 7, 19).unwrap(), bytes[7..26]);
+        assert_eq!(volume.read_ino(attr.ino, attr.size, 19).unwrap(), b"");
+        for (write, truncate) in [(true, false), (true, true), (false, true)] {
+            assert_eq!(
+                volume.open_file(attr.ino, write, truncate),
+                Err(libc::EACCES)
+            );
+        }
+        for size in [0, 1, attr.size + 1] {
+            assert_eq!(volume.truncate(attr.ino, size), Err(libc::EACCES));
+        }
+        let fh = volume.open_file(attr.ino, false, false).unwrap();
+        assert_eq!(volume.write(fh, 0, b"overwrite"), Err(libc::EBADF));
+        volume.release(fh).unwrap();
+        write_file(&volume, "safe-save.tmp", b"replacement");
+        let pending = volume.pending();
+        assert_eq!(
+            volume.rename(ROOT_INO, "safe-save.tmp", ROOT_INO, &name),
+            Err(libc::EACCES)
+        );
+        assert_eq!(volume.pending(), pending);
+        assert_eq!(read_all(&volume, "safe-save.tmp"), b"replacement");
+        assert_eq!(read_all(&volume, &name), bytes);
+        volume.unlink(ROOT_INO, "safe-save.tmp").unwrap();
+        let renamed = format!("Renamed.{extension}");
+        volume.rename(ROOT_INO, &name, ROOT_INO, &renamed).unwrap();
+        volume.upload_pending().unwrap();
+        assert_eq!(volume.resolve(&renamed).unwrap(), attr.ino);
+        assert_eq!(volume.resolve(&name), Err(libc::ENOENT));
+        // The provider name stays suffix-free; projection adds it exactly once.
+        let provider = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
+        assert_eq!(
+            provider.stat(&cloud_source::ItemId::new(&id)).unwrap().name,
+            "Renamed"
+        );
+        volume.unlink(ROOT_INO, &renamed).unwrap();
+        volume.upload_pending().unwrap();
+        assert_eq!(server.is_trashed(&id), Some(true));
+    }
+}
+
+#[path = "cloud_mount/import.rs"]
+mod cloud_import;
+#[path = "cloud_mount/native.rs"]
+mod cloud_volume_native;
+#[path = "cloud_mount/import_transition.rs"]
+mod import_transition;
 
 fn pattern(len: usize) -> Vec<u8> {
     (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect()
@@ -1200,6 +1284,7 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
         CloudResponse::Done
     );
 
+    import_transition::verify_process_handshake(&mut service, &mount);
     service.shutdown();
     assert!(!mount.exists());
 }

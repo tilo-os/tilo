@@ -66,6 +66,7 @@ use zeroize::Zeroizing;
 #[cfg(feature = "conformance")]
 pub mod conformance;
 pub mod http;
+pub mod materialize;
 pub mod tree;
 
 /// A provider's stable identity for an item.
@@ -153,9 +154,9 @@ pub struct ExportFormat {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NativeDocument {
     pub mime: String,
-    /// Extension of the read-only link entry the document is projected as,
-    /// without the dot (`"gdoc"`, `"gsheet"`), so it never masquerades as
-    /// an editable file of a real format.
+    /// Provider-specific link suffix (`"gdoc"`, `"gsheet"`), retained for
+    /// metadata consumers. The tree uses the preferred Office export suffix
+    /// instead, or leaves unsupported native document names unadorned.
     pub link_extension: String,
     /// Where the provider's editor opens it.
     pub web_url: Option<String>,

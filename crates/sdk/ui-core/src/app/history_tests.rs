@@ -5016,6 +5016,7 @@ fn component_control_root(
             search_requests: std::rc::Rc::default(),
             instance_id: 930 + index as u64,
             app_id: HISTORY.app_id.into(),
+            device_id: "test-device".into(),
             records: records.clone(),
             checkout,
             permissions: std::rc::Rc::new(std::cell::RefCell::new(

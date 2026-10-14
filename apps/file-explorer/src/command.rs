@@ -99,8 +99,8 @@ pub enum FileCommand {
     UndoLastTrash,
     /// Copy / cut the selection into the clipboard.
     Copy,
-    /// Import the selected cloud entry once into the user's Downloads folder.
-    ImportOnceToDownloads,
+    /// Provider browse and transfer controls share the semantic effect handler.
+    Cloud(crate::effects::FilesEffect),
     Cut,
     /// Paste the clipboard into the current directory.
     Paste,

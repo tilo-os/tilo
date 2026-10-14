@@ -44,6 +44,8 @@ use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
 mod clipboard_client;
+mod cloud_browse;
+mod mounted_cloud;
 pub use clipboard_client::Receipt as ClipboardReceipt;
 pub(crate) use clipboard_client::UndoRequest;
 mod selection_actions;
@@ -170,6 +172,9 @@ fn remote_folder_availability(account: &crate::remote_accounts::RemoteAccount) -
             code: "account_disabled".into(),
             reason: account.health.unavailable_reason().into(),
         };
+    }
+    if account.is_import() {
+        return Availability::Available;
     }
     if !account.mount.as_deref().is_some_and(Path::is_dir) {
         return Availability::Unavailable {
@@ -757,6 +762,8 @@ pub struct FileExplorerWidget {
     accounts_root: Option<PathBuf>,
     /// The accounts as last read from `accounts_root`.
     accounts_cache: Vec<crate::remote_accounts::RemoteAccount>,
+    cloud: cloud_browse::CloudView,
+    mounted_cloud: mounted_cloud::MountedCloud,
     host_intent: Option<ui::widget::AppHostIntent>,
     /// A one-shot shell-owned document admission. The reply is strong only
     /// while this Files widget still owns the request; the shell gets a weak
@@ -858,6 +865,10 @@ impl FileExplorerWidget {
         op: crate::file_ops::FileOp,
         follow: OpFollowUp,
     ) -> Option<crate::file_ops::Outcome> {
+        if let crate::file_ops::FileOp::CloudImport { job_id, .. } = &op {
+            crate::cloud_jobs::register(job_id);
+            self.cloud.job_id = Some(job_id.clone());
+        }
         if let (Some(dispatcher), Some(device)) = (&self.dispatcher, &self.device)
             && let Some(queueing) = crate::resource::FileExplorer::queueing(device, op.clone())
         {
@@ -866,6 +877,14 @@ impl FileExplorerWidget {
             return None;
         }
         let id = uuid::Uuid::new_v4().to_string();
+        if matches!(op, crate::file_ops::FileOp::CloudImport { .. }) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.cloud.transfer = Some((id, rx));
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::cloud_jobs::run(&op, None));
+            });
+            return None;
+        }
         let reverting = match &op {
             crate::file_ops::FileOp::Revert { op } => self
                 .local_outcomes
@@ -902,7 +921,10 @@ impl FileExplorerWidget {
                 .iter()
                 .position(|(op, _)| *op == entry.value.op)
             {
-                let (_, follow) = self.awaiting_ops.remove(at);
+                let (op, follow) = self.awaiting_ops.remove(at);
+                if matches!(op, crate::file_ops::FileOp::CloudImport { .. }) {
+                    self.cloud_finished(outcome);
+                }
                 self.settle_op(id.as_str(), follow, outcome);
             } else {
                 for change in outcome.result() {
@@ -1268,6 +1290,7 @@ impl FileExplorerWidget {
         account: &crate::remote_accounts::RemoteAccount,
         reauthenticate: bool,
     ) {
+        self.leave_cloud_browse();
         let service = account.kind.label().to_string();
         let (title, lines, action) = if reauthenticate {
             // The one thing to do, said once; Settings is where people sign in.
@@ -1320,6 +1343,12 @@ impl FileExplorerWidget {
         };
         let reauthenticate =
             account.health == crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication;
+        if account.is_import() {
+            if let Err(error) = self.browse_cloud(id.to_owned(), None, 0) {
+                self.set_external_status(error);
+            }
+            return true;
+        }
         match (&account.mount, remote_folder_availability(&account)) {
             (Some(mount), Availability::Available) => {
                 self.close_collab_panel();
@@ -1605,6 +1634,8 @@ impl FileExplorerWidget {
             local_clipboard: clipboard_client::Client::new(),
             accounts_root: None,
             accounts_cache: Vec::new(),
+            cloud: cloud_browse::CloudView::default(),
+            mounted_cloud: mounted_cloud::MountedCloud::default(),
             host_intent: None,
             pending_document_open: None,
             pending_launch: None,
@@ -1973,6 +2004,18 @@ impl FileExplorerWidget {
                 self.invoke_open_with(&entry, &app, always.unwrap_or(false))?;
                 None
             }
+            effect @ (FilesEffect::BrowseCloud { .. }
+            | FilesEffect::MoreCloud
+            | FilesEffect::SelectCloud { .. }
+            | FilesEffect::ImportCloud
+            | FilesEffect::CloudProgress
+            | FilesEffect::CancelCloud
+            | FilesEffect::RetryCloud
+            | FilesEffect::RevealCloud) => self.cloud_effect(effect)?,
+            FilesEffect::ImportConverted { entry } => {
+                self.choose_mounted_import(entry)?;
+                None
+            }
             FilesEffect::ImportOnce { entry, folder } => {
                 self.import_once(&entry, &folder)?;
                 None
@@ -2155,6 +2198,10 @@ impl FileExplorerWidget {
             }
             FilesEffect::OpenAccount { account } => {
                 let account = self.account_named(&account)?;
+                if account.is_import() {
+                    self.browse_cloud(account.id.to_string(), None, 0)?;
+                    return Ok(Ran::Done(None));
+                }
                 match (&account.mount, remote_folder_availability(&account)) {
                     (Some(mount), Availability::Available) => self.open_path(mount.clone()),
                     _ => self.show_remote_account_panel(&account, false),
@@ -2271,12 +2318,24 @@ impl FileExplorerWidget {
     }
 
     fn importable_cloud_entry(&self, path: &Path) -> bool {
+        // Legacy native-document placeholders contain a browser link, not
+        // editable document bytes. Copying one cannot fulfil an import.
+        if path.extension().is_some_and(|extension| {
+            [
+                "gdoc", "gsheet", "gslides", "gdraw", "gform", "gsite", "url",
+            ]
+            .iter()
+            .any(|suffix| extension.eq_ignore_ascii_case(suffix))
+        }) {
+            return false;
+        }
         self.remote_account_snapshot().iter().any(|account| {
             matches!(
                 account.kind,
                 crate::remote_accounts::RemoteAccountKind::GoogleDrive
                     | crate::remote_accounts::RemoteAccountKind::Dropbox
-            ) && account.health != crate::remote_accounts::RemoteAccountHealth::Disabled
+            ) && !account.is_import()
+                && account.health != crate::remote_accounts::RemoteAccountHealth::Disabled
                 && account
                     .mount
                     .as_ref()
@@ -2312,7 +2371,17 @@ impl FileExplorerWidget {
         {
             return Err(t("files-import-local-destination"));
         }
-        self.copy_into_folder(entry, &destination.to_string_lossy())
+        self.queue(
+            crate::file_ops::FileOp::ImportMounted {
+                paths: vec![source.display().to_string()],
+                folder: destination.display().to_string(),
+            },
+            OpFollowUp::Paste {
+                count: 1,
+                cut: false,
+            },
+        );
+        Ok(())
     }
 
     /// Copy the entry `entry` names into `folder`, keeping its name: a
@@ -2448,6 +2517,7 @@ impl FileExplorerWidget {
     /// What the places list shows now: the Favorites and the locations.
     fn current_places(&self) -> Places {
         Places::new(&self.favs, self.current_path.clone())
+            .with_active_account(self.cloud.active.then(|| self.cloud.account.clone()))
             .with_workspaces(self.workspace_roots.clone())
             .with_remote_accounts(
                 self.remote_account_snapshot()
@@ -2458,11 +2528,11 @@ impl FileExplorerWidget {
                             Availability::Available
                         );
                         places_sidebar::AccountPlace {
+                            status: account.badge(),
                             id: account.id.as_str().to_owned(),
                             label: account.label,
                             // A folder that cannot be opened has no place to go to.
                             mount: account.mount.filter(|_| available),
-                            status: account.health.badge().map(str::to_owned),
                         }
                     })
                     .collect(),
@@ -2506,6 +2576,9 @@ impl FileExplorerWidget {
     /// The **content** pane (the responsive body's detail): the file list or
     /// grid (plus any error affordance), scrolling under a symmetric gutter.
     fn build_content_pane(&self, theme: &ui::Theme) -> Box<dyn Widget> {
+        if self.cloud.active {
+            return self.build_cloud_pane(theme);
+        }
         let sp = &theme.tokens.spacing;
         // Loading and failure are painted by the shared centered state surface
         // in `draw_state_surface`. Keep this structural slot empty: it avoids
@@ -2572,10 +2645,28 @@ impl FileExplorerWidget {
     /// current path is shown ONCE — in the path bar at the top — so it is
     /// deliberately not repeated here. Empty string means nothing to surface.
     fn footer_label(&self) -> String {
+        if self.cloud.active {
+            return t_args(
+                "files-item-count",
+                &[arg("count", i64_of_usize(self.cloud.entries.len()))],
+            );
+        }
         // A folder that did not open, or is still opening, has no count to
         // report: the state surface says what is happening.
         if self.error.is_some() || self.is_loading {
             return String::new();
+        }
+        if let Some(description) = self
+            .selection
+            .primary()
+            .and_then(|index| {
+                self.displayed_entries()
+                    .get(index)
+                    .map(|entry| entry.path.clone())
+            })
+            .and_then(|path| self.converted_description(&path))
+        {
+            return description;
         }
         let count = self.entries.len();
         let left = self
@@ -2631,6 +2722,9 @@ impl FileExplorerWidget {
     /// deliberately finite line length, while the full path remains discoverable
     /// in the location bar and the root accessibility description.
     fn state_surface_copy(&self) -> Option<(String, String, bool)> {
+        if self.cloud.active {
+            return None;
+        }
         let location = Self::bounded_state_text(
             &crate::model::format_path(&self.current_path, self.home_path.as_deref()),
             STATE_SURFACE_LOCATION_CHARS,
@@ -2856,6 +2950,9 @@ impl FileExplorerWidget {
     /// backing child widget. The stable accessible name on Files' root turns
     /// value changes into live announcements without stealing keyboard focus.
     fn accessibility_status(&self) -> String {
+        if self.cloud.active {
+            return self.footer_label();
+        }
         if let Some(panel) = &self.collab_panel {
             let details = panel.lines.join(". ");
             return t_args(
@@ -3049,6 +3146,7 @@ impl FileExplorerWidget {
     /// Re-read `path` into the view without touching history (shared by
     /// navigate/back/forward/refresh).
     fn load(&mut self, path: PathBuf) {
+        self.leave_cloud_browse();
         self.is_loading = true;
         self.selection.clear();
         self.retain_shown_selection();
@@ -3182,7 +3280,10 @@ impl FileExplorerWidget {
     }
 
     pub fn refresh(&mut self) {
-        self.load(self.current_path.clone());
+        // Settling a local copy must not navigate away from its source view.
+        if !self.cloud.active {
+            self.load(self.current_path.clone());
+        }
     }
 
     /// Re-read the visible directory without treating it as navigation, when
@@ -4412,26 +4513,9 @@ impl FileExplorerWidget {
             FileCommand::UndoLastTrash => self.apply_undo_last_trash(),
             FileCommand::RestoreFromTrash => self.request_restore_from_trash(),
             FileCommand::EmptyTrash => self.request_empty_trash_confirmation(),
-            FileCommand::ImportOnceToDownloads => {
-                let entry = self
-                    .selection
-                    .primary()
-                    .and_then(|index| self.displayed_entries().get(index).cloned());
-                if let (Some(entry), Some(home)) = (entry, self.home_path.as_ref()) {
-                    self.perform(crate::effects::FilesEffect::ImportOnce {
-                        entry: Self::entry_resource_id(&entry),
-                        folder: self
-                            .user_dirs
-                            .downloads
-                            .clone()
-                            .unwrap_or_else(|| home.join("Downloads"))
-                            .display()
-                            .to_string(),
-                    });
-                    true
-                } else {
-                    false
-                }
+            FileCommand::Cloud(effect) => {
+                self.perform(effect);
+                true
             }
             FileCommand::Copy => self.apply_copy(),
             FileCommand::Cut => self.apply_cut(),
@@ -5426,6 +5510,7 @@ impl FileExplorerWidget {
                     label: "Personal cloud".into(),
                     host: "cloud.example".into(),
                     health: crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+                    files_mode: accounts::cloud_types::FilesMode::Sync,
                     mount: None,
                 };
                 self.show_remote_account_panel(&account, true);
@@ -5990,7 +6075,8 @@ impl FileExplorerWidget {
         text_renderer: &mut ui::text_render::TextRenderer,
         theme: &ui::Theme,
     ) {
-        if !self.entries.is_empty() || self.error.is_some() || self.is_loading {
+        if self.cloud.active || !self.entries.is_empty() || self.error.is_some() || self.is_loading
+        {
             return;
         }
         let rect = self.content_body_rect();
@@ -6570,18 +6656,6 @@ impl FileExplorerWidget {
             spec.push((String::new(), None));
             spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
             spec.push((t("files-menu-copy"), Some(FileCommand::Copy)));
-            if single
-                && self
-                    .selection
-                    .primary()
-                    .and_then(|index| self.displayed_entries().get(index).cloned())
-                    .is_some_and(|entry| self.importable_cloud_entry(&entry.path))
-            {
-                spec.push((
-                    t("files-import-once-downloads"),
-                    Some(FileCommand::ImportOnceToDownloads),
-                ));
-            }
             if can_paste {
                 spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
             }
@@ -8484,8 +8558,31 @@ impl FileExplorerWidget {
         resource.actions.push(row_action(
             &FilesEffect::OpenItem { item: id() },
             "open",
-            t("files-menu-open"),
+            if self.converted_description(&entry.path).is_some() {
+                t("files-mounted-open")
+            } else {
+                t("files-menu-open")
+            },
         ));
+        if let Some(description) = self.converted_description(&entry.path) {
+            resource.presentation = Some(ui::tilo_actions::ResourcePresentation {
+                detail: Some(description.clone()),
+                badge: Some(t("files-mounted-readonly")),
+                preview: Some(format!(
+                    "{} {}",
+                    description,
+                    t("files-mounted-independent")
+                )),
+            });
+            if let Some(open) = resource.actions.last_mut() {
+                open.description = Some(description);
+            }
+            resource.actions.push(row_action(
+                &FilesEffect::ImportConverted { entry: id() },
+                "import-converted",
+                t("files-mounted-copy"),
+            ));
+        }
         self.append_open_with_actions(entry, &resource_id, &mut resource);
         if !self.is_trash_view() {
             let mut copy_to = FilesEffect::CopyTo {
@@ -8675,6 +8772,7 @@ impl FileExplorerWidget {
         extras.extend(published_template_resources());
         extras.extend(self.live_entry_resources());
         extras.extend(self.live_remote_account_resources());
+        extras.extend(self.cloud_resources());
         let mut nearby_root = Resource::new("files.nearby", "files.nearby", "Nearby");
         self.append_nearby_receiver_resources(&mut nearby_root);
         extras.extend(nearby_root.children);
@@ -8706,7 +8804,7 @@ impl FileExplorerWidget {
                     Resource::new(resource_id, "files.remote-account", account.label.clone());
                 resource.presentation = Some(tilo_actions::ResourcePresentation {
                     detail: Some(format!("{} at {}", account.kind.label(), account.host)),
-                    badge: account.health.badge().map(str::to_owned),
+                    badge: account.badge(),
                     preview: None,
                 });
                 let account_id = account.id.to_string();
@@ -8883,7 +8981,7 @@ impl Widget for FileExplorerWidget {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Service calls finishing on the app runtime wake the event loop.
         let received = self.poll_received_share();
-        self.poll_share_result() | received
+        self.poll_share_result() | received | self.poll_cloud() | self.poll_mounted_cloud()
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -8893,6 +8991,8 @@ impl Widget for FileExplorerWidget {
         if self.drain_commands() {
             self.structure_dirty = true;
         }
+        self.poll_cloud();
+        self.poll_mounted_cloud();
         self.poll_deferred_document_open();
         self.poll_pending_launch();
         self.refresh_framework_history_target();
@@ -8974,6 +9074,7 @@ impl Widget for FileExplorerWidget {
         self.update_toolbar();
         self.composed_once = true;
         self.refresh_places_pane();
+        self.refresh_cloud_header();
         self.nav.set_content(self.build_content_pane(theme));
 
         // The shell fills the window; the item count / selection status floats
@@ -9236,7 +9337,11 @@ impl Widget for FileExplorerWidget {
         // The body's docked→push / reveal slide must keep the host pumping
         // frames while it settles; the floating status bubble likewise while it
         // lingers / fades.
-        self.nav.needs_animation_frame()
+        self.cloud.pending.is_some()
+            || self.mounted_cloud.is_pending()
+            || self.cloud.chooser.is_some()
+            || self.cloud_import_pending()
+            || self.nav.needs_animation_frame()
             || (self.is_loading && self.state_spinner.needs_animation_frame())
             || self.status_bubble.needs_frame(ui::time::now())
     }

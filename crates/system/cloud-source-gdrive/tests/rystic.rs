@@ -185,8 +185,62 @@ fn imports_and_mutations_through_the_production_adapter() {
     assert_eq!(quota.used, 10_010);
 
     // No export-validity claim: the twin serves placeholders, not Office/PDF
-    // renderings. Sync/upload contracts are separate tests, never assertions
+    // renderings. Strict export/sync/upload contracts are separate tests, never assertions
     // that a missing vendor endpoint is correct behavior.
+}
+
+#[cfg(feature = "rystic-contract-tests")]
+#[test]
+fn native_document_exports_a_genuine_docx_package() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let (fixture, _) = fixture();
+    let item = fixture
+        .source
+        .create_native_document(
+            &fixture.folder,
+            "Office export contract",
+            "application/vnd.google-apps.document",
+        )
+        .unwrap();
+    let ItemKind::Native(native) = &item.kind else {
+        panic!("created entry is not a native Google document")
+    };
+    let docx = native
+        .exports
+        .iter()
+        .find(|format| {
+            format.extension == "docx"
+                && format.mime
+                    == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        })
+        .expect("native Google document must advertise the DOCX export format");
+    let download = fixture.source.export(&item.id, docx).unwrap();
+    let mut body = Vec::new();
+    download
+        .body
+        .take(10 * 1024 * 1024 + 1)
+        .read_to_end(&mut body)
+        .unwrap();
+    assert!(body.len() <= 10 * 1024 * 1024, "DOCX export too large");
+
+    // Parse the ZIP directory, CRCs and required Office XML parts, not merely
+    // a non-JSON response or a PK signature. Python avoids adding a production
+    // dependency for an explicitly opted-in external simulator contract.
+    let mut validator = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/validate_docx.py"
+        ))
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("the strict Office export contract requires Python 3");
+    validator.stdin.take().unwrap().write_all(&body).unwrap();
+    assert!(
+        validator.wait().unwrap().success(),
+        "native DOCX export must be a genuine ZIP Office Open XML package; see validator diagnostic"
+    );
 }
 
 #[cfg(feature = "rystic-contract-tests")]

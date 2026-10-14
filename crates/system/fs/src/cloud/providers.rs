@@ -144,7 +144,18 @@ fn provider_config(account: &accounts::Account) -> Option<(&'static str, serde_j
 /// The mount specification of a Settings account, or `None` when it is
 /// not a file account this build can mount (or is disabled).
 pub fn spec_for(account: &accounts::Account) -> Option<MountSpec> {
-    if !account.enabled {
+    if accounts::cloud_types::files_mode(account) != Some(accounts::cloud_types::FilesMode::Sync) {
+        return None;
+    }
+    source_spec(account)
+}
+
+/// A source for standalone browsing; import mode never implies a mount.
+pub fn source_spec(account: &accounts::Account) -> Option<MountSpec> {
+    if !account.enabled
+        || accounts::cloud_types::files_mode(account).is_none()
+        || !is_file_account(account)
+    {
         return None;
     }
     let (provider, config) = provider_config(account)?;

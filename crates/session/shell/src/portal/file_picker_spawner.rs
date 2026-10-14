@@ -101,6 +101,8 @@ pub struct FilePickerRequest {
     pub save: bool,
     /// `true` when `OpenFile` asks the user to choose directories.
     pub directory: bool,
+    /// Host-validated write intent, not caller-supplied consent or wording.
+    pub writable_directory: bool,
     /// `true` when the app asked for `OpenFiles` — the user may return more than one path.
     pub multiple: bool,
     /// The app's preferred label for the confirm button ("Import").
@@ -117,9 +119,30 @@ pub struct FilePickerRequest {
 }
 
 impl FilePickerRequest {
+    /// System-owned wording for writable selection; apps cannot disguise it as Open.
+    pub fn display_title(&self) -> String {
+        use crate::shell::i18n::t;
+        if self.writable_directory {
+            t(if self.scope.is_some() {
+                "portal-file-existing-write-folder"
+            } else {
+                "portal-file-grant-write-folder"
+            })
+        } else {
+            self.title.clone()
+        }
+    }
+
     /// The label the confirm button should carry.
     pub fn confirm_label(&self) -> String {
         use crate::shell::i18n::t;
+        if self.writable_directory {
+            return t(if self.scope.is_some() {
+                "portal-file-use-write-folder"
+            } else {
+                "portal-file-allow-write-folder"
+            });
+        }
         match self.accept_label.as_deref() {
             Some(l) if !l.trim().is_empty() => l.to_string(),
             _ if self.save => t("portal-file-save"),
@@ -169,6 +192,7 @@ impl FilePickerSpawnerHandle {
             title: opts.title,
             save: opts.save,
             directory: opts.directory,
+            writable_directory: opts.writable_directory,
             multiple: opts.multiple,
             accept_label: opts.accept_label,
             current_name: opts.current_name,
@@ -189,6 +213,7 @@ pub struct FilePickerOptions {
     pub title: String,
     pub save: bool,
     pub directory: bool,
+    pub writable_directory: bool,
     pub multiple: bool,
     pub accept_label: Option<String>,
     pub current_name: Option<String>,
@@ -202,6 +227,7 @@ impl FilePickerOptions {
             title: title.into(),
             save,
             directory: false,
+            writable_directory: false,
             multiple: false,
             accept_label: None,
             current_name: None,
@@ -401,6 +427,7 @@ mod tests {
                 title: options.title,
                 save: false,
                 directory: true,
+                writable_directory: false,
                 multiple: false,
                 accept_label: None,
                 current_name: None,
@@ -418,6 +445,7 @@ mod tests {
                 title: "t".into(),
                 save: false,
                 directory: false,
+                writable_directory: false,
                 multiple: false,
                 accept_label: Some("Import".into()),
                 current_name: None,
@@ -435,6 +463,7 @@ mod tests {
                 title: "t".into(),
                 save: true,
                 directory: false,
+                writable_directory: false,
                 multiple: false,
                 accept_label: Some("   ".into()),
                 current_name: None,

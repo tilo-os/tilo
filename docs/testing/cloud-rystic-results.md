@@ -1,6 +1,66 @@
 # Dropbox and Google Drive import/sync test results
 
-## Failure counts
+## Reverification with a strict native Office export contract
+
+Re-run on 2026-10-14 using installed Rystic CLI **0.0.28** (`3e381c4`,
+built `2026-10-12T14:34:05Z`, Go 1.24.0 linux/amd64):
+
+| Installed twin | Version | Commit | Contract |
+| --- | --- | --- | --- |
+| Dropbox | 0.0.2 | `41c9c6fa969f7c1e8ffb171344f427ff1c0a738d` | 24 |
+| Google Drive | 0.0.3 | `5b4a15bd9931181da6c77f2a668c16c41b004475` | 24 |
+
+Dropbox model: `sha256:f8be3e88fddfe7699c9c55484dbcbf0946f9e294a9828c7eba70472687d53ebf`.
+Drive model: `sha256:d8f46d5b8036d37ac3fe481297e7204843fb765814a1ef1d9a0e18070e6f863f`.
+The installed `rystic describe`, `features` and `docs google-drive-twin`
+advertise native document creation and Office exports. The HOWTO's Exports
+section explicitly says the bytes are name/description-based stand-ins, not
+renderings. That is sufficient API surface to exercise the production export
+path, but not to claim successful Office conversion.
+
+| Command | Passed | Failed | Ignored | Exit |
+| --- | ---: | ---: | ---: | ---: |
+| `python3 scripts/test-cloud-rystic.py all` | 3 | 0 | 0 | 0 |
+| `python3 scripts/test-cloud-rystic.py all --contracts` | 3 | 5 | 0 | 1 |
+
+The strict run reproduced the original **four** failing contracts below and
+added **one** distinct failure: native DOCX export is not a ZIP Office Open XML
+package. Dropbox remains 2 passed/2 failed; Drive is now 1 passed/3 failed.
+No new production-adapter defect was established. These counts are separate
+from the original vendor feedback and its two additional HTTP-probe limits.
+
+The new `native_document_exports_a_genuine_docx_package` contract creates a
+Google Docs entry through the production adapter, checks its advertised DOCX
+MIME/extension pair, exports through the adapter, and validates ZIP integrity,
+required XML parts, the Word main-part content type, internal Office relationship,
+and WordprocessingML document/body. The diagnostic on this exact twin is:
+`DOCX export is not a ZIP Office Open XML package (stand-in bytes)`.
+It does not accept non-JSON bytes or a ZIP signature as proof, and it makes no
+claim about layout fidelity or populated document content.
+
+The Python standard-library validator's four credential-free self-tests pass:
+
+```bash
+python3 crates/system/cloud-source-gdrive/tests/validate_docx.py --self-test
+```
+
+It also accepts the genuine Office package in `tests/fixtures/docx.rs`, stored
+as an escaped Rust byte constant to keep the repository text-only. The self-tests
+reject text/JSON stand-ins, a forged ZIP prefix, ZIPs without Office parts,
+malformed XML and incorrect Office declarations. These are validator checks,
+not additional provider passes.
+
+Compilation and builder-lock waits happened before metering. Test bodies took
+0.28s/0.34s for the supported Dropbox/Drive run and 0.20s/2.05s for the strict
+run. Every uniquely owned instance was stopped and removed in the runner's
+`finally`; a subsequent `rystic ps` reported zero instances. No personal account,
+provider credential, production workaround or supported-suite widening was used.
+The native contract is enabled only by the existing `rystic-contract-tests`
+feature and requires Python 3 on the machine executing the test binary.
+Targeted strict-test Clippy (`-D warnings`), Rust formatting and
+`cargo check --locked -p shell --tests` also passed on this checkout.
+
+## Original failure counts
 
 Measured against Dropbox twin 0.0.2 and Google Drive twin 0.0.3 on 2026-10-14.
 Counts are distinct causes, not individual assertion failures or retries.
@@ -30,10 +90,11 @@ The four failing simulator contracts are:
 
 Two additional reproduced Dropbox limits: a 1,048,577-byte upload returns 413,
 and the longpoll endpoint returns 404. These are not additional failing Rust
-cases. Shared-drive omissions, Google export placeholders and other published
-limitations are **not counted as newly reproduced failures**.
+cases. In this original measurement, shared-drive omissions, Google export placeholders
+and other published limitations were not counted as reproduced failures. The
+strict DOCX contract above now counts the export limitation separately.
 
-## Passing coverage and limits
+## Original passing coverage and limits
 
 - Credential-free suites: **103 Dropbox tests and 102 Google Drive tests passed**.
 - Supported twin suite: **3 tests passed** (2 Dropbox, 1 Drive).
@@ -64,7 +125,7 @@ From the repository root, with an installed/authenticated Rystic CLI:
 # Supported scenarios; successful on the measured twin releases.
 python3 scripts/test-cloud-rystic.py all
 
-# Strict vendor contracts too; currently exits nonzero with four failures.
+# Strict vendor contracts too; currently exits nonzero with five failures.
 python3 scripts/test-cloud-rystic.py all --contracts
 ```
 

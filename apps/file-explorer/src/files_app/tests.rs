@@ -1363,13 +1363,8 @@ mod command_path_tests {
                 files
                     .context_menu_spec(&[])
                     .iter()
-                    .any(|(_, command)| command.as_ref()
-                        == Some(&FileCommand::ImportOnceToDownloads))
-            );
-            assert!(files.apply_command(FileCommand::ImportOnceToDownloads));
-            assert_eq!(
-                std::fs::read(destination.join("Folder 2/document.txt")).unwrap(),
-                b"later remote edit"
+                    .all(|(label, _)| !label.contains("Downloads")),
+                "cloud import never chooses a destination on the person's behalf"
             );
             // A symlink cannot turn the local destination into a cloud folder.
             let link = home.path().join("cloud-link");
@@ -1475,6 +1470,7 @@ mod command_path_tests {
             label: "Cloud".into(),
             host: "cloud.example".into(),
             health,
+            files_mode: accounts::cloud_types::FilesMode::Sync,
             mount,
         }
     }
@@ -5773,6 +5769,7 @@ mod injected_startup_tests {
                 label: "Cloud".into(),
                 host: "cloud.example".into(),
                 health: crate::remote_accounts::RemoteAccountHealth::Offline,
+                files_mode: accounts::cloud_types::FilesMode::Sync,
                 mount: Some(mount.clone()),
             });
         let mut widget =
@@ -5830,6 +5827,7 @@ mod injected_startup_tests {
             label: "Host fixture".to_string(),
             host: "fixture.invalid".to_string(),
             health: crate::remote_accounts::RemoteAccountHealth::Disabled,
+            files_mode: accounts::cloud_types::FilesMode::Sync,
             mount: None,
         };
         let mut inputs = startup(&child);

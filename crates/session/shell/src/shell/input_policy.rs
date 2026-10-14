@@ -2155,6 +2155,7 @@ mod tests {
                 title: "Insert image".into(),
                 save: false,
                 directory: false,
+                writable_directory: false,
                 multiple: false,
                 accept_label: None,
                 current_name: None,

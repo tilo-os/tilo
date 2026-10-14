@@ -4430,6 +4430,7 @@ dependencies = [
  "iroh",
  "mime_guess",
  "runtime-dylib",
+ "runtime-fs",
  "runtime-portal",
  "serde",
  "serde_json",
@@ -14097,6 +14098,7 @@ dependencies = [
  "cloud-source-onedrive",
  "collab-types",
  "desktop-policy",
+ "file-explorer",
  "hex",
  "launcher",
  "os-actions",
@@ -14141,6 +14143,7 @@ dependencies = [
  "uuid",
  "workspace-hack",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

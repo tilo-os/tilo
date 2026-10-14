@@ -79,7 +79,15 @@ impl FileChooserBackend {
                 .or_fail()?;
             let caller = auth.caller;
             let opts = decode_open_options(caller.clone(), title, &options);
-            pick_and_grant(&self.ctx.file_picker, opts, FsMode::Read).await
+            let mode = if writable_directory_requested(&options) {
+                if lockdown::current_policy().disable_save_to_disk {
+                    return Err(Ended::Cancelled);
+                }
+                FsMode::ReadWrite
+            } else {
+                FsMode::Read
+            };
+            pick_and_grant(&self.ctx.file_picker, opts, mode).await
         })
         .await
     }
@@ -152,6 +160,9 @@ impl FileChooserBackend {
 ///
 /// The caller must already be authenticated by the host adapter. This operation
 /// grants no collaborative workspace capability and performs no authentication.
+/// `ReadWrite` on a directory is explicit destination consent: the frontend
+/// exports only that selected directory with write permission. Ordinary Open
+/// requests must pass `Read`; Save requests retain their write behavior.
 ///
 /// **The dialog is the prompt.** There is deliberately no separate "may
 /// this app read the filesystem?" prompt in front of this — that
@@ -161,11 +172,14 @@ impl FileChooserBackend {
 /// authorisation, naming exactly one path — nothing wider, nothing the app chose.
 pub async fn pick_and_grant(
     file_picker: &FilePickerSpawnerHandle,
-    opts: FilePickerOptions,
+    mut opts: FilePickerOptions,
     mode: FsMode,
 ) -> Outcome {
-    let caller = opts.caller.clone();
-    let save = opts.save;
+    let writable_directory = opts.directory && mode == FsMode::ReadWrite;
+    // The host's access decision must reach the actual shared picker before
+    // confirmation; the caller's choice alone is never consent.
+    opts.writable_directory = writable_directory;
+    let writable = opts.save || writable_directory;
     let rx = file_picker.request_with(opts);
     // Spawner dropped the reply — treat as cancel, the same defensive
     // posture as `flow::resolve`'s "channel-closed-without-reply ≡ deny": a request nobody answered is not an approved one.
@@ -179,8 +193,20 @@ pub async fn pick_and_grant(
     // which gives the already-running app a revocable document path.
     // Recording these private choices in collaborative workspace grants
     // would both leak them to peers and widen the next launch's mounts.
-    let _ = (caller, mode);
-    paths_to_open_response(Some(paths), save)
+    if writable_directory && (paths.len() != 1 || !paths[0].is_dir()) {
+        return Err(Ended::Failed);
+    }
+    let mut results = paths_to_open_response(Some(paths), writable)?;
+    if writable_directory {
+        let choices = vec![(
+            tilo_dialogs::portal::WRITABLE_DIRECTORY_CHOICE.to_owned(),
+            "true".to_owned(),
+        )];
+        if let Ok(value) = OwnedValue::try_from(Value::new(choices)) {
+            results.insert("choices".into(), value);
+        }
+    }
+    Ok(results)
 }
 
 /// Decode the portal's `filters` option: `a(sa(us))`.
@@ -209,23 +235,48 @@ fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String
     String::try_from(v).ok().filter(|s| !s.is_empty())
 }
 
+/// Only a single-directory request can opt into writing. Unknown or malformed
+/// choices and ordinary Open requests retain read-only behavior.
+#[cfg(any(target_os = "linux", test))]
+fn writable_directory_requested(options: &HashMap<String, OwnedValue>) -> bool {
+    if crate::portal::option::<bool>(options, "directory") != Some(true)
+        || crate::portal::option::<bool>(options, "multiple").unwrap_or(false)
+    {
+        return false;
+    }
+    type Choices = Vec<(String, String, Vec<(String, String)>, String)>;
+    options
+        .get("choices")
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| Choices::try_from(value).ok())
+        .is_some_and(|choices| {
+            choices.iter().any(|(id, _, alternatives, selected)| {
+                id == tilo_dialogs::portal::WRITABLE_DIRECTORY_CHOICE
+                    && alternatives.is_empty()
+                    && selected == "true"
+            })
+        })
+}
+
 #[cfg(any(target_os = "linux", test))]
 fn decode_open_options(
     caller: super::PortalCaller,
     title: String,
     options: &HashMap<String, OwnedValue>,
 ) -> FilePickerOptions {
-    FilePickerOptions::new(caller, title, /*save=*/ false)
+    let mut decoded = FilePickerOptions::new(caller, title, /*save=*/ false)
         .directory(crate::portal::option::<bool>(options, "directory").unwrap_or(false))
         .multiple(crate::portal::option::<bool>(options, "multiple").unwrap_or(false))
         .accept_label(opt_string(options, "accept_label"))
-        .filters(filters_from_options(options))
+        .filters(filters_from_options(options));
+    decoded.writable_directory = writable_directory_requested(options);
+    decoded
 }
 
 /// Translate a real user-selected path list into the results the
 /// `FileChooser` frontend expects. No selection (`None`, or dismissed with
 /// nothing picked) is a cancel.
-pub(super) fn paths_to_open_response(paths: Option<Vec<PathBuf>>, save: bool) -> Outcome {
+pub(super) fn paths_to_open_response(paths: Option<Vec<PathBuf>>, writable: bool) -> Outcome {
     let mut results = Results::new();
     let paths = paths
         .filter(|paths| !paths.is_empty())
@@ -239,9 +290,10 @@ pub(super) fn paths_to_open_response(paths: Option<Vec<PathBuf>>, save: bool) ->
     if let Ok(owned) = OwnedValue::try_from(uris_value) {
         results.insert("uris".to_string(), owned);
     }
-    if save && let Ok(w) = OwnedValue::try_from(Value::Bool(true)) {
-        results.insert("writable".to_string(), w);
-    }
+    // The frontend defaults missing `writable` to true. Always state the
+    // access explicitly so a read-only Open cannot acquire write permission
+    // when xdg-desktop-portal exports it through the document portal.
+    results.insert("writable".to_string(), OwnedValue::from(writable));
     Ok(results)
 }
 
@@ -254,15 +306,105 @@ pub(crate) fn file_uri(path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portal::{GrantStoreHandle, MockFilePickerSpawner};
-    use crate::shell::state::WorkspaceAuthority as _;
-    use crate::shell::state::{Workspace, WorkspaceId};
+    use crate::portal::MockFilePickerSpawner;
+    use crate::shell::state::WorkspaceId;
     use std::os::unix::ffi::OsStrExt as _;
 
     use std::sync::Arc;
 
-    fn empty_ws(id: u64) -> Workspace {
-        Workspace::new(WorkspaceId(id), "fc")
+    fn destination_options(directory: bool) -> HashMap<String, OwnedValue> {
+        let choices = vec![(
+            tilo_dialogs::portal::WRITABLE_DIRECTORY_CHOICE.to_owned(),
+            "Import here".to_owned(),
+            Vec::<(String, String)>::new(),
+            "true".to_owned(),
+        )];
+        HashMap::from([
+            ("directory".into(), OwnedValue::from(directory)),
+            (
+                "choices".into(),
+                OwnedValue::try_from(Value::new(choices)).unwrap(),
+            ),
+        ])
+    }
+
+    #[test]
+    fn writable_directory_requires_explicit_single_directory_request() {
+        assert!(!writable_directory_requested(&HashMap::new()));
+        assert!(!writable_directory_requested(&destination_options(false)));
+        let mut options = destination_options(true);
+        assert!(writable_directory_requested(&options));
+        options.insert("multiple".into(), OwnedValue::from(true));
+        assert!(!writable_directory_requested(&options));
+        options.remove("multiple");
+        options.insert("choices".into(), OwnedValue::from(false));
+        assert!(!writable_directory_requested(&options));
+    }
+
+    #[tokio::test]
+    async fn directory_consent_shows_trusted_write_intent_and_exports_only_selection() {
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("import # destination");
+        std::fs::create_dir(&selected).unwrap();
+        let sibling = root.path().join("not selected");
+        std::fs::create_dir(&sibling).unwrap();
+        let caller = PortalCaller::new(WorkspaceId(39), "org.example");
+        for (mode, selection) in [
+            (FsMode::Read, Some(vec![selected.clone()])),
+            (FsMode::ReadWrite, Some(vec![selected.clone()])),
+            (FsMode::ReadWrite, None),
+        ] {
+            let queue = super::super::FilePickerQueue::new();
+            let picker = FilePickerSpawnerHandle::new(Arc::new(queue.clone()));
+            let mut options = destination_options(true);
+            options.insert(
+                "accept_label".into(),
+                OwnedValue::try_from(Value::from("Open")).unwrap(),
+            );
+            let opts = decode_open_options(caller.clone(), "Open folder".into(), &options);
+            assert!(opts.writable_directory);
+            let write = mode == FsMode::ReadWrite;
+            let cancelled = selection.is_none();
+            let respond = async {
+                tokio::task::yield_now().await;
+                let request = queue.drain().pop().expect("actual shared picker request");
+                assert!(request.directory);
+                assert!(!request.save);
+                assert!(!request.multiple);
+                assert_eq!(request.writable_directory, write);
+                if write {
+                    assert_eq!(
+                        request.display_title(),
+                        crate::shell::i18n::t("portal-file-grant-write-folder")
+                    );
+                    assert_eq!(
+                        request.confirm_label(),
+                        crate::shell::i18n::t("portal-file-allow-write-folder")
+                    );
+                    assert_ne!(request.display_title(), "Open folder");
+                    assert_ne!(request.confirm_label(), "Open");
+                } else {
+                    assert_eq!(request.confirm_label(), "Open");
+                }
+                request.reply.send(selection).unwrap();
+            };
+            let (response, ()) = tokio::join!(pick_and_grant(&picker, opts, mode), respond);
+            let (code, result) = crate::portal::reply::reply(response);
+            if cancelled {
+                assert_eq!(code, 1);
+                assert!(result.is_empty());
+            } else {
+                assert_eq!(code, 0);
+                let uris = Vec::<String>::try_from(result["uris"].try_clone().unwrap()).unwrap();
+                assert_eq!(uris, vec![file_uri(&selected).unwrap()]);
+                assert!(!uris.contains(&file_uri(&sibling).unwrap()));
+                assert_eq!(
+                    crate::portal::option::<bool>(&result, "writable"),
+                    Some(write)
+                );
+                assert_eq!(result.contains_key("choices"), write);
+            }
+        }
     }
 
     #[test]
@@ -304,6 +446,31 @@ mod tests {
     }
 
     #[test]
+    fn writable_destination_rejects_files_and_multiple_selections() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("file");
+        std::fs::write(&file, b"unchanged").unwrap();
+        let caller = PortalCaller::new(WorkspaceId(40), "org.example");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for paths in [vec![file.clone()], vec![directory.path().to_path_buf(); 2]] {
+            let picker =
+                FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(paths)));
+            let options =
+                FilePickerOptions::new(caller.clone(), "Import into folder", false).directory(true);
+            let (code, result) = crate::portal::reply::reply(runtime.block_on(pick_and_grant(
+                &picker,
+                options,
+                FsMode::ReadWrite,
+            )));
+            assert_eq!(code, 2);
+            assert!(result.is_empty());
+        }
+        assert_eq!(std::fs::read(file).unwrap(), b"unchanged");
+    }
+
+    #[test]
     fn chooser_paths_map_to_portal_responses_and_encoded_uris() {
         // Phase `paths_allow_returns_response_zero_and_uri`.
         {
@@ -313,7 +480,10 @@ mod tests {
             ));
             assert_eq!(code, 0);
             assert!(results.contains_key("uris"));
-            assert!(!results.contains_key("writable"));
+            assert_eq!(
+                crate::portal::option::<bool>(&results, "writable"),
+                Some(false)
+            );
         }
         // Phase `paths_save_returns_writable_true`.
         {
@@ -368,11 +538,6 @@ mod tests {
 
     #[test]
     #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the read guard protects `ws`, which the closure below needs through the \
-                  block's final `.count()` — already dropped at the earliest possible point"
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
     )]
@@ -381,7 +546,7 @@ mod tests {
         // Wires a `MockFilePickerSpawner` returning `/tmp/test.txt`, calls the
         // backend's response builder, and asserts the response contains `file:///tmp/test.txt`.
         {
-            let (_store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(33));
+            let ws_id = WorkspaceId(33);
             let mock = Arc::new(MockFilePickerSpawner::returning(vec![PathBuf::from(
                 "/tmp/test.txt",
             )]));
@@ -406,88 +571,11 @@ mod tests {
             assert_eq!(seen[0].1, "Open file");
             assert!(!seen[0].2);
         }
-        // Phase `a_pick_is_left_to_the_document_portal_and_not_replicated_to_peers`.
-        {
-            let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(36));
-            let picked = PathBuf::from("/tmp/only-this-one.txt");
-            let fp =
-                FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(vec![
-                    picked.clone(),
-                ])));
-            let caller = PortalCaller::new(ws_id, "org.example");
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let (code, _) = crate::portal::reply::reply(rt.block_on(pick_and_grant(
-                &fp,
-                FilePickerOptions::new(caller.clone(), "Open", false),
-                FsMode::Read,
-            )));
-            assert_eq!(code, 0);
-
-            // Read the capabilities back out of the workspace the store wrote to, not out of anything this test built.
-            let tree = store.tree_handle();
-            let grant_count = {
-                let guard = tree.read();
-                let ws = guard
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id == ws_id)
-                    .expect("workspace");
-                ws.app_capabilities(&caller.app_id).into_iter().count()
-            };
-            assert_eq!(
-                grant_count, 0,
-                "private file choices must not enter the collaborative workspace document"
-            );
-        }
-        // Phase `a_cancelled_dialog_grants_nothing`.
-        {
-            use crate::shell::state::Capability;
-
-            let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(37));
-            let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
-            let caller = PortalCaller::new(ws_id, "org.example");
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let (code, _) = crate::portal::reply::reply(rt.block_on(pick_and_grant(
-                &fp,
-                FilePickerOptions::new(caller.clone(), "Open", false),
-                FsMode::Read,
-            )));
-            assert_eq!(code, 1, "a cancelled dialog is response=1");
-
-            let tree = store.tree_handle();
-            let granted_fs = {
-                let guard = tree.read();
-                let ws = guard
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id == ws_id)
-                    .expect("workspace");
-                ws.app_capabilities(&caller.app_id)
-                    .into_iter()
-                    .filter(|c| {
-                        matches!(
-                            Capability::from_capability(c),
-                            Some(Capability::Filesystem { .. })
-                        )
-                    })
-                    .count()
-            };
-            assert_eq!(
-                granted_fs, 0,
-                "declining the dialog must not hand the app any filesystem access"
-            );
-        }
+        // Workspace isolation is asserted against the backend-connected store
+        // in portal_file_chooser_e2e, not an unattached unit-test store.
         // Phase `open_file_with_cancelled_spawner_returns_response_one`.
         {
-            let (_store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(34));
+            let ws_id = WorkspaceId(34);
             let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
             let caller = PortalCaller::new(ws_id, "org.example");
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -507,7 +595,7 @@ mod tests {
             (false, FsMode::Read, false),
             (true, FsMode::ReadWrite, true),
         ] {
-            let (_store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(38));
+            let ws_id = WorkspaceId(38);
             let picked = PathBuf::from("/tmp/target.txt");
             let fp =
                 FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(vec![
