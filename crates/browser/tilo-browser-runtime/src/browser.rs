@@ -2700,6 +2700,10 @@ pub fn desktop_set_places(id: u64, places: &str) -> Result<(), JsValue> {
     with_mount(id, |m| {
         if let Some(desktop) = &m.desktop {
             desktop.room.set_places(places);
+            // The bar reads the counts in its update pass, which a bare
+            // redraw skips: without the wake it would paint them only on
+            // its next other change, such as the clock's minute.
+            desktop.shared.wake();
             m.pending = true;
             m.window.request_redraw();
         }
