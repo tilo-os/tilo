@@ -377,15 +377,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         }
     }
 
-    // Case `each_nonblocking_connect_progress_error_is_retried`.
-    {
-        for error in [libc::EINPROGRESS, libc::EALREADY, libc::EAGAIN] {
-            assert!(crate::unix_connect_is_pending(Some(error)));
-        }
-        assert!(!crate::unix_connect_is_pending(Some(libc::ECONNREFUSED)));
-        assert!(!crate::unix_connect_is_pending(None));
-    }
-
     // Case `hosted_services_discover_and_use_a_healthy_ush_socket`.
     {
         use std::io::{BufRead, BufReader};

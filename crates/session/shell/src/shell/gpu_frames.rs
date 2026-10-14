@@ -404,20 +404,21 @@ impl GpuFrame {
 }
 
 /// Bytes of `wl_shm` pixels written into client-frame textures since the
-/// process started ([`UploadRing::upload`]).
+/// process started ([`UploadRing::upload`]); the key-latency harness reports
+/// what each frame uploaded from it.
 static SHM_UPLOAD_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-#[cfg(test)]
-thread_local! {
-    /// Bytes this thread uploaded: the global count is shared with every test
-    /// running beside it.
-    static THREAD_SHM_UPLOAD_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
 
 /// Bytes of `wl_shm` pixels uploaded to client-frame textures since the
 /// process started.
 pub fn shm_upload_bytes() -> u64 {
     SHM_UPLOAD_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes of `wl_shm` pixels this thread wrote into client-frame textures
+    /// ([`UploadRing::upload`]).
+    static THREAD_SHM_UPLOAD_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -518,16 +519,13 @@ impl UploadRing {
         // Written below: up to date with this frame.
         slot.stale = Some(Vec::new());
         let whole = [(0, 0, size.0, size.1)];
-        let bytes = write_regions(
+        write_regions(
             &present.queue,
             &slot.texture,
             pixels,
             size,
             write.as_deref().unwrap_or(&whole),
         );
-        SHM_UPLOAD_BYTES.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
-        #[cfg(test)]
-        THREAD_SHM_UPLOAD_BYTES.with(|count| count.set(count.get().saturating_add(bytes)));
         let frame = GpuFrame::borrowing(&present, slot.texture.clone(), false, surface);
         // The CPU pixels are this frame's: a screenshot or another device
         // reads them instead of the texture.
@@ -572,7 +570,7 @@ impl UploadRing {
 }
 
 /// Write `regions` of `pixels`, a tightly packed RGBA frame of `size`, into
-/// the same place of `texture`. Returns the bytes written.
+/// the same place of `texture`.
 #[cfg(target_os = "linux")]
 fn write_regions(
     queue: &wgpu::Queue,
@@ -580,8 +578,7 @@ fn write_regions(
     pixels: &[u8],
     size: (u32, u32),
     regions: &[FrameRegion],
-) -> u64 {
-    let mut bytes = 0u64;
+) {
     for &(x, y, width, height) in regions {
         let right = x.saturating_add(width).min(size.0);
         let bottom = y.saturating_add(height).min(size.1);
@@ -612,13 +609,13 @@ fn write_regions(
                 depth_or_array_layers: 1,
             },
         );
-        bytes = bytes.saturating_add(
-            u64::from(width)
-                .saturating_mul(u64::from(height))
-                .saturating_mul(4),
-        );
+        let bytes = u64::from(width)
+            .saturating_mul(u64::from(height))
+            .saturating_mul(4);
+        SHM_UPLOAD_BYTES.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        THREAD_SHM_UPLOAD_BYTES.with(|count| count.set(count.get().saturating_add(bytes)));
     }
-    bytes
 }
 
 /// A frame's leases, waiting for the GPU marker submitted when it went.

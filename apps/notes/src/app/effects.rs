@@ -23,7 +23,7 @@ impl NotesApp {
             let document = cx.document().ok_or("the notebook is unavailable")?;
             return Ok(Effected::value(actions::find_text(&document, text, *page)?));
         }
-        let state = Workspace::of(cx.live().get(), &self.workspace);
+        let state = Workspace::of(&cx.live().get(), &self.workspace);
         match effect {
             NotesEffect::InspectEditor | NotesEffect::FindText { .. } => {
                 Err("the editor document is unavailable".into())

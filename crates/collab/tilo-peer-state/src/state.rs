@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, GrantId, KindSet, RoomPolicy, Subject, TreePath,
+    ActionKind, Answer, Authority, Grant, GrantId, RoomPolicy, Subject, TreePath,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
@@ -134,8 +134,8 @@ pub(crate) fn agent_is_member(policy: &RoomPolicy, agent: &str, now: SystemTime)
     })
 }
 /// The id of the grant that makes a member an administrator.
-fn administrator_grant_id(user_public_key: [u8; 32]) -> String {
-    format!("room-admin-v1:{}", hex::encode(user_public_key))
+fn administrator_grant_id(user_public_key: [u8; 32]) -> GrantId {
+    tilo_action_policy::roles::administrator_grant_id(&hex::encode(user_public_key))
 }
 /// The decision context of a policy question asked at `now`.
 pub fn peer_handle(key: &[u8; 32]) -> u64 {
@@ -181,8 +181,9 @@ pub struct GovernedMember {
     pub active_device_keys: Vec<[u8; 32]>,
     pub removed: bool,
     /// Made an administrator by the governance writer: `role` is then
-    /// [`MemberRole::Editor`](crate::join::MemberRole::Editor) with the
-    /// owner's authority over the workspace.
+    /// [`MemberRole::Editor`](crate::join::MemberRole::Editor) holding every
+    /// governance action of the workspace, bounded by that role
+    /// ([`tilo_action_policy::roles::administrator_grant`]).
     #[serde(default)]
     pub administrator: bool,
 }
@@ -754,7 +755,9 @@ impl StatePeer {
         self.set_member(user_public_key, role.into(), false, key, now)
     }
 
-    /// Make a governed collaborator an administrator of the room.
+    /// Make a governed collaborator an administrator of the room: an Editor
+    /// holding every governance action
+    /// ([`tilo_action_policy::roles::administrator_grant`]).
     ///
     /// # Errors
     ///
@@ -796,10 +799,7 @@ impl StatePeer {
         let person = hex::encode(user_public_key);
         let admin_id = administrator_grant_id(user_public_key);
         let before_role = policy.members.get(&person).copied();
-        let before_admin = policy
-            .grants
-            .iter()
-            .any(|grant| grant.id.as_str() == admin_id);
+        let before_admin = policy.grants.iter().any(|grant| grant.id == admin_id);
         let before = doc.get_heads();
         let members = governed_map(&doc, "members")?;
         let grants = governed_map(&doc, "grants")?;
@@ -808,12 +808,9 @@ impl StatePeer {
         ));
         put_member(&mut doc, &members, user_public_key, role)?;
         if administrator {
-            let grant = Grant::new(
-                admin_id.clone(),
-                Subject::Person(person),
-                tilo_action_policy::roles::room_resource(&self.core.room),
-                KindSet::ALL,
-                Answer::Allow,
+            let grant = tilo_action_policy::roles::administrator_grant(
+                &self.core.room,
+                &person,
                 Subject::Person(hex::encode(self.core.authority.user_public_key)),
             );
             doc.put(
@@ -828,6 +825,46 @@ impl StatePeer {
         doc.commit();
         let changed = self.apply_governance_doc(doc, &before, key, now)?;
         Ok(changed && (before_role != Some(role) || before_admin != administrator))
+    }
+
+    /// Rewrite each administrator's grant still in the shape rooms held
+    /// before [`tilo_action_policy::roles::administrator_grant`] (on the
+    /// room's resource, where the Editor's own Deny outranked it) to that
+    /// grant, keeping its id and giver. The governance writer runs it before
+    /// it publishes governance, so a room's next governance change carries
+    /// its administrators' authority. Whether the room changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a grant needs rewriting and `key` is not the
+    /// governance writer, or governance cannot be updated.
+    pub fn reconcile_administrator_grants(
+        &mut self,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let Some(doc) = self.core.room_doc.as_ref() else {
+            return Ok(false);
+        };
+        let room = self.core.room.as_str();
+        let rewritten = doc
+            .policy()
+            .grants
+            .iter()
+            .filter(|grant| tilo_action_policy::roles::is_legacy_administrator_grant(room, grant))
+            .filter_map(|grant| match &grant.subject {
+                Subject::Person(person) => Some(tilo_action_policy::roles::administrator_grant(
+                    room,
+                    person,
+                    grant.granted_by.clone(),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if rewritten.is_empty() {
+            return Ok(false);
+        }
+        self.put_governed_grants(&rewritten, key, now)
     }
 
     /// Remove grants the governance writer decided to take back, by id.
@@ -1076,7 +1113,7 @@ impl StatePeer {
                 || room_policy
                     .grants
                     .iter()
-                    .any(|grant| grant.id.as_str() == administrator_grant_id(root));
+                    .any(|grant| grant.id == administrator_grant_id(root));
             let active_role = if role == Some(Role::Owner) {
                 Some(crate::join::MemberRole::Editor)
             } else {
@@ -3972,6 +4009,9 @@ mod room_media_native_tests;
 #[path = "state/bot_members_tests.rs"]
 pub(crate) mod bot_members_tests;
 
+#[cfg(test)]
+#[path = "state/administrators_tests.rs"]
+mod administrators_tests;
 #[cfg(test)]
 #[path = "state/governance_cache_tests.rs"]
 mod governance_cache_tests;

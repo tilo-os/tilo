@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chosenDisplayName, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, pairViaHost, randomDisplayName, spectate, workspaceAt} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, randomDisplayName, rememberEntered, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 
 const identity = key => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(key), userPublicKey: key.toString(16).padStart(2, '0').repeat(32), sign: async () => new Uint8Array(64)});
 
@@ -190,4 +190,90 @@ test('a chosen name is kept per person in this browser', () => {
   assert.equal(chosenDisplayName('bb', names), null);
   chooseDisplayName('aa', '', names);
   assert.equal(chosenDisplayName('aa', names), null);
+});
+
+const memoryStore = () => {
+  const map = new Map();
+  return {getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, String(value)), removeItem: key => map.delete(key)};
+};
+
+test('rooms entered as a member are remembered per host and room, most recently opened first', () => {
+  const store = memoryStore();
+  rememberEntered({origin: 'https://acme.example/', room: 'A', name: 'Acme'}, store);
+  rememberEntered({origin: 'https://globex.example', room: 'G'}, store);
+  // Two rooms on one host are two workspaces.
+  rememberEntered({origin: 'https://globex.example', room: 'H', name: 'Hank'}, store);
+  assert.deepEqual(enteredWorkspaces(store).map(entry => [entry.origin, entry.room, entry.name]), [
+    ['https://globex.example', 'H', 'Hank'], ['https://globex.example', 'G', null], ['https://acme.example', 'A', 'Acme'],
+  ]);
+  // Opening one again moves it to the front and keeps the name it had.
+  rememberEntered({origin: 'https://acme.example', room: 'A'}, store);
+  assert.deepEqual(enteredWorkspaces(store)[0], {origin: 'https://acme.example', room: 'A', name: 'Acme', unavailable: false});
+  // The desktop names a room only when nothing named it yet.
+  nameEntered({origin: 'https://globex.example', room: 'G', name: 'Globex'}, store);
+  nameEntered({origin: 'https://acme.example', room: 'A', name: 'Front workspace'}, store);
+  assert.deepEqual(enteredWorkspaces(store).map(entry => entry.name), ['Acme', 'Hank', 'Globex']);
+});
+
+test('the remembered rooms are bounded, and damaged or roomless entries are never offered', () => {
+  const store = memoryStore();
+  for (let index = 0; index < 40; index += 1) rememberEntered({origin: `https://h${index}.example`, room: `R${index}`}, store);
+  const entered = enteredWorkspaces(store);
+  assert.equal(entered.length, 32);
+  assert.equal(entered[0].room, 'R39');
+  rememberEntered({origin: 'https://nowhere.example', room: null}, store);
+  assert.equal(enteredWorkspaces(store).length, 32);
+  store.setItem('tilo-entered-workspaces', '[{"origin":"not a url","room":"X"},{"origin":"https://ok.example","room":"OK"},7]');
+  assert.deepEqual(enteredWorkspaces(store), [{origin: 'https://ok.example', room: 'OK', name: null, unavailable: false}]);
+  store.setItem('tilo-entered-workspaces', '{broken');
+  assert.deepEqual(enteredWorkspaces(store), []);
+});
+
+test('a bare entry reopens the chosen room until it refuses this browser, and choosing the home forgets it', () => {
+  const store = memoryStore();
+  rememberEntered({origin: 'https://acme.example', room: 'A', name: 'Acme'}, store);
+  // A choice this browser never entered is not reopened.
+  chooseWorkspace({origin: 'https://other.example', room: 'O'}, store);
+  assert.equal(chosenWorkspace(store), null);
+  chooseWorkspace({origin: 'https://acme.example/', room: 'A'}, store);
+  assert.deepEqual(chosenWorkspace(store), {origin: 'https://acme.example', room: 'A'});
+  chooseWorkspace(null, store);
+  assert.equal(chosenWorkspace(store), null);
+  chooseWorkspace({origin: 'https://acme.example', room: 'A'}, store);
+  markUnavailable({origin: 'https://acme.example', room: 'A'}, store);
+  assert.equal(chosenWorkspace(store), null);
+  assert.equal(enteredWorkspaces(store)[0].unavailable, true);
+  // Entering it again clears the mark.
+  rememberEntered({origin: 'https://acme.example', room: 'A'}, store);
+  assert.equal(enteredWorkspaces(store)[0].unavailable, false);
+});
+
+test('the person switches between the home and the workspaces they entered, never to the one in front', () => {
+  const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+  const entered = [
+    {origin: 'https://acme.example', room: 'A', name: 'Acme', unavailable: false},
+    {origin: 'https://globex.example', room: 'G', name: null, unavailable: true},
+    // The room the home's door admitted this browser to is the home itself.
+    {origin: 'https://rooms.example', room: 'LOUNGE', name: 'Lounge', unavailable: false},
+    // Another room on the home's host is a workspace of its own.
+    {origin: 'https://rooms.example', room: 'TEAM', name: 'Team', unavailable: false},
+  ];
+  const fromAcme = workspaceChoices({home, homeRoom: 'LOUNGE', entered, current: {kind: 'room', host: 'https://acme.example', room: 'A'}});
+  assert.deepEqual(fromAcme.map(choice => [choice.id, choice.name, choice.room, choice.home, choice.unavailable]), [
+    ['open-workspace:home', 'Lounge', null, true, false],
+    ['open-workspace:https://globex.example/G', 'globex.example', 'G', false, true],
+    ['open-workspace:https://rooms.example/TEAM', 'Team', 'TEAM', false, false],
+  ]);
+  // In the home (before or after its room is known), the home is not offered.
+  for (const room of [null, 'LOUNGE']) {
+    const fromHome = workspaceChoices({home, homeRoom: 'LOUNGE', entered, current: {kind: 'room', host: 'https://rooms.example', room}});
+    assert.deepEqual(fromHome.map(choice => choice.name), ['Acme', 'globex.example', 'Team']);
+  }
+  // Without a home, the person's own desktop offers every room entered.
+  assert.equal(workspaceChoices({entered, current: {kind: 'own'}}).length, 4);
+  assert.deepEqual(workspaceActions(fromAcme), [
+    {id: 'open-workspace:home', title: 'Open Lounge', subtitle: 'Workspace · rooms.example'},
+    {id: 'open-workspace:https://globex.example/G', title: 'Open globex.example', subtitle: 'Workspace · globex.example · did not open last time'},
+    {id: 'open-workspace:https://rooms.example/TEAM', title: 'Open Team', subtitle: 'Workspace · rooms.example'},
+  ]);
 });
