@@ -12,6 +12,8 @@
 //! | relay → worker | [`WorkerStreamOpen::Environment`] | as the member's stream, spliced |
 //! | relay → worker | [`WorkerStreamOpen::Legacy`] | [`LegacyFrame`]s up, [`WindowInput`]s down |
 //! | worker → relay | [`StreamOpen::LegacyLaunch`] | one [`LegacyLaunchOutcome`] |
+//! | device → relay | [`StreamOpen::ComputeContent`] | one [`ContentReply`], then its bytes |
+//! | relay → device | [`WorkerStreamOpen::ComputeContent`] | one [`ContentReply`], then its bytes |
 //!
 //! The relay never trusts a member-supplied identity: it stamps the
 //! certified peer as [`MemberIdentity`] on everything it forwards to a
@@ -267,6 +269,40 @@ pub enum StreamOpen {
         /// What to run.
         request: LegacyLaunch,
     },
+    /// The bytes of one content digest a compute job names: an input, asked
+    /// by the job's worker while the job runs, or an output, asked by the
+    /// job's requester once it completed. The relay decides which from the
+    /// job's durable record and asks the other end
+    /// ([`WorkerStreamOpen::ComputeContent`]).
+    ComputeContent {
+        /// [`ENVIRONMENT_PROTOCOL_VERSION`].
+        version: u16,
+        /// Workspace the job runs in.
+        workspace_id: u64,
+        /// The job naming the digest.
+        job_id: [u8; 16],
+        /// blake3 digest of the bytes asked for.
+        digest: [u8; 32],
+    },
+}
+
+/// The answer on a compute content stream: from the device holding the
+/// bytes to the relay, and from the relay to the device that asked.
+/// [`Self::Found`] is followed by exactly `len` raw bytes and the end of
+/// the stream; every hop checks them against the digest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContentReply {
+    /// The bytes follow.
+    Found {
+        /// Their length.
+        len: u64,
+    },
+    /// Not served; `code` says why (`not_authorised`, `source_offline`,
+    /// `missing`, `too_large`, `content_plane_unavailable`, …).
+    Refused {
+        /// Stable machine-readable reason.
+        code: String,
+    },
 }
 
 /// Member → worker, after the session opened.
@@ -393,6 +429,22 @@ pub enum WorkerStreamOpen {
         launch: LaunchId,
         /// What to run.
         request: LegacyLaunch,
+    },
+    /// Relay → the device holding one content digest of a compute job:
+    /// serve it to `asker`. A requester receives this for an input of a job
+    /// it submitted, a worker for an output of a job it ran; each serves
+    /// only what that job binds to the asker.
+    ComputeContent {
+        /// [`ENVIRONMENT_PROTOCOL_VERSION`].
+        version: u16,
+        /// Workspace the job runs in.
+        workspace_id: u64,
+        /// The device that asked, as the relay authenticated it.
+        asker: MemberIdentity,
+        /// The job naming the digest.
+        job_id: [u8; 16],
+        /// blake3 digest of the bytes asked for.
+        digest: [u8; 32],
     },
 }
 
