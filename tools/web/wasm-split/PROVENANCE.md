@@ -48,6 +48,10 @@ time:
   across fresh splitter processes. Randomized hash iteration changed the bytes
   of split modules even for the same linked input.
 
+- Shared-chunk and app-module emission share the same memory-bounded worker
+  pool concurrently. A slow shared chunk no longer blocks all app emission;
+  worker/memory limits and each group's output order are unchanged.
+
 Memory: upstream parses the whole program once per split module, all at
 once, which took 140 GB for a 170 MB module split in 34. Here each split
 module is parsed with only the function bodies it keeps (the rest are
