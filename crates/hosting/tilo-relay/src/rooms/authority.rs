@@ -26,7 +26,7 @@ use crate::host_authority::HostOperation;
 
 /// What a room administration request asks of its authority.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum RoomOp<'a> {
+pub(super) enum RoomOp<'a> {
     /// The host's own business, which no room's governance decides.
     Host(HostOperation),
     /// One of the room's governance actions on the room itself
@@ -65,7 +65,7 @@ impl Rooms {
     /// # Errors
     ///
     /// Why the device may not.
-    pub(crate) fn authorize(
+    pub(super) fn authorize(
         &self,
         device: &DeviceCert,
         room: Option<&GovernedRoom>,
