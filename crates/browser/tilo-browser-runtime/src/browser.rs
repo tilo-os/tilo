@@ -112,6 +112,14 @@ struct Config {
     /// The name a desktop seeded for this mount gives its workspace.
     #[serde(default)]
     workspace_name: Option<String>,
+    /// The host of the room shown (`example.org`), which the bar names
+    /// beside the workspace; absent on the person's own desktop.
+    #[serde(default)]
+    host: Option<String>,
+    /// The deployment's About links (`{notify, source, community}`, from
+    /// the web host's `entry.json`); one left empty is not offered.
+    #[serde(default)]
+    about: tilo_desktop::about::AboutLinks,
 }
 
 impl Config {
@@ -932,6 +940,8 @@ fn present_desktop(
         crate::shell::HostOffers {
             invite: config.invite,
             mac: config.mac,
+            host: config.host.clone(),
+            about: config.about.clone(),
         },
         Rc::clone(&requests),
         Arc::new(move || {
@@ -1879,6 +1889,8 @@ impl Mount {
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
+            // The page titles its tab after it.
+            "workspaceName": self.desktop.as_ref().and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone()))),
             "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
             "ime": ime,
         });

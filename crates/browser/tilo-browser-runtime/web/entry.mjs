@@ -27,7 +27,47 @@ const PRIMARY_RECORD = '@tilo:package-primary';
  * at all is the app's own default. */
 const recordOption = record => (record === undefined ? {} : {record: record || PRIMARY_RECORD});
 
-/** The entry this page is served under: `{base, home?, tickets?}`. */
+/** The web links among `about`'s `notify`, `source` and `community`, or
+ * `null` without any: the desktop's About sheet offers only these. */
+function aboutLinks(about) {
+  const links = {};
+  for (const key of ['notify', 'source', 'community']) {
+    const url = about?.[key];
+    if (typeof url !== 'string') continue;
+    try {
+      if (['https:', 'http:'].includes(new URL(url).protocol)) links[key] = url;
+    } catch {
+      // Not a URL: not offered.
+    }
+  }
+  return Object.keys(links).length ? links : null;
+}
+
+/** The host a room scope names (`rooms.example`), for the bar's host pill;
+ * `null` on the person's own desktop. */
+function scopeHost(scope) {
+  if (scope.kind !== 'room') return null;
+  try {
+    return new URL(scope.host).host;
+  } catch {
+    return null;
+  }
+}
+
+/** `onStatus` that also titles the tab after the workspace in front. */
+function titled(window, forward) {
+  return status => {
+    const name = status?.workspaceName;
+    if (window.document && typeof name === 'string' && name) {
+      const title = `Tilo · ${name}`;
+      if (window.document.title !== title) window.document.title = title;
+    }
+    forward?.(status);
+  };
+}
+
+/** The entry this page is served under: `{base, home?, tickets?, about?}`;
+ * `about` holds the web host's links for the desktop's About sheet. */
 export async function readEntry({mode, location, fetch = globalThis.fetch}) {
   const base = new URL(mode === 'app' ? '../' : './', location.href);
   base.search = '';
@@ -40,8 +80,10 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
     // No configuration: a plain bundle's entry.
   }
   const home = typeof config.home?.host?.origin === 'string' ? config.home : null;
+  const about = aboutLinks(config.about);
   return {base: base.href, ...(home ? {home} : {}),
-    ...(typeof config.tickets === 'string' ? {tickets: config.tickets} : {})};
+    ...(typeof config.tickets === 'string' ? {tickets: config.tickets} : {}),
+    ...(about ? {about} : {})};
 }
 
 /** `{parse, format}` over the runtime's Rust grammar under `entry`. */
@@ -163,9 +205,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // A listed workspace is shown under its listed name, not its room id.
   const scope = route.target.scope;
   const listed = scope.kind === 'room' ? workspaceAt(workspaces, scope.host) : null;
+  const host = scopeHost(scope);
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop,
-    diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...diagnostics},
-    onStatus: diagnostics.onStatus});
+    diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
+      ...(entry.about ? {about: entry.about} : {}), ...diagnostics},
+    onStatus: titled(window, diagnostics.onStatus)});
   if (shown.redirect) {
     window.location.replace(link.format({mode: shown.redirect, target: route.target}));
     return null;

@@ -40,6 +40,13 @@ expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example"},"a
 [[ $(get "$home" /entry.json) == "$expected" ]] || fail "entry.json: $(get "$home" /entry.json)"
 grep -q '^cache-control: no-cache' <(head_of "$home" /entry.json) || fail "entry.json must revalidate"
 
+# About links: those set are offered, an empty one is not.
+about=$(start -e TILO_WEB_ABOUT_SOURCE=https://example.org/source -e TILO_WEB_ABOUT_NOTIFY=)
+[[ $(get "$about" /entry.json) == '{"about":{"source":"https://example.org/source"}}' ]] \
+  || fail "entry.json about: $(get "$about" /entry.json)"
+"$engine" run --rm "${confine[@]}" -e TILO_WEB_ABOUT_COMMUNITY=javascript:x "$image" >/dev/null 2>&1 \
+  && fail "an About link that is not https must refuse to start"
+
 page=$(get "$home" /)
 version=$(grep -o "v/[0-9a-f]\{20\}/entry-page.mjs" <<<"$page" | head -1 | cut -d/ -f2)
 [[ -n $version ]] || fail "the entry page imports no versioned entry-page.mjs"

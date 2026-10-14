@@ -222,6 +222,10 @@ pub enum ChromeIntent {
     AcceptContinuity,
     /// Hide the continuity offer until that device's focus moves again.
     DismissContinuity,
+    /// Open or close the menu behind the bar's Tilo mark
+    /// ([`crate::topbar::TopBarChrome::with_tilo_mark`]), under
+    /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].
+    ToggleTiloMenu,
     /// Deliver a click to a running application's tray item.
     AppTray {
         key: String,
