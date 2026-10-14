@@ -136,7 +136,7 @@ impl ResourceSurface<Notebook, NotesEffect> for NotesApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Notebook>) {
-        self.attach_framework(cx.dispatcher(), cx.actions());
+        self.attach_framework(cx.dispatcher(), cx.actions(), cx.live());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {

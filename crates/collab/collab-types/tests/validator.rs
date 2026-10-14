@@ -628,3 +628,47 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
         }
     );
 }
+
+/// A grant naming a record (at it or below it) names that record's channel;
+/// a pattern over an app's records, another room's record or a record of
+/// another app names none.
+#[test]
+fn a_grant_naming_a_record_names_its_channel_and_a_pattern_does_not() {
+    use collab_types::{document_channel_id, document_node, named_record_of_channel};
+    use tilo_action_policy::{Answer, KindSet, Level, TreePath};
+    let grant = |node: TreePath| {
+        Grant::new(
+            "g",
+            Subject::person("carol"),
+            node,
+            KindSet::READ,
+            Answer::Deny,
+            Subject::person("owner"),
+        )
+    };
+    let channel = document_channel_id("so.tilo.sheets", "room", "payroll");
+    let exact = [grant(document_node("room", "so.tilo.sheets", "payroll"))];
+    assert_eq!(
+        named_record_of_channel(&exact, "room", channel),
+        Some(("so.tilo.sheets", "payroll"))
+    );
+    let below = [grant(
+        document_node("room", "so.tilo.sheets", "payroll").field("salary"),
+    )];
+    assert_eq!(
+        named_record_of_channel(&below, "room", channel),
+        Some(("so.tilo.sheets", "payroll"))
+    );
+    let others = [
+        grant(
+            TreePath::room("room")
+                .app("so.tilo.sheets")
+                .any(Level::Resource),
+        ),
+        grant(TreePath::room("room").app("so.tilo.sheets")),
+        grant(document_node("other", "so.tilo.sheets", "payroll")),
+        grant(document_node("room", "so.tilo.notes", "payroll")),
+        grant(document_node("room", "so.tilo.sheets", "budget")),
+    ];
+    assert_eq!(named_record_of_channel(&others, "room", channel), None);
+}

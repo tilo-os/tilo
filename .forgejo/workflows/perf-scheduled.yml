@@ -520,6 +520,8 @@ jobs:
             cargo build --locked --release -p shell --example strip_pan_bench
           bash scripts/ci-run.sh "framework-scaling release build" -- \
             cargo build --locked --release -p tilo-app --features test-support --example framework-scaling
+          bash scripts/ci-run.sh "notes-latency release build" -- \
+            cargo build --locked --release -p notes --example notes-latency
 
       - name: Verify, time and record
         run: |
@@ -547,6 +549,12 @@ jobs:
           target/release/examples/framework-scaling 500,1000,2500 focus | tee perf/framework-focus.log
           python3 tools/perf/adapters.py framework-focus --env-json perf/env.json \
             perf/framework-focus.log >> perf/render.jsonl
+          # Notes over a 27-note notebook: typing, Enter, Backspace, the
+          # wheel and opening a note, each input timed to the frame that
+          # shows it and to that frame's raster.
+          target/release/examples/notes-latency | tee perf/notes-latency.log
+          python3 tools/perf/adapters.py notes-latency --env-json perf/env.json \
+            perf/notes-latency.log >> perf/render.jsonl
           cat perf/render.jsonl
 
       - name: Check the render counters
@@ -744,13 +752,14 @@ jobs:
   # The browser runtime: the release desktop bundle (build.sh --bundle
   # desktop, the bytes web-entry.yml publishes) built once here, then
   # scripts/perf/browser_qualification.mjs in headless Chrome for Testing at
-  # FHD: load, first opens, window activation, the demo workload (a strip of
-  # windows panned by 120 Hz wheel input; frame intervals and the runtime's
-  # CPU per frame) and an idle desktop, three fresh-context rounds. The
-  # harness first proves the page ran exactly this commit's clean bundle and
-  # that WebGPU ran on the renderer the records name: the runner has no GPU,
-  # so Chrome's is SwiftShader, and these records are compared only with each
-  # other, never quoted as hardware frame rates. Built in the CI builder like
+  # FHD: load, first opens, window activation and an idle desktop, three
+  # fresh-context rounds. The harness first proves the page ran exactly this
+  # commit's clean bundle and that WebGPU ran on the renderer the records
+  # name. The runner has no GPU, and Chrome gives WebGPU no CPU driver but its
+  # own SwiftShader (lavapipe draws its page, never its WebGPU), which takes
+  # tens of seconds for a panned FHD frame here: the demo workload and its
+  # frame-rate goals are left to hardware qualification (--demo-seconds 0;
+  # kpi-budgets.toml, "Browser runtime"). Built in the CI builder like
   # web-entry.yml's bundle, with its compiler cache.
   browser:
     needs: [plan, builder]
@@ -803,7 +812,8 @@ jobs:
           python3 tools/perf/record.py env --profile release --renderer swiftshader \
             --virtualization kvm --runner runner > perf/env.json
           node scripts/perf/browser_qualification.mjs "$BROWSER_BUNDLE" --out perf/browser.json \
-            --renderer swiftshader --expect-revision "$(git rev-parse HEAD)" | tee perf/browser-summary.txt
+            --renderer swiftshader --demo-seconds 0 --expect-revision "$(git rev-parse HEAD)" \
+            | tee perf/browser-summary.txt
           python3 tools/perf/adapters.py browser-qualification --env-json perf/env.json \
             perf/browser.json > perf/browser.jsonl
           cat perf/browser.jsonl

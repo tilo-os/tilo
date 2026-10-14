@@ -1,7 +1,8 @@
 # Development Guide
 
-Build dependencies, local development and testing. See `AGENTS.md` for repository
-conventions.
+Build dependencies, local development and testing. The project's rules, and the
+check that enforces each, are in [`docs/policies.md`](docs/policies.md); `AGENTS.md`
+is what agents working here are told.
 
 ## Dev VMs (tilo-vm)
 
@@ -1786,12 +1787,23 @@ checks all new commits and exact blobs in its comparison range, catching
 `--no-verify` commits and intermediate binary additions later deleted. It fails
 when history cannot be inspected. Existing exceptions remain migration work.
 
+The lines a commit adds carry no credential, merge-conflict marker or `dbg!`
+(`dbg!` only in Rust outside `vendor/`). One definition,
+`tools/policy/added_line_policy.py`, serves the hook, `scripts/scan-secrets.sh`
+and fast quality, which repeats it on every new commit, so `--no-verify` does
+not get past it. A line counts as added when no parent's version of the file
+holds it: an existing string does not fire again when its file is touched, and
+a merge answers only for its resolution. A credential-shaped string that is not
+one needs `example` or `placeholder` on the same line; that is the only
+exception.
+
 `pre-commit` checks the staged change the way CI's quality job would: rustfmt
 on the staged Rust files, workspace membership
 (`scripts/check-workspace-complete.sh`), the app text and shell copy contracts,
 lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
-CI (`.forgejo/workflows/check.yml`).
+CI (`.forgejo/workflows/check.yml`). [`docs/policies.md`](docs/policies.md) maps
+every rule to the hook or CI step that holds it.
 
 Committing a merge checks only what the resolution changed. A file staged
 exactly as the merged-in side has it already passed that side's checks, so the
