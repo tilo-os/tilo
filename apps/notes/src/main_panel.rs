@@ -400,6 +400,10 @@ pub struct MainPanel {
     body_presented: Option<BodyShown>,
     /// Follow an explicit reveal or keyboard edit once layout has fresh caret geometry.
     follow_caret: bool,
+    /// The block the caret goes to (at its start) when the open page binds
+    /// again, instead of where it was: the line an edit applied as an action
+    /// (a pasted picture) left for typing to go on.
+    caret_on_rebind: Option<String>,
     /// Local user's id for authorship attribution, re-applied to the
     /// editor whenever a page is (re)bound.
     local_author: Option<String>,
@@ -467,6 +471,7 @@ impl MainPanel {
             body_drawing: None,
             body_presented: None,
             follow_caret: false,
+            caret_on_rebind: None,
             local_author: None,
             empty_action_rect: Rect::ZERO,
             empty_action_requested: false,
@@ -567,8 +572,12 @@ impl MainPanel {
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
         let same_page = self.page_id == Some(page);
+        let moved = self.caret_on_rebind.take().filter(|_| same_page);
         let caret = same_page
             .then(|| {
+                if let Some(id) = moved {
+                    return Some((id, 0));
+                }
                 let editor = self.editor.editor();
                 let block = editor.blocks().get(editor.focused_index()?)?;
                 Some((block.id.clone(), block.line.cursor_pos()))
@@ -1251,6 +1260,13 @@ impl MainPanel {
         self.editor
             .editor_mut()
             .set_tooltip_viewport(Some(viewport));
+    }
+
+    /// Put the caret at the start of block `id` when the open page binds
+    /// again after an edit applied as an action, and keep it in view.
+    pub fn put_caret_on_rebind(&mut self, id: String) {
+        self.caret_on_rebind = Some(id);
+        self.follow_caret = true;
     }
 
     /// Reveal a block without mutating the collaborative document.

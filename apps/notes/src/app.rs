@@ -224,6 +224,23 @@ fn read_image_asset(source: &std::path::Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// The line after the picture a paste just put in a note: the block that
+/// follows the first block showing `picture` that did not already show it
+/// (`before` and `after` are the page's blocks around the paste).
+fn line_after_new_picture(
+    before: &[(String, String)],
+    after: &[(String, String)],
+    picture: &str,
+) -> Option<String> {
+    let new = after.iter().position(|(id, text)| {
+        text == picture
+            && !before
+                .iter()
+                .any(|(was, shown)| was == id && shown == picture)
+    })?;
+    after.get(new + 1).map(|(id, _)| id.clone())
+}
+
 /// `bytes` as an image the notebook keeps: as given when it fits an asset,
 /// else re-encoded (JPEG, or PNG to keep transparency) and scaled down until
 /// it does. A screenshot is often larger than an asset may be, and pasting it
@@ -1093,23 +1110,28 @@ impl NotesApp {
             };
             let result = fit_image_asset(request.image.bytes).and_then(|bytes| {
                 let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+                let picture = format!("![Pasted image]({source})");
+                let before = crate::read::page_block_snapshots(edits.doc(), page);
                 // The pasted picture is drawn from here at once, whatever the
                 // content store does with the notebook's copy.
                 if let Ok(mut assets) = self.canonical_assets.write() {
-                    assets.insert(source.clone(), bytes.clone());
+                    assets.insert(source, bytes.clone());
                 }
                 // Replaces the selection the paste was made over, or goes
                 // after the block the caret was in, as one action.
                 let edit = self
                     .main
                     .body_editor_mut()
-                    .image_paste_action(
-                        edits.doc(),
-                        &request.target,
-                        format!("![Pasted image]({source})"),
-                    )
+                    .image_paste_action(edits.doc(), &request.target, picture.clone())
                     .map_err(|error| error.to_string())?;
-                self.submit_now(edits, actions::show_image(page, bytes, edit))
+                self.submit_now(edits, actions::show_image(page, bytes, edit))?;
+                // Typing goes on under the picture, on the line the paste left
+                // after it, and the next paste goes after that line.
+                let after = crate::read::page_block_snapshots(edits.doc(), page);
+                if let Some(line) = line_after_new_picture(&before, &after, &picture) {
+                    self.main.put_caret_on_rebind(line);
+                }
+                Ok(())
             });
             match result {
                 Ok(()) => {
