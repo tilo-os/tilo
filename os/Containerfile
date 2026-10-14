@@ -2431,7 +2431,7 @@ COPY os/usr/lib/bootc/install/40-tilo.toml /usr/lib/bootc/install/40-tilo.toml
 # ---------------------------------------------------------------------------
 # Kernel/userspace hardening (security plan §11 — "table stakes")
 # ---------------------------------------------------------------------------
-# Kernel args (init_on_alloc/free, lockdown=integrity, slab_nomerge, kstack
+# Kernel args (init_on_alloc, lockdown=integrity, slab_nomerge, kstack
 # randomisation, page-alloc shuffle, vsyscall=none). bootc applies kargs.d at
 # install/upgrade, and `bootc container ukify` seals it into the UKI command line
 # at build time — which is what makes this set measured rather than merely

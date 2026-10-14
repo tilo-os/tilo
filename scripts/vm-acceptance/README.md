@@ -197,7 +197,8 @@ run here on every full run instead, on the dev disk under KVM:
   endpoint within `boot_to_greeter_s` (20 s), with the image's boot contract. It reads the
   VM's boot timestamps, so where it runs in the order does not matter. Every run also
   writes where the boot's time went (`R06-boot-analysis.txt`: `systemd-analyze time`,
-  `critical-chain` of greetd and of graphical.target, `blame`; and `R06-boot-plot.svg`),
+  `critical-chain` of greetd and of graphical.target, `blame`; `R06-boot-plot.svg`; and
+  the whole kernel log with the journal's boot list, `R06-dmesg.txt`),
   holds userspace start to greetd active to `userspace_to_greeter_s` (10 s), and fails
   when the network (NetworkManager, firewalld, `network.target`) is on greetd's critical
   chain: greetd waits for `systemd-user-sessions.service`, which upstream orders after
@@ -262,6 +263,8 @@ the store (docs/measurements/performance.md) and publishes the nightly run's.
 |---|---|---|---|
 | `boot.to_greeter_s`, `boot.{kernel,initrd,userspace}_s` | s | R06 | kernel+userspace to a usable greeter, and its phases |
 | `boot.greeter_s`, `boot.userspace_to_greeter_s` | s | R06 | kernel start, and userspace start, to greetd.service active |
+| `boot.kernel_meminit_s` | s | R06 | the kernel log's silence ending at `SLUB: HWalign`, while the boot CPU alone frees all RAM to the page allocator (from `R06-dmesg.txt`) |
+| `boot.first_boot` | count | R06 | 1 when this boot is the only one the persistent journal holds: fresh host pages and first-boot units, so not comparable with a reboot |
 | `session.sign_in_{first,again}.{shell,first_frame,usable}_s` | s | R08 | greeter sign-in request to the compositor process, its first presented frame, and a usable desktop |
 | `idle.shell_cpu_pct`, `idle.session_cpu_pct` | percent | R01 | compositor and whole session CPU over the idle window |
 | `idle.gpu_driver_cpu_pct` | percent | R01 | the part of `idle.shell_cpu_pct` on threads the GPU driver started (`llvmpipe-N`, and `tilo-gpu-driver`, the name the compositor gives threads started while it opens the device). On lavapipe this is the window's frames rasterised, a GPU's work on real hardware, so R01 and R02 judge a software renderer's compositor CPU without it; with no frame painted it must stay under `idle_software_raster_cpu_pct` |

@@ -462,6 +462,77 @@ class Boot(unittest.TestCase):
             self.attribution("== critical-chain greetd.service\nFailed to get ID: ...\n== end\n")
 
 
+# The kernel log around memory init of a first boot with init_on_free=1 (vm-acceptance run
+# 89167's R06 timestamps), with an untimestamped continuation line in between.
+KERNEL_LOG_FIRST_BOOT = """\
+journal=persistent
+== boots
+IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY
+  0 4f0c2a51d3c94a5e8b0b7e1f2d3c4b5a Fri 2026-10-09 18:20:01 UTC Fri 2026-10-09 18:31:44 UTC
+== dmesg
+[    0.000000] Linux version 7.2.0 (mockbuild@tilo) #1 SMP PREEMPT_DYNAMIC
+[    0.502573] On node 0, zone Normal: 308 pages in unavailable ranges
+[    0.539120] mem auto-init: stack:all(zero), heap alloc:on, heap free:on
+[    0.539125] mem auto-init: clearing system memory may take some time...
+  a continuation line, with no stamp of its own
+[    6.557204] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=6, Nodes=1
+[    7.797585] Run /init as init process
+== end
+"""
+
+
+class KernelLog(unittest.TestCase):
+    def run_log(self, text):
+        class Vm:
+            def root_exec(self, script, timeout=120):
+                return text
+
+        class Ctx:
+            vm = Vm()
+
+            def __init__(self):
+                self.written: dict = {}
+                self.recorded: dict = {}
+
+            def write(self, name, body):
+                self.written[name] = body
+
+            def record(self, kpi, unit, values, **meta):
+                self.recorded[kpi] = (unit, values)
+
+        ctx, res = Ctx(), resources.core.Result("R06", "resources", "boot")
+        resources.boot_kernel_log(ctx, res)
+        return ctx, res
+
+    def test_memory_init_is_the_silence_that_ends_at_slub(self):
+        k = resources.parse_kernel_log(KERNEL_LOG_FIRST_BOOT)
+        self.assertEqual(k, {"kernel_meminit_s": 6.018, "first_boot": True,
+                             "mem_auto_init": "stack:all(zero), heap alloc:on, heap free:on"})
+
+    def test_the_log_and_the_records_are_written(self):
+        ctx, res = self.run_log(KERNEL_LOG_FIRST_BOOT)
+        self.assertEqual(set(ctx.written), {"R06-dmesg.txt"})
+        self.assertEqual(ctx.recorded["boot.kernel_meminit_s"], ("s", [6.018]))
+        self.assertEqual(ctx.recorded["boot.first_boot"], ("count", [1]))
+        self.assertEqual(res.metrics["kernel_meminit_s"], 6.018)
+
+    def test_a_later_boot_is_not_a_first_boot(self):
+        later = KERNEL_LOG_FIRST_BOOT.replace(
+            "  0 4f0c", " -1 9a8b7c6d5e4f40312233445566778899 Fri 2026-10-09 18:00:01 UTC Fri 2026-10-09 18:10:00 UTC\n"
+            "  0 4f0c")
+        self.assertFalse(resources.parse_kernel_log(later)["first_boot"])
+
+    def test_a_volatile_journal_cannot_tell_a_first_boot(self):
+        ctx, _ = self.run_log(KERNEL_LOG_FIRST_BOOT.replace("journal=persistent", "journal=volatile"))
+        self.assertNotIn("boot.first_boot", ctx.recorded)
+        self.assertIn("boot.kernel_meminit_s", ctx.recorded)
+
+    def test_a_log_without_slub_records_no_memory_init(self):
+        wrapped = KERNEL_LOG_FIRST_BOOT.replace("SLUB: HWalign", "Lost early line")
+        self.assertNotIn("kernel_meminit_s", resources.parse_kernel_log(wrapped))
+        self.assertNotIn("boot.kernel_meminit_s", self.run_log(wrapped)[0].recorded)
+
+
 SIGN_IN_OUT = """\
 FRAME-LIFECYCLE serial=1 event=render-retired queue_wait_us=1873690 render_us=57520 total_us=1931211 flip_to_vblank_us=none monotonic_us=45103200
 SIGNIN t0=41.400 user_manager=42.140 session=42.220 shell=42.410 first_frame_us=45103200 usable=43.090

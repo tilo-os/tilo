@@ -170,10 +170,12 @@ pub(crate) struct WorkspaceDisplay {
     cookie: [u8; 16],
     bridge: Option<Bridge>,
     rapid_exits: u8,
-    /// When the running bridge was first observed with no connected client.
+    /// When the running bridge entered its current idle phase.
     idle_since: Option<Instant>,
+    /// The timeout for that phase: no clients or previously mapped clients.
+    idle_limit: Option<Duration>,
     idle_checked: Option<Instant>,
-    /// Satellite has mapped at least one toplevel in this run.
+    /// Satellite has mapped a toplevel since clients were last observed absent.
     saw_toplevel: bool,
     /// The composer process group already asked to serve the running
     /// server, so each server and composer pair is asked once.
@@ -370,6 +372,7 @@ impl WorkspaceDisplay {
                 bridge: None,
                 rapid_exits: 0,
                 idle_since: None,
+                idle_limit: None,
                 idle_checked: None,
                 saw_toplevel: false,
                 composer_asked: None,
@@ -487,6 +490,7 @@ impl WorkspaceDisplay {
                     resources,
                 });
                 self.idle_since = None;
+                self.idle_limit = None;
                 false
             }
             Err(error) => {
@@ -510,20 +514,29 @@ impl WorkspaceDisplay {
         if mapped {
             self.saw_toplevel = true;
         }
-        match idle_deadline(connected, mapped, self.saw_toplevel) {
-            Some(limit) => {
-                let idle_since = *self.idle_since.get_or_insert(now);
-                if now.saturating_duration_since(idle_since) >= limit {
-                    tracing::info!(display = self.number, "stopping idle Xwayland bridge");
-                    self.stop_bridge();
-                }
+        if connected == Some(0) {
+            // The next client is a new app, not the previous app's leftovers.
+            self.saw_toplevel = false;
+        }
+        if let Some(limit) = idle_deadline(connected, mapped, self.saw_toplevel) {
+            if self.idle_limit != Some(limit) {
+                self.idle_limit = Some(limit);
+                self.idle_since = Some(now);
             }
-            None => self.idle_since = None,
+            let idle_since = *self.idle_since.get_or_insert(now);
+            if now.saturating_duration_since(idle_since) >= limit {
+                tracing::info!(display = self.number, "stopping idle Xwayland bridge");
+                self.stop_bridge();
+            }
+        } else {
+            self.idle_since = None;
+            self.idle_limit = None;
         }
     }
 
     fn stop_bridge(&mut self) {
         self.idle_since = None;
+        self.idle_limit = None;
         self.idle_checked = None;
         self.saw_toplevel = false;
         self.composer_asked = None;
@@ -1535,6 +1548,108 @@ mod tests {
             "a server that has not mapped yet is still starting"
         );
         assert_eq!(idle_deadline(None, false, true), None);
+    }
+
+    #[test]
+    fn a_new_client_after_an_idle_spell_is_not_reaped_as_windowless() {
+        for gap in [3, 30, 59] {
+            let mut fixture = fixture();
+            let (session, _) = fixture.displays.session_for("room-a").unwrap();
+            let _client = connect(&session, &fixture.displays);
+            let start = Instant::now();
+            fixture.displays.poll(start, &mut |_| sleeper());
+            let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+            let pid = display.bridge.as_ref().unwrap().child.id();
+            let mapped = HashSet::from([pid]);
+
+            display.reap_if_idle(start, Some(1), &mapped);
+            display.reap_if_idle(start + Duration::from_secs(1), Some(0), &HashSet::new());
+            let connected_at = start + Duration::from_secs(gap);
+            display.reap_if_idle(connected_at, Some(1), &HashSet::new());
+            assert!(
+                display.bridge.is_some(),
+                "a new client must survive connection after {gap}s"
+            );
+            display.reap_if_idle(
+                connected_at + Duration::from_secs(5),
+                Some(1),
+                &HashSet::new(),
+            );
+            assert!(
+                display.bridge.is_some(),
+                "a new client may take more than two seconds to map"
+            );
+            display.reap_if_idle(connected_at + Duration::from_secs(6), Some(1), &mapped);
+            assert!(
+                display.bridge.is_some(),
+                "the same bridge serves the new window"
+            );
+        }
+    }
+
+    #[test]
+    fn windowless_clock_starts_when_the_window_goes() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let _client = connect(&session, &fixture.displays);
+        let start = Instant::now();
+        fixture.displays.poll(start, &mut |_| sleeper());
+        let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+        let pid = display.bridge.as_ref().unwrap().child.id();
+        let mapped = HashSet::from([pid]);
+
+        display.reap_if_idle(start, Some(1), &mapped);
+        display.reap_if_idle(start + Duration::from_secs(50), Some(1), &mapped);
+        let closed_at = start + Duration::from_secs(51);
+        display.reap_if_idle(closed_at, Some(1), &HashSet::new());
+        display.reap_if_idle(
+            closed_at + Duration::from_millis(1999),
+            Some(2),
+            &HashSet::new(),
+        );
+        assert!(
+            display.bridge.is_some(),
+            "Wine helpers do not reset the windowless clock"
+        );
+        display.reap_if_idle(closed_at + Duration::from_secs(2), Some(2), &HashSet::new());
+        assert!(
+            display.bridge.is_none(),
+            "leftover clients lose the bridge after two seconds"
+        );
+    }
+
+    #[test]
+    fn the_empty_bridge_clock_starts_when_the_last_client_leaves() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let _client = connect(&session, &fixture.displays);
+        let start = Instant::now();
+        fixture.displays.poll(start, &mut |_| sleeper());
+        let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+        let pid = display.bridge.as_ref().unwrap().child.id();
+
+        display.reap_if_idle(start, Some(1), &HashSet::from([pid]));
+        display.reap_if_idle(start + Duration::from_secs(1), Some(1), &HashSet::new());
+        let disconnected_at = start + Duration::from_millis(2500);
+        display.reap_if_idle(disconnected_at, Some(0), &HashSet::new());
+        display.reap_if_idle(
+            disconnected_at + Duration::from_millis(59999),
+            Some(0),
+            &HashSet::new(),
+        );
+        assert!(
+            display.bridge.is_some(),
+            "the empty phase gets its own full minute"
+        );
+        display.reap_if_idle(
+            disconnected_at + Duration::from_secs(60),
+            Some(0),
+            &HashSet::new(),
+        );
+        assert!(
+            display.bridge.is_none(),
+            "an empty bridge still expires after one minute"
+        );
     }
 
     #[test]

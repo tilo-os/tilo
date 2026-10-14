@@ -2298,7 +2298,9 @@ impl TopBarChrome {
             self.tilo_mark_rect = Rect::ZERO;
             return x;
         };
-        let control = BAR_CONTROL_PX;
+        // The opt-in web menu keeps its minimum pointer target inside the
+        // compact bar; native controls retain the smaller bar-control size.
+        let control = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
         self.tilo_mark_rect = Rect::new(
             x,
             center_y - control / 2.0,
