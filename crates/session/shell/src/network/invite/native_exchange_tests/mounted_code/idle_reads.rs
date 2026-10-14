@@ -283,9 +283,13 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
     let announced_count =
         usize::try_from(tilo_identity_host::policy_change::epoch().wrapping_sub(announcements))
             .unwrap();
-    let idle_captures = captures_after - captures;
-    let idle_checks = checks_after - checks;
-    let held_waits = counter.waits.load(Ordering::Acquire) - waits;
+    let idle_captures = captures_after.checked_sub(captures).unwrap();
+    let idle_checks = checks_after.checked_sub(checks).unwrap();
+    let held_waits = counter
+        .waits
+        .load(Ordering::Acquire)
+        .checked_sub(waits)
+        .unwrap();
     let clocked_waits = counter.clocked_waits.load(Ordering::Acquire);
     eprintln!(
         "IDLE-SHARED-WORKSPACE events={EVENTS} captures={idle_captures} checks={idle_checks} announcements={announced_count} held_waits={held_waits} clocked_waits={clocked_waits}"
@@ -304,7 +308,10 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
             "watched readers never schedule polling rechecks"
         );
         assert!(
-            idle_checks <= CHECKS_PER_ANNOUNCEMENT * announced_count,
+            idle_checks
+                <= CHECKS_PER_ANNOUNCEMENT
+                    .checked_mul(announced_count)
+                    .unwrap(),
             "each waiting reader checks at most once per actual announcement"
         );
     }
