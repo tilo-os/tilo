@@ -2603,23 +2603,13 @@ impl CapnpBrokerState {
             (argument.as_deref(), request.confirmation.as_ref()),
         )
         .map_err(abandon)?;
-        if descriptor.contract.confirmation != tilo_actions::ConfirmationPolicy::None {
-            let witnessed = match request.confirmation.as_ref() {
-                Some(Confirmation::Witnessed(token)) => self.take_witness(
-                    token,
-                    policy.id(),
-                    (&address.resource, &address.action),
-                    argument.as_deref(),
-                ),
-                _ => false,
-            };
-            let own = policy
-                .direct()
-                .then_some(request.confirmation.as_ref())
-                .flatten();
-            if !witnessed && !confirmation_satisfied(&descriptor.contract.confirmation, own) {
-                return Err(abandon(ActionHostError::ConfirmationRequired));
-            }
+        if !self.confirmed_as_asked(
+            &policy,
+            &descriptor,
+            argument.as_deref(),
+            request.confirmation.as_ref(),
+        ) {
+            return Err(abandon(ActionHostError::ConfirmationRequired));
         }
         let started = service
             .start(&crate::services::DevicePairingRequest {
@@ -2629,12 +2619,53 @@ impl CapnpBrokerState {
                 argument: argument.as_deref(),
             })
             .map_err(|reason| abandon(ActionHostError::Refused { reason }))?;
+        let id = self.follow_host_step(&policy, started);
+        if let Ok(mut ledger) = self.remote_invocations.lock() {
+            ledger.complete(&request.invocation, id);
+        }
+        Ok(self.receipt_for(request.invocation, id))
+    }
+
+    /// Whether `confirmation` answers `descriptor`'s own confirmation
+    /// policy for `actor` with `argument`: the person's own word when they
+    /// act themselves, else the answer they gave on their device.
+    fn confirmed_as_asked(
+        &self,
+        actor: &BrokerActor,
+        descriptor: &ActionDescriptor,
+        argument: Option<&str>,
+        confirmation: Option<&Confirmation>,
+    ) -> bool {
+        if descriptor.contract.confirmation == tilo_actions::ConfirmationPolicy::None {
+            return true;
+        }
+        let witnessed = match confirmation {
+            Some(Confirmation::Witnessed(token)) => self.take_witness(
+                token,
+                actor.id(),
+                (&descriptor.address.resource, &descriptor.address.action),
+                argument,
+            ),
+            _ => false,
+        };
+        let own = actor.direct().then_some(confirmation).flatten();
+        witnessed || confirmation_satisfied(&descriptor.contract.confirmation, own)
+    }
+
+    /// Record a host step started for `actor` as an invocation job: accepted
+    /// now, and its outcome once `started` answers, from whichever thread
+    /// completes it. The job's id.
+    fn follow_host_step(
+        self: &Arc<Self>,
+        actor: &BrokerActor,
+        started: Pending<crate::services::DevicePairingOutcome>,
+    ) -> u64 {
         let id = self
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let owner = InvocationOwner::Local {
-            actor: policy.id().to_owned(),
+            actor: actor.id().to_owned(),
         };
         // Accepted first: a step that already answered records its outcome
         // over it below, never the other way round.
@@ -2653,8 +2684,8 @@ impl CapnpBrokerState {
                 None => tilo_actions::InvocationUpdate::Failed {
                     invocation,
                     error: tilo_actions::ActionFailure {
-                        code: "pairing_stopped".into(),
-                        message: "the pairing step stopped without an answer".into(),
+                        code: "host_step_stopped".into(),
+                        message: "the host step stopped without an answer".into(),
                         details: None,
                         retryable: true,
                     },
@@ -2662,10 +2693,7 @@ impl CapnpBrokerState {
             };
             state.record_completion(id, owner, update);
         });
-        if let Ok(mut ledger) = self.remote_invocations.lock() {
-            ledger.complete(&request.invocation, id);
-        }
-        Ok(self.receipt_for(request.invocation, id))
+        id
     }
 
     /// Run saved shortcut `shortcut_id` in `room` for `caller`, who is at
@@ -3685,7 +3713,7 @@ mod device_pairing_tests {
     }
 
     impl DevicePairingServices for Host {
-        fn app_id(&self) -> &str {
+        fn app_id(&self) -> &'static str {
             "so.tilo.settings"
         }
 
