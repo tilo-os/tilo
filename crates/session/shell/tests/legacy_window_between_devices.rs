@@ -33,6 +33,8 @@ use shell::shell::peer_view::{PeerView, PushOutcome};
 use tokio::sync::mpsc;
 use ui::widget::Widget as _;
 
+use crate::support::peer_stream::push_and_settle;
+
 const WS: u64 = 4242;
 /// A tab id another device minted: salt in the high bits.
 const TAB: u64 = 0x5EED_0000_0000_0007;
@@ -286,7 +288,10 @@ async fn a_legacy_window_streams_between_two_devices() {
             let captured = origin + Duration::from_nanos(ts);
             let previous_ts = previous_received_ts.replace(ts);
             let decode_started = Instant::now();
-            let outcome = view.push_encoded_with_latency(&encoded, None);
+            // A picture that outlasts the decoder's wait on a loaded runner
+            // is collected as the compositor loop collects it: slow is not
+            // rejected. Every frame still has to yield its picture.
+            let outcome = push_and_settle(view, &encoded, None);
             let decode_elapsed = decode_started.elapsed();
             // The first frame is the keyframe the host forced for this
             // viewer; one that fails to decode means the viewer had to
@@ -515,7 +520,7 @@ fn a_board_viewer_receives_only_pictures_its_hardware_decoder_takes() {
             panic!("a frame");
         };
         assert_eq!(
-            view.push_encoded_with_latency(&encoded_h264, None),
+            push_and_settle(&mut view, &encoded_h264, None),
             PushOutcome::Decoded,
             "every frame decodes, the first one too"
         );
@@ -583,7 +588,7 @@ async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
     let (encoded, ts) = next_surface_frame(&mut viewer_events).await;
     assert_eq!(ts, timestamps[0]);
     assert_eq!(
-        view.push_encoded_with_latency(&encoded, None),
+        push_and_settle(&mut view, &encoded, None),
         PushOutcome::Decoded
     );
     view.mark_drawn();
@@ -603,7 +608,7 @@ async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
             let (encoded_h264, ts) = next_surface_frame(&mut viewer_events).await;
             let index = timestamps.iter().position(|timestamp| *timestamp == ts).expect("recorded capture timestamp");
             let started = Instant::now();
-            let outcome = view.push_encoded_with_latency(&encoded_h264, None);
+            let outcome = push_and_settle(&mut view, &encoded_h264, None);
             eprintln!("legacy-backlog previous_index={previous_index} index={index} outcome={outcome:?} decode_ms={:.2}", millis(started.elapsed()));
             assert!(matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest),
                 "every delivered encoded unit decodes: previous_index={previous_index} index={index} outcome={outcome:?}");

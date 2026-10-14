@@ -17,6 +17,29 @@ class NativeDeliveryTests(unittest.TestCase):
         frames = [{"frame":19,"total_us":100}, {"frame":20,"total_us":200}]
         return scenario, lines, frames
 
+    def test_input_phases_split_banked_event_time_and_reject_inconsistent_rows(self):
+        scenario, lines, frames = self.fixture()
+        self.assertIsNone(summarize_native_delivery(scenario, lines, frames)["input_phases"])
+        phased = {"handle_event_us": 900, "input_events": 4, "input_event_max_us": 400,
+                  "input_dispatch_us": 500, "input_hit_test_us": 100, "input_resources_us": 50,
+                  "input_publication_us": 40, "input_commit_us": 10, "input_to_commit_us": 1500}
+        frames = [{**row, **phased} for row in frames]
+        report = summarize_native_delivery(scenario, lines, frames)["input_phases"]
+        self.assertEqual(report["events_per_frame"], {"n": 1, "min": 4, "median": 4, "max": 4})
+        self.assertEqual(report["costliest_event"]["max_ms"], 0.4)
+        self.assertEqual(report["phases"]["dispatch"]["p50_ms"], 0.5)
+        self.assertEqual(report["phases"]["hit_test"]["p50_ms"], 0.1)
+        self.assertEqual(report["oldest_input_to_cpu_commit"]["max_ms"], 1.5)
+        for bad in [{"input_dispatch_us": 901}, {"input_event_max_us": 901},
+                    {"input_commit_us": -1}, {"input_events": None}]:
+            changed = [{**row, **bad} for row in frames]
+            with self.assertRaises(ValueError):
+                summarize_native_delivery(scenario, lines, changed)
+        partial = [frames[0], {key: value for key, value in frames[1].items()
+                               if not key.startswith("input_")}]
+        with self.assertRaises(ValueError):
+            summarize_native_delivery(scenario, lines, partial)
+
     def test_summary_counts_coalescing_delay_and_cadence_from_real_evidence(self):
         with self.subTest(phase='coalescing is counted not invented'):
             report = summarize_native_delivery(*self.fixture())

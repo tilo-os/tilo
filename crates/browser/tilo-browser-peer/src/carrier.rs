@@ -180,6 +180,26 @@ pub async fn agent_live_grant(
     .await
 }
 
+/// Post this person's own recent semantic actions in `request.workspace_id`
+/// and get everyone's "who is here and what are they doing" line back.
+///
+/// # Errors
+///
+/// Returns [`LinkError::Refused`] when this device is not admitted there.
+pub async fn here(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::web::HereRequest,
+) -> Result<tilo_relay_protocol::web::HereReply, LinkError> {
+    call(
+        client,
+        tilo_relay_protocol::web::HERE_PATH,
+        Some(session),
+        encode(request)?,
+    )
+    .await
+}
+
 /// Send a member's input for a legacy window
 /// ([`tilo_relay_protocol::legacy_window`]); with no events, ask whether
 /// this device may drive it. `Ok(false)`: it may not.
@@ -301,7 +321,7 @@ impl HttpsLink {
             return Err(LinkError::Refused("host is not the pinned device".into()));
         }
         let sig_over_server_nonce = signer
-            .sign(auth::challenge_digest(&challenge.ack.server_nonce).to_vec())
+            .sign(auth::client_challenge_digest(&challenge.ack.server_nonce).to_vec())
             .await
             .map_err(|error| LinkError::Sign(error.0))?;
         let (grant, features) = decode_grant(

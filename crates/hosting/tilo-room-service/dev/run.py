@@ -53,7 +53,9 @@ What it starts (each piece is the production one; only TLS and origins differ):
                 entry.json has the shape container/entrypoint.sh writes, with
                 plain local origins:
                   {"home": {"name", "host": {"origin": <relay>},
-                            "admission": <api>/[, "app"]}}
+                            "admission": <api>/[, "app"]}[, "about"]}
+                with "about" from TILO_WEB_ABOUT_NOTIFY, _SOURCE and
+                _COMMUNITY, as the image writes it.
 
 Building:
   Without --relay-bin/--room-service-bin it builds both release binaries with
@@ -101,7 +103,7 @@ load compiles the bundle and takes a minute or two there:
 
 Other TILO_ROOMS_* and TILO_RELAY_* variables in the environment reach the
 service unchanged (for example TILO_ROOMS_SEED_APPS, TILO_ROOMS_CHAT_CHANNELS,
-TILO_RELAY_LOG); the ones above are set by this script.
+TILO_ROOMS_STRIPS, TILO_RELAY_LOG); the ones above are set by this script.
 """
 
 
@@ -225,7 +227,13 @@ def entry_json(args, relay_origin, api_origin):
             'admission': f'{api_origin}/'}
     if args.home_app:
         home['app'] = args.home_app
-    return {'home': home}
+    entry = {'home': home}
+    # The About sheet's links, from the same variables the image reads.
+    about = {key: url for key in ('notify', 'source', 'community')
+             if (url := os.environ.get(f'TILO_WEB_ABOUT_{key.upper()}', ''))}
+    if about:
+        entry['about'] = about
+    return entry
 
 
 class Site(http.server.SimpleHTTPRequestHandler):

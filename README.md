@@ -57,7 +57,7 @@ Install Rust through rustup and the native dependencies listed in
 
 ```bash
 cargo build -p shell        # compositor, tilo-control, shots
-cargo build -p ui
+cargo build -p tilo-ui
 cargo build -p tilo-fs
 cargo build -p file-explorer
 ```
@@ -110,6 +110,7 @@ formatting slip fails in a second on your machine instead of minutes later in CI
 - [`docs/architecture/`](docs/architecture/) — product model, component overview, and design intent
 - [`DEVELOPMENT.md`](DEVELOPMENT.md) — build environment and running Tilo on your own machine
 - [`crates/README.md`](crates/README.md) — workspace domains, developer tools, and build boundaries
+- [`docs/policies.md`](docs/policies.md) — the project's standing rules and the check that enforces each
 - [`AGENTS.md`](AGENTS.md) — what agents working in this repository are told
 
 ## Status

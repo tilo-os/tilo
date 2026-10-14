@@ -35,7 +35,7 @@
     "efi_path": "/EFI/BOOT/BOOTX64.EFI",
     "uki_architecture": "x86_64",
     "uki_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "uki_cmdline": "root=tilo-auto rd.luks.options=tpm2-device=auto,fido2-device=auto init_on_alloc=1 init_on_free=1 lockdown=integrity slab_nomerge randomize_kstack_offset=on page_alloc.shuffle=1 vsyscall=none tilo.generation=7 rw preempt=full console=tty0 console=ttyAMA0,115200 console=ttyS0,115200 quiet splash plymouth.ignore-serial-consoles tilo.mode=normal systemd.import_credentials=no composefs=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb tilo.install",
+    "uki_cmdline": "root=tilo-auto rd.luks.options=tpm2-device=auto,fido2-device=auto init_on_alloc=1 lockdown=integrity slab_nomerge randomize_kstack_offset=on page_alloc.shuffle=1 vsyscall=none tilo.generation=7 rw preempt=full console=tty0 console=ttyAMA0,115200 console=ttyS0,115200 quiet splash plymouth.ignore-serial-consoles tilo.mode=normal systemd.import_credentials=no composefs=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb tilo.install",
     "composefs_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   }
 }

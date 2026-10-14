@@ -818,6 +818,9 @@ pub struct ShellOverlayHost {
     /// whose runtime content was replaced by a `PeerView`. These never enter
     /// `ChromeState` or its replicated workspace document.
     peer_stream_tabs: std::collections::HashMap<(u64, u64), u64>,
+    /// Wakes the compositor loop when a peer stream's picture finishes
+    /// decoding; handed to every peer view this host mounts.
+    peer_picture_wake: Option<media::realtime::PictureWake>,
     /// Quick-settings root-page presentation, geometry and input state.
     qs_root: QuickSettingsRoot,
     // Navigation can shrink the panel before the matching release arrives.
@@ -883,6 +886,9 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// Roster id whose recent summary People shows. Local view state: the
+    /// same person stays expanded as the roster reorders.
+    expanded_collaborator: Option<String>,
     /// Peer whose live tab focus this session mirrors. Local-only and
     /// ephemeral: follow is a viewing mode, never shared workspace state.
     followed_peer: Option<String>,
@@ -2159,6 +2165,9 @@ impl ShellOverlayHost {
             crate::shell::search::providers::SessionActionsProvider::new(session_action_policy),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::SettingsPagesProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::tray_items::TrayItemsProvider::global(),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -2449,6 +2458,7 @@ impl ShellOverlayHost {
             notification_stack: NotificationStack::new(),
             last_chrome_revision: u64::MAX,
             peer_stream_tabs: std::collections::HashMap::new(),
+            peer_picture_wake: None,
             // User intent is durable, while the root filters it against the
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
@@ -2482,6 +2492,7 @@ impl ShellOverlayHost {
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             text_caret: None,
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
+            expanded_collaborator: None,
             followed_peer: None,
             followed_tab: None,
             followed_session: None,
@@ -4541,6 +4552,7 @@ impl ShellOverlayHost {
         );
         peer_view.restart_stream(codec, display_size);
         peer_view.set_input_sink(std::sync::Arc::clone(input_sink));
+        peer_view.set_picture_wake(self.peer_picture_wake.clone());
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: identical to `foreign_surface_rect`: rows are boxed by
             // this host and `&mut self` makes this traversal exclusive.
@@ -4610,13 +4622,53 @@ impl ShellOverlayHost {
         encoded: &[u8],
         latency_ns: Option<u64>,
     ) -> bool {
-        let Some(tab_id) = self
+        self.peer_stream_view_mut(source_peer, surface_id)
+            .is_some_and(|view| {
+                !matches!(
+                    view.push_encoded_with_latency(encoded, latency_ns),
+                    crate::shell::peer_view::PushOutcome::DecodeFailed
+                )
+            })
+    }
+
+    /// How the loop learns that a peer-stream picture finished decoding:
+    /// peer views never wait for their pictures, so `wake` (run on a media
+    /// thread) brings the loop back to [`Self::collect_late_peer_pictures`].
+    /// Views mounted from now on use it.
+    pub fn set_peer_picture_wake(&mut self, wake: media::realtime::PictureWake) {
+        self.peer_picture_wake = Some(wake);
+    }
+
+    /// Show every peer-stream picture that finished decoding after its frame
+    /// was pushed. A window that stops changing sends no further frame to
+    /// carry its last picture out of the decoder, so the loop collects it.
+    /// Returns whether any view took a new picture.
+    pub fn collect_late_peer_pictures(&mut self) -> bool {
+        if self.peer_stream_tabs.is_empty() {
+            return false;
+        }
+        let streams: Vec<(u64, u64)> = self.peer_stream_tabs.keys().copied().collect();
+        let mut collected = false;
+        for (source_peer, surface_id) in streams {
+            if let Some(view) = self.peer_stream_view_mut(source_peer, surface_id)
+                && view.picture_pending()
+            {
+                collected |= view.collect_late_picture().is_some();
+            }
+        }
+        collected
+    }
+
+    /// The view showing the stream of `surface_id` from `source_peer`.
+    pub fn peer_stream_view_mut(
+        &mut self,
+        source_peer: u64,
+        surface_id: u64,
+    ) -> Option<&mut crate::shell::peer_view::PeerView> {
+        let tab_id = self
             .peer_stream_tabs
             .get(&(source_peer, surface_id))
-            .copied()
-        else {
-            return false;
-        };
+            .copied()?;
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: same row ownership invariant as `mount_peer_stream`.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
@@ -4625,21 +4677,14 @@ impl ShellOverlayHost {
                     continue;
                 };
                 let ui::widget::TileContent::App(app) = host.content_mut() else {
-                    return false;
+                    return None;
                 };
-                let Some(view) = app
+                return app
                     .as_any_mut()
-                    .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>())
-                else {
-                    return false;
-                };
-                return !matches!(
-                    view.push_encoded_with_latency(encoded, latency_ns),
-                    crate::shell::peer_view::PushOutcome::DecodeFailed
-                );
+                    .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>());
             }
         }
-        false
+        None
     }
 
     /// Whether a view shows the stream of `surface_id` from `source_peer`.
@@ -8311,8 +8356,8 @@ impl ShellOverlayHost {
                 if let Some(badge) = &r.badge {
                     e = e.badge(badge.clone());
                 }
-                if r.id == "room.activity.open" {
-                    e = e.keybinding("Super+H");
+                if let Some(shortcut) = &r.shortcut {
+                    e = e.keybinding(shortcut.clone());
                 }
                 entries.push(e);
                 results.push(r.clone());
@@ -9070,6 +9115,16 @@ impl ShellOverlayHost {
                     self.palette_visible = true;
                     return;
                 }
+            }
+            crate::shell::search::usage::record(&result.provider_id, &result.id);
+            // A switch flips where the person can see it: keep the palette
+            // open on the row's new state instead of closing it.
+            if result.provider_id == crate::shell::search::providers::actions::PROVIDER_ID
+                && crate::shell::search::providers::actions::toggles_in_place(&result.id)
+            {
+                self.last_search_query = "\0toggled\0".into();
+                self.palette_layout_dirty = true;
+                return;
             }
             self.palette_visible = false;
             self.palette.close();
@@ -10022,11 +10077,15 @@ impl ShellOverlayHost {
                 let rows = state.quick_settings.vpns.len();
                 DrillInList::list_height(qs::LIST_TOP, rows)
             }
-            QsLevel::Notifications => self.notification_center.preferred_height_for_width(
-                state.notification_log(),
-                self.qs_type_lines,
-                self.quick_settings_width(),
-            ),
+            // `state` is the caller's shared borrow of this same chrome; the
+            // host reads it again for the rows' own actions.
+            QsLevel::Notifications => self.chrome.as_ref().map_or(0.0, |chrome| {
+                self.notification_center.preferred_height_for_width(
+                    &ChromeNotifications::new(chrome),
+                    &self.qs_type_lines,
+                    self.quick_settings_width(),
+                )
+            }),
             QsLevel::Clipboard => {
                 let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -10060,7 +10119,7 @@ impl ShellOverlayHost {
     /// The notification centre's geometry for the current panel and text
     /// scale — the one oracle paint, hit-testing and sizing read.
     fn qs_notification_layout(&self) -> CenterLayout {
-        CenterLayout::new(self.quick_settings_rect(), self.qs_type_lines)
+        CenterLayout::new(self.quick_settings_rect(), &self.qs_type_lines).drill_in()
     }
 
     /// Scroll the notification centre from a pointer wheel over the open
@@ -14567,6 +14626,51 @@ impl ShellOverlayHost {
         self.status_selection = ui::text_selection::Selection::default();
     }
 
+    /// Follow the painted row's person, or stop when they are the one
+    /// already followed. Revalidated against the live roster first.
+    fn toggle_follow_row(&mut self, index: usize) {
+        let target = self
+            .collaborators_overlay
+            .follow_target(index)
+            .and_then(|id| {
+                self.chrome.as_ref().and_then(|chrome| {
+                    let state = chrome.borrow();
+                    let local_user = state.active_local_user();
+                    tilo_desktop::collaborators::collaborator_roster_rows(
+                        &state.tree().desktop,
+                        &local_user,
+                    )
+                    .into_iter()
+                    .find(|row| row.id == id && row.followable)
+                })
+            });
+        if let Some(target) = target {
+            if self.followed_peer.as_deref() == Some(target.id.as_str()) {
+                self.set_followed_peer(None);
+            } else {
+                self.set_followed_peer(Some(target.id));
+            }
+        }
+    }
+
+    /// Expand the painted row's recent summary, or collapse it when it is
+    /// already the open one. Keyed by the person, not the row index.
+    fn toggle_collaborator_details(&mut self, index: usize) {
+        let Some(target) = self
+            .collaborators_overlay
+            .details_target(index)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        self.expanded_collaborator =
+            if self.expanded_collaborator.as_deref() == Some(target.as_str()) {
+                None
+            } else {
+                Some(target)
+            };
+    }
+
     fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
         if matches!(
             hit,
@@ -14599,29 +14703,15 @@ impl ShellOverlayHost {
             *handled = true;
             return;
         }
-        if let CollaboratorsHit::ToggleFollow(index) = hit {
-            let target = self
-                .collaborators_overlay
-                .follow_target(index)
-                .and_then(|id| {
-                    self.chrome.as_ref().and_then(|chrome| {
-                        let state = chrome.borrow();
-                        let local_user = state.active_local_user();
-                        tilo_desktop::collaborators::collaborator_roster_rows(
-                            &state.tree().desktop,
-                            &local_user,
-                        )
-                        .into_iter()
-                        .find(|row| row.id == id && row.followable)
-                    })
-                });
-            if let Some(target) = target {
-                if self.followed_peer.as_deref() == Some(target.id.as_str()) {
-                    self.set_followed_peer(None);
-                } else {
-                    self.set_followed_peer(Some(target.id));
-                }
-            }
+        match hit {
+            CollaboratorsHit::ToggleDetails(index) => self.toggle_collaborator_details(index),
+            CollaboratorsHit::ToggleFollow(index) => self.toggle_follow_row(index),
+            _ => {}
+        }
+        if matches!(
+            hit,
+            CollaboratorsHit::ToggleDetails(_) | CollaboratorsHit::ToggleFollow(_)
+        ) {
             *handled = true;
             return;
         }
@@ -14659,6 +14749,7 @@ impl ShellOverlayHost {
                     state.bump();
                 }
                 CollaboratorsHit::ToggleFollow(_)
+                | CollaboratorsHit::ToggleDetails(_)
                 | CollaboratorsHit::PreviousPeople
                 | CollaboratorsHit::NextPeople
                 | CollaboratorsHit::EditStatus
@@ -19605,11 +19696,18 @@ impl Widget for ShellOverlayHost {
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {
-        self.layers
+        let mut targets = self
+            .layers
             .dictation
             .preview_target()
             .map(|rect| vec![("dictation.live-preview".into(), rect)])
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if self.onboarding.is_none() && self.palette_visible && self.palette.is_open() {
+            // The legacy widget id covers the result card. A touch aimed at
+            // the query must use the same row as its editable semantic node.
+            targets.push((PALETTE_QUERY_TARGET.into(), self.palette.input_row_rect()));
+        }
+        targets
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -21106,6 +21204,10 @@ impl ShellOverlayHost {
                     status_editing: self.status_editing,
                     status_selection: self.status_selection,
                     screen_exposure: screen_exposure.as_deref(),
+                    expanded_id: self.expanded_collaborator.as_deref(),
+                    // Native presence has no spectator role yet.
+                    watching: 0,
+                    status_editable: true,
                 },
                 self.last_cursor,
             );

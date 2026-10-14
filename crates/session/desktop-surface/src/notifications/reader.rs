@@ -18,10 +18,13 @@ pub(super) struct NotificationReader {
     region: ScrollRegion,
     theme: Option<Box<Theme>>,
     back_focused: bool,
+    /// Focus rings show once the keyboard (or assistive technology) moves
+    /// focus, never for a page the pointer opened.
+    focus_visible: bool,
 }
 
 impl NotificationReader {
-    pub fn new(id: u64) -> Self {
+    pub fn new(id: u64, focus_visible: bool) -> Self {
         let mut region = ScrollRegion::vertical();
         region.set_focused(true);
         Self {
@@ -29,6 +32,7 @@ impl NotificationReader {
             region,
             theme: None,
             back_focused: false,
+            focus_visible,
         }
     }
 
@@ -44,8 +48,8 @@ impl NotificationReader {
             .with_bounds(layout.panel())
             .with_children(vec![
                 AccessNode::new(Role::Button)
-                    .with_name(t("drill-in-back"))
-                    .with_bounds(layout.back())
+                    .with_name(t("notification-center-back-to-list"))
+                    .with_bounds(layout.reader_back())
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -69,11 +73,13 @@ impl NotificationReader {
             [1] => self.back_focused = false,
             _ => return false,
         }
+        self.focus_visible = true;
         self.region.set_focused(!self.back_focused);
         true
     }
 
     pub fn toggle_focus(&mut self) {
+        self.focus_visible = true;
         self.back_focused = !self.back_focused;
         self.region.set_focused(!self.back_focused);
     }
@@ -97,6 +103,12 @@ impl NotificationReader {
             self.apply_scroll(action),
             ui::widget::PrimaryScrollResult::Changed(_)
         )
+    }
+
+    /// Whether focus is drawn: once the keyboard has moved it.
+    #[cfg(test)]
+    pub fn focus_visible(&self) -> bool {
+        self.focus_visible
     }
 
     pub fn activate_back(&self) -> bool {
@@ -139,10 +151,13 @@ impl NotificationReader {
             transform,
             text,
             theme,
-            &ButtonFace::new(layout.back(), &t("drill-in-back"))
+            // "‹ Notifications": the way back names the list it returns to.
+            &ButtonFace::new(layout.reader_back(), &t("notification-center-title"))
                 .role(ui::widget::ButtonRole::Plain)
-                .hovered(cursor.is_some_and(|p| layout.back().contains(p)))
-                .focused(self.back_focused),
+                .icon(ui::icons::Icon::ChevronLeft)
+                .accessible_name(&t("notification-center-back-to-list"))
+                .hovered(cursor.is_some_and(|p| layout.reader_back().contains(p)))
+                .focused(self.back_focused && self.focus_visible),
         );
         let viewport = layout.reading_viewport();
         self.region.set_viewport(viewport, theme);
@@ -150,9 +165,11 @@ impl NotificationReader {
         let title_style = theme.text(TextRole::Heading);
         let source_style = theme.text(TextRole::Caption);
         let body_style = theme.text(TextRole::Body);
-        let source = source_label(notification);
+        let source = source_label(notification).unwrap_or_default();
         let hidden = (!notification.show_preview).then(|| t("notification-preview-hidden"));
         let body = hidden.as_deref().unwrap_or(&notification.body);
+        // A notice with no source has no source line, nor its step.
+        let source_gap = if source.is_empty() { 0.0 } else { gap };
         // The overflow lane changes wrap width. Measure again after resolving
         // it so neither the last line nor the scrollbar clips the document.
         let mut title_h = 0.0;
@@ -163,13 +180,19 @@ impl NotificationReader {
                 text.measure_style(&notification.title, Some(width), &title_style)
                     .1,
             );
-            source_h = f64::from(text.measure_style(&source, Some(width), &source_style).1);
+            source_h = if source.is_empty() {
+                0.0
+            } else {
+                f64::from(text.measure_style(&source, Some(width), &source_style).1)
+            };
             let body_h = f64::from(text.measure_style(body, Some(width), &body_style).1);
-            self.region
-                .set_content_size(viewport.width(), title_h + source_h + body_h + 4.0 * gap);
+            self.region.set_content_size(
+                viewport.width(),
+                title_h + source_h + body_h + 3.0 * gap + source_gap,
+            );
         }
         let width = f32_of_f64((self.region.content_rect().width() - 2.0 * gap).max(1.0));
-        if !self.back_focused {
+        if self.focus_visible && !self.back_focused {
             ui::widget::paint_focus_ring(
                 scene,
                 transform,
@@ -200,7 +223,8 @@ impl NotificationReader {
                     scene,
                     body,
                     theme.tokens.colors.text_primary,
-                    content.pre_translate((gap, 3.0 * gap + title_h + source_h).into()),
+                    content
+                        .pre_translate((gap, 2.0 * gap + source_gap + title_h + source_h).into()),
                     Some(width),
                     &body_style,
                 );

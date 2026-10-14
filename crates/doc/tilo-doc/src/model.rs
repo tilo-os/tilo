@@ -629,18 +629,33 @@ pub fn shadowed_containers(doc: &AutoCommit, root: &ObjId) -> Vec<String> {
 /// Returns [`DocError`] if a container key is missing under `root` or does not
 /// resolve to a map.
 pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<Containers, DocError> {
+    // One walk over `root` finds every container: a record holding rich text
+    // in each of its items opens one per item, and a lookup per key seeks
+    // into the operations again each time.
+    let mut maps: HashMap<&'static str, ObjId> = HashMap::with_capacity(CONTAINER_KEYS.len());
+    for item in doc.map_range(root, ..) {
+        if matches!(item.value, ValueRef::Object(ObjType::Map))
+            && let Some(key) = CONTAINER_KEYS.iter().find(|key| **key == item.key.as_ref())
+        {
+            maps.insert(*key, item.id());
+        }
+    }
+    let mut take = |key: &str| {
+        maps.remove(key)
+            .ok_or_else(|| DocError::Invalid(format!("root.{key} is not a map")))
+    };
     Ok(Containers {
         root: root.clone(),
-        blocks: required_map(doc, root, KEY_BLOCKS)?,
-        styles: required_map(doc, root, KEY_STYLES)?,
-        preserved: required_map(doc, root, KEY_PRESERVED)?,
-        meta: required_map(doc, root, KEY_META)?,
-        blobs: required_map(doc, root, KEY_BLOBS)?,
-        header: required_map(doc, root, KEY_HEADER)?,
-        footer: required_map(doc, root, KEY_FOOTER)?,
-        notes: required_map(doc, root, KEY_NOTES)?,
-        comments: required_map(doc, root, KEY_COMMENTS)?,
-        changes: required_map(doc, root, KEY_CHANGES)?,
+        blocks: take(KEY_BLOCKS)?,
+        styles: take(KEY_STYLES)?,
+        preserved: take(KEY_PRESERVED)?,
+        meta: take(KEY_META)?,
+        blobs: take(KEY_BLOBS)?,
+        header: take(KEY_HEADER)?,
+        footer: take(KEY_FOOTER)?,
+        notes: take(KEY_NOTES)?,
+        comments: take(KEY_COMMENTS)?,
+        changes: take(KEY_CHANGES)?,
     })
 }
 
@@ -1287,6 +1302,8 @@ fn block_fields(doc: &AutoCommit, obj: &ObjId) -> BlockFields {
 struct OrderedBlock {
     order: Vec<u8>,
     id: String,
+    /// The block's map.
+    obj: ObjId,
     fields: BlockFields,
 }
 
@@ -1298,11 +1315,13 @@ fn ordered_blocks(doc: &AutoCommit, container: &ObjId) -> Vec<OrderedBlock> {
         .map_range(container, ..)
         .filter(|item| matches!(item.value, ValueRef::Object(ObjType::Map)))
         .filter_map(|item| {
-            let mut fields = block_fields(doc, &item.id());
+            let obj = item.id();
+            let mut fields = block_fields(doc, &obj);
             let order = fields.order.take()?;
             Some(OrderedBlock {
                 order,
                 id: item.key.into_owned(),
+                obj,
                 fields,
             })
         })
@@ -1349,6 +1368,58 @@ pub fn body_spine(doc: &AutoCommit, c: &Containers) -> Vec<SpineEntry> {
             order: b.order,
             id: b.id,
             kind: b.fields.kind.unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// The objects a body block is stored in: its map, and the text and
+/// attributes inside it when it has them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockObjects {
+    pub block: ObjId,
+    pub text: Option<ObjId>,
+    pub attrs: Option<ObjId>,
+}
+
+/// One ordered body block as [`read_body`] found it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BodyBlock {
+    pub entry: SpineEntry,
+    /// Where the block is stored.
+    pub objects: BlockObjects,
+    /// The block materialised, when the caller asked for its kind.
+    pub view: Option<BlockView>,
+}
+
+/// The body's spine, materialising the blocks whose kind `view` picks, in
+/// one walk over the body: each block's fields are read once, whether it
+/// becomes a spine entry, a view or both. [`body_spine`] followed by
+/// [`materialize_blocks`] of the same blocks reads each picked block twice
+/// and looks every one up by id again.
+pub fn read_body(
+    doc: &AutoCommit,
+    c: &Containers,
+    mut view: impl FnMut(&str) -> bool,
+) -> Vec<BodyBlock> {
+    ordered_blocks(doc, &c.blocks)
+        .into_iter()
+        .map(|b| {
+            let kind = b.fields.kind.clone().unwrap_or_default();
+            let objects = BlockObjects {
+                block: b.obj,
+                text: b.fields.text.clone(),
+                attrs: b.fields.attrs.clone(),
+            };
+            let view = view(&kind).then(|| block_view(doc, b.id.clone(), b.fields));
+            BodyBlock {
+                entry: SpineEntry {
+                    order: b.order,
+                    id: b.id,
+                    kind,
+                },
+                objects,
+                view,
+            }
         })
         .collect()
 }
@@ -2154,6 +2225,30 @@ impl DocMut<'_> {
         if let Some(tid) = self.region_text_obj(region, block_id) {
             let mark = Mark::new(name.to_string(), value, start, end);
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
+        }
+    }
+
+    /// Mark `[start, end)` of a block living in `region` as written by `author`
+    /// ([`MARK_AUTHOR`](crate::schema::MARK_AUTHOR)), as
+    /// [`tilo_automerge::mark_text_author`] marks plain text: the mark covers exactly that text
+    /// and does not expand, so nothing inserted beside it later — by anyone — is taken in. Every
+    /// write names its own author.
+    ///
+    /// That also keeps typing cheap. An expanding end takes in the next key, so a mark per key
+    /// nests inside the one before and every earlier mark stays open at the caret: each key
+    /// would pay for all the keys typed before it.
+    pub fn mark_author_in(
+        &mut self,
+        region: Region,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        author: &str,
+    ) {
+        self.flush_bulk();
+        if let Some(tid) = self.region_text_obj(region, block_id) {
+            let mark = Mark::new(crate::schema::MARK_AUTHOR.to_owned(), author, start, end);
+            let _ = self.doc.mark(&tid, mark, ExpandMark::None);
         }
     }
 

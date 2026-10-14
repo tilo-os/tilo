@@ -381,7 +381,7 @@ an application can enable them through dependency feature unification):
 | `ui/dmabuf-import` | Off | Vulkan external-memory import of a compatible DMA-BUF; avoids a CPU pixel round-trip. Requires supported formats/modifiers/device sharing; enabling the feature does not guarantee successful zero-copy import. |
 | `ui/gpu-video` | Off | Enables DMA-BUF import plus NV12/P010-to-RGB GPU conversion. Conversion is still GPU work even when no CPU pixel copy occurs. |
 | `media/realtime` | Off (the shell enables it) | GStreamer real-time encoder/decoder: hardware first (VA-API, NVCODEC, V4L2), then royalty-free software, then Cisco openh264. Which hardware runs is decided at runtime from the registry. |
-| `shell/hosted-test-control` | On | Hosted input-control test socket; remove from production feature selection when that test surface is unwanted. Not a frame-rate optimization. |
+| `shell/hosted-test-control` | On | Deterministic test seams for `shots` and integration tests; remove from production feature selection when that test surface is unwanted. Not a frame-rate optimization. |
 
 See [UI features](../crates/sdk/ui-core/Cargo.toml) and [shell features](../crates/session/shell/Cargo.toml).
 `--no-default-features` changes the workload/capability set; document it in any

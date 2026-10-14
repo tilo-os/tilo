@@ -20,7 +20,7 @@ use gstreamer_video as gst_video;
 
 use super::{
     CodecCapabilities, DecodeOutput, DecodedPicture, DecoderConfig, EncodedUnit, EncoderConfig,
-    InputFormat, InputFrame, RealtimeError, StreamColor, is_keyframe,
+    InputFormat, InputFrame, PictureWake, RealtimeError, StreamColor, is_keyframe,
 };
 use crate::frame::FrameAcceptance;
 use crate::hw::realtime::{
@@ -51,8 +51,15 @@ const FRAME_TIMEOUT: Duration = Duration::from_millis(500);
 /// state) must not stall the receiver's frame loop: measured decode times are
 /// 3-25 ms per frame at 720p-1080p, so a picture that has not arrived within
 /// several frame intervals (with headroom for a loaded machine) is returned
-/// with the next call instead.
+/// with the next call instead, or by `take_late_picture` when no next call
+/// comes; `picture_pending` tells such a slow unit from a rejected one. A
+/// caller that collects late pictures itself sets its own wait, down to none
+/// (`RealtimeDecoder::set_picture_wait`).
 const DECODE_WAIT: Duration = Duration::from_millis(150);
+
+/// The decoder's [`PictureWake`], shared with the sink of every element it
+/// starts.
+type SharedWake = std::sync::Arc<Mutex<Option<PictureWake>>>;
 
 enum Event {
     Sample(gst::Sample),
@@ -428,10 +435,12 @@ struct Running {
 }
 
 impl Running {
+    /// `wake` runs after each sample is queued for the caller.
     fn start(
         pipeline: gst::Pipeline,
         appsrc: gst_app::AppSrc,
         appsink: &gst_app::AppSink,
+        wake: Option<SharedWake>,
     ) -> Result<Self, String> {
         let (tx, rx) = mpsc::channel::<Event>();
         let sample_tx = Mutex::new(tx.clone());
@@ -441,6 +450,12 @@ impl Running {
                     let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                     if let Ok(tx) = sample_tx.lock() {
                         let _ = tx.send(Event::Sample(sample));
+                    }
+                    let wake = wake
+                        .as_ref()
+                        .and_then(|slot| slot.lock().ok().and_then(|wake| wake.clone()));
+                    if let Some(wake) = wake {
+                        wake();
                     }
                     Ok(gst::FlowSuccess::Ok)
                 })
@@ -711,7 +726,7 @@ impl RealtimeEncoder {
             .map_err(|e| format!("assemble: {e}"))?;
         gst::Element::link_many(chain.iter().copied()).map_err(|e| format!("link: {e}"))?;
 
-        let running = Running::start(pipeline, appsrc, &appsink)?;
+        let running = Running::start(pipeline, appsrc, &appsink, None)?;
         let mut enc = Self {
             config: config.clone(),
             spec,
@@ -1238,6 +1253,17 @@ pub struct RealtimeDecoder {
     /// every fall-through to another element.
     awaiting_keyframe: bool,
     first_output_seen: bool,
+    /// Units handed to the running element whose pictures have not come out
+    /// yet: elements here are one-in-one-out, so each sample settles one.
+    units_in_flight: u32,
+    /// How long a call waits for its unit's picture once output has started;
+    /// see [`Self::set_picture_wait`].
+    picture_wait: Duration,
+    /// Whether the running element has had its one start-up wait: an
+    /// element that produced nothing within it is not waited for that long
+    /// again, unit after unit.
+    startup_waited: bool,
+    picture_wake: SharedWake,
     tried: Vec<String>,
     pts: Duration,
 }
@@ -1270,6 +1296,10 @@ impl RealtimeDecoder {
             stream_color: std::sync::Arc::new(Mutex::new(None)),
             awaiting_keyframe: true,
             first_output_seen: false,
+            units_in_flight: 0,
+            picture_wait: DECODE_WAIT,
+            startup_waited: false,
+            picture_wake: std::sync::Arc::new(Mutex::new(None)),
             tried: Vec::new(),
             pts: Duration::ZERO,
         };
@@ -1294,6 +1324,30 @@ impl RealtimeDecoder {
         }
     }
 
+    /// How long [`Self::decode`] waits for its unit's picture once the
+    /// element has produced its first one (150 ms unless set). A caller
+    /// whose thread must never stall on a decode (a compositor loop) sets
+    /// [`Duration::ZERO`]: the unit is handed to the decoder and the call
+    /// returns whatever picture is already out, and the unit's own picture
+    /// arrives with the next call or [`Self::take_late_picture`], with
+    /// [`Self::picture_pending`] holding meanwhile. Pair it with
+    /// [`Self::set_picture_wake`] to be told when to collect.
+    ///
+    /// The first unit an element is given still waits for start-up (up to
+    /// 5 s), so an element that rejects the stream's first keyframe hands
+    /// that keyframe straight to the next candidate.
+    pub fn set_picture_wait(&mut self, wait: Duration) {
+        self.picture_wait = wait;
+    }
+
+    /// Run `wake` on the decoder's thread each time a picture comes out,
+    /// for this element and every candidate it falls through to.
+    pub fn set_picture_wake(&mut self, wake: Option<PictureWake>) {
+        if let Ok(mut slot) = self.picture_wake.lock() {
+            *slot = wake;
+        }
+    }
+
     /// The element currently decoding.
     pub fn element(&self) -> Option<&'static CodecElement> {
         self.running.as_ref().map(|(_, e)| *e)
@@ -1304,6 +1358,8 @@ impl RealtimeDecoder {
         self.running = None;
         self.awaiting_keyframe = true;
         self.first_output_seen = false;
+        self.startup_waited = false;
+        self.units_in_flight = 0;
         while !self.candidates.is_empty() {
             let spec = self.candidates.remove(0);
             match self.build(spec) {
@@ -1412,7 +1468,11 @@ impl RealtimeDecoder {
             .add_many(&chain)
             .map_err(|e| format!("assemble: {e}"))?;
         gst::Element::link_many(&chain).map_err(|e| format!("link: {e}"))?;
-        Ok((Running::start(pipeline, appsrc, &appsink)?, decoder_handle))
+        let wake = std::sync::Arc::clone(&self.picture_wake);
+        Ok((
+            Running::start(pipeline, appsrc, &appsink, Some(wake))?,
+            decoder_handle,
+        ))
     }
 
     /// Decode one access unit and return the newest picture that is ready.
@@ -1449,12 +1509,7 @@ impl RealtimeDecoder {
                     return Ok(picture);
                 }
                 Err(e) => {
-                    let failed = self.element().map_or("decoder", |e| e.element);
-                    tracing::warn!(
-                        "media: real-time decoder {failed} failed ({e}); trying the next"
-                    );
-                    self.tried.push(format!("{failed}: {e}"));
-                    self.start_next()?;
+                    self.fall_through(&e)?;
                     // A keyframe can start the next element right away (a
                     // hardware decoder that refuses the stream's size or
                     // profile fails on exactly this unit); anything else
@@ -1466,6 +1521,62 @@ impl RealtimeDecoder {
                 }
             }
         }
+    }
+
+    /// Whether a unit this decoder accepted is still being decoded: its
+    /// picture took longer than the call's wait and will come out of a later
+    /// [`Self::decode`] or [`Self::take_late_picture`]. A `decode` that
+    /// returned `Ok(None)` while this holds was slow, not rejected.
+    pub fn picture_pending(&self) -> bool {
+        self.units_in_flight > 0
+    }
+
+    /// The newest picture that came out after its `decode` call returned,
+    /// without waiting and without feeding the decoder anything. A receiver
+    /// whose stream has gone quiet calls this so the last unit's picture is
+    /// shown rather than stranded until the next unit arrives.
+    ///
+    /// # Errors
+    ///
+    /// [`RealtimeError::Unavailable`] once every candidate has failed.
+    pub fn take_late_picture(&mut self) -> Result<Option<DecodedPicture>, RealtimeError> {
+        if self.units_in_flight == 0 {
+            return Ok(None);
+        }
+        let Some((running, _)) = self.running.as_ref() else {
+            return Ok(None);
+        };
+        match running.drain() {
+            Ok(samples) => {
+                self.settle(samples.len());
+                let picture = samples
+                    .last()
+                    .and_then(|sample| self.picture_from_sample(sample));
+                if picture.is_some() {
+                    self.first_output_seen = true;
+                }
+                Ok(picture)
+            }
+            Err(e) => {
+                // The next element starts at the next keyframe.
+                self.fall_through(&e)?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Replace a failed element with the next candidate.
+    fn fall_through(&mut self, error: &str) -> Result<(), RealtimeError> {
+        let failed = self.element().map_or("decoder", |e| e.element);
+        tracing::warn!("media: real-time decoder {failed} failed ({error}); trying the next");
+        self.tried.push(format!("{failed}: {error}"));
+        self.start_next()
+    }
+
+    /// `pictures` came out of the running element.
+    fn settle(&mut self, pictures: usize) {
+        let pictures = u32::try_from(pictures).unwrap_or(u32::MAX);
+        self.units_in_flight = self.units_in_flight.saturating_sub(pictures);
     }
 
     /// Push one unit into the running element and collect the newest
@@ -1482,22 +1593,27 @@ impl RealtimeDecoder {
         if !keyframe && let Some(b) = buffer.get_mut() {
             b.set_flags(gst::BufferFlags::DELTA_UNIT);
         }
-        let timeout = if self.first_output_seen {
-            DECODE_WAIT
+        // Start-up (opening a render node, creating a context) is waited for
+        // once per element; after that a unit waits only the picture wait.
+        let timeout = if self.first_output_seen || self.startup_waited {
+            self.picture_wait
         } else {
             startup_timeout()
         };
         let (running, _) = self.running.as_ref().ok_or("no decoder is running")?;
         // Anything that arrived late from the previous unit first.
-        let mut newest = running.drain()?.pop();
+        let mut late = running.drain()?;
         running.push(buffer)?;
-        if let Some(s) = running.next_sample(timeout)? {
-            newest = Some(s);
-        }
-        if let Some(s) = running.drain()?.pop() {
-            newest = Some(s);
-        }
-        Ok(newest)
+        let waited = running.next_sample(timeout)?;
+        self.startup_waited = true;
+        let mut after = running.drain()?;
+        let pictures = late
+            .len()
+            .saturating_add(usize::from(waited.is_some()))
+            .saturating_add(after.len());
+        self.units_in_flight = self.units_in_flight.saturating_add(1);
+        self.settle(pictures);
+        Ok(after.pop().or(waited).or_else(|| late.pop()))
     }
 
     fn picture_from_sample(&self, sample: &gst::Sample) -> Option<DecodedPicture> {
@@ -1520,5 +1636,237 @@ impl RealtimeDecoder {
             frame = super::crop_frame(frame, w, h);
         }
         Some(DecodedPicture { frame, color })
+    }
+}
+
+#[cfg(test)]
+mod late_picture_tests {
+    use super::{
+        DECODE_WAIT, DecodeOutput, DecoderConfig, EncodedUnit, EncoderConfig, InputFrame,
+        RealtimeDecoder, RealtimeEncoder, StreamCodec, gst,
+    };
+    use crate::FramePayload;
+    use crate::hw::realtime::RealtimePolicy;
+    use gstreamer::prelude::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    const WIDTH: u32 = 320;
+    const HEIGHT: u32 = 240;
+    const PIXELS: usize = 76_800;
+    /// The red byte of the pixel at (160, 120).
+    const CENTRE_BYTE: usize = 154_240;
+    const FRAMES: u8 = 8;
+
+    /// A flat grey whose level names the frame, so a picture says which unit
+    /// it came from.
+    fn level(n: u8) -> u8 {
+        n.saturating_mul(20).saturating_add(8)
+    }
+
+    fn grey(n: u8) -> Vec<u8> {
+        [level(n), level(n), level(n), 255].repeat(PIXELS)
+    }
+
+    fn centre_level(picture: &crate::DecodedPicture) -> u8 {
+        let FramePayload::Rgba(bytes) = &picture.frame.payload else {
+            panic!("asked for RGBA");
+        };
+        bytes[CENTRE_BYTE]
+    }
+
+    fn assert_shows(picture: &crate::DecodedPicture, n: u8, what: &str) {
+        let shown = centre_level(picture);
+        assert!(
+            shown.abs_diff(level(n)) <= 3,
+            "{what}: shows level {shown}, unit {n} is {}",
+            level(n)
+        );
+    }
+
+    /// One VP9 unit per frame, each a flat grey naming its frame.
+    fn vp9_units() -> Vec<EncodedUnit> {
+        let mut config = EncoderConfig::new(StreamCodec::Vp9, WIDTH, HEIGHT, 30);
+        config.policy = RealtimePolicy::SoftwareOnly;
+        let mut encoder =
+            RealtimeEncoder::new(&config).expect("the royalty-free VP9 encoder is installed");
+        let units: Vec<_> = (0..FRAMES)
+            .flat_map(|n| {
+                encoder
+                    .encode(
+                        InputFrame::Packed(&grey(n)),
+                        Duration::from_millis(33).saturating_mul(u32::from(n)),
+                    )
+                    .expect("encode")
+            })
+            .collect();
+        assert_eq!(units.len(), usize::from(FRAMES), "one unit per frame");
+        units
+    }
+
+    /// A software VP9 decoder that has shown `keyframe`'s picture.
+    fn vp9_decoder_at(keyframe: &EncodedUnit) -> RealtimeDecoder {
+        let mut decoder = RealtimeDecoder::new(DecoderConfig {
+            codec: StreamCodec::Vp9,
+            output: DecodeOutput::Rgba,
+            policy: RealtimePolicy::SoftwareOnly,
+            display_size: Some((WIDTH, HEIGHT)),
+        })
+        .expect("the royalty-free VP9 decoder is installed");
+        let picture = decoder
+            .decode(&keyframe.data, Some(keyframe.keyframe))
+            .expect("decode")
+            .expect("the keyframe decodes within startup");
+        assert_shows(&picture, 0, "the keyframe");
+        assert!(!decoder.picture_pending());
+        decoder
+    }
+
+    /// Hold every picture inside the decoder, as a starved thread would,
+    /// until the probe is removed from the returned pad.
+    fn hold_output(decoder: &RealtimeDecoder) -> (gst::Pad, gst::PadProbeId) {
+        let src = decoder
+            .decoder_element
+            .as_ref()
+            .and_then(|element| element.static_pad("src"))
+            .expect("the decoder's source pad");
+        let hold = src
+            .add_probe(gst::PadProbeType::BLOCK_DOWNSTREAM, |_, _| {
+                gst::PadProbeReturn::Ok
+            })
+            .expect("block the decoder's output");
+        (src, hold)
+    }
+
+    /// A decoder whose pictures outlast the call's wait (a loaded machine,
+    /// its decoding thread starved) reports the accepted units as still
+    /// decoding, never as rejected, and the stream's last picture is
+    /// collected without another unit to carry it out. The decoder's output
+    /// is held back deterministically by blocking its source pad.
+    #[test]
+    fn a_slow_picture_is_pending_not_rejected_and_the_last_one_is_collected() {
+        let units = vp9_units();
+        let (first, rest) = units.split_first().expect("a keyframe");
+        let mut decoder = vp9_decoder_at(first);
+        decoder.picture_wait = Duration::from_millis(20);
+
+        let (src, hold) = hold_output(&decoder);
+        for (n, unit) in (1_u8..).zip(rest) {
+            let picture = decoder
+                .decode(&unit.data, Some(unit.keyframe))
+                .expect("a slow decoder is not a failed one");
+            assert!(picture.is_none(), "unit {n}: nothing leaves a held decoder");
+            assert!(
+                decoder.picture_pending(),
+                "unit {n} was accepted, so no picture yet means still decoding"
+            );
+            assert!(decoder.take_late_picture().expect("drain").is_none());
+        }
+
+        src.remove_probe(hold);
+        let mut newest = None;
+        let deadline = tilo_test_env::hang_deadline();
+        while decoder.picture_pending() && Instant::now() < deadline {
+            if let Some(picture) = decoder.take_late_picture().expect("drain") {
+                newest = Some(picture);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            !decoder.picture_pending(),
+            "every accepted unit's picture came out"
+        );
+        let newest = newest.expect("the held pictures came out");
+        assert_shows(
+            &newest,
+            FRAMES.saturating_sub(1),
+            "the last unit, collected",
+        );
+        assert!(
+            decoder.take_late_picture().expect("drain").is_none(),
+            "nothing is left once every unit is settled"
+        );
+    }
+
+    /// A decoder that must not wait (a compositor loop's) hands each unit
+    /// over and returns at once while its pictures are held back, where the
+    /// default wait stalls the caller for the whole wait; each held picture
+    /// then wakes the caller and is collected without another unit.
+    #[test]
+    fn a_decoder_without_a_wait_returns_at_once_and_wakes_its_collector() {
+        let units = vp9_units();
+        let (first, rest) = units.split_first().expect("a keyframe");
+        let (blocking, rest) = rest.split_first().expect("a unit after the keyframe");
+        let mut decoder = vp9_decoder_at(first);
+        let wakes = Arc::new(AtomicUsize::new(0));
+        decoder.set_picture_wake(Some({
+            let wakes = Arc::clone(&wakes);
+            Arc::new(move || {
+                wakes.fetch_add(1, Ordering::SeqCst);
+            })
+        }));
+
+        let (src, hold) = hold_output(&decoder);
+        // The default: a held picture costs the caller the whole wait.
+        let started = Instant::now();
+        assert!(
+            decoder
+                .decode(&blocking.data, Some(blocking.keyframe))
+                .expect("a slow decoder is not a failed one")
+                .is_none()
+        );
+        let waited = started.elapsed();
+        assert!(
+            waited >= DECODE_WAIT,
+            "the default wait holds the caller: {waited:?}"
+        );
+
+        decoder.set_picture_wait(Duration::ZERO);
+        let mut slowest = Duration::ZERO;
+        for (n, unit) in (2_u8..).zip(rest) {
+            let started = Instant::now();
+            let picture = decoder
+                .decode(&unit.data, Some(unit.keyframe))
+                .expect("a slow decoder is not a failed one");
+            slowest = slowest.max(started.elapsed());
+            assert!(picture.is_none(), "unit {n}: nothing leaves a held decoder");
+            assert!(decoder.picture_pending(), "unit {n} is still decoding");
+        }
+        eprintln!(
+            "decode call with a held picture: {waited:?} with the default wait, \
+             slowest {slowest:?} without one"
+        );
+        assert!(
+            slowest < DECODE_WAIT,
+            "a decoder without a wait never waits for a picture: {slowest:?}"
+        );
+
+        let woken = wakes.load(Ordering::SeqCst);
+        // The unit decoded with the default wait, and every one after it.
+        let all_woken = woken.saturating_add(rest.len()).saturating_add(1);
+        src.remove_probe(hold);
+        let mut newest = None;
+        let deadline = tilo_test_env::hang_deadline();
+        while (decoder.picture_pending() || wakes.load(Ordering::SeqCst) < all_woken)
+            && Instant::now() < deadline
+        {
+            if let Some(picture) = decoder.take_late_picture().expect("drain") {
+                newest = Some(picture);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!decoder.picture_pending(), "every held picture came out");
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            all_woken,
+            "each held picture woke the collector once"
+        );
+        let newest = newest.expect("the held pictures were collected");
+        assert_shows(
+            &newest,
+            FRAMES.saturating_sub(1),
+            "the last unit, collected",
+        );
     }
 }

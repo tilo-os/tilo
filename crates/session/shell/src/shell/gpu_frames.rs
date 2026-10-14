@@ -252,8 +252,8 @@ impl GpuFrame {
 
 #[cfg(test)]
 thread_local! {
-    /// Bytes of `wl_shm` pixels this thread wrote into client-frame textures,
-    /// per test: tests run beside each other on their own threads.
+    /// Bytes of `wl_shm` pixels this thread wrote into client-frame textures
+    /// ([`UploadRing::upload`]).
     static THREAD_SHM_UPLOAD_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
