@@ -38,6 +38,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "
 zbus = { workspace = true, features = ["tokio"] }
 futures-util.workspace = true
 workspace-hack = { version = "0.1" }
+tilo-paths.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
