@@ -416,8 +416,13 @@ def run_render(ctx: RunContext) -> list[record.Record]:
          ctx.dir / "bench.log", ctx.repo)
     opening = ctx.dir / "framework-open.log"
     call([ctx.bins["framework-scaling"], "5000,50000", "open"], opening, ctx.repo)
-    return record.read(records) + adapters.framework_open(
+    measured = record.read(records) + adapters.framework_open(
         [opening.read_text(encoding="utf-8", errors="replace")], ctx.env)
+    if "notes-latency" in ctx.bins:
+        notes = ctx.dir / "notes-latency.log"
+        call([ctx.bins["notes-latency"]], notes, ctx.repo)
+        measured += adapters.notes_latency([notes.read_text(encoding="utf-8", errors="replace")], ctx.env)
+    return measured
 
 
 IDLE_WAKEUPS_TEST = "idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget"
@@ -478,7 +483,11 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           {"strip_pan_bench": ("crates/session/shell/examples/strip_pan_bench.rs",
                                ("cargo", "build", "--locked", "--release", "-p", "shell", "--example",
                                 "strip_pan_bench"),
-                               "target/release/examples/strip_pan_bench")}),
+                               "target/release/examples/strip_pan_bench"),
+           "notes-latency": ("apps/notes/examples/notes-latency.rs",
+                             ("cargo", "build", "--locked", "--release", "-p", "notes", "--example",
+                              "notes-latency"),
+                             "target/release/examples/notes-latency")}),
     Group("wakeups", "dev", "lavapipe", (),
           {"shell": "target/debug/shell"},
           {"it": (("cargo", "test", "--locked", "-p", "shell", "--test", "it", "--no-run"), "it")},
