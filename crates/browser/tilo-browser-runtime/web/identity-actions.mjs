@@ -118,12 +118,8 @@ export function createIdentityActions({
 }) {
   let mount;
   const offered = new Set();
-  // The pair action says, where it was chosen, that its link is copied.
-  let pairCopied = false;
-  const pairAction = () => (pairCopied
-    ? {...PAIR, subtitle: 'Link copied: open it on the new device to pair it'} : PAIR);
   const actions = () => [...(naming ? [NAME] : []), ...(identity.kept ? [RECOVERY] : [KEEP, RECOVERY, SIGN_IN]),
-    ...(pairing ? [pairAction()] : [])];
+    ...(pairing ? [PAIR] : [])];
   const refresh = () => mount?.setHostActions(actions());
   // Each moment offers once per page: `moment` defaults to the action.
   const offer = (action, title, body, moment = action.id) => {
@@ -233,8 +229,8 @@ export function createIdentityActions({
           if (!link) throw new IdentityError('no-workspace', 'Join a workspace before pairing a device to it');
           const copied = await Promise.resolve(copy(link)).then(() => true, () => false);
           if (copied) {
-            pairCopied = true;
-            refresh();
+            // The clipboard is out of sight: said in passing, not kept.
+            mount?.acknowledge?.('Link copied: open it on the new device');
           } else {
             // Without the clipboard, the link has to be said somewhere.
             offered.delete(PAIR.id);
