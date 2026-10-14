@@ -23,6 +23,11 @@ use crate::{EntryKind, MAX_READ_CHUNK, MAX_WRITE_CHUNK, Metadata};
 use cap_std::fs::{Dir, File, MetadataExt};
 use rustix::fs::OFlags;
 
+// Metadata and the wire protocol use u32; Darwin's libc mode_t is u16.
+pub(crate) fn mode_bits(mode: impl Into<u32>) -> u32 {
+    mode.into()
+}
+
 #[path = "native/history_read_subject.rs"]
 mod history_read_subject;
 pub use history_read_subject::{NativeHistoryReadObservation, NativeHistoryReadSubject};
@@ -714,7 +719,7 @@ impl FsSession {
         Ok(crate::directory_backend::DirectoryStat {
             metadata,
             identity: [raw.dev(), raw.ino()],
-            file_type: raw.mode() & libc::S_IFMT,
+            file_type: raw.mode() & mode_bits(libc::S_IFMT),
             execute_bits: (raw.mode() & 0o111) as u16,
         })
     }
@@ -738,7 +743,7 @@ impl FsSession {
         Ok(crate::directory_backend::DirectoryStat {
             metadata: describe(&metadata),
             identity: [metadata.dev(), metadata.ino()],
-            file_type: metadata.mode() & libc::S_IFMT,
+            file_type: metadata.mode() & mode_bits(libc::S_IFMT),
             execute_bits: (metadata.mode() & 0o111) as u16,
         })
     }

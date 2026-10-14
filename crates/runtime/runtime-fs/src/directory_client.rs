@@ -829,24 +829,55 @@ impl MetadataPinClient {
     }
 }
 fn native_type(raw: u32, kind: crate::EntryKind) -> Result<u32, capnp::Error> {
-    const REG: u32 = libc::S_IFREG;
-    const DIR: u32 = libc::S_IFDIR;
-    const LINK: u32 = libc::S_IFLNK;
-    const FIFO: u32 = libc::S_IFIFO;
-    const SOCKET: u32 = libc::S_IFSOCK;
-    const BLOCK: u32 = libc::S_IFBLK;
-    const CHAR: u32 = libc::S_IFCHR;
-    let expected = match raw {
-        REG => crate::EntryKind::File,
-        DIR => crate::EntryKind::Directory,
-        LINK => crate::EntryKind::Symlink,
-        FIFO | SOCKET | BLOCK | CHAR => crate::EntryKind::Other,
-        _ => return Err(invalid("invalid native file type")),
-    };
+    use crate::{EntryKind, native::mode_bits};
+    let kinds = [
+        (mode_bits(libc::S_IFREG), EntryKind::File),
+        (mode_bits(libc::S_IFDIR), EntryKind::Directory),
+        (mode_bits(libc::S_IFLNK), EntryKind::Symlink),
+        (mode_bits(libc::S_IFIFO), EntryKind::Other),
+        (mode_bits(libc::S_IFSOCK), EntryKind::Other),
+        (mode_bits(libc::S_IFBLK), EntryKind::Other),
+        (mode_bits(libc::S_IFCHR), EntryKind::Other),
+    ];
+    let expected = kinds
+        .into_iter()
+        .find_map(|(bits, kind)| (raw == bits).then_some(kind))
+        .ok_or_else(|| invalid("invalid native file type"))?;
     if kind != expected {
         return Err(invalid("native file type disagrees with metadata"));
     }
     Ok(raw)
+}
+
+#[cfg(test)]
+mod native_mode_tests {
+    use super::native_type;
+    use crate::{EntryKind, native::mode_bits};
+
+    #[test]
+    fn mode_width_and_metadata_kind_preserve_wire_validation() {
+        assert_eq!(mode_bits(0o170_000_u16), mode_bits(0o170_000_u32));
+        for (bits, kind) in [
+            (libc::S_IFREG, EntryKind::File),
+            (libc::S_IFDIR, EntryKind::Directory),
+            (libc::S_IFLNK, EntryKind::Symlink),
+            (libc::S_IFIFO, EntryKind::Other),
+            (libc::S_IFSOCK, EntryKind::Other),
+            (libc::S_IFBLK, EntryKind::Other),
+            (libc::S_IFCHR, EntryKind::Other),
+        ] {
+            let raw = mode_bits(bits);
+            assert_eq!(native_type(raw, kind).unwrap(), raw);
+            let wrong_kind = if kind == EntryKind::File {
+                EntryKind::Directory
+            } else {
+                EntryKind::File
+            };
+            assert!(native_type(raw, wrong_kind).is_err());
+        }
+        assert!(native_type(0, EntryKind::Other).is_err());
+        assert!(native_type(u32::MAX, EntryKind::Other).is_err());
+    }
 }
 
 #[derive(Clone)]
@@ -1039,7 +1070,7 @@ mod absent_stat_rpc_tests {
                 1 => out.set_execute_bits(0o111),
                 2 => out.set_device(3),
                 3 => out.set_inode(4),
-                4 => out.set_file_type(libc::S_IFREG),
+                4 => out.set_file_type(crate::native::mode_bits(libc::S_IFREG)),
                 5 => {
                     out.init_metadata();
                 }
