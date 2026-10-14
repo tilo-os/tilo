@@ -4617,13 +4617,45 @@ impl ShellOverlayHost {
         encoded: &[u8],
         latency_ns: Option<u64>,
     ) -> bool {
-        let Some(tab_id) = self
+        self.peer_stream_view_mut(source_peer, surface_id)
+            .is_some_and(|view| {
+                !matches!(
+                    view.push_encoded_with_latency(encoded, latency_ns),
+                    crate::shell::peer_view::PushOutcome::DecodeFailed
+                )
+            })
+    }
+
+    /// Show every peer-stream picture that finished decoding after its frame
+    /// was pushed. A window that stops changing sends no further frame to
+    /// carry its last picture out of the decoder, so the loop collects it.
+    /// Returns whether any view took a new picture.
+    pub fn collect_late_peer_pictures(&mut self) -> bool {
+        if self.peer_stream_tabs.is_empty() {
+            return false;
+        }
+        let streams: Vec<(u64, u64)> = self.peer_stream_tabs.keys().copied().collect();
+        let mut collected = false;
+        for (source_peer, surface_id) in streams {
+            if let Some(view) = self.peer_stream_view_mut(source_peer, surface_id)
+                && view.picture_pending()
+            {
+                collected |= view.collect_late_picture().is_some();
+            }
+        }
+        collected
+    }
+
+    /// The view showing the stream of `surface_id` from `source_peer`.
+    pub fn peer_stream_view_mut(
+        &mut self,
+        source_peer: u64,
+        surface_id: u64,
+    ) -> Option<&mut crate::shell::peer_view::PeerView> {
+        let tab_id = self
             .peer_stream_tabs
             .get(&(source_peer, surface_id))
-            .copied()
-        else {
-            return false;
-        };
+            .copied()?;
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: same row ownership invariant as `mount_peer_stream`.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
@@ -4632,21 +4664,14 @@ impl ShellOverlayHost {
                     continue;
                 };
                 let ui::widget::TileContent::App(app) = host.content_mut() else {
-                    return false;
+                    return None;
                 };
-                let Some(view) = app
+                return app
                     .as_any_mut()
-                    .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>())
-                else {
-                    return false;
-                };
-                return !matches!(
-                    view.push_encoded_with_latency(encoded, latency_ns),
-                    crate::shell::peer_view::PushOutcome::DecodeFailed
-                );
+                    .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>());
             }
         }
-        false
+        None
     }
 
     /// Whether a view shows the stream of `surface_id` from `source_peer`.
