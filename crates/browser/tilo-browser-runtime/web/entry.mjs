@@ -1,7 +1,8 @@
 /**
  * Boot of the web entry pages: `index.html` (desktop mode) and
  * `app/index.html` (one app, full tab). The page:
- * 1. takes the secrets the inline scrubber moved out of the address bar;
+ * 1. takes the secrets the inline scrubber moved out of the address bar
+ *    (a machine to set up, `install`, is handed back for the page to offer);
  * 2. parses the link with the runtime's Rust grammar under its entry (a bare
  *    entry under a home workspace needs no grammar, so admission starts
  *    while the runtime still loads)
@@ -121,7 +122,8 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // The page's own loading note, which admission progress replaces only
   // while it lasts: once in, the note is back until the desktop draws.
   const loading = status?.textContent ?? '';
-  const secrets = takeLinkSecrets(window);
+  // A machine to set up is not admission: the page offers it once open.
+  const {install, ...secrets} = takeLinkSecrets(window);
   // The runtime (most of the page's download) loads while the entry is read
   // and, for a bare entry under a home workspace, while admission starts:
   // a host's door is asked, and the person and device keys opened, before
@@ -178,5 +180,5 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
       return openTarget({mount: shown.mount, navigation: shown.navigation, target: next.target, mode: next.mode});
     },
     onError: error => say(error?.message ?? String(error))});
-  return {peer, mount: shown.mount, navigation: shown.navigation, router, link, entry};
+  return {peer, mount: shown.mount, navigation: shown.navigation, router, link, entry, ...(install ? {install} : {})};
 }
