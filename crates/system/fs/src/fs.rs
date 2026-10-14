@@ -89,6 +89,10 @@ type DocExports = HashMap<u64, (Vec<automerge::ChangeHash>, Arc<[u8]>)>;
 /// one inode's writes, reads and commits never wait for another's.
 pub type WriteStages = HashMap<u64, Arc<Stage>>;
 
+/// Writes the namespace to disk unless the copy there already holds it
+/// ([`QuickFS::set_durability_hook`]).
+pub type DurabilityHook = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
+
 #[derive(Serialize)]
 struct VersionMetadataDigest {
     path: Option<String>,
@@ -707,8 +711,9 @@ pub struct QuickFS {
     history_jobs: history_jobs::HistoryJobs,
     checked_history_workspace: Option<uuid::Uuid>,
     mount_lifetime: uuid::Uuid,
-    /// Run after a record group is durable, to persist what depends on it.
-    durability_hook: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
+    /// Makes the namespace on disk hold the current placements: run after a
+    /// record group is durable (native plane), and by `fsync`/`fsyncdir`.
+    durability_hook: std::sync::OnceLock<DurabilityHook>,
     /// Namespace deltas of the changeset being published, broadcast once it
     /// is durable (`None` outside a changeset).
     deferred_deltas: Mutex<Option<Vec<Vec<u8>>>>,
@@ -1648,9 +1653,34 @@ impl QuickFS {
         self.persist_buffer(ino, PersistIntent::Close)
     }
 
-    /// `fsync`: make the buffer durable.
+    /// `fsync`: make the buffer durable, and the name it is reached by.
+    ///
+    /// Staged bytes alone would come back after a crash only as a sibling
+    /// copy when the namespace on disk does not place the file yet: a file
+    /// created, written and synced within the persister's settle time
+    /// (`namespace_persist::QUIET`). So the namespace is made durable too.
     fn fsync_inode(&self, ino: u64) -> Result<(), i32> {
-        self.persist_buffer(ino, PersistIntent::Sync)
+        self.persist_buffer(ino, PersistIntent::Sync)?;
+        self.sync_namespace()
+    }
+
+    /// Make the namespace on disk hold every placement made so far: what
+    /// `fsync` of a directory promises for the names in it. Without a hook
+    /// (no persistent namespace) there is nothing to make durable.
+    fn sync_namespace(&self) -> Result<(), i32> {
+        let Some(hook) = self.durability_hook.get() else {
+            return Ok(());
+        };
+        hook().map_err(|error| {
+            eprintln!("the namespace could not be made durable: {error}");
+            EIO
+        })
+    }
+
+    /// Sets how the namespace is made durable: after each native changeset,
+    /// and for every `fsync` and `fsyncdir`. Set once.
+    pub fn set_durability_hook(&self, hook: DurabilityHook) {
+        let _ = self.durability_hook.set(hook);
     }
 
     /// `release` of kernel handle `fh`: commit a writable handle's bytes if
@@ -6511,6 +6541,28 @@ impl Filesystem for QuickFS {
         reply: ReplyEmpty,
     ) {
         match self.fsync_inode(ino.0) {
+            Ok(()) => reply.ok(),
+            Err(errno) => reply.error(to_errno(errno)),
+        }
+    }
+
+    /// `fsync` of a directory: the names in it survive a crash. Left
+    /// unimplemented, the kernel would take the `ENOSYS` as success for every
+    /// later directory sync while a rename or create stayed in memory until
+    /// the persister's next write.
+    fn fsyncdir(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
+        if !self.ino_in_view(ino.0) {
+            reply.error(to_errno(ENOENT));
+            return;
+        }
+        match self.sync_namespace() {
             Ok(()) => reply.ok(),
             Err(errno) => reply.error(to_errno(errno)),
         }
