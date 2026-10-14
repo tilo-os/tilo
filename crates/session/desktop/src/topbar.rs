@@ -7287,7 +7287,10 @@ mod tests {
             Some(TopBarChrome::CONTROL_TILO_MARK)
         );
         let mark = bar.tilo_mark_rect();
-        assert!(mark.width() >= 32.0 && mark.height() >= 32.0, "{mark:?}");
+        assert!(
+            mark.width() >= BAR_CONTROL_PX && mark.height() >= BAR_CONTROL_PX,
+            "{mark:?}"
+        );
         assert!(mark.x1 <= bar.overview_btn_rect.x0, "the mark leads");
         assert!(
             bar.test_rects()
