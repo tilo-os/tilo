@@ -21,8 +21,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tilo_desktop::chrome::{
-    ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, TopBarWidget,
-    TopBarWidgets,
+    ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, StripPlaces,
+    TopBarWidget, TopBarWidgets,
 };
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadCopy};
 use tilo_desktop::overview::{OverviewHost, room_cards};
@@ -64,13 +64,41 @@ pub(crate) struct HostOffers {
     pub mac: bool,
 }
 
+/// The room around this desktop: where its other people are, and who this
+/// person is when they make something.
+#[derive(Clone, Default)]
+pub(crate) struct Room {
+    /// The place each other person present in the room names: the id of
+    /// the strip they show.
+    pub places: Rc<RefCell<Vec<String>>>,
+    /// Bumped whenever `places` changes.
+    pub places_revision: Rc<Cell<u64>>,
+    /// Who made each strip and opened each window.
+    pub authors: crate::desktop::Authors,
+    /// The person this desktop acts for.
+    pub author: String,
+}
+
+impl Room {
+    /// Take the places of the room's other people.
+    pub fn set_places(&self, places: Vec<String>) {
+        if *self.places.borrow() != places {
+            *self.places.borrow_mut() = places;
+            self.places_revision
+                .set(self.places_revision.get().wrapping_add(1));
+        }
+    }
+}
+
 /// The bar's view of the page: the surface's tree, the wall clock, and the
 /// intents it raised since the last update pass.
 struct PageChrome {
     handle: DesktopHandle,
+    room: Room,
     intents: RefCell<Vec<ChromeIntent>>,
-    /// `(tree revision, minute)` the snapshot revision was last bumped for.
-    seen: Cell<(u64, i64)>,
+    /// `(tree revision, minute, places revision)` the snapshot revision was
+    /// last bumped for.
+    seen: Cell<(u64, i64, u64)>,
     revision: Cell<u64>,
     wake: Arc<dyn Fn() + Send + Sync>,
 }
@@ -78,11 +106,25 @@ struct PageChrome {
 impl DesktopChromeSource for PageChrome {
     fn snapshot(&self) -> DesktopChromeSnapshot {
         let clock = clock_snapshot();
-        let seen = (self.handle.revision(), clock.unix_seconds.div_euclid(60));
+        let seen = (
+            self.handle.revision(),
+            clock.unix_seconds.div_euclid(60),
+            self.room.places_revision.get(),
+        );
         if self.seen.get() != seen {
             self.seen.set(seen);
             self.revision.set(self.revision.get().wrapping_add(1));
         }
+        let others: Vec<StripId> = self
+            .room
+            .places
+            .borrow()
+            .iter()
+            .filter_map(|place| place.parse().ok().map(StripId))
+            .collect();
+        let places = self
+            .handle
+            .read(|tree| StripPlaces::in_active_workspace(tree, &others));
         DesktopChromeSnapshot {
             revision: self.revision.get(),
             clock,
@@ -91,6 +133,7 @@ impl DesktopChromeSource for PageChrome {
             topbar_widgets: Some(TopBarWidgets {
                 widgets: vec![TopBarWidget::Clock, TopBarWidget::Calendar],
             }),
+            strip_places: Some(places),
             ..DesktopChromeSnapshot::default()
         }
     }
@@ -227,12 +270,14 @@ impl BrowserShell {
         generation: String,
         offers: HostOffers,
         requests: HostRequests,
+        room: Room,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         let chrome = Rc::new(PageChrome {
             handle: handle.clone(),
+            room,
             intents: RefCell::default(),
-            seen: Cell::new((u64::MAX, 0)),
+            seen: Cell::new((u64::MAX, 0, 0)),
             revision: Cell::new(0),
             wake,
         });
@@ -330,8 +375,38 @@ impl BrowserShell {
             }
             ChromeIntent::ToggleCollaborators => self.invite(),
             ChromeIntent::ToggleOverview => self.toggle_overview(),
+            ChromeIntent::SwitchStrip(strip) => {
+                if let Some(workspace) = self.active_workspace() {
+                    self.dispatch(&Command::Strip {
+                        generation: self.generation.clone(),
+                        workspace,
+                        strip: strip.0.to_string(),
+                    });
+                }
+            }
+            ChromeIntent::AddStrip { name } => self.add_strip(name),
             _ => {}
         }
+    }
+
+    /// Add a strip named `name` to the active workspace, kept as this
+    /// person's, and go there.
+    fn add_strip(&self, name: String) {
+        let mut tree = self.handle.read(Clone::clone);
+        let active = tree.active;
+        let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.id == active) else {
+            return;
+        };
+        let strip = Strip::new(StripId(self.handle.mint_id()), name);
+        let id = strip.id;
+        workspace.strips.push(strip);
+        tree.active_strip.insert(active, id);
+        self.chrome
+            .room
+            .authors
+            .borrow_mut()
+            .insert(id.0, self.chrome.room.author.clone());
+        self.handle.replace_tree(tree);
     }
 
     fn toggle_overview(&mut self) {

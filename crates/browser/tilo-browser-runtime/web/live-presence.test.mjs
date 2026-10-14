@@ -302,3 +302,31 @@ test('a change of focused app or record snaps without carrying old-surface motio
     for (const at of [16,20,60]) assert.deepEqual(remote.sample(at).pointer,[10,20]);
   }
 });
+
+test('followPlaces hands over where present people are, once per change', async () => {
+  const {followPlaces} = await import('./live-presence.mjs');
+  const handlers = {presence: new Set(), member: new Set()};
+  let remotes = [];
+  const layer = {
+    remoteState: () => remotes,
+    onPresence: fn => { handlers.presence.add(fn); return () => handlers.presence.delete(fn); },
+    onMember: fn => { handlers.member.add(fn); return () => handlers.member.delete(fn); },
+  };
+  let tick;
+  const heard = [];
+  const stop = followPlaces(layer, places => heard.push(places), {setTimer: fn => { tick = fn; return 1; }, clearTimer: () => { tick = undefined; }});
+  remotes = [
+    {publisher: 'a', place: '11', participant: {kind: 'person'}, stale: false},
+    {publisher: 'b', place: '10', participant: null, stale: false},
+    {publisher: 'c', place: '11', participant: {kind: 'agent'}, stale: false},
+    {publisher: 'd', place: null, participant: {kind: 'person'}, stale: false},
+  ];
+  for (const fn of handlers.presence) fn({});
+  for (const fn of handlers.presence) fn({});
+  remotes = remotes.map(remote => (remote.publisher === 'a' ? {...remote, stale: true} : remote));
+  tick();
+  stop();
+  assert.deepEqual(heard, [[], ['10', '11'], ['10']]);
+  assert.equal(tick, undefined);
+  assert.equal(handlers.presence.size, 0);
+});
