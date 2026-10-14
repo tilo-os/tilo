@@ -7,13 +7,15 @@ use getrandom::SysRng;
 use rand_core::UnwrapErr;
 use std::{path::Path, sync::Arc, time::Duration};
 use tilo_agent_participant::{AppCatalogue, ModelChoice};
-use tilo_identity_host::{device_fleet::DeviceFleetStore, provisioning};
+use tilo_identity_host::{
+    device_fleet::DeviceFleetStore, enrollment::EnrollmentRole, provisioning,
+};
 use tilo_relay::{
     config::RelayConfig,
     daemon::{Relay, RelayIdentity},
     rooms::{GrantAppAuthorshipRequest, IssueInvitationRequest, RemoveMemberRequest},
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList};
+use tilo_user_identity::{DeviceCert, IdentityPaths, RevocationList};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 
 fn provision(profile: &Path) -> Result<DeviceCert, Box<dyn std::error::Error>> {
@@ -39,11 +41,13 @@ fn enroll_host(
     let now = tilo_clock::unix_now_ns();
     let expires = now.checked_add(600_000_000_000).ok_or("expiry overflow")?;
     let identity = hex::encode(owner.user_public_key);
-    let token = fleet.mint_enrollment(&identity, DeviceCapabilities::host(), now, expires)?;
+    let role = EnrollmentRole::HomePeer;
+    let token = fleet.mint_enrollment(&identity, role.preset(), now, expires)?;
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let cert = fleet.complete_enrollment(
         &identity,
         &token,
+        role,
         key.verifying_key().to_bytes(),
         "Private native pair host",
         now,
