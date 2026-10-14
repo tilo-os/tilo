@@ -160,6 +160,9 @@ pub struct RichTextLine {
     /// Cursor position before the most-recent edit; used with `prev_text` to
     /// figure out where the splice landed.
     prev_cursor: usize,
+    /// Marks that end at this byte for good: text typed there next does not
+    /// continue them (a span closed by its typed markdown delimiter).
+    closed: Option<(usize, Vec<Mark>)>,
     /// `(byte_start, byte_end, author_id)` read from the bound Text's marks
     /// during `sync`; drives the authorship highlight in `BlockEditor::draw`.
     author_runs: Vec<(usize, usize, String)>,
@@ -195,6 +198,7 @@ impl RichTextLine {
             pending_marks: Vec::new(),
             prev_text: String::new(),
             prev_cursor: 0,
+            closed: None,
             author_runs: Vec::new(),
             mention_paint: None,
         }
@@ -274,6 +278,29 @@ impl RichTextLine {
         if !enabled {
             self.pending_marks.clear();
         }
+    }
+
+    /// Whether the line shows inline marks (prose) rather than plain
+    /// source (code).
+    pub fn inline_formatting(&self) -> bool {
+        self.inline_formatting
+    }
+
+    /// Whether the caret types into inline code: inside a code span, at its
+    /// end (where the document extends the span over what is typed), or
+    /// with code set for the text typed next.
+    pub fn caret_in_code(&self) -> bool {
+        let caret = self.inner.cursor_pos();
+        self.inline_formatting
+            && (self
+                .pending_marks
+                .iter()
+                .any(|mark| matches!(mark, Mark::Code))
+                || self.marks.iter().any(|span| {
+                    matches!(span.mark, Mark::Code)
+                        && span.range.start < caret
+                        && caret <= span.range.end
+                }))
     }
 
     pub fn set_wrap(&mut self, wrap: bool) {
@@ -400,6 +427,7 @@ impl RichTextLine {
 
     /// Does NOT mark the line dirty — programmatic writes are not user edits.
     pub fn set_text(&mut self, s: &str) {
+        self.closed = None;
         self.inner.set_text(s);
         self.inner.set_cursor_pos(s.len());
         // Doesn't preserve prior marks; parents re-seed via `set_marks`.
@@ -525,6 +553,13 @@ impl RichTextLine {
     #[doc(hidden)]
     pub fn transient_colors(&self) -> &[TransientColorSpan] {
         &self.transient_colors
+    }
+
+    /// Text typed next at byte `at` does not continue `marks`, though a
+    /// span of each ends there: the person ended them on purpose. Moving
+    /// the caret or editing elsewhere forgets this.
+    pub fn close_marks_at(&mut self, at: usize, marks: Vec<Mark>) {
+        self.closed = Some((at, marks));
     }
 
     pub fn add_mark(&mut self, span: MarkSpan) {
@@ -724,7 +759,19 @@ impl RichTextLine {
     /// `LinkOpen` when the edit just typed a `[[` at the caret.
     fn reconcile_marks_after_edit(&mut self, new_text: &str) {
         let (at, inserted, removed) = diff_splice(&self.prev_text, new_text);
-        marks::shift_after_edit(&mut self.marks, at, inserted, removed);
+        marks::carry_through_edit(&mut self.marks, at, inserted, removed);
+        if let Some((closed_at, closed)) = self.closed.take()
+            && closed_at == at
+            && inserted > 0
+        {
+            for mark in &closed {
+                marks::remove_mark_from_range(
+                    &mut self.marks,
+                    at..at.saturating_add(inserted),
+                    mark,
+                );
+            }
+        }
 
         // Drain pending marks onto the inserted bytes.
         if inserted > 0 && !self.pending_marks.is_empty() {
@@ -1244,6 +1291,13 @@ impl Widget for RichTextLine {
             self.refresh_attributes();
         }
         self.prev_cursor = self.inner.cursor_pos();
+        if self
+            .closed
+            .as_ref()
+            .is_some_and(|(at, _)| *at != self.prev_cursor)
+        {
+            self.closed = None;
+        }
     }
 
     fn name(&self) -> &'static str {
