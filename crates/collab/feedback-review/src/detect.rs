@@ -7,7 +7,7 @@
 
 use std::sync::LazyLock;
 
-use regex::Regex;
+use regex_lite::Regex;
 
 use crate::view::{declared_occurrences, declared_values};
 use crate::{
