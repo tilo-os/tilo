@@ -4498,10 +4498,27 @@ fn run_autostart_once(frame_builder: &FrameBuilder) {
 /// compositor can mint an external xdg-activation token before the child is
 /// spawned. This keeps the token single-use and binds it to the exact user
 /// action rather than accepting an app-id guess later.
-fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) -> bool {
+fn launch_queued_host_apps(
+    state: &mut State,
+    frame_builder: &mut FrameBuilder,
+    wake: &crate::session_runtime::Wake,
+) -> bool {
     let requests = crate::shell::host_apps::drain_queued_launches();
     let mut changed = false;
     for request in requests {
+        let reopened = {
+            let chrome = frame_builder.chrome();
+            let tree = chrome.tree();
+            crate::shell::host_apps::reopen_from_tray(
+                &request,
+                crate::tray::global(),
+                &tree,
+                Arc::clone(wake),
+            )
+        };
+        if reopened {
+            continue;
+        }
         tracing::info!(
             target: "shell::compositor::host_launch",
             desktop_id = %request.app.desktop_id,
@@ -11443,7 +11460,7 @@ pub fn run() {
         crate::shell::launcher::expire_pending_placements();
         session_changed |=
             crate::compositor::selection::pump_pending_shell_drop(&mut state, &mut frame_builder);
-        session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
+        session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder, &session_wake);
         session_changed |= post_codec_pack_notices(&mut frame_builder);
         session_changed |= post_storage_notices(&mut frame_builder);
         run_autostart_once(&frame_builder);

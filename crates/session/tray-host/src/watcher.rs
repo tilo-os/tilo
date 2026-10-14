@@ -42,7 +42,11 @@ impl Watcher {
         let connection = connection.clone();
         let emitter = emitter.into_owned();
         drop(tokio::spawn(async move {
-            match item::track(tray, connection, destination, path).await {
+            let owner_app = match sender.as_deref() {
+                Some(sender) => verified_owner(&tray, &connection, sender).await,
+                None => None,
+            };
+            match item::track(tray, connection, destination, path, owner_app).await {
                 Ok(key) => {
                     let _ = Self::status_notifier_item_registered(&emitter, &key).await;
                 }
@@ -96,6 +100,24 @@ impl Watcher {
 
     #[zbus(signal)]
     pub async fn status_notifier_host_registered(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+}
+
+/// The application `sender` belongs to, proven from its process by the
+/// tray's [`crate::OwnerResolver`] (a Flatpak's connection is normally the
+/// sandbox's xdg-dbus-proxy, which runs in that sandbox). `None` on a
+/// peer-to-peer connection, which has no bus to ask for the peer's process.
+pub async fn verified_owner(
+    tray: &Tray,
+    connection: &zbus::Connection,
+    sender: &str,
+) -> Option<String> {
+    if !connection.is_bus() {
+        return None;
+    }
+    let bus = zbus::fdo::DBusProxy::new(connection).await.ok()?;
+    let name = zbus::names::BusName::try_from(sender).ok()?;
+    let pid = bus.get_connection_unix_process_id(name).await.ok()?;
+    tray.owner_of_process(pid)
 }
 
 /// Keeps the watcher served while held.
