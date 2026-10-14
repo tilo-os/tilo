@@ -52,6 +52,12 @@ version=$(grep -o "v/[0-9a-f]\{20\}/entry-page.mjs" <<<"$page" | head -1 | cut -
 [[ -n $version ]] || fail "the entry page imports no versioned entry-page.mjs"
 grep -q "'../v/$version/entry-page.mjs'" <<<"$(get "$home" /app/)" || fail "the app entry points elsewhere"
 grep -q '^cache-control: no-cache' <(head_of "$home" /) || fail "/ must revalidate"
+# Every answer pins the host to HTTPS, the entry pages and the versioned
+# files alike, and never reaches past it to the workspace hosts beneath.
+for path in / /entry.json "/v/$version/entry-page.mjs"; do
+  sts=$(head_of "$home" "$path" | grep '^strict-transport-security:' || true)
+  [[ $sts == 'strict-transport-security: max-age=31536000' ]] || fail "$path must pin HTTPS for this host only: ${sts:-no header}"
+done
 # One complete, immutable version: version.json names the version the entry
 # pages import, and every file that version's build.json lists (bar the two
 # entry pages, which live at the top) is served under v/<version>/ with
