@@ -141,7 +141,7 @@ fn try_retain_frame(
     bytes: &[u8],
     seq: u64,
 ) -> Result<(RetainOutcome, bool, u64), StoreError> {
-    let (_, payload) = retained::payload(bytes, store.workspace_id()).unwrap();
+    let (_, payload) = frames::payload(bytes, store.workspace_id()).unwrap();
     let (channel, checkpoint) = match payload {
         CoeditPayload::Checkpoint { channel, .. } => (channel, true),
         CoeditPayload::RetainedDelta { channel, .. } => (channel, false),
@@ -227,7 +227,7 @@ fn tail_cache_publishes_what_a_full_selection_would() {
         let (fast_outcome, selected, _) = try_retain_frame(&fast, bytes, seq)
             .unwrap_or_else(|error| panic!("retain {retains} (seq {seq}) with cursors: {error}"));
         fast_selections = fast_selections.saturating_add(usize::from(selected));
-        full.tail_cache.invalidate();
+        full.tail_cache().invalidate();
         let (full_outcome, _, _) = try_retain_frame(&full, bytes, seq)
             .unwrap_or_else(|error| panic!("retain {retains} (seq {seq}) selecting: {error}"));
         assert_eq!(

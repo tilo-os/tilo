@@ -8,13 +8,13 @@ use std::{
     path::PathBuf,
 };
 
-pub(crate) const RUN_ENTRIES: usize = 128;
-pub(crate) const RUN_BYTES: usize = 256 * 1024;
-pub(crate) const MERGE_FAN_IN: usize = 8;
-pub(crate) const MAX_METADATA: usize = 16 * 1024;
+pub const RUN_ENTRIES: usize = 128;
+pub const RUN_BYTES: usize = 256 * 1024;
+pub const MERGE_FAN_IN: usize = 8;
+pub const MAX_METADATA: usize = 16 * 1024;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct WorkLimit {
+pub struct WorkLimit {
     pub entries: usize,
     pub metadata_bytes: usize,
 }
@@ -29,10 +29,16 @@ impl Default for WorkLimit {
 impl WorkLimit {
     /// A metadata decode may use its entire validated record bound. Charging
     /// that bound avoids overrunning the caller's byte quantum on lookahead.
-    pub(super) fn record_entries(self) -> usize {
+    pub fn record_entries(self) -> usize {
         self.entries.min(self.metadata_bytes / MAX_METADATA)
     }
-    pub(super) fn checked(self) -> Result<Self, StoreError> {
+    /// This limit, refused when it allows no work or more than the store's
+    /// bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero or oversized limit.
+    pub fn checked(self) -> Result<Self, StoreError> {
         if self.entries == 0 || self.metadata_bytes < MAX_METADATA {
             return Err(invalid("invalid work quantum"));
         }
@@ -43,17 +49,21 @@ impl WorkLimit {
     }
 }
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Step<T> {
+pub enum Step<T> {
     More,
     Done(T),
 }
-pub(super) fn invalid(message: &str) -> StoreError {
+pub fn invalid(message: &str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, message).into()
 }
 /// Turn a broken step-machine invariant into a storage error instead of a
 /// panic: the owner fails the operation and keeps serving other workspaces.
-pub(crate) trait Invariant<T> {
+pub trait Invariant<T> {
     /// The value, or an `InvalidData` storage error naming what was missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value is absent.
     fn invariant(self, what: &str) -> Result<T, StoreError>;
 }
 fn broken(what: &str) -> StoreError {
@@ -69,7 +79,12 @@ impl<T, E> Invariant<T> for Result<T, E> {
         self.map_err(|_| broken(what))
     }
 }
-pub(super) fn increment(value: &mut u64) -> Result<(), StoreError> {
+/// Add one to a work counter.
+///
+/// # Errors
+///
+/// Returns an error when the counter is exhausted.
+pub fn increment(value: &mut u64) -> Result<(), StoreError> {
     *value = value
         .checked_add(1)
         .ok_or_else(|| invalid("storage counter exhausted"))?;
@@ -77,7 +92,7 @@ pub(super) fn increment(value: &mut u64) -> Result<(), StoreError> {
 }
 
 #[derive(Default, Debug, Clone)]
-pub(crate) struct WorkStats {
+pub struct WorkStats {
     pub staging_full_flushes: u64,
     pub peak_metadata_entries: usize,
     pub peak_metadata_bytes: usize,
@@ -88,7 +103,7 @@ pub(crate) struct WorkStats {
     pub peak_frame_bytes: usize,
 }
 impl WorkStats {
-    pub(super) fn metadata(&mut self, entries: usize, bytes: usize, handles: usize) {
+    pub fn metadata(&mut self, entries: usize, bytes: usize, handles: usize) {
         self.peak_metadata_entries = self.peak_metadata_entries.max(entries);
         self.peak_metadata_bytes = self.peak_metadata_bytes.max(bytes);
         self.peak_open_files = self.peak_open_files.max(handles);
@@ -96,7 +111,7 @@ impl WorkStats {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct Meta {
+pub struct Meta {
     #[serde(deserialize_with = "bounded_keys")]
     pub key: Vec<OsString>,
     #[serde(with = "os_path")]
@@ -169,7 +184,12 @@ impl Meta {
         Ok(())
     }
 }
-pub(super) fn write_meta(file: &mut File, meta: &Meta) -> Result<(), StoreError> {
+/// Append one length-prefixed metadata record to `file`.
+///
+/// # Errors
+///
+/// Returns an error when `meta` is invalid or the write fails.
+pub fn write_meta(file: &mut File, meta: &Meta) -> Result<(), StoreError> {
     meta.validate()?;
     let bytes = serde_json::to_vec(meta).map_err(|e| invalid(&e.to_string()))?;
     if bytes.len() > MAX_METADATA {
@@ -180,7 +200,12 @@ pub(super) fn write_meta(file: &mut File, meta: &Meta) -> Result<(), StoreError>
     file.write_all(&bytes)?;
     Ok(())
 }
-pub(super) fn read_meta(file: &mut File) -> Result<Option<Meta>, StoreError> {
+/// The next metadata record of `file`, `None` at its end.
+///
+/// # Errors
+///
+/// Returns an error for a corrupt or oversized record or a failed read.
+pub fn read_meta(file: &mut File) -> Result<Option<Meta>, StoreError> {
     let mut prefix = [0; 4];
     if file.read(&mut prefix[..1])? == 0 {
         return Ok(None);
@@ -201,12 +226,17 @@ pub(super) fn read_meta(file: &mut File) -> Result<Option<Meta>, StoreError> {
 /// child-open or unlink operations retain the exact entry for the next quantum.
 /// An iterator error has no entry identity, so retry reopens this directory and
 /// scans its remaining contents in bounded quanta instead of skipping the error.
-pub(super) struct DirectoryCursor {
+pub struct DirectoryCursor {
     path: PathBuf,
     entries: Option<fs::ReadDir>,
     pending: Option<fs::DirEntry>,
 }
 impl DirectoryCursor {
+    /// A cursor over the entries of the directory `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory cannot be listed.
     pub fn open(path: &std::path::Path) -> Result<Self, StoreError> {
         Ok(Self {
             path: path.into(),
@@ -214,6 +244,11 @@ impl DirectoryCursor {
             pending: None,
         })
     }
+    /// The current entry, `None` past the last.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the listing fails.
     pub fn peek(&mut self) -> Result<Option<&fs::DirEntry>, StoreError> {
         if self.pending.is_none() {
             if self.entries.is_none() {
@@ -241,7 +276,7 @@ struct Merge {
     first: u64,
     count: u64,
 }
-pub(super) struct Sorter {
+pub struct Sorter {
     root: PathBuf,
     buffer: Vec<Meta>,
     bytes: usize,
@@ -257,6 +292,11 @@ pub(super) struct Sorter {
     pub stats: WorkStats,
 }
 impl Sorter {
+    /// A sorter spilling its runs under `root`, which it creates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `root` cannot be created.
     pub fn new(root: PathBuf) -> Result<Self, StoreError> {
         fs::create_dir(&root)?;
         let mut sorter = Self::unspilled(root);
@@ -290,6 +330,11 @@ impl Sorter {
     pub fn spilling(&self) -> bool {
         self.spill.is_some()
     }
+    /// Add one record, starting a spill when the in-memory run is full.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `meta` is invalid or a spill cannot start.
     pub fn push(&mut self, meta: Meta) -> Result<(), StoreError> {
         if self.sealed || self.spilling() {
             return Err(invalid("metadata sorter requires spill progress"));
@@ -327,6 +372,11 @@ impl Sorter {
         self.spill = Some(File::create(self.path(0, self.runs))?);
         Ok(())
     }
+    /// One quantum of writing the full run to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the run cannot be written.
     pub fn spill_step(&mut self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
         let limit = limit.checked()?;
         self.stats.last_step_work = 0;
@@ -350,6 +400,11 @@ impl Sorter {
         }
         Ok(Step::More)
     }
+    /// One quantum of merging; done with the path of the sorted output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a run cannot be read or the output written.
     pub fn step(&mut self, limit: WorkLimit) -> Result<Step<PathBuf>, StoreError> {
         let limit = limit.checked()?;
         self.stats.last_step_work = 0;

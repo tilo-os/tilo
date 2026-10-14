@@ -1,13 +1,15 @@
 //! Regressions over the shell-proof scenario, generated at test time (see
 //! `shell_proof_fixture`).
 use super::*;
-use crate::{coedit::CoeditPayload, transport::Envelope};
-use tilo_peer_state::{NeighbourMsg, StatePeer, retained_proof::*};
+use crate::ShellAuthority as _;
+use tilo_peer_state::{NeighbourMsg, StatePeer};
+use tilo_relay::store::WorkspaceStore;
+use tilo_relay::transport::Envelope;
 
-/// Build the shell-proof and shell-selection scenarios once, at test time,
-/// with fresh test identities, in the layout the production store reader and
-/// the tests read. Keeping the directory alive also preserves consumers that
-/// copy retained trees.
+/// Build the shell-proof scenario once, at test time, with fresh test
+/// identities, in the layout the production store reader and the tests read.
+/// Keeping the directory alive also preserves consumers that copy retained
+/// trees. The shell-selection scenario is `fixtures::producer_fixture`.
 pub(super) fn fixture() -> PathBuf {
     static FIXTURES: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     FIXTURES
@@ -16,10 +18,6 @@ pub(super) fn fixture() -> PathBuf {
             super::shell_proof_fixture::write(
                 &super::shell_proof_fixture::generate(),
                 &dir.path().join("shell-proof"),
-            );
-            super::shell_selection_fixture::write(
-                &super::shell_selection_fixture::generate(),
-                &dir.path().join("shell-selection"),
             );
             dir
         })
@@ -62,7 +60,7 @@ pub(super) fn parts(payload: CoeditPayload) -> ([u8; 32], Vec<u8>, RoomInput) {
 fn shell_authority_binding_is_local_persistent_conflict_checked_and_workspace_bound() {
     let temp = tempfile::tempdir().unwrap();
     let authority = binding();
-    let workspace = crate::room_workspace_id(authority.room()).unwrap();
+    let workspace = tilo_relay::room_workspace_id(authority.room()).unwrap();
     let mut store = WorkspaceStore::open(temp.path(), workspace, true).unwrap();
     assert!(store.shell_authority().is_none());
     store.bind_shell_authority(authority.clone()).unwrap();
@@ -101,7 +99,7 @@ fn shell_authority_binding_is_local_persistent_conflict_checked_and_workspace_bo
 fn shell_authority_failed_or_malformed_persistence_never_installs_trust() {
     let temp = tempfile::tempdir().unwrap();
     let authority = binding();
-    let workspace = crate::room_workspace_id(authority.room()).unwrap();
+    let workspace = tilo_relay::room_workspace_id(authority.room()).unwrap();
     let mut store = WorkspaceStore::open(temp.path(), workspace, true).unwrap();
     let path = store.root().join("shell-authority-v1.json");
     fs::create_dir(&path).unwrap();
@@ -243,7 +241,7 @@ fn captured_shell_sequence_four_is_unpaired_with_current_seven() {
             delta,
             author_device_public_key,
             ..
-        } = crate::transport::decode(&bytes[4..]).unwrap()
+        } = tilo_relay::transport::decode(&bytes[4..]).unwrap()
         else {
             panic!()
         };

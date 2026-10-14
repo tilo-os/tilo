@@ -1653,7 +1653,11 @@ fn open_bound_workspace(
         )?
     };
     if let Some(authority) = &binding.shell_authority {
-        rt.store.bind_shell_authority(authority.clone())?;
+        // The configured authority is typed at the config edge; the store's
+        // shell adapter reads its serialised form.
+        let authority = serde_json::to_value(authority)
+            .map_err(|error| crate::store::StoreError::Json(error.to_string()))?;
+        rt.store.bind_shell(&authority)?;
     }
     rt.checkpoint_prefix_recovery = binding.checkpoint_prefix_recovery;
     rt.admission = rt.admission.rebind(

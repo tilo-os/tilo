@@ -2987,7 +2987,7 @@ struct CheckpointBatchInput {
 struct CheckpointBatch {
     root: std::path::PathBuf,
     inputs: Vec<CheckpointBatchInput>,
-    selector: Option<crate::store::shell_selection::Selection>,
+    selector: Option<Box<dyn crate::store::shell_selection::ShellSelection>>,
     projected: Option<crate::store::shell_selection::BatchSelectionOutcome>,
     stage_index: usize,
     all_projectable: bool,
@@ -3021,7 +3021,7 @@ fn new_checkpoint_batch(
         let raw = crate::transport::encode(&envelope)
             .map_err(|error| crate::persistence::error(error.to_string()))?;
         let incoming =
-            crate::store::shell_selection::incoming_identity(&raw, state.store.workspace_id())
+            tilo_relay_store::frames::incoming_identity(&raw, state.store.workspace_id())
                 .ok_or_else(|| crate::persistence::error("invalid checkpoint identity"))?;
         // Reservation is speculative until fresh authorization permits promotion.
         // Keep the same ordered receipt through projection and serial fallback.
@@ -3112,7 +3112,7 @@ fn step_checkpoint_batch(
             })
             .collect::<Result<_, crate::store::StoreError>>()?;
         let incoming = batch.inputs.iter().map(|input| input.incoming).collect();
-        let selector = crate::store::shell_selection::Selection::new_projected(
+        let selector = state.store.bound_shell()?.projected_selection(
             &state.store,
             batch.root.join("selection"),
             incoming,
@@ -3277,7 +3277,7 @@ fn checkpoint_progress_step(batch: &CheckpointBatch) -> Option<CheckpointProgres
     } else {
         batch.selector.as_ref().map_or_else(
             || "selection-create".into(),
-            super::store::shell_selection::Selection::diagnostic_phase,
+            |selector| selector.diagnostic_phase(),
         )
     };
     checkpoint_progress_phase(batch, phase)
@@ -3682,9 +3682,10 @@ impl ProjectedCheckpointCommit {
     fn error_fence(&self, batch: &CheckpointBatch) -> Option<CheckpointCommitFence> {
         if self.mode == CheckpointBatchMode::AllOriginal
             && (self.selected_committed
-                || batch.selector.as_ref().is_some_and(
-                    super::store::shell_selection::Selection::current_switch_attempted,
-                ))
+                || batch
+                    .selector
+                    .as_ref()
+                    .is_some_and(|selector| selector.current_switch_attempted()))
         {
             return self
                 .recovery_fence
@@ -3757,7 +3758,7 @@ fn promote_checkpoint_input(
 struct SerialCheckpointCommit {
     index: usize,
     retain: Option<crate::store::retained::RetainBuild>,
-    selection: Option<crate::store::shell_selection::Selection>,
+    selection: Option<Box<dyn crate::store::shell_selection::ShellSelection>>,
     publication: Option<crate::store::shell_selection::Publication>,
     retained_written: u64,
     commit: Option<StateCommit>,
@@ -3779,7 +3780,7 @@ impl SerialCheckpointCommit {
             .is_some()
         {
             promote_checkpoint_input(state, batch, index)?;
-            let selector = crate::store::shell_selection::Selection::new(
+            let selector = state.store.bound_shell()?.selection(
                 &state.store,
                 batch.root.join(format!("serial-{index:02}")),
                 Some(
@@ -3934,7 +3935,7 @@ impl SerialCheckpointCommit {
         let publication = self
             .selection
             .as_ref()
-            .and_then(super::store::shell_selection::Selection::publication_on_error)
+            .and_then(|selection| selection.publication_on_error())
             .or_else(|| {
                 self.retain
                     .as_ref()
@@ -6269,8 +6270,8 @@ fn checkpoint_prefix_recovery_allowed(
         && author_device_public_key == peer.device_public_key
         && runtime
             .store
-            .shell_authority()
-            .is_some_and(|authority| authority.governor() == &peer.cert)
+            .shell_binding()
+            .is_some_and(|binding| binding.governor() == &peer.cert)
         && source.authorized(runtime)
 }
 
@@ -7422,6 +7423,7 @@ async fn authorize_delivery(
 )]
 mod private_transport_tests {
     use super::*;
+    use tilo_relay_shell::ShellAuthority as _;
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
         sign_device_cert,
@@ -7580,10 +7582,10 @@ mod private_transport_tests {
 
     #[tokio::test]
     async fn exact_history_checkpoint_prefix_production_path_runs_one_selection() {
-        use crate::store::{
-            bounded::{Step, WorkLimit},
-            shell_selection::tests::{producer_frame, producer_metadata},
-            shell_selection::{self, Selection},
+        use crate::store::bounded::{Step, WorkLimit};
+        use tilo_relay_shell::selection::{
+            self as shell_selection, Selection,
+            fixtures::{producer_frame, producer_metadata},
         };
         let meta = producer_metadata();
         let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
@@ -7747,10 +7749,10 @@ mod private_transport_tests {
         const PREFIX_ROUTES: usize = 4;
         use crate::store::{
             bounded::{Step, WorkLimit},
-            shell_selection::tests::replay_frames,
-            shell_selection::{self, SelectedRead, Selection},
+            test_support::replay_frames,
         };
         use automerge::transaction::Transactable;
+        use tilo_relay_shell::selection::{self as shell_selection, SelectedRead, Selection};
 
         fn frame(
             authority: &tilo_peer_state::retained_proof::RetentionAuthority,
@@ -8286,7 +8288,7 @@ mod private_transport_tests {
 
     #[tokio::test]
     async fn checkpoint_stage_allocation_error_registers_candidate_for_owner_cleanup() {
-        use crate::store::shell_selection::tests::{producer_frame, producer_metadata};
+        use tilo_relay_shell::selection::fixtures::{producer_frame, producer_metadata};
         let meta = producer_metadata();
         let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
@@ -8373,10 +8375,10 @@ mod private_transport_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn reader_buffers_authenticated_checkpoint_suffix_into_one_owner_batch() {
-        use crate::store::{
-            bounded::{Step, WorkLimit},
-            shell_selection::tests::{producer_frame, producer_metadata},
-            shell_selection::{self, Selection},
+        use crate::store::bounded::{Step, WorkLimit};
+        use tilo_relay_shell::selection::{
+            self as shell_selection, Selection,
+            fixtures::{producer_frame, producer_metadata},
         };
         let meta = producer_metadata();
         let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
@@ -8586,10 +8588,10 @@ mod private_transport_tests {
         operation: &'static str,
         force_serial_finish_gc: bool,
     ) {
-        use crate::store::{
-            bounded::{Step, WorkLimit},
-            shell_selection::Selection,
-            shell_selection::tests::{producer_frame, producer_metadata},
+        use crate::store::bounded::{Step, WorkLimit};
+        use tilo_relay_shell::selection::{
+            Selection,
+            fixtures::{producer_frame, producer_metadata},
         };
         let meta = producer_metadata();
         let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
@@ -8915,8 +8917,9 @@ mod private_transport_tests {
     }
 
     async fn activation_failure_fences_original_sessions_and_retry(operation: &'static str) {
-        use crate::store::shell_selection::tests::{
-            admit_frames, producer_fixture, producer_frame, producer_metadata, replay_frames,
+        use crate::store::test_support::replay_frames;
+        use tilo_relay_shell::selection::fixtures::{
+            admit_frames, producer_fixture, producer_frame, producer_metadata,
         };
         let meta = producer_metadata();
         let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
@@ -9129,7 +9132,7 @@ mod private_transport_tests {
     #[tokio::test]
     async fn selected_shell_activation_publishes_complete_ordered_pair_and_suppresses_delayed_checkpoint()
      {
-        use crate::store::shell_selection::tests::{
+        use tilo_relay_shell::selection::fixtures::{
             admit_frames, producer_fixture, producer_frame, producer_metadata,
         };
         let meta = producer_metadata();

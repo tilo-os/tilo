@@ -2,18 +2,17 @@
 //! continuations. Source files are trusted authenticated-ingress records, not
 //! independently authenticated by their outer (often zero) Envelope signature.
 //! Unknown data never grants retirement. Only exact historical proof pairs do.
-use super::{
-    StoreError, WorkspaceStore,
-    bounded::{self, Meta, Sorter, Step, WorkLimit, WorkStats, invalid, read_meta, write_meta},
-    replay, retained,
-};
-use crate::coedit::CoeditPayload;
-use crate::store::bounded::Invariant;
+//!
+//! The workspace store reaches this module only through the
+//! `tilo_relay_store::shell` seam: [`binding::NeighbourReplay`] binds a
+//! [`RetentionAuthority`] to a store, and the store steps the [`Selection`],
+//! [`SelectedRead`] and [`tail_cache::FastTail`] that binding hands out.
 use std::{
     collections::BTreeMap,
     fs::{self, File},
     io::Seek,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use tilo_peer_state::{
     NeighbourMsg,
@@ -23,23 +22,58 @@ use tilo_peer_state::{
         RoomInput, VerifiedRoom, VerifiedSnapshot, verify_room, verify_snapshot,
     },
 };
+use tilo_relay_client::coedit::CoeditPayload;
+use tilo_relay_store::{
+    StoreError,
+    bounded::{
+        self, Invariant, Meta, Sorter, Step, WorkLimit, WorkStats, invalid, read_meta, write_meta,
+    },
+    durable, frames,
+    frames::input_identity,
+    shell::{
+        BatchProjectionReason, BatchSelectionOutcome, DIRECTORY, IncomingDisposition, Publication,
+        SelectionOutcome, ShellStore,
+    },
+};
 
+pub mod binding;
+#[cfg(any(test, feature = "test-support"))]
+#[allow(
+    clippy::missing_panics_doc,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "test fixtures: a fixture that cannot be built fails the test that needs it"
+)]
+pub mod fixtures;
 mod selected;
-pub(crate) mod tail_cache;
+#[cfg(test)]
+mod shell_proof_fixture;
+#[cfg(test)]
+mod shell_proof_tests;
+pub mod tail_cache;
 use selected::SelectedGc;
-pub(crate) use selected::SelectedRead;
+pub use selected::SelectedRead;
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static SELECTION_CONSTRUCTIONS: std::sync::OnceLock<
     std::sync::Mutex<
         std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     >,
 > = std::sync::OnceLock::new();
 
-#[cfg(test)]
-pub(crate) fn track_selection_constructions(
+/// Count the selections constructed on `root` from now on.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(
+    clippy::missing_panics_doc,
+    clippy::unwrap_used,
+    reason = "test counter: a poisoned registry is the test failing"
+)]
+pub fn track_selection_constructions(
     root: &Path,
 ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
     let observed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -51,8 +85,15 @@ pub(crate) fn track_selection_constructions(
     observed
 }
 
-#[cfg(test)]
-pub(crate) fn selection_constructions(root: &Path) -> usize {
+/// The selections constructed on `root` since
+/// [`track_selection_constructions`], which stops counting.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(
+    clippy::missing_panics_doc,
+    clippy::unwrap_used,
+    reason = "test counter: a poisoned registry is the test failing"
+)]
+pub fn selection_constructions(root: &Path) -> usize {
     SELECTION_CONSTRUCTIONS
         .get_or_init(Default::default)
         .lock()
@@ -61,60 +102,9 @@ pub(crate) fn selection_constructions(root: &Path) -> usize {
         .map_or(0, |count| count.load(std::sync::atomic::Ordering::SeqCst))
 }
 
-pub(crate) const DIRECTORY: &str = "shell-selected-v1";
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Publication {
-    Original,
-    Suppress,
-    Activate(PathBuf),
-    /// Replay the committed fallback in place; no newer checkpoint was selected.
-    ReplayRequired(PathBuf),
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SelectionOutcome {
-    Published(Publication),
-    BatchPublished {
-        supplemental_recovery: Option<PathBuf>,
-        publication: Publication,
-        dispositions: Vec<IncomingDisposition>,
-    },
-    UnresolvedTailDependencies,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IncomingDisposition {
-    Covered,
-    Staged,
-    SelectedLive,
-    Original,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BatchProjectionReason {
-    Represented,
-    FinalBasisOmission,
-    UnresolvedTailDependencies,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BatchSelectionOutcome {
-    pub supplemental_recovery: Option<PathBuf>,
-    pub publication: Publication,
-    pub dispositions: Vec<IncomingDisposition>,
-    pub reason: BatchProjectionReason,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RetainOutcome {
-    pub written: u64,
-    pub publication: Publication,
-}
-
-/// Identity of the authenticated retained input being classified. Transport time
-/// is irrelevant, but another source/route/kind cannot inherit its disposition.
-fn input_identity(source: [u8; 32], channel: [u8; 32], checkpoint: bool, body: &[u8]) -> [u8; 32] {
-    let mut hash = blake3::Hasher::new();
-    hash.update(&source);
-    hash.update(&channel);
-    hash.update(&[u8::from(checkpoint)]);
-    hash.update(body);
-    *hash.finalize().as_bytes()
+/// The retention authority bound to `store` by this crate's adapter, if any.
+pub(crate) fn authority(store: &dyn ShellStore) -> Option<&RetentionAuthority> {
+    binding::bound_authority(store.shell_binding()?)
 }
 
 /// A retained lineage supplies a negative channel hint only. Positive room
@@ -136,21 +126,12 @@ fn retained_channel_hint(meta: &Meta) -> Option<[u8; 32]> {
     hex::decode_to_slice(channel, &mut decoded).ok()?;
     Some(decoded)
 }
-pub(crate) fn incoming_identity(bytes: &[u8], workspace: u64) -> Option<[u8; 32]> {
-    let (source, payload) = retained::payload(bytes, workspace)?;
-    Some(match payload {
-        CoeditPayload::Checkpoint { channel, body } => input_identity(source, channel, true, &body),
-        CoeditPayload::RetainedDelta { channel, body } => {
-            input_identity(source, channel, false, &body)
-        }
-    })
-}
 
-pub(super) fn frame(path: &Path, workspace: u64) -> Result<Option<Frame>, StoreError> {
-    let Some(bytes) = replay::frame_bytes(path)? else {
+pub(crate) fn frame(path: &Path, workspace: u64) -> Result<Option<Frame>, StoreError> {
+    let Some(bytes) = frames::frame_bytes(path)? else {
         return Ok(None);
     };
-    let Some((source, payload)) = retained::payload(&bytes, workspace) else {
+    let Some((source, payload)) = frames::payload(&bytes, workspace) else {
         return Ok(None);
     };
     let (channel, body, kind) = match payload {
@@ -164,7 +145,7 @@ pub(super) fn frame(path: &Path, workspace: u64) -> Result<Option<Frame>, StoreE
         kind,
     }))
 }
-pub(super) struct Frame {
+pub(crate) struct Frame {
     pub source: [u8; 32],
     pub channel: [u8; 32],
     pub body: Vec<u8>,
@@ -237,7 +218,7 @@ impl Basis {
     }
 }
 
-#[cfg_attr(test, derive(Debug))]
+#[derive(Debug)]
 enum Phase {
     Old,
     Scan,
@@ -263,8 +244,8 @@ enum Phase {
     clippy::struct_excessive_bools,
     reason = "independent step-machine flags of one resumable selection pass"
 )]
-pub(crate) struct Selection {
-    store: WorkspaceStore,
+pub struct Selection {
+    store: Arc<dyn ShellStore>,
     scratch: PathBuf,
     authority: RetentionAuthority,
     old_read: SelectedRead,
@@ -316,7 +297,7 @@ pub(crate) struct Selection {
     live_output: File,
     ordinal: u64,
     route_iter: Option<std::collections::btree_map::IntoIter<String, Route>>,
-    collect: Option<retained::GenerationGc>,
+    collect: Option<durable::GenerationGc>,
     active_gc: Option<SelectedGc>,
     gc_output: File,
     changed: bool,
@@ -333,12 +314,19 @@ pub(crate) struct Selection {
     snapshot_verifications: (usize, usize),
 }
 impl Selection {
-    #[cfg(test)]
-    pub(crate) fn diagnostic_phase(&self) -> String {
+    /// The current phase, for diagnostics.
+    pub fn diagnostic_phase(&self) -> String {
         format!("{:?}", self.phase)
     }
-    pub(crate) fn new(
-        store: &WorkspaceStore,
+    /// A selection of `store`'s retained history, staged under `scratch`,
+    /// classifying `incoming` (the input just written) if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no authority is bound to `store` or the
+    /// selected basis cannot be opened or staged.
+    pub fn new(
+        store: &dyn ShellStore,
         scratch: PathBuf,
         incoming: Option<[u8; 32]>,
     ) -> Result<Self, StoreError> {
@@ -352,14 +340,20 @@ impl Selection {
     }
     #[cfg(test)]
     pub(crate) fn new_batch(
-        store: &WorkspaceStore,
+        store: &dyn ShellStore,
         scratch: PathBuf,
         incoming: Vec<[u8; 32]>,
     ) -> Result<Self, StoreError> {
         Self::new_inner(store, scratch, incoming, BTreeMap::new(), true)
     }
-    pub(crate) fn new_projected(
-        store: &WorkspaceStore,
+    /// A batch selection over `incoming`, reading the projected lineage
+    /// generations `lineage_overrides` names instead of their `CURRENT`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::new`].
+    pub fn new_projected(
+        store: &dyn ShellStore,
         scratch: PathBuf,
         incoming: Vec<[u8; 32]>,
         lineage_overrides: BTreeMap<std::ffi::OsString, PathBuf>,
@@ -367,38 +361,37 @@ impl Selection {
         Self::new_inner(store, scratch, incoming, lineage_overrides, true)
     }
     fn new_inner(
-        store: &WorkspaceStore,
+        store: &dyn ShellStore,
         scratch: PathBuf,
         incoming: Vec<[u8; 32]>,
         lineage_overrides: BTreeMap<std::ffi::OsString, PathBuf>,
         batch: bool,
     ) -> Result<Self, StoreError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(count) = SELECTION_CONSTRUCTIONS
             .get_or_init(Default::default)
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(store.root())
         {
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-        let (cache_epoch, wanted) = store.tail_cache.invalidate();
+        let (cache_epoch, wanted) = store.tail_cache().invalidate();
         let incoming_dispositions = vec![None; incoming.len()];
         let incoming_verified = vec![false; incoming.len()];
         fs::create_dir_all(&scratch)?;
         let old_read =
             SelectedRead::new(store)?.ok_or_else(|| invalid("unbound shell selector"))?;
-        let old_scan = retained::current(&store.root.join(DIRECTORY))?
+        let old_scan = durable::current(&store.root().join(DIRECTORY))?
             .map(|p| File::open(p.join("basis.manifest")))
             .transpose()?;
-        let dir = store.root.join(DIRECTORY);
-        retained::create_dir(&dir)?;
+        let dir = store.root().join(DIRECTORY);
+        durable::create_dir(&dir)?;
         let staged = dir.join(hex::encode(rand::random::<[u8; 16]>()));
-        retained::create_dir(&staged)?;
+        durable::create_dir(&staged)?;
         Ok(Self {
-            store: store.clone(),
-            authority: store
-                .shell_authority()
+            store: store.handle(),
+            authority: authority(store)
                 .invariant("shell authority missing")?
                 .clone(),
             old_read,
@@ -458,7 +451,7 @@ impl Selection {
     /// A complete changed cut may already be visible if CURRENT's rename or
     /// directory barrier reports an error. The owner must fence its captured
     /// recipients on any later failure, even before an Activate result exists.
-    pub(crate) fn publication_on_error(&self) -> Option<Publication> {
+    pub fn publication_on_error(&self) -> Option<Publication> {
         if !self.switch_attempted {
             return None;
         }
@@ -470,18 +463,21 @@ impl Selection {
             None
         }
     }
-    pub(crate) fn current_switch_attempted(&self) -> bool {
+    /// Whether the switch of the selected `CURRENT` was attempted.
+    pub fn current_switch_attempted(&self) -> bool {
         self.switch_attempted
     }
-    pub(crate) fn cleanup_paths(&self) -> (PathBuf, PathBuf) {
-        (self.store.root.join(DIRECTORY), self.staged.clone())
+    /// The selection directory and this pass's staged generation.
+    pub fn cleanup_paths(&self) -> (PathBuf, PathBuf) {
+        (self.store.root().join(DIRECTORY), self.staged.clone())
     }
-    pub(crate) fn stats(&self) -> &WorkStats {
+    /// The work this pass did.
+    pub fn stats(&self) -> &WorkStats {
         &self.sorter.stats
     }
     /// Seed `key`'s tail cursor too if this selection commits cleanly: the
     /// route the incoming tail wrote is the one most likely to be written next.
-    pub(crate) fn want_route(&mut self, key: String) {
+    pub fn want_route(&mut self, key: String) {
         self.wanted.retain(|wanted| wanted != &key);
         self.wanted.insert(0, key);
         self.wanted.truncate(tail_cache::ROUTES);
@@ -549,7 +545,12 @@ impl Selection {
     }
     /// Finish the projected manifests without switching selected CURRENT.
     /// The caller must promote every projected lineage before resuming `step`.
-    pub(crate) fn step_projection(
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::step`]; also when the selection would commit before the
+    /// caller promoted its projected lineages.
+    pub fn step_projection(
         &mut self,
         limit: WorkLimit,
     ) -> Result<Step<BatchSelectionOutcome>, StoreError> {
@@ -586,7 +587,10 @@ impl Selection {
             .stats
             .peak_frame_bytes
             .max(usize::try_from(meta.len).unwrap_or(usize::MAX));
-        frame(&self.store.root.join(&meta.source), self.store.workspace_id)
+        frame(
+            &self.store.root().join(&meta.source),
+            self.store.workspace_id(),
+        )
     }
     fn add(&mut self, meta: &Meta, role: &str) -> Result<(), StoreError> {
         let name = format!("{:016x}.delta", self.ordinal);
@@ -594,17 +598,15 @@ impl Selection {
         let path = self.staged.join(name);
         // Every source belongs to an already durable retained generation. The
         // Commit phase syncs this hard-link directory before switching CURRENT.
-        fs::hard_link(self.store.root.join(&meta.source), &path)?;
-        super::continuity::copy_measured(
-            &self.store,
-            &self.store.root.join(&meta.source),
+        fs::hard_link(self.store.root().join(&meta.source), &path)?;
+        self.store.copy_measured(
+            &self.store.root().join(&meta.source),
             &path,
             &mut self.sorter.stats,
-            0,
         )?;
         let mut selected = meta.clone();
         selected.source = path
-            .strip_prefix(&self.store.root)
+            .strip_prefix(self.store.root())
             .invariant("root missing")?
             .into();
         selected.key = vec![role.into()];
@@ -764,7 +766,14 @@ impl Selection {
         clippy::too_many_lines,
         reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
     )]
-    pub(crate) fn step(&mut self, limit: WorkLimit) -> Result<Step<SelectionOutcome>, StoreError> {
+    /// One quantum of selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when retained history cannot be read or the selected
+    /// basis cannot be written; [`Self::publication_on_error`] then says
+    /// what may already be visible.
+    pub fn step(&mut self, limit: WorkLimit) -> Result<Step<SelectionOutcome>, StoreError> {
         let limit = limit.checked()?;
         self.sorter.stats.last_step_work = 1;
         match self.phase {
@@ -802,7 +811,7 @@ impl Selection {
                     self.old_scan = None;
                 }
                 if self.outer.is_none() {
-                    match fs::read_dir(self.store.root.join("retained/v2")) {
+                    match fs::read_dir(self.store.root().join("retained/v2")) {
                         Ok(d) => self.outer = Some(d),
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                             self.phase = Phase::Sort;
@@ -837,7 +846,7 @@ impl Selection {
                                     name,
                                 ],
                                 source: path
-                                    .strip_prefix(&self.store.root)
+                                    .strip_prefix(self.store.root())
                                     .invariant("root missing")?
                                     .into(),
                                 pin: 0,
@@ -856,7 +865,7 @@ impl Selection {
                             .lineage_overrides
                             .get(&entry.file_name())
                             .cloned()
-                            .or(retained::current(&entry.path())?);
+                            .or(durable::current(&entry.path())?);
                         if let Some(active) = active {
                             self.child = Some(fs::read_dir(active)?);
                             self.active_lineage = Some(entry.file_name());
@@ -1238,7 +1247,7 @@ impl Selection {
                     self.last_tail = None;
                     self.finish_route_tails();
                     self.input = if self.fallback {
-                        retained::current(&self.store.root.join(DIRECTORY))?
+                        durable::current(&self.store.root().join(DIRECTORY))?
                             .map(|p| File::open(p.join("basis.manifest")))
                             .transpose()?
                     } else {
@@ -1360,7 +1369,7 @@ impl Selection {
                     let pin = self.staged.join(format!("gc-{:016x}.delta", meta.pin));
                     // This is another link to an already durable retained
                     // inode; the staged-directory barrier precedes CURRENT.
-                    fs::hard_link(self.store.root.join(&meta.source), &pin)?;
+                    fs::hard_link(self.store.root().join(&meta.source), &pin)?;
                     write_meta(&mut self.gc_output, &meta)?;
                     return Ok(Step::More);
                 }
@@ -1368,28 +1377,28 @@ impl Selection {
                 self.phase = Phase::Commit;
             }
             Phase::Commit => {
-                #[cfg(test)]
-                super::test_barrier::check(&self.staged, "selection-full-flush")?;
+                #[cfg(any(test, feature = "test-support"))]
+                tilo_relay_store::test_barrier::check(&self.staged, "selection-full-flush")?;
                 self.sorter.stats.staging_full_flushes =
                     self.sorter.stats.staging_full_flushes.saturating_add(3);
-                crate::store::fsync(&self.output)?;
-                crate::store::fsync(&self.live_output)?;
-                crate::store::fsync(&self.gc_output)?;
-                retained::sync_dir(&self.staged)?;
-                #[cfg(test)]
-                super::test_barrier::pause(self.store.root(), "shell-select-switch");
+                tilo_relay_store::fsync(&self.output)?;
+                tilo_relay_store::fsync(&self.live_output)?;
+                tilo_relay_store::fsync(&self.gc_output)?;
+                durable::sync_dir(&self.staged)?;
+                #[cfg(any(test, feature = "test-support"))]
+                tilo_relay_store::test_barrier::pause(self.store.root(), "shell-select-switch");
                 self.switch_attempted = true;
-                retained::durable_write(
-                    &self.store.root.join(DIRECTORY).join("CURRENT"),
+                durable::durable_write(
+                    &self.store.root().join(DIRECTORY).join("CURRENT"),
                     self.staged
                         .file_name()
                         .invariant("staged missing")?
                         .as_encoded_bytes(),
                 )?;
-                #[cfg(test)]
-                super::test_barrier::check(self.store.root(), "shell-after-current")?;
+                #[cfg(any(test, feature = "test-support"))]
+                tilo_relay_store::test_barrier::check(self.store.root(), "shell-after-current")?;
                 self.active_gc = Some(SelectedGc::new(
-                    self.store.root.clone(),
+                    self.store.root().to_path_buf(),
                     self.staged.clone(),
                 )?);
                 self.phase = Phase::Gc;
@@ -1402,8 +1411,8 @@ impl Selection {
                     return Ok(Step::More);
                 }
                 if self.collect.is_none() {
-                    self.collect = Some(retained::GenerationGc::new(
-                        self.store.root.join(DIRECTORY),
+                    self.collect = Some(durable::GenerationGc::new(
+                        self.store.root().join(DIRECTORY),
                     )?);
                 }
                 if self
@@ -1417,11 +1426,14 @@ impl Selection {
                     // back leaves cursors for plain tails; a wanted route
                     // without tails keeps the cursor Pair started at its pair.
                     if !self.batch && !self.fallback {
-                        self.store.tail_cache.install(
+                        self.store.tail_cache().install(
                             self.cache_epoch,
                             self.staged.clone(),
                             &self.wanted,
-                            std::mem::take(&mut self.seeded),
+                            std::mem::take(&mut self.seeded)
+                                .into_iter()
+                                .map(|(key, tail)| (key, tail_cache::RouteTail::cursor(tail)))
+                                .collect(),
                         );
                     }
                     self.phase = Phase::Done;

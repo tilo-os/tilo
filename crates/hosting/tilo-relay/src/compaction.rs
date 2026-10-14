@@ -29,7 +29,7 @@
 //! already hold its content. Its certificate is retained beside it, so a
 //! replay carries it first (certificate lineages lead a replay) and a native
 //! shell accepts the host-signed state. Rooms whose replay a native shell
-//! selects (`shell_authority`) are left to that selection.
+//! selects (a bound `shell_binding`) are left to that selection.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -359,7 +359,7 @@ impl Compactor {
         min_tail: usize,
     ) -> Result<(), String> {
         let store = workspace.lock().await.store.clone();
-        if store.shell_authority().is_some() {
+        if store.shell_binding().is_some() {
             return Ok(());
         }
         let known = lock(&self.0.member_snapshots)

@@ -7,16 +7,26 @@
     clippy::too_many_lines,
     reason = "each test spells out one end-to-end scenario"
 )]
-use super::*;
-use crate::store::{
-    replay::{PublicationCursor, ReplayBudget, ReplayId, ReplayLimits, ReplaySnapshot},
-    retained::{CheckpointStage, RetainBuild},
-    shell_proof_tests::{binding, fixture, governed_sequence, metadata, parts, superseded_route},
+use super::fixtures::{
+    admit_frames, admit_frames_with_origin, producer_authority, producer_fixture, producer_frame,
+    producer_metadata, receive,
 };
-use crate::transport::Envelope;
+use super::shell_proof_tests::{
+    binding, fixture, governed_sequence, metadata, parts, superseded_route,
+};
+use super::*;
+use crate::ShellAuthority as _;
 use automerge::transaction::Transactable;
 use collab_types::CommitNamed as _;
-use tilo_peer_state::{StatePeer, TransportOrigin};
+use tilo_peer_state::StatePeer;
+use tilo_relay::store::WorkspaceStore;
+use tilo_relay::store::test_support::{
+    CheckpointStage, PublicationCursor, ReplayBudget, ReplayId, RetainBuild, capture, drain_replay,
+    replay_frames, wrapper_suffix,
+};
+use tilo_relay::transport::Envelope;
+use tilo_relay_store::frames::incoming_identity;
+use tilo_relay_store::shell::RetainOutcome;
 
 mod tail_cache_tests;
 
@@ -36,7 +46,7 @@ fn one_entry() -> WorkLimit {
     }
 }
 fn scratch(store: &WorkspaceStore) -> PathBuf {
-    store.root.join("store-work-v1").join(format!(
+    store.root().join("store-work-v1").join(format!(
         "retain-{}",
         hex::encode(rand::random::<[u8; 16]>())
     ))
@@ -49,7 +59,7 @@ fn select_all(store: &WorkspaceStore) {
     finish(|| selector.step(WorkLimit::default()).unwrap());
 }
 fn retain(store: &WorkspaceStore, bytes: &[u8]) {
-    let Envelope::Delta { delta, .. } = crate::transport::decode(&bytes[4..]).unwrap() else {
+    let Envelope::Delta { delta, .. } = tilo_relay::transport::decode(&bytes[4..]).unwrap() else {
         panic!()
     };
     match CoeditPayload::decode(&delta).unwrap() {
@@ -63,7 +73,7 @@ fn retain(store: &WorkspaceStore, bytes: &[u8]) {
 }
 fn checkpoint_channel(store: &WorkspaceStore, bytes: &[u8]) -> [u8; 32] {
     let (_, CoeditPayload::Checkpoint { channel, .. }) =
-        retained::payload(bytes, store.workspace_id()).unwrap()
+        frames::payload(bytes, store.workspace_id()).unwrap()
     else {
         panic!("checkpoint fixture contains a retained delta")
     };
@@ -120,7 +130,7 @@ fn projected_selection(
     Selection::new_projected(store, root.join("selection"), incoming, overrides).unwrap()
 }
 fn selected_current(store: &WorkspaceStore) -> Option<PathBuf> {
-    retained::current(&store.root.join(DIRECTORY)).unwrap()
+    durable::current(&store.root().join(DIRECTORY)).unwrap()
 }
 fn assert_selected_complete(store: &WorkspaceStore) {
     let mut selected = SelectedRead::new(store).unwrap().unwrap();
@@ -130,105 +140,11 @@ fn assert_selected_complete(store: &WorkspaceStore) {
 
 // ---- replay and admission -------------------------------------------------
 
-fn drain_replay(
-    store: &WorkspaceStore,
-    snapshot: &mut ReplaySnapshot,
-    budget: &ReplayBudget,
-) -> Vec<Envelope> {
-    while matches!(
-        store
-            .prepare_replay_step(snapshot, WorkLimit::default())
-            .unwrap(),
-        Step::More
-    ) {}
-    let mut result = Vec::new();
-    loop {
-        let mut batch = store
-            .read_replay_batch(snapshot, ReplayLimits::default(), budget)
-            .unwrap();
-        while let Some(frame) = batch.front() {
-            result.push(frame.clone());
-            batch.pop_written();
-        }
-        if batch.eof {
-            return result;
-        }
-    }
-}
-fn capture(store: &WorkspaceStore, limit: WorkLimit) -> ReplaySnapshot {
-    let mut build = store
-        .start_replay_capture(ReplayId(rand::random()), [2; 32])
-        .unwrap();
-    finish(|| store.capture_replay_step(&mut build, limit).unwrap())
-}
-pub(crate) fn replay_frames(store: &WorkspaceStore) -> Vec<Envelope> {
-    let mut snapshot = capture(store, one_entry());
-    let result = drain_replay(store, &mut snapshot, &ReplayBudget::new(256 * 1024 * 1024));
-    let mut discard = snapshot.into_discard().unwrap();
-    while matches!(discard.step(WorkLimit::default()).unwrap(), Step::More) {}
-    result
-}
 fn encoded(frames: &[Envelope]) -> Vec<Vec<u8>> {
     frames
         .iter()
-        .map(|frame| crate::transport::encode(frame).unwrap())
+        .map(|frame| tilo_relay::transport::encode(frame).unwrap())
         .collect()
-}
-fn receive(
-    peer: &mut StatePeer,
-    frame: Envelope,
-    retained: bool,
-    now: web_time::SystemTime,
-) -> Result<tilo_peer_state::ReceiveOutcome, String> {
-    let Envelope::Delta {
-        author_device_public_key,
-        delta,
-        ..
-    } = frame
-    else {
-        return Err("expected a delta frame".to_string());
-    };
-    let (_, body, _) = parts(CoeditPayload::decode(&delta).unwrap());
-    let origin = if retained {
-        TransportOrigin::RetainedRelayDelta(author_device_public_key)
-    } else {
-        TransportOrigin::RelayDelta(author_device_public_key)
-    };
-    peer.receive_from(origin, postcard::from_bytes(&body).unwrap(), now)
-}
-pub(crate) fn admit_frames(
-    meta: &serde_json::Value,
-    initial: &Path,
-    frames: Vec<Envelope>,
-) -> StatePeer {
-    admit_frames_with_origin(meta, initial, frames, false)
-}
-fn admit_frames_with_origin(
-    meta: &serde_json::Value,
-    initial: &Path,
-    frames: Vec<Envelope>,
-    retained: bool,
-) -> StatePeer {
-    let now = web_time::SystemTime::UNIX_EPOCH
-        .checked_add(web_time::Duration::from_nanos(
-            meta["now_ns"].as_u64().unwrap(),
-        ))
-        .unwrap();
-    let mut peer = StatePeer::restore(
-        &fs::read(initial).unwrap(),
-        meta["room"].as_str().unwrap(),
-        serde_json::from_value(meta["authority"].clone()).unwrap(),
-        serde_json::from_value(meta["certificates"].clone()).unwrap(),
-        tilo_user_identity::RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    for (index, frame) in frames.into_iter().enumerate() {
-        let outcome = receive(&mut peer, frame, retained, now)
-            .unwrap_or_else(|e| panic!("replay frame {index}: {e}"));
-        assert_eq!(outcome.rejected, 0, "deferred rejection at {index}");
-    }
-    peer
 }
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
@@ -242,10 +158,10 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 fn active_retained_count(store: &WorkspaceStore) -> usize {
-    fs::read_dir(store.root.join("retained/v2"))
+    fs::read_dir(store.root().join("retained/v2"))
         .unwrap()
         .map(|lineage| {
-            retained::current(&lineage.unwrap().path())
+            durable::current(&lineage.unwrap().path())
                 .unwrap()
                 .map_or(0, |active| fs::read_dir(active).unwrap().count())
         })
@@ -254,47 +170,6 @@ fn active_retained_count(store: &WorkspaceStore) -> usize {
 
 // ---- real-owner producer fixture ------------------------------------------
 
-pub(crate) fn producer_fixture() -> PathBuf {
-    fixture().parent().unwrap().join("shell-selection")
-}
-pub(crate) fn producer_metadata() -> serde_json::Value {
-    serde_json::from_slice(&fs::read(producer_fixture().join("manifest.json")).unwrap()).unwrap()
-}
-fn producer_authority(meta: &serde_json::Value) -> RetentionAuthority {
-    RetentionAuthority::new(
-        meta["room"].as_str().unwrap(),
-        serde_json::from_value(meta["authority"].clone()).unwrap(),
-    )
-    .unwrap()
-}
-pub(crate) fn producer_frame(
-    meta: &serde_json::Value,
-    row: &serde_json::Value,
-    time: u64,
-) -> Vec<u8> {
-    let channel = hex::decode(row["channel"].as_str().unwrap())
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let body = fs::read(producer_fixture().join(row["file"].as_str().unwrap())).unwrap();
-    let payload = if row["kind"] == "Checkpoint" {
-        CoeditPayload::Checkpoint { channel, body }
-    } else {
-        CoeditPayload::RetainedDelta { channel, body }
-    };
-    crate::transport::encode(&Envelope::Delta {
-        workspace_id: crate::room_workspace_id(meta["room"].as_str().unwrap()).unwrap(),
-        author_device_public_key: serde_json::from_value::<tilo_user_identity::DeviceCert>(
-            meta["authority"].clone(),
-        )
-        .unwrap()
-        .device_public_key,
-        authored_at_ns: time,
-        signature: [0; 64],
-        delta: payload.encode().unwrap(),
-    })
-    .unwrap()
-}
 fn producer_frames(meta: &serde_json::Value, group: &str, time: u64) -> Vec<Vec<u8>> {
     meta[group]
         .as_array()
@@ -306,7 +181,7 @@ fn producer_frames(meta: &serde_json::Value, group: &str, time: u64) -> Vec<Vec<
 /// A store bound to `authority` at its current workspace id.
 fn bound_store(authority: RetentionAuthority) -> (tempfile::TempDir, WorkspaceStore) {
     let tmp = tempfile::tempdir().unwrap();
-    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let id = tilo_relay::room_workspace_id(authority.room()).unwrap();
     let mut store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
     store.bind_shell_authority(authority).unwrap();
     (tmp, store)
@@ -324,7 +199,7 @@ fn setup() -> (tempfile::TempDir, WorkspaceStore) {
     let meta = producer_metadata();
     let (tmp, store) = baseline_store(&meta);
     // Trusted fixture import models admitted bytes durable before selection.
-    let raw = WorkspaceStore::open(tmp.path(), store.workspace_id, true).unwrap();
+    let raw = WorkspaceStore::open(tmp.path(), store.workspace_id(), true).unwrap();
     for bytes in producer_frames(&meta, "checkpoint2", 2) {
         retain(&raw, &bytes);
     }
@@ -474,8 +349,8 @@ fn synthetic_frame(
         NeighbourMsg::AppDocument { envelope, .. } => *envelope.author.as_bytes(),
         _ => authority.governor().device_public_key,
     };
-    crate::transport::encode(&Envelope::Delta {
-        workspace_id: crate::room_workspace_id(authority.room()).unwrap(),
+    tilo_relay::transport::encode(&Envelope::Delta {
+        workspace_id: tilo_relay::room_workspace_id(authority.room()).unwrap(),
         author_device_public_key: source,
         authored_at_ns: 1,
         signature: [0; 64],
@@ -539,7 +414,7 @@ fn incremental(
 }
 /// Re-encodes a checkpoint frame with one identity-relevant field changed.
 fn changed_snapshot_frame(raw: &[u8], change: &str) -> Vec<u8> {
-    let mut envelope = crate::transport::decode(&raw[4..]).unwrap();
+    let mut envelope = tilo_relay::transport::decode(&raw[4..]).unwrap();
     let Envelope::Delta {
         author_device_public_key,
         delta,
@@ -577,7 +452,7 @@ fn changed_snapshot_frame(raw: &[u8], change: &str) -> Vec<u8> {
     }
     .encode()
     .unwrap();
-    crate::transport::encode(&envelope).unwrap()
+    tilo_relay::transport::encode(&envelope).unwrap()
 }
 
 // ---- captured shell replay ------------------------------------------------
@@ -586,10 +461,10 @@ fn changed_snapshot_frame(raw: &[u8], change: &str) -> Vec<u8> {
 fn captured_shell_store_selection_replays_exact_current_pairs() {
     let tmp = tempfile::tempdir().unwrap();
     let authority = binding();
-    let workspace = crate::room_workspace_id(authority.room()).unwrap();
+    let workspace = tilo_relay::room_workspace_id(authority.room()).unwrap();
     let store = reopen_bound(tmp.path(), workspace, authority);
     // Trusted test-store import of the public authenticated-ingress capture.
-    copy_tree(&fixture().join("retained"), &store.root.join("retained"));
+    copy_tree(&fixture().join("retained"), &store.root().join("retained"));
     let frames = replay_frames(&store);
     assert!(frames.iter().all(|frame| matches!(
         frame,
@@ -634,15 +509,15 @@ fn captured_shell_store_selection_replays_exact_current_pairs() {
 fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is_recoverable() {
     let tmp = tempfile::tempdir().unwrap();
     let authority = binding();
-    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let id = tilo_relay::room_workspace_id(authority.room()).unwrap();
     let store = reopen_bound(tmp.path(), id, authority.clone());
-    copy_tree(&fixture().join("retained"), &store.root.join("retained"));
-    let room = store.root.join("retained/v2").join(format!(
+    copy_tree(&fixture().join("retained"), &store.root().join("retained"));
+    let room = store.root().join("retained/v2").join(format!(
         "{}-{}",
         hex::encode(authority.governor().device_public_key),
         hex::encode(blake3::hash(b"shell-tree").as_bytes())
     ));
-    let active = retained::current(&room).unwrap().unwrap();
+    let active = durable::current(&room).unwrap().unwrap();
     assert!(fs::read_dir(&active).unwrap().count() > 0);
     let mut build = store
         .start_replay_capture(ReplayId(rand::random()), [2; 32])
@@ -684,7 +559,7 @@ fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is
             .sequence,
         governed_sequence()
     );
-    assert_eq!(retained::current(&room).unwrap().unwrap(), active);
+    assert_eq!(durable::current(&room).unwrap().unwrap(), active);
     assert_eq!(
         active_retained_count(&reopened),
         0,
@@ -772,7 +647,7 @@ fn shell_selection_staging_disposition_is_bound_to_incoming_source_and_route() {
         let (_tmp, store) = baseline_store(&meta);
         let staged = producer_frame(&meta, &meta["tail"][1], 2);
         retain(&store, &staged);
-        let mut input = crate::transport::decode(&staged[4..]).unwrap();
+        let mut input = tilo_relay::transport::decode(&staged[4..]).unwrap();
         let Envelope::Delta {
             author_device_public_key,
             delta,
@@ -793,7 +668,7 @@ fn shell_selection_staging_disposition_is_bound_to_incoming_source_and_route() {
         *delta = CoeditPayload::Checkpoint { channel, body }
             .encode()
             .unwrap();
-        let bytes = crate::transport::encode(&input).unwrap();
+        let bytes = tilo_relay::transport::encode(&input).unwrap();
         let outcome = retain_outcome(
             store.start_retain(&channel, None, bytes.clone()).unwrap(),
             WorkLimit::default(),
@@ -818,7 +693,7 @@ fn shell_selection_staging_disposition_is_bound_to_incoming_source_and_route() {
 fn selected_shell_unbound_reopen_preserves_readable_committed_basis_without_gc_authority() {
     let meta = producer_metadata();
     let (tmp, store) = baseline_store(&meta);
-    let id = store.workspace_id;
+    let id = store.workspace_id();
     let expected = replay_frames(&store);
     drop(store);
     let reopened = WorkspaceStore::open(tmp.path(), id, true).unwrap();
@@ -878,9 +753,9 @@ fn shell_selection_preserves_unproved_wrapper(outer: bool) {
     let meta = producer_metadata();
     let authority = producer_authority(&meta);
     let (tmp, store) = bound_store(authority.clone());
-    let id = store.workspace_id;
+    let id = store.workspace_id();
     let raw = producer_frame(&meta, &meta["baseline"][0], 1);
-    let unproved = retained::tests::wrapper_suffix(&raw, outer);
+    let unproved = wrapper_suffix(&raw, outer);
     retain(&store, &unproved);
     for group in ["baseline", "checkpoint2"] {
         for bytes in producer_frames(&meta, group, 2) {
@@ -891,9 +766,9 @@ fn shell_selection_preserves_unproved_wrapper(outer: bool) {
         store.load_retained().unwrap().contains(&unproved),
         "selection cannot retire an unproved wrapper"
     );
-    let incoming =
-        retained::tests::wrapper_suffix(&producer_frame(&meta, &meta["baseline"][0], 3), outer);
-    let Envelope::Delta { delta, .. } = crate::transport::decode(&incoming[4..]).unwrap() else {
+    let incoming = wrapper_suffix(&producer_frame(&meta, &meta["baseline"][0], 3), outer);
+    let Envelope::Delta { delta, .. } = tilo_relay::transport::decode(&incoming[4..]).unwrap()
+    else {
         panic!()
     };
     let (channel, _, _) = parts(CoeditPayload::decode(&delta).unwrap());
@@ -912,8 +787,8 @@ fn shell_selection_preserves_unproved_wrapper(outer: bool) {
     drop(store);
     let store = reopen_bound(tmp.path(), id, authority);
     let replay = replay_frames(&store);
-    assert!(replay.contains(&crate::transport::decode(&unproved[4..]).unwrap()));
-    assert!(replay.contains(&crate::transport::decode(&incoming[4..]).unwrap()));
+    assert!(replay.contains(&tilo_relay::transport::decode(&unproved[4..]).unwrap()));
+    assert!(replay.contains(&tilo_relay::transport::decode(&incoming[4..]).unwrap()));
     let retained = store.load_retained().unwrap();
     assert!(retained.contains(&unproved));
     assert!(retained.contains(&incoming));
@@ -931,12 +806,12 @@ fn shell_selection_preserves_unproved_coedit_wrapper() {
 #[test]
 fn retained_authority_accepts_only_its_exact_room_binding() {
     let authority = binding();
-    let workspace = crate::room_workspace_id(authority.room()).unwrap();
+    let workspace = tilo_relay::room_workspace_id(authority.room()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let store = reopen_bound(tmp.path(), workspace, authority.clone());
     assert_eq!(store.workspace_id(), workspace);
     let tmp = tempfile::tempdir().unwrap();
-    let unrelated = crate::room_workspace_id(&uuid::Uuid::new_v4().to_string()).unwrap();
+    let unrelated = tilo_relay::room_workspace_id(&uuid::Uuid::new_v4().to_string()).unwrap();
     let mut store = WorkspaceStore::open(tmp.path(), unrelated, true).unwrap();
     assert!(store.bind_shell_authority(authority).is_err());
 }
@@ -966,11 +841,11 @@ fn fallback_original_proof_reuse_is_limited_to_exact_proved_incoming_slots() {
     let meta = producer_metadata();
     for change in ["unchanged", "source", "channel", "kind", "body", "unproved"] {
         let (tmp, store) = baseline_store(&meta);
-        let id = store.workspace_id;
+        let id = store.workspace_id();
         let raw_store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
         let mut apps = Vec::new();
         for mut raw in producer_frames(&meta, "checkpoint2", 2) {
-            let (_, CoeditPayload::Checkpoint { body, .. }) = retained::payload(&raw, id).unwrap()
+            let (_, CoeditPayload::Checkpoint { body, .. }) = frames::payload(&raw, id).unwrap()
             else {
                 panic!()
             };
@@ -1001,7 +876,7 @@ fn fallback_original_proof_reuse_is_limited_to_exact_proved_incoming_slots() {
             let meta = read_meta(&mut inventory)
                 .unwrap()
                 .expect("incoming retained frame");
-            let path = store.root.join(meta.source);
+            let path = store.root().join(meta.source);
             if frame(&path, id)
                 .unwrap()
                 .is_some_and(|value| value.identity() == incoming)
@@ -1046,7 +921,7 @@ fn changed_snapshot_input_cannot_reuse_a_paired_proof() {
         }
         let route = selector.basis.routes.values().next().unwrap();
         assert!(route.verified_input.is_some());
-        let path = store.root.join(&route.file.as_ref().unwrap().source);
+        let path = store.root().join(&route.file.as_ref().unwrap().source);
         fs::write(
             &path,
             changed_snapshot_frame(&fs::read(&path).unwrap(), change),
@@ -1105,7 +980,7 @@ fn serial_incomplete_checkpoint_pairs_wait_then_publish_each_route_once() {
             if entry.file_type().unwrap().is_dir() {
                 contains_original(&entry.path(), expected)
             } else if entry.path().extension().is_some_and(|ext| ext == "delta") {
-                replay::frame_bytes(&entry.path()).unwrap().as_deref() == Some(expected)
+                frames::frame_bytes(&entry.path()).unwrap().as_deref() == Some(expected)
             } else {
                 false
             }
@@ -1133,7 +1008,7 @@ fn serial_incomplete_checkpoint_pairs_wait_then_publish_each_route_once() {
                 while matches!(selected.step().unwrap(), Step::More) {}
                 for original in &originals {
                     assert!(
-                        contains_original(&store.root.join("retained"), original),
+                        contains_original(&store.root().join("retained"), original),
                         "suppressed input lost durable retained custody"
                     );
                 }
@@ -1149,12 +1024,15 @@ fn serial_incomplete_checkpoint_pairs_wait_then_publish_each_route_once() {
                 let mut cursor = PublicationCursor::open(&path).unwrap();
                 let mut delivered = Vec::new();
                 loop {
-                    match cursor.step(crate::persistence::output_budget()).unwrap() {
+                    match cursor
+                        .step(tilo_relay::store::test_support::output_budget())
+                        .unwrap()
+                    {
                         Step::More => {}
                         Step::Done(None) => break,
                         Step::Done(Some(mut batch)) => {
                             while let Some(frame) = batch.front() {
-                                delivered.push(crate::transport::encode(frame).unwrap());
+                                delivered.push(tilo_relay::transport::encode(frame).unwrap());
                                 batch.pop_written();
                             }
                         }
@@ -1521,7 +1399,7 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
 #[test]
 fn exact_history_checkpoint_prefix_stays_inactive_before_projected_selection() {
     fn lineage_currents(store: &WorkspaceStore) -> BTreeMap<std::ffi::OsString, Vec<u8>> {
-        fs::read_dir(store.root.join("retained/v2"))
+        fs::read_dir(store.root().join("retained/v2"))
             .unwrap()
             .map(|entry| {
                 let entry = entry.unwrap();
@@ -1534,7 +1412,7 @@ fn exact_history_checkpoint_prefix_stays_inactive_before_projected_selection() {
     }
     let meta = producer_metadata();
     let (_tmp, store) = selected_baseline_store(&meta);
-    let selected_before = fs::read(store.root.join(DIRECTORY).join("CURRENT")).unwrap();
+    let selected_before = fs::read(store.root().join(DIRECTORY).join("CURRENT")).unwrap();
     let before = lineage_currents(&store);
 
     let (_root, stages, incoming) = stage_checkpoints(
@@ -1549,7 +1427,7 @@ fn exact_history_checkpoint_prefix_stays_inactive_before_projected_selection() {
         "projection switched a lineage CURRENT"
     );
     assert_eq!(
-        fs::read(store.root.join(DIRECTORY).join("CURRENT")).unwrap(),
+        fs::read(store.root().join(DIRECTORY).join("CURRENT")).unwrap(),
         selected_before,
         "projection switched selected CURRENT"
     );
@@ -1595,12 +1473,12 @@ fn promoted_prefix_repairs_on_reopen_and_suffix_republish_completes_the_cut() {
     let complete = replay_frames(&expected);
 
     let (recovery_tmp, recovery) = selected_baseline_store(&meta);
-    let id = recovery.workspace_id;
+    let id = recovery.workspace_id();
     let channels = prefix
         .iter()
         .map(|bytes| checkpoint_channel(&recovery, bytes))
         .collect::<Vec<_>>();
-    let recovery_root = recovery.root.clone();
+    let recovery_root = recovery.root().to_path_buf();
     let lineage = |channel: [u8; 32]| {
         recovery_root.join("retained/v2").join(format!(
             "{}-{}",
@@ -1614,7 +1492,7 @@ fn promoted_prefix_repairs_on_reopen_and_suffix_republish_completes_the_cut() {
     };
     let before = channels
         .iter()
-        .map(|channel| retained::current(&lineage(*channel)).unwrap().unwrap())
+        .map(|channel| durable::current(&lineage(*channel)).unwrap().unwrap())
         .collect::<Vec<_>>();
     let (_root, mut staged, _incoming) = stage_checkpoints(&recovery, prefix.clone(), None);
     staged[0].promote().unwrap();
@@ -1628,11 +1506,11 @@ fn promoted_prefix_repairs_on_reopen_and_suffix_republish_completes_the_cut() {
         "promoted prefix repairs into a replayable cut"
     );
     assert_ne!(
-        retained::current(&lineage(channels[0])).unwrap().unwrap(),
+        durable::current(&lineage(channels[0])).unwrap().unwrap(),
         before[0]
     );
     assert_eq!(
-        retained::current(&lineage(channels[1])).unwrap().unwrap(),
+        durable::current(&lineage(channels[1])).unwrap().unwrap(),
         before[1],
         "unpromoted suffix must not switch its lineage CURRENT"
     );
@@ -1665,7 +1543,7 @@ fn selected_switch_failure_keeps_previous_durable_basis_and_retires_no_input() {
     let mut plan = File::open(moved.join("gc.manifest")).unwrap();
     let mut count = 0;
     while let Some(meta) = read_meta(&mut plan).unwrap() {
-        assert!(store.root.join(meta.source).exists());
+        assert!(store.root().join(meta.source).exists());
         count += 1;
     }
     assert!(count > 0);
@@ -1683,7 +1561,7 @@ fn durable_retirement_plan_preserves_reused_path_and_selected_references_survive
     }
     let mut plan = File::open(selector.staged.join("gc.manifest")).unwrap();
     let target = read_meta(&mut plan).unwrap().unwrap();
-    let path = store.root.join(target.source);
+    let path = store.root().join(target.source);
     let bytes = fs::read(&path).unwrap();
     fs::remove_file(&path).unwrap();
     fs::write(&path, &bytes).unwrap();
@@ -1700,13 +1578,13 @@ fn durable_retirement_plan_preserves_reused_path_and_selected_references_survive
 fn shell_selection_spills_history_metadata_and_preserves_unknown_files() {
     let (_tmp, store) = setup();
     let raw = WorkspaceStore::open(
-        store.root.parent().unwrap().parent().unwrap(),
-        store.workspace_id,
+        store.root().parent().unwrap().parent().unwrap(),
+        store.workspace_id(),
         true,
     )
     .unwrap();
-    let bytes = crate::transport::encode(&Envelope::Delta {
-        workspace_id: store.workspace_id,
+    let bytes = tilo_relay::transport::encode(&Envelope::Delta {
+        workspace_id: store.workspace_id(),
         author_device_public_key: [77; 32],
         authored_at_ns: 1,
         signature: [0; 64],
@@ -1719,12 +1597,12 @@ fn shell_selection_spills_history_metadata_and_preserves_unknown_files() {
     })
     .unwrap();
     raw.retain_delta(&[88; 32], 1, &bytes).unwrap();
-    let lineage = store.root.join("retained/v2").join(format!(
+    let lineage = store.root().join("retained/v2").join(format!(
         "{}-{}",
         hex::encode([77; 32]),
         hex::encode([88; 32])
     ));
-    let active = retained::current(&lineage).unwrap().unwrap();
+    let active = durable::current(&lineage).unwrap().unwrap();
     for i in 2..602 {
         fs::write(active.join(format!("{i:016x}.delta")), &bytes).unwrap();
     }
@@ -1758,9 +1636,9 @@ fn retirement_pin_survives_failed_source_barrier_on_retry_and_reopen() {
     let generation = selector.staged.clone();
     let mut plan = File::open(generation.join("gc.manifest")).unwrap();
     let target = read_meta(&mut plan).unwrap().unwrap();
-    let source = store.root.join(target.source);
+    let source = store.root().join(target.source);
     let pin = generation.join(format!("gc-{:016x}.delta", target.pin));
-    let fault = crate::store::test_barrier::fail(source.parent().unwrap(), "sync-dir");
+    let fault = tilo_relay_store::test_barrier::fail(source.parent().unwrap(), "sync-dir");
     assert!(selector.step(WorkLimit::default()).is_err());
     assert!(
         !source.exists(),
@@ -1780,8 +1658,8 @@ fn retirement_pin_survives_failed_source_barrier_on_retry_and_reopen() {
     );
     drop(selector);
     let reopened_store = reopen_bound(
-        store.root.parent().unwrap().parent().unwrap(),
-        store.workspace_id,
+        store.root().parent().unwrap().parent().unwrap(),
+        store.workspace_id(),
         store.shell_authority().unwrap().clone(),
     );
     let mut reopened = SelectedRead::new(&reopened_store).unwrap().unwrap();
@@ -1811,9 +1689,9 @@ fn retirement_confirms_immutable_selection_once_for_the_whole_plan() {
         selector.step(WorkLimit::default()).unwrap();
     }
     let generation = selector.staged.clone();
-    let mut gc = SelectedGc::new(store.root.clone(), generation.clone()).unwrap();
-    let selected_dir = store.root.join(DIRECTORY);
-    let fault = crate::store::test_barrier::fail(&selected_dir, "sync-dir");
+    let mut gc = SelectedGc::new(store.root().to_path_buf(), generation.clone()).unwrap();
+    let selected_dir = store.root().join(DIRECTORY);
+    let fault = tilo_relay_store::test_barrier::fail(&selected_dir, "sync-dir");
     assert!(
         gc.step().is_err(),
         "the first retirement requires a durable selection"
@@ -1824,7 +1702,7 @@ fn retirement_confirms_immutable_selection_once_for_the_whole_plan() {
     // The owner serializes this immutable plan. Further records must not force
     // the already-confirmed CURRENT selection to disk again for every unlink.
     // Source/pin directory barriers still run for each actual retirement.
-    let fault = crate::store::test_barrier::fail(&selected_dir, "sync-dir");
+    let fault = tilo_relay_store::test_barrier::fail(&selected_dir, "sync-dir");
     while matches!(
         gc.step().expect("selection barrier repeated per record"),
         Step::More
@@ -1857,14 +1735,14 @@ fn staged_commit_barrier_keeps_every_input(barrier: &'static str) -> (Selection,
         selector.ordinal > 3,
         "exercise multiple staged records and retirement pins"
     );
-    let fault = crate::store::test_barrier::fail(&selector.staged, barrier);
+    let fault = tilo_relay_store::test_barrier::fail(&selector.staged, barrier);
     assert!(selector.step(WorkLimit::default()).is_err());
     assert_eq!(selected_current(&store), before);
     let mut pins = File::open(selector.staged.join("gc.manifest")).unwrap();
     let mut retired = 0_usize;
     while let Some(meta) = read_meta(&mut pins).unwrap() {
         assert!(
-            store.root.join(meta.source).exists(),
+            store.root().join(meta.source).exists(),
             "failed {barrier} must not retire source"
         );
         assert!(
@@ -1914,7 +1792,7 @@ fn recovery_cursor_rejects_other_workspace_before_publication() {
         delta: vec![255],
         signature: [0; 64],
     };
-    let bytes = crate::transport::encode(&frame).unwrap();
+    let bytes = tilo_relay::transport::encode(&frame).unwrap();
     let source = generation.join("0.delta");
     fs::write(&source, &bytes).unwrap();
     let mut manifest = File::create(generation.join("basis.manifest")).unwrap();
@@ -1957,7 +1835,7 @@ fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite
     let t2_bytes = changes_since(&mut branch, &t1_heads);
     let t2 = incremental(&key, &authority, t2_bytes, seq + 2, now);
     let (tmp, store) = bound_store(authority.clone());
-    let workspace_id = store.workspace_id;
+    let workspace_id = store.workspace_id();
     retain_synthetic(&store, &authority, &cp1, true);
     let t1_frame = synthetic_frame(&authority, &t1, false);
     retain(&store, &t1_frame);
@@ -1965,13 +1843,13 @@ fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite
     assert!(
         prior_frames
             .iter()
-            .any(|frame| { crate::transport::encode(frame).unwrap() == t1_frame })
+            .any(|frame| { tilo_relay::transport::encode(frame).unwrap() == t1_frame })
     );
     let selected_before = selected_current(&store).unwrap();
     let mut removed_original = false;
-    for lineage in fs::read_dir(store.root.join("retained/v2")).unwrap() {
+    for lineage in fs::read_dir(store.root().join("retained/v2")).unwrap() {
         let lineage = lineage.unwrap().path();
-        let Some(active) = retained::current(&lineage).unwrap() else {
+        let Some(active) = durable::current(&lineage).unwrap() else {
             continue;
         };
         for entry in fs::read_dir(active).unwrap() {
@@ -1998,7 +1876,7 @@ fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite
     }
     retain(&reopened, &t2_frame);
     reopened.bind_shell_authority(authority).unwrap();
-    let pending = crate::transport::encode(&Envelope::Presence {
+    let pending = tilo_relay::transport::encode(&Envelope::Presence {
         workspace_id,
         payload: b"pending subscription frame".to_vec(),
     })
@@ -2030,7 +1908,7 @@ fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite
             "unresolved original was not retained"
         );
     }
-    let work = reopened.root.join("store-work-v1");
+    let work = reopened.root().join("store-work-v1");
     let mut replay_work = fs::read_dir(&work)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -2150,8 +2028,8 @@ fn shell_selection_preserves_invalid_foreign_and_unknown_records() {
     );
     let foreign = synthetic_frame(&authority, &foreign, true);
     retain(&store, &foreign);
-    let unknown = crate::transport::encode(&Envelope::Delta {
-        workspace_id: store.workspace_id,
+    let unknown = tilo_relay::transport::encode(&Envelope::Delta {
+        workspace_id: store.workspace_id(),
         author_device_public_key: [99; 32],
         authored_at_ns: 1,
         signature: [0; 64],
@@ -2205,7 +2083,7 @@ fn initial_shell_basis_replays_independent_reversed_author_tails_in_exact_sequen
     let tmp = tempfile::tempdir().unwrap();
     let mut store = WorkspaceStore::open(
         tmp.path(),
-        crate::room_workspace_id(authority.room()).unwrap(),
+        tilo_relay::room_workspace_id(authority.room()).unwrap(),
         true,
     )
     .unwrap();
@@ -2258,7 +2136,7 @@ fn reopened_shell_basis_replays_dependent_tails_cumulatively_in_signed_sequence_
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let workspace_id = crate::room_workspace_id(authority.room()).unwrap();
+    let workspace_id = tilo_relay::room_workspace_id(authority.room()).unwrap();
     let store = WorkspaceStore::open(tmp.path(), workspace_id, true).unwrap();
     retain_synthetic(&store, &authority, &cp, true);
     for msg in tails.iter().rev() {
@@ -2326,7 +2204,7 @@ fn initial_shell_conflict_or_t2_without_t1_remains_unselected() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = WorkspaceStore::open(
             tmp.path(),
-            crate::room_workspace_id(authority.room()).unwrap(),
+            tilo_relay::room_workspace_id(authority.room()).unwrap(),
             true,
         )
         .unwrap();

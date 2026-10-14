@@ -19,16 +19,21 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+pub(super) use tilo_relay_store::frames::{equal_files, frame_bytes};
 
 pub(crate) const DEFAULT_BATCH_FRAMES: usize = 64;
 pub(crate) const DEFAULT_BATCH_BYTES: usize = 1024 * 1024;
 pub(crate) const DEFAULT_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const DEFAULT_REPLAY_TICKETS: usize = 32;
+/// Names one replay's work directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ReplayId(pub [u8; 16]);
+pub struct ReplayId(pub [u8; 16]);
+/// The most one replay batch carries.
 #[derive(Clone, Copy)]
-pub(crate) struct ReplayLimits {
+pub struct ReplayLimits {
+    /// Frames per batch.
     pub max_frames: usize,
+    /// Frame bytes per batch.
     pub max_bytes: usize,
 }
 impl Default for ReplayLimits {
@@ -40,13 +45,13 @@ impl Default for ReplayLimits {
     }
 }
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ReplaySummary {
+pub struct ReplaySummary {
     pub total_frames: u64,
 }
 /// A caller shares this budget across all owners; the batch keeps its permit
 /// through writes, including `transport::encode`'s payload + output overlap.
 #[derive(Clone)]
-pub(crate) struct ReplayBudget {
+pub struct ReplayBudget {
     inner: Arc<Budget>,
 }
 struct Budget {
@@ -54,7 +59,9 @@ struct Budget {
     used: AtomicUsize,
 }
 impl ReplayBudget {
-    pub(crate) fn new(capacity: usize) -> Self {
+    /// A budget of `capacity` bytes of replayed frames held at once.
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
         Self {
             inner: Arc::new(Budget {
                 capacity,
@@ -62,7 +69,8 @@ impl ReplayBudget {
             }),
         }
     }
-    pub(crate) fn used(&self) -> usize {
+    /// Bytes currently held against the budget.
+    pub fn used(&self) -> usize {
         self.inner.used.load(Ordering::Relaxed)
     }
     fn acquire(&self, bytes: usize) -> Result<ReplayAllocation, StoreError> {
@@ -88,7 +96,7 @@ impl Drop for ReplayAllocation {
         self.inner.used.fetch_sub(self.bytes, Ordering::AcqRel);
     }
 }
-pub(crate) struct ReplayBatch {
+pub struct ReplayBatch {
     pub number: u64,
     frames: VecDeque<Envelope>,
     pub eof: bool,
@@ -98,10 +106,12 @@ pub(crate) struct ReplayBatch {
 }
 
 impl ReplayBatch {
-    pub(crate) fn front(&self) -> Option<&Envelope> {
+    /// The next frame to write.
+    pub fn front(&self) -> Option<&Envelope> {
         self.frames.front()
     }
-    pub(crate) fn pop_written(&mut self) {
+    /// Drop the frame [`Self::front`] returned, now written.
+    pub fn pop_written(&mut self) {
         self.frames.pop_front();
     }
     pub(crate) fn len(&self) -> usize {
@@ -119,30 +129,6 @@ fn frame_payload(bytes: &[u8]) -> &[u8] {
     bytes.get(4..).unwrap_or_default()
 }
 
-/// Only reads complete legal transport frames. Invalid data remains untouched.
-/// Prefix and file length are checked before any payload-sized allocation.
-pub(super) fn frame_bytes(path: &Path) -> Result<Option<Vec<u8>>, StoreError> {
-    let mut file = File::open(path)?;
-    let len = file.metadata()?.len();
-    if !(4..=(transport::MAX_FRAME_BYTES as u64).saturating_add(4)).contains(&len) {
-        return Ok(None);
-    }
-    let mut prefix = [0; 4];
-    file.read_exact(&mut prefix)?;
-    if u64::from(u32::from_le_bytes(prefix)) != len.saturating_sub(4) {
-        return Ok(None);
-    }
-    let mut bytes = vec![0; usize::try_from(len).map_err(|_| invalid("oversized frame"))?];
-    // The range check above guarantees at least the four prefix bytes.
-    let (head, body) = bytes.split_at_mut(4);
-    head.copy_from_slice(&prefix);
-    file.read_exact(body)?;
-    let mut extra = [0];
-    if file.read(&mut extra)? != 0 {
-        return Err(invalid("frame changed during read"));
-    }
-    Ok(Some(bytes))
-}
 fn heap_bytes(envelope: &Envelope) -> usize {
     match envelope {
         Envelope::Delta { delta, .. } => delta.capacity(),
@@ -261,7 +247,7 @@ fn capture_continuity(
     Ok(())
 }
 
-pub(crate) struct ReplayBuild {
+pub struct ReplayBuild {
     root: PathBuf,
     workspace: PathBuf,
     device: [u8; 32],
@@ -276,7 +262,7 @@ pub(crate) struct ReplayBuild {
     sorter: Option<Sorter>,
     next_pin: u64,
     continuity: Option<File>,
-    selection: Option<super::shell_selection::Selection>,
+    selection: Option<Box<dyn super::shell_selection::ShellSelection>>,
     selected: Option<File>,
     shell_selected: bool,
     skip: Option<ResumeSkip>,
@@ -295,7 +281,12 @@ impl ReplayBuild {
     pub(crate) fn stats(&self) -> Option<&WorkStats> {
         self.sorter.as_ref().map(|s| &s.stats)
     }
-    pub(crate) fn into_discard(self) -> Result<WorkDiscard, StoreError> {
+    /// Discard this build's work directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory cannot be listed.
+    pub fn into_discard(self) -> Result<WorkDiscard, StoreError> {
         WorkDiscard::new(self.root)
     }
 }
@@ -308,7 +299,8 @@ struct Candidate {
     /// Held by the resuming device: indexed for coverage, not replayed.
     held: bool,
 }
-pub(crate) struct ReplaySnapshot {
+/// A captured replay: pinned retained frames, ready to prepare and read.
+pub struct ReplaySnapshot {
     root: PathBuf,
     workspace: PathBuf,
     workspace_id: u64,
@@ -337,7 +329,12 @@ impl ReplaySnapshot {
     pub(crate) fn stats(&self) -> &WorkStats {
         &self.stats
     }
-    pub(crate) fn into_discard(self) -> Result<WorkDiscard, StoreError> {
+    /// Discard this snapshot's work directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory cannot be listed.
+    pub fn into_discard(self) -> Result<WorkDiscard, StoreError> {
         WorkDiscard::new(self.root)
     }
     fn pin(&self, pin: u64) -> PathBuf {
@@ -523,11 +520,17 @@ impl ReplaySnapshot {
 }
 impl WorkspaceStore {
     pub(crate) fn replay_capture_has_basis(&self) -> Result<bool, StoreError> {
-        Ok(self.shell_authority().is_none()
+        Ok(self.shell_binding().is_none()
             || retained::current(&self.root.join(super::shell_selection::DIRECTORY))?.is_some())
     }
 
-    pub(crate) fn start_replay_capture(
+    /// Begin capturing a replay for `device`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the capture's work directory cannot be made
+    /// or the shell selection it starts with cannot be opened.
+    pub fn start_replay_capture(
         &self,
         id: ReplayId,
         device: [u8; 32],
@@ -564,20 +567,18 @@ impl WorkspaceStore {
         let selection = if pending_only {
             None
         } else {
-            self.shell_authority()
-                .map(|_| super::shell_selection::Selection::new(self, root.clone(), None))
-                .transpose()?
+            self.shell_selection(root.clone(), None)?
         };
         Ok(ReplayBuild {
             selection,
-            selected: if !pending_only && self.shell_authority().is_none() {
+            selected: if !pending_only && self.shell_binding().is_none() {
                 retained::current(&self.root.join(super::shell_selection::DIRECTORY))?
                     .map(|p| File::open(p.join("basis.manifest")))
                     .transpose()?
             } else {
                 None
             },
-            shell_selected: !pending_only && self.shell_authority().is_some(),
+            shell_selected: !pending_only && self.shell_binding().is_some(),
             root: root.clone(),
             workspace: self.root.clone(),
             device,
@@ -598,7 +599,11 @@ impl WorkspaceStore {
         clippy::too_many_lines,
         reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
     )]
-    pub(crate) fn capture_replay_step(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when retained history cannot be read or pinned.
+    pub fn capture_replay_step(
         &self,
         build: &mut ReplayBuild,
         limit: WorkLimit,
@@ -827,7 +832,12 @@ impl WorkspaceStore {
         clippy::too_many_lines,
         reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
     )]
-    pub(crate) fn prepare_replay_step(
+    /// One quantum of ordering a captured snapshot's frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot cannot be read or sorted.
+    pub fn prepare_replay_step(
         &self,
         snapshot: &mut ReplaySnapshot,
         limit: WorkLimit,
@@ -972,7 +982,13 @@ impl WorkspaceStore {
         }
         Ok(Step::More)
     }
-    pub(crate) fn read_replay_batch(
+    /// The next batch of a prepared snapshot's frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot is not ready for this store or a
+    /// frame cannot be read.
+    pub fn read_replay_batch(
         &self,
         snapshot: &mut ReplaySnapshot,
         limits: ReplayLimits,
@@ -1099,28 +1115,6 @@ impl WorkspaceStore {
         Ok(Step::More)
     }
 }
-pub(super) fn equal_files(a: &Path, b: &Path) -> Result<bool, StoreError> {
-    let mut a = File::open(a)?;
-    let mut b = File::open(b)?;
-    if a.metadata()?.len() != b.metadata()?.len() {
-        return Ok(false);
-    }
-    let mut left = [0; 16 * 1024];
-    let mut right = [0; 16 * 1024];
-    loop {
-        let n = a.read(&mut left)?;
-        if n == 0 {
-            return Ok(true);
-        }
-        let (Some(read), Some(expected)) = (left.get(..n), right.get_mut(..n)) else {
-            return Ok(false);
-        };
-        b.read_exact(expected)?;
-        if read != expected {
-            return Ok(false);
-        }
-    }
-}
 pub(super) fn same_inode(a: &Path, b: &Path) -> Result<bool, StoreError> {
     let a = match fs::symlink_metadata(a) {
         Ok(m) => m,
@@ -1143,7 +1137,7 @@ pub(super) fn same_inode(a: &Path, b: &Path) -> Result<bool, StoreError> {
 }
 
 /// Snapshot/staging-only reclamation. Never execute abandoned cleanup manifests.
-pub(crate) struct WorkDiscard {
+pub struct WorkDiscard {
     root: PathBuf,
     outer: Option<DirectoryCursor>,
     child: Option<(PathBuf, DirectoryCursor)>,
@@ -1168,7 +1162,12 @@ impl WorkDiscard {
             done: false,
         })
     }
-    pub(crate) fn step(&mut self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
+    /// One quantum of removal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an entry cannot be listed or removed.
+    pub fn step(&mut self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
         let limit = limit.checked()?;
         if self.done || self.outer.is_none() {
             return Ok(Step::Done(()));
@@ -1326,12 +1325,17 @@ fn owned_work_file(dir: &std::ffi::OsStr, name: &std::ffi::OsStr) -> bool {
 }
 /// Startup-only cursor. Finish before admitting any new work: it treats all
 /// recognized old snapshots as abandoned, never as live cleanup authority.
-pub(crate) struct WorkReclaimer {
+pub struct WorkReclaimer {
     entries: Option<DirectoryCursor>,
     current: Option<WorkDiscard>,
 }
 impl WorkspaceStore {
-    pub(crate) fn start_work_reclamation(&self) -> Result<WorkReclaimer, StoreError> {
+    /// Reclaim every abandoned work directory, before admitting new work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the work directory cannot be listed.
+    pub fn start_work_reclamation(&self) -> Result<WorkReclaimer, StoreError> {
         Ok(WorkReclaimer {
             entries: match DirectoryCursor::open(&self.root.join("store-work-v1")) {
                 Ok(cursor) => Some(cursor),
@@ -1343,7 +1347,12 @@ impl WorkspaceStore {
     }
 }
 impl WorkReclaimer {
-    pub(crate) fn step(&mut self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
+    /// One quantum of reclamation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an entry cannot be listed or removed.
+    pub fn step(&mut self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
         let limit = limit.checked()?;
         if let Some(current) = &mut self.current {
             if current.step(limit)? == Step::Done(()) {
@@ -1378,19 +1387,28 @@ mod tests;
 /// One selected publication frame, sharing the normal process output budget.
 /// The owner holds its ordered completion across this cursor; queued deliveries
 /// own the batch/permit, so subsequent GC cannot invalidate their bytes.
-pub(crate) struct PublicationCursor {
+pub struct PublicationCursor {
     workspace: PathBuf,
     input: File,
     recovery: bool,
 }
 impl PublicationCursor {
-    pub(crate) fn open(generation: &Path) -> Result<Self, StoreError> {
+    /// The live publication of the selected `generation`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when its manifest cannot be opened.
+    pub fn open(generation: &Path) -> Result<Self, StoreError> {
         Self::open_manifest(generation, false)
     }
     /// The serialized workspace owner must retain its queue position through
     /// the cursor's completion; it excludes generation GC while paths are read.
     /// Delivered batches then own their bytes/permits independently of GC.
-    pub(crate) fn open_recovery(generation: &Path) -> Result<Self, StoreError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when its manifest cannot be opened.
+    pub fn open_recovery(generation: &Path) -> Result<Self, StoreError> {
         Self::open_manifest(generation, true)
     }
     fn open_manifest(generation: &Path, recovery: bool) -> Result<Self, StoreError> {
@@ -1413,10 +1431,12 @@ impl PublicationCursor {
             recovery,
         })
     }
-    pub(crate) fn step(
-        &mut self,
-        budget: &ReplayBudget,
-    ) -> Result<Step<Option<ReplayBatch>>, StoreError> {
+    /// The next frame of the publication, within `budget`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a frame cannot be read or exceeds `budget`.
+    pub fn step(&mut self, budget: &ReplayBudget) -> Result<Step<Option<ReplayBatch>>, StoreError> {
         let offset = self.input.stream_position()?;
         #[cfg(test)]
         if self.recovery && offset > 0 {
