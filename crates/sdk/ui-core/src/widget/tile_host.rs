@@ -3030,7 +3030,7 @@ fn draw_opening_card(
         presence,
         rect,
         OpeningCardText { name, status: "" },
-        spinner,
+        Some(spinner),
     );
 }
 
@@ -3051,8 +3051,9 @@ pub struct OpeningCardText<'a> {
     pub status: &'a str,
 }
 
-/// The opening card, for a place held before any window exists. Returns
-/// where its last line ends, for a caller adding something under it.
+/// The opening card, for a place held before any window exists. Draws
+/// `spinner` in the indicator's place, or leaves that place to the caller
+/// (a measured wait shows a bar there instead). Returns the place.
 pub fn paint_opening_card(
     scene: &mut Scene,
     transform: Affine,
@@ -3061,8 +3062,8 @@ pub fn paint_opening_card(
     presence: &PresenceCtx,
     rect: Rect,
     text: OpeningCardText<'_>,
-    spinner: &mut Spinner,
-) -> f64 {
+    spinner: Option<&mut Spinner>,
+) -> Rect {
     let OpeningCardText { name, status } = text;
     scene.fill(
         vello::peniko::Fill::NonZero,
@@ -3092,28 +3093,33 @@ pub fn paint_opening_card(
         );
     }
     let top = y + f64::from(style.size) + OPENING_SPINNER_GAP;
-    spinner.set_rect(Rect::new(
+    let indicator = Rect::new(
         cx - OPENING_SPINNER_PX / 2.0,
         top,
         cx + OPENING_SPINNER_PX / 2.0,
         top + OPENING_SPINNER_PX,
-    ));
-    Widget::draw(spinner, scene, transform, tr, theme, presence);
-    let mut below = top + OPENING_SPINNER_PX + OPENING_SPINNER_GAP;
+    );
+    if let Some(spinner) = spinner {
+        spinner.set_rect(indicator);
+        Widget::draw(spinner, scene, transform, tr, theme, presence);
+    }
     if !status.is_empty() {
         let style = theme.text(TextRole::Body);
-        let (tw, th) = tr.measure_style(status, None, &style);
+        let (tw, _) = tr.measure_style(status, None, &style);
         tr.draw_style(
             scene,
             status,
             theme.on_content().ink_dim,
-            translated(transform, cx - f64::from(tw) / 2.0, below),
+            translated(
+                transform,
+                cx - f64::from(tw) / 2.0,
+                indicator.y1 + OPENING_SPINNER_GAP,
+            ),
             None,
             &style,
         );
-        below += f64::from(th);
     }
-    below
+    indicator
 }
 
 /// One function so the two callers (`Stub`, `Notice`) can't drift apart —
