@@ -10,7 +10,6 @@
 use std::any::TypeId;
 
 use tilo_resource::{Reader, Resource, Shape};
-use ui_core::State;
 use ui_core::Theme;
 use ui_core::automerge::AutoCommit;
 use ui_core::history_mode::restore::{
@@ -19,19 +18,16 @@ use ui_core::history_mode::restore::{
     RestoreValueType,
 };
 use ui_core::history_mode::{
-    HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
-    PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
+    FrozenRootPreview, HistoryDefinition, HistoryPresentation, HistoryPreview,
+    HistoryScopeDefinition, PreviewInput,
 };
-use ui_core::launch::ShotFrame;
-use ui_core::presence::PresenceCtx;
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
-use ui_core::vello::kurbo::{Affine, Rect, Vec2};
-use ui_core::widget::Widget;
+use ui_core::vello::kurbo::{Affine, Rect};
 
 use super::app::{Editing, ResourceApp, build_root, leaked};
 use super::live::Live;
-use super::root::{ResourceRoot, RootWidget};
+use super::root::ResourceRoot;
 use ui_core::storage::AppStorage;
 
 struct HistoryKey<A>(std::marker::PhantomData<A>);
@@ -214,12 +210,18 @@ fn readable<R: Resource>(doc: &AutoCommit) -> Result<(), String> {
 fn preview<A: ResourceApp>(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
     let root = past_root::<A>(&doc)?;
-    Ok(Box::new(ViewPreview::new(
-        root.into_root_widget(),
-        <A::Resource as Resource>::LABEL,
+    Ok(Box::new(
+        past_preview::<A>(root, doc).with_view(input.initial_view),
+    ))
+}
+
+/// `root` drawing `doc`, the past version it was built over.
+fn past_preview<A: ResourceApp>(root: ResourceRoot, doc: AutoCommit) -> FrozenRootPreview {
+    FrozenRootPreview::new(
+        Box::new(root.into_root_widget()),
         doc,
-        input.initial_view,
-    )))
+        <A::Resource as Resource>::LABEL,
+    )
 }
 
 /// `A`'s root over `doc`, a frozen past version: read-only, keeping
@@ -238,7 +240,7 @@ fn past_root<A: ResourceApp>(doc: &AutoCommit) -> Result<ResourceRoot, String> {
 /// preview draws it: read-only, over the frozen document. Built by
 /// [`HeadlessApp::past_version`](super::testing::HeadlessApp::past_version).
 pub struct PastVersion<R: Resource> {
-    preview: ViewPreview,
+    preview: FrozenRootPreview,
     /// The root's live state, which the root widget holds erased.
     live: Live<R>,
 }
@@ -247,7 +249,7 @@ impl<R: Resource> PastVersion<R> {
     /// Every name and value the drawn view exposes to assistive technology,
     /// depth first: what a reader of the past version would hear.
     pub fn texts(&self) -> Vec<String> {
-        ui_core::a11y::texts(&self.preview.root)
+        ui_core::a11y::texts(self.preview.root())
     }
 
     /// The state the view was presented.
@@ -257,7 +259,7 @@ impl<R: Resource> PastVersion<R> {
 
     /// The drawn size of the view.
     pub fn size(&self) -> Rect {
-        self.preview.root.get_rect()
+        self.preview.root().get_rect()
     }
 }
 
@@ -273,12 +275,7 @@ pub(crate) fn render_past<A: ResourceApp>(
         .typed::<A::Resource>()
         .map(|typed| typed.live.clone())
         .ok_or_else(|| format!("{} drew another resource", A::TITLE))?;
-    let mut preview = ViewPreview::new(
-        root.into_root_widget(),
-        <A::Resource as Resource>::LABEL,
-        doc,
-        PreviewView::default(),
-    );
+    let mut preview = past_preview::<A>(root, doc);
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
     let bounds = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
@@ -301,7 +298,7 @@ pub(crate) fn draw_past<A: ResourceApp>(
     // Lay out `preview` in `bounds` and draw it. An item of its own, not
     // generic over `A`, so it is compiled once rather than in every app.
     fn draw_preview(
-        mut preview: ViewPreview,
+        mut preview: FrozenRootPreview,
         bounds: Rect,
         scene: &mut Scene,
         transform: Affine,
@@ -313,116 +310,8 @@ pub(crate) fn draw_past<A: ResourceApp>(
         Ok(())
     }
     let root = past_root::<A>(&doc)?;
-    let preview = ViewPreview::new(
-        root.into_root_widget(),
-        <A::Resource as Resource>::LABEL,
-        doc,
-        PreviewView::default(),
-    );
+    let preview = past_preview::<A>(root, doc);
     draw_preview(preview, bounds, scene, transform, theme)
-}
-
-struct ViewPreview {
-    root: RootWidget,
-    /// [`Resource::LABEL`] of the resource shown.
-    label: &'static str,
-    doc: Option<AutoCommit>,
-    bounds: Rect,
-    view: PreviewView,
-}
-
-impl ViewPreview {
-    fn new(root: RootWidget, label: &'static str, doc: AutoCommit, view: PreviewView) -> Self {
-        Self {
-            root,
-            label,
-            doc: Some(doc),
-            bounds: Rect::ZERO,
-            view,
-        }
-    }
-}
-
-impl HistoryPreview for ViewPreview {
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a preview pane is a few thousand logical pixels"
-    )]
-    fn layout(
-        &mut self,
-        bounds: Rect,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Result<(), String> {
-        self.bounds = bounds;
-        let size = (
-            bounds.width().max(1.0) as u32,
-            bounds.height().max(1.0) as u32,
-        );
-        let mut frame = ShotFrame::new(size, theme.clone());
-        if let Some(doc) = self.doc.take() {
-            frame = frame.with_state(State::from_doc(doc));
-        }
-        // The view is measured by the renderer that draws it — the live
-        // window's, with its fonts and text scale — or a label laid out by
-        // another renderer can come out too narrow and collapse to "…".
-        std::mem::swap(&mut frame.text, text);
-        frame.sync(&mut self.root);
-        let laid_out = frame.layout(&mut self.root);
-        std::mem::swap(&mut frame.text, text);
-        laid_out.map_err(|error| error.to_string())?;
-        self.doc = Some(std::mem::take(&mut frame.state.doc));
-        Ok(())
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let offset = Vec2::new(self.bounds.x0, self.bounds.y0 - self.view.scroll.1);
-        let transform = transform.pre_translate(offset);
-        self.root
-            .draw(scene, transform, text, theme, &PresenceCtx::empty());
-    }
-
-    fn navigate(&mut self, command: PreviewNavigation) -> bool {
-        match command {
-            PreviewNavigation::Scroll { dy, .. } => {
-                let content = self.root.get_rect().height();
-                let limit = (content - self.bounds.height()).max(0.0);
-                let next = (self.view.scroll.1 + dy).clamp(0.0, limit);
-                let changed = (next - self.view.scroll.1).abs() > f64::EPSILON;
-                self.view.scroll.1 = next;
-                changed
-            }
-            _ => false,
-        }
-    }
-
-    fn view(&self) -> PreviewView {
-        self.view.clone()
-    }
-
-    fn accessibility(&self) -> PreviewAccessibility {
-        // A screen-reader user hears what the past version says, not only
-        // that one is showing.
-        let heading = ui_core::i18n::I18nManager::format(
-            "history-preview-description",
-            &[("resource", self.label.into())],
-        );
-        let description = std::iter::once(heading)
-            .chain(ui_core::a11y::texts(&self.root))
-            .collect::<Vec<_>>()
-            .join("\n");
-        PreviewAccessibility {
-            description,
-            pages: Vec::new(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -582,18 +471,13 @@ mod tests {
             let bytes = doc.fork_at(&past).unwrap().save();
 
             let frozen = AutoCommit::load(&bytes).unwrap();
-            let mut preview = ViewPreview::new(
-                build_root::<PageApp>(
-                    Reader::read(&frozen).unwrap(),
-                    Editing::ReadOnly,
-                    AppStorage::for_app(PageApp::ID),
-                    crate::framework::settings::Hosted::default(),
-                )
-                .into_root_widget(),
-                Page::LABEL,
-                frozen,
-                PreviewView::default(),
+            let root = build_root::<PageApp>(
+                Reader::read(&frozen).unwrap(),
+                Editing::ReadOnly,
+                AppStorage::for_app(PageApp::ID),
+                crate::framework::settings::Hosted::default(),
             );
+            let mut preview = past_preview::<PageApp>(root, frozen);
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
             preview
@@ -601,12 +485,12 @@ mod tests {
                 .unwrap();
             let mut scene = Scene::new();
             preview.draw(&mut scene, Affine::IDENTITY, &mut text, &theme);
-            assert_eq!(shown(&preview.root), ["First draft"]);
-            assert!(preview.root.get_rect().width() > 0.0);
+            assert_eq!(shown(preview.root()), ["First draft"]);
+            assert!(preview.root().get_rect().width() > 0.0);
         }
     }
 
-    fn shown(root: &RootWidget) -> Vec<String> {
+    fn shown(root: &dyn Widget) -> Vec<String> {
         fn visit(widget: &dyn Widget, out: &mut Vec<String>) {
             if let Some(node) = widget.accessibility()
                 && let Some(label) = node.name
