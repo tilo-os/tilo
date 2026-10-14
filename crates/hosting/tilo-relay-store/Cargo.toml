@@ -35,6 +35,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The test barriers report through a oneshot channel.
+tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true

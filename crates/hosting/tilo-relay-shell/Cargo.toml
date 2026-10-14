@@ -69,6 +69,8 @@ tilo-relay = { path = "../tilo-relay", features = ["test-support"] }
 tilo-relay-store = { path = "../tilo-relay-store", features = ["test-support"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
+# Serves the Automerge worker processes selection's proofs run in.
+tilo-automerge-isolate.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 web-time = "1"
 tempfile.workspace = true
