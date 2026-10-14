@@ -40,7 +40,8 @@ impl RecordContentKind {
             .and_then(|name| name.rsplit_once('.'))
             .map(|(_, extension)| extension.to_ascii_lowercase());
         match extension.as_deref() {
-            Some("tilo-doc") => Self::SerializedDocument {
+            // Existing .qdoc records retain the same serialized-document policy.
+            Some("qdoc" | "tilo-doc") => Self::SerializedDocument {
                 schema: SerializedDocumentSchema::TiloDoc,
             },
             _ => Self::Opaque,
@@ -76,9 +77,13 @@ mod tests {
         let document = RecordContentKind::SerializedDocument {
             schema: SerializedDocumentSchema::TiloDoc,
         };
+        assert_eq!(kind("notes.qdoc"), document);
+        assert_eq!(kind("Notes.QDOC"), document);
         assert_eq!(kind("notes.tilo-doc"), document);
         assert_eq!(kind("Notes.TILO-DOC"), document);
+        assert_eq!(kind("notes.qdoc.bin"), RecordContentKind::Opaque);
         assert_eq!(kind("notes.tilo-doc.bin"), RecordContentKind::Opaque);
+        assert_eq!(kind("qdoc"), RecordContentKind::Opaque);
         assert_eq!(kind("tilo-doc"), RecordContentKind::Opaque);
         assert_eq!(kind("report.docx"), RecordContentKind::Opaque);
     }
