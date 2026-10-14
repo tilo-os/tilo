@@ -14,6 +14,11 @@ EnvironmentFile=/run/tilo-node/%i/session-host.env
 ExecStartPre=/usr/bin/loginctl enable-linger %i
 # The account's user manager runs the session (systemd-run --user below).
 ExecStartPre=/bin/sh -c 'exec /usr/bin/systemctl start "user@$(id -u %i).service"'
+# The session lives exactly as long as this unit: a session left from an
+# earlier start (its relay restarted) is stopped first, and this one stops
+# with the unit.
+ExecStartPre=-/usr/bin/systemctl --machine=%i@ --user stop tilo-node-session.service
+ExecStopPost=-/usr/bin/systemctl --machine=%i@ --user stop tilo-node-session.service
 ExecStart=/usr/bin/systemd-run --quiet --wait --collect --unit=tilo-node-session --machine=%i@ --user --setenv=TILO_IDENTITY_ROOT=/var/lib/tilo-node/%i/session --setenv=TILO_COLLAB_HOST -- /usr/libexec/tilo-session --backend headless
 Restart=always
 RestartSec=2
