@@ -1,10 +1,11 @@
 //! Calls in the rooms this relay governs.
 //!
 //! A call is room governance: [`RoomMediaV1`] in the room document, which the
-//! governor authors and every member verifies. The relay's own user starts,
-//! ends and moderates calls; any member device joins an active one and gets a
-//! grant for the relay's `moq-lite` voice carrier (see
-//! [`tilo_relay_protocol::voice`]).
+//! governor authors and every member verifies. The relay's own user, and any
+//! member the room's governance grants its `call` action (no role preset
+//! below the owner's does), starts, ends and moderates calls; any member
+//! device joins an active one and gets a grant for the relay's `moq-lite`
+//! voice carrier (see [`tilo_relay_protocol::voice`]).
 //!
 //! What a participation may do is the room's current policy for its device:
 //! the call is active, the device is a member, and neither the call's
@@ -33,6 +34,9 @@ use tilo_relay_protocol::{AuthenticatedPeer, Envelope};
 use tokio::sync::mpsc;
 use web_time::SystemTime;
 
+use tilo_action_policy::roles::governance;
+
+use super::authority::RoomOp;
 use super::{GovernedRoom, Rooms};
 
 /// How long a grant's token admits new carrier sessions.
@@ -611,17 +615,35 @@ impl Rooms {
         self.inner.calls.carrier.get().is_some()
     }
 
-    /// Start, end or moderate a call of `room` for `caller`.
+    /// Start, end or moderate a call of `room` for `caller`: a device of
+    /// the relay's user, or of a member the room lets run its calls.
     pub(crate) async fn voice_call(
         &self,
         room: &str,
         caller: &AuthenticatedPeer,
         operation: &CallOperation,
     ) -> Result<CallState, String> {
-        self.authorize(&caller.cert, tilo_clock::unix_now_ns(), "call")
-            .map_err(|error| error.to_string())?;
+        self.voice_call_as(room, &caller.cert, operation).await
+    }
+
+    /// [`Self::voice_call`] for the device `caller` certifies, however it
+    /// reached the relay: the envelope and the room's `call` action share
+    /// it, and with it the one authorization.
+    pub(super) async fn voice_call_as(
+        &self,
+        room: &str,
+        caller: &tilo_user_identity::DeviceCert,
+        operation: &CallOperation,
+    ) -> Result<CallState, String> {
         let room = self.room(room).await.map_err(|error| error.to_string())?;
         let mut room = room.lock().await;
+        self.authorize(
+            caller,
+            Some(&room),
+            RoomOp::Govern(governance::CALL),
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(|error| error.to_string())?;
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
         super::prepare_governance(&mut candidate, &self.inner.host.key, now)?;

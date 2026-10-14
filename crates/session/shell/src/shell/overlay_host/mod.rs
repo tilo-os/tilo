@@ -818,6 +818,9 @@ pub struct ShellOverlayHost {
     /// whose runtime content was replaced by a `PeerView`. These never enter
     /// `ChromeState` or its replicated workspace document.
     peer_stream_tabs: std::collections::HashMap<(u64, u64), u64>,
+    /// Wakes the compositor loop when a peer stream's picture finishes
+    /// decoding; handed to every peer view this host mounts.
+    peer_picture_wake: Option<media::realtime::PictureWake>,
     /// Quick-settings root-page presentation, geometry and input state.
     qs_root: QuickSettingsRoot,
     // Navigation can shrink the panel before the matching release arrives.
@@ -883,6 +886,9 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// Roster id whose recent summary People shows. Local view state: the
+    /// same person stays expanded as the roster reorders.
+    expanded_collaborator: Option<String>,
     /// Peer whose live tab focus this session mirrors. Local-only and
     /// ephemeral: follow is a viewing mode, never shared workspace state.
     followed_peer: Option<String>,
@@ -2159,6 +2165,9 @@ impl ShellOverlayHost {
             crate::shell::search::providers::SessionActionsProvider::new(session_action_policy),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::SettingsPagesProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::tray_items::TrayItemsProvider::global(),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -2449,6 +2458,7 @@ impl ShellOverlayHost {
             notification_stack: NotificationStack::new(),
             last_chrome_revision: u64::MAX,
             peer_stream_tabs: std::collections::HashMap::new(),
+            peer_picture_wake: None,
             // User intent is durable, while the root filters it against the
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
@@ -2482,6 +2492,7 @@ impl ShellOverlayHost {
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             text_caret: None,
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
+            expanded_collaborator: None,
             followed_peer: None,
             followed_tab: None,
             followed_session: None,
@@ -4541,6 +4552,7 @@ impl ShellOverlayHost {
         );
         peer_view.restart_stream(codec, display_size);
         peer_view.set_input_sink(std::sync::Arc::clone(input_sink));
+        peer_view.set_picture_wake(self.peer_picture_wake.clone());
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: identical to `foreign_surface_rect`: rows are boxed by
             // this host and `&mut self` makes this traversal exclusive.
@@ -4610,13 +4622,53 @@ impl ShellOverlayHost {
         encoded: &[u8],
         latency_ns: Option<u64>,
     ) -> bool {
-        let Some(tab_id) = self
+        self.peer_stream_view_mut(source_peer, surface_id)
+            .is_some_and(|view| {
+                !matches!(
+                    view.push_encoded_with_latency(encoded, latency_ns),
+                    crate::shell::peer_view::PushOutcome::DecodeFailed
+                )
+            })
+    }
+
+    /// How the loop learns that a peer-stream picture finished decoding:
+    /// peer views never wait for their pictures, so `wake` (run on a media
+    /// thread) brings the loop back to [`Self::collect_late_peer_pictures`].
+    /// Views mounted from now on use it.
+    pub fn set_peer_picture_wake(&mut self, wake: media::realtime::PictureWake) {
+        self.peer_picture_wake = Some(wake);
+    }
+
+    /// Show every peer-stream picture that finished decoding after its frame
+    /// was pushed. A window that stops changing sends no further frame to
+    /// carry its last picture out of the decoder, so the loop collects it.
+    /// Returns whether any view took a new picture.
+    pub fn collect_late_peer_pictures(&mut self) -> bool {
+        if self.peer_stream_tabs.is_empty() {
+            return false;
+        }
+        let streams: Vec<(u64, u64)> = self.peer_stream_tabs.keys().copied().collect();
+        let mut collected = false;
+        for (source_peer, surface_id) in streams {
+            if let Some(view) = self.peer_stream_view_mut(source_peer, surface_id)
+                && view.picture_pending()
+            {
+                collected |= view.collect_late_picture().is_some();
+            }
+        }
+        collected
+    }
+
+    /// The view showing the stream of `surface_id` from `source_peer`.
+    pub fn peer_stream_view_mut(
+        &mut self,
+        source_peer: u64,
+        surface_id: u64,
+    ) -> Option<&mut crate::shell::peer_view::PeerView> {
+        let tab_id = self
             .peer_stream_tabs
             .get(&(source_peer, surface_id))
-            .copied()
-        else {
-            return false;
-        };
+            .copied()?;
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: same row ownership invariant as `mount_peer_stream`.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
@@ -4625,21 +4677,14 @@ impl ShellOverlayHost {
                     continue;
                 };
                 let ui::widget::TileContent::App(app) = host.content_mut() else {
-                    return false;
+                    return None;
                 };
-                let Some(view) = app
+                return app
                     .as_any_mut()
-                    .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>())
-                else {
-                    return false;
-                };
-                return !matches!(
-                    view.push_encoded_with_latency(encoded, latency_ns),
-                    crate::shell::peer_view::PushOutcome::DecodeFailed
-                );
+                    .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>());
             }
         }
-        false
+        None
     }
 
     /// Whether a view shows the stream of `surface_id` from `source_peer`.
@@ -5981,12 +6026,9 @@ impl ShellOverlayHost {
             ) {
                 chrome_handle.borrow_mut().bump();
             }
-            let pending_notice = crate::shell::catalogue::take_pending_notice(&package_id);
+            crate::shell::catalogue::take_pending_launch(&package_id);
             {
                 let mut st = chrome_handle.borrow_mut();
-                if let Some(notice) = pending_notice {
-                    st.dismiss_notification(notice);
-                }
                 st.push_notification_full(
                     tilo_desktop::notifications::Notification::new(
                         t("host-app-did-not-open-title"),
@@ -6024,12 +6066,11 @@ impl ShellOverlayHost {
                 chrome_handle.borrow_mut().bump();
                 posted = true;
             }
-            // A failure settles the "Opening…" notice here. `Started`
+            // A failure settles the pending launch here. `Started`
             // doesn't — the window is still seconds away — that's
-            // [`Self::retire_notices_for_opened_windows`]'s job. A clean
+            // [`Self::settle_launches_of_opened_windows`]'s job. A clean
             // exit also settles it: a process can quit before presenting a
-            // window, and leaving "Loading…" visible for two minutes would
-            // falsely claim that launch is still in flight.
+            // window, and the app must stay openable again.
             if matches!(
                 event.kind,
                 LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. }
@@ -6056,16 +6097,9 @@ impl ShellOverlayHost {
                     posted = true;
                 }
                 // A failed process can never claim its promised toplevel, so
-                // clear it at the same boundary as the opening notice.
+                // clear it at the same boundary as the pending launch.
                 crate::shell::launcher::clear_pending_placement(&event.package_id);
-                if let Some(notice) =
-                    crate::shell::catalogue::take_pending_notice(&event.package_id)
-                {
-                    let mut st = chrome_handle.borrow_mut();
-                    st.dismiss_notification(notice);
-                    st.bump();
-                    posted = true;
-                }
+                crate::shell::catalogue::take_pending_launch(&event.package_id);
             }
             if matches!(
                 event.kind,
@@ -6073,17 +6107,10 @@ impl ShellOverlayHost {
             ) {
                 // A successful launcher parent may have daemonised. Its GUI
                 // child still owns this launch for a short bounded interval,
-                // so dismiss the loading card now but keep placement until a
+                // so settle the launch now but keep placement until a
                 // matching toplevel claims it or the grace expires.
                 crate::shell::launcher::retire_pending_placement_after_grace(&event.package_id);
-                if let Some(notice) =
-                    crate::shell::catalogue::take_pending_notice(&event.package_id)
-                {
-                    let mut st = chrome_handle.borrow_mut();
-                    st.dismiss_notification(notice);
-                    st.bump();
-                    posted = true;
-                }
+                crate::shell::catalogue::take_pending_launch(&event.package_id);
             }
             match &event.kind {
                 LaunchEventKind::Started { .. }
@@ -6222,15 +6249,15 @@ impl ShellOverlayHost {
         posted
     }
 
-    /// Retires the "Opening…" notice of any app now on screen. Neither
-    /// `Started` (forked, no window yet) nor an adopted-but-not-presenting
-    /// tab counts — what settles it is the app's first frame or placeholder
-    /// card, whichever shows first, handing over to the window's own place.
-    pub(crate) fn retire_notices_for_opened_windows(&self) -> bool {
+    /// Settles the pending launch of any app now on screen, so it can be
+    /// opened again. Neither `Started` (forked, no window yet) nor an
+    /// adopted-but-not-presenting tab counts — what settles it is the app's
+    /// first frame or placeholder card, whichever shows first.
+    pub(crate) fn settle_launches_of_opened_windows(&self) -> bool {
         if self.desktop_controls.is_explicit() {
             return false;
         }
-        let pending = crate::shell::catalogue::pending_notices();
+        let pending = crate::shell::catalogue::pending_launches();
         if pending.is_empty() {
             return false;
         }
@@ -6263,19 +6290,14 @@ impl ShellOverlayHost {
             return false;
         }
         let mut retired = false;
-        for (package_id, notice) in pending {
+        for package_id in pending {
             let showing = painted
                 .iter()
                 .any(|id| crate::shell::launcher::app_id_matches_package(id, &package_id));
             if !showing {
                 continue;
             }
-            if crate::shell::catalogue::take_pending_notice(&package_id).is_some() {
-                let mut st = chrome_handle.borrow_mut();
-                st.dismiss_notification(notice);
-                st.bump();
-                retired = true;
-            }
+            retired |= crate::shell::catalogue::take_pending_launch(&package_id);
         }
         retired
     }
@@ -8334,8 +8356,8 @@ impl ShellOverlayHost {
                 if let Some(badge) = &r.badge {
                     e = e.badge(badge.clone());
                 }
-                if r.id == "room.activity.open" {
-                    e = e.keybinding("Super+H");
+                if let Some(shortcut) = &r.shortcut {
+                    e = e.keybinding(shortcut.clone());
                 }
                 entries.push(e);
                 results.push(r.clone());
@@ -9093,6 +9115,16 @@ impl ShellOverlayHost {
                     self.palette_visible = true;
                     return;
                 }
+            }
+            crate::shell::search::usage::record(&result.provider_id, &result.id);
+            // A switch flips where the person can see it: keep the palette
+            // open on the row's new state instead of closing it.
+            if result.provider_id == crate::shell::search::providers::actions::PROVIDER_ID
+                && crate::shell::search::providers::actions::toggles_in_place(&result.id)
+            {
+                self.last_search_query = "\0toggled\0".into();
+                self.palette_layout_dirty = true;
+                return;
             }
             self.palette_visible = false;
             self.palette.close();
@@ -10045,11 +10077,15 @@ impl ShellOverlayHost {
                 let rows = state.quick_settings.vpns.len();
                 DrillInList::list_height(qs::LIST_TOP, rows)
             }
-            QsLevel::Notifications => self.notification_center.preferred_height_for_width(
-                state.notification_log(),
-                self.qs_type_lines,
-                self.quick_settings_width(),
-            ),
+            // `state` is the caller's shared borrow of this same chrome; the
+            // host reads it again for the rows' own actions.
+            QsLevel::Notifications => self.chrome.as_ref().map_or(0.0, |chrome| {
+                self.notification_center.preferred_height_for_width(
+                    &ChromeNotifications::new(chrome),
+                    &self.qs_type_lines,
+                    self.quick_settings_width(),
+                )
+            }),
             QsLevel::Clipboard => {
                 let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -10083,7 +10119,7 @@ impl ShellOverlayHost {
     /// The notification centre's geometry for the current panel and text
     /// scale — the one oracle paint, hit-testing and sizing read.
     fn qs_notification_layout(&self) -> CenterLayout {
-        CenterLayout::new(self.quick_settings_rect(), self.qs_type_lines)
+        CenterLayout::new(self.quick_settings_rect(), &self.qs_type_lines).drill_in()
     }
 
     /// Scroll the notification centre from a pointer wheel over the open
@@ -12080,6 +12116,9 @@ impl ShellOverlayHost {
             );
             state.bump();
         }
+        // A full revert, comparison, name or task change is the person's own
+        // action and shows in History itself; only a partial undo has
+        // something to say that the pane doesn't.
         if outcome.reverted {
             let mut state = chrome.borrow_mut();
             state.bump();
@@ -12088,34 +12127,13 @@ impl ShellOverlayHost {
                     t("host-history-partial-undo-title"),
                     t("host-history-partial-undo-body"),
                 );
-            } else {
-                state.push_notification(
-                    t("host-history-reverted-title"),
-                    t("host-history-reverted-body"),
-                );
             }
         }
         if let Some(target) = outcome.open_target {
             Self::open_room_activity_target(chrome, &target);
         }
-        if outcome.compared {
-            chrome.borrow_mut().push_notification(
-                t("host-history-compared-title"),
-                t("host-history-compared-body"),
-            );
-        }
-        if outcome.named {
-            let mut state = chrome.borrow_mut();
-            state.bump();
-            state.push_notification(t("host-history-named-title"), t("host-history-named-body"));
-        }
-        if outcome.task_changed {
-            let mut state = chrome.borrow_mut();
-            state.bump();
-            state.push_notification(
-                t("host-history-task-updated-title"),
-                t("host-history-task-updated-body"),
-            );
+        if outcome.compared || outcome.named || outcome.task_changed {
+            chrome.borrow_mut().bump();
         }
         if outcome.agent_runtime_changed {
             // Starting or retrying a process is local, not a durable task
@@ -14608,6 +14626,51 @@ impl ShellOverlayHost {
         self.status_selection = ui::text_selection::Selection::default();
     }
 
+    /// Follow the painted row's person, or stop when they are the one
+    /// already followed. Revalidated against the live roster first.
+    fn toggle_follow_row(&mut self, index: usize) {
+        let target = self
+            .collaborators_overlay
+            .follow_target(index)
+            .and_then(|id| {
+                self.chrome.as_ref().and_then(|chrome| {
+                    let state = chrome.borrow();
+                    let local_user = state.active_local_user();
+                    tilo_desktop::collaborators::collaborator_roster_rows(
+                        &state.tree().desktop,
+                        &local_user,
+                    )
+                    .into_iter()
+                    .find(|row| row.id == id && row.followable)
+                })
+            });
+        if let Some(target) = target {
+            if self.followed_peer.as_deref() == Some(target.id.as_str()) {
+                self.set_followed_peer(None);
+            } else {
+                self.set_followed_peer(Some(target.id));
+            }
+        }
+    }
+
+    /// Expand the painted row's recent summary, or collapse it when it is
+    /// already the open one. Keyed by the person, not the row index.
+    fn toggle_collaborator_details(&mut self, index: usize) {
+        let Some(target) = self
+            .collaborators_overlay
+            .details_target(index)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        self.expanded_collaborator =
+            if self.expanded_collaborator.as_deref() == Some(target.as_str()) {
+                None
+            } else {
+                Some(target)
+            };
+    }
+
     fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
         if matches!(
             hit,
@@ -14640,29 +14703,15 @@ impl ShellOverlayHost {
             *handled = true;
             return;
         }
-        if let CollaboratorsHit::ToggleFollow(index) = hit {
-            let target = self
-                .collaborators_overlay
-                .follow_target(index)
-                .and_then(|id| {
-                    self.chrome.as_ref().and_then(|chrome| {
-                        let state = chrome.borrow();
-                        let local_user = state.active_local_user();
-                        tilo_desktop::collaborators::collaborator_roster_rows(
-                            &state.tree().desktop,
-                            &local_user,
-                        )
-                        .into_iter()
-                        .find(|row| row.id == id && row.followable)
-                    })
-                });
-            if let Some(target) = target {
-                if self.followed_peer.as_deref() == Some(target.id.as_str()) {
-                    self.set_followed_peer(None);
-                } else {
-                    self.set_followed_peer(Some(target.id));
-                }
-            }
+        match hit {
+            CollaboratorsHit::ToggleDetails(index) => self.toggle_collaborator_details(index),
+            CollaboratorsHit::ToggleFollow(index) => self.toggle_follow_row(index),
+            _ => {}
+        }
+        if matches!(
+            hit,
+            CollaboratorsHit::ToggleDetails(_) | CollaboratorsHit::ToggleFollow(_)
+        ) {
             *handled = true;
             return;
         }
@@ -14700,6 +14749,7 @@ impl ShellOverlayHost {
                     state.bump();
                 }
                 CollaboratorsHit::ToggleFollow(_)
+                | CollaboratorsHit::ToggleDetails(_)
                 | CollaboratorsHit::PreviousPeople
                 | CollaboratorsHit::NextPeople
                 | CollaboratorsHit::EditStatus
@@ -15126,53 +15176,27 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::CalibrationProposal(proposal) => {
                 let (apply, dismiss) =
                     Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let device = view
-                    .devices
-                    .iter()
-                    .find(|device| device.id == proposal.peer)
-                    .map_or_else(
-                        || t("host-fabric-certified-display"),
-                        |device| device.label.clone(),
-                    );
                 if apply.contains(point) {
                     Some((
                         DeviceFabricUiAction::ApplyCalibration {
                             device: proposal.peer,
                         },
-                        t_args(
-                            "host-fabric-calibration-applied",
-                            &[("device", device.into())],
-                        ),
+                        String::new(),
                     ))
                 } else if dismiss.contains(point) {
                     Some((
                         DeviceFabricUiAction::DismissCalibration {
                             device: proposal.peer,
                         },
-                        t_args(
-                            "host-fabric-calibration-dismissed",
-                            &[("device", device.into())],
-                        ),
+                        String::new(),
                     ))
                 } else {
                     None
                 }
             }
             DeviceFabricPaneRow::CalibrationRevert(device) => Some((
-                DeviceFabricUiAction::RevertCalibration {
-                    device: device.clone(),
-                },
-                t_args(
-                    "host-fabric-calibration-restored",
-                    &[(
-                        "device",
-                        view.devices
-                            .iter()
-                            .find(|item| item.id == device)
-                            .map_or_else(|| t("host-fabric-the-display"), |item| item.label.clone())
-                            .into(),
-                    )],
-                ),
+                DeviceFabricUiAction::RevertCalibration { device },
+                String::new(),
             )),
             DeviceFabricPaneRow::RemoteAudioConsent(consent) => {
                 let Some(approved) = self.qs_device_row_choice(row_index, point) else {
@@ -15183,17 +15207,7 @@ impl ShellOverlayHost {
                         session_id: consent.session_id,
                         approved,
                     },
-                    if approved {
-                        t_args(
-                            "host-fabric-audio-allowed",
-                            &[("source", consent.label.into())],
-                        )
-                    } else {
-                        t_args(
-                            "host-fabric-audio-declined",
-                            &[("source", consent.label.into())],
-                        )
-                    },
+                    String::new(),
                 ))
             }
             DeviceFabricPaneRow::RemoteAudioSource(source) => {
@@ -15211,17 +15225,14 @@ impl ShellOverlayHost {
                         kind: consent.scope.kind(),
                         approved,
                     },
-                    consent.outcome(approved),
+                    String::new(),
                 ))
             }
             DeviceFabricPaneRow::SpeakerSession(session) => Some((
                 DeviceFabricUiAction::StopSpeakerGroupSession {
                     session_id: session.session_id,
                 },
-                t_args(
-                    "host-fabric-speaker-stopped",
-                    &[("group", session.name.into())],
-                ),
+                String::new(),
             )),
             DeviceFabricPaneRow::SpeakerGroup(group)
                 if let Some(QsDeviceSource::RemoteAudio(source_token)) =
@@ -15232,10 +15243,7 @@ impl ShellOverlayHost {
                         source_token,
                         group: group.id,
                     },
-                    t_args(
-                        "host-fabric-speaker-playing",
-                        &[("group", group.name.into())],
-                    ),
+                    String::new(),
                 ))
             }
             DeviceFabricPaneRow::SpeakerGroup(group)
@@ -15268,23 +15276,13 @@ impl ShellOverlayHost {
                     group: membership.group,
                     kind: membership.scope.kind(),
                 },
-                membership.left(),
+                String::new(),
             )),
             DeviceFabricPaneRow::RemoteAudioRoute(route) => Some((
                 DeviceFabricUiAction::StopRemoteAudio {
                     session_id: route.session_id,
                 },
-                if route.phase == crate::shell::remote_audio::RemoteAudioPhase::Interrupted {
-                    t_args(
-                        "host-fabric-audio-route-dismissed",
-                        &[("route", route.label.into())],
-                    )
-                } else {
-                    t_args(
-                        "host-fabric-audio-route-stopped",
-                        &[("route", route.label.into())],
-                    )
-                },
+                String::new(),
             )),
             DeviceFabricPaneRow::RemoteCaptureConsent(consent) => {
                 let Some(approved) = self.qs_device_row_choice(row_index, point) else {
@@ -15295,17 +15293,7 @@ impl ShellOverlayHost {
                         request_id: consent.request_id,
                         approved,
                     },
-                    if approved {
-                        t_args(
-                            "host-fabric-input-allowed",
-                            &[("app", consent.app_label.into())],
-                        )
-                    } else {
-                        t_args(
-                            "host-fabric-input-declined",
-                            &[("app", consent.app_label.into())],
-                        )
-                    },
+                    String::new(),
                 ))
             }
             DeviceFabricPaneRow::RemoteCaptureSource(kind) => {
@@ -15323,12 +15311,12 @@ impl ShellOverlayHost {
                 {
                     Some((
                         DeviceFabricUiAction::ApproveRemoteCaptureTarget { session_id },
-                        t("host-fabric-input-focused-app-allowed"),
+                        String::new(),
                     ))
                 } else {
                     Some((
                         DeviceFabricUiAction::StopRemoteCapture { session_id },
-                        t("host-fabric-input-stopped"),
+                        String::new(),
                     ))
                 }
             }
@@ -15341,19 +15329,13 @@ impl ShellOverlayHost {
                         session: consent.session,
                         approved,
                     });
+                // The person's own choice: the call moving here (or staying
+                // put) is the answer. Only a failure needs saying.
                 if let Some(chrome) = self.chrome.as_ref() {
                     let mut state = chrome.borrow_mut();
-                    match result {
-                        Ok(_) if approved => state.push_notification(
-                            t("host-call-handoff-title"),
-                            t("host-call-handoff-approved"),
-                        ),
-                        Ok(_) => state.push_notification(
-                            t("host-call-handoff-title"),
-                            t("host-call-handoff-declined"),
-                        ),
-                        Err(error) => state.push_notification(t("host-call-move-failed"), error),
-                    };
+                    if let Err(error) = result {
+                        state.push_notification(t("host-call-move-failed"), error);
+                    }
                     state.bump();
                 }
                 return;
@@ -15372,17 +15354,7 @@ impl ShellOverlayHost {
                         request_id: authorization.request_id,
                         approved,
                     },
-                    if approved {
-                        t_args(
-                            "host-fabric-pairing-approved",
-                            &[("accessory", authorization.accessory_name.into())],
-                        )
-                    } else {
-                        t_args(
-                            "host-fabric-pairing-declined",
-                            &[("accessory", authorization.accessory_name.into())],
-                        )
-                    },
+                    String::new(),
                 ))
             }
             DeviceFabricPaneRow::BluetoothHandoff(status) => {
@@ -15396,10 +15368,7 @@ impl ShellOverlayHost {
                             DeviceFabricUiAction::RetryBluetoothHandoff {
                                 request_id: status.request_id,
                             },
-                            t_args(
-                                "host-fabric-handoff-retrying",
-                                &[("accessory", status.accessory_name.into())],
-                            ),
+                            String::new(),
                         ))
                     }
                     BluetoothHandoffPhaseView::Failed(_) | BluetoothHandoffPhaseView::Cancelled => {
@@ -15409,10 +15378,7 @@ impl ShellOverlayHost {
                         DeviceFabricUiAction::CancelBluetoothHandoff {
                             request_id: status.request_id,
                         },
-                        t_args(
-                            "host-fabric-handoff-cancelling",
-                            &[("accessory", status.accessory_name.into())],
-                        ),
+                        String::new(),
                     )),
                 }
             }
@@ -15420,25 +15386,13 @@ impl ShellOverlayHost {
                 let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
-                let action = DeviceFabricUiAction::AuthorizeGamepadForwarding {
-                    forwarding_id: authorization.forwarding_id,
-                    approved,
-                };
-                let success = if approved {
-                    t_args(
-                        "host-fabric-controller-allowed",
-                        &[
-                            ("controller", authorization.controller_label.clone().into()),
-                            ("device", authorization.source_label.into()),
-                        ],
-                    )
-                } else {
-                    t_args(
-                        "host-fabric-controller-declined",
-                        &[("device", authorization.source_label.into())],
-                    )
-                };
-                Some((action, success))
+                Some((
+                    DeviceFabricUiAction::AuthorizeGamepadForwarding {
+                        forwarding_id: authorization.forwarding_id,
+                        approved,
+                    },
+                    String::new(),
+                ))
             }
             DeviceFabricPaneRow::LocalGamepad(gamepad) => {
                 if let Some(forwarding) = gamepad.forwarding {
@@ -15446,10 +15400,7 @@ impl ShellOverlayHost {
                         DeviceFabricUiAction::StopPhysicalGamepad {
                             session: forwarding.session,
                         },
-                        t_args(
-                            "host-fabric-controller-stopped",
-                            &[("controller", gamepad.name.clone().into())],
-                        ),
+                        String::new(),
                     ))
                 } else {
                     self.qs_selected_source = Some(QsDeviceSource::Gamepad(gamepad.token));
@@ -15462,26 +15413,14 @@ impl ShellOverlayHost {
                     DeviceFabricUiAction::CancelMediaHandoff {
                         request_id: status.request_id,
                     },
-                    t_args(
-                        "host-fabric-media-move-cancelled",
-                        &[
-                            ("title", status.title.clone().into()),
-                            ("device", status.target_label.into()),
-                        ],
-                    ),
+                    String::new(),
                 )),
                 crate::shell::device_fabric_runtime::MediaHandoffPhase::Failed(_)
                 | crate::shell::device_fabric_runtime::MediaHandoffPhase::Cancelled => Some((
                     DeviceFabricUiAction::RetryMediaHandoff {
                         request_id: status.request_id,
                     },
-                    t_args(
-                        "host-fabric-media-retrying",
-                        &[
-                            ("title", status.title.clone().into()),
-                            ("device", status.target_label.into()),
-                        ],
-                    ),
+                    String::new(),
                 )),
                 crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed => None,
             },
@@ -15494,19 +15433,13 @@ impl ShellOverlayHost {
                 DeviceFabricUiAction::RouteLocalAudio {
                     node_id: output.node_id,
                 },
-                t_args(
-                    "host-fabric-output-routed",
-                    &[("output", output.label.into())],
-                ),
+                String::new(),
             )),
             DeviceFabricPaneRow::LocalInput(input) if !input.is_default => Some((
                 DeviceFabricUiAction::SelectLocalInput {
                     node_id: input.node_id,
                 },
-                t_args(
-                    "host-fabric-input-selected",
-                    &[("input", input.label.into())],
-                ),
+                String::new(),
             )),
             DeviceFabricPaneRow::Tethering(status) => {
                 if status.phase
@@ -15520,27 +15453,14 @@ impl ShellOverlayHost {
                             request_id: status.request_id,
                             approved,
                         },
-                        if approved {
-                            t_args(
-                                "host-fabric-tethering-allowed",
-                                &[("device", status.peer_label.into())],
-                            )
-                        } else {
-                            t_args(
-                                "host-fabric-tethering-declined",
-                                &[("device", status.peer_label.into())],
-                            )
-                        },
+                        String::new(),
                     ))
                 } else if status.can_disconnect() {
                     Some((
                         DeviceFabricUiAction::DisconnectPhoneTethering {
                             request_id: status.request_id,
                         },
-                        t_args(
-                            "host-fabric-tethering-disconnected",
-                            &[("device", status.peer_label.into())],
-                        ),
+                        String::new(),
                     ))
                 } else {
                     None
@@ -15715,14 +15635,9 @@ impl ShellOverlayHost {
                         {
                             device.connected = false;
                         }
+                        // The device row now reads as disconnected.
                         state.quick_settings.pop_level();
-                        state.push_notification(
-                            t("qs-bluetooth"),
-                            t_args(
-                                "qs-bluetooth-disconnected",
-                                &[("device", accessory.name.into())],
-                            ),
-                        );
+                        state.bump();
                     }
                     Err(error) => {
                         crate::shell::quick_settings::actions::log_qs_result(
@@ -15835,10 +15750,7 @@ impl ShellOverlayHost {
                 DeviceFabricUiAction::RevokeControl {
                     controller: device.id.clone(),
                 },
-                t_args(
-                    "host-fabric-control-revoked",
-                    &[("device", device.label.clone().into())],
-                ),
+                String::new(),
             ))
         } else {
             Some((
@@ -15853,14 +15765,17 @@ impl ShellOverlayHost {
         }
     }
 
-    fn finish_qs_device_action(&self, action: DeviceFabricUiAction, success: String) {
+    /// Runs a device action the person chose. `next_step` is empty when the
+    /// pane itself shows the result; it is only said when something still
+    /// happens elsewhere (another device must confirm, a grant expires).
+    fn finish_qs_device_action(&self, action: DeviceFabricUiAction, next_step: String) {
         let result = self.device_fabric_call(action);
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             match result {
-                Ok(_) if success.is_empty() => {}
+                Ok(_) if next_step.is_empty() => {}
                 Ok(_) => {
-                    state.push_notification(t("host-fabric-notice-title"), success);
+                    state.push_notification(t("host-fabric-notice-title"), next_step);
                 }
                 Err(error) => {
                     state.push_notification(t("host-fabric-action-failed"), error);
@@ -16688,10 +16603,7 @@ impl ShellOverlayHost {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut state = chrome.borrow_mut();
                     state.open_room_activity(None);
-                    state.push_notification(
-                        t("host-review-activity-title"),
-                        t("host-review-activity-body"),
-                    );
+                    state.bump();
                 }
             }
             WorkspaceSettingsOutcome::DismissMemberSheet => {
@@ -17178,8 +17090,11 @@ impl ShellOverlayHost {
                     (f32_of_f64(p.x) / 40.0, f32_of_f64(p.y) / 40.0)
                 }
             };
+            // Winit's deltas are negative for a wheel turned (or fingers
+            // scrolling) rightward, which scrolls content toward its later
+            // columns: forward, as Super+Right.
             if dx.abs() > 0.5 && dx.abs() > dy.abs() {
-                let dir = if dx > 0.0 { 1 } else { -1 };
+                let dir = if dx < 0.0 { 1 } else { -1 };
                 if self.step_focus_along_strip(dir) {
                     *ctx.handled = true;
                     return;
@@ -18000,7 +17915,7 @@ impl Widget for ShellOverlayHost {
         let picker_dirty = self.pump_file_picker();
         let dialog_dirty = self.pump_portal_dialogs();
         self.pump_permission_prompt();
-        let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
+        let launch_dirty = self.drain_launch_events() | self.settle_launches_of_opened_windows();
         self.run_requested_session_actions();
         let session_action_dirty = self.drain_session_action_results();
         // Also driven by the widget's own `update`, but routed here too so
@@ -19781,11 +19696,18 @@ impl Widget for ShellOverlayHost {
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {
-        self.layers
+        let mut targets = self
+            .layers
             .dictation
             .preview_target()
             .map(|rect| vec![("dictation.live-preview".into(), rect)])
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if self.onboarding.is_none() && self.palette_visible && self.palette.is_open() {
+            // The legacy widget id covers the result card. A touch aimed at
+            // the query must use the same row as its editable semantic node.
+            targets.push((PALETTE_QUERY_TARGET.into(), self.palette.input_row_rect()));
+        }
+        targets
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -21282,6 +21204,10 @@ impl ShellOverlayHost {
                     status_editing: self.status_editing,
                     status_selection: self.status_selection,
                     screen_exposure: screen_exposure.as_deref(),
+                    expanded_id: self.expanded_collaborator.as_deref(),
+                    // Native presence has no spectator role yet.
+                    watching: 0,
+                    status_editable: true,
                 },
                 self.last_cursor,
             );

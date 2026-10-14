@@ -20,6 +20,10 @@ pub struct InstalledApp {
     /// The manifest's `[package.names]`: the name in other languages, by
     /// BCP 47 tag. Search matches these alongside `display_name`.
     pub localized_names: std::collections::BTreeMap<String, String>,
+    /// The manifest's `[package.keywords]`, every language's together: the
+    /// other words the app is known by. Search matches these alongside the
+    /// name ("youtube" finds a video app).
+    pub keywords: Vec<String>,
     /// The manifest's `[package].category`, when declared; matched by
     /// the Applications search provider.
     pub category: Option<String>,
@@ -58,6 +62,7 @@ impl InstalledApp {
                 .filter(|n| !n.trim().is_empty())
                 .unwrap_or_else(|| package_store::display_name_for_package_id(&package_id)),
             localized_names: manifest.localized_names.clone(),
+            keywords: manifest.keywords.clone(),
             category: manifest.category.clone().filter(|c| !c.trim().is_empty()),
             package_id,
             version: manifest.version.clone(),
@@ -147,6 +152,29 @@ pub fn read(catalog: &Catalog) -> Result<Vec<InstalledApp>, CatalogError> {
         .iter()
         .filter_map(InstalledApp::from_package)
         .collect())
+}
+
+/// Read one visible registry row and its manifest. Other installed packages'
+/// manifests do not have to be parsed to resolve a service by identity.
+///
+/// # Errors
+///
+/// Returns a catalogue error when either installed store cannot be read.
+pub fn read_one(catalog: &Catalog, app_id: &str) -> Result<Option<InstalledApp>, CatalogError> {
+    Ok(catalog
+        .find(app_id)?
+        .as_ref()
+        .and_then(InstalledApp::from_package)
+        .filter(|app| app.package_id == app_id))
+}
+
+/// [`read_one`] over the stores the environment names.
+///
+/// # Errors
+///
+/// See [`Catalog::from_env`] and [`read_one`].
+pub fn read_one_from_env(app_id: &str) -> Result<Option<InstalledApp>, CatalogError> {
+    read_one(&Catalog::from_env()?, app_id)
 }
 
 /// Resolve the exact signed package selected by an installed application
@@ -275,6 +303,63 @@ mod tests {
     }
 
     #[test]
+    fn single_app_lookup_requires_the_canonical_registry_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("store");
+        std::fs::create_dir_all(&user).unwrap();
+        let forged = install(
+            tmp.path(),
+            "so.tilo.other",
+            &manifest(
+                "id = \"so.tilo.osk\"\nversion = \"9.0.0\"\nkind = \"service\"",
+                "[entrypoint]\nbin = \"bin/other\"\ntype = \"gui\"\n",
+            ),
+        );
+        let canonical = install(
+            tmp.path(),
+            "so.tilo.osk",
+            &manifest(
+                "id = \"so.tilo.osk\"\nversion = \"1.0.0\"\nkind = \"service\"",
+                "[entrypoint]\nbin = \"bin/osk\"\ntype = \"gui\"\n",
+            ),
+        );
+        let row = |package: &InstalledPackage| {
+            format!(
+                "[[entry]]\nid = {:?}\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                package.id,
+                package.payload_root.display().to_string(),
+                package.manifest_path.display().to_string(),
+            )
+        };
+        let registry = package_store::Layout::new(&user).registry();
+        std::fs::write(&registry, row(&forged)).unwrap();
+        let catalog = Catalog::at(&user, None);
+        assert!(
+            read_one(&catalog, "so.tilo.osk").unwrap().is_none(),
+            "another row's manifest cannot claim the keyboard identity"
+        );
+
+        std::fs::write(&registry, format!("{}{}", row(&forged), row(&canonical))).unwrap();
+        let osk = read_one(&catalog, "so.tilo.osk").unwrap().unwrap();
+        assert_eq!(osk.package_id, "so.tilo.osk");
+        assert_eq!(osk.version, "1.0.0");
+        assert_eq!(osk.manifest_path, canonical.manifest_path);
+
+        std::fs::write(
+            &canonical.manifest_path,
+            manifest(
+                "id = \"so.tilo.other\"\nversion = \"1.0.1\"\nkind = \"service\"",
+                "[entrypoint]\nbin = \"bin/osk\"\ntype = \"gui\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(
+            read_one(&catalog, "so.tilo.osk").unwrap().is_none(),
+            "a changed keyboard manifest with another identity is unavailable"
+        );
+    }
+
+    #[test]
     fn exact_launch_selection_preserves_root_and_rejects_manifest_identity_substitution() {
         let tmp = tempfile::tempdir().unwrap();
         let user = tmp.path().join("store");
@@ -378,6 +463,7 @@ mod tests {
                 package_id: "so.tilo.notes".into(),
                 display_name: "Notes".into(),
                 localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
                 category: None,
                 version: "1.0.0".into(),
                 manifest_path: path,

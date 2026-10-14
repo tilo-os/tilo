@@ -292,7 +292,14 @@ check_media() {
   version=${version##*/}
   if [[ $version =~ ^[0-9a-f]{64}$ ]]; then
     archived_file=$(mktemp "$RUNNER_TEMP/tilo-registry-archive.XXXXXX")
+    # The proxy fetches an archived screenshot from its origin on first
+    # read and can answer that read with a gateway timeout (HTTP 524) while
+    # the same URL serves on the next request. That single answer used to
+    # fail publication after the media uploads had already landed. Retry
+    # transient answers (timeouts, 5xx such as 502-504 and 524), as the HEAD
+    # check above does. A wrong digest or a persistent error still fails.
     if ! curl --fail --silent --show-error --max-filesize 33554432 \
+      --connect-timeout 10 --max-time 180 --retry 4 --retry-delay 2 \
       "$media_url" --output "$archived_file"; then
       rm -f -- "$archived_file"
       return 1
@@ -342,12 +349,9 @@ LC_ALL=C sort -t $'\t' -k1,1 -k4,4 -o "$publication_plan" "$publication_plan"
 # has to synthesize or re-sign publisher data. This also upgrades an
 # already-published single-architecture entry append-only.
 # One snapshot serves every id; only a refused attempt re-reads it.
-fetch_snapshot() {
-  curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
-    --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
-  jq -e '.entries | type == "array"' "$snapshot" >/dev/null
-}
+source tools/apps/registry-runtime-readiness.sh
 fetch_snapshot
+runtime_readiness_deadline=$((SECONDS + 1200))
 while IFS= read -r id; do
   accepted=false
   architectures=$(awk -F $'\t' -v id="$id" '$1 == id {print $4}' \
@@ -358,7 +362,8 @@ while IFS= read -r id; do
     previous="$RUNNER_TEMP/tilo-registry-previous.json"
     aggregate="$RUNNER_TEMP/tilo-registry-aggregate.json"
     request="$RUNNER_TEMP/tilo-registry-request.json"
-    rm -f "$previous" "$aggregate" "$request"
+    missing_runtime="$RUNNER_TEMP/tilo-registry-missing-runtime.json"
+    rm -f "$previous" "$aggregate" "$request" "$missing_runtime"
     # A request still waiting for review is replaced by this one and
     # must keep its versions, so build on it when there is one.
     "$registry_cli" pending --registry "$registry_url" \
@@ -386,9 +391,11 @@ while IFS= read -r id; do
       args=(entry --arch "$arch" --identity "$registry_identity" \
         --metadata "$metadata" --action "$action" --url "$tapp_url"
         --runtime-catalogue "$snapshot"
-        --registry-owner-pubkey "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY")
+        --registry-owner-pubkey "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"
+        --missing-runtime-output "$missing_runtime")
       [[ -f $aggregate ]] && args+=(--previous-entry "$aggregate")
-      "$registry_cli" "${args[@]}" "$tapp" > "$request"
+      await_registry_runtime_ready "$runtime_readiness_deadline" "$request" "$missing_runtime" \
+        "$registry_cli" "${args[@]}" "$tapp"
       jq -e --arg id "$id" '.entry | select(.package_id == $id)' \
         "$request" > "$aggregate.next"
       mv "$aggregate.next" "$aggregate"

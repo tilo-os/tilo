@@ -1063,6 +1063,7 @@ mod tests {
             package_id: "com.example.notes".to_string(),
             name: Some("Notes".to_string()),
             localized_names: BTreeMap::default(),
+            keywords: Vec::new(),
             category: Some("Office".to_string()),
             icon: None,
             version: "0.1.0".to_string(),
@@ -1286,9 +1287,9 @@ mod tests {
             assert!(argv.windows(2).any(|w| w[0] == "--proc" && w[1] == "/proc"));
             assert!(argv.windows(2).any(|w| w[0] == "--dev" && w[1] == "/dev"));
         }
-        // Phase `argv_shares_net_when_mode_not_off`.
+        // Phase `argv_shares_net_when_mode_is_host`.
         {
-            let m = mk_manifest("on");
+            let m = mk_manifest("host");
             let argv = build_bwrap_argv(
                 &m,
                 Path::new("/host/pkg"),

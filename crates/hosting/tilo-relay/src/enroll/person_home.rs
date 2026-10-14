@@ -201,6 +201,33 @@ impl PersonHome {
         )
     }
 
+    /// Run a fleet update with the person's checked fleet-directory descriptor
+    /// locked from snapshot through durable publication. A delegated child holds
+    /// the descriptor; only bounded public projections cross the IPC channel.
+    pub fn with_fleet<T>(
+        &self,
+        identity_dir: &Path,
+        user: [u8; 32],
+        operation: impl FnOnce(Option<Vec<u8>>, &mut FleetPublish<'_>) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let name = fleet_name(user);
+        match self {
+            Self::Direct => with_local_fleet(identity_dir, &name, operation),
+            Self::Delegated { program, person } => {
+                let request = ChildRequest {
+                    operation: ChildOperation::FleetTransaction,
+                    path: identity_dir.to_path_buf(),
+                    subdir: None,
+                    name,
+                    mode: 0o644,
+                    create_dir: false,
+                    limit: MAX_FILE_BYTES,
+                };
+                run_fleet_child(program, *person, &request, operation)
+            }
+        }
+    }
+
     /// Replace the identity's device fleet in `identity_dir` with `bytes`.
     pub fn write_fleet(
         &self,
@@ -330,6 +357,8 @@ pub enum ChildOperation {
     /// Merge direct peers and rooms (JSON on stdin) into the person's
     /// directory of identity `name` in the peers directory `path`.
     MergePeers,
+    /// Hold the checked fleet directory lock across snapshot and publication.
+    FleetTransaction,
 }
 
 /// The name of the hidden subcommand the delegated child runs.
@@ -340,6 +369,7 @@ fn child_args(request: &ChildRequest) -> Vec<OsString> {
         ChildOperation::Read => "read",
         ChildOperation::Write => "write",
         ChildOperation::MergePeers => "merge-peers",
+        ChildOperation::FleetTransaction => "fleet-transaction",
     };
     let mut args: Vec<OsString> = vec![
         CHILD_COMMAND.into(),
@@ -463,6 +493,185 @@ fn run_child(
     Ok(output.stdout)
 }
 
+type FleetPublish<'a> = dyn FnMut(&[u8]) -> anyhow::Result<()> + 'a;
+
+fn with_local_fleet<T>(
+    identity_dir: &Path,
+    name: &str,
+    operation: impl FnOnce(Option<Vec<u8>>, &mut FleetPublish<'_>) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    use std::os::fd::AsRawFd as _;
+    let uid = local::own_uid();
+    let identity = local::open_owned_dir(identity_dir, uid)?;
+    let directory = local::open_owned_subdir(&identity, FLEETS_DIR, uid, Some(0o755))?
+        .context("fleet directory is missing")?;
+    // Persist a newly created fleet-directory entry before publishing in it.
+    // SAFETY: identity is an open directory descriptor.
+    if unsafe { libc::fsync(identity.as_raw_fd()) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("sync the identity directory");
+    }
+    // Same directory flock as the session's DeviceFleetStore. Fail busy rather
+    // than letting an account that holds the lock indefinitely stall a signer.
+    // SAFETY: directory is an open directory descriptor, retained throughout.
+    if unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("fleet is busy; retry enrollment");
+    }
+    let snapshot = local::read_owned_file(&directory, name, uid, MAX_FILE_BYTES)?;
+    operation(snapshot, &mut |bytes| {
+        if bytes.len() > MAX_FILE_BYTES {
+            bail!("fleet exceeds 1 MiB");
+        }
+        local::replace_owned_file(&directory, name, bytes, uid, 0o644)?;
+        Ok(())
+    })
+}
+
+/// Length-prefixed frames have a fixed allocation bound, including the absent
+/// file flag. No paths, signing requests or nonce-store operations come back
+/// from the child: it supplies a public snapshot and a publication receipt.
+fn write_frame(writer: &mut impl std::io::Write, bytes: &[u8]) -> anyhow::Result<()> {
+    if bytes.len() > MAX_FILE_BYTES + 1 {
+        bail!("fleet transaction frame exceeds its bound");
+    }
+    let size = u32::try_from(bytes.len()).context("fleet frame size is invalid")?;
+    writer.write_all(&size.to_be_bytes())?;
+    writer.write_all(bytes)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn read_frame(reader: &mut impl std::io::Read) -> anyhow::Result<Vec<u8>> {
+    let mut size = [0; 4];
+    reader.read_exact(&mut size)?;
+    let size = u32::from_be_bytes(size) as usize;
+    if size > MAX_FILE_BYTES + 1 {
+        bail!("fleet transaction frame exceeds its bound");
+    }
+    let mut bytes = vec![0; size];
+    reader.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn serve_fleet_transaction(
+    request: &ChildRequest,
+    reader: &mut impl std::io::Read,
+    writer: &mut impl std::io::Write,
+) -> anyhow::Result<()> {
+    with_local_fleet(&request.path, &request.name, |snapshot, publish| {
+        write_frame(writer, &encode_read(snapshot.as_deref()))?;
+        let bytes = read_frame(reader)?;
+        publish(&bytes)?;
+        write_frame(writer, b"")
+    })
+}
+
+struct FleetChild {
+    process: std::process::Child,
+    reaped: bool,
+}
+
+impl Drop for FleetChild {
+    fn drop(&mut self) {
+        // Also reap on malformed output, signer failure, EOF and timeout: no
+        // dropped-uid child or directory lock outlives its approving process.
+        if !self.reaped {
+            bounded_command::kill_tree(&mut self.process);
+            let _ = self.process.wait();
+        }
+    }
+}
+
+/// Recompute the remaining total budget before every read/write syscall, so
+/// a peer sending one byte at a time cannot extend the 30-second transaction.
+struct FleetChannel {
+    socket: std::os::unix::net::UnixStream,
+    deadline: std::time::Instant,
+}
+
+impl FleetChannel {
+    fn remaining(&self) -> std::io::Result<Duration> {
+        let remaining = self
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "fleet transaction timed out",
+            ));
+        }
+        Ok(remaining)
+    }
+}
+
+impl std::io::Read for FleetChannel {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.socket.set_read_timeout(Some(self.remaining()?))?;
+        self.socket.read(bytes)
+    }
+}
+
+impl std::io::Write for FleetChannel {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.socket.set_write_timeout(Some(self.remaining()?))?;
+        self.socket.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.socket.flush()
+    }
+}
+
+fn run_fleet_child<T>(
+    program: &Path,
+    person: Person,
+    request: &ChildRequest,
+    operation: impl FnOnce(Option<Vec<u8>>, &mut FleetPublish<'_>) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    use std::process::Stdio;
+    let deadline = std::time::Instant::now()
+        .checked_add(CHILD_TIMEOUT)
+        .context("fleet transaction deadline overflow")?;
+    let (socket, peer) = std::os::unix::net::UnixStream::pair()?;
+    let mut command = child_command(program, person, None, &child_args(request));
+    command
+        .stdin(Stdio::from(OwnedFd::from(peer.try_clone()?)))
+        .stdout(Stdio::from(OwnedFd::from(peer)))
+        .stderr(Stdio::null());
+    bounded_command::own_process_tree(&mut command);
+    let mut child = FleetChild {
+        process: command
+            .spawn()
+            .context("start the person's fleet transaction")?,
+        reaped: false,
+    };
+    let mut channel = FleetChannel { socket, deadline };
+    let snapshot = decode_read(&read_frame(&mut channel)?, MAX_FILE_BYTES)?;
+    if child.process.try_wait()?.is_some() {
+        child.reaped = true;
+        bail!("fleet transaction child exited before redemption");
+    }
+    let result = operation(snapshot, &mut |bytes| {
+        write_frame(&mut channel, bytes)?;
+        if !read_frame(&mut channel)?.is_empty() {
+            bail!("fleet transaction publication receipt is malformed");
+        }
+        Ok(())
+    })?;
+    channel.socket.shutdown(std::net::Shutdown::Both)?;
+    match bounded_command::wait_child_or(&mut child.process, None, Some(deadline))? {
+        bounded_command::Wakeup::Exited(status) => {
+            // Never signal a process group after reaping its leader: its pid
+            // may already have been reused by an unrelated process.
+            child.reaped = true;
+            if !status.success() {
+                bail!("fleet transaction child failed");
+            }
+            Ok(result)
+        }
+        _ => bail!("fleet transaction child timed out"),
+    }
+}
+
 /// A read's answer on the child's stdout: `0` when the file is absent, `1`
 /// followed by its bytes otherwise.
 fn decode_read(output: &[u8], limit: usize) -> anyhow::Result<Option<Vec<u8>>> {
@@ -521,6 +730,22 @@ pub fn serve_child(request: &ChildRequest) -> anyhow::Result<()> {
                 request.mode & 0o777,
                 request.create_dir,
             )?;
+        }
+        ChildOperation::FleetTransaction => {
+            // The signer may be waiting on a root-only secret provider while
+            // this process waits for publication. Bound the exec'd child's
+            // own lifetime too, independently of the parent's IPC deadline:
+            // even a stuck signer must not leave a fleet lock held forever.
+            let seconds = libc::c_uint::try_from(CHILD_TIMEOUT.as_secs())?;
+            // SAFETY: this is the dedicated exec'd helper, with signals
+            // unblocked above. SIGALRM's default disposition terminates it.
+            unsafe {
+                if libc::signal(libc::SIGALRM, libc::SIG_DFL) == libc::SIG_ERR {
+                    return Err(std::io::Error::last_os_error()).context("arm fleet child timeout");
+                }
+                libc::alarm(seconds);
+            }
+            serve_fleet_transaction(request, &mut std::io::stdin().lock(), &mut stdout)?;
         }
         ChildOperation::MergePeers => {
             let mut bytes = Vec::new();
@@ -1039,8 +1264,11 @@ pub mod local {
             {
                 return Err(io::Error::last_os_error());
             }
-            // SAFETY: `dir` is open.
-            unsafe { libc::fsync(dir.as_raw_fd()) };
+            // SAFETY: `dir` is open. A publication receipt must not hide a
+            // durability failure after the file's directory entry changed.
+            if unsafe { libc::fsync(dir.as_raw_fd()) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
             Ok(())
         })();
         if result.is_err() {
@@ -1465,6 +1693,165 @@ mod tests {
         let linked = scope.path().join("linked");
         symlink(&elsewhere, &linked).unwrap();
         assert!(read_rooms(&linked.join("personal-rooms.json"), me()).is_err());
+    }
+
+    #[test]
+    fn fleet_transaction_locks_snapshot_through_publication() {
+        use std::os::fd::AsRawFd as _;
+        let scope = tempfile::tempdir().unwrap();
+        let home = PersonHome::Direct;
+        home.write_fleet(scope.path(), USER, b"old").unwrap();
+        home.with_fleet(scope.path(), USER, |snapshot, publish| {
+            assert_eq!(snapshot.as_deref(), Some(b"old".as_slice()));
+            let competitor = open_owned_dir(&scope.path().join(FLEETS_DIR), me())?;
+            // SAFETY: competitor is an open, independent directory descriptor.
+            assert_eq!(
+                unsafe { libc::flock(competitor.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            publish(b"new")?;
+            assert_eq!(std::fs::read(fleet_file(scope.path()))?, b"new");
+            // SAFETY: publication must not have released the transaction lock.
+            assert_eq!(
+                unsafe { libc::flock(competitor.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                -1
+            );
+            Ok(())
+        })
+        .unwrap();
+        let next = open_owned_dir(&scope.path().join(FLEETS_DIR), me()).unwrap();
+        // SAFETY: next is open; the preceding transaction has ended.
+        assert_eq!(
+            unsafe { libc::flock(next.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+    }
+
+    #[test]
+    fn fleet_transaction_keeps_the_checked_descriptor_and_refuses_linked_snapshots() {
+        let scope = tempfile::tempdir().unwrap();
+        let identity = scope.path().join("identity");
+        let moved = scope.path().join("moved");
+        let elsewhere = scope.path().join("elsewhere");
+        std::fs::create_dir(&identity).unwrap();
+        std::fs::create_dir(&elsewhere).unwrap();
+        let home = PersonHome::Direct;
+        home.write_fleet(&identity, USER, b"old").unwrap();
+        home.with_fleet(&identity, USER, |snapshot, publish| {
+            assert_eq!(snapshot.as_deref(), Some(b"old".as_slice()));
+            std::fs::rename(&identity, &moved)?;
+            symlink(&elsewhere, &identity)?;
+            publish(b"new")
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(fleet_file(&moved)).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        assert!(
+            home.with_fleet(&identity, USER, |_, _| -> anyhow::Result<()> {
+                bail!("must not run")
+            })
+            .is_err()
+        );
+        let target = scope.path().join("target");
+        std::fs::hard_link(fleet_file(&moved), &target).unwrap();
+        let error = home
+            .with_fleet(&moved, USER, |_, _| -> anyhow::Result<()> {
+                panic!("a linked snapshot must be refused before redemption")
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("more than one name"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    }
+
+    #[test]
+    fn fleet_child_protocol_acknowledges_only_after_publication() {
+        let scope = tempfile::tempdir().unwrap();
+        let request = ChildRequest {
+            operation: ChildOperation::FleetTransaction,
+            path: scope.path().to_path_buf(),
+            subdir: None,
+            name: fleet_name(USER),
+            mode: 0o644,
+            create_dir: false,
+            limit: MAX_FILE_BYTES,
+        };
+        let (mut parent, mut child) = std::os::unix::net::UnixStream::pair().unwrap();
+        parent.set_read_timeout(Some(CHILD_TIMEOUT)).unwrap();
+        parent.set_write_timeout(Some(CHILD_TIMEOUT)).unwrap();
+        let worker = std::thread::spawn(move || {
+            serve_fleet_transaction(&request, &mut child.try_clone().unwrap(), &mut child)
+        });
+        assert_eq!(
+            decode_read(&read_frame(&mut parent).unwrap(), MAX_FILE_BYTES).unwrap(),
+            None
+        );
+        assert!(!fleet_file(scope.path()).exists());
+        write_frame(&mut parent, b"published").unwrap();
+        assert!(read_frame(&mut parent).unwrap().is_empty());
+        assert_eq!(
+            std::fs::read(fleet_file(scope.path())).unwrap(),
+            b"published"
+        );
+        worker.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn disconnected_parent_releases_the_fleet_without_publication() {
+        let scope = tempfile::tempdir().unwrap();
+        let request = ChildRequest {
+            operation: ChildOperation::FleetTransaction,
+            path: scope.path().to_path_buf(),
+            subdir: None,
+            name: fleet_name(USER),
+            mode: 0o644,
+            create_dir: false,
+            limit: MAX_FILE_BYTES,
+        };
+        let (mut parent, mut child) = std::os::unix::net::UnixStream::pair().unwrap();
+        parent.set_read_timeout(Some(CHILD_TIMEOUT)).unwrap();
+        let worker = std::thread::spawn(move || {
+            serve_fleet_transaction(&request, &mut child.try_clone().unwrap(), &mut child)
+        });
+        read_frame(&mut parent).unwrap();
+        drop(parent);
+        assert!(worker.join().unwrap().is_err());
+        assert!(!fleet_file(scope.path()).exists());
+        PersonHome::Direct
+            .with_fleet(scope.path(), USER, |snapshot, publish| {
+                assert!(snapshot.is_none());
+                publish(b"retry")
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(fleet_file(scope.path())).unwrap(), b"retry");
+    }
+
+    #[test]
+    fn fleet_frames_and_total_channel_deadline_are_bounded() {
+        use std::io::{Read as _, Write as _};
+        let mut oversized = u32::try_from(MAX_FILE_BYTES + 2)
+            .unwrap()
+            .to_be_bytes()
+            .as_slice()
+            .to_vec();
+        assert!(read_frame(&mut oversized.as_slice()).is_err());
+        assert!(write_frame(&mut oversized, &vec![0; MAX_FILE_BYTES + 2]).is_err());
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut channel = FleetChannel {
+            socket,
+            deadline: std::time::Instant::now(),
+        };
+        assert_eq!(
+            channel.read(&mut [0]).unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            channel.write(b"x").unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
     }
 
     #[test]

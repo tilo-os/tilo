@@ -161,7 +161,9 @@ containerfile="$repo/os/Containerfile"
 # The atomic firstboot file helper is one intentional payload addition in
 # the existing libexec COPY instruction; the layer budget is unchanged.
 # The identity CLI adds exactly one component output at /usr/bin/tilo-identity.
-expected_contract=8d83ca469f32fc11b89eb9d63087e28927e453ec62617211d58cda4e6872643f
+# The boot audit's image signature policy checker is one intentional payload
+# addition beside the audit in the existing libexec COPY instruction.
+expected_contract=04b38edbd63e4a46d841b7cbeb22e0a765b2abc46b4790ba3e86effc90e6b03b
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -253,6 +255,7 @@ for path in \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
+  os/usr/libexec/tilo-image-policy-check \
   os/usr/libexec/tilo-extension \
   os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |

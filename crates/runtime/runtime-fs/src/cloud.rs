@@ -54,8 +54,8 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 /// runtime directory.
 #[must_use]
 pub fn default_socket() -> Option<PathBuf> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty())?;
-    Some(socket_in(Path::new(&runtime)))
+    let runtime = tilo_paths::xdg::runtime_dir()?;
+    Some(socket_in(&runtime))
 }
 
 /// The socket below the runtime directory `runtime_dir`.
@@ -68,8 +68,8 @@ pub fn socket_in(runtime_dir: &Path) -> PathBuf {
 /// runtime directory.
 #[must_use]
 pub fn default_files_socket() -> Option<PathBuf> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty())?;
-    Some(files_socket_in(Path::new(&runtime)))
+    let runtime = tilo_paths::xdg::runtime_dir()?;
+    Some(files_socket_in(&runtime))
 }
 
 /// The file socket below the runtime directory `runtime_dir`.

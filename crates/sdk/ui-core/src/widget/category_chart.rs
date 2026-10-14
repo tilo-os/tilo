@@ -12,7 +12,6 @@ use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -730,49 +729,17 @@ impl Widget for CategoryChart {
             );
         }
         if self.style.show_legend && self.style.layout != CategoryLayout::Waterfall {
-            self.toggles.clear_hits();
             let y = self.rect.y0 + if self.title.is_empty() { 10.0 } else { 38.0 };
-            let items = chart_legend::layout(
-                self.series.iter().map(|series| series.name.as_str()),
-                self.rect.x0 + 58.0,
-                self.rect.x1 - 12.0,
-                y,
+            self.toggles.paint(
+                scene,
+                transform,
+                tr,
+                theme,
+                self.series
+                    .iter()
+                    .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
+                Rect::new(self.rect.x0 + 58.0, y, self.rect.x1 - 12.0, y),
             );
-            for (series, item) in self.series.iter().zip(items) {
-                let x = item.x0;
-                let y = item.y0;
-                let visible = !self.toggles.is_hidden(&series.id);
-                let color = if visible {
-                    series.color
-                } else {
-                    Color::from_rgba8(series.color.r(), series.color.g(), series.color.b(), 65)
-                };
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    color,
-                    None,
-                    &RoundedRect::from_rect(Rect::new(x, y + 2.0, x + 10.0, y + 12.0), 2.0),
-                );
-                tr.draw_style(
-                    scene,
-                    &series.name,
-                    if visible {
-                        theme.tokens.colors.text_dim
-                    } else {
-                        Color::from_rgba8(
-                            theme.tokens.colors.text_dim.r(),
-                            theme.tokens.colors.text_dim.g(),
-                            theme.tokens.colors.text_dim.b(),
-                            90,
-                        )
-                    },
-                    transform * Affine::translate((x + 16.0, y)),
-                    Some(crate::num::f32_of_f64((item.width() - 20.0).max(1.0))),
-                    &theme.text(TextRole::Caption),
-                );
-                self.toggles.push_hit(series.id.clone(), item);
-            }
         } else {
             self.toggles.clear_hits();
         }

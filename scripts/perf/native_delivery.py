@@ -91,6 +91,7 @@ def summarize_native_delivery(scenario, lines, frames):
     if not frame_ids <= all_cpu_ids:
         raise ValueError("Native frame mapping has no CPU sample")
     measured = [row for row in frames if row["frame"] in measured_ids]
+    phases = input_phase_summary(frames, measured)
     return {
         "performance_certified": False,
         "effects_validated": False,
@@ -103,6 +104,7 @@ def summarize_native_delivery(scenario, lines, frames):
         "scheduler_lateness": distribution(scheduler_lateness, scale=0.001) if scheduler_lateness else None,
         "delivery_to_dispatch": distribution(queue_delay, scale=0.001) if queue_delay else None,
         "active_cpu_frame_build": distribution([row["total_us"] for row in measured], scale=0.001),
+        "input_phases": phases,
         "frame_correlation": correlate_frames(frames, lines),
         "active_frame_correlation": correlate_frames(measured, [
             "tilo-render-frame " + json.dumps(row)
@@ -110,6 +112,47 @@ def summarize_native_delivery(scenario, lines, frames):
         "limitations": ["Input identity proves dispatch and frame association, not an observable effect.",
                         "Coalesced inputs are not extra frames; mixed warmup frames are excluded.",
                         "CPU/worker evidence is not GPU completion or display cadence."],
+    }
+
+
+INPUT_PHASE_KEYS = ["input_dispatch_us", "input_hit_test_us", "input_resources_us",
+                    "input_publication_us", "input_commit_us"]
+
+
+def input_phase_summary(frames, measured):
+    """Measured frames' banked input split into events and phases; None for old evidence.
+
+    `handle_event_us` sums every event since the previous frame; the per-event
+    maximum and the phases say what one event and each stage cost. None of
+    these are presentation latency. Every CPU frame of the stream must carry
+    the fields, or none may.
+    """
+    present = ["input_events" in row for row in frames]
+    if not any(present):
+        return None
+    if not all(present):
+        raise ValueError("Partial input phase evidence")
+    keys = ["handle_event_us", "input_events", "input_event_max_us", "input_to_commit_us",
+            *INPUT_PHASE_KEYS]
+    for row in frames:
+        if any(type(row.get(key)) is not int or row[key] < 0 for key in keys):
+            raise ValueError("Invalid input phase timing")
+        if (sum(row[key] for key in INPUT_PHASE_KEYS) > row["handle_event_us"]
+                or row["input_event_max_us"] > row["handle_event_us"]):
+            raise ValueError("Input phases exceed the banked event time")
+    frames = measured
+    events = sorted(row["input_events"] for row in frames)
+    return {
+        "events_per_frame": {"n": len(events), "min": events[0],
+                             "median": events[(len(events) - 1) // 2], "max": events[-1]},
+        "banked_handle_event": distribution([row["handle_event_us"] for row in frames], scale=0.001),
+        "costliest_event": distribution([row["input_event_max_us"] for row in frames], scale=0.001),
+        "oldest_input_to_cpu_commit": distribution([row["input_to_commit_us"] for row in frames],
+                                                   scale=0.001),
+        "phases": {key[len("input_"):-len("_us")]: distribution([row[key] for row in frames], scale=0.001)
+                   for key in INPUT_PHASE_KEYS},
+        "limitations": ["Banked sums cover every event since the previous frame, not one event.",
+                        "CPU commit precedes render submission and presentation."],
     }
 
 

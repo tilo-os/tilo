@@ -25,8 +25,10 @@
 #[cfg(feature = "heap-probe")]
 pub mod heap;
 pub mod read;
+mod write;
 
 pub use read::ReadTyped;
+pub use write::WriteTyped;
 
 use automerge::sync::{self, SyncDoc};
 use automerge::{AutoCommit, AutomergeError, Change, ChangeHash};

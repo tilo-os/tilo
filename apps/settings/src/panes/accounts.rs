@@ -119,6 +119,9 @@ pub enum AccountsEffect {
     /// Check and save the account form, or take the sign-in's next step.
     #[effect(label = "Save account")]
     SaveAccountForm,
+    /// Explicitly request Gmail access alongside the Google files sign-in.
+    #[effect(label = "Connect files and Gmail")]
+    ConnectGoogleMail,
     /// Close the account form or sign-in without saving.
     #[effect(view)]
     CancelAccountForm,
@@ -234,6 +237,7 @@ pub(crate) fn answer(
             model.command(AccountViewCommand::Reauthenticate(account));
         }
         AccountsEffect::SaveAccountForm => model.command(AccountViewCommand::Submit),
+        AccountsEffect::ConnectGoogleMail => model.connect_google_mail()?,
         AccountsEffect::CancelAccountForm => model.command(AccountViewCommand::Cancel),
         AccountsEffect::SaveNewPassword => {
             model.command(AccountViewCommand::SubmitReauthentication);
@@ -531,6 +535,7 @@ pub enum AccountViewCommand {
     Edit(String),
     Reauthenticate(String),
     Submit,
+    SubmitGoogleMail,
     Cancel,
     SubmitReauthentication,
     CancelReauthentication,
@@ -926,6 +931,20 @@ impl AccountsPane {
         self.changed = true;
     }
 
+    fn connect_google_mail(&mut self) -> Result<(), String> {
+        if !self
+            .sign_in
+            .as_ref()
+            .is_some_and(cloud_signin::SignInFlow::can_request_google_mail)
+        {
+            return Err(
+                "Open the Google account sign-in form before requesting Gmail access".into(),
+            );
+        }
+        self.command(AccountViewCommand::SubmitGoogleMail);
+        Ok(())
+    }
+
     /// Persist a completed sign-in: the sealed grant first, then the
     /// account metadata, journaled like every other account mutation.
     fn save_signed_in(
@@ -965,7 +984,23 @@ impl AccountsPane {
             }
             merge_config(&mut stored.config, serde_json::Value::Object(identity));
         }
-        Self::commit_account(account_root, stored, Some(&completed.secret))?;
+        let mut accounts = vec![(stored, Some(&completed.secret))];
+        if let Some(mail) = &completed.mail {
+            let mut mail = mail.clone();
+            if let Some(existing) = shared.get(&mail.id) {
+                if existing.type_id.as_str() != "email" {
+                    return Err("the Gmail identity belongs to another account type".into());
+                }
+                let mut config = mail.config.clone();
+                if let Some(name) = existing.config.get("display_name") {
+                    merge_config(&mut config, serde_json::json!({"display_name": name}));
+                }
+                mail = existing.clone();
+                merge_config(&mut mail.config, config);
+            }
+            accounts.push((mail, Some(&completed.secret)));
+        }
+        Self::commit_accounts(account_root, accounts)?;
         Ok(id)
     }
 
@@ -1070,6 +1105,12 @@ impl AccountsPane {
             }
             Some(AccountViewCommand::Edit(id)) => self.open_edit(&id),
             Some(AccountViewCommand::Reauthenticate(id)) => self.open_reauthentication(id),
+            Some(AccountViewCommand::SubmitGoogleMail) => {
+                if let Some(flow) = self.sign_in.as_mut() {
+                    flow.submit_with_google_mail();
+                }
+                self.changed = true;
+            }
             Some(AccountViewCommand::Submit) if self.sign_in.is_some() => {
                 if let Some(flow) = self.sign_in.as_mut() {
                     flow.submit();
@@ -1105,6 +1146,16 @@ impl AccountsPane {
             } else {
                 self.open_edit(&id);
             }
+            return;
+        }
+        if let Some(account) = stored.as_ref()
+            && account.type_id.as_str() == "email"
+            && account.config_as::<AccountConfig>().is_some_and(|config| {
+                config.auth == accounts::email::AuthMethod::OAuth
+                    && config.imap_host == "imap.gmail.com"
+            })
+        {
+            self.open_sign_in(AccountKind::Mail, Some(account));
             return;
         }
         if let Some(account) = stored
@@ -1810,32 +1861,45 @@ impl AccountsPane {
         stored: accounts::Account,
         secret: Option<&accounts::Secret>,
     ) -> Result<(), String> {
-        let id = stored.id.clone();
+        Self::commit_accounts(account_root, vec![(stored, secret)])
+    }
+
+    /// Save related service accounts in one metadata mutation, with credentials
+    /// durable first and compensated together on failure.
+    fn commit_accounts(
+        account_root: &AccountRoot,
+        prepared: Vec<(accounts::Account, Option<&accounts::Secret>)>,
+    ) -> Result<(), String> {
         let mut shared = account_root.store();
         let original_store = shared.clone();
         let original_statuses = account_root.statuses();
         account_root.begin_mutation(&original_store, &original_statuses)?;
-        // Persist credential custody first. If metadata then fails, the only
-        // residue is an unreachable encrypted vault entry, never an account
-        // that applications try to use without its credential.
-        let mut previous_secret = None;
-        if let Some(prepared_secret) = secret {
-            let mut vault = account_root.vault();
-            previous_secret = Some(vault.get(&id));
-            vault.put(&id, prepared_secret);
-            if let Err(error) = vault.try_save() {
-                let _ = account_root.finish_mutation();
-                return Err(format!("could not save credential: {error}"));
+        let mut vault = account_root.vault();
+        let mut previous_secrets = Vec::new();
+        for (stored, secret) in prepared {
+            if let Some(secret) = secret {
+                previous_secrets.push((stored.id.clone(), vault.get(&stored.id)));
+                vault.put(&stored.id, secret);
             }
+            shared.upsert(stored);
         }
-        shared.upsert(stored);
+        if !previous_secrets.is_empty()
+            && let Err(error) = vault.try_save()
+        {
+            let _ = account_root.finish_mutation();
+            return Err(format!("could not save credential: {error}"));
+        }
         if let Err(e) = account_root.save_store(&shared) {
-            if let Some(previous) = previous_secret {
-                let mut vault = account_root.vault();
-                match previous {
-                    Some(secret) => vault.put(&id, &secret),
-                    None => {
-                        vault.remove(&id);
+            // Live records publish each edit before projecting to disk. Restore
+            // that metadata too, and retain the journal if either restoration fails.
+            let metadata_rollback = account_root.save_store(&original_store);
+            if !previous_secrets.is_empty() {
+                for (id, previous) in previous_secrets {
+                    match previous {
+                        Some(secret) => vault.put(&id, &secret),
+                        None => {
+                            vault.remove(&id);
+                        }
                     }
                 }
                 if let Err(rollback) = vault.try_save() {
@@ -1843,6 +1907,11 @@ impl AccountsPane {
                         "could not persist account: {e}; credential rollback also failed: {rollback}"
                     ));
                 }
+            }
+            if let Err(rollback) = metadata_rollback {
+                return Err(format!(
+                    "could not persist account: {e}; metadata rollback also failed: {rollback}"
+                ));
             }
             let _ = account_root.finish_mutation();
             warn!(target: "tilo::settings", op = "account_store_save", error = %e, "failed to persist account metadata");

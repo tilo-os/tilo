@@ -103,6 +103,13 @@ it.
   are compacted by periodic full checkpoints; a permanently offline app that
   never supplies a checkpoint can still accumulate a tail.
 
+- Who-is-here lines (`/peer/v1/here`, feature `web`) live in memory only, per
+  workspace and device, for five minutes after a person's last post, and
+  for at most 4096 people per workspace. Model prose for them is off unless
+  `TILO_RELAY_SUMMARY_*` configures a provider, and it is capped per person,
+  per call and per hour. The variables are in
+  `crates/hosting/tilo-room-service/README.md`.
+
 ## Cost model
 
 What a relay costs per active collaborator is measured, not estimated:

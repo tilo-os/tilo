@@ -1876,7 +1876,6 @@ impl MusicApp {
                 );
                 self.reload_library(state);
                 self.art_urls.insert(playlist_id, url);
-                self.notify(ToastKind::Success, "Playlist cover updated");
             }
             (_, Err(reason)) => {
                 tracing::warn!(%reason, "the playlist cover could not be prepared");
@@ -2899,7 +2898,6 @@ impl MusicApp {
             self.view = View::Playlists;
             self.set_scroll_y(0.0);
         }
-        self.notify(ToastKind::Success, "Playlist deleted");
     }
 
     fn on_toggle_queue(&mut self) {

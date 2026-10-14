@@ -97,6 +97,8 @@ pub mod environment_tools;
 #[cfg(not(target_arch = "wasm32"))]
 mod handshake;
 #[cfg(not(target_arch = "wasm32"))]
+mod host_authority;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;
 #[cfg(target_os = "linux")]
 pub mod legacy_route;
@@ -112,6 +114,8 @@ pub mod metrics;
 pub mod moderation;
 #[cfg(not(target_arch = "wasm32"))]
 pub use tilo_relay_session::nearby;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod payloads;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]

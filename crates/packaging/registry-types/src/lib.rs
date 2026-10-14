@@ -58,6 +58,7 @@
 )]
 
 pub mod application;
+pub mod catalogue;
 pub mod change;
 pub mod compact;
 pub mod entry;

@@ -18,7 +18,7 @@
 //! Geometry and maximization are presentation state and never written.
 
 use std::collections::HashSet;
-use tilo_automerge::ReadTyped as _;
+use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 
 use automerge::{
     AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, transaction::Transactable,
@@ -170,14 +170,6 @@ fn child_object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) 
     }
 }
 
-/// Writing an unchanged value is still an operation, and every operation is
-/// a history row; these write only a value that differs.
-fn put_text_if_changed(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &str) {
-    if doc.str_at(parent, key).as_deref() != Some(value) {
-        let _ = doc.put(parent, key, value.to_string());
-    }
-}
-
 /// Compared as JSON values rather than bytes: a map inside `value`
 /// serialises in a different order once it has been read back, and that is
 /// not a change. `false` when `value` does not serialise.
@@ -283,7 +275,7 @@ fn sync_list<T>(
 }
 
 fn write_tab(doc: &mut AutoCommit, entry: &ObjId, tab: &Tab) {
-    put_text_if_changed(doc, entry, "title", &tab.title);
+    let _ = doc.put_str_if_changed(entry, "title", &tab.title);
     put_json_if_changed(doc, entry, "tile_json", &tab.tile);
 }
 
@@ -306,12 +298,14 @@ fn write_strip(doc: &mut AutoCommit, entry: &ObjId, strip: &Strip) {
 }
 
 fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
-    put_text_if_changed(doc, entry, "name", &ws.name);
+    let _ = doc.put_str_if_changed(entry, "name", &ws.name);
     // Room identity travels with the workspace: a reader hydrating from
     // this document must land in this room, not mint its own.
-    put_text_if_changed(doc, entry, "room", &ws.room.to_string());
+    let _ = doc.put_str_if_changed(entry, "room", &ws.room.to_string());
     match ws.owner() {
-        Some(owner) => put_text_if_changed(doc, entry, "owner", owner),
+        Some(owner) => {
+            let _ = doc.put_str_if_changed(entry, "owner", owner);
+        }
         None => delete_if_present(doc, entry, "owner"),
     }
     sync_blob_map(
@@ -730,6 +724,20 @@ pub fn append_workspace(
 /// Record which workspace is showing.
 pub fn set_active(doc: &mut AutoCommit, workspace_id: WorkspaceId) {
     let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(workspace_id.raw()));
+}
+
+/// Whether `change` did nothing but record which workspace is showing, as
+/// [`set_active`] does on every workspace switch: one operation, putting the
+/// root key. Every workspace's content is as the changes before it left it.
+pub fn only_sets_active(change: &automerge::Change) -> bool {
+    use automerge::legacy::{Key, ObjectId, OpType};
+    change.len() == 1
+        && change.decode().operations.first().is_some_and(|op| {
+            op.obj == ObjectId::Root
+                && !op.insert
+                && matches!(op.action, OpType::Put(_))
+                && matches!(&op.key, Key::Map(key) if key == ACTIVE_KEY)
+        })
 }
 
 /// Record a workspace's room. `false` when the document does not hold the

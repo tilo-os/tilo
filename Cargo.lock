@@ -1648,6 +1648,7 @@ dependencies = [
  "tilo-app",
  "tilo-content",
  "tilo-files",
+ "tilo-model-gateway",
  "tilo-subject",
  "tilo-test-env",
  "tilo-wet-media",
@@ -3956,6 +3957,8 @@ dependencies = [
  "tilo-app-package",
  "tilo-egress",
  "tilo-environment",
+ "tilo-files",
+ "tilo-paths",
  "tilo-user-identity",
  "tracing",
  "tracing-subscriber",
@@ -5521,6 +5524,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "tilo-automerge-fork",
+ "tilo-paths",
  "tilo-power-mgmt",
  "tilo-startup-metrics",
  "tilo-test-env",
@@ -7107,6 +7111,7 @@ version = "0.1.0"
 dependencies = [
  "app-registry",
  "clap",
+ "cli-shim",
  "ed25519-dalek 3.0.0",
  "fnv",
  "getrandom 0.4.3",
@@ -7114,7 +7119,6 @@ dependencies = [
  "package-store",
  "runtime-bundle",
  "semver",
- "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -8865,8 +8869,10 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "settings",
  "taffy",
  "tempfile",
+ "test-http",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
@@ -9708,6 +9714,8 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-content",
+ "tilo-desktop-model",
+ "tilo-desktop-surface",
  "tilo-doc",
  "tilo-document",
  "tilo-files",
@@ -13022,6 +13030,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-advisory-lock",
  "tilo-clock",
+ "tilo-files",
  "tilo-paths",
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
@@ -13109,6 +13118,7 @@ dependencies = [
  "tempfile",
  "tilo-advisory-lock",
  "tilo-files",
+ "tilo-paths",
  "tilo-test-env",
  "tokio",
  "uuid",
@@ -13388,9 +13398,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",
@@ -15891,7 +15901,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "web-time",
+ "tilo-clock",
 ]
 
 [[package]]
@@ -16057,6 +16067,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "registry-client",
+ "registry-server",
  "registry-types",
  "runtime-bundle",
  "serde",
@@ -16074,6 +16085,7 @@ dependencies = [
  "tilo-paths",
  "tilo-test-env",
  "tilo-ui-graph",
+ "tokio",
  "toml 1.0.6+spec-1.1.0",
  "wasmparser 0.239.0",
  "workspace-hack",
@@ -16123,6 +16135,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-automation",
  "tilo-clock",
+ "tilo-files",
  "tilo-rt",
  "tokio",
  "workspace-hack",
@@ -16409,6 +16422,7 @@ dependencies = [
  "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-files",
  "tilo-platform-caps",
  "tilo-rt",
  "wasm-bindgen",
@@ -16434,6 +16448,7 @@ dependencies = [
  "clap_complete",
  "serde_json",
  "tilo-clock",
+ "tilo-paths",
  "workspace-hack",
 ]
 
@@ -16488,6 +16503,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-files",
  "tilo-secrets",
  "tokio",
  "workspace-hack",
@@ -16852,6 +16868,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tilo-paths",
  "tilo-test-env",
  "tracing",
  "workspace-hack",
@@ -17672,7 +17689,6 @@ dependencies = [
  "subsetter",
  "tempfile",
  "thiserror 2.0.21",
- "tilo-content",
  "tilo-font-catalog",
  "tilo-paths",
  "tilo-sandbox",
@@ -17760,6 +17776,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "runtime-portal",
+ "socket2",
  "tempfile",
  "tilo-advisory-lock",
  "tilo-platform-caps",
@@ -17821,6 +17838,7 @@ dependencies = [
 name = "tilo-relay"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "anyhow",
  "app-cli",
  "app-registry",
@@ -17878,6 +17896,7 @@ dependencies = [
  "tilo-clock",
  "tilo-connector",
  "tilo-delivery-protocol",
+ "tilo-desktop-model",
  "tilo-doc",
  "tilo-environment",
  "tilo-files",
@@ -17885,6 +17904,7 @@ dependencies = [
  "tilo-identity-host",
  "tilo-moderation",
  "tilo-moq",
+ "tilo-net",
  "tilo-paths",
  "tilo-peer-state",
  "tilo-relay-client",
@@ -18009,7 +18029,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-resource-macros",
- "tilo-rt",
+ "tilo-wake",
  "uuid",
  "workspace-hack",
 ]
@@ -18107,6 +18127,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tilo-clock",
+ "tilo-files",
  "tilo-moq",
  "tilo-net",
  "tilo-reference",
@@ -18128,6 +18149,7 @@ dependencies = [
  "tilo-clock",
  "tilo-platform-caps",
  "tilo-test-env",
+ "tilo-wake",
  "tokio",
  "tracing",
  "wasm-bindgen",
@@ -18783,6 +18805,14 @@ dependencies = [
  "uuid",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-wake"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -20308,7 +20338,17 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "serde_core",
+ "uuid-rng-internal",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "uuid-rng-internal"
+version = "1.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e1d7ccff5e453092983b2a5ec27ebdd52745f40bef229e92051a054a37c662b"
+dependencies = [
+ "getrandom 0.4.3",
 ]
 
 [[package]]
@@ -22195,6 +22235,7 @@ dependencies = [
  "tilo-document",
  "tilo-files",
  "tilo-paths",
+ "tilo-pdf",
  "tilo-resource",
  "tilo-rich-text",
  "tilo-spellcheck",

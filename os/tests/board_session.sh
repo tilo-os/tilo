@@ -43,6 +43,14 @@ cat >"$bin/install" <<'EOF'
 #!/bin/sh
 echo "install $*" >>"$SEAT_LOG"
 EOF
+# `runuser -u ACCOUNT -- CMD...`: record who the directories are made as,
+# then run the command.
+cat >"$bin/runuser" <<'EOF'
+#!/bin/sh
+echo "runuser $*" >>"$SEAT_LOG"
+shift 2; [ "$1" = -- ] && shift
+exec "$@"
+EOF
 cat >"$bin/systemctl" <<'EOF'
 #!/bin/sh
 echo "systemctl $*" >>"$SEAT_LOG"
@@ -72,6 +80,7 @@ chmod 755 "$bin/display"
 seat() {
   exec env SEAT_LOG="$work/seat.log" SEAT_STOP="$work/stop" DISPLAY_STATE="$work/display" \
     TILO_SEAT_GETENT="$bin/getent" TILO_SEAT_ID="$bin/id" TILO_SEAT_INSTALL="$bin/install" \
+    TILO_SEAT_RUNUSER="$bin/runuser" \
     TILO_SEAT_SYSTEMD_RUN="$bin/systemd-run" TILO_SEAT_SYSTEMCTL="$bin/systemctl" \
     TILO_DISPLAY_PRESENT="$bin/display" TILO_SEAT_POLL_SEC=0.1 \
     "$@" "$libexec/tilo-seat-session" you /usr/libexec/tilo-session

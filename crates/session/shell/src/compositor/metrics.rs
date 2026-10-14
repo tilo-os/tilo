@@ -81,6 +81,11 @@ pub struct FrameSample {
     /// The apps whose surfaces committed a new frame since the previous
     /// painted tick, `+`-joined; empty when none did or nothing painted.
     pub paint_clients: &'static str,
+    /// The part of [`Self::cpu_us`] the loop thread spent answering the
+    /// test-control socket. A harness's request lands in whichever tick is
+    /// running when it arrives, so what a tick cost the session itself is
+    /// `cpu_us` less this. `None` where `cpu_us` is.
+    pub testctl_cpu_us: Option<u32>,
 }
 
 /// [`FrameSample::paint_reasons`] bits: why the compositor decided a tick had
@@ -109,9 +114,11 @@ pub mod paint_reason {
     pub const LOCK_CLOCK: u16 = 1 << 12;
     pub const LOCK_ANIMATION: u16 = 1 << 13;
     pub const LOCK_OSD: u16 = 1 << 14;
+    /// A change an earlier tick counted still waited for its frame.
+    pub const OWED: u16 = 1 << 15;
 
     /// Bit and CSV name, in bit order.
-    pub const NAMES: [(u16, &str); 15] = [
+    pub const NAMES: [(u16, &str); 16] = [
         (FORCE, "force"),
         (INPUT, "input"),
         (CURSOR, "cursor"),
@@ -127,6 +134,7 @@ pub mod paint_reason {
         (LOCK_CLOCK, "lock-clock"),
         (LOCK_ANIMATION, "lock-animation"),
         (LOCK_OSD, "lock-osd"),
+        (OWED, "owed"),
     ];
 
     /// `+`-joined names of the set bits, in bit order.
@@ -257,7 +265,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -285,6 +293,9 @@ impl FrameSample {
             self.input_step_us,
             paint_reason::names(self.paint_reasons),
             self.paint_clients,
+            self.testctl_cpu_us
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
         )
     }
 }
@@ -293,7 +304,7 @@ impl FrameSample {
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
 input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us,\
-paint_reasons,paint_clients";
+paint_reasons,paint_clients,testctl_cpu_us";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -758,6 +769,21 @@ impl FrameRecorder {
     pub fn mark_testctl(&mut self, d: Duration) {
         self.cur.testctl_us = us(d);
     }
+    /// The loop thread's CPU clock now, for [`Self::mark_testctl_cpu`];
+    /// `None` while nothing is recorded.
+    pub fn thread_cpu(&self) -> Option<Duration> {
+        if !self.enabled {
+            return None;
+        }
+        thread_cpu_time()
+    }
+    /// The thread CPU the test-control socket took since `start`, read
+    /// with [`Self::thread_cpu`] before it was serviced.
+    pub fn mark_testctl_cpu(&mut self, start: Option<Duration>) {
+        self.cur.testctl_cpu_us = start
+            .zip(thread_cpu_time())
+            .map(|(start, end)| us(end.saturating_sub(start)));
+    }
     pub fn mark_clients(&mut self, d: Duration) {
         self.cur.clients_us = us(d);
     }
@@ -1114,7 +1140,7 @@ mod tests {
         let all = paint_reason::NAMES
             .iter()
             .fold(0, |bits, (bit, _)| bits | bit);
-        assert_eq!(all.count_ones(), 15, "the 15 bits are distinct");
+        assert_eq!(all.count_ones(), 16, "the 16 bits are distinct");
         assert_eq!(intern_clients(""), "");
         let first = intern_clients("so.tilo.notes");
         assert!(
@@ -1523,6 +1549,7 @@ mod tests {
             input_step_us: 16,
             paint_reasons: paint_reason::APPS | paint_reason::REVISION,
             paint_clients: "so.tilo.file-explorer",
+            testctl_cpu_us: Some(17),
         }
         .write_csv_row(&mut buf)
         .expect("write csv row into a Vec");

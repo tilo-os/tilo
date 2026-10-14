@@ -230,7 +230,7 @@ impl Op {
 impl Hub {
     fn notify(&self, op: &Op) {
         for (path, kind) in op.changes() {
-            self.watchers.notify(path.as_str(), kind);
+            self.watchers.notify(path.as_str(), kind).wake();
         }
     }
 

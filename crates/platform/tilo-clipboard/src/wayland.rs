@@ -524,6 +524,10 @@ mod image_worker_impl {
         deadline: tilo_clock::Instant,
     }
 
+    struct PublishedSelection {
+        reply: std::sync::mpsc::Sender<bool>,
+    }
+
     struct PlainRequest {
         reply: std::sync::Mutex<Option<std::sync::mpsc::Sender<Option<String>>>>,
         deadline: tilo_clock::Instant,
@@ -576,8 +580,8 @@ mod image_worker_impl {
             _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
             _: sctk::reexports::client::protocol::wl_callback::Event,
             pending: &PendingPublication,
-            _: &Connection,
-            _: &QueueHandle<Self>,
+            connection: &Connection,
+            queue_handle: &QueueHandle<Self>,
         ) {
             // This callback follows all earlier focus events on the same
             // protocol queue. A timed-out or unfocused copy must not become
@@ -602,7 +606,36 @@ mod image_worker_impl {
             } else {
                 false
             };
-            let _ = pending.reply.send(ok);
+            if ok {
+                // The new sink may take focus as soon as set_image returns.
+                // Fence set_selection on this connection before reporting a
+                // successful copy, so a caller's next focus change cannot
+                // overtake its own publication.
+                connection.display().sync(
+                    queue_handle,
+                    PublishedSelection {
+                        reply: pending.reply.clone(),
+                    },
+                );
+                let _ = connection.flush();
+            } else {
+                let _ = pending.reply.send(false);
+            }
+        }
+    }
+
+    impl Dispatch<sctk::reexports::client::protocol::wl_callback::WlCallback, PublishedSelection>
+        for State
+    {
+        fn event(
+            _: &mut Self,
+            _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
+            _: sctk::reexports::client::protocol::wl_callback::Event,
+            published: &PublishedSelection,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let _ = published.reply.send(true);
         }
     }
 

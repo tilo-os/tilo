@@ -11,6 +11,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+pub use agent_provider_config::local::snapshot::{
+    AcceleratorSetup, AcceleratorSetupState, HardwareFit, HardwareRecommendation,
+    InProcessLocalModel, InstalledLocalModel, LocalModelPackage, LocalModelPhase,
+    LocalModelSnapshot,
+};
 use agent_provider_config::{
     EndpointLocation, ModelDescriptor, ModelRequestLimits, ProviderConfig, ProviderProfile,
     ProviderProtocol,
@@ -1141,7 +1146,7 @@ impl AgentModelsModel {
 
     fn recommendation_card(&self) -> El {
         let hardware = &self.snapshot.hardware;
-        let fit_label = hardware.fit.label();
+        let fit_label = fit_label(hardware.fit);
         let mem = gib(i64::from(hardware.memory_gib));
         let hw_fit = t("agent-hw-fit");
         let hw_mem = t("agent-hw-memory");
@@ -1332,17 +1337,17 @@ impl AgentModelsModel {
         let (status, tone) = match &model.phase {
             None => (t("agent-status-not-installed"), StatusTone::Neutral),
             Some(LocalModelPhase::Ready { .. }) => (t("agent-status-ready"), StatusTone::Success),
-            Some(phase) => (phase.status(), phase_tone(phase)),
+            Some(phase) => (phase_status(phase), phase_tone(phase)),
         };
         card_with_action(
-            &package.capability_title(),
+            &capability_title(package),
             semantic_status_pill(&status, tone),
             rows(body),
         )
     }
 
     fn model_card(&self, model: &InstalledLocalModel) -> El {
-        let status = model.phase.status();
+        let status = phase_status(&model.phase);
         let storage = byte_size(model.package.installed_bytes);
         let status_label = t("agent-model-status");
         let storage_label = t("agent-model-storage");
@@ -1961,198 +1966,34 @@ fn limit_input(buffer: &Arc<Mutex<String>>) -> Option<u32> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HardwareFit {
-    Excellent,
-    Good,
-    Tight,
-    Unsupported,
+/// The fit's label, as the hardware card shows it.
+fn fit_label(fit: HardwareFit) -> String {
+    t(match fit {
+        HardwareFit::Excellent => "agent-fit-excellent",
+        HardwareFit::Good => "agent-fit-good",
+        HardwareFit::Tight => "agent-fit-tight",
+        HardwareFit::Unsupported => "agent-fit-unsupported",
+    })
 }
 
-impl HardwareFit {
-    fn label(self) -> String {
-        t(match self {
-            Self::Excellent => "agent-fit-excellent",
-            Self::Good => "agent-fit-good",
-            Self::Tight => "agent-fit-tight",
-            Self::Unsupported => "agent-fit-unsupported",
-        })
+/// The card title naming what an in-process model does for the person.
+fn capability_title(package: &LocalModelPackage) -> String {
+    if package.segmentation {
+        t("agent-inprocess-segmentation-title")
+    } else {
+        package.name.clone()
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HardwareRecommendation {
-    pub fit: HardwareFit,
-    pub memory_gib: u16,
-    pub accelerator: String,
-    pub accelerator_memory_gib: Option<u16>,
-    pub free_storage_gib: Option<u16>,
-    pub reason: String,
-}
-
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each flag mirrors an independent signed declaration of the release"
-)]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalModelPackage {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub source: String,
-    pub revision: String,
-    pub license: String,
-    pub license_url: String,
-    pub download_bytes: u64,
-    pub installed_bytes: u64,
-    /// Signed capability reported by the local-model manager for this exact
-    /// revision. It is not inferred from a model name.
-    #[serde(default)]
-    pub vision: bool,
-    /// Signed biometric capability for a distinct local face runtime.  A
-    /// general image-analysis model must not gain this capability implicitly.
-    #[serde(default)]
-    pub face_recognition: bool,
-    /// The model runs inside the apps that use it: it is installed, never
-    /// started, and is not a chat model for the local provider profile.
-    #[serde(default)]
-    pub in_process: bool,
-    /// Signed salient-object segmentation capability ("Select subject").
-    #[serde(default)]
-    pub segmentation: bool,
-}
-
-impl LocalModelPackage {
-    /// The card title naming what an in-process model does for the person.
-    fn capability_title(&self) -> String {
-        if self.segmentation {
-            t("agent-inprocess-segmentation-title")
-        } else {
-            self.name.clone()
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum LocalModelPhase {
-    Downloading {
-        downloaded_bytes: u64,
-        total_bytes: u64,
-    },
-    Installing {
-        percent: Option<u8>,
-        message: String,
-    },
-    Ready {
-        running: bool,
-        /// Exact loopback endpoint published by the supervised model service.
-        /// A missing endpoint is never substituted with a guessed port.
-        #[serde(default)]
-        endpoint: Option<LocalModelEndpoint>,
-    },
-    Error {
-        message: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalModelEndpoint {
-    pub url: String,
-    pub model_id: String,
-}
-
-impl LocalModelPhase {
-    fn is_transient(&self) -> bool {
-        matches!(self, Self::Downloading { .. } | Self::Installing { .. })
-    }
-
-    fn status(&self) -> String {
-        t(match self {
-            Self::Downloading { .. } => "agent-status-downloading",
-            Self::Installing { .. } => "agent-status-installing",
-            Self::Ready { running: true, .. } => "agent-status-running",
-            Self::Ready { running: false, .. } => "agent-status-ready",
-            Self::Error { .. } => "agent-status-attention",
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InstalledLocalModel {
-    pub package: LocalModelPackage,
-    pub phase: LocalModelPhase,
-}
-
-/// A signed model that runs in-process, offered whether or not it is
-/// installed. `phase` is absent until it is set up.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InProcessLocalModel {
-    pub package: LocalModelPackage,
-    #[serde(default)]
-    pub phase: Option<LocalModelPhase>,
-}
-
-impl InProcessLocalModel {
-    /// Whether setting it up (again) is what the card offers.
-    pub(crate) fn installable(&self) -> bool {
-        matches!(self.phase, None | Some(LocalModelPhase::Error { .. }))
-    }
-
-    /// Whether there are local bytes or a failed record to remove.
-    pub(crate) fn removable(&self) -> bool {
-        matches!(
-            self.phase,
-            Some(LocalModelPhase::Ready { .. } | LocalModelPhase::Error { .. })
-        )
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum AcceleratorSetupState {
-    Available,
-    Queued,
-    Staging,
-    RestartRequired,
-    Active,
-    Error { message: String },
-}
-
-impl AcceleratorSetupState {
-    pub(crate) fn blocks_model_setup(&self) -> bool {
-        !matches!(self, Self::Active)
-    }
-
-    fn is_transient(&self) -> bool {
-        matches!(self, Self::Queued | Self::Staging)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcceleratorSetup {
-    pub boot_pack_id: String,
-    pub status: AcceleratorSetupState,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalModelSnapshot {
-    pub hardware: HardwareRecommendation,
-    pub recommendation: Option<LocalModelPackage>,
-    #[serde(default)]
-    pub models: Vec<InstalledLocalModel>,
-    /// Every signed in-process model, installed or not.
-    #[serde(default)]
-    pub in_process: Vec<InProcessLocalModel>,
-    #[serde(default)]
-    pub accelerator_setup: Option<AcceleratorSetup>,
-}
-
-impl LocalModelSnapshot {
-    pub(crate) fn in_process_model(&self, id: &str) -> Option<&InProcessLocalModel> {
-        self.in_process.iter().find(|model| model.package.id == id)
-    }
+/// The phase's status line.
+fn phase_status(phase: &LocalModelPhase) -> String {
+    t(match phase {
+        LocalModelPhase::Downloading { .. } => "agent-status-downloading",
+        LocalModelPhase::Installing { .. } => "agent-status-installing",
+        LocalModelPhase::Ready { running: true, .. } => "agent-status-running",
+        LocalModelPhase::Ready { running: false, .. } => "agent-status-ready",
+        LocalModelPhase::Error { .. } => "agent-status-attention",
+    })
 }
 
 /// Boundary implemented by Tilo' model service. The production adapter is a
@@ -2922,7 +2763,7 @@ mod tests {
             package,
             phase: LocalModelPhase::Ready {
                 running: true,
-                endpoint: Some(LocalModelEndpoint {
+                endpoint: Some(agent_provider_config::local::LocalEndpoint {
                     url: "http://127.0.0.1:43127/v1".into(),
                     model_id,
                 }),

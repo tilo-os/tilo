@@ -22,9 +22,9 @@
 //! at qdoc's header/footer (the model has one for the whole document), `first`/`even` stay
 //! while their part does — so every section shows the document's header and footer.
 
-use super::container::DocxContainer;
 use super::headers::{ExportedParts, FOOTER_REL_ID, HEADER_REL_ID, KeptRegions, normalize_target};
 use super::styles::attr_val;
+use crate::package::ZipPackage;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeSet;
@@ -100,7 +100,7 @@ struct Rel {
     external: bool,
 }
 
-fn document_rels(c: &DocxContainer) -> Vec<Rel> {
+fn document_rels(c: &ZipPackage) -> Vec<Rel> {
     let Some(xml) = c
         .get(DOCUMENT_RELS)
         .and_then(|b| std::str::from_utf8(b).ok())
@@ -256,7 +256,7 @@ fn part_rels_name(part: &str) -> String {
 
 /// Drop every header/footer relationship whose id is not in `keep`, then every part only
 /// those relationships reached, with its relationships part and content-type override.
-fn prune_header_footer_rels(c: &mut DocxContainer, rels: &[Rel], keep: &BTreeSet<String>) {
+fn prune_header_footer_rels(c: &mut ZipPackage, rels: &[Rel], keep: &BTreeSet<String>) {
     let dropped: BTreeSet<&str> = rels
         .iter()
         .filter(|r| r.kind.is_some() && !keep.contains(&r.id))
@@ -337,7 +337,7 @@ fn header_footer_overrides(content_types: &str) -> Vec<String> {
 
 /// The first `word/{stem}N.xml` not already in the package. One more candidate than there
 /// are parts, so one is always free.
-fn free_part_name(c: &DocxContainer, stem: &str) -> String {
+fn free_part_name(c: &ZipPackage, stem: &str) -> String {
     (1..=c.parts.len().saturating_add(1))
         .map(|n| format!("word/{stem}{n}.xml"))
         .find(|name| c.get(name).is_none())
@@ -401,7 +401,7 @@ impl SectionPlan {
 /// (holding the carried-through parts) of header/footer relationships and parts the new
 /// `w:sectPr` does not reference. `original` is the imported `w:sectPr`, if any.
 pub(super) fn plan(
-    c: &mut DocxContainer,
+    c: &mut ZipPackage,
     original: Option<&str>,
     section_breaks: &[&str],
     parts: &ExportedParts,
@@ -505,7 +505,7 @@ mod tests {
                 r#"<w:cols w:space="708"/><w:titlePg/><w:docGrid w:linePitch="360"/>"#,
                 "</w:sectPr>",
             );
-            let mut c = DocxContainer { parts: Vec::new() };
+            let mut c = ZipPackage { parts: Vec::new() };
             let parts = ExportedParts {
                 header: Some(Vec::new()),
                 footer: None,

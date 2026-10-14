@@ -26,7 +26,11 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 
 use tilo_peer_state::StatePeer;
 
+use tilo_action_policy::roles::governance;
+
+use super::authority::RoomOp;
 use super::{GovernedRoom, RoomRecord, Rooms, system_time};
+use crate::host_authority::HostOperation;
 
 /// A verified redemption to admit, and what its receipt answers for.
 pub(super) struct Redeeming<'a> {
@@ -285,8 +289,9 @@ fn current_bootstrap(
 }
 
 impl Rooms {
-    /// Issue an invitation to `room` for `administrator`, a device of this
-    /// relay's own user.
+    /// Issue an invitation to `room` for `administrator`: a device of this
+    /// relay's own user, or of a member the room lets invite with the
+    /// invitation's role.
     ///
     /// # Errors
     ///
@@ -298,13 +303,17 @@ impl Rooms {
         request: IssueInvitationRequest,
     ) -> Result<IssuedInvitation, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "invitation.issue")?;
-        let issued = self.stage_issue(
-            &mut *self.room(room).await?.lock().await,
-            administrator,
-            request,
-            now,
-        )?;
+        let issued = {
+            let governed = self.room(room).await?;
+            let mut governed = governed.lock().await;
+            self.authorize(
+                administrator,
+                Some(&governed),
+                RoomOp::Invite(request.role.into()),
+                now,
+            )?;
+            self.stage_issue(&mut governed, administrator, request, now)?
+        };
         self.written(room, false).await?;
         Ok(issued)
     }
@@ -405,14 +414,15 @@ impl Rooms {
         administrator: &DeviceCert,
         request: CancelInvitationRequest,
     ) -> Result<(), CollaborationError> {
-        self.authorize(
-            administrator,
-            tilo_clock::unix_now_ns(),
-            "invitation.cancel",
-        )?;
         let digest = request_digest(&request)?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
+        self.authorize(
+            administrator,
+            Some(&room),
+            RoomOp::Govern(governance::INVITE),
+            tilo_clock::unix_now_ns(),
+        )?;
         let mut state = room.collaboration().clone();
         if let Some(prior) = state
             .invitations
@@ -460,9 +470,14 @@ impl Rooms {
         administrator: &DeviceCert,
     ) -> Result<Vec<PendingInvitation>, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "invitation.pending")?;
         let room = self.room(room).await?;
         let room = room.lock().await;
+        self.authorize(
+            administrator,
+            Some(&room),
+            RoomOp::Govern(governance::INVITE),
+            now,
+        )?;
         let redeemed = |invite_id: [u8; 32]| {
             room.collaboration()
                 .join_completions
@@ -502,7 +517,7 @@ impl Rooms {
     )]
     pub async fn enter(&self, room: &str, device: &DeviceCert) -> Result<bool, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(device, now, "room.enter")?;
+        self.authorize(device, None, RoomOp::Host(HostOperation::EnterRoom), now)?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let mut candidate = room.peer().clone();
@@ -529,9 +544,9 @@ impl Rooms {
         request: SetMemberRoleRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "member.role.set")?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
+        self.authorize_role_change(&room, administrator, &request, now)?;
         let key = self.inner.host.key.clone();
         self.administer(
             &mut room,
@@ -564,7 +579,12 @@ impl Rooms {
         grants: Vec<tilo_action_policy::Grant>,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "room.grants.put")?;
+        self.authorize(
+            administrator,
+            None,
+            RoomOp::Host(HostOperation::PutRoomGrants),
+            now,
+        )?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let key = self.inner.host.key.clone();
@@ -579,7 +599,8 @@ impl Rooms {
     }
 
     /// Make `user_public_key` an administrator of `room`: an editor holding
-    /// every governance action, as the room's Owner role.
+    /// every governance action, still bounded by their role
+    /// ([`tilo_action_policy::roles::administrator_grant`]).
     ///
     /// # Errors
     ///
@@ -593,7 +614,12 @@ impl Rooms {
         user_public_key: [u8; 32],
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "member.administrator.set")?;
+        self.authorize(
+            administrator,
+            None,
+            RoomOp::Host(HostOperation::SetAdministrator),
+            now,
+        )?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let key = self.inner.host.key.clone();
@@ -647,7 +673,7 @@ impl Rooms {
             let change = tilo_action_policy::Change::RemoveMember {
                 person: hex::encode(person),
             };
-            self.authorize_member_change(&room, administrator, &change, now)?;
+            self.authorize(administrator, Some(&room), RoomOp::Change(&change), now)?;
         }
         let key = self.inner.host.key.clone();
         let completion = self
@@ -776,7 +802,7 @@ impl Rooms {
             },
         };
         let room_id = room.room().to_owned();
-        let by = self.authorize_member_change(&room, administrator, &change, now)?;
+        let by = self.authorize(administrator, Some(&room), RoomOp::Change(&change), now)?;
         let key = self.inner.host.key.clone();
         let target = request.user_public_key;
         let completion = self
@@ -816,44 +842,6 @@ impl Rooms {
         Ok(completion)
     }
 
-    /// The person deciding `change`, when `device` may make it in `room`:
-    /// the owner for a device of the relay's user, otherwise the member whose
-    /// device it is, held to the room's policy.
-    fn authorize_member_change(
-        &self,
-        room: &GovernedRoom,
-        device: &DeviceCert,
-        change: &tilo_action_policy::Change,
-        now: u64,
-    ) -> Result<String, CollaborationError> {
-        let owner = hex::encode(room.peer().authority().user_public_key);
-        if self.authorize(device, now, change.action()).is_ok() {
-            if let tilo_action_policy::Change::RemoveMember { person }
-            | tilo_action_policy::Change::Ban { person }
-            | tilo_action_policy::Change::Restrict { person, .. } = change
-                && *person == owner
-            {
-                return Err(CollaborationError::new("the owner cannot be removed"));
-            }
-            return Ok(owner);
-        }
-        if self.revocations().is_revoked(&device.device_public_key) {
-            return Err(CollaborationError::new("device revoked"));
-        }
-        let member = room
-            .peer()
-            .permissions(device.device_public_key, system_time(now))
-            .map_err(CollaborationError::new)?;
-        let bound = tilo_action_policy::roles::foreign_device_bound();
-        let authority = member.authority(&bound);
-        let cx = tilo_action_policy::Context::at_time(system_time(now));
-        member
-            .policy
-            .check(&member.person, &authority, change, &cx, false)
-            .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
-        Ok(member.person.clone())
-    }
-
     /// Commit application authorship under the current owner's authority.
     ///
     /// # Errors
@@ -870,7 +858,12 @@ impl Rooms {
         request: GrantAppAuthorshipRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "app.authorship.grant")?;
+        self.authorize(
+            administrator,
+            None,
+            RoomOp::Host(HostOperation::GrantAppAuthorship),
+            now,
+        )?;
         if request.request_id == [0; 32] {
             return Err(CollaborationError::new(
                 "request identifier must be nonzero",
@@ -938,7 +931,12 @@ impl Rooms {
             ));
         }
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "bot.govern")?;
+        self.authorize(
+            administrator,
+            None,
+            RoomOp::Host(HostOperation::GovernBot),
+            now,
+        )?;
         command.validate()?;
         // The command names itself: the same install or renewal sent again
         // is the same administration request.
@@ -1067,59 +1065,6 @@ impl Rooms {
             })?;
         self.settle(room).await?;
         Ok(GovernanceCompletion { generation })
-    }
-
-    /// Only devices of this relay's own user administer its rooms.
-    pub(super) fn authorize(
-        &self,
-        device: &DeviceCert,
-        now: u64,
-        operation: &'static str,
-    ) -> Result<(), CollaborationError> {
-        let host = &self.inner.host.cert;
-        // An agent is a device of the relay's user too, but it governs
-        // nothing: it joins rooms only through its delegation.
-        #[cfg(feature = "agents")]
-        let agent = self
-            .inner
-            .host
-            .agents
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&device.device_public_key);
-        #[cfg(not(feature = "agents"))]
-        let agent = false;
-        let result = if self
-            .revocations()
-            .revocation_of(&host.user_public_key, &host.device_public_key)
-            .is_some()
-        {
-            Err(CollaborationError::new(
-                "this relay's device is revoked: it no longer governs rooms",
-            ))
-        } else if device.user_public_key != host.user_public_key {
-            Err(CollaborationError::new(
-                "room administration requires a device of the relay's user",
-            ))
-        } else if agent {
-            Err(CollaborationError::new(
-                "room administration requires a person's device, not an agent's",
-            ))
-        } else if self.revocations().revokes(device) {
-            Err(CollaborationError::new("device revoked"))
-        } else {
-            tilo_user_identity::verify_device_cert_at(device, now)
-                .map_err(|error| CollaborationError::new(error.to_string()))
-        };
-        if let Err(reason) = &result {
-            tracing::warn!(
-                device = %hex::encode(device.device_public_key),
-                operation,
-                %reason,
-                "room administration denied"
-            );
-        }
-        result
     }
 
     pub(super) fn inspect(

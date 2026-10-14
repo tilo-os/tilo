@@ -92,7 +92,7 @@ pub fn validate_limits(limits: Limits, max_items: usize) -> Result<(), ReadError
     Ok(())
 }
 
-/// Inert cursor scope for the actual bound qdoc object, using canonical counter/actor identity.
+/// Inert cursor scope for the actual bound tilo-doc object, using canonical counter/actor identity.
 /// The cached actor-table index is deliberately excluded. This is not a record/caller witness.
 ///
 /// # Errors

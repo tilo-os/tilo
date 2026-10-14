@@ -2,10 +2,24 @@
 # kargs to the bootloader entry at install/upgrade. All are low-risk and mostly
 # free on the Fedora kernel; the tilo-security-audit.service asserts they're live.
 kargs = [
-  # Zero kernel heap + page allocations on alloc and free — kills a large class
-  # of kernel use-after-free / uninitialised-memory info leaks.
+  # Zero every kernel heap and page allocation before its caller sees it, so no
+  # caller can read a previous owner's data through uninitialised memory.
+  #
+  # init_on_free=1 is deliberately NOT set (os/tests/kernel_hardening_invariants.sh
+  # holds it out). It would add prompt scrubbing of freed memory (freed data
+  # does not linger until the page or object is reused), but it:
+  #   - zeroes all of RAM on the boot CPU alone before the slab allocator exists
+  #     (mm_core_init -> memblock_free_all), on every cold boot, proportional to
+  #     installed RAM: 6.0 s of a 7.8 s kernel phase in a 4.5 GiB KVM guest;
+  #   - turns init_on_alloc off: with both set the kernel zeroes only on free
+  #     (post_alloc_hook skips alloc-time zeroing), so the pair buys nothing
+  #     init_on_free alone does not.
+  # What is given up is the shorter lifetime of freed data in RAM. That matters
+  # only to an attacker who can already read kernel memory or physical RAM
+  # (a kernel read primitive, cold boot, DMA), where it narrows the window
+  # rather than closing it. Uninitialised-memory leaks to a new owner, which
+  # init_on_alloc closes, stay closed.
   "init_on_alloc=1",
-  "init_on_free=1",
   # Kernel lockdown in integrity mode: even root can't modify the running kernel
   # (kexec, /dev/mem, raw MSRs, unsigned modules). Fully enforced under Secure
   # Boot; harmless without it.

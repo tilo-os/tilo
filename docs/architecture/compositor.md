@@ -4,12 +4,9 @@ The compositor is a single Rust binary, `shell`, that is a real **Wayland server
 
 ## Modes and backends
 
-The binary picks a mode and a backend at startup:
+`shell` is the compositor: it hosts a Wayland socket, accepts third-party clients, and paints frames itself. There is one session; everything it does before its first frame (id salt, state load and migrations, ownership adoption, collaboration broker) lives once in `compositor::session_bootstrap`. The former `--mode hosted` loop, which kept its own drifting copy of that bootstrap, is removed: the binary refuses the flag with exit status 2. Develop inside an existing GNOME/Sway session with `--backend winit`.
 
-- `--mode native` (default) — `shell` is the compositor. It hosts a Wayland socket, accepts third-party clients, and paints frames itself.
-- `--mode hosted` — runs as a regular `ui` Wayland *client* of an existing display server. Useful for development inside an existing GNOME/Sway session; **not** a separate compositor.
-
-Within `--mode native`, the backend is a trait (`compositor::backend::Backend`) and `--backend` picks the implementation:
+The backend is a trait (`compositor::backend::Backend`) and `--backend` picks the implementation:
 
 - `--backend winit` — smithay's winit backend. Compositor renders into a winit-managed window on top of an existing parent compositor. Used for dev and for the CI integration test.
 - `--backend drm` — libseat session + udev device enumeration + libinput for input + DRM/GBM for scanout. The path for booting on a bare TTY via greetd.
@@ -798,7 +795,7 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 
 ## Where to read first
 
-- `crates/session/shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
+- `crates/session/shell/src/compositor/{mod.rs, state.rs, native.rs, session_bootstrap.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
 - `crates/session/shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
 - `crates/session/shell/tests/{compositor_test.rs, interaction_test.rs, control_socket_test.rs}` — the integration coverage.
 - `crates/session/shell/examples/drm_backend_boot.rs` — the DRM backend's hardware probe, run from a free TTY; it fails rather than skips when it cannot claim the seat.

@@ -113,7 +113,8 @@ fn content_type(path: &str) -> Option<&'static str> {
         "otf" => "font/otf",
         "ttc" => "font/collection",
         "woff2" => "font/woff2",
-        "txt" | "md" => "text/plain; charset=utf-8",
+        // `ftl`: the entry pages' arrival lines (`locales/`).
+        "txt" | "md" | "ftl" => "text/plain; charset=utf-8",
         _ => return None,
     })
 }
@@ -699,7 +700,12 @@ impl Service {
             (&Method::GET, ["metrics"]) => self.metrics(request.headers()).await,
             (&Method::GET, ["mode"]) => Self::json(
                 StatusCode::OK,
-                &serde_json::json!({"mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str()}),
+                &serde_json::json!({
+                    "mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str(),
+                    // Public like the web entry's version.json: which build
+                    // answers here, for drift reports from outside the cluster.
+                    "revision": ops::get().map_or(ops::UNKNOWN_REVISION, ops::Ops::revision),
+                }),
             ),
             (&Method::POST, ["errors"]) => self.client_error(request.into_body()).await,
             (&Method::POST, ["rooms"]) => match Self::paused() {
@@ -862,11 +868,22 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Service, guest_link};
+    use super::{Service, content_type, guest_link};
     use tilo_reference::link::{Link, Mode, WebEntries, WebEntry};
 
     const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
     const ENTRY: &str = "https://rooms.example/open/";
+
+    #[test]
+    fn the_arrival_screens_lines_are_served_as_text() {
+        // The entry pages fetch `locales/<locale>.ftl`; an unknown type is a 404.
+        for locale in ["en-US", "de-DE"] {
+            assert_eq!(
+                content_type(&format!("locales/{locale}.ftl")),
+                Some("text/plain; charset=utf-8")
+            );
+        }
+    }
 
     #[test]
     fn a_guest_link_is_a_route_and_a_ticket() {

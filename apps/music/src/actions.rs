@@ -242,6 +242,10 @@ pub enum MusicEffect {
     /// Separately grants native streaming for the same Premium account.
     #[effect(job, device_only)]
     ConnectSpotifyPlayback,
+    /// Inspect Spotify account eligibility
+    /// Reads existing grants only; returns product classifications and account matching.
+    #[effect(job, device_only, returns, idempotent, kind = "read")]
+    SpotifyAccountStatus,
     /// Refresh Spotify devices
     #[effect(job, device_only, returns)]
     SpotifyDevices,

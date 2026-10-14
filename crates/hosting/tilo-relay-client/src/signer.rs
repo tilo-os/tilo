@@ -67,7 +67,7 @@ pub async fn signed_ack2(
     server_nonce: &[u8; 32],
 ) -> Result<tilo_relay_protocol::auth::HelloAck2, String> {
     let sig_over_server_nonce = signer
-        .sign(tilo_relay_protocol::auth::challenge_digest(server_nonce).to_vec())
+        .sign(tilo_relay_protocol::auth::client_challenge_digest(server_nonce).to_vec())
         .await
         .map_err(|error| error.0)?;
     Ok(tilo_relay_protocol::auth::HelloAck2 {

@@ -17,7 +17,7 @@ use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Dropdown, TextInput, Toggle, Widget};
 
-use crate::continuity::{Capability, ContinuityPrivacy};
+use crate::continuity::{self, Capability, ContinuityPrivacy};
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
@@ -1427,7 +1427,7 @@ impl DeviceMeshModel {
         ];
         for capability in Capability::ALL {
             let key = continuity_key(capability);
-            let desc = capability.description();
+            let desc = continuity::description(capability);
             let status = if self.continuity.effective(capability) {
                 t_args(
                     "mesh-facet-active",
@@ -1444,7 +1444,7 @@ impl DeviceMeshModel {
             let facet = capability.key().to_owned();
             privacy_rows.push(
                 self.cx
-                    .row(capability.label())
+                    .row(continuity::label(capability))
                     .described(status)
                     .id(key)
                     .toggle_verb(

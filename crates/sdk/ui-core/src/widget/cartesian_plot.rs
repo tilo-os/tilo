@@ -2462,43 +2462,16 @@ impl CartesianPlot {
             );
             self.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT
         };
-        let items = chart_legend::layout(
-            self.series.iter().map(|series| series.name.as_str()),
-            left,
-            right,
-            y,
+        self.toggles.paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.series
+                .iter()
+                .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
+            Rect::new(left, y, right, y),
         );
-        for (series, item) in self.series.iter().zip(items) {
-            let x = item.x0;
-            let y = item.y0;
-            let hidden = self.toggles.is_hidden(&series.id);
-            let color = if hidden {
-                with_alpha(series.color, 70)
-            } else {
-                series.color
-            };
-            let text_color = if hidden {
-                with_alpha(theme.tokens.colors.text_dim, 100)
-            } else {
-                theme.tokens.colors.text_dim
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                color,
-                None,
-                &Circle::new((x + 4.0, y + 6.0), 4.0),
-            );
-            tr.draw_style(
-                scene,
-                &series.name,
-                text_color,
-                transform * Affine::translate((x + 14.0, y)),
-                Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
-                &theme.text(TextRole::Caption),
-            );
-            self.toggles.push_hit(series.id.clone(), item);
-        }
     }
 
     fn draw_tooltip(

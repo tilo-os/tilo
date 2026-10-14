@@ -184,6 +184,49 @@ macro_rules! rect_geometry {
     };
 }
 
+/// Implements the [`Widget`] methods of a composite that is one pressable
+/// target, from its `self.activation`: focusable once bound, a pointer
+/// cursor over the rect at `self.$rect`, and accessibility `Activate`
+/// firing the binding. A focus change sets `self.dirty`, so pair it with
+/// [`redraw_flag!`].
+macro_rules! pressable {
+    ($($rect:ident).+) => {
+        fn cursor_shape(
+            &self,
+            point: $crate::kurbo::Point,
+        ) -> Option<winit::window::CursorIcon> {
+            (self.activation.is_bound() && self.$($rect).+.contains(point))
+                .then_some(winit::window::CursorIcon::Pointer)
+        }
+
+        fn is_focusable(&self) -> bool {
+            self.activation.is_bound()
+        }
+
+        fn set_focus(&mut self, focused: bool) {
+            if self.activation.state.focused != focused {
+                self.activation.state.focused = focused;
+                self.dirty = true;
+            }
+        }
+
+        fn is_focused(&self) -> bool {
+            self.activation.state.focused
+        }
+
+        fn perform_action(
+            &mut self,
+            action: &$crate::a11y::Action,
+            _key_path: &[u64],
+            _state: &mut $crate::widget::Edits<'_>,
+            _root: &$crate::widget::ModelPath,
+        ) -> bool {
+            matches!(action, $crate::a11y::Action::Activate) && self.activation.activate()
+        }
+    };
+}
+pub(crate) use pressable;
+
 /// Implements [`Widget::needs_redraw`] and [`Widget::mark_drawn`] for a
 /// widget that tracks whether it needs repainting in `self.dirty`.
 #[macro_export]
@@ -1720,6 +1763,15 @@ pub trait Widget {
         None
     }
 
+    /// Whether [`Self::accessibility`] reports this subtree hidden, for a
+    /// host that asks it of every node to prune focus traversal. Widgets
+    /// whose node is costly to build (text values, per-block children) and is
+    /// never hidden answer without building it; any override must agree with
+    /// `accessibility()`.
+    fn accessibility_hidden(&self) -> bool {
+        self.accessibility().is_some_and(|node| node.state.hidden)
+    }
+
     /// Geometry for an immediate-mode semantic child from
     /// [`AccessNode::children`](crate::a11y::AccessNode::children). The path is
     /// its child-index path beneath this widget's accessibility node. Returning
@@ -3028,6 +3080,7 @@ pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
+pub mod acknowledgement;
 pub mod autocomplete;
 pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList};
 mod number_input;
