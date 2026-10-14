@@ -170,8 +170,9 @@ room; members refuse its later writes on their own. Room administration
 refuses agent devices. Other users' agents are not admitted, and agents
 never call the host's room actions.
 
-Room administration on a relay (the `tilo-room-admin/1` ALPN, the `/rooms`
-pages, call control) is one decision, `Rooms::authorize`
+Room administration on a relay (the room's `tilo.workspace` governance
+actions over `Envelope::RemoteAction`, the `tilo-room-admin/1` ALPN, the
+`/rooms` pages, call control) is one decision, `Rooms::authorize`
 (`crates/hosting/tilo-relay/src/rooms/authority.rs`). The caller's
 certificate must be current and unrevoked, and not one of the relay's
 agents. A device of the relay's own user administers every room. Any other
@@ -183,6 +184,16 @@ than the inviter's role, membership changes are the room's policy checks
 decides stays the host person's (`host_authority.rs`): creating, listing
 and entering rooms, pre-admission, room grants, administrators, bots,
 application authorship and the host's compute control.
+
+The desktop administers a relay room it holds through those governance
+actions, on the room's own relay session, the same surface agents and
+screen readers use (`crates/session/shell/src/shell/network/relay_rooms.rs`).
+It still asks the ALPN only for what the actions do not carry: the host
+operations above, the invitations issued before it holds a room it is
+sharing or joining, and a member's own topology namespace claim and effect
+receipt. Removing or banning a member and ending a call are not served as
+actions until the person's own confirmation can be asked for; they stay on
+the ALPN and the `/rooms` pages.
 
 A room the desktop hosts itself applies the same rule through its action
 broker: an agent session takes the role its membership preset grants,
