@@ -63,6 +63,7 @@ fn two_group_one_strip_tree() -> (WorkspaceTree, StripId, GroupId, GroupId) {
                 active_tab: 11,
                 width: WindowWidth::Narrow,
                 maximized: false,
+                focus_history: Vec::new(),
             },
             WindowGroup {
                 id: g_right,
@@ -70,6 +71,7 @@ fn two_group_one_strip_tree() -> (WorkspaceTree, StripId, GroupId, GroupId) {
                 active_tab: 21,
                 width: WindowWidth::Narrow,
                 maximized: false,
+                focus_history: Vec::new(),
             },
         ],
     };

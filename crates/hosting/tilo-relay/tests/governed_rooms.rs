@@ -1136,3 +1136,9 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
 
 #[path = "governed_rooms/topology_namespace.rs"]
 mod topology_namespace;
+
+#[path = "governed_rooms/governance_actions.rs"]
+mod governance_actions;
+
+#[path = "governed_rooms/app_authorship.rs"]
+mod app_authorship;

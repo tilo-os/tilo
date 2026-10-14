@@ -1,8 +1,8 @@
 //! The browser desktop bundle: `tilo-browser-runtime` plus every Tilo app
 //! whose manifest declares the web platform, registered with
-//! `ui::application::registry` before the page mounts anything. Most apps
-//! register deferred and load from their own module when first opened
-//! (`split`).
+//! `ui::application::registry` before the page mounts anything. Every app
+//! registers deferred and loads from its own module when first opened
+//! (`split`), so the start module holds no app's code.
 //!
 //! The runtime's exports (`mountDesktop`, `connectPeer`, …) are this
 //! module's exports, so the page host loads it exactly as it loads the

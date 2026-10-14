@@ -56,10 +56,10 @@ impl From<Fullscreen> for RootFullscreen {
         match f {
             Fullscreen::Exclusive(video_mode) => {
                 Self::Exclusive(RootVideoModeHandle { video_mode })
-            },
+            }
             Fullscreen::Borderless(Some(inner)) => {
                 Self::Borderless(Some(RootMonitorHandle { inner }))
-            },
+            }
             Fullscreen::Borderless(None) => Self::Borderless(None),
         }
     }

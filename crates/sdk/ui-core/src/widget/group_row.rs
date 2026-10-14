@@ -302,6 +302,8 @@ pub struct GroupRow {
     /// Transient: the promoted group leaves its lane's leading gutter to the
     /// workspace wheel, as a user maximize does; a client fullscreen covers it.
     promotion_keeps_gutter: bool,
+    /// A maximize can cover the gutter without hiding its Restore controls.
+    promotion_keeps_controls: bool,
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
@@ -358,6 +360,12 @@ pub struct GroupRow {
     /// Groups the last draw skipped as outside the row. They keep their
     /// dirty state, so cached scenes rebuild once they are painted again.
     culled_groups: Vec<u64>,
+    /// When the latest frame synced the groups, and which of them its draw
+    /// then left unpainted: a deadline of theirs that was due by then has
+    /// had its frame, and what is left of it is for their paint.
+    synced_at: Option<Instant>,
+    unpainted: Vec<u64>,
+    unpainted_since: Option<Instant>,
     /// While the lane being drawn is in canvas coordinates (a presenter
     /// keeps the strip): what of the canvas the screen shows this draw.
     /// `None` in screen space.
@@ -573,9 +581,13 @@ impl Pan {
         if gr.width() <= 0.0 {
             return None;
         }
-        // Groups must clear the leading wheel-disc gutter on the left and
-        // the viewport's right edge on the right.
-        let left_bound = self.viewport.x0 + self.inset;
+        // A group needs to be on screen, flush with the viewport's edges.
+        // The wheel-disc gutter is canvas the strip pans *with*: every
+        // group already starts past it, so a group revealed at the left
+        // edge never overlaps the disc. Bounding at the gutter instead
+        // panned the leftmost group's reveal all the way home to scroll 0,
+        // dragging the workspace switcher back into view.
+        let left_bound = self.viewport.x0;
         let right_bound = self.viewport.x1;
         let mut sx = self.scroll_x;
         // An oversized group cannot fit; reveal its start consistently.
@@ -985,6 +997,7 @@ impl GroupRow {
             leading_inset: 0.0,
             fullscreen_group: None,
             promotion_keeps_gutter: false,
+            promotion_keeps_controls: false,
             hidden: false,
             group_drag: None,
             touch_pan: None,
@@ -1003,6 +1016,9 @@ impl GroupRow {
             sibling_fade_hold: None,
             fade_hero: None,
             culled_groups: Vec::new(),
+            synced_at: None,
+            unpainted: Vec::new(),
+            unpainted_since: None,
             apart_window: None,
             apart_spans: Vec::new(),
             apart_drawings: Vec::new(),
@@ -1233,20 +1249,38 @@ impl GroupRow {
 
     /// Visible screen-space edge grip, using ordinary widget dispatch geometry.
     /// The viewport clips grips, and promoted or hidden groups have none.
-    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+    pub fn group_resize_rects(&self, group_id: u64) -> Vec<Rect> {
         if self.hidden {
-            return None;
+            return Vec::new();
         }
-        let (index, group) = self
+        let Some((index, group)) = self
             .groups
             .iter()
             .enumerate()
-            .find(|(_, group)| group.id == group_id)?;
+            .find(|(_, group)| group.id == group_id)
+        else {
+            return Vec::new();
+        };
         if self.layout_hides_group(index) || self.fullscreen_group == Some(group_id) {
-            return None;
+            return Vec::new();
         }
-        let rect = group.resize_grab_rect()?.intersect(self.rect);
-        (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
+        group
+            .resize_grab_rects()
+            .into_iter()
+            .map(|rect| rect.intersect(self.rect))
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .collect()
+    }
+
+    /// Whether `p` lies on any visible window's edge grip.
+    pub fn resize_grab_hit_at(&self, p: Point) -> bool {
+        !self.hidden
+            && self.rect.contains(p)
+            && self.groups.iter().enumerate().any(|(i, group)| {
+                !self.layout_hides_group(i)
+                    && self.fullscreen_group != Some(group.id)
+                    && group.resize_grab_hit(p)
+            })
     }
 
     /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
@@ -1255,6 +1289,15 @@ impl GroupRow {
     pub fn set_promotion_keeps_gutter(&mut self, keeps: bool) {
         if self.promotion_keeps_gutter != keeps {
             self.promotion_keeps_gutter = keeps;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Keep the maximized system controls even when the promoted group
+    /// covers its gutter. Client fullscreen leaves this off.
+    pub fn set_promotion_keeps_controls(&mut self, keeps: bool) {
+        if self.promotion_keeps_controls != keeps {
+            self.promotion_keeps_controls = keeps;
             self.structure_dirty = true;
         }
     }
@@ -3190,10 +3233,26 @@ impl Widget for GroupRow {
     fn modal_capture(&self) -> Option<Rect> {
         self.children().into_iter().find_map(Widget::modal_capture)
     }
+    /// A group the latest frame left unpainted (outside the row) had that
+    /// frame for every deadline due by its sync. One still pending waits for
+    /// the group's paint (a status pill that clears itself when drawn), which
+    /// only showing the group gives, so it must not wake the host on every
+    /// frame. Its later deadlines (an alarm, a poll) still wake it.
     fn next_wake_deadline(&self) -> Option<Instant> {
+        let served = |child: &dyn Widget, deadline: Instant| {
+            self.unpainted_since.is_some_and(|since| deadline <= since)
+                && self.groups.iter().any(|group| {
+                    self.unpainted.contains(&group.id)
+                        && std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(group), child)
+                })
+        };
         self.children()
             .into_iter()
-            .filter_map(Widget::next_wake_deadline)
+            .filter_map(|child| {
+                child
+                    .next_wake_deadline()
+                    .filter(|&deadline| !served(child, deadline))
+            })
             .min()
     }
 
@@ -3287,6 +3346,7 @@ impl Widget for GroupRow {
         Some(self)
     }
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        self.synced_at = Some(crate::time::now());
         for g in &mut self.groups {
             g.sync(state, root);
         }
@@ -3309,6 +3369,10 @@ impl Widget for GroupRow {
         clippy::too_many_lines,
         reason = "one ordered build of the row: group nodes, handles, then either the single run or one run per lane"
     )]
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3337,6 +3401,9 @@ impl Widget for GroupRow {
         for (i, group) in self.groups.iter_mut().enumerate() {
             group.set_reduce_motion(theme.reduce_motion);
             let lane = lane_of.get(i).copied().unwrap_or(0);
+            // No seam handle sits left of a lane's first group.
+            let prev_lane = i.checked_sub(1).and_then(|p| lane_of.get(p).copied());
+            group.set_leads_lane(prev_lane != Some(lane));
             let dest_fits = snap_lane.get(lane).copied().unwrap_or(false);
             if group.is_closing() && !theme.reduce_motion {
                 // A closing slot owns its width spring even when its destination
@@ -3369,6 +3436,13 @@ impl Widget for GroupRow {
         let usable_per_group = self.usable_per_group();
         for (g, &usable) in self.groups.iter_mut().zip(usable_per_group.iter()) {
             g.set_strip_usable_px(usable);
+        }
+        for group in &mut self.groups {
+            group.set_fullscreen_presentation(
+                self.fullscreen_group == Some(group.id)
+                    && !self.promotion_keeps_gutter
+                    && !self.promotion_keeps_controls,
+            );
         }
         let group_nodes: Vec<NodeId> = self
             .groups
@@ -4107,6 +4181,8 @@ impl Widget for GroupRow {
         for handle in &mut self.handles {
             handle.mark_drawn();
         }
+        self.unpainted = culled;
+        self.unpainted_since = self.synced_at;
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -4719,6 +4795,23 @@ impl GroupRow {
         // remembered cursor (or an active capture) before siblings. Keep every
         // sibling in the fallback order: synthetic and keyboard-adjacent test
         // paths can legitimately lack a preceding cursor move.
+        // Edge grips first, for every group: they overlay the windows' own
+        // content, so no group's tile may swallow the pointer before the group
+        // under it has seen it.
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+        ) {
+            for i in 0..self.groups.len() {
+                if self.layout_hides_group(i) {
+                    continue;
+                }
+                if self.groups[i].handle_edge_input(event, ctx.scale_factor, *ctx.modifiers) {
+                    *ctx.handled = true;
+                    return;
+                }
+            }
+        }
         let preferred = matches!(event, WindowEvent::MouseInput { .. }).then(|| {
             self.groups
                 .iter()
@@ -5670,6 +5763,200 @@ mod tests {
 
     fn make_row_with_groups(tab_specs: &[&[u64]]) -> GroupRow {
         make_row_with_groups_with_taffy(tab_specs).0
+    }
+
+    /// A row a host pans between frames, as the desktop surface pans its
+    /// shown strip for a wheel: begin, travel and end in one step.
+    struct PannedRow {
+        row: GroupRow,
+        travel: std::rc::Rc<std::cell::Cell<Option<f64>>>,
+    }
+
+    impl crate::widget::Decorator for PannedRow {
+        type Inner = GroupRow;
+        fn inner(&self) -> &GroupRow {
+            &self.row
+        }
+        fn inner_mut(&mut self) -> &mut GroupRow {
+            &mut self.row
+        }
+        fn needs_redraw(&self) -> bool {
+            self.travel.get().is_some() || self.row.needs_redraw()
+        }
+        fn update(&mut self, state: &crate::widget::AppModel, path: &ModelPath) -> bool {
+            if let Some(travel) = self.travel.take() {
+                self.row.begin_strip_pan();
+                assert!(self.row.update_strip_pan(travel), "the strip moves");
+                self.row.end_strip_pan(crate::time::now());
+            }
+            self.row.update(state, path)
+        }
+    }
+
+    /// A pan translates windows that are already laid out: the frame
+    /// re-applies positions, so hit-testing and culling follow, but solves
+    /// no size, and a strip of windows pans at the cost of moving them.
+    #[test]
+    fn a_strip_pan_re_applies_positions_without_measuring() {
+        let travel = std::rc::Rc::new(std::cell::Cell::new(None));
+        let groups = (1..=6).map(|id| make_group(id * 100, &[id])).collect();
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            PannedRow {
+                row: GroupRow::new(groups),
+                travel: std::rc::Rc::clone(&travel),
+            },
+            (1200, 800),
+            Theme::dark(),
+        );
+        for _ in 0..4 {
+            harness.relayout();
+        }
+        let row = |harness: &crate::headless::FrameHarness| {
+            let row = &harness.root::<PannedRow>().row;
+            (
+                row.scroll_x(),
+                row.groups[0].get_rect(),
+                row.pan_max_scroll_x(),
+            )
+        };
+        let (start, first, max) = row(&harness);
+        assert!(max > 300.0, "six windows overflow 1200 px: {max}");
+        let nodes = harness.layout_node_ids();
+
+        travel.set(Some(150.0));
+        assert!(harness.poll_frame().unwrap(), "a pan presents a frame");
+        let stats = harness.last_relayout();
+        assert!(!stats.rebuilt, "a pan keeps the composition: {stats:?}");
+        assert!(
+            !stats.measured,
+            "a pan solves no size: {stats:?}, asked by {:?}",
+            harness.layout_measure_requesters()
+        );
+        assert_eq!(harness.layout_node_ids(), nodes);
+        let (panned, moved, _) = row(&harness);
+        assert!((panned - start - 150.0).abs() < 1e-9, "{start} -> {panned}");
+        assert!(
+            (first.x0 - moved.x0 - 150.0).abs() < 1e-9,
+            "the windows are laid out where the strip panned to: {first:?} -> {moved:?}"
+        );
+        harness.verify_retained_geometry().unwrap();
+    }
+
+    /// An app whose wake deadline only its paint moves on, as a status pill
+    /// that clears itself once drawn after its linger.
+    struct PaintedDeadline {
+        deadline: std::rc::Rc<std::cell::Cell<Option<Instant>>>,
+        rect: Rect,
+    }
+
+    impl Widget for PaintedDeadline {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.fill_leaf(node_map, self)
+        }
+        crate::rect_geometry!();
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+            self.deadline.set(None);
+        }
+        fn next_wake_deadline(&self) -> Option<Instant> {
+            self.deadline.get()
+        }
+        fn name(&self) -> &'static str {
+            "PaintedDeadline"
+        }
+    }
+
+    impl crate::widget::AppWidget for PaintedDeadline {
+        fn uses_host_record(&self) -> bool {
+            false
+        }
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Painted deadline"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Glyph("P")
+        }
+    }
+
+    /// A window past the strip's edge is not painted, so a deadline only its
+    /// paint consumes stays due: once a frame has run for it, it must not
+    /// wake the host on every frame until the window is shown. Its later
+    /// deadlines still wake the host, and shown again it is painted.
+    #[test]
+    fn an_unpainted_window_does_not_keep_waking_the_host_for_its_paint() {
+        let deadline = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut groups: Vec<WindowGroup> = (1..=5).map(|id| make_group(id * 100, &[id])).collect();
+        groups.push(WindowGroup::new(
+            600,
+            vec![(
+                TabDescriptor::new(6, "T6"),
+                TileContent::App(Box::new(PaintedDeadline {
+                    deadline: std::rc::Rc::clone(&deadline),
+                    rect: Rect::ZERO,
+                })),
+            )],
+            6,
+            WindowWidth::Normal,
+        ));
+        let travel = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            PannedRow {
+                row: GroupRow::new(groups),
+                travel: std::rc::Rc::clone(&travel),
+            },
+            (1200, 800),
+            Theme::dark(),
+        );
+        for _ in 0..4 {
+            harness.relayout();
+        }
+        let due = |harness: &crate::headless::FrameHarness| {
+            harness
+                .frame_schedule()
+                .next_wake_deadline
+                .is_some_and(|at| at <= crate::time::now())
+        };
+
+        // Due while off screen: the host wakes once and the frame runs.
+        deadline.set(Some(crate::time::now()));
+        assert!(due(&harness), "a due deadline wakes the host");
+        assert!(harness.poll_frame().unwrap());
+        assert!(
+            deadline.get().is_some(),
+            "an off-screen window is not painted"
+        );
+        assert!(
+            !due(&harness),
+            "the deadline had its frame: no frame after frame"
+        );
+
+        // A later deadline of the same window still wakes the host.
+        let later = crate::time::now() + Duration::from_secs(60);
+        deadline.set(Some(later));
+        assert_eq!(harness.frame_schedule().next_wake_deadline, Some(later));
+
+        // Shown, the window is painted and its deadline consumed.
+        deadline.set(Some(crate::time::now()));
+        let max = harness.root::<PannedRow>().row.pan_max_scroll_x();
+        travel.set(Some(max));
+        assert!(harness.poll_frame().unwrap());
+        assert_eq!(deadline.get(), None, "the window shown is painted");
     }
 
     /// A closing window's fade rebuilds the row once per drawn frame. Asking
@@ -7559,6 +7846,44 @@ mod tests {
         direct_pan_keeps_a_fifth_viewport_after_the_last_app();
         direct_pan_tracks_reversals_and_only_settles_elastic_overpull();
         direct_pan_overpull_has_diminishing_gain_and_returns_to_resting_end();
+    }
+
+    #[test]
+    fn revealing_a_half_visible_leftmost_group_pans_only_far_enough() {
+        // Viewport 0..1000 with the 96 px wheel-disc gutter, so the first
+        // group lies at canvas 96..696 and the second at 704..1304.
+        let pan = Pan {
+            viewport: Rect::new(0.0, 0.0, 1000.0, 600.0),
+            inset: 96.0,
+            scroll_x: 400.0,
+            content_w: 2400.0,
+            ..Pan::default()
+        };
+        // Scrolled 400, the first group sits at -304..296: half visible.
+        let leftmost = Rect::new(-304.0, 0.0, 296.0, 600.0);
+        let target = pan
+            .scroll_target_for(leftmost)
+            .expect("a cut group is revealed");
+        assert!(
+            (target - 96.0).abs() < 0.01,
+            "flush with the screen edge (scroll 96), not home (0) with the \
+             wheel disc back on screen: {target}"
+        );
+        // Fully visible already: nothing to do.
+        assert_eq!(
+            pan.scroll_target_for(Rect::new(10.0, 0.0, 610.0, 600.0)),
+            None
+        );
+        // The right edge is unchanged.
+        let target = pan
+            .scroll_target_for(Rect::new(
+                704.0 - 400.0 + 500.0,
+                0.0,
+                1404.0 - 400.0 + 500.0,
+                600.0,
+            ))
+            .expect("a group cut on the right is revealed");
+        assert!((target - 904.0).abs() < 0.01, "{target}");
     }
 
     #[test]

@@ -1222,3 +1222,75 @@ fn entries_since_reads_only_appended_changes_and_matches_entries() {
         assert_matches_a_fresh_read(&source, &mut plain, &log, &rows, &format!("plain {n}"));
     }
 }
+
+/// A source that passes over the changes that only move a view: one
+/// operation putting the root `view` key.
+fn only_moves_the_view(change: &automerge::Change) -> bool {
+    use automerge::legacy::{Key, ObjectId};
+    change.len() == 1
+        && change.decode().operations.first().is_some_and(|op| {
+            op.obj == ObjectId::Root && matches!(&op.key, Key::Map(key) if key == "view")
+        })
+}
+
+#[test]
+fn passed_over_changes_make_no_row_and_take_no_place_in_the_window() {
+    let viewer = source()
+        .with_max_entries(3)
+        .passing_over(only_moves_the_view);
+    let mut log = HistoryLog::default();
+    let mut doc = AutoCommit::new();
+    let mut hours = 0_i64..;
+    let mut commit = |doc: &mut AutoCommit| {
+        let hour = hours.next().unwrap_or_default();
+        tilo_resource::history::commit_stamped_at(doc, T0 + HOUR * hour);
+    };
+    for title in ["one", "two", "three"] {
+        doc.put(ROOT, "title", title).unwrap();
+        commit(&mut doc);
+    }
+    let (rows, _) = read_since(&viewer, &mut doc, &mut log);
+    assert_eq!(rows.len(), 3, "the window holds the three edits");
+    assert_matches_a_fresh_read(&viewer, &mut doc, &log, &rows, "edits");
+
+    // phase: moving the view, many times, reads each change once and moves
+    // no row
+    let revision = log.rows_revision();
+    for view in 0..10_u64 {
+        doc.put(ROOT, "view", view).unwrap();
+        commit(&mut doc);
+        let (after, read) = read_since(&viewer, &mut doc, &mut log);
+        assert_eq!(read, 1, "view {view}: its own change");
+        assert_eq!(after, rows, "view {view}: the rows are as they were");
+        assert_eq!(log.rows_revision(), revision, "view {view}: rows unmoved");
+        assert_matches_a_fresh_read(&viewer, &mut doc, &log, &after, "view");
+    }
+
+    // phase: an edit after them is a row, read at heads that include them,
+    // and slides the window by one place, not by the views
+    doc.put(ROOT, "title", "four").unwrap();
+    commit(&mut doc);
+    let (rows, read) = read_since(&viewer, &mut doc, &mut log);
+    assert_eq!(read, 1);
+    assert_ne!(log.rows_revision(), revision, "a row moved");
+    assert_eq!(rows.len(), 3, "the window still holds three edits");
+    assert_matches_a_fresh_read(&viewer, &mut doc, &log, &rows, "edit after views");
+
+    // phase: a change that moves the view and edits is no view change
+    doc.put(ROOT, "view", 99_u64).unwrap();
+    doc.put(ROOT, "title", "five").unwrap();
+    commit(&mut doc);
+    let (rows, _) = read_since(&viewer, &mut doc, &mut log);
+    assert_matches_a_fresh_read(&viewer, &mut doc, &log, &rows, "view and edit");
+    let unfiltered = source().with_max_entries(3).entries(&mut doc);
+    assert_eq!(
+        rows.last().map(|row| row.id),
+        unfiltered.last().map(|row| row.id),
+        "it is a row"
+    );
+
+    // phase: a log read from scratch passes over the same changes
+    let mut scratch = HistoryLog::default();
+    let (fresh, _) = read_since(&viewer, &mut doc, &mut scratch);
+    assert_eq!(fresh, rows);
+}

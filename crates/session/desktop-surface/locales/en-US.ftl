@@ -76,6 +76,20 @@ topbar-clock-add-one-minute = Add one minute
 topbar-workspace-position = Workspace { $position } of { $total }
 topbar-desktop-navigation = Desktop navigation
 topbar-display-navigation = Display navigation
+topbar-strips = Strips in this workspace
+topbar-strip-count = { $name } · { $count }
+topbar-strip-go = Go to { $name }, { $count ->
+    [0] nobody there
+    [one] one person there
+   *[other] { $count } people there
+}
+topbar-strip-add = Add a strip
+topbar-strips-more-label = +{ $count }
+topbar-strips-more = { $count ->
+    [one] One more strip
+   *[other] { $count } more strips
+}, go to { $name }
+topbar-strip-name-placeholder = Name the strip
 
 # Workspace activity
 a11y-shell-workspace-activity = Workspace activity
@@ -564,6 +578,7 @@ notification-dnd-held = { $status } · { $count } held
 notification-stack-a11y = Notifications
 notification-group-system = System
 notification-center-undo = Undo
+notification-not-now = Not now
 notification-app-failed-title = Couldn't open an app
 notification-service-unavailable = This isn't available on this desktop yet
 

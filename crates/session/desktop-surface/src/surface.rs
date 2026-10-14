@@ -49,7 +49,7 @@ mod search;
 
 pub use history::HistorySource;
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
-pub use search::{HostAction, HostActionSource};
+pub use search::{HostAction, HostActionSource, is_host_offer};
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -899,7 +899,7 @@ impl DesktopSurface {
                 if let Some(model) = find_group(&mut shared.tree, strip_id, group.id)
                     && model.tabs.iter().any(|t| t.id == tab)
                 {
-                    model.active_tab = tab;
+                    model.activate_tab(tab);
                 }
                 shared.tree.set_active_group(strip_id, group.id);
                 changed = true;
@@ -971,7 +971,7 @@ impl DesktopSurface {
                         tree.active_strip.insert(ids.workspace, ids.strip);
                         tree.set_active_group(ids.strip, ids.group);
                         if let Some(group) = find_group(tree, ids.strip, ids.group) {
-                            group.active_tab = ids.tab;
+                            group.activate_tab(ids.tab);
                         }
                         ops.push(RowOp::Show(ids.strip, ids.group, ids.tab));
                     }
@@ -1402,6 +1402,7 @@ fn launch(tiles: &mut dyn TileSource, shared: &mut Shared, app: &str) -> Option<
             active_tab: tab.id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         },
     );
     shared.tree.set_active_group(strip, group_id);
@@ -2061,6 +2062,7 @@ pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) ->
             tabs: vec![tab],
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         })
         .collect();
     let first_group = strip.window_groups.first().map(|g| g.id);
@@ -2616,5 +2618,25 @@ mod tests {
             "a mouse's sideways wheel click steps like the shell's"
         );
         assert_eq!(focused(&mut surface, &handle), 1);
+    }
+
+    #[test]
+    fn host_actions_no_longer_offered_are_reported_for_withdrawal() {
+        let (_surface, handle) = desktop(1);
+        let action = |id: &str| HostAction {
+            id: id.into(),
+            title: id.into(),
+            subtitle: None,
+            source: None,
+        };
+        assert!(
+            handle
+                .set_host_actions(vec![action("keep"), action("pair")])
+                .is_empty()
+        );
+        assert_eq!(
+            handle.set_host_actions(vec![action("pair"), action("recover")]),
+            ["keep"]
+        );
     }
 }

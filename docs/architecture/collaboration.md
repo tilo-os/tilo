@@ -66,8 +66,12 @@ workspace room, expiry, and an Ed25519 signature. Iroh chooses a direct path
 when possible and uses its encrypted relay path when NAT traversal cannot
 establish one.
 
-Direct collaboration has no server requirement. It is the fast path for an
-ad-hoc invitation and remains active when a workspace host is configured.
+Direct collaboration needs no workspace host. It is the fast path for an
+ad-hoc invitation and remains active when a workspace host is configured. It
+does use number 0's public iroh infrastructure — their DNS service for address
+lookup and their relays for NAT traversal — which sees endpoint ids and IP
+addresses but no content (`docs/architecture/security.md`, "What leaves the
+device by default").
 
 An invite also signs the maximum role its bearer receives: Viewer,
 Commenter, or Editor. The inviter chooses that role before the token is
@@ -265,7 +269,9 @@ ALPN before subscribing.
 
 Devices talk to a host through `crates/hosting/tilo-relay-session`: the
 session client (`RelayClient`), the co-edit session (`RelayCoeditSession`),
-anti-entropy, room administration (`RoomAdminClient`) and the workspace join
+anti-entropy, a room host's administration door (`RoomAdminClient`, for host
+operations and rooms a device does not hold yet; a held room is administered
+through its `tilo.workspace` governance actions) and the workspace join
 client (`WorkspaceJoinClient`). The shell, the action broker, joined rooms and
 the runtime depend on that crate alone; `tilo-relay` is the daemon, depends on
 the session crate and re-exports it under its historic paths, and appears in

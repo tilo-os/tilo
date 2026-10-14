@@ -157,7 +157,8 @@ pub fn execute_with_host(
     }
     match (action, &item.source) {
         (ActionKind::Open, StoreSource::Tilo { .. })
-        | (ActionKind::Update, StoreSource::Tilo { .. }) => {
+        | (ActionKind::Update, StoreSource::Tilo { .. })
+        | (ActionKind::RuntimeInstall, StoreSource::Tilo { .. }) => {
             open_tilo(host, item, action, staging_dir)
         }
         (ActionKind::Remove, StoreSource::Tilo { .. }) => tilo_existing(host, item, |host, id| {
@@ -253,8 +254,8 @@ fn open_tilo(
     let mut package_root = host.list().ok().and_then(|packages| {
         packages
             .into_iter()
-            .find(|package| package.id == item.id)
-            .and_then(|package| package.package_id())
+            .find(|listed| listed.package.id == item.id)
+            .and_then(|listed| listed.package.package_id())
     });
 
     if !already_cached {
@@ -301,6 +302,15 @@ fn open_tilo(
         }
         // An update replaces what runs at the app's next launch; it does
         // not open the app.
+        if action == ActionKind::RuntimeInstall {
+            return ActionOutcome::ok(ui::i18n::I18nManager::format(
+                "store-runtime-installed",
+                &[
+                    ("name", ui::i18n::ArgValue::Text(item.name.clone())),
+                    ("version", ui::i18n::ArgValue::Text(version.version.clone())),
+                ],
+            ));
+        }
         if action == ActionKind::Update {
             return ActionOutcome::ok(format!("Updated {} to {}", item.name, version.version));
         }
@@ -348,8 +358,8 @@ fn tilo_existing(
     let id = match host.list().and_then(|packages| {
         packages
             .into_iter()
-            .find(|package| package.id == item.id)
-            .and_then(|package| package.package_id())
+            .find(|listed| listed.package.id == item.id)
+            .and_then(|listed| listed.package.package_id())
             .ok_or_else(|| "installed package could not be resolved".into())
     }) {
         Ok(id) => id,
@@ -387,6 +397,7 @@ mod tests {
                 download_url: Some("https://x/y.tapp".into()),
                 root_hash_hex: Some("de".repeat(32)),
                 size_bytes: 0,
+                runtime: None,
             }],
             publisher_pubkey_hex: Some("aa".repeat(32)),
             installed,
@@ -415,6 +426,7 @@ mod tests {
                 download_url: None,
                 root_hash_hex: None,
                 size_bytes: 0,
+                runtime: None,
             }],
             publisher_pubkey_hex: None,
             installed,

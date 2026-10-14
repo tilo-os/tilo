@@ -268,6 +268,33 @@ fn secret_sync_key() -> Option<SecretKey> {
         .ok()
 }
 
+/// Whether a custody read is running on its worker.
+static CUSTODY_READING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Read custody with `read` on a thread of its own and publish it to the
+/// service when it returns. The read lists the identity directory, parses the
+/// fleet certificate and probes the secret store: disk reads that, on a busy
+/// disk, held the compositor loop that ticks the fabric for hundreds of
+/// milliseconds. One read runs at a time; a tick that finds one running
+/// leaves it be and uses the custody already published.
+fn refresh_custody_in_background(read: impl FnOnce() -> Option<Custody> + Send + 'static) {
+    use std::sync::atomic::Ordering;
+    if CUSTODY_READING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("unlock-custody".to_owned())
+        .spawn(move || {
+            if let Some(custody) = read() {
+                let _ = with_service(|service| service.custody = Some(custody));
+            }
+            CUSTODY_READING.store(false, Ordering::Release);
+        });
+    if spawned.is_err() {
+        CUSTODY_READING.store(false, Ordering::Release);
+    }
+}
+
 /// One fabric tick: refresh custody, merge the fabric's enrolments, publish
 /// this device's own, drop removed devices' halves, expire undecided
 /// requests and write the history.
@@ -291,16 +318,15 @@ pub fn refresh(network: &ShellNetwork) {
         })
     })
     .unwrap_or(true);
-    let custody = if stale { read_custody(user) } else { None };
+    if stale {
+        refresh_custody_in_background(move || read_custody(user));
+    }
 
     let fabric = network.device_fabric();
     let Some((removed, outbox)) = with_service(|service| {
         if service.local_device != Some(local) {
             service.local_device = Some(local);
             service.sibling = Some(UnlockSibling::new(local));
-        }
-        if let Some(custody) = custody {
-            service.custody = Some(custody);
         }
         let removed = service.merge_fabric(&fabric, now);
         service.expire(now);
@@ -669,4 +695,37 @@ fn answer_hello(hello: &UnlockHello, nonce: [u8; 32]) -> Option<SiblingFrame> {
         frame
     })
     .flatten()
+}
+
+#[cfg(test)]
+mod custody_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
+
+    #[test]
+    fn a_fabric_tick_never_waits_for_the_custody_read() {
+        // The reader stands for a disk that does not answer.
+        let (release, gate) = mpsc::channel::<()>();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&reads);
+        refresh_custody_in_background(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let _ = gate.recv();
+            None
+        });
+        // The tick came back with the read still blocked, and the ticks after
+        // it start no second one.
+        let again = Arc::clone(&reads);
+        refresh_custody_in_background(move || {
+            again.fetch_add(100, Ordering::SeqCst);
+            None
+        });
+        assert!(CUSTODY_READING.load(Ordering::Acquire));
+        drop(release);
+        tilo_test_env::wait_until("the custody read to finish", || {
+            !CUSTODY_READING.load(Ordering::Acquire)
+        });
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
 }

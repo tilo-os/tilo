@@ -250,6 +250,25 @@ pub trait DurableStore {
     /// Reports the latest failed write, or writes still awaiting their host.
     fn flush(&self, key: Option<&StorageKey>) -> Result<(), StoreError>;
 
+    /// [`Self::flush`] for a caller that must not wait on storage (a UI
+    /// thread): start making everything read from or accepted for `key`
+    /// durable and return at once. `Ok` when it already is; otherwise
+    /// [`StoreError::Pending`], the work left to the store's own thread, and
+    /// [`Self::is_settled`] turns true when it has finished. A store with no
+    /// thread of its own waits, as [`Self::flush`] does.
+    ///
+    /// # Errors
+    /// The latest failed write, or [`StoreError::Pending`].
+    fn flush_without_waiting(&self, key: &StorageKey) -> Result<(), StoreError> {
+        self.flush(Some(key))
+    }
+
+    /// Whether everything read from or accepted for `key` is on stable
+    /// storage now. Does not wait where the store has a thread of its own.
+    fn is_settled(&self, key: &StorageKey) -> bool {
+        self.flush(Some(key)).is_ok()
+    }
+
     /// Become the key's only writer until the returned lease is dropped.
     ///
     /// # Errors
@@ -273,6 +292,19 @@ pub trait DurableStore {
     /// # Errors
     /// A key the store cannot claim, or a failure recording the claim.
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError>;
+
+    /// The `record` component of every [`StorageKey::Record`] of `package`
+    /// in `workspace` that holds stored bytes, sorted. Lets a host find
+    /// records it can no longer name: an app that used to keep a record per
+    /// window and now keeps one per room adopts its windows' records. A
+    /// store that cannot enumerate its keys answers with none.
+    ///
+    /// # Errors
+    /// Invalid identifiers or a failure reading the backing storage.
+    fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
+        let _ = (package, workspace);
+        Ok(Vec::new())
+    }
 
     /// Where a host that keeps the key in a local file keeps it. Only for
     /// diagnostics and tools that work on that file; `None` elsewhere.

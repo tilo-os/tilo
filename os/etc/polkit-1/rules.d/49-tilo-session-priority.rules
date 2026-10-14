@@ -1,0 +1,21 @@
+// The compositor raises the priority and memory protection of its own login
+// session scope at startup (crates/packaging/launcher/src/priority.rs), which
+// lives in the system manager: a user manager cannot touch it. The grant is
+// the resource-control change only (`set-property`), only on `session-N.scope`
+// units, only the caller's own session (subject.session is logind's id for the
+// session the calling process belongs to), only for a local, active session. It starts, stops and reconfigures
+// nothing else, and cannot reach another unit.
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units" ||
+        !subject.local || !subject.active) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit") || "";
+    var verb = action.lookup("verb") || "";
+    if (verb === "set-property" && subject.session &&
+        /^[0-9]+$/.test(subject.session) &&
+        unit === "session-" + subject.session + ".scope") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

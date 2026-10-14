@@ -140,6 +140,19 @@ fn edit_parts(
 /// knowing the app.
 pub const DOCUMENT_READ_TAG: &str = "read:document";
 
+/// [`ActionContract::tags`] entry of the action that opens the file its
+/// `path` parameter names in this app instance, reading it inside the app's
+/// sandbox. A caller that launched the app with a file opens it through
+/// this action, and only through an action that declares it: one taking a
+/// `path` for another purpose (importing an installer image, exporting)
+/// is never guessed from its name.
+pub const OPENS_PATH_TAG: &str = "open:path";
+
+/// Prefix of the [`ActionContract::tags`] entries naming the file
+/// extensions (lowercase, without the dot) an [`OPENS_PATH_TAG`] action
+/// opens: `open:path-ext:csv`. An opener naming none opens any file.
+pub const OPENS_PATH_EXTENSION_PREFIX: &str = "open:path-ext:";
+
 /// Facet the executor writes on a change made by a verb its app marks
 /// `#[action(incoming_message)]`: a message someone received. The
 /// `IncomingMessage` trigger fires on it without knowing the app's schema.
@@ -426,6 +439,21 @@ impl ActionContract {
     /// [`DOCUMENT_READ_TAG`].
     pub fn reads_document(&self) -> bool {
         self.tags.iter().any(|tag| tag == DOCUMENT_READ_TAG)
+    }
+
+    /// Whether the action opens the file its `path` names. See
+    /// [`OPENS_PATH_TAG`].
+    pub fn opens_path(&self) -> bool {
+        self.tags.iter().any(|tag| tag == OPENS_PATH_TAG)
+    }
+
+    /// The file extensions an [`opens_path`](Self::opens_path) action is
+    /// declared for; none means any file. See
+    /// [`OPENS_PATH_EXTENSION_PREFIX`].
+    pub fn opened_extensions(&self) -> impl Iterator<Item = &str> {
+        self.tags
+            .iter()
+            .filter_map(|tag| tag.strip_prefix(OPENS_PATH_EXTENSION_PREFIX))
     }
 
     /// Whether the action's result carries content from outside the user's

@@ -67,6 +67,8 @@ path = "tests/it.rs"
 settings-store = { path = "../../crates/system/settings-store" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tempfile.workspace = true
+# The PDF viewer's engine: the agent benchmark reopens its PDF export with it.
+tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

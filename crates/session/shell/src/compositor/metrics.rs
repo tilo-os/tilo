@@ -12,7 +12,9 @@
 //! is pure — the same function the live binary and unit tests call, so they can't drift.
 
 pub(crate) mod cpu_trace;
+mod trace_writer;
 pub(crate) use cpu_trace::{CpuPhase, CpuSnapshot};
+use trace_writer::TraceWriter;
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -81,6 +83,11 @@ pub struct FrameSample {
     /// The apps whose surfaces committed a new frame since the previous
     /// painted tick, `+`-joined; empty when none did or nothing painted.
     pub paint_clients: &'static str,
+    /// The part of [`Self::cpu_us`] the loop thread spent answering the
+    /// test-control socket. A harness's request lands in whichever tick is
+    /// running when it arrives, so what a tick cost the session itself is
+    /// `cpu_us` less this. `None` where `cpu_us` is.
+    pub testctl_cpu_us: Option<u32>,
 }
 
 /// [`FrameSample::paint_reasons`] bits: why the compositor decided a tick had
@@ -260,7 +267,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -288,6 +295,9 @@ impl FrameSample {
             self.input_step_us,
             paint_reason::names(self.paint_reasons),
             self.paint_clients,
+            self.testctl_cpu_us
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
         )
     }
 }
@@ -296,7 +306,7 @@ impl FrameSample {
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
 input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us,\
-paint_reasons,paint_clients";
+paint_reasons,paint_clients,testctl_cpu_us";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -519,12 +529,11 @@ pub struct FrameRecorder {
     /// stops retaining (the CSV trace, if enabled, keeps streaming) — a run that long has already produced a statistically settled summary.
     samples: Vec<FrameSample>,
     warmup_us: u64,
-    trace: Option<std::io::BufWriter<std::fs::File>>,
+    trace: Option<TraceWriter>,
     /// Flush cadence for crash-durable production traces.  Flushing every row
     /// perturbs the very loop being measured; flushing once per second bounds
     /// hard-reset loss while keeping the hot path buffered.
     next_trace_flush_us: u64,
-    trace_path: Option<std::path::PathBuf>,
     trace_rows: usize,
     summary_path: Option<std::path::PathBuf>,
     target_period_us: u32,
@@ -591,7 +600,6 @@ impl FrameRecorder {
             warmup_us: 0,
             trace: None,
             next_trace_flush_us: TRACE_FLUSH_INTERVAL_US,
-            trace_path: None,
             trace_rows: 0,
             summary_path: None,
             target_period_us: 0,
@@ -615,7 +623,6 @@ impl FrameRecorder {
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(DEFAULT_WARMUP_MS);
-        let mut opened_trace_path = None;
         let trace = trace_path.and_then(|p| match std::fs::File::create(&p) {
             Ok(mut f) => {
                 if let Err(e) = writeln!(f, "{CSV_HEADER}") {
@@ -625,8 +632,8 @@ impl FrameRecorder {
                     );
                     return None;
                 }
-                opened_trace_path = Some(std::path::PathBuf::from(p));
-                Some(std::io::BufWriter::new(f))
+                let path = std::path::PathBuf::from(p);
+                Some(TraceWriter::to_file(f, path))
             }
             Err(e) => {
                 eprintln!("frame-metrics: cannot create trace {}: {e}", p.display());
@@ -646,7 +653,6 @@ impl FrameRecorder {
         });
         me.warmup_us = warmup_ms.saturating_mul(1_000);
         me.trace = trace;
-        me.trace_path = opened_trace_path;
         me.summary_path = summary_path.map(std::path::PathBuf::from);
         me.samples.reserve(4096);
         eprintln!(
@@ -760,6 +766,21 @@ impl FrameRecorder {
     }
     pub fn mark_testctl(&mut self, d: Duration) {
         self.cur.testctl_us = us(d);
+    }
+    /// The loop thread's CPU clock now, for [`Self::mark_testctl_cpu`];
+    /// `None` while nothing is recorded.
+    pub fn thread_cpu(&self) -> Option<Duration> {
+        if !self.enabled {
+            return None;
+        }
+        thread_cpu_time()
+    }
+    /// The thread CPU the test-control socket took since `start`, read
+    /// with [`Self::thread_cpu`] before it was serviced.
+    pub fn mark_testctl_cpu(&mut self, start: Option<Duration>) {
+        self.cur.testctl_cpu_us = start
+            .zip(thread_cpu_time())
+            .map(|(start, end)| us(end.saturating_sub(start)));
     }
     pub fn mark_clients(&mut self, d: Duration) {
         self.cur.clients_us = us(d);
@@ -894,13 +915,9 @@ impl FrameRecorder {
     }
 
     fn compact_trace(&mut self) {
-        let (Some(path), Some(mut trace)) = (self.trace_path.clone(), self.trace.take()) else {
+        let Some(mut trace) = self.trace.take() else {
             return;
         };
-        if let Err(error) = trace.flush() {
-            eprintln!("frame-metrics: trace flush failed ({error}); disabling trace");
-            return;
-        }
         let keep = MAX_TRACE_ROWS / 2;
         let retained = self
             .samples
@@ -909,29 +926,20 @@ impl FrameRecorder {
             .take(keep)
             .copied()
             .collect::<Vec<_>>();
-        match std::fs::File::create(&path) {
-            Ok(mut file) => {
-                if writeln!(file, "{CSV_HEADER}").is_err()
-                    || retained
-                        .iter()
-                        .rev()
-                        .try_for_each(|sample| sample.write_csv_row(&mut file))
-                        .is_err()
-                {
-                    eprintln!(
-                        "frame-metrics: compacting {} failed; disabling trace",
-                        path.display()
-                    );
-                    return;
-                }
-                self.trace_rows = retained.len();
-                self.trace = Some(std::io::BufWriter::new(file));
-            }
-            Err(error) => eprintln!(
-                "frame-metrics: reopening compacted trace {} failed ({error}); disabling trace",
-                path.display()
-            ),
+        let mut bytes = Vec::new();
+        let formatted = writeln!(bytes, "{CSV_HEADER}").and_then(|()| {
+            retained
+                .iter()
+                .rev()
+                .try_for_each(|sample| sample.write_csv_row(&mut bytes))
+        });
+        // The writer thread recreates the file; this thread only formats.
+        if formatted.is_err() || trace.replace(bytes).is_err() {
+            eprintln!("frame-metrics: compacting the trace failed; disabling trace");
+            return;
         }
+        self.trace_rows = retained.len();
+        self.trace = Some(trace);
     }
 
     /// Post-warmup samples retained so far.
@@ -953,7 +961,7 @@ impl FrameRecorder {
             return;
         }
         if let Some(t) = self.trace.as_mut() {
-            let _ = t.flush();
+            let _ = t.close();
         }
         let Some(path) = self.summary_path.clone() else {
             return;
@@ -1047,6 +1055,17 @@ fn us(d: Duration) -> u32 {
 )]
 mod tests {
     use super::*;
+
+    /// The trace file once it holds `lines` lines: the rows reach it from the
+    /// writer thread, not from the call that ended the tick.
+    pub(super) fn wait_for_lines(path: &std::path::Path, lines: usize) -> String {
+        let mut text = String::new();
+        tilo_test_env::wait_until("the trace writer to catch up", || {
+            text = std::fs::read_to_string(path).unwrap_or_default();
+            text.lines().count() >= lines
+        });
+        text
+    }
 
     fn sample(seq: u64, start_us: u64, period_us: u32, painted: bool) -> FrameSample {
         FrameSample {
@@ -1526,6 +1545,7 @@ mod tests {
             input_step_us: 16,
             paint_reasons: paint_reason::APPS | paint_reason::REVISION,
             paint_clients: "so.tilo.file-explorer",
+            testctl_cpu_us: Some(17),
         }
         .write_csv_row(&mut buf)
         .expect("write csv row into a Vec");
@@ -1574,13 +1594,12 @@ mod tests {
             writeln!(file, "{CSV_HEADER}").expect("write trace header");
             let mut recorder = FrameRecorder::disabled();
             recorder.enabled = true;
-            recorder.trace = Some(std::io::BufWriter::new(file));
-            recorder.trace_path = Some(path.clone());
+            recorder.trace = Some(TraceWriter::to_file(file, path.clone()));
             let base = Instant::now();
             recorder.begin_tick(base + Duration::from_secs(1));
             recorder.end_tick();
 
-            let text = std::fs::read_to_string(&path).expect("read flushed trace");
+            let text = tests::wait_for_lines(&path, 2);
             assert_eq!(
                 text.lines().count(),
                 2,
@@ -1615,7 +1634,7 @@ mod tests {
 
 #[cfg(test)]
 mod startup_trace_tests {
-    use super::{CSV_HEADER, FrameRecorder};
+    use super::{CSV_HEADER, FrameRecorder, TraceWriter};
     use std::io::Write;
 
     #[test]
@@ -1626,8 +1645,7 @@ mod startup_trace_tests {
         writeln!(file, "{CSV_HEADER}").expect("write trace header");
         let mut recorder = FrameRecorder::disabled();
         recorder.enabled = true;
-        recorder.trace = Some(std::io::BufWriter::new(file));
-        recorder.trace_path = Some(path.clone());
+        recorder.trace = Some(TraceWriter::to_file(file, path.clone()));
 
         // Real end_tick path, before its one-second periodic flush deadline.
         recorder.begin_tick(recorder.start);
@@ -1639,7 +1657,7 @@ mod startup_trace_tests {
         );
         recorder.end_tick();
 
-        let text = std::fs::read_to_string(&path).expect("read live trace");
+        let text = super::tests::wait_for_lines(&path, 2);
         let lines = text.lines().collect::<Vec<_>>();
         assert_eq!(
             lines.len(),

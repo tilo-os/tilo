@@ -415,6 +415,13 @@ impl DropboxSource {
                 }
             })?;
         let entry = Entry::parse(&downloaded.result).ok_or(Error::InvalidResponse("metadata"))?;
+        if !entry
+            .path_lower
+            .as_deref()
+            .is_some_and(|path| self.within_root(path))
+        {
+            return Err(Error::NotFound);
+        }
         if let Some(id) = expect_id
             && entry.id.as_deref() != Some(id.as_str())
         {
@@ -551,7 +558,7 @@ impl CloudSource for DropboxSource {
     }
 
     fn list(&self, folder: &ItemId) -> Result<Vec<Item>> {
-        let path = self.api_path(folder)?;
+        let path = self.folder_path(folder)?;
         let mut value = self
             .api
             .rpc("files/list_folder", &self.list_arg(&path, false))
@@ -689,8 +696,14 @@ impl CloudSource for DropboxSource {
                     Some(expected) if !is_rev(&expected) => {
                         return Err(Error::Conflict { current: None });
                     }
-                    Some(expected) => upload::Commit::update(id.0, expected.0),
-                    None => upload::Commit::overwrite(id.0),
+                    Some(expected) => {
+                        self.entry(&id)?;
+                        upload::Commit::update(id.0, expected.0)
+                    }
+                    None => {
+                        self.entry(&id)?;
+                        upload::Commit::overwrite(id.0)
+                    }
                 }
             }
             UploadTarget::Create { parent, name } => {
@@ -828,7 +841,16 @@ impl CloudSource for DropboxSource {
                     failure.into_error()
                 }
             })?;
-        Ok(Self::entries(&value)
+        let entries = Self::entries(&value);
+        if entries.iter().any(|entry| {
+            !entry
+                .path_lower
+                .as_deref()
+                .is_some_and(|path| self.within_root(path))
+        }) {
+            return Err(Error::NotFound);
+        }
+        Ok(entries
             .into_iter()
             .filter_map(|entry| {
                 Some(RevisionInfo {
@@ -888,6 +910,7 @@ impl CloudSource for DropboxSource {
         if !is_dropbox_id(id) {
             return Err(Error::NotFound);
         }
+        self.entry(id)?;
         let url = |value: &Value| value.get("url").and_then(Value::as_str).map(str::to_owned);
         match self.api.rpc(
             "sharing/create_shared_link_with_settings",

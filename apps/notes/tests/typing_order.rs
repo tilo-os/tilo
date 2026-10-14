@@ -174,7 +174,7 @@ fn semantic_new_page_open_adopts_focused_line_and_types_without_pointer_focus() 
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call(
         "new-note",
-        serde_json::json!({"title":"Input diagnostic scratch"}),
+        serde_json::json!({"title": "Input diagnostic scratch"}),
     )
     .unwrap();
     app.settle();
@@ -204,4 +204,175 @@ fn semantic_new_page_open_adopts_focused_line_and_types_without_pointer_focus() 
         "a",
         "semantic Open must admit ordinary typing without a pointer workaround"
     );
+}
+
+#[test]
+fn semantic_open_from_a_narrow_drawer_routes_the_first_printable_key_to_the_note() {
+    use crate::framework_support::surface;
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    app.call("new-note", serde_json::json!({"title": "Routing scratch"}))
+        .unwrap();
+    app.settle();
+    let page = app.read_document(read::list_pages)[0].id;
+    app.harness().relayout_at((780, 720)).unwrap();
+    assert!(surface(&mut app, |notes| notes.built_narrow_for_test()));
+    let toggle = surface(&mut app, |notes| notes.menu_btn_center_for_test());
+    app.harness().click_at(toggle.x, toggle.y);
+    assert!(surface(&mut app, |notes| notes.drawer_open_for_test()));
+    let blocked = app.harness().native_input_snapshot().unwrap();
+    assert_eq!(blocked["sidebar_drawer_open"], true);
+    assert_eq!(blocked["editor_route_available"], false);
+    app.call("open-note", serde_json::json!({"page": page}))
+        .unwrap();
+    app.settle();
+    let before = app.harness().native_input_snapshot().unwrap();
+    assert_eq!(before["active_line_focused"], true);
+    assert_eq!(before["active_line_disabled"], false);
+    assert_eq!(before["body_chars"], 0);
+    app.harness().key("a");
+    assert_eq!(
+        body(&app, page),
+        "a",
+        "semantic Open must release the drawer's modal keyboard capture"
+    );
+}
+
+#[test]
+fn semantic_new_page_from_a_narrow_drawer_routes_the_first_printable_key_to_the_note() {
+    use crate::framework_support::surface;
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    app.call("new-note", serde_json::json!({"title": "Routing scratch"}))
+        .unwrap();
+    app.settle();
+    app.harness().relayout_at((780, 720)).unwrap();
+    assert!(surface(&mut app, |notes| notes.built_narrow_for_test()));
+    let toggle = surface(&mut app, |notes| notes.menu_btn_center_for_test());
+    app.harness().click_at(toggle.x, toggle.y);
+    assert!(surface(&mut app, |notes| notes.drawer_open_for_test()));
+    app.call(
+        "new-note",
+        serde_json::json!({"title": "Fresh routing scratch"}),
+    )
+    .unwrap();
+    app.settle();
+    let selected = app.harness().native_input_snapshot().unwrap()["selected_page"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let page = PageId::parse_str(&selected).unwrap();
+    app.call("open-note", serde_json::json!({"page": page}))
+        .unwrap();
+    app.settle();
+    let before = app.harness().native_input_snapshot().unwrap();
+    assert_eq!(before["active_line_focused"], true);
+    assert_eq!(before["active_line_disabled"], false);
+    assert_eq!(before["body_chars"], 0);
+    app.harness().key("a");
+    assert_eq!(
+        body(&app, page),
+        "a",
+        "semantic Open must release the drawer's modal keyboard capture"
+    );
+}
+
+#[test]
+fn focused_editor_behind_a_retained_narrow_drawer_does_not_lose_printable_input_after_open() {
+    use crate::framework_support::surface;
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    app.call("new-note", serde_json::json!({"title": "Routing scratch"}))
+        .unwrap();
+    app.settle();
+    app.harness().relayout_at((780, 720)).unwrap();
+    assert!(surface(&mut app, |notes| notes.built_narrow_for_test()));
+    let toggle = surface(&mut app, |notes| notes.menu_btn_center_for_test());
+    app.harness().click_at(toggle.x, toggle.y);
+    assert!(surface(&mut app, |notes| notes.drawer_open_for_test()));
+    app.call(
+        "new-note",
+        serde_json::json!({"title": "Fresh routing scratch"}),
+    )
+    .unwrap();
+    app.settle();
+    let selected = app.harness().native_input_snapshot().unwrap()["selected_page"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let page = PageId::parse_str(&selected).unwrap();
+    app.call("open-note", serde_json::json!({"page": page}))
+        .unwrap();
+    app.settle();
+    app.harness()
+        .perform_named("block_editor", &ui::a11y::Action::Focus)
+        .unwrap();
+    let before = app.harness().native_input_snapshot().unwrap();
+    assert_eq!(before["active_line_focused"], true);
+    assert_eq!(before["active_line_disabled"], false);
+    assert_eq!(before["body_chars"], 0);
+    app.harness().key("a");
+    assert_eq!(
+        body(&app, page),
+        "a",
+        "semantic Open must release the drawer's modal keyboard capture"
+    );
+}
+
+#[test]
+fn semantic_open_preserves_a_docked_sidebar_and_the_existing_body_caret() {
+    use crate::framework_support::surface;
+    let (mut app, page) = with_focused_page();
+    app.harness().relayout_at((1280, 720)).unwrap();
+    assert!(!surface(&mut app, |notes| notes.built_narrow_for_test()));
+    assert!(surface(&mut app, |notes| notes.drawer_open_for_test()));
+    app.harness().type_text("hi");
+    app.harness().key("ArrowLeft");
+    let before = app.harness().native_input_snapshot().unwrap();
+    app.call("open-note", serde_json::json!({"page": page}))
+        .unwrap();
+    app.settle();
+    let after = app.harness().native_input_snapshot().unwrap();
+    assert_eq!(after["caret"], before["caret"]);
+    assert_eq!(after["sidebar_drawer_open"], false);
+    assert_eq!(after["editor_route_available"], true);
+    assert!(surface(&mut app, |notes| notes.drawer_open_for_test()));
+    app.harness().key("x");
+    assert_eq!(body(&app, page), "hxi");
+}
+
+#[test]
+fn semantic_open_commits_an_outgoing_title_only_to_its_original_page() {
+    use crate::framework_support::surface;
+    let (mut app, original) = with_focused_page();
+    let other = PageId::new_v4();
+    app.invoke(Invoke::apply(&create_page_action(other, None, "Other")).unwrap())
+        .unwrap();
+    app.call("open-note", serde_json::json!({"page": original}))
+        .unwrap();
+    app.settle();
+    let title = surface(&mut app, |notes| notes.main_title_center_for_test());
+    app.harness().click_at(title.x, title.y);
+    assert!(surface(&mut app, |notes| notes.main_title_editing_for_test()));
+    app.harness().type_text("Renamed");
+    app.call("open-note", serde_json::json!({"page": other}))
+        .unwrap();
+    app.settle();
+    app.read_document(|doc| {
+        let pages = read::list_pages(doc);
+        assert_eq!(
+            pages.iter().find(|page| page.id == original).unwrap().title,
+            "Renamed"
+        );
+        assert_eq!(
+            pages.iter().find(|page| page.id == other).unwrap().title,
+            "Other"
+        );
+    });
+    let editor = app.harness().native_input_snapshot().unwrap();
+    assert_eq!(editor["editor_binding_page"], other.to_string());
+    assert_eq!(editor["active_line_focused"], true);
+    app.harness().key("a");
+    assert_eq!(body(&app, other), "a");
+    assert_eq!(body(&app, original), "");
 }

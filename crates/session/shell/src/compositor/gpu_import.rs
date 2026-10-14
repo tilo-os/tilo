@@ -31,6 +31,15 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::{ExportMem, ImportDma};
 use smithay::utils::{Point, Rectangle, Size};
 
+/// Readbacks made through this importer since the process started.
+static READBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// GL readbacks of client buffers to the CPU since the process started. A
+/// frame kept on the GPU ([`crate::shell::gpu_frames`]) never adds to it.
+pub fn readback_count() -> u64 {
+    READBACKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Why the GPU import path is unavailable or failed for one buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GpuImportError {
@@ -149,6 +158,12 @@ impl GpuImporter {
         &self.device
     }
 
+    /// The GL renderer, for a test that needs a GPU client writing a buffer.
+    #[cfg(test)]
+    pub fn renderer_mut(&mut self) -> &mut GlesRenderer {
+        &mut self.renderer
+    }
+
     /// Import `dmabuf` and read it back into `out` as row-major RGBA8.
     ///
     /// Returns the buffer's `(width, height)`. `out` is cleared and refilled; the caller's `Vec` is
@@ -217,6 +232,7 @@ impl GpuImporter {
         if width == 0 || height == 0 {
             return Err(GpuImportError::InvalidDimensions { width, height });
         }
+        READBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let texture = self
             .renderer

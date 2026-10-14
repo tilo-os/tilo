@@ -2,6 +2,7 @@ use super::*;
 use crate::store::WorkspaceStore;
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use ed25519_dalek::Signer as _;
+use tilo_peer_state::NeighbourMsg;
 
 const WORKSPACE: u64 = 7;
 
@@ -174,7 +175,14 @@ fn read(doc: &AutoCommit, key: &str) -> Option<String> {
 
 fn compact(store: &WorkspaceStore, entries: &[ChannelEntry]) -> Replaced {
     let folded = fold_all(entries).expect("something to fold");
-    let frames = document_frames(&key(99), WORKSPACE, &folded.route, &folded.snapshot).unwrap();
+    let frames = document_frames(
+        &crate::payloads::NeighbourPayloads,
+        &key(99),
+        WORKSPACE,
+        &folded.route,
+        &folded.snapshot,
+    )
+    .unwrap();
     let remove: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
     store
         .replace_channel(
@@ -383,7 +391,14 @@ fn a_sealed_tail_is_never_folded_and_asks_for_a_member() {
 fn host_frames_name_their_signer_as_publisher() {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "x").unwrap();
-    let frames = document_frames(&key(7), WORKSPACE, &route(), &doc.save()).unwrap();
+    let frames = document_frames(
+        &crate::payloads::NeighbourPayloads,
+        &key(7),
+        WORKSPACE,
+        &route(),
+        &doc.save(),
+    )
+    .unwrap();
     let host = key(7).verifying_key().to_bytes();
     let (
         author,
@@ -419,7 +434,8 @@ fn the_host_certificate_is_retained_where_replay_leads_with_it() {
         expires_at_ns: None,
         signature: [0; 64],
     };
-    let (channel, frame) = identity_frame(&cert, WORKSPACE).unwrap();
+    let (channel, frame) =
+        identity_frame(&crate::payloads::NeighbourPayloads, &cert, WORKSPACE).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
     store.retain_checkpoint(&channel, &frame).unwrap();
@@ -462,7 +478,14 @@ fn a_large_snapshot_is_framed_in_segments_the_fold_reads_back() {
         })
         .collect();
     doc.splice_text(&text, 0, 0, &noise).unwrap();
-    let frames = document_frames(&key(7), WORKSPACE, &route(), &doc.save()).unwrap();
+    let frames = document_frames(
+        &crate::payloads::NeighbourPayloads,
+        &key(7),
+        WORKSPACE,
+        &route(),
+        &doc.save(),
+    )
+    .unwrap();
     assert!(frames.len() > 1, "a snapshot above one frame is segmented");
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
@@ -559,7 +582,8 @@ fn observe_classifies_like_full_decode() {
 
     let mut observed = 0;
     for delta in &deltas {
-        let now = Compactor::observe(delta).map(|o| (o.channel, o.len));
+        let now = Compactor::observe_with(&crate::payloads::NeighbourPayloads, delta)
+            .map(|o| (o.channel, o.len));
         assert_eq!(now, observe_by_full_decode(delta), "delta {delta:02x?}");
         observed += usize::from(now.is_some());
     }
@@ -777,4 +801,110 @@ fn a_repeat_round_verifies_only_new_entries() {
     let (_, _, checks) = round(&store, &mut signatures);
     assert_eq!(checks, 3, "the host snapshot and the two new edits");
     assert_eq!(signatures.remembered(), 3, "removed entries are forgotten");
+}
+
+/// A payload adapter that recognises nothing: what the core sees for a body
+/// vocabulary it was not built for.
+struct Opaque;
+
+impl crate::payloads::ShellPayloads for Opaque {
+    fn is_document(&self, _: &[u8]) -> bool {
+        false
+    }
+    fn open_document(&self, _: &[u8]) -> Option<(Route, Box<collab_types::SignedOp>)> {
+        None
+    }
+    fn document_body(
+        &self,
+        _: &[u8; 32],
+        _: &Route,
+        _: collab_types::SignedOp,
+    ) -> Result<Vec<u8>, String> {
+        Err("opaque".into())
+    }
+    fn host_identity(
+        &self,
+        _: &tilo_user_identity::DeviceCert,
+    ) -> Result<([u8; 32], Vec<u8>), String> {
+        Err("opaque".into())
+    }
+    fn checkpoint(&self, _: &[u8; 32], _: &[u8]) -> Option<crate::payloads::Checkpoint> {
+        None
+    }
+    fn audience(&self, _: &[u8]) -> Option<std::collections::BTreeSet<[u8; 32]>> {
+        None
+    }
+    fn decoded_overhead(&self) -> usize {
+        0
+    }
+}
+
+/// The core makes no assumption about a body its payload adapter does not
+/// classify: a channel the desktop adapter would fold and hand to a member
+/// is, through an adapter that recognises nothing, kept whole. Nothing is
+/// folded, removed or asked for, and nothing is signed.
+#[test]
+fn opaque_payloads_are_never_folded_or_gc_selected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let mut seq = 0;
+    history(&store, 300, &mut seq);
+    let mut sealed = AutoCommit::new();
+    for edit in 0..COMPACT_TAIL_ENTRIES {
+        let before = sealed.get_heads();
+        sealed.put(ROOT, "k", i64::try_from(edit).unwrap()).unwrap();
+        sealed.commit();
+        let at = seq.saturating_add(10);
+        retain(
+            &store,
+            device_frames(
+                2,
+                &DocumentMutation::Incremental(sealed.save_after(&before)),
+                true,
+                at,
+            ),
+            &mut seq,
+        );
+    }
+    let entries = store.channel_entries(&channel()).unwrap();
+    assert!(
+        checked(&entries)
+            .iter()
+            .all(|entry| entry.route().is_some()),
+        "every entry is a document frame to the desktop adapter"
+    );
+
+    let (ask, folded) = plan(
+        &entries,
+        &mut Signatures::default(),
+        &HashSet::new(),
+        COMPACT_TAIL_ENTRIES,
+        |_, _| Some(Vec::new()),
+    );
+    assert_eq!(
+        ask,
+        Some(route()),
+        "the desktop adapter asks a member for the sealed tail"
+    );
+    assert!(
+        folded.is_some_and(|(folded, _)| folded.removed.len() > 2),
+        "the desktop adapter folds the readable tail"
+    );
+
+    let mut signed = false;
+    let mut opaque = Signatures::with_payloads(std::sync::Arc::new(Opaque));
+    let (ask, folded) = plan(
+        &entries,
+        &mut opaque,
+        &HashSet::new(),
+        COMPACT_TAIL_ENTRIES,
+        |_, _| {
+            signed = true;
+            Some(Vec::new())
+        },
+    );
+    assert_eq!(ask, None, "no member is asked to compact opaque entries");
+    assert!(folded.is_none(), "no opaque entry is folded or removed");
+    assert!(!signed, "the host signs nothing for opaque entries");
+    assert_eq!(opaque.remembered(), 0, "no opaque body counts as verified");
 }
