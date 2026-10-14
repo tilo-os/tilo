@@ -535,15 +535,9 @@ impl NetworkWakeStatus {
     }
 }
 
-fn valid_uuid(value: &str) -> bool {
-    value.len() == 36
-        && value.bytes().enumerate().all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
+/// A hyphenated UUID, the only 36-character form `uuid` parses.
+pub(crate) fn valid_uuid(value: &str) -> bool {
+    value.len() == 36 && uuid::Uuid::try_parse(value).is_ok()
 }
 
 /// A short-lived shell capability naming one picker target. It
