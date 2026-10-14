@@ -2974,6 +2974,13 @@ struct CatalogueState {
     collab: bool,
     active_workspace: Option<crate::shell::state::WorkspaceId>,
     quick_settings: QuickSettingsKey,
+    /// What the rows that show a setting's state say: Wi-Fi, Bluetooth,
+    /// airplane mode, Do Not Disturb, axis navigation.
+    states: [bool; 5],
+    /// The settings document the rows read: the appearance mode and high
+    /// contrast their badges show, and the shortcuts and keyboard layout
+    /// their keycaps spell.
+    settings: Option<settings_store::SettingsStamp>,
     /// The search sources and whether each is on, for their switches.
     search_sources: Vec<(String, String, bool)>,
 }
@@ -3153,6 +3160,15 @@ impl SearchProvider for ActionsProvider {
                 out.push(row);
             }
         }
+        // Equal matches: what is chosen most comes first, then the action
+        // that does it in one step before the one asking for input, and a
+        // switch before a view of the same thing, so "wi-fi" finds the
+        // switch ahead of the setter it drives and the list of networks.
+        crate::shell::search::usage::order_ties_by(&mut out, |row| {
+            i32::from(row.params.is_empty())
+                .saturating_mul(2)
+                .saturating_add(i32::from(toggles_in_place(&row.id)))
+        });
         out
     }
 }
@@ -3194,6 +3210,14 @@ impl ActionsProvider {
             collab: ctx.chrome.collab_available(),
             active_workspace,
             quick_settings: self.qs_actions.catalogue_key(),
+            states: [
+                ctx.chrome.quick_settings.wifi,
+                ctx.chrome.quick_settings.bluetooth,
+                ctx.chrome.quick_settings.radios.airplane_mode,
+                ctx.chrome.dnd(),
+                ctx.chrome.axis_navigation_enabled(),
+            ],
+            settings: settings_store::stamp(),
             search_sources: self.search_sources(),
         }
     }
@@ -3600,13 +3624,14 @@ impl ActionsProvider {
                     (on_open, None)
                 };
                 out.push(SearchResult {
+                    shortcut: None,
                     kind: ResourceKind::Action,
                     operation_kind: shell_action_kind(action.id),
                     provider_id: self.id().to_string(),
                     id: action.id.to_string(),
                     title: label,
                     subtitle: Some(subtitle),
-                    badge: None,
+                    badge: state_badge(action.id, ctx.chrome),
                     score,
                     params: action.params.to_vec(),
                     contract: Some(shell_action_contract(action.id)),
@@ -3652,6 +3677,7 @@ impl ActionsProvider {
             let score = 0;
             let request = descriptor.request;
             out.push(SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::View,
                 provider_id: self.id().into(),
@@ -3700,6 +3726,7 @@ impl ActionsProvider {
                 };
                 let request = id.clone();
                 out.push(SearchResult {
+                    shortcut: None,
                     kind: ResourceKind::Action,
                     operation_kind: kind,
                     provider_id: self.id().into(),
@@ -3775,6 +3802,7 @@ impl ActionsProvider {
                 id,
             );
             out.push(SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::View,
                 provider_id: self.id().into(),
@@ -3857,6 +3885,7 @@ impl ActionsProvider {
                 ) as Rc<crate::shell::search::BeginInvokeFn>
             });
             out.push(SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 badge: None,
@@ -3937,6 +3966,61 @@ impl ActionsProvider {
                 on_begin_invoke,
             });
         }
+        // One-step switches for the radios: "wifi" finds "Wi-Fi: turn off", not a
+        // form asking for `enabled`, and the row says what it is now. They run
+        // the same set-enabled action with the opposite of the live state.
+        for toggle in QS_TOGGLES {
+            let (set_enabled_id, toggle_id) = (toggle.set_enabled, toggle.id);
+            let Some(base) = out.iter().find(|row| row.id == set_enabled_id).cloned() else {
+                continue;
+            };
+            if !self.qs_actions.action_available(set_enabled_id) {
+                continue;
+            }
+            let on = radio_is_on(ctx.chrome, set_enabled_id);
+            let title = t(if on { toggle.turn_off } else { toggle.turn_on });
+            let subtitle = t(toggle.subtitle);
+            let params = base.params.clone();
+            let opposite = move |chrome: &Chrome| -> Result<ActionArgs, ActionError> {
+                let enabled = !radio_is_on(&chrome.borrow(), set_enabled_id);
+                let mut arguments = serde_json::Map::new();
+                arguments.insert("enabled".into(), serde_json::Value::Bool(enabled));
+                ActionArgs::bind_json(&params, &arguments).map_err(ActionError::Arguments)
+            };
+            let on_open = {
+                let run = Rc::clone(&base.on_open);
+                let opposite = opposite.clone();
+                Rc::new(
+                    move |doc: &mut ui::widget::Edits<'_>,
+                          root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          _args: &ActionArgs| {
+                        run(doc, root, chrome, &opposite(chrome)?)
+                    },
+                ) as Rc<crate::shell::search::OpenFn>
+            };
+            let on_begin_invoke = base.on_begin_invoke.clone().map(|begin| {
+                Rc::new(
+                    move |doc: &mut ui::widget::Edits<'_>,
+                          root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          _args: &ActionArgs| {
+                        begin(doc, root, chrome, &opposite(chrome)?)
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>
+            });
+            candidates.record(&title.to_lowercase(), &subtitle.to_lowercase(), toggle_id);
+            out.push(SearchResult {
+                id: toggle_id.to_string(),
+                title,
+                subtitle: Some(subtitle),
+                badge: Some(on_off_badge(on)),
+                params: Vec::new(),
+                on_open,
+                on_begin_invoke,
+                ..base
+            });
+        }
         let actor = key.actor.clone();
         let ownership_resource = {
             let tree = ctx.chrome.tree();
@@ -3960,6 +4044,7 @@ impl ActionsProvider {
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
+                        shortcut: None,
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Document,
                         provider_id: self.id().to_string(),
@@ -4011,6 +4096,7 @@ impl ActionsProvider {
                     let spec = action.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
+                        shortcut: None,
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Document,
                         provider_id: self.id().to_string(),
@@ -4043,6 +4129,7 @@ impl ActionsProvider {
                 let score = 0;
                 let preferences = Rc::clone(preferences);
                 out.push(SearchResult {
+                    shortcut: None,
                     kind: ResourceKind::Action,
                     operation_kind: tilo_actions::OperationKind::Effect,
                     provider_id: self.id().to_string(),
@@ -4114,6 +4201,7 @@ impl ActionsProvider {
                     let preferences = Rc::clone(preferences);
                     let provider_id = provider_id.clone();
                     out.push(SearchResult {
+                        shortcut: None,
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: self.id().to_string(),
@@ -4146,6 +4234,12 @@ impl ActionsProvider {
                 }
                 source_switches.end = out.len();
             }
+        }
+        // Each row that has a shortcut shows it, as the keyboard layout in use
+        // spells it.
+        let shortcuts = settings_store::hardware::ShortcutConfig::load();
+        for row in &mut out {
+            row.shortcut = action_shortcut(&shortcuts, &row.id);
         }
         let mut by_id = std::collections::HashMap::with_capacity(out.len());
         for (at, row) in out.iter().enumerate() {
@@ -4208,6 +4302,185 @@ fn workspace_view_copy(
     }
 }
 
+/// The words people use for the action `id`, in every language the shell
+/// has ("dark mode", "dunkelmodus", "night"): what a person types who does
+/// not know what the row is called. Missing for an action means it is found
+/// by its label alone.
+pub(crate) fn action_keywords(id: &str) -> Vec<String> {
+    crate::shell::i18n::words_in_every_locale(&format!(
+        "{}{}",
+        crate::shell::i18n::KEYWORD_PREFIX,
+        id.replace(['.', '_', ':'], "-")
+    ))
+}
+
+/// Actions that change a setting the row itself shows, so choosing one
+/// leaves the palette open on the row's new state: a person flipping Wi-Fi
+/// or Do Not Disturb wants to see it flip, not lose the palette.
+pub(crate) fn toggles_in_place(id: &str) -> bool {
+    matches!(
+        id,
+        "notifications.dnd.toggle"
+            | "appearance.theme.dark"
+            | "appearance.theme.light"
+            | "appearance.high-contrast"
+            | "navigation.axis.enable"
+            | "navigation.axis.disable"
+    ) || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
+}
+
+/// The shortcut that does what an action does, as the active keyboard
+/// layout spells it, when the desktop has one: the catalogue id in
+/// [`settings_store::keyboard_shortcuts`] and the action it matches.
+const ACTION_SHORTCUTS: &[(&str, &str)] = &[
+    ("overview.toggle", "workspace-overview"),
+    ("quick-settings.open", "quick-settings"),
+    ("quick-settings.clipboard", "clipboard-history"),
+    ("shortcut-help.toggle", "shortcut-help"),
+    ("window.focus-previous", "focus-previous-window"),
+    ("window.focus-next", "focus-next-window"),
+    ("tab.previous", "previous-tab"),
+    ("tab.next", "next-tab"),
+    ("tab.menu", "tab-menu"),
+    ("tab.reopen", "reopen-closed-tab"),
+    ("strip.focus-previous", "previous-strip"),
+    ("strip.focus-next", "next-strip"),
+    ("workspace.previous", "previous-workspace"),
+    ("workspace.next", "next-workspace"),
+    ("group.move-left", "move-group-left"),
+    ("group.move-right", "move-group-right"),
+    (
+        "group.move-to-strip-previous",
+        "move-group-to-previous-strip",
+    ),
+    ("group.move-to-strip-next", "move-group-to-next-strip"),
+    (
+        "group.move-to-display-previous",
+        "move-group-to-previous-display",
+    ),
+    ("group.move-to-display-next", "move-group-to-next-display"),
+    ("group.maximize", "toggle-maximize"),
+    ("group.fullscreen", "toggle-fullscreen"),
+    ("group.narrower", "resize-narrower"),
+    ("group.wider", "resize-wider"),
+    ("window.new.terminal", "open-terminal"),
+    ("dictation.toggle", "dictation-toggle"),
+    ("dictation.finish", "dictation-finish"),
+    ("dictation.cancel", "dictation-cancel"),
+    ("capture.open", "fixed-capture-screenshot"),
+    ("room.activity.open", "fixed-workspace-history"),
+    ("lock", "lock"),
+    ("emoji.picker", "emoji-picker"),
+];
+
+/// `shortcut_id`'s current chord as the active layout's keycaps spell it,
+/// from `config`.
+pub(crate) fn shortcut_text(
+    config: &settings_store::hardware::ShortcutConfig,
+    shortcut_id: &str,
+) -> Option<String> {
+    let entry = settings_store::keyboard_shortcuts::entry(config, shortcut_id)?;
+    entry
+        .chords
+        .first()
+        .map(crate::shell::keyboard_shortcuts::chord_text)
+}
+
+/// The shortcut shown beside the action `id`, if it has one.
+pub(crate) fn action_shortcut(
+    config: &settings_store::hardware::ShortcutConfig,
+    id: &str,
+) -> Option<String> {
+    ACTION_SHORTCUTS
+        .iter()
+        .find(|(action, _)| *action == id)
+        .and_then(|(_, shortcut)| shortcut_text(config, shortcut))
+}
+
+/// A Quick Settings radio offered as a one-step toggle: the set-enabled
+/// action it drives, its own id, and the catalogue keys of its row's title
+/// (to turn the radio on, or off) and subtitle.
+struct QsToggle {
+    set_enabled: &'static str,
+    id: &'static str,
+    turn_on: &'static str,
+    turn_off: &'static str,
+    subtitle: &'static str,
+}
+
+/// The Quick Settings radios offered as one-step toggles.
+const QS_TOGGLES: &[QsToggle] = &[
+    QsToggle {
+        set_enabled: QS_WIFI_ID,
+        id: "quick-settings.wifi.toggle",
+        turn_on: "search-toggle-wifi-on",
+        turn_off: "search-toggle-wifi-off",
+        subtitle: "search-toggle-wifi-subtitle",
+    },
+    QsToggle {
+        set_enabled: QS_BLUETOOTH_ID,
+        id: "quick-settings.bluetooth.toggle",
+        turn_on: "search-toggle-bluetooth-on",
+        turn_off: "search-toggle-bluetooth-off",
+        subtitle: "search-toggle-bluetooth-subtitle",
+    },
+    QsToggle {
+        set_enabled: QS_AIRPLANE_ID,
+        id: "quick-settings.airplane-mode.toggle",
+        turn_on: "search-toggle-airplane-mode-on",
+        turn_off: "search-toggle-airplane-mode-off",
+        subtitle: "search-toggle-airplane-mode-subtitle",
+    },
+];
+
+/// Whether the radio `set_enabled_id` drives is on now.
+fn radio_is_on(state: &ChromeState, set_enabled_id: &str) -> bool {
+    match set_enabled_id {
+        QS_WIFI_ID => state.quick_settings.wifi,
+        QS_BLUETOOTH_ID => state.quick_settings.bluetooth,
+        _ => state.quick_settings.radios.airplane_mode,
+    }
+}
+
+/// `ON` or `OFF`, as the search-source switches say it.
+fn on_off_badge(on: bool) -> String {
+    t(if on {
+        "search-action-provider-badge-on"
+    } else {
+        "search-action-provider-badge-off"
+    })
+}
+
+/// What a row shows of the setting it changes, so a toggle reads as a
+/// switch: on or off, or which mode is current.
+fn state_badge(id: &str, state: &ChromeState) -> Option<String> {
+    use settings_store::appearance::{HIGH_CONTRAST, MODE};
+    match id {
+        "notifications.dnd.toggle" => Some(on_off_badge(state.dnd())),
+        "navigation.axis.enable" => state
+            .axis_navigation_enabled()
+            .then(|| t("search-badge-state-current")),
+        "navigation.axis.disable" => {
+            (!state.axis_navigation_enabled()).then(|| t("search-badge-state-current"))
+        }
+        "appearance.high-contrast" => HIGH_CONTRAST
+            .from_document(&settings_store::load())
+            .then(|| on_off_badge(true)),
+        "appearance.theme.dark" | "appearance.theme.light" => {
+            let document = settings_store::load();
+            let mode = MODE.from_document(&document);
+            let wanted = if id.ends_with("dark") {
+                "dark"
+            } else {
+                "light"
+            };
+            (mode.as_deref() == Some(wanted) && !HIGH_CONTRAST.from_document(&document))
+                .then(|| t("search-badge-state-current"))
+        }
+        _ => None,
+    }
+}
+
 /// A typed action id is a verbatim identity — scripts and power users name
 /// actions by it — so it weighs close to the label.
 pub(super) const ACTION_ID_WEIGHT: FieldWeight = FieldWeight::new(90);
@@ -4219,11 +4492,17 @@ struct ActionCandidates(Vec<Vec<(String, FieldWeight)>>);
 impl ActionCandidates {
     /// Record the searchable text of the row pushed next.
     fn record(&mut self, label: &str, subtitle: &str, id: &str) {
-        self.0.push(vec![
+        let mut row = vec![
             (label.to_owned(), FieldWeight::TITLE),
             (id.to_owned(), ACTION_ID_WEIGHT),
             (subtitle.to_owned(), FieldWeight::SUBTITLE),
-        ]);
+        ];
+        row.extend(
+            action_keywords(id)
+                .into_iter()
+                .map(|word| (word, FieldWeight::KEYWORD)),
+        );
+        self.0.push(row);
     }
 }
 
