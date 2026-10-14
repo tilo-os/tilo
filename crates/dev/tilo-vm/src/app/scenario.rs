@@ -94,6 +94,8 @@ struct Plan {
     run: PathBuf,
     install_timeout: Duration,
     keep: bool,
+    #[cfg(not(windows))]
+    development_vm_proof: Option<&'static str>,
     #[cfg(windows)]
     ports: WindowsPorts,
 }
@@ -120,6 +122,11 @@ impl WindowsPorts {
             qmp: qmp.local_addr().map_err(CliError::io("QMP port"))?.port(),
         })
     }
+}
+
+#[cfg(not(windows))]
+fn development_vm_proof(marker: Option<&str>, architecture: &str) -> bool {
+    marker == Some("1") && matches!(architecture, "aarch64" | "arm64")
 }
 
 impl Plan {
@@ -183,6 +190,15 @@ impl Plan {
         let mut line = CommandLine::new("bash", &["os/dev/vm.sh"]);
         for arg in args {
             line = line.arg(*arg);
+        }
+        // The unsigned ARM development medium requires this VM-only channel.
+        // Attaching it does not bypass the guest's marker, virtualization or
+        // passphrase-only checks, and does not admit a physical installation.
+        #[cfg(not(windows))]
+        if args.first() == Some(&"boot-installer")
+            && let Some(flag) = self.development_vm_proof
+        {
+            line = line.arg(flag);
         }
         for (key, value) in self.env() {
             line = line.env(&key, value);
@@ -1040,6 +1056,13 @@ impl App {
             out,
             install_timeout: Duration::from_secs(args.install_timeout),
             keep: args.keep,
+            #[cfg(not(windows))]
+            development_vm_proof: development_vm_proof(
+                std::env::var("TILO_UNVERIFIED_VM_INSTALL").ok().as_deref(),
+                &std::env::var("TILO_VM_ARCH")
+                    .unwrap_or_else(|_| std::env::consts::ARCH.to_owned()),
+            )
+            .then_some("--install-proof"),
             #[cfg(windows)]
             ports: WindowsPorts::reserve()?,
         };
@@ -2102,6 +2125,8 @@ mod tests {
             run: PathBuf::from("/run/user/1000/tilo-vm-scenario-install-x"),
             install_timeout: Duration::from_secs(3600),
             keep: false,
+            #[cfg(not(windows))]
+            development_vm_proof: None,
             #[cfg(windows)]
             ports: WindowsPorts {
                 console: 30001,
@@ -2236,6 +2261,44 @@ mod tests {
             discard_unsanitized_runtime(&plan, &mut stopped).unwrap();
             assert_eq!(stopped.calls, ["stop", "status"]);
             assert!(!plan.run.exists());
+        }
+    }
+
+    /// Only an explicit ARM development opt-in attaches the guest's required proof channel.
+    #[cfg(unix)]
+    #[test]
+    fn opted_in_arm_development_install_attaches_only_the_proof_channel() {
+        assert!(development_vm_proof(Some("1"), "aarch64"));
+        assert!(development_vm_proof(Some("1"), "arm64"));
+        assert!(!development_vm_proof(None, "aarch64"));
+        assert!(!development_vm_proof(Some("0"), "aarch64"));
+        assert!(!development_vm_proof(Some("1"), "x86_64"));
+        let mut plan = plan(Layout::Erase);
+        plan.development_vm_proof = Some("--install-proof");
+        let boot = plan.vm(&["boot-installer", "--2d", "--no-tpm"]);
+        assert_eq!(
+            boot.args,
+            [
+                "os/dev/vm.sh",
+                "boot-installer",
+                "--2d",
+                "--no-tpm",
+                "--install-proof"
+            ]
+        );
+        assert!(
+            plan.describe()["commands"]
+                .to_string()
+                .contains("--install-proof")
+        );
+        for action in ["init-cycle", "boot-target", "stop", "status"] {
+            assert!(
+                !plan
+                    .vm(&[action])
+                    .args
+                    .iter()
+                    .any(|arg| arg == "--install-proof")
+            );
         }
     }
 
