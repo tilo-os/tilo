@@ -177,6 +177,12 @@ impl EffectSession {
         })
     }
 
+    /// The mounted component, whose app describes what a document
+    /// operation did (`ui::resources::document_action_result`).
+    pub(super) fn root(&self) -> &dyn ui::Widget {
+        self.frame.root_widget()
+    }
+
     /// Whether the component shows the replica at `heads`.
     pub(super) fn shows(&self, heads: &[ChangeHash]) -> bool {
         self.heads == heads

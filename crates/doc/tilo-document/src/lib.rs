@@ -701,28 +701,7 @@ impl Resource for RichText {
                 },
             )
             .describe("Apply or clear an inline mark over a span."),
-            ActionDecl::new(
-                "set-style",
-                "Set paragraph style",
-                vec![
-                    ActionParam::required_owned("block", ParamType::Text, "Block id"),
-                    ActionParam::required_owned("kind", ParamType::Text, "paragraph, heading, …"),
-                    ActionParam::optional_owned("level", ParamType::Integer, "Heading level"),
-                ],
-                |args, _| {
-                    let block = args.text("block").ok_or("missing block")?.to_owned();
-                    let kind = args.text("kind").ok_or("missing kind")?.to_owned();
-                    let level = args.integer("level");
-                    Ok(RichTextAction::SetParagraphStyle {
-                        region: action::RegionKind::Body,
-                        blocks: vec![block],
-                        kind,
-                        level,
-                        ordered: None,
-                    })
-                },
-            )
-            .describe("Change a paragraph's structural kind."),
+            set_style_declaration(),
             ActionDecl::new(
                 "insert-block",
                 "Insert paragraph",
@@ -1025,6 +1004,68 @@ impl RichText {
 /// `write-markdown`: the whole body replaced from Markdown, a new document
 /// in one step. Edits use `append-markdown` and `replace-text`, which keep
 /// what is there.
+/// `set-style`: a paragraph's kind, named as a reader of the page sees it
+/// ([`paragraph_kind`]).
+fn set_style_declaration() -> tilo_resource::ActionDecl<RichText> {
+    use tilo_actions::{ActionParam, ParamType};
+    tilo_resource::ActionDecl::new(
+        "set-style",
+        "Set paragraph style",
+        vec![
+            ActionParam::required_owned("block", ParamType::Text, "Block id"),
+            ActionParam::required_owned(
+                "kind",
+                ParamType::Text,
+                "paragraph, heading, bullet, numbered or quote",
+            ),
+            ActionParam::optional_owned(
+                "level",
+                ParamType::Integer,
+                "Heading level, or a list item's indent",
+            ),
+        ],
+        |args, _| {
+            let block = args.text("block").ok_or("missing block")?.to_owned();
+            let named = args.text("kind").ok_or("missing kind")?;
+            let (kind, ordered) = paragraph_kind(named).ok_or_else(|| {
+                format!(
+                    "kind `{named}` is not one a paragraph takes: use paragraph, heading, \
+                     bullet, numbered or quote"
+                )
+            })?;
+            let level = args.integer("level");
+            Ok(RichTextAction::SetParagraphStyle {
+                region: action::RegionKind::Body,
+                blocks: vec![block],
+                kind: kind.to_owned(),
+                level,
+                ordered,
+            })
+        },
+    )
+    .describe("Change a paragraph's structural kind.")
+}
+
+/// The block kind (and, for a list, whether it is numbered) a paragraph
+/// takes for a kind named as a reader of the page sees it: `bullet` and
+/// `numbered` are list items, as Notes shows them. `None` for a kind no
+/// paragraph takes, which would otherwise be stored and shown as plain text.
+fn paragraph_kind(named: &str) -> Option<(&'static str, Option<bool>)> {
+    let named = named.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+    Some(match named.as_str() {
+        "paragraph" | "body" | "text" | "normal" => ("paragraph", None),
+        "heading" => ("heading", None),
+        "bullet" | "bullets" | "bulleted" | "list" | "list_item" | "unordered" => {
+            ("list_item", Some(false))
+        }
+        "numbered" | "number" | "ordered" | "numbered_list" | "ordered_list" => {
+            ("list_item", Some(true))
+        }
+        "quote" | "blockquote" => ("quote", None),
+        _ => return None,
+    })
+}
+
 fn write_markdown_declaration() -> tilo_resource::ActionDecl<RichText> {
     use tilo_actions::{ActionParam, ParamType};
     tilo_resource::ActionDecl::new(

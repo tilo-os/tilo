@@ -169,6 +169,9 @@ struct FollowUps {
     /// The check of the result against the request: a check that cannot
     /// plan leaves the task done, never failed.
     checking: bool,
+    /// The export the request asks for, when the steps made none: as the
+    /// check, one that cannot plan leaves the task done.
+    exporting: bool,
 }
 
 struct Running {
@@ -188,7 +191,7 @@ struct Running {
     produced_by: Vec<String>,
     /// What the task's steps answered, oldest first, at most
     /// [`MOST_OBSERVED`]: what the task is planned again with.
-    observed: VecDeque<String>,
+    observed: VecDeque<Observed>,
     /// Whether a failed step was already planned around once: a task gets
     /// one repair, so a model's slip (an argument out of range, a stale
     /// target) is fixed rather than ending it, and a step that cannot work
@@ -248,9 +251,20 @@ impl Running {
             self.acted = self.acted.saturating_add(1);
         }
         self.changed |= edited || !content.is_empty();
+        if edited {
+            // What was read of this app's record before shows it as it was:
+            // a check planned with "1 slide, empty" adds the slides again.
+            for observed in &mut self.observed {
+                observed.before_change |= observed.app == step.app;
+            }
+        }
         self.ran.push(step_brief(step));
         if let Some(output) = output {
-            self.answered(step, output);
+            if edited {
+                self.edit_answered(step, output);
+            } else {
+                self.answered(step, output);
+            }
         }
         self.produced_by
             .extend(std::iter::repeat_n(step.app.clone(), content.len()));
@@ -281,24 +295,35 @@ impl Running {
         }
         let rest = if !self.changed && !self.follow_ups.after_reads {
             self.follow_ups.after_reads = true;
-            READS_ANSWERED
+            READS_ANSWERED.to_owned()
+        } else if self.changed
+            && self.produced.is_empty()
+            && asks_export(&self.request)
+            && !self.follow_ups.exporting
+        {
+            // A plan that edited and stopped short of the export asked for
+            // leaves nothing to hand on: every model class gets this turn.
+            self.follow_ups.exporting = true;
+            EXPORT_MISSING.to_owned()
         } else if self.changed && checks_work && !self.follow_ups.checking {
             self.follow_ups.checking = true;
-            CHECK_WORK
+            // What ran is said outright, so the check sees the slides it
+            // added were added rather than adding them again.
+            format!("{CHECK_WORK}{CHECK_RAN}{}", self.ran.join("; "))
         } else {
             return;
         };
         self.steps.push_back(Step {
             app: String::new(),
             record: None,
-            action: StepAction::Continue(rest.to_owned()),
+            action: StepAction::Continue(rest),
             carries: false,
         });
     }
 
     /// A task that starts with `steps`, and what was read while planning
     /// them.
-    fn new(id: String, request: String, steps: Vec<Step>, read: Vec<String>) -> Self {
+    fn new(id: String, request: String, steps: Vec<Step>, read: Vec<(String, String)>) -> Self {
         let mut running = Self {
             id,
             request,
@@ -317,19 +342,49 @@ impl Running {
             by_model: false,
             ran: Vec::new(),
         };
-        for seen in read {
-            running.observe(seen);
+        for (app, seen) in read {
+            running.observe(app, seen);
         }
         running
     }
 
-    /// Keep `seen` for the rest of the task to be planned with: the newest
-    /// [`MOST_OBSERVED`].
-    fn observe(&mut self, seen: String) {
+    /// Keep `seen`, read from a record of `app`, for the rest of the task to
+    /// be planned with: the newest [`MOST_OBSERVED`].
+    fn observe(&mut self, app: String, seen: String) {
         if self.observed.len() >= MOST_OBSERVED {
             self.observed.pop_front();
         }
-        self.observed.push_back(seen);
+        self.observed.push_back(Observed {
+            app,
+            seen,
+            before_change: false,
+            edit: false,
+        });
+    }
+
+    /// What the task is planned again with: each answer, those read before
+    /// a later step changed their app's record said to be so.
+    fn observations(&self) -> Vec<String> {
+        self.observed.iter().map(Observed::shown).collect()
+    }
+
+    /// `step`, which changed its record, answered `output` (a deck's outline,
+    /// the cells it wrote): that replaces what the app's last edit answered,
+    /// so a run of edits keeps the task's reads rather than crowding them out.
+    fn edit_answered(&mut self, step: &Step, output: ActionOutput) {
+        if let StepAction::Invoke { address, .. } = &step.action
+            && observation(&step.app, address, &output).is_some()
+        {
+            self.observed
+                .retain(|observed| !(observed.edit && observed.app == step.app));
+        }
+        let before = self.observed.len();
+        self.answered(step, output);
+        if self.observed.len() > before
+            && let Some(newest) = self.observed.back_mut()
+        {
+            newest.edit = true;
+        }
     }
 
     /// `step` answered `output`: its value — what a view or read found, an
@@ -341,7 +396,7 @@ impl Running {
         if let StepAction::Invoke { address, .. } = &step.action
             && let Some(observed) = observation(&step.app, address, &output)
         {
-            self.observe(observed);
+            self.observe(step.app.clone(), observed);
         }
         if !produced(&output).is_empty() {
             self.last = Some(output);
@@ -391,10 +446,72 @@ const CHECK_WORK: &str = "Check what this task made against the request, item by
      plan only the steps that fix it, without redoing what is right. If everything is as asked, \
      plan no steps at once.";
 
+/// The apps of `granted` that `task` names and of which no record is
+/// `held` (open or offered in the room).
+fn named_without_documents(task: &str, granted: &[&str], held: &[&str]) -> Vec<String> {
+    granted
+        .iter()
+        .filter(|app| crate::model::task_names_app_itself(task, app) && !held.contains(app))
+        .map(|app| (*app).to_owned())
+        .collect()
+}
+
+/// What a task naming an app with no document yet is planned again with,
+/// after a first plan found nothing that fits: the apps follow.
+const NEW_DOCUMENT_NOTE: &str = "(Nothing needs opening first: plan the operations of an app \
+     that has no document yet directly, starting with the one that makes the document; the \
+     first of them opens a new, empty document and the rest run there. Apps with no document \
+     yet:";
+
+/// What a task whose request asks for an export, and whose steps made no
+/// content, is planned again with.
+const EXPORT_MISSING: &str = "The steps so far changed the document but exported nothing, and \
+     the request asks for an export. Plan only the export the request asks for (its format, kept \
+     as content when it says so), without redoing the changes.";
+
+/// Whether `request` asks for something to be exported.
+fn asks_export(request: &str) -> bool {
+    request
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| word == "export")
+}
+
+/// What follows [`CHECK_WORK`]: the steps the task ran, each of which
+/// succeeded (a failed step is repaired or ends the task).
+const CHECK_RAN: &str = "\nThe steps this task already ran, each of which succeeded \
+     (do not run any of them again): ";
+
 /// What a task whose plan was only reads is planned again with.
 const READS_ANSWERED: &str = "The reads above have answered. Now plan the steps that make or change \
      what the request asks for, using what they found. If the request asks for nothing to be \
      made or changed, plan no steps and say so in `reply`.";
+
+/// What a step or a plan's read answered, from a record of `app`.
+#[derive(Debug)]
+struct Observed {
+    app: String,
+    seen: String,
+    /// A later step of the task changed a record of `app`, so this shows it
+    /// as it was then.
+    before_change: bool,
+    /// What an edit answered, which the app's next edit's answer replaces.
+    edit: bool,
+}
+
+impl Observed {
+    fn shown(&self) -> String {
+        if self.before_change {
+            format!("{BEFORE_CHANGE} {}", self.seen)
+        } else {
+            self.seen.clone()
+        }
+    }
+}
+
+/// How an answer read before a later step changed its record is shown.
+const BEFORE_CHANGE: &str = "(read BEFORE this task's later steps changed it, so it no longer \
+     holds this: what it holds now is under what the documents hold now)";
 
 /// A step as a repair is told it already ran: its action and, briefly, its
 /// arguments.
@@ -962,7 +1079,24 @@ impl AgentParticipant {
             .collect();
         routes.sort_by_key(|route| !crate::model::task_names_app(text, &route.app_id));
         routes.truncate(MOST_OPENED);
-        if routes.is_empty() {
+        // An app the task names that has no document in the room yet: a
+        // model that took "write it in the Word Processor" to need one
+        // opened first is told its operations make the document.
+        let offered = self.unopened.people_first();
+        let held: Vec<&str> = self
+            .apps
+            .keys()
+            .chain(&offered)
+            .map(|route| route.app_id.as_str())
+            .collect();
+        let granted: Vec<&str> = self
+            .catalogue
+            .iter()
+            .map(|definition| definition.app_id)
+            .filter(|app| self.identity.delegation.permits_app(app))
+            .collect();
+        let fresh = named_without_documents(text, &granted, &held);
+        if routes.is_empty() && fresh.is_empty() {
             return false;
         }
         self.reopened_for = Some(task.to_owned());
@@ -971,7 +1105,12 @@ impl AgentParticipant {
                 tracing::debug!(%error, app = %route.app_id, "agent: a room document did not open");
             }
         }
-        self.plan(task.to_owned(), text, None);
+        if fresh.is_empty() {
+            self.plan(task.to_owned(), text, None);
+        } else {
+            let told = format!("{text}\n\n{NEW_DOCUMENT_NOTE} {})", fresh.join(", "));
+            self.plan(task.to_owned(), &told, None);
+        }
         true
     }
 
@@ -1052,8 +1191,8 @@ impl AgentParticipant {
             Ok(steps) => {
                 if let Some(running) = self.running.as_mut().filter(|_| running_it) {
                     running.by_model |= by_model;
-                    for seen in read {
-                        running.observe(seen);
+                    for (app, seen) in read {
+                        running.observe(app, seen);
                     }
                     for step in steps.into_iter().rev() {
                         running.steps.push_front(step);
@@ -1071,7 +1210,9 @@ impl AgentParticipant {
                         .filter(|running| {
                             continues
                                 && running.acted > 0
-                                && (running.follow_ups.checking || error.starts_with(NOTHING_LEFT))
+                                && (running.follow_ups.checking
+                                    || running.follow_ups.exporting
+                                    || error.starts_with(NOTHING_LEFT))
                         })
                         .map(|running| running.done())
                 } else {
@@ -1407,12 +1548,7 @@ impl AgentParticipant {
         let (produced, observed) = self
             .running
             .as_ref()
-            .map(|running| {
-                (
-                    running.produced.clone(),
-                    running.observed.iter().cloned().collect(),
-                )
-            })
+            .map(|running| (running.produced.clone(), running.observations()))
             .unwrap_or_default();
         let searchable = self.searchable(&apps, &open);
         PlanContext {
@@ -2142,13 +2278,94 @@ mod tests {
     /// Export, open, read, insert: the insert is given what the export
     /// made, though a read (and an open) ran in between; a later export
     /// is what a later step is given.
+    /// A read of a record a later step changed is shown as it was, so a
+    /// check does not take "1 slide, empty" for what the deck holds now and
+    /// add the slides again; a read of another app's record is not.
+    #[test]
+    fn a_read_before_a_change_to_its_record_is_shown_as_before() {
+        let mut running = Running::new(
+            "t1".into(),
+            "make the deck from the price sheet".into(),
+            Vec::new(),
+            vec![("so.tilo.slides".into(), "Untitled deck (1 slides)".into())],
+        );
+        let slides = "so.tilo.slides";
+        running.answered(
+            &invoke("so.tilo.sheets", "sheets.sheet", "read-cells"),
+            ActionOutput {
+                value: Some(serde_json::json!({"content": {"rows": [["Basic", 49]]}})),
+                resources: Vec::new(),
+            },
+        );
+        running.ran_step(
+            &invoke(slides, "slides.deck", "add-slide"),
+            None,
+            Vec::new(),
+            true,
+        );
+        let shown = running.observations();
+        assert!(shown[0].starts_with(BEFORE_CHANGE), "{shown:?}");
+        assert!(shown[0].ends_with("Untitled deck (1 slides)"), "{shown:?}");
+        assert!(!shown[1].starts_with(BEFORE_CHANGE), "{shown:?}");
+        // An export changes nothing: what was read stays as read.
+        let mut exported_only = Running::new(
+            "t2".into(),
+            "export the deck".into(),
+            Vec::new(),
+            vec![(slides.into(), "Deck (4 slides)".into())],
+        );
+        exported_only.ran_step(
+            &invoke(slides, "slides.deck", "export"),
+            None,
+            vec!["abc".into()],
+            false,
+        );
+        assert!(!exported_only.observations()[0].starts_with(BEFORE_CHANGE));
+    }
+
+    /// Each edit's answer (a deck's outline) replaces the app's last one, so
+    /// six added slides leave the price sheet's read among what is kept.
+    #[test]
+    fn an_edit_answer_replaces_the_apps_last_and_keeps_the_reads() {
+        let mut running = Running::new("t1".into(), "make the deck".into(), Vec::new(), Vec::new());
+        let outline = |slides: usize| ActionOutput {
+            value: Some(serde_json::json!(format!("Deck ({slides} slides)"))),
+            resources: Vec::new(),
+        };
+        running.ran_step(
+            &invoke("so.tilo.sheets", "sheets.sheet", "read-cells"),
+            Some(ActionOutput {
+                value: Some(serde_json::json!({"content": {"rows": [["Basic", 49]]}})),
+                resources: Vec::new(),
+            }),
+            Vec::new(),
+            false,
+        );
+        for slides in 1..=MOST_OBSERVED + 2 {
+            running.ran_step(
+                &invoke("so.tilo.slides", "slides.deck", "add-slide"),
+                Some(outline(slides)),
+                Vec::new(),
+                true,
+            );
+        }
+        let shown = running.observations();
+        assert_eq!(shown.len(), 2, "{shown:?}");
+        assert!(shown[0].contains("Basic"), "{shown:?}");
+        assert!(
+            shown[1].ends_with(&format!("Deck ({} slides)\"", MOST_OBSERVED + 2)),
+            "{shown:?}"
+        );
+        assert!(!shown[1].starts_with(BEFORE_CHANGE), "{shown:?}");
+    }
+
     #[test]
     fn a_carried_step_is_given_what_the_latest_step_that_made_content_made() {
         let mut running = Running::new(
             "t1".into(),
             "export the artwork, then insert it in the launch page".into(),
             Vec::new(),
-            vec!["read while planning".into()],
+            vec![("so.tilo.notes".into(), "read while planning".into())],
         );
         assert_eq!(running.observed.len(), 1);
         let canvas = "so.tilo.canvas";
@@ -2173,7 +2390,7 @@ mod tests {
             running
                 .observed
                 .iter()
-                .any(|seen| seen.contains("tilo.rich-text#read-text answered")),
+                .any(|seen| seen.seen.contains("tilo.rich-text#read-text answered")),
             "{:?}",
             running.observed
         );
@@ -2320,6 +2537,79 @@ mod tests {
         );
     }
 
+    /// A model plan that edited and made no export the request asks for is
+    /// planned again once for the export, whatever the model; one that
+    /// exported, or was not asked to, is not.
+    #[test]
+    fn a_plan_that_skipped_the_export_asked_for_is_planned_again_once() {
+        let request = "Correct every \"12 minutes\" with replace text. Then export the \
+                       document as DOCX, kept as content.";
+        let mut running = Running::new("t1".into(), request.into(), Vec::new(), Vec::new());
+        running.by_model = true;
+        let writer = "so.tilo.word-processor";
+        running.ran_step(
+            &invoke(writer, "tilo.rich-text", "replace-text"),
+            None,
+            Vec::new(),
+            true,
+        );
+        running.plan_more(false);
+        assert!(matches!(
+            running.steps.front().map(|step| &step.action),
+            Some(StepAction::Continue(rest)) if rest == EXPORT_MISSING
+        ));
+        running.steps.clear();
+        running.plan_more(false);
+        assert!(running.steps.is_empty(), "once");
+
+        let mut exported = Running::new("t2".into(), request.into(), Vec::new(), Vec::new());
+        exported.by_model = true;
+        exported.ran_step(
+            &invoke(writer, "tilo.rich-text", "replace-text"),
+            None,
+            Vec::new(),
+            true,
+        );
+        exported.ran_step(
+            &invoke(writer, "tilo.rich-text", "export-content"),
+            None,
+            vec!["abc".into()],
+            false,
+        );
+        exported.plan_more(false);
+        assert!(exported.steps.is_empty());
+
+        let mut not_asked =
+            Running::new("t3".into(), "Fix the typo.".into(), Vec::new(), Vec::new());
+        not_asked.by_model = true;
+        not_asked.ran_step(
+            &invoke(writer, "tilo.rich-text", "replace-text"),
+            None,
+            Vec::new(),
+            true,
+        );
+        not_asked.plan_more(false);
+        assert!(not_asked.steps.is_empty());
+        assert!(!asks_export("the exported figures") && asks_export("Export it as PNG"));
+    }
+
+    /// A task that names an app the room has no document of is re-planned
+    /// with that app named as one whose operations make the document.
+    #[test]
+    fn the_apps_a_task_names_without_a_document_are_found() {
+        let granted = ["so.tilo.word-processor", "so.tilo.sheets", "so.tilo.notes"];
+        let task = "In the Word Processor, write the postmortem from the Notes note and the Impact sheet in Sheets.";
+        assert_eq!(
+            named_without_documents(task, &granted, &["so.tilo.notes", "so.tilo.sheets"]),
+            ["so.tilo.word-processor"]
+        );
+        assert!(
+            named_without_documents(task, &granted, &granted).is_empty(),
+            "every named app has a document"
+        );
+        assert!(named_without_documents("Tidy the note.", &granted[..2], &[]).is_empty());
+    }
+
     /// A model plan that changed something is checked once against its
     /// request when the planner checks work, and not otherwise.
     #[test]
@@ -2334,10 +2624,17 @@ mod tests {
             running.steps.is_empty(),
             "no check unless the planner checks work"
         );
+        running.ran_step(
+            &invoke("so.tilo.slides", "slides.deck", "add-slide"),
+            None,
+            Vec::new(),
+            true,
+        );
         running.plan_more(true);
         assert!(matches!(
             running.steps.front().map(|step| &step.action),
-            Some(StepAction::Continue(rest)) if rest == CHECK_WORK
+            Some(StepAction::Continue(rest))
+                if rest.starts_with(CHECK_WORK) && rest.ends_with(&format!("{CHECK_RAN}add-slide"))
         ));
         assert!(running.follow_ups.checking);
         running.steps.clear();

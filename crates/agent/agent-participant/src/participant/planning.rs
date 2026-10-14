@@ -42,8 +42,9 @@ pub(super) struct Planned {
     /// task.
     pub continues: bool,
     pub steps: Result<Vec<Step>, String>,
-    /// What the plan's reads found, as observations.
-    pub read: Vec<String>,
+    /// What the plan's reads found, as observations, each with the app
+    /// of the record read.
+    pub read: Vec<(String, String)>,
     /// When the planner returned it.
     pub ready_at: Instant,
     /// Whether a model made it (not steps written out or stated outright).
@@ -75,7 +76,7 @@ pub(super) struct Planning {
 struct LoopReads {
     asks: mpsc::Sender<ReadAsk>,
     control: Arc<AgentControl>,
-    found: Vec<String>,
+    found: Vec<(String, String)>,
 }
 
 impl Reads for LoopReads {
@@ -99,7 +100,7 @@ impl Reads for LoopReads {
             .recv()
             .map_err(|_| "the agent stopped before it read".to_string())??;
         if let Some(seen) = observation(&route.app_id, address, &output) {
-            self.found.push(seen);
+            self.found.push((route.app_id.clone(), seen));
         }
         Ok(output)
     }

@@ -1074,3 +1074,48 @@ fn a_refused_edit_names_the_block_the_document_lacks() {
         "{error}"
     );
 }
+
+#[test]
+fn set_style_takes_the_kinds_a_reader_sees_and_refuses_others() {
+    // Notes shows a list item as `{"bullet": indent}`: a `bullet` asked for
+    // is a bulleted list item, not an unknown kind shown as plain text.
+    let style = |kind: &str| {
+        let arguments = serde_json::json!({"block": "b1", "kind": kind, "level": 0});
+        tilo_resource::build_action::<RichText>("set-style", arguments.as_object().unwrap(), 0)
+    };
+    for (named, kind, ordered) in [
+        ("bullet", "list_item", Some(false)),
+        ("list_item", "list_item", Some(false)),
+        ("numbered", "list_item", Some(true)),
+        ("Heading", "heading", None),
+        ("paragraph", "paragraph", None),
+        ("quote", "quote", None),
+    ] {
+        assert_eq!(
+            style(named).unwrap(),
+            RichTextAction::SetParagraphStyle {
+                region: RegionKind::Body,
+                blocks: vec!["b1".into()],
+                kind: kind.into(),
+                level: Some(0),
+                ordered,
+            },
+            "{named}"
+        );
+    }
+    let refused = style("callout").unwrap_err();
+    assert!(refused.contains("bullet, numbered or quote"), "{refused}");
+
+    let mut replica = document(2);
+    let block = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
+    let arguments = serde_json::json!({"block": block, "kind": "bullet", "level": 0});
+    let action =
+        tilo_resource::build_action::<RichText>("set-style", arguments.as_object().unwrap(), 0)
+            .unwrap();
+    replica.apply_action(&action, "Bullet").unwrap();
+    let styled = block_alts(&replica)
+        .into_iter()
+        .find(|(id, _, _)| *id == block)
+        .unwrap();
+    assert_eq!(styled.1, "list_item");
+}

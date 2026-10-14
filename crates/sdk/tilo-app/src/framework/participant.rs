@@ -434,6 +434,13 @@ impl Participant {
         self.doc.get_heads()
     }
 
+    /// What changed in the replica since `heads`, as patches: what an
+    /// app's `document_action_result` describes an edit by.
+    pub fn diff_since(&mut self, heads: &[automerge::ChangeHash]) -> Vec<automerge::Patch> {
+        let now = self.doc.get_heads();
+        self.doc.diff(heads, &now)
+    }
+
     /// The changes the replica holds that `heads` do not.
     pub fn changes_since(&mut self, heads: &[automerge::ChangeHash]) -> Vec<automerge::Change> {
         self.doc.get_changes(heads)

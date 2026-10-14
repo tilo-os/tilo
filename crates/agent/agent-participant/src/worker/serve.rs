@@ -311,14 +311,50 @@ impl Worker {
         // export, a document's read, a look at an artwork): only what it
         // names as a document operation runs on the replica, everything else
         // in the mounted component.
-        let document = door::resolve(&replica.resources(), address)
-            .is_some_and(|spec| spec.kind == OperationKind::Document);
+        let resources = replica.resources();
+        let spec = door::resolve(&resources, address);
+        let document = spec.is_some_and(|spec| spec.kind == OperationKind::Document);
+        let answers = spec.is_some_and(|spec| {
+            matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. })
+        });
+        drop(resources);
         if !self.agent || document {
-            return replica.invoke(address, arguments, confirm);
+            let before = replica.heads();
+            let mut output = replica.invoke(address, arguments, confirm)?;
+            if self.agent && answers && output.value.is_none() {
+                output.value = self.document_result(address, &before);
+            }
+            return Ok(output);
         }
         self.effect_session()
             .map_err(unmounted)?
             .invoke(address, arguments, confirm)
+    }
+
+    /// What the document operation at `address` did since `before`, as its
+    /// app answers a person's caller (a deck's outline, the cells an edit
+    /// wrote): an agent sees what it changed without reading again. The
+    /// answer is the app's from the record as it now stands, so a component
+    /// mounted earlier serves; one is mounted only when none is.
+    fn document_result(
+        &mut self,
+        address: &ActionAddress,
+        before: &[automerge::ChangeHash],
+    ) -> Option<serde_json::Value> {
+        if self.effects.is_none()
+            && let Err(error) = self.effect_session()
+        {
+            tracing::debug!(%error, "app worker: no component to answer an edit");
+            return None;
+        }
+        let replica = self.replica.as_mut()?;
+        let changes = replica.diff_since(before);
+        let session = self.effects.as_ref()?;
+        replica
+            .read(|doc| {
+                ui::resources::document_action_result(session.root(), doc, address, &changes)
+            })
+            .flatten()
     }
 
     /// The held record's component, mounted for an agent's effects: the

@@ -1220,11 +1220,21 @@ impl ImagePlaces {
         }
     }
 
-    /// The heading or paragraph `after` names: the first containing it
-    /// exactly, else ignoring case, spacing and punctuation, else the
-    /// longest one it begins with, else the most alike above
-    /// [`FUZZY_MATCH`].
+    /// The heading or paragraph `after` names: a heading that is exactly
+    /// it (ignoring case, spacing and punctuation), so a contents line or
+    /// a mention of the same words earlier is not taken for the section;
+    /// else the first containing it exactly, else ignoring case, spacing
+    /// and punctuation, else the longest one it begins with, else the most
+    /// alike above [`FUZZY_MATCH`].
     fn named(&self, after: &str) -> Option<&ImagePlace> {
+        let wanted = normalized(after);
+        if let Some(found) = self
+            .paragraphs
+            .iter()
+            .find(|place| place.heading && !wanted.is_empty() && normalized(&place.text) == wanted)
+        {
+            return Some(found);
+        }
         if let Some(found) = self
             .paragraphs
             .iter()
@@ -1232,7 +1242,6 @@ impl ImagePlaces {
         {
             return Some(found);
         }
-        let wanted = normalized(after);
         if wanted.is_empty() {
             return None;
         }
@@ -1624,6 +1633,30 @@ mod tests {
             "the same words reordered"
         );
         assert_eq!(places.place(Some("grew")), Ok(("p1".into(), 29)));
+    }
+
+    /// A heading that is the anchor wins over a contents line or a mention
+    /// of the same words before it: the picture goes under the section.
+    #[test]
+    fn insert_image_prefers_the_heading_the_anchor_names() {
+        let place = |id: &str, text: &str, heading: bool| ImagePlace {
+            id: id.into(),
+            text: text.into(),
+            heading,
+        };
+        let places = ImagePlaces {
+            paragraphs: vec![
+                place("toc", "Timeline", false),
+                place("p1", "See the Timeline below.", false),
+                place("h1", "Timeline", true),
+                place("p2", "14:02 alert fires.", false),
+            ],
+            end: Some(("p2".into(), 18)),
+        };
+        let at = |after: &str| places.place(Some(after)).map(|(id, _)| id);
+        assert_eq!(at("Timeline").as_deref(), Ok("h1"));
+        assert_eq!(at("timeline").as_deref(), Ok("h1"));
+        assert_eq!(at("Timeline below").as_deref(), Ok("p1"));
     }
 
     /// An anchor like nothing in the document is refused with its headings,

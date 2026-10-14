@@ -671,13 +671,21 @@ fn validate_read(resource: &Resource, payload: &[u8]) -> Result<(), SemanticRead
     Ok(())
 }
 
+/// `number` to the 15 significant digits a spreadsheet keeps, so a read
+/// shows `0.75` for a margin computed as `0.7499999999999999`: the noise of
+/// binary arithmetic is not a value anyone entered or a formula meant.
+fn significant(number: f64) -> f64 {
+    format!("{number:.14e}").parse().unwrap_or(number)
+}
+
 fn json_value(value: &CellValue) -> serde_json::Value {
     match value {
         CellValue::Empty => serde_json::Value::Null,
-        CellValue::Number(number) => serde_json::Number::from_f64(*number).map_or_else(
-            || serde_json::Value::String(number.to_string()),
-            serde_json::Value::Number,
-        ),
+        CellValue::Number(number) => serde_json::Number::from_f64(significant(*number))
+            .map_or_else(
+                || serde_json::Value::String(number.to_string()),
+                serde_json::Value::Number,
+            ),
         CellValue::Bool(value) => serde_json::Value::Bool(*value),
         CellValue::Text(_) | CellValue::Error(_) => {
             serde_json::Value::String(value.to_plain_string())

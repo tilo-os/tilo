@@ -345,6 +345,11 @@ impl Replica {
         self.participant.heads()
     }
 
+    /// What changed in the record since `heads`, as patches.
+    pub(crate) fn diff_since(&mut self, heads: &[automerge::ChangeHash]) -> Vec<automerge::Patch> {
+        self.participant.diff_since(heads)
+    }
+
     /// The whole record, saved from a copy so that what
     /// [`Self::take_mutation`] returns next is unchanged.
     pub(crate) fn snapshot(&self) -> Vec<u8> {

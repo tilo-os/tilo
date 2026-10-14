@@ -753,3 +753,48 @@ fn kill(pid: u32) {
     assert!(status.success());
     std::thread::sleep(std::time::Duration::from_millis(200));
 }
+
+/// An agent's edit answers as a person's caller is answered: `add-slide`
+/// returns the deck's outline with the new slide last, so an agent knows
+/// the slides it added are there without reading the deck again.
+#[test]
+fn an_agents_document_operation_answers_with_what_the_app_says_it_did() {
+    let deck = ConfinedReplica::open(
+        &catalogue(),
+        "so.tilo.slides",
+        ROOM,
+        "iris",
+        true,
+        Seed::New,
+    )
+    .unwrap();
+    let add = deck
+        .survey()
+        .into_iter()
+        .find(|action| action.address.action == "add-slide")
+        .expect("a deck publishes add-slide")
+        .address;
+    let slide = |title: &str| {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("title".into(), title.into());
+        arguments
+    };
+    let first = deck.invoke(&add, &slide("Launch"), false).unwrap();
+    let outline = first
+        .value
+        .as_ref()
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert!(outline.contains("Launch"), "{first:?}");
+    let second = deck.invoke(&add, &slide("Pricing"), false).unwrap();
+    let outline = second
+        .value
+        .as_ref()
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert!(outline.contains("(2 slides)"), "{outline}");
+    assert!(
+        outline.find("Launch").unwrap() < outline.find("Pricing").unwrap(),
+        "{outline}"
+    );
+}

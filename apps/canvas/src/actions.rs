@@ -1060,6 +1060,27 @@ fn unshaped() -> Shape {
     }
 }
 
+/// `shape` with a rect's negative width or height turned to reach the other
+/// way from its corner: the same box, written with positive sides.
+fn upright(shape: &Shape) -> Shape {
+    match *shape {
+        Shape::Rect {
+            x,
+            y,
+            width,
+            height,
+            radius,
+        } if width < 0.0 || height < 0.0 => Shape::Rect {
+            x: if width < 0.0 { x + width } else { x },
+            y: if height < 0.0 { y + height } else { y },
+            width: width.abs(),
+            height: height.abs(),
+            radius,
+        },
+        ref other => other.clone(),
+    }
+}
+
 /// `mark`'s shape, its box set from `place` (fractions of `art`) when given.
 fn placed_shape(art: &Artwork, mark: &NewMark) -> Result<Shape, ActionError> {
     let Some([fx, fy, fw, fh]) = mark.place else {
@@ -1068,17 +1089,21 @@ fn placed_shape(art: &Artwork, mark: &NewMark) -> Result<Shape, ActionError> {
                 "a mark needs a shape, or place (with kind rect or ellipse)",
             ));
         }
+        // A rect given a negative side reaches back from its corner, as a
+        // canvas `fillRect` draws it: a bar standing on its baseline is
+        // `y` at the baseline and a negative height.
+        let shape = upright(&mark.shape);
         // Fractions written into a shape's units (`"width": 0.38`) draw
         // something too small to see, and a side of 0 nothing: say which
         // side, rather than draw nothing.
-        let (sides, least, units) = match &mark.shape {
+        let (sides, least, units) = match &shape {
             Shape::Rect { width, height, .. } => (
                 [("width", *width), ("height", *height)],
                 1.0,
                 "x, y, width and height",
             ),
             Shape::Ellipse { rx, ry, .. } => ([("rx", *rx), ("ry", *ry)], 0.5, "cx, cy, rx and ry"),
-            _ => return Ok(mark.shape.clone()),
+            _ => return Ok(shape),
         };
         let short: Vec<String> = sides
             .iter()
@@ -1094,7 +1119,7 @@ fn placed_shape(art: &Artwork, mark: &NewMark) -> Result<Shape, ActionError> {
                 if least < 1.0 { "radius" } else { "side" }
             )));
         }
-        return Ok(mark.shape.clone());
+        return Ok(shape);
     };
     if ![fx, fy, fw, fh]
         .iter()
@@ -2785,6 +2810,37 @@ mod tests {
             .to_string()
     }
 
+    /// A bar standing on its baseline may be drawn with `y` at the baseline
+    /// and a negative height, as a canvas `fillRect` takes it: the same box.
+    #[test]
+    fn a_rect_with_a_negative_side_reaches_back_from_its_corner() {
+        let mut doc = artwork();
+        let bar = Shape::Rect {
+            x: 90.0,
+            y: 440.0,
+            width: 120.0,
+            height: -360.0,
+            radius: 0.0,
+        };
+        CanvasAction::Draw(Draw {
+            layer: None,
+            marks: vec![NewMark::new(bar)],
+        })
+        .apply(&mut doc)
+        .expect("drawn");
+        let drawn = doc::read(&doc).marks.pop().expect("one mark").shape;
+        assert_eq!(
+            drawn,
+            Shape::Rect {
+                x: 90.0,
+                y: 80.0,
+                width: 120.0,
+                height: 360.0,
+                radius: 0.0,
+            }
+        );
+    }
+
     /// A refused `draw` names the one mark that is wrong, by the id its
     /// caller gave it or else its place, and says which side is too small.
     #[test]
@@ -2817,13 +2873,17 @@ mod tests {
             unnamed.starts_with("mark item 2: the shape is under one unit across: height is 0;"),
             "{unnamed}"
         );
-        let both = refusal(vec![NewMark::new(rect(0.38, -4.0))]);
+        let both = refusal(vec![NewMark::new(rect(0.38, 0.5))]);
         assert!(
             both.starts_with(
-                "mark item 0: the shape is under one unit across: width is 0.38 and height is -4;"
+                "mark item 0: the shape is under one unit across: width is 0.38 and height is 0.5;"
             ),
             "{both}"
         );
+        // A negative side reaches back from the corner; one under a unit is
+        // still too small, whichever way it reaches.
+        let back = refusal(vec![NewMark::new(rect(40.0, -0.0001))]);
+        assert!(back.contains("height is 0.0001;"), "{back}");
         let ellipse = refusal(vec![NewMark {
             id: Some("sun".into()),
             ..NewMark::new(Shape::Ellipse {

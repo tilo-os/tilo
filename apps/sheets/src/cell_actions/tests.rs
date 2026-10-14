@@ -706,3 +706,18 @@ fn an_unknown_sheet_is_refused_with_the_sheet_names() {
         "{message}"
     );
 }
+
+/// A computed margin reads as the value it is to a spreadsheet's 15
+/// digits, not the binary noise of the division (`0.7499999999999999`).
+#[test]
+fn computed_values_read_to_fifteen_significant_digits() {
+    let doc = workbook(&[
+        &["Price", "Cost", "Margin", "Margin %"],
+        &["3.8", "0.95", "=A2-B2", "=C2/A2"],
+        &["4.2", "1.1", "=A3-B3", "=C3/A3"],
+    ]);
+    let rows = read(&doc, None)["rows"].clone();
+    assert_eq!(rows[1][2], json!(2.85));
+    assert_eq!(rows[1][3], json!(0.75));
+    assert_eq!(rows[2][3], json!(0.738_095_238_095_238));
+}
