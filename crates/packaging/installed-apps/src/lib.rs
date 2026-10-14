@@ -20,6 +20,10 @@ pub struct InstalledApp {
     /// The manifest's `[package.names]`: the name in other languages, by
     /// BCP 47 tag. Search matches these alongside `display_name`.
     pub localized_names: std::collections::BTreeMap<String, String>,
+    /// The manifest's `[package.keywords]`, every language's together: the
+    /// other words the app is known by. Search matches these alongside the
+    /// name ("youtube" finds a video app).
+    pub keywords: Vec<String>,
     /// The manifest's `[package].category`, when declared; matched by
     /// the Applications search provider.
     pub category: Option<String>,
@@ -58,6 +62,7 @@ impl InstalledApp {
                 .filter(|n| !n.trim().is_empty())
                 .unwrap_or_else(|| package_store::display_name_for_package_id(&package_id)),
             localized_names: manifest.localized_names.clone(),
+            keywords: manifest.keywords.clone(),
             category: manifest.category.clone().filter(|c| !c.trim().is_empty()),
             package_id,
             version: manifest.version.clone(),
@@ -458,6 +463,7 @@ mod tests {
                 package_id: "so.tilo.notes".into(),
                 display_name: "Notes".into(),
                 localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
                 category: None,
                 version: "1.0.0".into(),
                 manifest_path: path,

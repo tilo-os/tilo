@@ -829,11 +829,13 @@ impl App {
             )?;
             let permissions = self.permission_ctx.directory_witness()?;
             let reusable = owners.iter().all(|owner| owner.generation.is_some());
+            // Described, not made: making a provider can build its index,
+            // and this runs on every frame that publishes the surface.
             let directory_providers =
-                crate::bound_dispatch::search_providers(self.root_widget.as_ref());
+                crate::bound_dispatch::search_provider_descriptors(self.root_widget.as_ref());
             let provider_domains = directory_providers
                 .iter()
-                .map(|provider| provider.action_directory_invocation_domain())
+                .map(|provider| provider.invocation_domain)
                 .collect();
             let witness = action_directory_snapshot::DirectoryWitness {
                 registry_generation: self.actions.action_registry_generation,
@@ -856,11 +858,7 @@ impl App {
                     .map(|provider| {
                         format!(
                             "{}:{:?}:{:?}",
-                            provider.name(),
-                            provider
-                                .callback_binding()
-                                .map(|binding| binding.lifetime_id),
-                            provider.action_directory_generation()
+                            provider.name, provider.owner, provider.generation
                         )
                     })
                     .collect(),
