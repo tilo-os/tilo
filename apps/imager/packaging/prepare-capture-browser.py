@@ -121,7 +121,7 @@ def stage(root, output, pins, cohort, qualification=False):
             or authored['package']['optional-runtimes'] != ['tilo-runtime/' + ledger['cef_version']]):
         raise ValueError('signed Browser receives another SDK/CEF graph')
     with tempfile.TemporaryDirectory(prefix='tilo-browser-admission-') as scratch:
-        payload = Path(scratch) / 'payload'
+        payload = Path(scratch).resolve() / 'payload'
         run([tools / 'tilo-app-package', 'unpack', '--dest', payload, output / 'browser.tapp'])
         qualifier.bound_file(payload / 'bin/browser', expected)
         qualifier.bound_file(payload / 'surface.toml', cohort['source_inputs']['apps/browser/surface.toml'])
@@ -134,19 +134,26 @@ def stage(root, output, pins, cohort, qualification=False):
         manifest = tomllib.loads((bundle / 'bundle.toml').read_text())
         if manifest['version'] != version:
             raise ValueError('signed receiving runtime version differs')
-        destination = root / 'usr/lib/tilo-runtime' / version
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(bundle, destination)
+        if bundle == bundles[0][0]:
+            destination = root / 'usr/lib/tilo-runtime' / version
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(bundle, destination)
+        # CEF is installed below by the actual full runtime package. Copying it
+        # first makes normal replacement try to rename a lower-layer directory,
+        # which overlayfs refuses with EXDEV.
     sdk_manifest = tomllib.loads((bundles[0][0] / 'bundle.toml').read_text())
     if sdk_manifest['root_hash'] != sdk['runtime_root_hash']:
         raise ValueError('receiving SDK root differs from selected capture pins')
     qualifier.bound_file(bundles[0][0] / 'lib/libruntime_dylib.so', cohort['roles']['runtime']['sha256'])
+    qualifier.bound_file(bundles[0][0] / 'bin/tilo-launcher', cohort['roles']['launcher']['sha256'])
     share = root / 'usr/share/tilo'
     share.mkdir(parents=True, exist_ok=True)
     for name, value in (('account-consumer-runtime-version', sdk['runtime_version']),
                         ('account-consumer-runtime-publisher.hex', sdk['runtime_publisher']),
                         ('browser-runtime-publisher.hex', ledger['cef_publisher'])):
-        (share / name).write_text(value + '\n')
+        path = share / name
+        path.write_text(value + '\n')
+        path.chmod(0o644)
     shutil.copytree(sidecar, root / 'usr/share/tilo-imager/capture', dirs_exist_ok=True)
     host = cohort['roles']['host']
     qualifier.bound_file(host['path'], host['sha256'])
@@ -175,10 +182,21 @@ def stage(root, output, pins, cohort, qualification=False):
         for publisher in publishers:
             recipe += 'RUN grep -Fx ' + publisher + ' /etc/tilo/runtime-bundle-trusted-publishers.txt\n'
     for name in ('cef.tapp', 'browser.tapp'):
-        recipe += ('RUN TILO_APPS_DATA_DIR=/usr/share/tilo-apps TILO_RUNTIME_BUNDLE_DIR=/usr/lib/tilo-runtime '
+        # The normal installer refuses mutable installed component pins. Buildah
+        # supplies this exact staged pin as a read-only rootless build mount;
+        # installed application data remains writable at its ordinary path.
+        recipe += ('RUN --mount=type=bind,source=rootfs/usr/share/tilo/browser-runtime-publisher.hex,'
+                   'target=/usr/share/tilo/browser-runtime-publisher.hex,ro,relabel=shared '
+                   'TILO_APPS_DATA_DIR=/usr/share/tilo-apps TILO_RUNTIME_BUNDLE_DIR=/usr/lib/tilo-runtime '
                    '/usr/bin/tilo-install install /qualification-packages/' + name
                    + ' --force --pinned --require-publisher ' + ledger['app_publisher']
                    + (' --allow-self-signed' if qualification else '') + '\n')
+    # This tree contains public installed payloads, never signing identities or
+    # session state. A private operator umask must not make /usr untraversable
+    # to the genuine non-root receiving user after COPY into the image.
+    for directory in (root, *root.rglob('*')):
+        if directory.is_dir():
+            directory.chmod(0o755)
     return recipe + 'RUN rm -rf /qualification-packages\n'
 
 

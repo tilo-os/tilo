@@ -1,7 +1,10 @@
-# Tilo Imager release operations
+# Tilo Installer release operations
 
-The release workflow builds only on native, repository-scoped runners and
-publishes only from protected `imager-v*` tags. Configure these runner labels:
+The release workflow builds only on native, repository-scoped runners. Relevant
+protected `main` pushes automatically publish immutable signed **Tilo Installer**
+prereleases; protected `imager-v*` tags publish stable releases. Existing package
+IDs, filenames and tag prefixes retain `Imager` for compatibility. Configure
+these runner labels:
 
 | Label | Host | Required tooling |
 |---|---|---|
@@ -64,11 +67,48 @@ documents why repository scope, ephemeral registration, and `one-job` belong
 together. Set an orchestration timeout because an ephemeral registration which
 never receives a job does not expire on its own.
 
-Ordinary `main` and pull-request changes are validated by the affected-package
-tests and imager release invariants in `check.yml`; they never allocate these
-native release hosts. Manual rehearsals receive no signing lease. The broker
-must reject every non-protected, non-tag OIDC identity. Do not put a persistent
-private key or cloud credential on the native fleet.
+Pull requests and unrelated `main` changes retain the affected-package tests
+and release invariants in `check.yml`. Installer, profile-tool, workspace manifest,
+lockfile and release-workflow changes on `main` additionally enter the existing
+native release queue, without reserving runners or dispatching OS builds.
+Manual rehearsals receive no signing lease. Do not put a persistent private key
+or cloud credential on the native fleet.
+
+## Automatic main downloads
+
+`Release / Tilo Installer` builds all six native Linux, Windows and macOS lanes
+on relevant `main` pushes, after the existing exact-source Desktop catalog gate.
+Linux retains signed capture qualification, AppImage runtime and installed
+Flatpak checks; Windows requires Authenticode-signed native packages; macOS
+requires signed and notarized packages. Missing packages or unavailable subjects
+fail rather than becoming successful platform skips.
+
+The public release identity is `imager-main-<full source SHA>`, while native
+package versions come from that source's `apps/imager/Cargo.toml`. No synthetic
+semantic version or source tag is created. The existing GitHub publisher still
+starts with a draft, authenticates the Linux trust bundle, verifies uploaded
+bytes, and refuses replacement of immutable assets. Continuous releases are
+prereleases, never GitHub's stable latest release. Homebrew, WinGet and website
+promotion remain tag-only.
+
+Main builds do not build installer media or OS images. They reuse the exact
+published media recorded in the reviewed `apps/imager/release-catalog.json`,
+fetch its catalog, checksums and signatures, compare the published catalog with
+the reviewed bytes, and verify the complete set with the independently protected
+Linux key fingerprint before publication. An empty `unreleased` catalog fails.
+The exact-source Desktop catalog, published installer catalog, native ephemeral
+fleet, capture prerequisites and broker policy below must be provisioned before
+a main run can publish. Enabling the trigger is not a publication receipt.
+
+The workflow protection preflight queries Forgejo's repository and main-branch
+API, checks the immutable source repository ID and requires a boolean protected
+branch response. It does not use `github.ref_protected`: Forgejo 16 can report
+that workflow context as false for protected branches. This API preflight is
+not a credential or JWT claim override. The signing broker must independently
+verify protected-main authorization from the issuer's authenticated claims;
+if its `ref_protected` claim is false, repair the issuer's protected-ref
+reporting before enabling publication. Never waive that broker check based on
+the workflow's metadata result.
 
 Installer media never allocate an OS generation. Set the protected
 `TILO_INSTALLER_OS_IMAGE` variable to one already-published, cosign-signed Tilo
@@ -124,6 +164,20 @@ Configure the external secret broker with all of these claim checks:
   immutable numeric owner/repository IDs to this string, so capture one denied
   bootstrap token and pin the exact format instead of assuming the older
   `repo:tilo/tilo:ref:...` form.
+
+For automatic main publication, configure a **separate protected-main claim
+profile** for only the Linux, Windows, macOS and public-release brokers. Keep
+the protected-tag profile above unchanged for stable releases and all media,
+Secure Boot, Homebrew, WinGet, internal-bundle and website credentials. The main
+profile must require the same issuer, audience, immutable repository ID,
+workflow identity, JWT validation and replay prevention, but require
+`event_name == push`, `ref_type == branch`, `ref == refs/heads/main` and
+`ref_protected == "true"`. Pin the instance's actual protected-main subject and
+bind the lease to the JWT's exact source revision, run and platform. The public
+release token remains scoped solely to the public downloads repository. A
+manual dispatch on main is not eligible. Existing tag-only brokers will deny
+continuous publication until this bounded profile is installed; the workflow
+must fail on that denial, never fall back to unsigned downloads.
 
 Validate JWT signature, `exp`, `nbf`, and `iat` against the issuer's discovery
 document/JWKS. Reject replay by `run_id` + `run_attempt` + platform, and never
@@ -360,7 +414,7 @@ fleet with QEMU's TCG fallback; version tags remain reserved for the dedicated
 KVM/DRI release runners. Both routes keep the same reproducibility, encrypted
 install/boot, signature, SBOM, SLSA provenance, and two-architecture promotion
 gates.
-Dispatch `Release / imager` manually on that commit with `full_native` enabled.
+Dispatch `Release / Tilo Installer` manually on that commit with `full_native` enabled.
 That run does not sign or publish, but proves every native label and packaged UI.
 Only after it is green should a maintainer create a protected semantic tag such
 as `imager-v1.2.3` on the same commit. A successful tag must finish the native matrix, release trust

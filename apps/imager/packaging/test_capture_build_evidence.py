@@ -12,6 +12,10 @@ PATH = Path(__file__).with_name('record-capture-cargo.py')
 SPEC = importlib.util.spec_from_file_location('capture_build_evidence', PATH)
 PRODUCER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PRODUCER)
+QUALIFIER_PATH = PATH.with_name('qualify-capture-release.py')
+QUALIFIER_SPEC = importlib.util.spec_from_file_location('capture_source_requirements', QUALIFIER_PATH)
+QUALIFIER = importlib.util.module_from_spec(QUALIFIER_SPEC)
+QUALIFIER_SPEC.loader.exec_module(QUALIFIER)
 
 
 class CaptureBuildEvidenceTests(unittest.TestCase):
@@ -22,11 +26,32 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'locked build/test'):
                     PRODUCER.build(arguments)
 
+    def test_launcher_uses_its_actual_compiler_role_and_installed_binding(self):
+        target = PRODUCER.ROOT / 'target/release/tilo-launcher'
+        row = {'reason': 'compiler-artifact', 'manifest_path': str(PRODUCER.ROOT /
+            'crates/packaging/launcher/Cargo.toml'),
+            'target': {'name': 'tilo-launcher', 'kind': ['bin']},
+            'profile': {'test': False}, 'executable': str(target), 'fresh': True}
+        self.assertEqual(PRODUCER.select_artifact([row], 'launcher'), (row, target))
+        self.assertEqual(QUALIFIER.BINDINGS['launcher'], '/usr/bin/tilo-launcher')
+        self.assertEqual(QUALIFIER.TARGETS['launcher'], 'tilo-launcher')
+        self.assertEqual(QUALIFIER.PACKAGES['launcher'], 'crates/packaging/launcher')
+        row['manifest_path'] = str(PRODUCER.ROOT / 'unrelated/Cargo.toml')
+        self.assertIsNone(PRODUCER.select_artifact([row], 'launcher'))
+
+    def test_actual_source_inventory_covers_full_admission_closure(self):
+        sources = PRODUCER.sources()
+        required = set(QUALIFIER.FIXTURE_FILES) | set(QUALIFIER.PACKAGE_FILES)
+        self.assertLessEqual(required, sources.keys())
+        for name in required:
+            with self.subTest(source=name):
+                self.assertEqual(sources[name], PRODUCER.facts(PRODUCER.ROOT / name))
+
     def test_real_child_source_change_preserves_failure_but_emits_no_roles(self):
         with tempfile.TemporaryDirectory(prefix='tilo-capture-evidence-') as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             subprocess.run(['git', 'init', '-q', str(root)], check=True)
-            for name in ('Cargo.toml', 'Cargo.lock', 'apps/imager/build.rs',
+            names = {'Cargo.toml', 'Cargo.lock', 'apps/imager/build.rs',
                          'apps/imager/capture-service.json', 'apps/imager/desktop-catalog.json',
                          'apps/imager/release-catalog.json',
                          'apps/imager/src/setup/home_capture/native_tests/signed_export.rs',
@@ -35,10 +60,16 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
                          'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',
                          'scripts/headless-examples/_control.py',
                          'scripts/browser/cef-lock.json', 'scripts/browser/build-host.py',
-                         'tools/apps/browser_runtime_release.py', 'tools/apps/app_package_isa.py'):
+                         'tools/apps/browser_runtime_release.py', 'tools/apps/app_package_isa.py'}
+            names.update(QUALIFIER.FIXTURE_FILES)
+            names.update(QUALIFIER.PACKAGE_FILES)
+            for name in names:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text('before\n')
+                if name == 'apps/imager/packaging/qualify-capture-release.py':
+                    path.write_bytes(QUALIFIER_PATH.read_bytes())
+                else:
+                    path.write_text('before\n')
             tools = root / 'tools-bin'
             tools.mkdir()
             cargo = tools / 'cargo'

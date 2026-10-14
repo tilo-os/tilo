@@ -42,7 +42,7 @@ class StagedSourceClosure(unittest.TestCase):
         sources = {name: qualifier.facts(qualifier.ROOT / name)['sha256']
                    for name in (*qualifier.FIXTURE_FILES, *qualifier.PACKAGE_FILES)}
         with tempfile.TemporaryDirectory() as temporary:
-            stage = Path(temporary)
+            stage = Path(temporary).resolve()
             qualifier.stage_sources(stage, sources)
             self.assertEqual(json.loads((stage / 'source-inputs.json').read_text()), sources)
             for name, digest in sources.items():
@@ -53,11 +53,11 @@ class StagedSourceClosure(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 altered = dict(sources, **{name: '0' * 64})
                 with self.assertRaises(ValueError):
-                    qualifier.stage_sources(Path(temporary), altered)
+                    qualifier.stage_sources(Path(temporary).resolve(), altered)
 
     def test_unpinned_official_manifest_and_runtime_overlays_refuse(self):
         with tempfile.TemporaryDirectory() as temporary:
-            manifest = Path(temporary) / 'assets.json'
+            manifest = Path(temporary).resolve() / 'assets.json'
             manifest.write_text('{"schema":1,"assets":{}}')
             with self.assertRaisesRegex(ValueError, 'official public asset manifest'):
                 qualifier.source_assets(manifest)
@@ -190,7 +190,7 @@ class NativeQualificationBoundary(unittest.TestCase):
 
     def test_redirected_candidate_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             target = root / 'candidate'
             target.write_bytes(b'actual fixture bytes')
             target.chmod(0o600)
@@ -202,7 +202,7 @@ class NativeQualificationBoundary(unittest.TestCase):
     def test_live_file_growth_is_bounded_on_the_same_held_read(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / 'growing'
+            path = Path(temporary).resolve() / 'growing'
             path.write_bytes(b'a')
             path.chmod(0o600)
             original_read = os.read
@@ -217,7 +217,7 @@ class NativeQualificationBoundary(unittest.TestCase):
     def test_document_decodes_its_held_bytes_without_path_reopen(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / 'record'
+            path = Path(temporary).resolve() / 'record'
             path.write_text('{"schema":1}')
             path.chmod(0o600)
             with patch.object(Path, 'read_bytes', side_effect=AssertionError('path reopened')):

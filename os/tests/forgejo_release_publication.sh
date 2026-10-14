@@ -56,7 +56,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_json(200, release)
         elif path.endswith("/releases/1/assets"):
-            self.send_json(200, assets)
+            if os.path.exists(os.path.join(os.path.dirname(sys.argv[1]), "corrupt-inventory")):
+                self.send_json(200, [{"name": None}, *assets])
+            else:
+                self.send_json(200, assets)
         elif path.startswith("/repos/tilo-os/releases/releases/assets/"):
             asset_id = int(path.rsplit("/", 1)[1])
             body = asset_bytes[asset_id]
@@ -168,4 +171,12 @@ after_conflict="$(publish)"
 grep -Fq 'verified existing tilo-imager-test.bin' <<<"$after_conflict" \
   || { printf 'mismatched rerun changed the published asset\n' >&2; exit 1; }
 
-printf 'ok    GitHub publication is target-scoped, idempotent, and immutable\n'
+touch "$work/corrupt-inventory"
+if publish >"$work/inventory.out" 2>"$work/inventory.err"; then
+  printf 'publisher ignored malformed remote asset inventory\n' >&2
+  exit 1
+fi
+grep -Fq 'release contains an invalid asset name' "$work/inventory.err"
+rm "$work/corrupt-inventory"
+
+printf 'ok    GitHub publication is target-scoped, idempotent, immutable, and rejects malformed inventory\n'

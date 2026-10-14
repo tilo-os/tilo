@@ -46,18 +46,18 @@ class EnabledImagerPlatforms(unittest.TestCase):
         self.winget_monitor = (ROOT / ".forgejo/workflows/release-imager-winget.yml").read_text()
 
     def test_release_gate_requires_every_enabled_platform_artifact(self):
-        with self.subTest(phase='full native and tags require both macos architectures'):
+        with self.subTest(phase='full native, tags and protected main require both macos architectures'):
             self.doCleanups()
             self.setUp()
             macos = section(self.workflow, "macos", 2)
             self.assertIn(
-                "    if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')",
+                "    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))",
                 macos,
             )
             for arch in ("x86_64", "aarch64"):
                 self.assertIn(f"runner: imager-macos-{arch}", macos)
             publish = section(self.workflow, "publish", 2)
-            self.assertIn("    needs: [linux, windows, macos]", publish)
+            self.assertIn("    needs: [plan, linux, windows, macos]", publish)
             install = section(self.workflow, "homebrew-install-test", 2)
             self.assertNotIn("package_kind: cask", install)
             for arch in ("x86_64", "aarch64"):
