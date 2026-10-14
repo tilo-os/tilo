@@ -162,6 +162,7 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/tests/test_ci_check_aggregate.py",
         "tools/tests/test_ci_queue_relief.py",
         "tools/tests/test_ci_receipt.sh",
+        "tools/tests/test_ci_test_shard_environment.py",
         "tools/tests/test_resolve_ci_builder.py",
     ),
     ".forgejo/workflows/ci-legacy-apps.yml": (
