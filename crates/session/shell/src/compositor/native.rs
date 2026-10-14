@@ -504,6 +504,47 @@ impl NativeRedrawReasons {
     }
 }
 
+/// The backend events one loop iteration dispatched, for whether they ask for
+/// a frame by themselves ([`NativeRedrawReasons::backend_event`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DispatchedInput {
+    /// Keyboard presses and releases.
+    keys: u64,
+    /// Every other backend event.
+    other: u64,
+}
+
+impl DispatchedInput {
+    fn note(&mut self, event: &BackendEvent) {
+        let key = matches!(
+            event,
+            BackendEvent::Input(WindowEvent::KeyboardInput { .. })
+                | BackendEvent::PhysicalKey {
+                    event: WindowEvent::KeyboardInput { .. },
+                    ..
+                }
+        );
+        if key {
+            self.keys = self.keys.saturating_add(1);
+        } else {
+            self.other = self.other.saturating_add(1);
+        }
+    }
+
+    /// Whether this input needs a frame of its own, with `keys_to_clients` of
+    /// its keys forwarded to a client. A key only a client took changes no
+    /// shell pixels: the client's commit asks for the frame that shows it.
+    /// Painting for the key as well spent the frame clock's next deadline on
+    /// a frame identical to the last one, so the commit that followed a
+    /// millisecond later waited a refresh interval for the next deadline. A
+    /// key the shell kept (a shortcut, typing into the chrome), and any other
+    /// event, asks for a frame as before; whatever the shell changed in
+    /// response asks again through its own reason.
+    fn asks_for_frame(self, keys_to_clients: u64) -> bool {
+        self.other > 0 || self.keys > keys_to_clients
+    }
+}
+
 /// `+`-joined app ids of the tiles whose surfaces committed since the last
 /// painted tick, for the frame trace. Characters that would break the CSV
 /// row or the join are replaced; a surface no tab has adopted yet is named
@@ -10356,6 +10397,8 @@ pub fn run() {
                 .map(BackendEvent::Input),
         );
         let had_backend_events = !pending_events.is_empty();
+        let mut dispatched_input = DispatchedInput::default();
+        let client_keys_before = state.client_keys_delivered;
         let mut session_changed = false;
         let mut accessibility_changed = false;
         let mut visible_input_changed = pen_moved;
@@ -10424,6 +10467,7 @@ pub fn run() {
         // events that must run next, before anything the backend queued later.
         let mut event_step = "accessibility";
         while let Some(event) = pending_events.pop_front() {
+            dispatched_input.note(&event);
             state.physical_key_input_time_ns = match &event {
                 BackendEvent::PhysicalKey { input_time_ns, .. } => Some(*input_time_ns),
                 _ => None,
@@ -12697,7 +12741,8 @@ pub fn run() {
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
         let redraw_reasons = NativeRedrawReasons {
             force: force_first_paint,
-            backend_event: had_backend_events,
+            backend_event: dispatched_input
+                .asks_for_frame(state.client_keys_delivered.wrapping_sub(client_keys_before)),
             visible_input: visible_input_changed,
             session: session_changed || injected_redraw,
             revision: revision_changed,
@@ -12785,7 +12830,7 @@ pub fn run() {
             }
             if should_paint {
                 frames_painted = frames_painted.saturating_add(1);
-                if had_backend_events {
+                if redraw_reasons.backend_event {
                     cause_events = cause_events.saturating_add(1);
                 }
                 if session_changed {
@@ -12806,7 +12851,10 @@ pub fn run() {
                     }
                 }
                 if keepalive_due
-                    && !(had_backend_events || session_changed || revision_changed || animating)
+                    && !(redraw_reasons.backend_event
+                        || session_changed
+                        || revision_changed
+                        || animating)
                 {
                     cause_keepalive = cause_keepalive.saturating_add(1);
                 }
@@ -14472,6 +14520,51 @@ mod tests {
         // resting frame remains owed.
         settle.after_tick(true, true);
         assert!(settle.due(false));
+    }
+
+    /// A key the focused client alone took asks for no frame: the client's
+    /// commit does, and a frame painted for the key itself would spend the
+    /// frame clock's deadline on an unchanged desktop and hold the commit's
+    /// frame back a refresh interval. Keys the shell kept, and every other
+    /// backend event, still ask for one.
+    #[test]
+    fn a_key_only_a_client_took_asks_for_no_frame_of_its_own() {
+        let key = |pressed| {
+            BackendEvent::Input(keyboard_input_event(
+                &winit::keyboard::Key::Character("a".into()),
+                pressed,
+            ))
+        };
+        let mut typed = DispatchedInput::default();
+        typed.note(&key(true));
+        typed.note(&key(false));
+        assert!(
+            !typed.asks_for_frame(2),
+            "a press and release forwarded to the client change no shell pixels"
+        );
+        assert!(
+            typed.asks_for_frame(1),
+            "a key the shell kept (a shortcut, typing into the chrome) asks for a frame"
+        );
+        let mut physical = DispatchedInput::default();
+        physical.note(&BackendEvent::PhysicalKey {
+            event: keyboard_input_event(&winit::keyboard::Key::Character("a".into()), true),
+            input_time_ns: 1,
+        });
+        assert!(
+            !physical.asks_for_frame(1),
+            "a physical key counts as a key"
+        );
+        let mut pointer = typed;
+        pointer.note(&BackendEvent::Redraw);
+        assert!(
+            pointer.asks_for_frame(2),
+            "any other backend event in the same tick still asks for a frame"
+        );
+        assert!(
+            !DispatchedInput::default().asks_for_frame(0),
+            "no input, no frame"
+        );
     }
 
     #[test]
