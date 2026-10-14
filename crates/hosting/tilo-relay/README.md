@@ -117,6 +117,14 @@ What a relay costs per active collaborator is measured, not estimated:
   (`Metrics::session_egress`). `tilo-relay-admin status` prints them.
   They count framed bytes before QUIC; the load bench adds what the iroh
   endpoint actually put on UDP.
+- **Presence bytes** (`peer::state_tests::presence_cost`): a controlled
+  60-move ingress schedule exercises production presence routing and writing
+  on both `/5` and `/6`. The actual accepted bytes must cost at most 70 bytes
+  per delivered presence on `/6`, and under a third of `/5`; both streams
+  must decode to identical attributed final states and event order. The
+  network scenario in `tests/presence_coalescing.rs` separately covers protocol
+  negotiation and delivery without using its scheduler-dependent byte mix
+  as a budget gate.
 - **Bytes per keystroke** (`tests/hosting_cost.rs`, per change): one
   one-character edit on the production path, frame by frame, with byte
   budgets, and the live egress counter checked against the frames the

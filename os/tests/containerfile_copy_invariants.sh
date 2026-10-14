@@ -174,7 +174,10 @@ containerfile="$repo/os/Containerfile"
 # the runtime with a fresh key. The installed paths are unchanged.
 # The boot audit's image signature policy checker is one intentional payload
 # addition beside the audit in the existing libexec COPY instruction.
-expected_contract=5f9949a545b5d443cdf299c0093447d2d3a1c2fffa6cf6947a65137b502f9d0b
+# The cache cleanup's policy (/etc/tilo/cache-gc.toml, beside desktop.toml) and
+# its system and user tilo-cache-gc.service/.timer units ride existing COPY
+# instructions; they are the intentional payload rows.
+expected_contract=3bfae7942dd781e71f91b4000d31a58dd5c467c998988cc639fb9cf22755d304
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

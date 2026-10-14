@@ -1297,8 +1297,7 @@ fn read_private_file(path: &Path, maximum: usize) -> Result<Vec<u8>, AgentError>
 
 fn private_file_authorized(metadata: &fs::Metadata) -> bool {
     let mode = metadata.mode() & 0o777;
-    // SAFETY: these credential accessors have no preconditions.
-    let effective_uid = unsafe { libc::geteuid() };
+    let effective_uid = rustix::process::geteuid().as_raw();
     if !matches!(metadata.uid(), 0) && metadata.uid() != effective_uid {
         return false;
     }
@@ -1309,8 +1308,7 @@ fn private_file_authorized(metadata: &fs::Metadata) -> bool {
 }
 
 fn process_has_group(group: libc::gid_t) -> bool {
-    // SAFETY: `getegid` has no preconditions.
-    if unsafe { libc::getegid() } == group {
+    if rustix::process::getegid().as_raw() == group {
         return true;
     }
     // SAFETY: a zero-sized query with a null pointer asks only for the count.

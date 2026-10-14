@@ -518,8 +518,21 @@ no heap memory; only explicitly enabled tracing incurs CPU clock and I/O costs.
 
 ## Idle wakeups
 
-An idle desktop should leave the CPU asleep. `idle_wakeups::` in the shell's
-`it` target holds it to a budget: it starts the production binary headless with
+Pull requests count app work through the production `NativeAppTick` scheduling
+seam in `compositor/native_idle_work_tests.rs`. Two adversarial widgets retain
+answered deadlines until draw, while the real `FrameBuilder` runs their pump,
+layout and paint passes. A due poll must update each app once with zero layout
+or draw calls; a future poll must schedule exactly one additional update. A
+later app change must still lay out and draw. Instants are explicit scheduler
+inputs, not elapsed-time gates or synchronization deadlines. This covers the
+app scheduling seam with an available presenter, not every native-loop service.
+
+```bash
+cargo test -p shell --lib idle_work_tests
+```
+
+An idle desktop should leave the CPU asleep. The shell's explicit
+`examples/idle-wakeups.rs` executable holds it to a budget: it starts the production binary headless with
 a signed-in desktop, restores a Notes tab, opens a Terminal through
 `window.new.terminal`, waits out startup work and 5 s more, then samples every thread of the
 compositor's process tree from `/proc` for 10 s and fails above
@@ -527,11 +540,14 @@ compositor's process tree from `/proc` for 10 s and fails above
 a thread blocked again), above `IDLE_CPU_BUDGET` percent of a core, or if the
 compositor painted while nobody touched it. It also holds the in-process apps'
 collaboration shovel and the identity service's client thread to
-`KEY_ASK_BUDGET` together, so a route asking for its channel keys on a 1 s
+`KEY_ROUND_BUDGET` per shovel, so a route asking for its channel keys on a 1 s
 timer again fails by name.
 
 ```bash
-cargo test --locked -p shell --test it idle_wakeups:: -- --nocapture
+cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark
+cargo build --locked -p shell --bin shell
+TILO_IDLE_SHELL_BIN="$PWD/target/debug/shell" \
+  bash tools/test-env.sh target/debug/examples/idle-wakeups
 ```
 
 It prints a table, busiest first:
@@ -555,9 +571,15 @@ bar's clock repaint when a minute turns in the window. It counts the
 compositor's `paint-tick` lines (`TILO_PAINT_STATS=ticks`), one per loop
 iteration with what woke it, read inside the window: a 2-second `paint-stats`
 summary counts every tick since the previous one, so the first one printed in
-the window can carry startup's ticks. Pull requests run it whenever
-`shell` changes; the scheduled lane (`kpis=wakeups`) runs it with a 60 s window
-(`TILO_IDLE_WAKEUP_WINDOW_SECS`) and records `wakeups.*`. When a change
+the window can carry startup's ticks. This wall-clock measurement is not a
+pull-request test: the example has `test = false` and a non-default
+`scheduled-idle-benchmark` feature. The shared fixture remains in
+`tests/idle_wakeups.rs` for integration tests. The scheduled lane
+(`kpis=wakeups`) runs the executable three times with a 60 s window
+(`TILO_IDLE_WAKEUP_WINDOW_SECS`), preserves every budget assertion and records
+`wakeups.*`. `TILO_IDLE_SHELL_BIN` explicitly selects the built production
+binary because Cargo's integration-test-only `CARGO_BIN_EXE_shell` is not
+available to examples. When a change
 removes a waker, lower `IDLE_WAKEUP_BUDGET` in the same pull request to the new
 measurement plus the same margin.
 

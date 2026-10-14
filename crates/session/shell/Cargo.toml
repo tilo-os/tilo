@@ -12,6 +12,8 @@ license.workspace = true
 # Explicit native RAM custody qualification: requires a qualified tmpfs backing
 # or permission to create a noswap fixture in a private mount namespace.
 signal-profile-native-test = []
+# Wall-clock idle qualification belongs to the scheduled performance lane.
+scheduled-idle-benchmark = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
@@ -413,6 +415,12 @@ path = "tests/it.rs"
 # Examples that carry unit tests build as test targets too, so `cargo test`
 # and the CI test jobs run those tests.
 [[example]]
+name = "idle-wakeups"
+test = false
+bench = false
+required-features = ["scheduled-idle-benchmark"]
+
+[[example]]
 name = "runtime-mcp-inspect"
 test = true
 
@@ -476,3 +484,6 @@ windows-vm = { path = "../../windows/windows-vm" }
 # The shell runtime's policy, where the person's allow for Terminal's Host
 # target (the device's own shell) is recorded.
 ush = { path = "../../runtime/ush" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

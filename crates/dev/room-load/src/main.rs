@@ -6,14 +6,23 @@
 //! forwards): each one is pre-admitted through `/join`, redeems its
 //! invitation, holds a certified session, publishes cursor presence over
 //! the live plane's HTTPS fallback and posts to the chat. It prints the
-//! join times, delivery counts and latencies, failures, and the host
-//! process's CPU and memory, sampled from `/proc`.
+//! join times, delivery counts and latencies, failures, and the host's CPU
+//! and memory, sampled from `/proc` over its whole process tree (the relay
+//! and the Automerge workers it starts), with the busiest single thread's
+//! share during the hold.
 //!
 //! With `--rooms N --shard S --chat-room`, the host spreads guests over N
 //! desktop rooms (each filled to S before the next opens) and every guest
 //! also joins one shared chat room. With `--max-guests N`, `/join` answers
 //! past N guests as the room service does when its room is full, and the
 //! run reports how fast those guests heard it.
+//!
+//! With `--spectators N`, N watching pages also certify themselves through
+//! `/spectate` (as the room service's homepage embed does) and read the
+//! first desktop room and its live plane without sending; `--max-spectators`
+//! caps them as `TILO_ROOMS_MAX_SPECTATORS` does; `--spectator-members`
+//! admits each as a Viewer of its own instead. They are reported apart,
+//! under `spectators`.
 //!
 //! Run it on a machine with cores to spare, not a laptop:
 //! `cargo run --release -p tilo-room-load -- bench --guests 300` (or any
@@ -31,6 +40,8 @@ mod guest;
 mod host;
 mod http;
 mod live;
+mod procfs;
+mod spectator;
 mod stats;
 
 use std::net::SocketAddr;
@@ -86,6 +97,10 @@ pub struct HostArgs {
     /// Guests `/join` admits before it answers that the room is full.
     #[arg(long)]
     pub max_guests: Option<usize>,
+    /// Spectators `/spectate` certifies before it answers that too many
+    /// people are watching.
+    #[arg(long)]
+    pub max_spectators: Option<usize>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -114,6 +129,16 @@ pub struct DriveArgs {
     /// Payload bytes of a chat change.
     #[arg(long, default_value_t = 300)]
     pub chat_bytes: usize,
+    /// Watching pages to start, beside the guests.
+    #[arg(long, default_value_t = 0)]
+    pub spectators: usize,
+    /// New spectators per second.
+    #[arg(long, default_value_t = 50.0)]
+    pub spectator_ramp: f64,
+    /// Admit each spectator as a Viewer of its own instead of certifying it
+    /// as the room's one spectator person.
+    #[arg(long)]
+    pub spectator_members: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -214,25 +239,6 @@ fn log_digest(path: &std::path::Path) -> serde_json::Value {
     serde_json::json!(counts)
 }
 
-/// CPU seconds (user + system) and resident bytes of `pid`.
-fn sample(pid: u32) -> Option<(f64, u64)> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after = stat.rsplit_once(") ")?.1;
-    let fields: Vec<&str> = after.split_whitespace().collect();
-    // Fields after the command: state is index 0, utime 11, stime 12.
-    let ticks: f64 = fields.get(11)?.parse::<f64>().ok()? + fields.get(12)?.parse::<f64>().ok()?;
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    let rss_kib: u64 = status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmRSS:"))?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()?;
-    // USER_HZ is 100 on every Linux the builder runs.
-    Some((ticks / 100.0, rss_kib * 1024))
-}
-
 fn origin_addr(origin: &str) -> anyhow::Result<SocketAddr> {
     let port: u16 = origin
         .rsplit(':')
@@ -266,6 +272,9 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
     if let Some(max) = args.host.max_guests {
         command.arg("--max-guests").arg(max.to_string());
     }
+    if let Some(max) = args.host.max_spectators {
+        command.arg("--max-spectators").arg(max.to_string());
+    }
     if let Some(arenas) = args.malloc_arenas {
         command.env("MALLOC_ARENA_MAX", arenas.to_string());
     }
@@ -293,6 +302,7 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         .await
         .map_err(|error| anyhow::anyhow!("host info: {error}"))?;
     let stats = Arc::new(stats::Stats::default());
+    let spectator_stats = Arc::new(stats::Stats::default());
     let (stop_tx, stop) = tokio::sync::watch::channel(false);
     let shared = Arc::new(guest::Shared {
         args: args.drive.clone(),
@@ -300,17 +310,21 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         service: http::Plain::new(started.join.parse()?),
         host_cert: host_info.host_cert,
         stats: stats.clone(),
+        spectator_stats: spectator_stats.clone(),
         started: Instant::now(),
         stop,
     });
 
-    let (cpu0, _) = sample(pid).unwrap_or_default();
+    let cpu0 = procfs::Sample::of(pid).unwrap_or_default().cpu_s;
     let begun = Instant::now();
     let mut peak_rss = 0u64;
     let ramp = Duration::from_secs_f64(1.0 / args.drive.ramp.max(0.01));
     let mut guests = tokio::task::JoinSet::new();
     let mut next = Instant::now();
     let mut started_guests = 0;
+    let spectator_ramp = Duration::from_secs_f64(1.0 / args.drive.spectator_ramp.max(0.01));
+    let mut next_spectator = Instant::now();
+    let mut started_spectators = 0;
     let mut last = (begun, cpu0);
     let mut report = tokio::time::interval(Duration::from_secs(1));
     loop {
@@ -320,22 +334,28 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
                 started_guests += 1;
                 next += ramp;
             }
+            () = tokio::time::sleep_until(next_spectator.into()), if started_spectators < args.drive.spectators => {
+                guests.spawn(spectator::run(shared.clone()));
+                started_spectators += 1;
+                next_spectator += spectator_ramp;
+            }
             _ = report.tick() => {
-                if let Some((cpu, rss)) = sample(pid) {
+                if let Some(procfs::Sample { cpu_s: cpu, bytes: rss, .. }) = procfs::Sample::of(pid) {
                     let now = Instant::now();
                     let cores = (cpu - last.1) / now.duration_since(last.0).as_secs_f64().max(1e-3);
                     last = (now, cpu);
                     peak_rss = peak_rss.max(rss);
                     let joined = stats.joined.load(std::sync::atomic::Ordering::Relaxed);
+                    let watching = spectator_stats.joined.load(std::sync::atomic::Ordering::Relaxed);
                     eprintln!(
-                        "t={:>5.1}s started={started_guests} joined={joined} host cpu={cores:.2} cores rss={} MiB presence rx={} chat rx={}",
+                        "t={:>5.1}s started={started_guests} joined={joined} spectators={started_spectators}/{watching} host cpu={cores:.2} cores rss={} MiB presence rx={} chat rx={}",
                         begun.elapsed().as_secs_f64(),
                         rss / (1024 * 1024),
                         stats.presence_rx.load(std::sync::atomic::Ordering::Relaxed),
                         stats.chat_rx.load(std::sync::atomic::Ordering::Relaxed),
                     );
                 }
-                if started_guests >= args.drive.guests {
+                if started_guests >= args.drive.guests && started_spectators >= args.drive.spectators {
                     break;
                 }
             }
@@ -344,12 +364,21 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
     let ramp_done_at = begun.elapsed().as_secs_f64();
     // Hold: everyone connected, measuring the steady state.
     let hold_begun = Instant::now();
-    let (hold_cpu0, _) = sample(pid).unwrap_or_default();
+    let hold0 = procfs::Sample::of(pid).unwrap_or_default();
     let presence0 = stats.presence_rx.load(std::sync::atomic::Ordering::Relaxed);
     let presence_tx0 = stats.presence_tx.load(std::sync::atomic::Ordering::Relaxed);
+    let received0 = shared
+        .relay
+        .received
+        .load(std::sync::atomic::Ordering::Relaxed);
     while hold_begun.elapsed() < Duration::from_secs(args.drive.hold) {
         report.tick().await;
-        if let Some((cpu, rss)) = sample(pid) {
+        if let Some(procfs::Sample {
+            cpu_s: cpu,
+            bytes: rss,
+            ..
+        }) = procfs::Sample::of(pid)
+        {
             let now = Instant::now();
             let cores = (cpu - last.1) / now.duration_since(last.0).as_secs_f64().max(1e-3);
             last = (now, cpu);
@@ -365,11 +394,19 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         }
     }
     let held = hold_begun.elapsed().as_secs_f64();
-    let (hold_cpu1, rss_end) = sample(pid).unwrap_or_default();
+    let hold1 = procfs::Sample::of(pid).unwrap_or_default();
     let presence_rate =
         (stats.presence_rx.load(std::sync::atomic::Ordering::Relaxed) - presence0) as f64 / held;
     let presence_tx_rate =
         (stats.presence_tx.load(std::sync::atomic::Ordering::Relaxed) - presence_tx0) as f64 / held;
+    // What the host sent every page during the hold: the egress an ingress
+    // in front of it forwards.
+    let egress_rate = (shared
+        .relay
+        .received
+        .load(std::sync::atomic::Ordering::Relaxed)
+        - received0) as f64
+        / held;
     let _ = stop_tx.send(true);
     while tokio::time::timeout(Duration::from_secs(10), guests.join_next())
         .await
@@ -387,24 +424,36 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         "rooms": args.host.rooms,
         "shard": args.host.shard,
         "chat_room": args.host.chat_room,
+        "max_guests": args.host.max_guests,
+        "spectators": args.drive.spectators,
+        "spectator_members": args.drive.spectator_members,
+        "max_spectators": args.host.max_spectators,
+        "host_threads": args.host_threads,
     });
     let host = serde_json::json!({
         "ramp_s": ramp_done_at,
         "hold_s": held,
-        "hold_cpu_cores": (hold_cpu1 - hold_cpu0) / held.max(1e-3),
-        "rss_mib_end": rss_end / (1024 * 1024),
+        "hold_cpu_cores": (hold1.cpu_s - hold0.cpu_s) / held.max(1e-3),
+        "hold_busiest_thread_cores": hold1.busiest_thread_cores(&hold0, held),
+        "processes": hold1.processes,
+        "rss_mib_end": hold1.bytes / (1024 * 1024),
         "rss_mib_peak": peak_rss / (1024 * 1024),
         "presence_rx_per_s": presence_rate,
         "presence_tx_per_s": presence_tx_rate,
+        "egress_bytes_per_s": egress_rate,
         // The driver shares the machine: when it runs out of cores, the
         // host's numbers are the driver's limit, not the host's.
         "session_mib_received": shared.relay.received.load(std::sync::atomic::Ordering::Relaxed) / (1024 * 1024),
-        "driver_cpu_cores_avg": sample(std::process::id()).map_or(0.0, |(cpu, _)| cpu / begun.elapsed().as_secs_f64()),
+        "driver_cpu_cores_avg": procfs::process_cpu(std::process::id()).map_or(0.0, |cpu| cpu / begun.elapsed().as_secs_f64()),
+        "driver_mib": procfs::proportional_bytes(std::process::id()).unwrap_or_default() / (1024 * 1024),
         "machine_cores": std::thread::available_parallelism().map_or(0, std::num::NonZero::get),
     });
     if let Some(fields) = summary.as_object_mut() {
         fields.insert("config".into(), config);
         fields.insert("host".into(), host);
+        if args.drive.spectators > 0 {
+            fields.insert("spectators".into(), spectator_stats.summary());
+        }
         fields.insert("host_log".into(), log_digest(&host_log()));
         fields.insert("timings".into(), timings(&host_log()));
     }

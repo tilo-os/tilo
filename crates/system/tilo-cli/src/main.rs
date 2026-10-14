@@ -39,6 +39,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+mod cleanup;
 mod health;
 mod os;
 
@@ -88,7 +89,7 @@ enum Cmd {
     /// The operating system: upgrade it, see what is booted, go back, repair.
     #[command(
         visible_alias = "system",
-        after_help = "Examples:\n  tilo os upgrade            Move onto the newest image made for this machine\n  tilo os upgrade --check    Say which image that is, change nothing\n  tilo os status\n  tilo os rollback"
+        after_help = "Examples:\n  tilo os upgrade            Move onto the newest image made for this machine\n  tilo os upgrade --check    Say which image that is, change nothing\n  tilo os status\n  tilo os clean              Remove caches nothing uses, by policy, now\n  tilo os rollback"
     )]
     Os {
         #[command(subcommand)]
@@ -177,6 +178,18 @@ enum SystemCmd {
     },
     /// Explain how to enter the isolated recovery environment.
     Repair,
+    /// Remove caches this machine can fetch or regenerate again, by policy, now.
+    #[command(
+        long_about = "Remove what this machine can download or regenerate again, by the policy in \
+                      /etc/tilo/cache-gc.toml (a person's ~/.config/tilo/cache-gc.toml replaces it \
+                      for their own run). As root: Flatpak runtimes no installed app uses, and the \
+                      copy of the last developer image upgrade in /var/lib/tilo-vm/image. As a \
+                      person: their test fixture caches. Nothing in use is removed. \
+                      tilo-cache-gc.timer runs both daily; `tilo os status` says what the last \
+                      runs freed and what they kept.",
+        after_help = "Examples:\n  tilo os clean          Clean your own test caches now\n  sudo tilo os clean     Clean the system caches now"
+    )]
+    Clean,
     /// Check that this session renders on the machine's GPU.
     #[command(
         after_help = "Examples:\n  tilo os health --gpu\n  tilo os health --gpu --json\n\nExits 1 when a GPU is present but the session or an app is not using it."
@@ -195,7 +208,7 @@ fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
     let result = if invoked_as(&args, "system") {
         let cli = SystemCli::parse_from(args);
-        if matches!(cli.cmd, SystemCmd::Health { .. }) {
+        if matches!(cli.cmd, SystemCmd::Health { .. } | SystemCmd::Clean) {
             run_system(cli.cmd)
         } else {
             require_system_provider().and_then(|()| run_system(cli.cmd))
@@ -236,7 +249,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Os { cmd } => {
             // Health reads the running session, not the image, so it answers
             // wherever a Tilo session runs.
-            if !matches!(cmd, SystemCmd::Health { .. }) {
+            // Cleaning works on any distribution: its caches are not the image's.
+            if !matches!(cmd, SystemCmd::Health { .. } | SystemCmd::Clean) {
                 require_system_provider()?;
             }
             run_system(cmd)
@@ -251,7 +265,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             if json {
                 args.push("--json");
             }
-            run_helper_directly(&args)
+            let code = run_helper_directly(&args)?;
+            if !json {
+                print_cleanup_status();
+            }
+            Ok(code)
         }
         Cmd::Rollback { yes } => {
             require_system_provider()?;
@@ -386,6 +404,42 @@ fn run_system(cmd: SystemCmd) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         SystemCmd::Health { gpu: _, json } => health::run_gpu(json),
+        SystemCmd::Clean => clean(),
+    }
+}
+
+/// The root run cleans the system's caches; a person's run cleans their own.
+fn clean() -> Result<ExitCode> {
+    let now = std::time::SystemTime::now();
+    let (title, record) = if is_root() {
+        ("Disk cleanup", cleanup::run_system()?)
+    } else {
+        ("Test caches", cleanup::run_user()?)
+    };
+    print!("{}", cleanup::render(title, Some(&record), now));
+    if !is_root() {
+        println!(
+            "System caches are cleaned daily by tilo-cache-gc.timer; `sudo tilo os clean` cleans them now."
+        );
+    }
+    Ok(if record.failed.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// What the last cleanup runs freed and kept, after the deployments.
+fn print_cleanup_status() {
+    let now = std::time::SystemTime::now();
+    let system = cleanup::read_record(std::path::Path::new(cleanup::SYSTEM_RECORD));
+    print!(
+        "\n{}",
+        cleanup::render("Disk cleanup", system.as_ref(), now)
+    );
+    // A person's own run, once it has run at least once: on most machines nobody runs tests.
+    if let Some(user) = cleanup::user_record().and_then(|path| cleanup::read_record(&path)) {
+        print!("{}", cleanup::render("Test caches", Some(&user), now));
     }
 }
 
