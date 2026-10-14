@@ -252,11 +252,7 @@ impl std::fmt::Display for Placement {
 
 /// The first eight hex characters of a device key, for log lines.
 fn short_device(device: &DeviceKey) -> String {
-    device
-        .iter()
-        .take(4)
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex::encode(device.get(..4).unwrap_or_default())
 }
 
 /// Choose the best eligible worker for `needs` among `candidates`.
