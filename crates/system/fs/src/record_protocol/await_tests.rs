@@ -289,19 +289,34 @@ async fn idle_awaits_share_one_connection() {
     assert_eq!(accepted.load(Ordering::SeqCst) - before, 1);
 }
 
+/// Wait until the host holds the recipient's await. The recipient opens
+/// its stream and authenticates first, which can take longer than any fixed
+/// pause on a loaded runner; a change made before the await arrives would
+/// time that handshake instead of the wake.
+async fn until_held(protocol: &RecordProtocol) {
+    let started = Instant::now();
+    while protocol.awaits.available_permits() == MAX_RECORD_CHANGE_AWAITS {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the recipient's await never reached the host"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 /// With a minute-long limit only a write can answer the held await, and
 /// it does at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_host_write_answers_a_held_await_at_once() {
     let mut fixture = Fixture::new().await;
-    let (_router, accepted) = fixture.serve(fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT));
+    let protocol = fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT);
+    let (_router, accepted) = fixture.serve(protocol.clone());
     let mut refresher = fixture.refresher().await;
     let waiting = tokio::spawn(async move {
         let refresh = refresher.next().await;
         (refresh, Instant::now(), refresher)
     });
-    // Let the await reach the host before the write.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    until_held(&protocol).await;
     let wrote = Instant::now();
     fixture.write(2);
     let (refresh, answered, refresher) = waiting.await.unwrap();
@@ -332,13 +347,14 @@ async fn a_host_write_answers_a_held_await_at_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_revoked_grant_ends_a_held_await_at_once() {
     let fixture = Fixture::new().await;
-    let (_router, _accepted) = fixture.serve(fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT));
+    let protocol = fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT);
+    let (_router, _accepted) = fixture.serve(protocol.clone());
     let mut refresher = fixture.refresher().await;
     let waiting = tokio::spawn(async move {
         let refresh = refresher.next().await;
         (refresh, Instant::now())
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    until_held(&protocol).await;
     let revoked = Instant::now();
     assert!(fixture.authority.revoke(fixture.link.invite.id).unwrap());
     let (refresh, answered) = waiting.await.unwrap();
