@@ -2518,9 +2518,17 @@ mod tests {
         let notes = home.join(".config/notes");
         std::fs::create_dir_all(&store).unwrap();
         std::fs::create_dir_all(&notes).unwrap();
+        // The home is writable; `notes` inside it is capped at Read, so it
+        // has its own read-only mount the pin must not shadow.
         let caps = vec![
             fs_grant("so.tilo.files", &home.display().to_string(), Access::Write),
             fs_grant("so.tilo.files", &notes.display().to_string(), Access::Read),
+            CapOverride::new(
+                Subject::app("so.tilo.files"),
+                Scope::FsPath(notes.display().to_string()),
+                collab_types::caps::Effect::Restrict,
+                Access::Read,
+            ),
         ];
         let plan = CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
             .confine_private_stores(std::slice::from_ref(&store));
