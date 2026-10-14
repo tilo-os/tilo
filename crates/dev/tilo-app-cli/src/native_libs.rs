@@ -132,14 +132,16 @@ pub fn thin_runtime_available() -> bool {
     })
 }
 
-/// The directories fonts are installed in, as the XDG base directories and
-/// fontconfig's defaults name them.
+/// The directories fonts are installed in: the XDG base directories and
+/// fontconfig's defaults, then this system's own font folders (macOS keeps
+/// its fonts under `/System/Library/Fonts`, Windows in its font folder).
 fn font_dirs() -> Vec<PathBuf> {
     tilo_paths::xdg::data_home()
         .into_iter()
         .chain(tilo_paths::xdg::data_dirs())
         .map(|dir| dir.join("fonts"))
         .chain(tilo_paths::home().map(|home| home.join(".fonts")))
+        .chain(tilo_paths::system_font_dirs())
         .collect()
 }
 
