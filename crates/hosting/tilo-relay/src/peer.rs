@@ -5652,13 +5652,7 @@ async fn handle_delta(
         }
         runtime.governor_tap.clone()
     };
-    let governor = governor_tap.and_then(|tap| {
-        let Envelope::Delta { delta, .. } = &env else {
-            return None;
-        };
-        let (_, _, body) = crate::coedit::retention_view(delta)?;
-        Some((tap, body.to_vec()))
-    });
+    let governor = governor_tap.and_then(|tap| Some((tap, governor_notice(&env)?)));
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
     if let Some((tap, body)) = governor {
         let _ = tap.try_send((peer.device_public_key, body));
@@ -5669,6 +5663,18 @@ async fn handle_delta(
     drop(admitting);
 
     Ok(None)
+}
+
+/// What the room's governor follows of `env`, a member's state change: its
+/// retained body. The room's governor stewards its channels and creates
+/// records from these, so every change the relay keeps must reach it, one
+/// sent alone and one in a checkpoint prefix alike.
+fn governor_notice(env: &Envelope) -> Option<Vec<u8>> {
+    let Envelope::Delta { delta, .. } = env else {
+        return None;
+    };
+    let (_, _, body) = crate::coedit::retention_view(delta)?;
+    Some(body.to_vec())
 }
 
 /// A member volunteering to compact sealed routes, or its coverage
@@ -6134,11 +6140,33 @@ async fn handle_delta_prefix(
     for envelope in &envelopes {
         trace_native_publication("server_authorized", envelope, None);
     }
-    let governed_source = {
+    let (governed_source, governor_tap) = {
         let runtime = workspace.lock().await;
-        checkpoint_prefix_recovery_allowed(&runtime, peer, *author_device_public_key, &source)
+        (
+            checkpoint_prefix_recovery_allowed(&runtime, peer, *author_device_public_key, &source),
+            runtime.governor_tap.clone(),
+        )
     };
-    if !governed_source {
+    // Every change of the prefix reaches the room's governor once it is
+    // kept, as one sent alone does (`handle_delta`): an access request and
+    // the next checkpoint arriving together must not hide the request from
+    // the channel's steward.
+    let notices: Vec<Vec<u8>> = if governor_tap.is_some() {
+        envelopes.iter().filter_map(governor_notice).collect()
+    } else {
+        Vec::new()
+    };
+    if governed_source {
+        enqueue_checkpoint_prefix(
+            &workspace,
+            envelopes,
+            source,
+            peer.role,
+            session.metrics.clone(),
+            inbound_budget,
+        )
+        .await?;
+    } else {
         for (envelope, budget) in envelopes.into_iter().zip(inbound_budget) {
             enqueue_state(
                 &workspace,
@@ -6150,17 +6178,12 @@ async fn handle_delta_prefix(
             .await?;
             drop(budget);
         }
-        return Ok(None);
     }
-    enqueue_checkpoint_prefix(
-        &workspace,
-        envelopes,
-        source,
-        peer.role,
-        session.metrics.clone(),
-        inbound_budget,
-    )
-    .await?;
+    if let Some(tap) = governor_tap {
+        for body in notices {
+            let _ = tap.try_send((peer.device_public_key, body));
+        }
+    }
     Ok(None)
 }
 
