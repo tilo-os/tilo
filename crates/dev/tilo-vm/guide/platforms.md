@@ -289,9 +289,14 @@ keys. For a shell or one command as root: `tilo-vm vm ssh [<name>] [-- <command>
 
 `vms.toml` sits in the platform config dir (`~/.config/tilo-vm/` on Linux,
 `~/Library/Application Support/tilo-vm/` on macOS, `%APPDATA%\tilo-vm\` on
-Windows); `tilo-vm vm list` prints its path. UTM cannot import disks from the
-command line: import the downloaded disk once in UTM and pass its name as
-`--template`.
+Windows); `tilo-vm vm list` prints its path. On UTM, `vm create --image
+<disk.qcow2>` (or the published disk) imports the disk once over UTM's
+AppleScript as the template VM `Tilo Dev (<name>)`, an aarch64 QEMU guest on
+Apple's hypervisor with UEFI, and clones it; macOS asks once whether the
+terminal may control UTM. `--template '<a UTM VM>'` clones one imported
+before. The VM's address comes from `utmctl ip-address` where the guest runs
+the QEMU guest agent, else from the lease macOS's DHCP server recorded for the
+VM's MAC address in `/var/db/dhcpd_leases` (UTM's shared network).
 
 `vm stop` waits for the VM lock, so it never cuts off a swap, gc or upgrade;
 `--force` skips that.
