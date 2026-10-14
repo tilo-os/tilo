@@ -748,8 +748,16 @@ pub fn card_height(
     } else {
         pad_x
     };
+    if card.single_action() {
+        if single_action_inline(text_renderer, theme, card, width) {
+            return compact;
+        }
+        let control_height = ButtonFace::height(crate::widget::ControlSize::Small, theme);
+        let (_, pad_y) = card_pad(theme);
+        return (compact + control_height + pad_y + choice_lead(theme)).ceil();
+    }
     let text_width = width - leading_column(theme, card) - pad_x - trailing;
-    if card.single_action() || text_width <= 0.0 {
+    if text_width <= 0.0 {
         return compact;
     }
     let style = theme.text(TextRole::Caption);
@@ -803,23 +811,46 @@ pub fn paint_card(
     } else {
         rect.x1 - pad_x
     };
+    let mut action_top = None;
     if card.single_action() {
-        let action = paint_single_action(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            Rect::new(rect.x0, rect.y0, text_right, rect.y1),
-            card,
-            a,
-        );
-        hit.primary_action_rect = action;
-        text_right = action.x0 - f64::from(theme.tokens.spacing.s3);
+        if single_action_inline(text_renderer, theme, card, rect.width()) {
+            let action = paint_single_action(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                Rect::new(rect.x0, rect.y0, text_right, rect.y1),
+                card,
+                a,
+            );
+            hit.primary_action_rect = action;
+            text_right = action.x0 - f64::from(theme.tokens.spacing.s3);
+        } else {
+            // Beside the text it would squeeze the text to nothing: it
+            // ends the card instead, where a pair of choices would.
+            let y1 = rect.y1 - choice_foot(theme);
+            let y0 = y1 - choice_height(theme);
+            let x1 = if card.closable {
+                rect.x1 - pad_x
+            } else {
+                rect.x1
+            };
+            hit.primary_action_rect = paint_single_action(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                Rect::new(rect.x0, y0, x1, y1),
+                card,
+                a,
+            );
+            action_top = Some(y0 - choice_lead(theme));
+        }
     }
 
     // Text column: optional attribution caption, then the title, then the
     // optional body.
-    let action_top = paint_card_actions(
+    let action_top = action_top.or(paint_card_actions(
         scene,
         transform,
         text_renderer,
@@ -828,7 +859,7 @@ pub fn paint_card(
         card,
         a,
         &mut hit,
-    );
+    ));
     let block = paint_card_text(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
         Rect::new(text_x0, rect.y0, text_right, action_top.unwrap_or(rect.y1)),
@@ -1165,6 +1196,36 @@ pub fn card_ground(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color
 }
 
 /// The width of a card's single action face.
+/// Whether a card `width` wide keeps its one action beside the text: only
+/// while the text keeps room to read, its whole title or some eight lines'
+/// height of width. Large text in a narrow column moves the action under
+/// the text instead.
+fn single_action_inline(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    card: &ToastCard<'_>,
+    width: f64,
+) -> bool {
+    let (pad_x, _) = card_pad(theme);
+    let trailing = if card.closable {
+        f64::from(theme.tokens.spacing.s2)
+            + ButtonFace::height(crate::widget::ControlSize::Small, theme)
+            + f64::from(theme.tokens.spacing.s1)
+    } else {
+        pad_x
+    };
+    let room = width
+        - leading_column(theme, card)
+        - pad_x
+        - trailing
+        - single_action_width(text_renderer, theme, card.primary_action)
+        - f64::from(theme.tokens.spacing.s3);
+    let title = theme.text(TextRole::Label).strong();
+    let (title_width, _) = text_renderer.measure_style(&single_line_text(card.title), None, &title);
+    let (_, line) = text_renderer.measure_style("Ag", None, &theme.text(TextRole::Caption));
+    room >= f64::from(title_width) || room >= f64::from(line) * 8.0
+}
+
 fn single_action_width(text_renderer: &mut TextRenderer, theme: &Theme, label: &str) -> f64 {
     ButtonFace::new(Rect::ZERO, label)
         .control_size(crate::widget::ControlSize::Small)
@@ -1739,6 +1800,37 @@ mod tests {
         )
         .unwrap();
         stack.apply_layout(&tree, node, Point::ZERO);
+    }
+
+    /// A card's one action sits beside its text while the text keeps room
+    /// to read; large text in a narrow column puts it under the text.
+    #[test]
+    fn a_lone_action_moves_under_text_it_would_squeeze() {
+        let mut tr = TextRenderer::new();
+        let mut card = ToastCard::new("Launch checklist wasn't saved", ToastKind::Warning)
+            .caption("Notes")
+            .body("Your changes are still in Notes.")
+            .closable(true);
+        card.primary_action = "Try again";
+        let paint = |tr: &mut TextRenderer, theme: &Theme, width: f64| {
+            let rect = Rect::new(0.0, 0.0, width, card_height(tr, theme, &card, width));
+            let hit = paint_card(&mut Scene::new(), Affine::IDENTITY, tr, theme, rect, &card);
+            (rect, hit.primary_action_rect)
+        };
+
+        let (rect, beside) = paint(&mut tr, &Theme::dark(), 440.0);
+        assert!(
+            beside.y0 < rect.center().y && beside.y1 > rect.center().y,
+            "{beside:?} sits beside the text in {rect:?}"
+        );
+
+        let large = Theme::light().with_text_scale(2.0);
+        let (rect, under) = paint(&mut tr, &large, 320.0);
+        assert!(
+            under.y0 > rect.center().y && under.y1 <= rect.y1,
+            "{under:?} ends the card {rect:?}"
+        );
+        assert!(rect.height() > minimum_card_height(&mut tr, &large, &card));
     }
 
     #[test]
