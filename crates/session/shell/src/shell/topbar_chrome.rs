@@ -227,6 +227,8 @@ impl DesktopChromeSource for NativeChrome {
             }),
             active_exposures: state.active_exposures().to_vec(),
             topbar_widgets: Some(self.widgets.borrow().clone()),
+            // The strip ribbon already places strips on this desktop.
+            strip_places: None,
         }
     }
 
@@ -256,6 +258,9 @@ impl DesktopChromeSource for NativeChrome {
                 return true;
             }
             ChromeIntent::HideClock => state.overlays.clock = false,
+            ChromeIntent::SwitchStrip(strip) => return state.focus_strip(strip),
+            // Strips are added from the ribbon and workspace settings here.
+            ChromeIntent::AddStrip { .. } => return false,
             ChromeIntent::ClockCommand {
                 command,
                 activity_id,

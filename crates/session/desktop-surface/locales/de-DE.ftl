@@ -78,6 +78,15 @@ topbar-clock-add-one-minute = Eine Minute hinzufügen
 topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation
+topbar-strips = Leisten in diesem Arbeitsbereich
+topbar-strip-count = { $name } · { $count }
+topbar-strip-go = Zu { $name } wechseln, { $count ->
+    [0] niemand dort
+    [one] eine Person dort
+   *[other] { $count } Personen dort
+}
+topbar-strip-add = Leiste hinzufügen
+topbar-strip-name-placeholder = Leiste benennen
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
