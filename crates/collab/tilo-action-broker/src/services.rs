@@ -278,6 +278,11 @@ pub struct LaunchableApplication {
     /// A host application Tilo did not package: it runs outside every Tilo
     /// sandbox, with the user's own files, and publishes no typed actions.
     pub unconfined: bool,
+    /// What its signed manifest offers while it is not running
+    /// (`[[offers]]`): listed in a workspace where it has published nothing
+    /// yet. Invoking one launches it, and its published action admits the
+    /// invocation.
+    pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
 }
 /// The application a launcher-authenticated connection belongs to, and the
 /// workspace it was launched into. Launch content is only ever read through

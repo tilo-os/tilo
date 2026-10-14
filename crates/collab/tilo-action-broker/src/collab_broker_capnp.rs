@@ -17853,6 +17853,7 @@ pub mod tests {
                     package_id: "so.tilo.word-processor".into(),
                     display_name: "Writer".into(),
                     unconfined: false,
+                    offers: Vec::new(),
                 }]
             }
             fn launch(

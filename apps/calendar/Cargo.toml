@@ -67,6 +67,8 @@ default = ["live"]
 live = ["tilo-dav/net", "dep:tilo-net"]
 
 [dev-dependencies]
+# Reads the signed manifest's offers to check them against what the app publishes.
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["chrono", "test-support"] }
 tempfile.workspace = true
 mail = { path = "../mail" }

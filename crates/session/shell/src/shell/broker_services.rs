@@ -818,6 +818,7 @@ fn launchable_applications(
             package_id: format!("{HOST_APPLICATION_PREFIX}{}", app.desktop_id),
             display_name: app.name,
             unconfined: true,
+            offers: Vec::new(),
         });
     packages
         .into_iter()
@@ -825,6 +826,7 @@ fn launchable_applications(
             package_id: app.package_id,
             display_name: app.display_name,
             unconfined: false,
+            offers: app.offers,
         })
         .chain(hosts)
         .collect()
@@ -2414,6 +2416,7 @@ mod tests {
             opens_extensions: Vec::new(),
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
+            offers: Vec::new(),
         };
         let host = |id: &str, name: &str| crate::shell::host_apps::HostApp {
             desktop_id: id.into(),
