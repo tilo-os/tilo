@@ -2440,6 +2440,13 @@ session-diagnostics-gpu_stages = Zeiten der GPU-Verarbeitungsschritte erfassen
 session-diagnostics-gpu_timestamps = GPU-Zeitstempel aktivieren
 session-diagnostics-gpu_dispatch_timestamps = Zeitstempel der GPU-Aufträge aktivieren
 session-diagnostics-dispatch-requires-timestamps = Die Zeitdiagnose der GPU-Aufträge benötigt GPU-Zeitstempel.
+session-diagnostics-profile-start = Compositor profilieren und das Profil speichern
+session-diagnostics-profile-stop = Profilierung des Compositors beenden
+session-diagnostics-profile-seconds = Wie viele Sekunden aufgezeichnet werden (Standard 30)
+session-diagnostics-profile-seconds-range = Ein Profil zeichnet zwischen 1 und { $max } Sekunden auf.
+session-diagnostics-profile-no-state-dir = Es gibt kein Statusverzeichnis zum Speichern des Profils; setze HOME oder XDG_STATE_HOME.
+session-diagnostics-profile-already-recording = Es wird bereits ein Profil in { $path } aufgezeichnet. Beende es zuerst.
+session-diagnostics-profile-not-created = Das Profil konnte nicht angelegt werden: { $error }
 
 device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht verfügbar. Aktualisieren und erneut versuchen.
 search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
