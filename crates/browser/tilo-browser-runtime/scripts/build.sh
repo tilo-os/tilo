@@ -122,7 +122,9 @@ linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
 # no module to read (a wasm-bindgen that makes its output itself), so
 # such a pkg/ is never reused.
 made_from=""
-if [[ -f "$linked" ]]; then made_from="$(stat -c '%s %Y' "$linked") split=$split"; fi
+# Size and modification time, with GNU stat or the BSD stat of macOS.
+file_stamp() { stat -c '%s %Y' "$1" 2>/dev/null || stat -f '%z %m' "$1"; }
+if [[ -f "$linked" ]]; then made_from="$(file_stamp "$linked") split=$split"; fi
 if [[ -n "$made_from" ]] && kept pkg/.made-from && [[ "$(cat "$out/pkg/.made-from")" == "$made_from" ]]; then
   echo "pkg: unchanged module, kept" >&2
 else
