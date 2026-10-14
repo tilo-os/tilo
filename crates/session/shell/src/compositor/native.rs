@@ -3707,6 +3707,8 @@ impl ControlState for FrameBuilderControlState<'_> {
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         serde_json::json!({
+            "workspace_work": crate::shell::work_accounting::snapshot(),
+            "workspace_content": self.fb.host().workspace_content_id(),
             "seat_focus": self.seat.map(State::seat_focus_json),
             "native_window_provenance": self.seat.map(|seat| seat.native_window_provenance_with_broker(native_broker.as_ref())),
             "overlays": {

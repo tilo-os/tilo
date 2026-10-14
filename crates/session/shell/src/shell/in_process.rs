@@ -447,6 +447,7 @@ impl InProcessApps {
         record: RecordId,
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
+        super::work_accounting::app_mounted();
         if definition.app_id == tilo_desktop::feedback::PACKAGE {
             return match &self.feedback {
                 Some(feedback) => feedback.prepare(&self.device_id, &self.author.0, tab),
