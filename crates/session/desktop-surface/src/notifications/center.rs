@@ -2721,6 +2721,53 @@ mod tests {
         center.key(&host, &layout, &Key::Named(NamedKey::End));
         assert_eq!(center.start, 20 - visible);
     }
+
+    #[test]
+    fn the_pager_is_a_hint_with_no_press_or_focus_stop_at_either_end() {
+        fn stops_in(node: &AccessNode, band: Rect, found: &mut Vec<String>) {
+            let inside = node
+                .bounds
+                .as_ref()
+                .is_some_and(|b| Rect::new(b.x0, b.y0, b.x1, b.y1).intersect(band).area() > 0.0);
+            if inside || (node.state.focusable && node.bounds.is_none()) {
+                found.push(node.name.clone().unwrap_or_default());
+            }
+            for child in &node.children {
+                stops_in(child, band, found);
+            }
+        }
+        let host = TestHost::default();
+        for i in 0..20 {
+            host.log
+                .borrow_mut()
+                .retain(Notification::new(format!("n{i}"), ""));
+        }
+        let layout = layout();
+        let mut center = NotificationCenter::new();
+        let visible = center.visible_rows(&host, &layout);
+        let footer = layout.footer();
+        let halves = [
+            Point::new(footer.x0 + footer.width() / 4.0, footer.center().y),
+            Point::new(footer.x1 - footer.width() / 4.0, footer.center().y),
+        ];
+        for end in [0, 20 - visible] {
+            center.start = end;
+            for p in halves {
+                assert_eq!(center.click(&host, &layout, p), CenterOutcome::Ignored);
+                assert_eq!(center.start, end, "a press on the pager never pages");
+            }
+            let mut stops = Vec::new();
+            stops_in(
+                &center.accessibility(&host, &layout, Instant::now()),
+                footer,
+                &mut stops,
+            );
+            assert!(
+                stops.is_empty(),
+                "the pager exposes no control to reach: {stops:?}"
+            );
+        }
+    }
     #[test]
     fn a_row_opens_where_it_leads_and_only_reads_when_there_is_nowhere() {
         let host = TestHost::default();
