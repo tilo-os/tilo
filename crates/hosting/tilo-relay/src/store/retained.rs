@@ -968,11 +968,10 @@ impl RetainBuild {
         }
         self.sorter.stats.last_step_work = 0;
         #[cfg(test)]
-        if matches!(self.phase, RetainPhase::Sort) {
-            super::test_barrier::pause(
-                self.scratch.parent().unwrap().parent().unwrap(),
-                "retain-sort",
-            );
+        if matches!(self.phase, RetainPhase::Sort)
+            && let Some(root) = self.scratch.parent().and_then(Path::parent)
+        {
+            super::test_barrier::pause(root, "retain-sort");
         }
         match &mut self.phase {
             RetainPhase::Scan(entries) => {

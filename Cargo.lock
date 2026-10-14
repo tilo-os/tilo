@@ -18163,6 +18163,7 @@ dependencies = [
  "tempfile",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-automerge-isolate",
  "tilo-moq",
  "tilo-peer-state",
  "tilo-relay",

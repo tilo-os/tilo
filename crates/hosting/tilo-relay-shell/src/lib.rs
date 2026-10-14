@@ -26,6 +26,15 @@
 //! An adapter that classifies nothing makes the host keep every entry and
 //! fold none: unknown data never grants removal.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::string_slice,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::collections::BTreeSet;
 
 #[cfg(feature = "web")]
@@ -35,6 +44,11 @@ pub mod selection;
 
 pub use neighbour::NeighbourPayloads;
 pub use selection::binding::{NeighbourReplay, ShellAuthority};
+
+// Selection verifies peer-supplied Automerge bytes in worker processes
+// started from this test binary; this serves them.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 
 /// The document a retained entry belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
