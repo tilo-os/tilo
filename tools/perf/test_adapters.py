@@ -759,5 +759,72 @@ class BrowserQualification(unittest.TestCase):
         self.assertIn("--demo-seconds 0", workflow)
 
 
+STREAM_HARNESS = ROOT / "scripts/perf/native_stream_qualification.mjs"
+
+
+def stream_report(**changes) -> dict:
+    """The shape scripts/perf/native_stream_qualification.mjs writes, reduced."""
+    report = {
+        "schema": 1, "renderer": "swiftshader",
+        "bundle": {"revision": "a" * 40, "dirty": False, "profile": "release", "digest": "d" * 64},
+        "browser": {"product": "Chrome/153.0.8010.12"},
+        "viewport": {"width": 960, "height": 540, "deviceScaleFactor": 1},
+        "session": {"encoder": "x264enc (software, software)", "hardware": False, "fps": 30, "width": 1280,
+                    "height": 720},
+        "workload": {"seconds": 10, "inputs": 20, "carrier": "webtransport"},
+        "counts": {"sent": 300, "deliveredPercent": 99.33},
+        "correctness": {"failures": []},
+        "samples": {"startup_ms": [640.0], "frame_latency_ms": [30.0, 35.0, 80.0], "frame_interval_ms": [33.0, 34.0],
+                    "encode_ms": [4.0, 5.0], "input_ms": [3.0, 6.0]},
+    }
+    for key, value in changes.items():
+        if key in report["bundle"]:
+            report["bundle"] = {**report["bundle"], key: value}
+        else:
+            report[key] = value
+    return report
+
+
+class NativeStream(unittest.TestCase):
+    def test_each_sample_list_becomes_its_kpi_and_misses_one_more(self):
+        records = {item.kpi: item for item in adapters.native_stream(stream_report(), BROWSER_ENV)}
+        self.assertEqual(set(records), {kpi for kpi, _ in adapters.STREAM_KPIS.values()} | {"stream.frame.missed"})
+        latency = records["stream.frame.latency"]
+        self.assertEqual((latency.unit, latency.n, latency.p50, latency.max), ("ms", 3, 35.0, 80.0))
+        missed = records["stream.frame.missed"]
+        self.assertEqual((missed.unit, missed.n, missed.max), ("percent", 1, 0.67))
+        self.assertEqual((latency.meta["encoder_hardware"], latency.meta["window"], latency.meta["carrier"]),
+                         ("false", "1280x720", "webtransport"))
+
+    def test_a_report_of_another_environment_or_an_incorrect_stream_is_refused(self):
+        for report, reason in ((stream_report(renderer="gpu"), "not the env's swiftshader"),
+                               (stream_report(profile="dev"), "dev build"),
+                               (stream_report(revision="b" * 40), "built from b"),
+                               (stream_report(dirty=True), "dirty"),
+                               (stream_report(schema=2), "schema"),
+                               (stream_report(correctness={"failures": ["2 corrupt pictures"]}), "corrupt"),
+                               (stream_report(counts={"sent": 3, "deliveredPercent": 140.0}), "not a share")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                adapters.native_stream(report, BROWSER_ENV)
+
+    def test_a_measurement_without_samples_fails(self):
+        report = stream_report()
+        report["samples"] = {**report["samples"], "input_ms": []}
+        with self.assertRaisesRegex(ValueError, "input_ms"):
+            adapters.native_stream(report, BROWSER_ENV)
+
+    def test_the_fields_are_the_harnesses(self):
+        """The harness writes every sample list the adapter reads."""
+        source = STREAM_HARNESS.read_text()
+        samples = source[source.index("samples: {"):source.index("counts: {")]
+        self.assertEqual(set(re.findall(r"\b([a-z_]+_ms):", samples)), set(adapters.STREAM_KPIS))
+
+    def test_every_kpi_the_scheduled_lane_reports_has_a_budget(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("stream.")}
+        produced = {item.kpi for item in adapters.native_stream(stream_report(), BROWSER_ENV)}
+        self.assertEqual(budgeted, produced)
+
+
 if __name__ == "__main__":
     unittest.main()
