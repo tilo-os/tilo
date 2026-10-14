@@ -1709,30 +1709,34 @@ impl InstallerApp {
         self.erase_confirmation_seen = value;
     }
 
-    fn validate_current_step_details(&self) -> Result<(), String> {
-        if self.step == Step::Account && !valid_full_name(local_text(&self.full_name).trim()) {
+    fn validate_account_details(&self) -> Result<(), String> {
+        if !valid_full_name(local_text(&self.full_name).trim()) {
             return Err(
                 "Use at most 100 characters for the name, without colons or control characters"
                     .into(),
             );
         }
+        validate_passwords(
+            &secret_copy(&self.password),
+            &secret_copy(&self.password_confirmation),
+        )?;
+        let separate = secret_copy(&self.disk_password);
+        if !separate.is_empty() && separate.as_str() == secret_copy(&self.password).as_str() {
+            return Err("Choose a disk secret different from the account password".into());
+        }
+        validate_startup_secret_for(
+            &self.startup_secret(),
+            matches!(
+                self.verified_boot_state(),
+                VerifiedBootState::TargetVerified
+            ),
+        )
+        .map_err(str::to_string)
+    }
+
+    fn validate_current_step_details(&self) -> Result<(), String> {
         if self.step == Step::Account {
-            validate_passwords(
-                &secret_copy(&self.password),
-                &secret_copy(&self.password_confirmation),
-            )?;
-            let separate = secret_copy(&self.disk_password);
-            if !separate.is_empty() && separate.as_str() == secret_copy(&self.password).as_str() {
-                return Err("Choose a disk secret different from the account password".into());
-            }
-            validate_startup_secret_for(
-                &self.startup_secret(),
-                matches!(
-                    self.verified_boot_state(),
-                    VerifiedBootState::TargetVerified
-                ),
-            )
-            .map_err(str::to_string)?;
+            self.validate_account_details()?;
         }
         if self.step == Step::Options {
             if !self.filesystem_policy_ready() {
@@ -1749,6 +1753,33 @@ impl InstallerApp {
             }
         }
         Ok(())
+    }
+
+    fn next_setup_step(&self) -> Option<Step> {
+        // Storage revalidation must not repeat a completed account. A public
+        // prepared-setup binding alone is not a credential: reuse only secrets
+        // supplied in this session, checked against the current boot policy.
+        let account_ready = self.step == Step::Disk
+            && self
+                .profile_completion
+                .is_some_and(ProfileCompletion::identity_complete)
+            && valid_username(&local_text(&self.username))
+            && self.validate_account_details().is_ok();
+        // Never skip media consent or Review. Unsupported filesystems still
+        // need repair, even if the original profile was complete.
+        if self.step == Step::Account || account_ready {
+            if self
+                .profile_completion
+                .is_some_and(ProfileCompletion::options_complete)
+                && self.filesystem_policy_ready()
+            {
+                Some(Step::Media)
+            } else {
+                Some(Step::Options)
+            }
+        } else {
+            next_step(self.step)
+        }
     }
 
     /// Advance to the next step if the current one validates.
@@ -1826,18 +1857,7 @@ impl InstallerApp {
                         }
                     }
                 }
-                // A profile that answered every option skips that page, but
-                // never the media formats: only the person opts in to them.
-                let destination = if self.step == Step::Account
-                    && self
-                        .profile_completion
-                        .is_some_and(ProfileCompletion::options_complete)
-                {
-                    Some(Step::Media)
-                } else {
-                    next_step(self.step)
-                };
-                if let Some(n) = destination {
+                if let Some(n) = self.next_setup_step() {
                     // Never auto-advance into Install via Next; the Begin
                     // button (begin flag) is the only entry into install.
                     if n != Step::Install {
@@ -6185,6 +6205,121 @@ mod tests {
             assert_eq!(disk_rows.len(), 2);
             assert!(!disk_rows[0].is_focusable());
             assert!(disk_rows[1].is_focusable());
+        }
+    }
+
+    fn prepared_profile_app() -> InstallerApp {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        let object = serde_json::json!({
+            "schema": 1, "hostname": "travel", "username": "owner",
+            "full_name": "Owner", "locale": "en_US.UTF-8", "keyboard": "us",
+            "timezone": "UTC", "filesystem": "btrfs",
+            "prepared_setup": {
+                "schema": 1, "sealed_bytes": 4096, "ciphertext_sha256": "a".repeat(64)
+            }
+        });
+        app.apply_media_profile(
+            crate::media_profile::validate_object(object.as_object().unwrap()).unwrap(),
+        );
+        app.tpm2 = false;
+        app.selected_disk = Some(0);
+        app
+    }
+
+    #[test]
+    fn prepared_storage_revalidation_reuses_supplied_credentials_but_keeps_review() {
+        let mut app = prepared_profile_app();
+        app.go_next();
+        assert_eq!(
+            app.step,
+            Step::Account,
+            "ciphertext binding is not a credential"
+        );
+        *app.password.lock().unwrap() = "correct horse battery staple".into();
+        *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
+        app.go_next();
+        assert_eq!(app.step, Step::Media);
+        app.go_back();
+        app.go_back();
+        app.go_back();
+        assert_eq!(app.step, Step::Disk);
+        let expected = app.install_options().prepared_setup;
+        app.go_next();
+        assert_eq!(
+            app.step,
+            Step::Media,
+            "storage review must not reask the account"
+        );
+        assert!(!app.codecs, "media formats still require opt-in");
+        app.go_next();
+        assert_eq!(app.step, Step::Review);
+        app.go_next();
+        assert_eq!(app.step, Step::Review, "Next never authorizes installation");
+        app.begin_install();
+        assert_eq!(app.install_state, InstallState::Idle);
+        assert!(app.status.contains("Type /dev/sda exactly"));
+        app.erase_confirmation.set("/dev/sda".into());
+        app.begin_install();
+        assert_eq!(app.install_state, InstallState::Idle);
+        assert!(app.status.contains("save your recovery key"));
+        assert_eq!(app.install_options().prepared_setup, expected);
+        assert_eq!(local_text(&app.username), "owner");
+    }
+
+    #[test]
+    fn prepared_storage_revalidation_requires_current_device_credentials() {
+        for (password, confirmation, separate) in [
+            ("", "", ""),
+            ("correct horse battery staple", "mismatch", ""),
+            ("804927", "804927", ""),
+            (
+                "correct horse battery staple",
+                "correct horse battery staple",
+                "correct horse battery staple",
+            ),
+        ] {
+            let mut app = prepared_profile_app();
+            // A six-digit PIN worked on the verified target, but must not be
+            // reused after boot policy revalidation requires a passphrase.
+            app.tpm2 = true;
+            app.secure_boot = true;
+            app.kernel_lockdown = true;
+            app.target_verified_boot = true;
+            *app.password.lock().unwrap() = password.into();
+            *app.password_confirmation.lock().unwrap() = confirmation.into();
+            *app.disk_password.lock().unwrap() = separate.into();
+            app.target_verified_boot = false;
+            app.go_next();
+            assert_eq!(app.step, Step::Account);
+            assert_eq!(app.install_state, InstallState::Idle);
+        }
+    }
+
+    #[test]
+    fn prepared_storage_revalidation_still_routes_option_repairs() {
+        for unsupported_filesystem in [false, true] {
+            let mut app = prepared_profile_app();
+            *app.password.lock().unwrap() = "correct horse battery staple".into();
+            *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
+            if unsupported_filesystem {
+                app.set_filesystem_support(Ok([false, true, true]));
+            } else {
+                app.profile_completion.as_mut().unwrap().locale = FieldCompletion::NeedsRepair;
+                app.locale.set(String::new());
+            }
+            app.go_next();
+            assert_eq!(app.step, Step::Options);
+            app.go_next();
+            if unsupported_filesystem {
+                assert_eq!(
+                    app.step,
+                    Step::Media,
+                    "supported replacement can be reviewed"
+                );
+            } else {
+                assert_eq!(app.step, Step::Options, "locale repair still validates");
+            }
+            assert_eq!(app.install_state, InstallState::Idle);
         }
     }
 
