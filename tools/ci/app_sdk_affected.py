@@ -35,6 +35,8 @@ from ci.workspace_graph import (
 SDK_PACKAGES = {
     "tilo-app-cli", "tilo-app-package-cli", "tilo-caps", "tilo-browser-compute",
     "tilo-browser-runtime", "tilo-web-desktop", "runtime-dylib",
+    # The nested postprocessor is SDK-owned; tools/web/ is a global input below.
+    "tilo-wasm-split",
 }
 
 # Actual Linux commands: native CLI tests/tools, Calculator and its shared

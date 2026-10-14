@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 from unittest import mock
@@ -477,6 +478,21 @@ class AppSdkAffectedTests(unittest.TestCase):
         self.assertTrue(self.check('apps/calculator/tests/fixtures/data.rs'))
         self.assertTrue(self.check('apps/calculator/tests/unknown.rs'))
         self.assertTrue(self.check('apps/calculator/tests/it.rs'))
+
+    def test_nested_splitter_is_named_and_retained_as_an_sdk_input(self):
+        manifest_path = 'tools/web/wasm-split/Cargo.toml'
+        manifest = tomllib.loads((ROOT / manifest_path).read_text())
+        self.assertEqual(manifest['package']['name'], 'tilo-wasm-split')
+        self.assertIn(manifest['package']['name'], selector.SDK_PACKAGES)
+        self.assertTrue(any(manifest_path.startswith(prefix)
+                            for prefix in selector.GLOBAL_INPUTS))
+        workflow = (ROOT / '.forgejo/workflows/app-sdk.yml').read_text()
+        self.assertIn('--manifest-path ' + manifest_path + ' -p tilo-wasm-split', workflow)
+        for name in ('Cargo.toml', 'Cargo.lock', 'src/main.rs', 'src/split.rs'):
+            with self.subTest(input=name):
+                (self.root / 'github-output').unlink(missing_ok=True)
+                self.assertEqual(self.run_selection(['tools/web/wasm-split/' + name]),
+                                 ['affected=true', 'linux_affected=true'])
 
     def test_sdk_workflow_tests_stay_inside_exempt_packages(self):
         workflow = (ROOT / '.forgejo/workflows/app-sdk.yml').read_text()
