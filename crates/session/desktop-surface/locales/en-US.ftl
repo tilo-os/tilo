@@ -17,9 +17,11 @@ topbar-watching-description = { $count } { $count ->
     } watching without joining
 topbar-sharing-surface = surface { $surface }
 topbar-open-overview = Open overview
+topbar-tilo-menu = Tilo menu
 topbar-previous-workspace = Previous workspace
 topbar-next-workspace = Next workspace
 topbar-workspace-settings = Workspace settings for { $workspace }
+topbar-workspace-host = Hosted at { $host }
 topbar-show-clock = Show clock
 topbar-show-system-monitor = Show system monitor
 topbar-show-calendar = Show calendar
@@ -1019,6 +1021,16 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Go to
 overview-panel-new-workspace = New workspace
 browser-new-workspace-name = Workspace { $number }
+
+# The menu behind the top bar's Tilo mark, and the About sheet it opens
+tilo-menu-about = About this computer
+tilo-about-title = About this computer
+tilo-about-lead = This is Tilo, an operating system.
+tilo-about-body-browser = What you're using right now runs in your browser. Tilo is coming natively to computers.
+tilo-about-body-native = It runs right here, on this computer.
+tilo-about-link-notify = Get notified
+tilo-about-link-source = Source code
+tilo-about-link-community = Community
 
 notification-center-read = Read
 notification-center-read-description = Read complete notification

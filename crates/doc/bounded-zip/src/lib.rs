@@ -22,6 +22,7 @@
 pub mod epub;
 
 use std::io::{Cursor, Read, Seek};
+use std::path::Path;
 
 use zip::ZipArchive;
 use zip::result::ZipError as RawZipError;
@@ -103,6 +104,9 @@ pub enum ZipError {
     /// A part read as text is not valid UTF-8.
     #[error("zip part {name} is not UTF-8")]
     NotUtf8 { name: String },
+    /// An entry's name would place it outside the extraction directory.
+    #[error("zip entry {name} names a path outside the extraction directory")]
+    UnsafeName { name: String },
 }
 
 impl ZipError {
@@ -342,10 +346,51 @@ impl<R: Read + Seek> BoundedArchive<R> {
         Ok(parts)
     }
 
-    /// The underlying archive, for operations this type doesn't wrap (such as
-    /// extraction after [`check_declared_sizes`](Self::check_declared_sizes)).
-    pub const fn archive_mut(&mut self) -> &mut ZipArchive<R> {
-        &mut self.archive
+    /// Extracts every entry under `dir`, each part inflated under the
+    /// per-part cap and all of them under the total — the same bounds
+    /// [`read_all`](Self::read_all) enforces, applied on the way to disk.
+    /// Returns the number of files written.
+    ///
+    /// Declared sizes are not trusted: a header that lies small is caught
+    /// at inflate time, so [`check_declared_sizes`](Self::check_declared_sizes)
+    /// is an optional early refusal, not a precondition. Names are confined
+    /// to `dir`; a `..` or absolute entry is an error, and symbolic links
+    /// are written as the bytes they contain, never created.
+    ///
+    /// # Errors
+    /// Any limit breach, an entry naming a path outside `dir`, an unreadable
+    /// entry, or a failed write.
+    pub fn extract_to(&mut self, dir: &Path) -> Result<usize, ZipError> {
+        let cap = self.limits.max_part_bytes;
+        let max_total = self.limits.max_total_bytes;
+        let mut written: usize = 0;
+        for index in 0..self.archive.len() {
+            let file = self
+                .archive
+                .by_index(index)
+                .map_err(|source| ZipError::Entry { index, source })?;
+            let name = file.name().to_string();
+            let Some(relative) = file.enclosed_name() else {
+                return Err(ZipError::UnsafeName { name });
+            };
+            let target = dir.join(relative);
+            let io_error = |source| ZipError::Read {
+                name: name.clone(),
+                source,
+            };
+            if file.is_dir() {
+                std::fs::create_dir_all(&target).map_err(io_error)?;
+                continue;
+            }
+            let declared = file.size();
+            let bytes = read_capped(file, &name, declared, cap, max_total, &mut self.total)?;
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(io_error)?;
+            }
+            std::fs::write(&target, bytes).map_err(io_error)?;
+            written = written.saturating_add(1);
+        }
+        Ok(written)
     }
 }
 
@@ -670,5 +715,65 @@ mod tests {
         let mut late = vec![b' '; 64 * 1024];
         late.extend_from_slice(b"<!DOCTYPE x>");
         assert!(!contains_dtd(&late));
+    }
+
+    /// A fresh directory under the system temp dir, so the crate needs no
+    /// test-only dependency for a few files.
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("bounded-zip-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn extraction_is_bounded_and_confined() {
+        let limits = ZipLimits {
+            max_parts: 8,
+            max_part_bytes: 64,
+            max_total_bytes: 1024,
+        };
+        // Phase `files_land_under_the_directory`.
+        {
+            let dir = scratch("lands");
+            let bytes = zip_with(
+                &[("manifest.json", b"{}"), ("sub/page.js", b"x")],
+                CompressionMethod::Stored,
+            );
+            let mut archive = BoundedArchive::from_bytes(&bytes, limits).unwrap();
+            assert_eq!(archive.extract_to(&dir).unwrap(), 2);
+            assert_eq!(std::fs::read(dir.join("sub/page.js")).unwrap(), b"x");
+        }
+        // Phase `a_header_that_lies_small_is_caught_at_inflate_time`.
+        {
+            let dir = scratch("lies");
+            let big = vec![b'a'; 4096];
+            let mut bytes = zip_with(&[("blob.bin", &big)], CompressionMethod::Deflated);
+            forge_declared_size(&mut bytes, 8);
+            let mut archive = BoundedArchive::from_bytes(&bytes, limits).unwrap();
+            assert!(
+                archive.check_declared_sizes().is_ok(),
+                "the forged header passes the declared check on purpose"
+            );
+            assert!(matches!(
+                archive.extract_to(&dir),
+                Err(ZipError::PartInflatesTooLarge { .. })
+            ));
+            assert!(
+                !dir.join("blob.bin").exists(),
+                "an over-limit part is never written"
+            );
+        }
+        // Phase `names_cannot_leave_the_directory`.
+        {
+            let dir = scratch("escape");
+            let bytes = zip_with(&[("../escape.txt", b"x")], CompressionMethod::Stored);
+            let mut archive = BoundedArchive::from_bytes(&bytes, limits).unwrap();
+            assert!(matches!(
+                archive.extract_to(&dir),
+                Err(ZipError::UnsafeName { .. })
+            ));
+            assert!(!dir.join("../escape.txt").exists());
+        }
     }
 }

@@ -45,6 +45,9 @@ thread_local! {
     static GPU_SETUPS: RefCell<std::collections::VecDeque<GpuSetup>> =
         const { RefCell::new(std::collections::VecDeque::new()) };
     static GPU_SETUP_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The device and renderer `prepare_gpu` opens before any mount asks for
+    /// one; the first `shared_gpu` takes it.
+    static PREPARED_GPU: RefCell<Option<PreparedGpu>> = const { RefCell::new(None) };
     /// Mounts presenting a desktop, which applications' notifications wake.
     static DESKTOPS: RefCell<std::collections::BTreeSet<u64>> =
         const { RefCell::new(std::collections::BTreeSet::new()) };
@@ -109,6 +112,14 @@ struct Config {
     /// The name a desktop seeded for this mount gives its workspace.
     #[serde(default)]
     workspace_name: Option<String>,
+    /// The host of the room shown (`example.org`), which the bar names
+    /// beside the workspace; absent on the person's own desktop.
+    #[serde(default)]
+    host: Option<String>,
+    /// The deployment's About links (`{notify, source, community}`, from
+    /// the web host's `entry.json`); one left empty is not offered.
+    #[serde(default)]
+    about: tilo_desktop::about::AboutLinks,
 }
 
 impl Config {
@@ -929,6 +940,8 @@ fn present_desktop(
         crate::shell::HostOffers {
             invite: config.invite,
             mac: config.mac,
+            host: config.host.clone(),
+            about: config.about.clone(),
         },
         Rc::clone(&requests),
         Arc::new(move || {
@@ -1267,7 +1280,88 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>, caps: SurfaceCa
     });
 }
 
-/// The shared device and renderer, created with the first surface.
+/// A device opened, and vello's pipelines compiled on it, ahead of the first
+/// surface.
+enum PreparedGpu {
+    /// Opening; the promise resolves once `Ready` replaced this.
+    Opening(js_sys::Promise),
+    Ready(Box<Result<(ui::gpu::RenderContext, vello::Renderer), String>>),
+}
+
+/// Open the WebGPU device and compile the renderer's pipelines now, while the
+/// page still joins its room and opens the workspace, rather than once the
+/// first mount's canvas exists: the first surface then only configures its
+/// canvas on a device that is ready. Without a mount nothing else happens;
+/// the first mount takes what this opened, and one that comes before it is
+/// done waits for it. Does nothing once a device exists or is being opened.
+///
+/// The page calls this right after the module is instantiated, unless the
+/// browser takes the conservative GPU profile (Safari), whose renderer starts
+/// only once the page's own load settled.
+#[wasm_bindgen]
+pub fn prepare_gpu() {
+    let busy = PREPARED_GPU.with_borrow(Option::is_some)
+        || SHARED_GPU.with_borrow(Option::is_some)
+        || GPU_SETUP_RUNNING.get();
+    if busy || crate::crash::stopped() {
+        return;
+    }
+    let mut resolve = None;
+    let opened = js_sys::Promise::new(&mut |done, _| resolve = Some(done));
+    PREPARED_GPU.set(Some(PreparedGpu::Opening(opened)));
+    wasm_bindgen_futures::spawn_local(async move {
+        let ready = open_gpu().await;
+        PREPARED_GPU.set(Some(PreparedGpu::Ready(Box::new(ready))));
+        if let Some(done) = resolve {
+            let _ = done.call0(&JsValue::NULL);
+        }
+    });
+}
+
+async fn open_gpu() -> Result<(ui::gpu::RenderContext, vello::Renderer), String> {
+    let mut cx = ui::gpu::RenderContext::new();
+    let index = cx.device(None).await.ok_or("no WebGPU device")?;
+    let handle = cx.devices.get(index).ok_or("WebGPU device missing")?;
+    let renderer = new_renderer(&handle.device).await?;
+    Ok((cx, renderer))
+}
+
+/// What `prepare_gpu` opened, once it is done; `None` when it was never
+/// called or its device was already taken.
+async fn take_prepared_gpu() -> Option<Result<(ui::gpu::RenderContext, vello::Renderer), String>> {
+    let opening = PREPARED_GPU.with_borrow(|prepared| match prepared {
+        Some(PreparedGpu::Opening(opened)) => Some(opened.clone()),
+        _ => None,
+    });
+    if let Some(opened) = opening {
+        let _ = wasm_bindgen_futures::JsFuture::from(opened).await;
+    }
+    match PREPARED_GPU.take()? {
+        PreparedGpu::Ready(ready) => Some(*ready),
+        // Only the GPU setup queue takes it, one setup at a time.
+        PreparedGpu::Opening(_) => None,
+    }
+}
+
+/// Asynchronous pipeline creation: the browser compiles vello's pipelines in
+/// parallel off its GPU process's main thread. Created synchronously they
+/// hold that thread for the whole compile (seconds each under a software
+/// rasteriser), and a page waiting on the GPU process (one tearing down its
+/// previous WebGPU context, a frame, a screenshot) waits with it.
+async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
+    vello::Renderer::new_async(
+        device,
+        vello::RendererOptions {
+            antialiasing_support: vello::AaSupport::area_only(),
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// The shared device and renderer, created with the first surface (or taken
+/// from `prepare_gpu`).
 async fn shared_gpu(
     window: &Arc<Window>,
     size: Viewport,
@@ -1293,7 +1387,12 @@ async fn shared_gpu(
         };
         return Ok((shared, surface));
     }
-    let mut cx = ui::gpu::RenderContext::new();
+    // A preparation that failed is tried again here, so its error is this
+    // surface's.
+    let (mut cx, prepared) = match take_prepared_gpu().await {
+        Some(Ok((cx, renderer))) => (cx, Some(renderer)),
+        Some(Err(_)) | None => (ui::gpu::RenderContext::new(), None),
+    };
     let surface = cx
         .create_surface(
             Arc::clone(window),
@@ -1307,20 +1406,12 @@ async fn shared_gpu(
         .devices
         .get(surface.dev_id)
         .ok_or("WebGPU device missing")?;
-    // Asynchronous pipeline creation: the browser compiles vello's pipelines
-    // in parallel off its GPU process's main thread. Created synchronously
-    // they hold that thread for the whole compile (seconds each under a
-    // software rasteriser), and a page waiting on the GPU process (one tearing
-    // down its previous WebGPU context, a frame, a screenshot) waits with it.
-    let mut renderer = vello::Renderer::new_async(
-        &handle.device,
-        vello::RendererOptions {
-            antialiasing_support: vello::AaSupport::area_only(),
-            ..Default::default()
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let mut renderer = match prepared {
+        // Prepared on the context's first device, which presents to any
+        // canvas on WebGPU.
+        Some(renderer) if surface.dev_id == 0 => renderer,
+        _ => new_renderer(&handle.device).await?,
+    };
     if caps == SurfaceCaps::CONSERVATIVE {
         renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);
         renderer.set_bump_budget_grow_once(true);
@@ -1798,6 +1889,8 @@ impl Mount {
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
+            // The page titles its tab after it.
+            "workspaceName": self.desktop.as_ref().and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone()))),
             "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
             "ime": ime,
         });
@@ -2305,6 +2398,25 @@ pub fn desktop_offer_host_action(id: u64, offer: &str) -> Result<(), JsValue> {
             .persistence
             .notifications
             .post(offer.action.notice(offer.title, offer.body));
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// Confirm in passing what the page just did out of sight ("Link copied"):
+/// a short-lived pill over the desktop, never a notification.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_acknowledge(id: u64, text: &str) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?
+            .handle
+            .acknowledge(text);
         m.window.request_redraw();
         Ok(())
     })

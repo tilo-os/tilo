@@ -13,7 +13,8 @@ source_revision=${2:?$usage}
   || { echo 'the image is not labelled with its source revision' >&2; exit 1; }
 for file in /usr/local/bin/tilo-relay /usr/local/bin/tilo-room-service /usr/local/bin/fonts/manifest.toml \
   /usr/local/share/tilo/bots/discord-bridge.json \
-  /srv/tilo-room-assets/index.html /srv/tilo-room-assets/app/index.html /srv/tilo-room-assets/workspaces.mjs /srv/tilo-room-assets/root-identity.mjs /srv/tilo-room-assets/identity-actions.mjs; do
+  /srv/tilo-room-assets/index.html /srv/tilo-room-assets/app/index.html /srv/tilo-room-assets/workspaces.mjs /srv/tilo-room-assets/root-identity.mjs /srv/tilo-room-assets/identity-actions.mjs \
+  /srv/tilo-room-assets/locales/en-US.ftl /srv/tilo-room-assets/locales/de-DE.ftl; do
   docker run --rm --entrypoint /bin/sh "$image" -c "test -s $file" || { echo "missing $file" >&2; exit 1; }
 done
 # Captured first: under pipefail, grep -q closing the pipe early fails the run.

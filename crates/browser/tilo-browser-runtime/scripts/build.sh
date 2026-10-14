@@ -3,6 +3,7 @@
 #   pkg/                wasm-bindgen output (--target web)
 #   *.mjs, index.html   page host and the desktop entry page
 #   app/index.html      the full-tab app entry page (web-routing.md)
+#   locales/            the entry pages' arrival lines (web/arrival.mjs)
 #   fonts/, fonts.json  canonical product fonts, their manifest and licences
 #   data/, data.json    application data fetched on request (desktop bundle:
 #                       the Typst editor's fonts), with sizes and hashes
@@ -122,7 +123,9 @@ linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
 # no module to read (a wasm-bindgen that makes its output itself), so
 # such a pkg/ is never reused.
 made_from=""
-if [[ -f "$linked" ]]; then made_from="$(stat -c '%s %Y' "$linked") split=$split"; fi
+# Size and modification time, with GNU stat or the BSD stat of macOS.
+file_stamp() { stat -c '%s %Y' "$1" 2>/dev/null || stat -f '%z %m' "$1"; }
+if [[ -f "$linked" ]]; then made_from="$(file_stamp "$linked") split=$split"; fi
 if [[ -n "$made_from" ]] && kept pkg/.made-from && [[ "$(cat "$out/pkg/.made-from")" == "$made_from" ]]; then
   echo "pkg: unchanged module, kept" >&2
 else
@@ -185,6 +188,8 @@ moq_kept=0
 kept media-moq-library.mjs && moq_kept=1
 find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' ! -name media-moq-library.mjs -exec cp {} "$out/" \;
 cp "$crate/web/index.html" "$out/index.html"
+mkdir -p "$out/locales"
+cp "$crate"/web/locales/*.ftl "$out/locales/"
 mkdir -p "$out/app"
 cp "$crate/web/app/index.html" "$out/app/index.html"
 # The live plane's MoQ library is bundled from the published @moq/net pinned

@@ -17,7 +17,7 @@ use std::rc::Rc;
 use ui::widget::ModelPath;
 use ui::widget::TaffyTreeExt;
 
-use taffy::{NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
@@ -66,14 +66,7 @@ fn leaf(
     node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     me: &mut (dyn Widget + 'static),
 ) -> NodeId {
-    taffy.widget_leaf(
-        Style {
-            size: Size::from_percent(1.0, 1.0),
-            ..Default::default()
-        },
-        node_map,
-        me,
-    )
+    taffy.fill_leaf(node_map, me)
 }
 
 impl Widget for OverviewPane {

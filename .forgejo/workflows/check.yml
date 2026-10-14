@@ -303,65 +303,17 @@ jobs:
       - name: Check native architecture
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
 
-      # Older/explicitly selected builders may predate the audio fixture.
-      # The helper replaces only the conflicting audio daemon; other installed
-      # packages retain their pinned versions.
-      - name: Ensure isolated audio test dependency
-        run: bash tools/ensure-headless-audio.sh
-
-      # Pinned/older builders may predate native PDF capture coverage. Stage
-      # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
-      # Where the runner's kernel can enforce Landlock, the PDF helper's
-      # sandbox is also required rather than allowed to stand down.
-      - name: Ensure native PDF capture dependency
-        if: contains(matrix.test_packages, '-p pdf-viewer') || contains(matrix.test_packages, '-p tilo-pdf') || contains(matrix.test_packages, '-p tilo-thumbnail')
-        run: |
-          asset=$(bash tools/ci/install-pdfium.sh --asset-name)
-          ./os/dev/cache-github-assets.sh "$asset"
-          library=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /usr os/external-assets/github-assets.tsv)
-          printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
-          bash tools/ci/require-pdf-sandbox.sh
-
-      # Real browser voice coverage runs only with the peer package. Both
-      # participants use throwaway profiles and Chromium's fake microphone.
-      - name: Prepare governed browser voice fixture
-        if: contains(matrix.test_packages, '-p tilo-browser-peer') || contains(matrix.scoped_tests, '"tilo-browser-peer"')
-        run: |
-          dnf install -y --setopt=install_weak_deps=False chromium
-          printf 'CHROME=%s\n' "$(command -v chromium-browser || command -v chromium)" >> "$GITHUB_ENV"
-          npm ci --prefix scripts/moq-browser
-          node scripts/moq-browser/build.mjs
-
-      # Imager deliberately rejects cache/source directories on the container
-      # overlay that also backs the operating-system root. The checked-out
-      # workspace is a host-backed qualified filesystem, so keep its native
-      # syscall fixtures there while retaining the container's ordinary /tmp
-      # behavior for every other package.
-      - name: Prepare qualified imager test filesystem
-        if: contains(matrix.test_packages, '-p imager')
-        run: |
-          root="$GITHUB_WORKSPACE/target/ci/imager-test-fs"
-          mkdir -p "$root"
-          chmod 700 "$root"
-          case "$(stat -f -c %T "$root")" in
-            ext2/ext3|ext2/ext3/ext4|xfs|btrfs) ;;
-            *) echo "workspace does not provide qualified imager semantics" >&2; exit 1 ;;
-          esac
-          # Do not redirect HOME/TMPDIR/XDG_CACHE_HOME for the whole mixed
-          # package shard: those process-wide variables alter unrelated apps'
-          # persistence and git fixtures. Only the imager's native syscall
-          # tests consume this dedicated location.
-          printf 'TILO_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
-
-      # app-cli registry and app-host local trust integration tests execute the installer;
-      # it is deliberately not a Rust dependency, so an affected-only Cargo
-      # invocation does not otherwise produce that binary.
-      - name: Build installer used by app-cli and app-host integration tests
-        if: contains(matrix.test_packages, '-p app-cli') || contains(matrix.test_packages, '-p app-host')
-        run: >-
-          bash tools/ci/measure.sh "build tilo-install test fixture" --
-          bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
-          cargo build --locked -p install --bin tilo-install
+      # Everything the shard needs beyond the builder image (audio, the X11
+      # bridge, PDFium, Chromium, the imager filesystem, the installer
+      # fixture), prepared by the merged tree's script rather than by steps of
+      # this file: a pull request runs its own head's copy of this workflow,
+      # so a requirement added here as a step would never reach one branched
+      # before it, while main's tests would already demand it.
+      - name: Prepare the shard's test environment
+        env:
+          TEST_PACKAGES: ${{ matrix.test_packages }}
+          SCOPED_TESTS: ${{ matrix.scoped_tests }}
+        run: bash tools/ci/prepare-test-shard.sh
 
       # `--tests` builds the targets whose tests run: libraries, binaries and
       # integration tests. Examples are type-checked by Clippy and built by

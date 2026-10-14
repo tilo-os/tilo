@@ -217,9 +217,17 @@ impl EgressDecision {
                 // falling into "not off means unrestricted".
                 "off" | "dns-only" => EgressDecision::Blocked,
                 "allowlist" => decision_of(declared()),
-                // Any other mode is the historical "share the host
-                // network" spelling.
-                _ => EgressDecision::Unrestricted,
+                "host" => EgressDecision::Unrestricted,
+                // A spelling this launcher does not know is not a policy it
+                // can enforce. The only safe reading of "allow-list" or
+                // "Off" is no egress — not the host network.
+                other => {
+                    tracing::warn!(
+                        mode = other,
+                        "unknown [sandbox.net].mode; the app gets no network"
+                    );
+                    EgressDecision::Blocked
+                }
             };
         }
 
@@ -1313,6 +1321,16 @@ mod tests {
                 EgressDecision::resolve("host", &[], &[]),
                 EgressDecision::Unrestricted
             );
+        }
+        // Phase `an_unknown_mode_is_blocked_not_shared`.
+        {
+            for spelling in ["allow-list", "Off", "none", "allowlist ", ""] {
+                assert_eq!(
+                    EgressDecision::resolve(spelling, &["a.example".into()], &[]),
+                    EgressDecision::Blocked,
+                    "{spelling:?} is not a policy this launcher knows; it must not share the host network"
+                );
+            }
         }
         // Phase `no_manifest_network_and_no_grant_is_blocked`.
         {
