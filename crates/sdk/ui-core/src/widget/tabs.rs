@@ -270,6 +270,7 @@ pub struct TabBar {
     /// are elided, so the title gives way to the faces instead of hiding
     /// under them.
     pill_faces: Vec<PillFaces>,
+    face_metrics: FaceMetrics,
     pending_context_menu: Option<(u64, Point)>,
     hover_idx: Option<usize>,
     hover_close_idx: Option<usize>,
@@ -434,6 +435,7 @@ impl TabBar {
             title_advance: HashMap::new(),
             visible_titles: Vec::new(),
             pill_faces: Vec::new(),
+            face_metrics: FaceMetrics::default(),
             pending_context_menu: None,
             hover_idx: None,
             hover_close_idx: None,
@@ -997,7 +999,7 @@ impl TabBar {
         }
         let peers = presence.peers_on(&tab_presence_key(tab.id)).len();
         let (x0, x1) = self.title_zone_without_faces(i, r);
-        PillFaces::fit(peers, x1 - x0)
+        PillFaces::fit(peers, x1 - x0, self.face_metrics)
     }
 
     /// Small faces of the peers on this tab, at the trailing end of the
@@ -1020,16 +1022,17 @@ impl TabBar {
             .get(pill.i)
             .copied()
             .unwrap_or_else(|| Reveal::None.reserve());
-        let x0 = r.x1 - reserve - faces.width() + PILL_FACE_GAP;
+        let metrics = self.face_metrics;
+        let x0 = r.x1 - reserve - faces.width(metrics) + metrics.gap;
         let cy = r.center().y;
         let ring = ctx.theme.tokens.colors.surfaces.overlay;
         let face_rect = |slot: usize| {
             square_at(
                 Point::new(
-                    x0 + PILL_FACE_PX / 2.0 + crate::num::f64_of_usize(slot) * PILL_FACE_STEP,
+                    x0 + metrics.face / 2.0 + crate::num::f64_of_usize(slot) * metrics.step(),
                     cy,
                 ),
-                PILL_FACE_PX,
+                metrics.face,
             )
         };
         let peers = presence.peers_on(&tab_presence_key(pill.tab.id));
@@ -1590,7 +1593,12 @@ impl TabBar {
 
     fn title_zone(&self, i: usize, r: Rect) -> (f64, f64) {
         let (x0, x1) = self.title_zone_without_faces(i, r);
-        let faces = self.pill_faces.get(i).copied().unwrap_or_default().width();
+        let faces = self
+            .pill_faces
+            .get(i)
+            .copied()
+            .unwrap_or_default()
+            .width(self.face_metrics);
         (x0, (x1 - faces).max(x0))
     }
 
@@ -2378,13 +2386,8 @@ const ACCENT_DOT_R: f64 = 4.0;
 const MODIFIED_DOT_R: f64 = 3.5;
 /// Fits an app glyph, a couple of characters, and the close chip.
 const PILL_MIN_PX: f64 = 84.0;
-/// Peer faces on a pill: at most this many faces before a "+N" disc, each
-/// this wide, overlapping their neighbour so a step is less than a face,
-/// and kept this far from the title.
+/// Peer faces on a pill: at most this many faces before a "+N" disc.
 const PILL_MAX_FACES: usize = 3;
-const PILL_FACE_PX: f64 = 14.0;
-const PILL_FACE_STEP: f64 = 10.0;
-const PILL_FACE_GAP: f64 = 4.0;
 /// Below this a pill can't host a legible title fragment alongside the close
 /// chip, so squeezing further would be worse than eliding harder.
 const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
@@ -2598,33 +2601,55 @@ struct PillFaces {
     overflow: usize,
 }
 
+/// Sizes of a pill's peer faces, from the theme: each face is a small icon
+/// wide, overlaps its neighbour by the smallest spacing step, and keeps that
+/// step from the title.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FaceMetrics {
+    face: f64,
+    gap: f64,
+}
+
+impl FaceMetrics {
+    fn of(theme: &Theme) -> Self {
+        Self {
+            face: f64::from(theme.tokens.metrics.icon_sm),
+            gap: f64::from(theme.tokens.spacing.s1),
+        }
+    }
+
+    fn step(self) -> f64 {
+        self.face - self.gap
+    }
+}
+
 impl PillFaces {
     fn slots(self) -> usize {
         self.faces.saturating_add(usize::from(self.overflow > 0))
     }
 
     /// Width the faces take from the title zone, including their gap.
-    fn width(self) -> f64 {
+    fn width(self, metrics: FaceMetrics) -> f64 {
         match self.slots() {
             0 => 0.0,
             slots => {
-                PILL_FACE_PX
-                    + crate::num::f64_of_usize(slots.saturating_sub(1)) * PILL_FACE_STEP
-                    + PILL_FACE_GAP
+                metrics.face
+                    + crate::num::f64_of_usize(slots.saturating_sub(1)) * metrics.step()
+                    + metrics.gap
             }
         }
     }
 
     /// The most faces for `peers` that still leave the title
     /// [`MIN_TITLE_PX`] of a `room`-wide zone; fewer faces fold into "+N".
-    fn fit(peers: usize, room: f64) -> Self {
+    fn fit(peers: usize, room: f64, metrics: FaceMetrics) -> Self {
         (1..=peers.min(PILL_MAX_FACES))
             .rev()
             .map(|faces| Self {
                 faces,
                 overflow: peers.saturating_sub(faces),
             })
-            .find(|candidate| room - candidate.width() >= MIN_TITLE_PX)
+            .find(|candidate| room - candidate.width(metrics) >= MIN_TITLE_PX)
             .unwrap_or_default()
     }
 }
@@ -2823,6 +2848,7 @@ impl Widget for TabBar {
         if self.tab_rects.len() != self.tabs.len() {
             return;
         }
+        self.face_metrics = FaceMetrics::of(theme);
         self.pill_faces = (0..self.tabs.len())
             .map(|i| self.fit_pill_faces(i, presence))
             .collect();
@@ -5143,7 +5169,8 @@ mod tests {
                 "three faces, the rest folded into +2"
             );
             assert!(
-                wide_trailing >= wide[1].width() + Reveal::None.reserve(),
+                wide_trailing
+                    >= wide[1].width(FaceMetrics::of(&Theme::dark())) + Reveal::None.reserve(),
                 "the title zone ends before the faces, so they never cover it"
             );
             let (medium, _) = faces_at(110.0);
