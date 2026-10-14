@@ -245,6 +245,15 @@ use crate::shell::state::{
     ResourceRef, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
 };
 
+/// The `key` entry of a portal request's options (a D-Bus `a{sv}`) as `T`;
+/// `None` when it is absent or of another type.
+pub(crate) fn option<T: TryFrom<zbus::zvariant::OwnedValue>>(
+    options: &HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+) -> Option<T> {
+    T::try_from(options.get(key)?.try_clone().ok()?).ok()
+}
+
 /// Identity of the sandboxed app that issued a portal request.
 ///
 /// Production fills this in from the bridge tag + per-workspace PID→app
