@@ -39,8 +39,9 @@ use crate::registry_to_installed::{
 const HANDSHAKE: Duration = Duration::from_millis(150);
 /// How long every request waits for its answer.
 const ROUND_TRIP: Duration = Duration::from_millis(150);
-/// Installed apps the registry offers an update for.
-const APPS: usize = 6;
+/// Installed apps the registry offers an update for: more than are
+/// downloaded at once, so later downloads can reuse a connection.
+const APPS: usize = 12;
 
 /// A loopback registry with a far-away registry's latency, keeping
 /// connections alive between requests as an HTTP/1.1 or HTTP/2 server does.
@@ -239,12 +240,9 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
         String::from_utf8_lossy(&update.stdout),
         String::from_utf8_lossy(&update.stderr)
     );
-    let installed = package_store::list_installed().unwrap();
-    assert_eq!(installed.len(), APPS);
-    assert!(
-        installed.iter().all(|row| row.version == "2.0.0"),
-        "{installed:?}"
-    );
+    let rows = package_store::list_installed().unwrap();
+    assert_eq!(rows.len(), APPS);
+    assert!(rows.iter().all(|row| row.version == "2.0.0"), "{rows:?}");
 
     let requests = registry.requests.lock().unwrap().len();
     let connections = registry.connections.load(Ordering::SeqCst);
@@ -260,16 +258,17 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
     assert_eq!(registry.requests_for("/artifacts/"), APPS);
     // The downloads overlap rather than waiting app after app.
     assert!(peak > 1, "downloads ran one at a time");
-    // A connection, once open, carries more than one request.
+    // A connection, once open, carries the next download: the catalogue's,
+    // and one per download running at once.
     assert!(
-        connections < requests,
+        connections <= app_cli::install::PARALLEL_DOWNLOADS + 1,
         "{connections} connections for {requests} requests"
     );
-    // On the network the run costs the catalogue and one overlapped wave of
-    // downloads, each on a fresh connection; the installs are local work.
-    // Budgets apply to optimised builds only.
+    // On the network the run costs the catalogue and two overlapped waves of
+    // downloads, the first on fresh connections; the installs are local
+    // work. Budgets apply to optimised builds only.
     if !cfg!(debug_assertions) {
-        let network = (HANDSHAKE + ROUND_TRIP) * 2;
+        let network = (HANDSHAKE + ROUND_TRIP) * 2 + ROUND_TRIP;
         let budget = network + Duration::from_secs(2);
         assert!(
             elapsed < budget,
