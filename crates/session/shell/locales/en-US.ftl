@@ -2439,6 +2439,13 @@ session-diagnostics-gpu_stages = Record GPU stage timing
 session-diagnostics-gpu_timestamps = Enable GPU timestamps
 session-diagnostics-gpu_dispatch_timestamps = Enable GPU dispatch timestamps
 session-diagnostics-dispatch-requires-timestamps = GPU dispatch timing requires GPU timestamps.
+session-diagnostics-profile-start = Profile the compositor and save the profile
+session-diagnostics-profile-stop = Stop profiling the compositor
+session-diagnostics-profile-seconds = How many seconds to record (default 30)
+session-diagnostics-profile-seconds-range = A profile records between 1 and { $max } seconds.
+session-diagnostics-profile-no-state-dir = There is no state directory to save the profile in; set HOME or XDG_STATE_HOME.
+session-diagnostics-profile-already-recording = A profile is already recording to { $path }. Stop it first.
+session-diagnostics-profile-not-created = The profile could not be created: { $error }
 
 device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
 search-action-activity-acknowledge = Acknowledge viewed activity

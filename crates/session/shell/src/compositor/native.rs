@@ -10277,8 +10277,12 @@ pub fn run() {
     // Slow iterations are exceptional and always worth preserving in the
     // session flight record: a compositor that stops pumping input for 100 ms
     // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
-    // verbose aggregate line for development runs.
-    let loop_timing = std::env::var("TILO_LOOP_TIMING").is_ok();
+    // verbose aggregate line for development runs. A profile the admin
+    // starts (`metrics::profile`) times the same phases for its duration,
+    // recording every span instead of logging the slow ones.
+    let loop_timing_env = std::env::var("TILO_LOOP_TIMING").is_ok();
+    // Set at the top of every tick.
+    let mut loop_timing: bool;
     // A developer override: every painted frame takes as long as on a slow
     // machine, so per-frame layout steps see real long frame times.
     let mut frame_stall = super::frame_stall::FrameStall::from_process_env();
@@ -10292,6 +10296,7 @@ pub fn run() {
                 if elapsed > pump_slowest.1 {
                     pump_slowest = ($name, elapsed);
                 }
+                metrics::profile::record_phase($name, elapsed, None);
                 pump_checkpoint = now;
             }
         }};
@@ -10302,7 +10307,8 @@ pub fn run() {
                 let started = Instant::now();
                 let value = $body;
                 let elapsed = started.elapsed();
-                if elapsed >= Duration::from_millis(8) {
+                metrics::profile::record_phase($name, elapsed, None);
+                if loop_timing_env && elapsed >= Duration::from_millis(8) {
                     eprintln!(
                         "PUMP-PHASE name={} elapsed_us={}",
                         $name,
@@ -10319,12 +10325,14 @@ pub fn run() {
                 let started = Instant::now();
                 let value = $body;
                 let elapsed = started.elapsed();
-                if elapsed >= Duration::from_millis(8) {
+                let items: usize = $count;
+                metrics::profile::record_phase($name, elapsed, Some(items));
+                if loop_timing_env && elapsed >= Duration::from_millis(8) {
                     eprintln!(
                         "PUMP-PHASE name={} elapsed_us={} items={}",
                         $name,
                         elapsed.as_micros(),
-                        $count
+                        items
                     );
                 }
                 value
@@ -10439,7 +10447,9 @@ pub fn run() {
         let iter_t0 = Instant::now();
         crate::shell::launcher::action_authority::tick(iter_t0);
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
+        metrics::profile::expire(iter_t0);
         metrics.begin_tick(iter_t0);
+        loop_timing = loop_timing_env || metrics::profile::active();
         // A setting this loop changed that the settings worker could not store
         // went back to its previous value: say so (one atomic load when none did).
         if settings_store::deferred_failure_pending() {
@@ -13076,7 +13086,7 @@ pub fn run() {
             .checked_sub(t_input_done)
             .unwrap_or_default();
         metrics.mark_pump(pump_total);
-        if loop_timing && pump_slowest.1 > Duration::from_millis(100) {
+        if loop_timing_env && pump_slowest.1 > Duration::from_millis(100) {
             eprintln!(
                 "SLOW-PUMP slowest={} elapsed={:?}",
                 pump_slowest.0, pump_slowest.1
@@ -14147,9 +14157,7 @@ pub fn run() {
         );
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
-        if (loop_timing || t_work_done > Duration::from_millis(100))
-            && t_work_done > Duration::from_millis(100)
-        {
+        if t_work_done > Duration::from_millis(100) {
             client_steps.mark("idle_callbacks");
             eprintln!(
                 "SLOW-ITER total_work={:?} | input={:?} pump=+{:?} post_pump_paint=+{:?} testctl=+{:?} dispatch_clients=+{:?} ({})",
@@ -14234,6 +14242,7 @@ pub fn run() {
                 ("lock-clock", lock_clock_deadline),
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
+                ("profile-end", metrics::profile::deadline()),
                 (
                     "app-action-authority",
                     crate::shell::launcher::action_authority::next_deadline(),
@@ -18192,6 +18201,69 @@ mod tests {
             socket_response(&mut reader),
             test_control::Response::Err { .. }
         ));
+    }
+
+    /// Profiling the live compositor is the device admin's alone: the
+    /// development test-control socket, the agent socket, an agent acting
+    /// over the admin socket and a locked session are all refused before
+    /// anything is recorded.
+    #[test]
+    fn compositor_profiling_is_refused_to_all_but_the_unlocked_owner_connection() {
+        use std::io::Write as _;
+        let mut fb = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock =
+            LockController::new(std::sync::Arc::new(lock_auth::UnavailableVerifier), "owner");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
+        let display: Display<State> = Display::new().unwrap();
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let start = serde_json::json!({"op":"actions_invoke", "provider":"session-diagnostics", "id":"profile-start@session-diagnostics", "args":{"seconds":5}});
+        let mut as_agent = start.clone();
+        as_agent["agent"] = serde_json::json!("peer");
+        for (agent_socket, admin, request) in [
+            (false, false, &start),
+            (true, false, &start),
+            (false, true, &as_agent),
+        ] {
+            let (server, client) = UnixStream::pair().unwrap();
+            let mut writer = client.try_clone().unwrap();
+            let mut reader = BufReader::new(client);
+            let mut conn = TestControlConn::new(server, agent_socket).unwrap();
+            conn.admin = admin;
+            writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+            pump_test_control_conn(
+                &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+            );
+            assert!(
+                matches!(
+                    socket_response(&mut reader),
+                    test_control::Response::Err { code, .. } if code == "not_permitted"
+                ),
+                "agent socket {agent_socket}, admin {admin}, request {request}"
+            );
+        }
+        let _ = session.request_lock(Instant::now());
+        let (server, client) = UnixStream::pair().unwrap();
+        let mut writer = client.try_clone().unwrap();
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::new(server, false).unwrap();
+        conn.admin = true;
+        writer.write_all(format!("{start}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(
+                socket_response(&mut reader),
+                test_control::Response::Err { .. }
+            ),
+            "a locked session refuses the owner too"
+        );
+        assert!(
+            !crate::compositor::metrics::profile::active(),
+            "no refused request started a profile"
+        );
     }
 
     /// A driver's request often lands after its connection was accepted and
