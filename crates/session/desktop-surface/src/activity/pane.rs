@@ -2565,6 +2565,15 @@ impl RoomActivityPane {
     /// Hand the timeline the rows [`Self::scope`] selects and re-derive
     /// everything that depends on which rows are in play.
     /// Every entry of the room's derived history, in any workspace.
+    /// Whether the change behind `id` only chose which workspace shows
+    /// ([`RoomChange::shows_another_workspace`]).
+    pub(super) fn only_shows_another_workspace(&self, id: &HistoryEntryId) -> bool {
+        self.history_log
+            .change(id)
+            .and_then(|(hash, _)| self.room_changes.get(&hash))
+            .is_some_and(|change| change.shows_another_workspace)
+    }
+
     pub(super) fn derived_entry_ids(&self) -> impl Iterator<Item = HistoryEntryId> + '_ {
         self.derived.iter().map(|(entry, _)| entry.id)
     }
@@ -8730,6 +8739,9 @@ pub(super) struct RoomChange {
     workspace: Option<u64>,
     counts: PatchCounts,
     bookkeeping: bool,
+    /// The change is one operation, choosing which workspace shows: every
+    /// workspace's strips are as the change before it left them.
+    shows_another_workspace: bool,
 }
 
 impl RoomChange {
@@ -8741,10 +8753,20 @@ impl RoomChange {
         for patch in &patches {
             counts.record(patch);
         }
+        // One operation, so on whatever it is merged over it can change
+        // nothing but the key its patch names.
+        let shows_another_workspace = matches!(
+            patches.as_slice(),
+            [patch] if patch.obj == automerge::ROOT
+                && matches!(&patch.action, automerge::PatchAction::PutMap { key, .. } if key == "active")
+        ) && doc
+            .get_change_by_hash(&hash)
+            .is_some_and(|change| change.len() == 1);
         Self {
             workspace: workspace_touched(doc, &patches, hash),
             counts,
             bookkeeping: is_room_bookkeeping(&patches),
+            shows_another_workspace,
         }
     }
 }

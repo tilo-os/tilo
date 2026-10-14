@@ -259,14 +259,15 @@ mod tests {
                 1,
                 "switch {n} diffs only its own change"
             );
-            // The first visit to "Second" also checkpoints the change that
-            // created it; after that a switch forks for its own entry alone.
-            if n >= 1 {
-                assert!(
-                    forks_after - forks <= 1,
-                    "switch {n} forks the document at most for its own checkpoint"
-                );
-            }
+            // The first visit to "Second" checkpoints the change that
+            // created it. A switch's own change shows the desktop the change
+            // before it left, so it forks nothing: forking the room for it
+            // made every switch's first frame O(history).
+            assert!(
+                forks_after - forks <= usize::from(n == 0),
+                "switch {n} forks the document {} times",
+                forks_after - forks
+            );
         }
 
         // What the incremental refreshes derived is what one refresh of the
@@ -291,6 +292,45 @@ mod tests {
         };
         assert!(!frames(&pane).is_empty(), "the switches are replayable");
         assert_eq!(frames(&pane), frames(&fresh), "the replay checkpoints");
+    }
+
+    /// A change that switches workspaces and edits a workspace at once does
+    /// show a desktop of its own: replay reads it from the document, as for
+    /// any other change.
+    #[test]
+    fn a_switch_written_with_an_edit_replays_the_edit() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        tree.set_active(second);
+        if let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|w| w.id == second) {
+            workspace.name = "Renamed".to_string();
+        }
+        tree.seed_doc_from_cache();
+        pane.refresh(&mut tree);
+        let last = pane.replay_frames.last().expect("the change is replayable");
+        assert_eq!(
+            last.workspaces
+                .iter()
+                .map(|workspace| workspace.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Renamed"],
+            "the frame shows the workspace as the change left it"
+        );
+        let mut fresh = native_pane();
+        fresh.refresh(&mut tree);
+        assert_eq!(
+            format!(
+                "{:?}",
+                pane.replay_frames.last().map(|frame| &frame.workspaces)
+            ),
+            format!(
+                "{:?}",
+                fresh.replay_frames.last().map(|frame| &frame.workspaces)
+            ),
+        );
     }
 
     #[test]
