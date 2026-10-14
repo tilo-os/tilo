@@ -16513,9 +16513,14 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
+ "rustix 1.1.4",
+ "serde",
  "serde_json",
+ "tempfile",
+ "tilo-advisory-lock",
  "tilo-clock",
  "tilo-paths",
+ "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
 
