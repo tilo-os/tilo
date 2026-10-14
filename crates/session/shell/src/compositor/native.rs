@@ -13641,6 +13641,7 @@ pub fn run() {
             locker.lock();
         }
 
+        let testctl_cpu = metrics.thread_cpu();
         // Accept new test-control connections and drain them in this same
         // iteration, so a request already written is answered without
         // another calloop sleep. One written after this drain wakes the loop
@@ -13743,6 +13744,7 @@ pub fn run() {
         }
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
+        metrics.mark_testctl_cpu(testctl_cpu);
 
         // Selection bookkeeping after dispatch, not in the protocol handler:
         // smithay raises `new_selection` before installing the new source, so an inline pull would read the previous owner.

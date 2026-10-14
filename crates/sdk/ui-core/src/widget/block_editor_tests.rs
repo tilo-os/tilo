@@ -1369,7 +1369,12 @@ fn code_fences_copy_highlight_and_render_formulas() {
             Some("rust".into()),
             "let answer = 42; // documented",
         )];
-        apply_syntax_colors(&mut blocks, &[Some("rust".into())]);
+        assert_eq!(refresh_syntax_colors(&mut blocks), 1);
+        assert_eq!(
+            refresh_syntax_colors(&mut blocks),
+            0,
+            "an unchanged run keeps its colours"
+        );
         let colors = blocks[0].line.transient_colors();
         assert!(
             colors.iter().any(|span| span.kind == TokenKind::Keyword),
