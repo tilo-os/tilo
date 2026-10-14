@@ -38,12 +38,12 @@ jobs:
           python3 scripts/vm-acceptance/test_layer_artifacts.py
 
   builder:
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     uses: ./.forgejo/workflows/resolve-builder.yml
     secrets: inherit
 
   producer:
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [tests, builder]
     runs-on: runner-disk-100g
     timeout-minutes: 120
@@ -123,3 +123,30 @@ jobs:
           set -euo pipefail
           test "$WORK" = "/var/tmp/cohort-cache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           rm -rf -- "$WORK"
+
+  qualification:
+    if: ${{ always() }}
+    needs: [tests, builder, producer]
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    env:
+      EVENT: ${{ github.event_name }}
+      TEST_RESULT: ${{ needs.tests.result }}
+      BUILDER_RESULT: ${{ needs.builder.result }}
+      PRODUCER_RESULT: ${{ needs.producer.result }}
+    steps:
+      - name: Require the requested qualification to actually execute
+        run: |
+          python3 - <<'PY'
+          import json, os
+          payload = json.load(open(os.environ['GITHUB_EVENT_PATH']))
+          requested = bool(payload.get('inputs', {}).get('components'))
+          assert os.environ['TEST_RESULT'] == 'success', 'producer boundary tests did not pass'
+          if requested or os.environ['EVENT'] == 'workflow_dispatch':
+              assert os.environ['BUILDER_RESULT'] == 'success', 'requested native builder did not execute'
+              assert os.environ['PRODUCER_RESULT'] == 'success', 'requested native producer did not qualify'
+          else:
+              assert os.environ['EVENT'] == 'pull_request', 'unknown qualification event; refuse silent success'
+          PY

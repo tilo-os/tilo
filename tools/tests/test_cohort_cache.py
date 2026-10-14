@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import re
+import textwrap
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "tools/ci/profile_cohort.py"
@@ -17,6 +18,25 @@ profile = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(profile)
 
 class NativeQualificationTests(unittest.TestCase):
+    def test_dispatch_cannot_succeed_with_skipped_native_jobs(self):
+        workflow = (ROOT / ".forgejo/workflows/cohort-cache-qualification.yml").read_text()
+        aggregate = workflow.split("  qualification:\n", 1)[1]
+        command = aggregate.split("python3 - <<'PY'\n", 1)[1].split("          PY\n", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            event = Path(directory) / "event.json"
+            for name, inputs, builder, producer, passed in (
+                    ("workflow_dispatch", {"components": "apps+runtime"}, "skipped", "skipped", False),
+                    ("workflow_dispatch", {"components": "apps+runtime"}, "success", "success", True),
+                    ("pull_request", {}, "skipped", "skipped", True),
+                    ("", {}, "skipped", "skipped", False)):
+                event.write_text(json.dumps({"inputs": inputs}))
+                env = {**os.environ, "GITHUB_EVENT_PATH": str(event), "EVENT": name,
+                       "TEST_RESULT": "success", "BUILDER_RESULT": builder, "PRODUCER_RESULT": producer}
+                result = subprocess.run([sys.executable, "-c", textwrap.dedent(command)],
+                                        env=env, capture_output=True, text=True)
+                with self.subTest(event=name, producer=producer):
+                    self.assertEqual(result.returncode == 0, passed, result.stderr)
+
     def observation(self):
         return {
             "schema": "tilo.vm.cohort-cache-observation/v1", "producer_exit_code": 0,
@@ -61,15 +81,18 @@ class NativeQualificationTests(unittest.TestCase):
         workflow = (ROOT / ".forgejo/workflows/cohort-cache-qualification.yml").read_text()
         sections = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)",
                                    workflow.split("jobs:\n", 1)[1], re.M | re.S))
-        self.assertEqual(set(sections), {"tests", "builder", "producer"})
+        self.assertEqual(set(sections), {"tests", "builder", "producer", "qualification"})
         for name in ("producer", "builder"):
-            self.assertIn("    if: github.event_name == 'workflow_dispatch'\n", sections[name])
+            self.assertIn("    if: ${{ github.event_name == 'workflow_dispatch' }}\n", sections[name])
         blocks = re.findall(r"^        run: \|\n((?:          .*\n|\n)*)", workflow, re.M)
         self.assertEqual(len(blocks), workflow.count("        run: |"))
         commands = "\n".join(blocks)
         for forbidden in ("virsh", "libvirt", "qemu", "build-image.sh", "tilo-vm vm", "tilo-vm swap",
                           "scripts/vm-acceptance/run.py", "swap-artifact", "remote_builders", "sudo"):
             self.assertNotIn(forbidden, commands)
+        self.assertIn("    if: ${{ always() }}", sections["qualification"])
+        self.assertIn("requested native producer did not qualify", sections["qualification"])
+        self.assertIn("GITHUB_EVENT_PATH", sections["qualification"])
         calls = re.findall(r"^\s+(?:- )?uses: (\S+)", workflow, re.M)
         allowed = {
             "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
