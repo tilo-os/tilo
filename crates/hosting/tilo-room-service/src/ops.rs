@@ -523,12 +523,11 @@ fn textfiles(out: &mut String, dirs: &[PathBuf]) {
         else {
             continue;
         };
-        let Ok(meta) = entry.metadata() else { continue };
-        if meta.len() > TEXTFILE_MAX {
+        let Ok(Some(bytes)) = tilo_files::native::bounded::read(&path, TEXTFILE_MAX) else {
             continue;
-        }
+        };
         let age = age_of(&path).map_or(0, |age| age.as_secs());
-        if let Ok(text) = std::fs::read_to_string(&path) {
+        if let Ok(text) = String::from_utf8(bytes) {
             files.entry(name).or_insert((text, age));
         }
     }
