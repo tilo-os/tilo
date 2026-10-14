@@ -48,6 +48,10 @@ export const NAME = Object.freeze({id: 'set-name', title: 'Set your name',
   subtitle: 'How others see you in this workspace', source: 'identity'});
 export const PAIR = Object.freeze({id: 'pair-device', title: 'Pair a new device',
   subtitle: 'Copy a link that opens this workspace there as you', source: 'devices'});
+/** Offered only while a pairing link could not be copied: copying it again. */
+export const COPY_PAIR = Object.freeze({id: 'copy-pair-link', title: 'Copy link',
+  subtitle: 'The link that pairs your new device', source: 'devices'});
+const PAIR_COPIED = 'Link copied: open it on the new device';
 const APPROVE = 'approve-pairing:';
 /**
  * How many actions make an identity worth keeping. One post or one moved
@@ -105,6 +109,9 @@ export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo'
  * between things (no input for a moment, nothing held down), so the ask
  * never lands mid-sentence or mid-drag. `searchChord` is how this page
  * opens search, said in the ask so the person can find it later.
+ * `revealLink(link, copied)` puts a pairing link the clipboard refused
+ * twice where the person can copy it themselves, calling `copied()` once
+ * they have.
  */
 export function createIdentityActions({
   identity, hosts = () => [], lookups = hosts, rpId = globalThis.location?.hostname, name = () => undefined,
@@ -114,12 +121,14 @@ export function createIdentityActions({
   naming = null, pairing = null, copy = text => globalThis.navigator?.clipboard?.writeText(text), now = () => Date.now(),
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
-  searchChord = 'Ctrl+K',
+  searchChord = 'Ctrl+K', revealLink = () => {},
 }) {
   let mount;
   const offered = new Set();
+  // A pairing link the clipboard refused, until it is copied.
+  let uncopied = null;
   const actions = () => [...(naming ? [NAME] : []), ...(identity.kept ? [RECOVERY] : [KEEP, RECOVERY, SIGN_IN]),
-    ...(pairing ? [PAIR] : [])];
+    ...(pairing ? [PAIR] : []), ...(uncopied ? [COPY_PAIR] : [])];
   const refresh = () => mount?.setHostActions(actions());
   // Each moment offers once per page: `moment` defaults to the action.
   const offer = (action, title, body, moment = action.id) => {
@@ -130,6 +139,14 @@ export function createIdentityActions({
   const publishEverywhere = async () => {
     const results = await Promise.allSettled(hosts().map(origin => publish({origin, identity})));
     for (const result of results) if (result.status === 'rejected') onError(result.reason);
+  };
+  const tryCopy = link => Promise.resolve().then(() => copy(link)).then(() => true, () => false);
+  // The link is on the clipboard: said in passing, and no longer offered,
+  // which withdraws the banner that held it.
+  const pairLinkCopied = () => {
+    uncopied = null;
+    refresh();
+    mount?.acknowledge?.(PAIR_COPIED);
   };
   // Devices waiting to be paired, asked for while a pairing link is fresh.
   let pairUntil = 0;
@@ -227,18 +244,26 @@ export function createIdentityActions({
         } else if (id === PAIR.id && pairing) {
           const link = pairing.link();
           if (!link) throw new IdentityError('no-workspace', 'Join a workspace before pairing a device to it');
-          const copied = await Promise.resolve(copy(link)).then(() => true, () => false);
-          if (copied) {
+          if (await tryCopy(link)) {
             // The clipboard is out of sight: said in passing, not kept.
-            mount?.acknowledge?.('Link copied: open it on the new device');
+            mount?.acknowledge?.(PAIR_COPIED);
           } else {
-            // Without the clipboard, the link has to be said somewhere.
-            offered.delete(PAIR.id);
-            offer(PAIR, 'Open this link on your new device', link);
+            // Search has closed, so the link is said in a banner that can
+            // copy it again: that click is a gesture the browser may honour.
+            uncopied = link;
+            refresh();
+            offered.delete(COPY_PAIR.id);
+            offer(COPY_PAIR, 'Open this link on your new device', link);
           }
           pairUntil = now() + PAIR_WINDOW_MS;
           stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
           await askPending();
+        } else if (id === COPY_PAIR.id && uncopied) {
+          const link = uncopied;
+          if (await tryCopy(link)) pairLinkCopied();
+          // Refused again, and a banner's text cannot be selected: the link
+          // goes where the person can copy it themselves. The banner stays.
+          else revealLink(link, () => { if (uncopied === link) pairLinkCopied(); });
         } else if (id.startsWith(APPROVE) && pairing) {
           const digest = id.slice(APPROVE.length);
           // The approved device joins as this person, where everyone in

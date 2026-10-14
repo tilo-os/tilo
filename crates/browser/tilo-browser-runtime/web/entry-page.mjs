@@ -119,6 +119,36 @@ function askName(current = '', save = async typed => typed.trim() || null) {
 }
 
 /**
+ * A link the clipboard refused, over the page where the person can copy it
+ * themselves: selected in a read-only field, so Ctrl+C or a long press
+ * copies it. Gone once copied (`copied()` is called) or closed.
+ */
+function revealLink(link, copied = () => {}) {
+  document.querySelector('[data-card="reveal-link"]')?.remove();
+  const card = document.createElement('div');
+  card.className = 'tilo-entry-card';
+  card.dataset.card = 'reveal-link';
+  card.setAttribute('role', 'dialog');
+  card.setAttribute('aria-label', 'Pairing link');
+  const label = document.createElement('label');
+  label.textContent = 'Pairing link: copy it, then open it on your new device';
+  const input = document.createElement('input');
+  Object.assign(input, {name: 'pairing-link', value: link, readOnly: true, spellcheck: false, autocomplete: 'off'});
+  label.append(input);
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = 'Close';
+  const done = () => card.remove();
+  input.addEventListener('copy', () => { done(); copied(); });
+  close.addEventListener('click', done);
+  card.addEventListener('keydown', event => { if (event.key === 'Escape') done(); });
+  card.append(label, close);
+  document.body.append(card);
+  input.focus();
+  input.select();
+}
+
+/**
  * Setting up a machine over the page: its address, key and install token
  * (filled in from an `install` link), what that means, and the person's
  * go-ahead. `run(values, onPhase)` installs; what it throws is said in the
@@ -314,6 +344,7 @@ function hostActionParts(mount, names) {
   return name => ({
     setHostActions: actions => { parts.set(name, actions); mount.setHostActions([...parts.values()].flat()); },
     offerHostAction: offer => mount.offerHostAction(offer),
+    acknowledge: text => mount.acknowledge?.(text),
   });
 }
 
@@ -894,7 +925,7 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming}) {
     identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: peer?.setDisplayName ? naming : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
-    pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K',
+    pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', revealLink,
   });
   void actions.attach(mount);
   if (peer?.authoredChanges) {
