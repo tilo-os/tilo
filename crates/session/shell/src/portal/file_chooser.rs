@@ -536,11 +536,7 @@ mod tests {
                 mode,
             ));
             assert_eq!(code, 0);
-            let writable = result
-                .get("writable")
-                .and_then(|value| value.try_clone().ok())
-                .and_then(|value| bool::try_from(value).ok())
-                .unwrap_or(false);
+            let writable = crate::portal::option::<bool>(&result, "writable").unwrap_or(false);
             assert_eq!(
                 writable, expect_write,
                 "save={save}: an Open must not hand out write access, and a \

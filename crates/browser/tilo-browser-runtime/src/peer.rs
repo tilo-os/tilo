@@ -773,6 +773,8 @@ struct JsPresence {
     drag: Option<JsDrag>,
     #[serde(default)]
     participant: Option<JsParticipant>,
+    #[serde(default)]
+    place: Option<String>,
 }
 
 fn participant_from_js(value: JsParticipant) -> Result<LiveParticipant, JsError> {
@@ -904,6 +906,7 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
             })
             .transpose()?,
         participant: value.participant.map(participant_from_js).transpose()?,
+        place: value.place,
     })
 }
 
@@ -927,6 +930,7 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
             size,
         }),
         participant: frame.participant.map(participant_to_js),
+        place: frame.place,
     }
 }
 
@@ -1047,6 +1051,33 @@ pub fn decode_live_frame(frame: &[u8]) -> Result<String, JsError> {
 pub fn live_record_track(record_json: &str) -> Result<String, JsError> {
     let record = record_from_js(serde_json::from_str(record_json).map_err(js_error)?);
     Ok(format!("ops/{}", hex::encode(record.digest())))
+}
+
+/// One of [`WasmPeer::here`]'s actions as the page sends it.
+#[derive(serde::Deserialize)]
+struct JsHereAction {
+    id: String,
+    action: String,
+    #[serde(default)]
+    resource: String,
+    #[serde(default)]
+    app: String,
+    #[serde(default)]
+    at_ms: u64,
+}
+
+/// One person of [`WasmPeer::here`]'s answer as the page reads it.
+#[derive(serde::Serialize)]
+struct JsHerePerson {
+    device: String,
+    user: String,
+    label: String,
+    window: Option<String>,
+    status: String,
+    recent: String,
+    sources: Vec<String>,
+    generated: bool,
+    updated_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -1847,6 +1878,86 @@ impl WasmPeer {
             })
             .collect();
         serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Post this person's display name, the window they focus (`window`:
+    /// tab id in hex) and own recent semantic actions in `room` (`actions`:
+    /// JSON array of `{id: 32 hex, action, resource, app, at_ms}`, titles
+    /// only) and resolve to who is here there: a JSON array of `{device,
+    /// user, label, window, status, recent, sources, generated, updated_ms}` with keys and
+    /// ids in hex. An empty array only fetches.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed or out-of-bounds actions, or when the host is not
+    /// reached or this device is not admitted to `room`.
+    #[wasm_bindgen(js_name = here)]
+    pub async fn here(
+        &self,
+        room: String,
+        label: String,
+        window: Option<String>,
+        actions: String,
+    ) -> Result<String, JsError> {
+        let actions: Vec<JsHereAction> = serde_json::from_str(&actions).map_err(js_error)?;
+        let request = tilo_relay_protocol::web::HereRequest {
+            workspace_id: workspace(&room)?,
+            label: label
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(tilo_relay_protocol::web::MAX_HERE_LABEL_CHARS)
+                .collect(),
+            window: window
+                .map(|window| u64::from_str_radix(&window, 16))
+                .transpose()
+                .map_err(js_error)?,
+            actions: actions
+                .into_iter()
+                .map(|action| {
+                    let id: [u8; 16] = hex::decode(&action.id)
+                        .ok()
+                        .and_then(|id| id.try_into().ok())
+                        .ok_or_else(|| js_error("action id is not 32 hex"))?;
+                    Ok(tilo_relay_protocol::web::HereAction {
+                        id,
+                        action: action.action,
+                        resource: action.resource,
+                        app: action.app,
+                        at_ms: action.at_ms,
+                    })
+                })
+                .collect::<Result<_, JsError>>()?,
+        };
+        request.validate().map_err(js_error)?;
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .here_then(
+                request,
+                Box::new(move |here| {
+                    let _ = reply.send(here);
+                }),
+            )
+            .map_err(js_error)?;
+        let here = receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)?;
+        let people: Vec<JsHerePerson> = here
+            .people
+            .into_iter()
+            .map(|person| JsHerePerson {
+                device: hex::encode(person.device),
+                user: hex::encode(person.user),
+                label: person.label,
+                window: person.window.map(|window| format!("{window:x}")),
+                status: person.status,
+                recent: person.recent,
+                sources: person.sources.iter().map(hex::encode).collect(),
+                generated: person.generated,
+                updated_ms: person.updated_ms,
+            })
+            .collect();
+        serde_json::to_string(&people).map_err(js_error)
     }
 
     /// Send `events` (JSON array of `legacy_window::InputEvent`s, externally

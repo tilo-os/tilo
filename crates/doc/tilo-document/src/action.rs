@@ -295,7 +295,7 @@ pub enum RichTextAction {
     /// Insert a table after `after` already holding its contents: `cells` is
     /// its rows top to bottom, each row's cell texts left to right, and every
     /// row has the same number of cells. The first row is the header row
-    /// (qdoc has no separate header marker: the editor shades row 0 and the
+    /// (tilo-doc has no separate header marker: the editor shades row 0 and the
     /// exporters write it as the table's head). Laid out exactly as
     /// [`InsertTable`](Self::InsertTable) lays out an empty table, with the
     /// table and cell ids minted inside `apply`, so the table and its text
@@ -531,7 +531,7 @@ pub const MAX_TABLE_CELLS: usize = 10_000;
 /// The longest image description an action may set, in characters.
 pub const MAX_IMAGE_ALT_CHARS: usize = 2_048;
 
-/// Read only the addressed block while matching qdoc's snapshot membership:
+/// Read only the addressed block while matching tilo-doc's snapshot membership:
 /// a region block must be a map with a byte-valued order key. Missing or
 /// non-Text text projects to the empty string, just as `materialize_block` does.
 /// Characters of region block `id`, `None` when it is not a block of that
@@ -2240,21 +2240,22 @@ impl Written {
     }
 
     /// Mark the written text as `author`'s, as part of the edit that wrote it.
+    ///
+    /// Every key carries its own mark, even typed straight after `author`'s
+    /// own run. Relying on that run's mark to take the key in instead would
+    /// lose the key to a collaborator typing at the same place at the same
+    /// time: their key's mark, anchored where this key lands, would cover it
+    /// and win.
     fn attribute(&self, dm: &mut DocMut<'_>, author: &str) {
         if self.len == 0 || author.is_empty() {
             return;
         }
-        let span = Span {
-            block: self.block.clone(),
-            start: self.start,
-            end: self.start.saturating_add(self.len),
-        };
-        add_mark_region(
-            dm,
+        dm.mark_author_in(
             self.region,
-            &span,
-            tilo_doc::schema::MARK_AUTHOR,
-            &MarkVal::Str(author.to_owned()),
+            &self.block,
+            self.start,
+            self.start.saturating_add(self.len),
+            author,
         );
     }
 }

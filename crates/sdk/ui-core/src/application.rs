@@ -922,7 +922,7 @@ impl HostContext {
                     || saved.workspace_id != self.views.workspace_id()
                     || saved.instance_id != self.instance_id
                     || saved.record_id != self.record.id.as_str()
-                    || !self.record.kind.names(&saved.record_kind)
+                    || self.record.kind.as_str() != saved.record_kind
                 {
                     return Err(LaunchError::BindingMismatch);
                 }
@@ -1481,6 +1481,26 @@ impl AppComponent {
                     slot,
                 }) as Box<dyn crate::search::SearchProvider>)
             })
+            .collect()
+    }
+    /// [`Self::search_providers`] as the action directory's witness reads
+    /// them: the same names, generations and domains under this component's
+    /// lifetime, without minting a proxy or making the root's providers.
+    pub(crate) fn search_provider_descriptors(
+        &self,
+    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+        let binding = self.callback_binding();
+        let Ok(_entry) = binding.enter() else {
+            return vec![];
+        };
+        let Some(root) = self.root.as_deref() else {
+            return vec![];
+        };
+        crate::search::capability::search_provider_descriptors(root)
+            .into_iter()
+            // As `search_providers`: the host collects nested components itself.
+            .filter(|descriptor| descriptor.owner.is_none())
+            .map(|descriptor| descriptor.owned_by(binding.lifetime_id))
             .collect()
     }
     pub fn record(&self) -> &RecordCheckout {

@@ -64,8 +64,13 @@ pub mod governance {
     pub const RESUME_BOT: &str = "resume-bot";
     /// Become a bot's installer, after reviewing its grant.
     pub const ADOPT_BOT: &str = "adopt-bot";
+    /// Start, end, restart or moderate one of the room's calls. A call is
+    /// room governance (who may speak, who is denied), so no preset below
+    /// the owner's holds it: the owner, and members the room grants it, run
+    /// calls, and any member joins an active one.
+    pub const CALL: &str = "call";
 
-    pub const ALL: [&str; 19] = [
+    pub const ALL: [&str; 20] = [
         INVITE,
         ADD_MEMBER,
         REMOVE_MEMBER,
@@ -85,6 +90,7 @@ pub mod governance {
         PAUSE_BOT,
         RESUME_BOT,
         ADOPT_BOT,
+        CALL,
     ];
 
     /// Actions that exercise authority over the room or others in it. The
@@ -115,6 +121,64 @@ pub fn room_resource(room: &str) -> TreePath {
 #[must_use]
 pub fn governance_action(room: &str, action: &str) -> TreePath {
     room_resource(room).action(action)
+}
+
+/// Every governance action of `room`: `room:<id>/kind:tilo.room/action:*`.
+/// More specific than the room's resource, where the Editor's rule denies
+/// governance, so a grant here decides each governance action whatever the
+/// grantee's role says about the room's resource.
+#[must_use]
+pub fn governance_actions(room: &str) -> TreePath {
+    room_resource(room).any(Level::Action)
+}
+
+/// The id of the grant that makes `person` an administrator of a room.
+#[must_use]
+pub fn administrator_grant_id(person: &str) -> GrantId {
+    GrantId(format!("room-admin-v1:{person}"))
+}
+
+/// The grant that makes `person` an administrator of `room`, given by its
+/// owner `granted_by`: every governance action allowed, on
+/// [`governance_actions`].
+///
+/// An administrator stays a member with a role, an Editor as the room's
+/// governance writes them, and that role still bounds them: an invite or a
+/// role they hand out is never above it ([`crate::Refusal::AboveActorRole`]),
+/// a membership action reaches only those ranked below it
+/// ([`crate::Refusal::NotBelowActor`]), and a grant they give never exceeds
+/// what they hold ([`crate::Refusal::AboveActorGrant`]). A ban or a live
+/// restriction on them stops their governance with the rest of their
+/// changes ([`crate::RoomPolicy::check_action`]).
+///
+/// Rooms written before the grant took this node held it on
+/// [`room_resource`], where the Editor's own Deny at the same node outranked
+/// it; [`is_legacy_administrator_grant`] finds those so the governance writer
+/// rewrites them.
+#[must_use]
+pub fn administrator_grant(room: &str, person: &str, granted_by: Subject) -> Grant {
+    Grant {
+        id: administrator_grant_id(person),
+        subject: Subject::Person(person.to_owned()),
+        node: governance_actions(room),
+        kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+        answer: Answer::Allow,
+        lifetime: Lifetime::UntilRevoked,
+        granted_by,
+    }
+}
+
+/// Whether `grant` is an administrator's grant of `room` in the shape rooms
+/// held before [`administrator_grant`]: the owner's lasting Allow on the
+/// room's resource, where it decides nothing an Editor's role does not
+/// already deny. Anything else under the id (a Deny, an expiring grant) is
+/// not one, so rewriting never widens it.
+#[must_use]
+pub fn is_legacy_administrator_grant(room: &str, grant: &Grant) -> bool {
+    matches!(&grant.subject, Subject::Person(person) if grant.id == administrator_grant_id(person))
+        && grant.node == room_resource(room)
+        && grant.answer == Answer::Allow
+        && grant.lifetime == Lifetime::UntilRevoked
 }
 
 /// Where comments live in a room, at any depth.

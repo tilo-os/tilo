@@ -8,6 +8,11 @@ fail=0
 # differs from both parents even when each manifest was taken from one parent.
 lock_staged_names=$(git diff --cached --name-only)
 
+# This inventory compares tracked paths with the working tree's baseline.
+# Run before the merge-only index hides scripts inherited from main, or
+# those baseline entries would incorrectly look like removed scripts.
+python3 "$root/tools/policy/check_image_interpreters.py" || fail=1
+
 # Merging main into a branch stages everything main changed since the branch
 # point, thousands of files that main's own checks already passed. The checks
 # below read the staged change through the index, so they run against a copy
@@ -51,7 +56,6 @@ python3 "$root/tools/policy/check_too_many_arguments.py" || fail=1
 # and on a large diff the pipeline then reports git's SIGPIPE instead of the
 # match.
 staged_names=$(git diff --cached --name-only)
-staged_added=$(git diff --cached -U0 --diff-filter=ACM | grep -E '^\+' || true)
 
 # A vendored crate under vendor/ is upstream's code, carried as it ships: the
 # added-code policy (ignore reasons, allow placement, dbg!) and rustfmt skip it.
@@ -93,13 +97,9 @@ fi
 # added lines misses an unchanged `#[allow]` in a file that this commit edits.
 python3 "$root/tools/ci/check_changed_rust_allows.py" --root "$root" --staged || fail=1
 
-# Credentials in the staged diff.
-"$root/scripts/scan-secrets.sh" || fail=1
-
-if grep -qE '^\+(<{7}|={7}|>{7})( |$)' <<< "$staged_added"; then
-  note "merge-conflict marker in the staged diff"
-  fail=1
-fi
+# Credentials, merge-conflict markers and dbg! in the lines the change adds.
+# CI repeats this exact check on every new commit (check_commit_policy.py).
+python3 "$root/tools/policy/added_line_policy.py" --root "$root" --staged || fail=1
 
 # Catch ineffective `#[allow]` attributes before CI.
 added=$(grep -E '^\+' <<< "$own_diff" || true)
@@ -115,11 +115,6 @@ fi
 allow_context=$(grep -A1 -E '^\+\s*#\[allow\(' <<< "$own_diff" || true)
 if grep -qE '^\+\s*(assert|assert_eq|assert_ne|debug_assert|println|eprintln|write|writeln|panic|vec|format)!' <<< "$allow_context"; then
   note "#[allow] directly above a macro invocation is ignored by rustc — put it on the enclosing function"
-  fail=1
-fi
-
-if grep -qE '(^|[^a-z_])dbg!\(' <<< "$added"; then
-  note "dbg! in the staged diff"
   fail=1
 fi
 

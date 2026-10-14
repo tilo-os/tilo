@@ -115,20 +115,11 @@ pub(crate) fn refusal(
     standings: Option<&crate::workspace::Standings>,
 ) -> Option<String> {
     let (_, _, body) = crate::coedit::retention_view(delta)?;
-    let Ok(tilo_peer_state::NeighbourMsg::AppDocument {
-        app_id,
-        cluster_id,
-        record_id,
-        envelope,
-        ..
-    }) = postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(body)
-    else {
-        return None;
-    };
+    let (route, envelope) = crate::payloads::shell().open_document(body)?;
     let record = collab_types::Record {
-        room: &cluster_id,
-        app: &app_id,
-        record: &record_id,
+        room: &route.cluster_id,
+        app: &route.app_id,
+        record: &route.record_id,
     };
     let author = standings.map(|standings| standings.get(envelope.author.as_bytes()));
     let allows = |node: &tilo_action_policy::TreePath, kind| match author {

@@ -26,6 +26,14 @@
  * marked `paired`, so the next visit reconnects as that person rather than
  * joining as this browser's own.
  *
+ * Returning (`enteredWorkspaces`): the rooms this browser entered as a
+ * member are remembered, so a person invited to several workspaces, on
+ * several hosts, can switch between them (`workspaceChoices`, offered as
+ * host actions in desktop search) and a bare entry reopens the one they
+ * last chose (`chosenWorkspace`). Remembering grants nothing: opening one
+ * is the room's own admission again, and one that refuses this browser is
+ * marked as such rather than reopened.
+ *
  * Spectating (the homepage embed): the page makes a device key in memory
  * only and asks the host to certify it as the room's one read-only
  * spectator person (`POST <admission>spectate`), then connects through the
@@ -63,6 +71,122 @@ export function listedWorkspaces({home = null, stored = []} = {}) {
 export function workspaceAt(workspaces, origin) {
   const wanted = originOf(origin);
   return workspaces.find(workspace => originOf(workspace.host.origin) === wanted) ?? null;
+}
+
+const ENTERED = 'tilo-entered-workspaces';
+const CHOSEN = 'tilo-chosen-workspace';
+/** The most rooms remembered as entered; the least recently opened go first. */
+const MAX_ENTERED = 32;
+/** Host action ids that open one of the person's workspaces. */
+export const OPEN_WORKSPACE = 'open-workspace:';
+
+const readJson = (store, key, fallback) => {
+  try { return JSON.parse(store?.getItem(key) ?? 'null') ?? fallback; } catch { return fallback; }
+};
+const sameRoom = (a, b) => originOf(a.origin) === originOf(b.origin) && a.room === b.room;
+const validEntry = entry => {
+  try { return typeof entry?.room === 'string' && entry.room && Boolean(originOf(entry.origin)); } catch { return false; }
+};
+const readEntered = store => {
+  const list = readJson(store, ENTERED, []);
+  return Array.isArray(list) ? list.filter(validEntry) : [];
+};
+const writeEntered = (store, list) => store?.setItem(ENTERED, JSON.stringify(list.slice(0, MAX_ENTERED)));
+
+/**
+ * The rooms this browser entered as a member (an invitation it redeemed, an
+ * account it holds, a device it paired), most recently opened first:
+ * `{origin, room, name, unavailable}`. `unavailable` says the last attempt
+ * to open it failed: the host refused this browser, or could not be reached.
+ */
+export function enteredWorkspaces(store = globalThis.localStorage) {
+  return readEntered(store).map(({origin, room, name = null, unavailable = false}) => ({
+    origin: originOf(origin), room, name: typeof name === 'string' && name ? name : null, unavailable: unavailable === true,
+  }));
+}
+
+/** Remember that this browser opened the room `{origin, room}` as a member,
+ * under `name` when one is known (an earlier name stays otherwise). */
+export function rememberEntered({origin, room, name = null}, store = globalThis.localStorage) {
+  const entry = {origin: originOf(origin), room};
+  if (!validEntry(entry)) return;
+  const list = readEntered(store);
+  const earlier = list.find(kept => sameRoom(kept, entry));
+  const kept = name || earlier?.name || null;
+  writeEntered(store, [{...entry, ...(kept ? {name: kept} : {})}, ...list.filter(other => !sameRoom(other, entry))]);
+}
+
+/** Name a remembered room after the workspace it showed, if it has no name yet. */
+export function nameEntered({origin, room, name}, store = globalThis.localStorage) {
+  if (typeof name !== 'string' || !name) return;
+  const list = readEntered(store);
+  const entry = list.find(kept => sameRoom(kept, {origin, room}));
+  if (!entry || entry.name) return;
+  entry.name = name;
+  writeEntered(store, list);
+}
+
+/** The last attempt to open the remembered room `{origin, room}` failed: say
+ * so where it is offered, and stop reopening it on a bare entry. */
+export function markUnavailable({origin, room}, store = globalThis.localStorage) {
+  const list = readEntered(store);
+  const entry = list.find(kept => sameRoom(kept, {origin, room}));
+  if (!entry) return;
+  entry.unavailable = true;
+  writeEntered(store, list);
+  const chosen = readJson(store, CHOSEN, null);
+  if (chosen && validEntry(chosen) && sameRoom(chosen, entry)) store?.removeItem(CHOSEN);
+}
+
+/** Keep `{origin, room}` as the workspace a bare entry reopens; `null` goes
+ * back to the web host's home workspace. */
+export function chooseWorkspace(choice, store = globalThis.localStorage) {
+  if (choice && validEntry(choice)) store?.setItem(CHOSEN, JSON.stringify({origin: originOf(choice.origin), room: choice.room}));
+  else store?.removeItem(CHOSEN);
+}
+
+/** The workspace the person last chose to open, while this browser still
+ * remembers entering it and nothing refused it since; else `null`. */
+export function chosenWorkspace(store = globalThis.localStorage) {
+  const chosen = readJson(store, CHOSEN, null);
+  if (!chosen || !validEntry(chosen)) return null;
+  const entry = enteredWorkspaces(store).find(kept => sameRoom(kept, chosen));
+  return entry && !entry.unavailable ? {origin: entry.origin, room: entry.room} : null;
+}
+
+/**
+ * The workspaces the person can switch to from `current` (a route scope, or
+ * `null`): the web host's `home` workspace, then the rooms they `entered`,
+ * never the one in front. `homeRoom` is the room this browser was admitted
+ * to through the home's door, so that room is offered once, as the home.
+ * Each choice is `{id, name, origin, room, home, unavailable}`; `id` is its
+ * host action id.
+ */
+export function workspaceChoices({home = null, homeRoom = null, entered = [], current = null}) {
+  const here = current?.kind === 'room' ? current : null;
+  const homeOrigin = home?.host?.origin ? originOf(home.host.origin) : null;
+  const isHome = scope => homeOrigin !== null && originOf(scope.host ?? scope.origin) === homeOrigin
+    && (scope.room == null || scope.room === (home.room ?? homeRoom));
+  const choices = [];
+  if (homeOrigin && !(here && isHome(here))) {
+    choices.push({id: `${OPEN_WORKSPACE}home`, name: home.name || new URL(homeOrigin).host, origin: homeOrigin,
+      room: home.room ?? null, home: true, unavailable: false});
+  }
+  for (const entry of entered) {
+    if (isHome(entry) || (here && originOf(here.host) === entry.origin && here.room === entry.room)) continue;
+    choices.push({id: `${OPEN_WORKSPACE}${entry.origin}/${entry.room}`, name: entry.name || new URL(entry.origin).host,
+      origin: entry.origin, room: entry.room, home: false, unavailable: entry.unavailable});
+  }
+  return choices;
+}
+
+/** The host actions that open `choices` (`workspaceChoices`), for desktop search. */
+export function workspaceActions(choices) {
+  return choices.map(choice => {
+    const host = new URL(choice.origin).host;
+    return {id: choice.id, title: `Open ${choice.name}`,
+      subtitle: choice.unavailable ? `Workspace · ${host} · did not open last time` : `Workspace · ${host}`};
+  });
 }
 
 export class HostAdmissionError extends Error {

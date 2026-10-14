@@ -198,6 +198,59 @@ pub fn sudo_refusal(stderr: &str) -> Option<String> {
     })
 }
 
+// Forward a typed call after inspecting its request, without a second serializer.
+struct Forward<T>(tilo_vm_protocol::Request, std::marker::PhantomData<T>);
+
+impl<T> From<Forward<T>> for tilo_vm_protocol::Request {
+    fn from(call: Forward<T>) -> Self {
+        call.0
+    }
+}
+
+impl<T: serde::de::DeserializeOwned + serde::Serialize> Call for Forward<T> {
+    type Output = T;
+}
+
+fn bootstrap_request(request: &tilo_vm_protocol::Request) -> bool {
+    use tilo_vm_protocol::{LayerSource, Request};
+    match request {
+        Request::Status(status) => status.slot.is_none(),
+        Request::LayerList(_) => true,
+        Request::LayerImport(import) => {
+            import.provenance.component == "vmd" && matches!(import.source, LayerSource::Upload(_))
+        }
+        _ => false,
+    }
+}
+
+fn bootstrap_hello<R: std::io::BufRead, W: std::io::Write>(
+    client: &mut Client<R, W>,
+    bootstrap: bool,
+) -> Result<HelloResult, ClientError> {
+    match client.hello(env!("CARGO_PKG_VERSION")) {
+        Err(ClientError::VersionMismatch { daemon: 5, .. }) if bootstrap => {
+            // v5 hello/import/upload/list shapes were audited at c4fe1799f7.
+            // It has no capability extension: never assume newer optional methods.
+            let hello = client.call(tilo_vm_protocol::Hello {
+                protocol: 5,
+                client_version: env!("CARGO_PKG_VERSION").into(),
+            })?;
+            if hello.protocol != 5
+                || hello.root != "/var/lib/tilo-vm"
+                || !matches!(hello.arch.as_str(), "x86_64" | "aarch64")
+                || hello.daemon_version.is_empty()
+                || !hello.capabilities.is_empty()
+            {
+                return Err(ClientError::Protocol(
+                    "unsupported legacy bootstrap identity or capabilities".into(),
+                ));
+            }
+            Ok(hello)
+        }
+        result => result,
+    }
+}
+
 pub struct Remote {
     child: Child,
     /// `None` only while dropping: closing its stdin ends the session.
@@ -219,6 +272,9 @@ impl Remote {
         &mut self,
         build: impl FnOnce() -> T,
     ) -> Result<(T, Result<(), CliError>), CliError> {
+        if self.hello.protocol == 5 {
+            return Ok((build(), Ok(())));
+        }
         keepawake::during(
             std::time::Duration::from_secs(60),
             || self.renew_sleep_lease(std::time::Duration::from_secs(10)),
@@ -272,11 +328,38 @@ impl Remote {
         Self::connect_line(vm, &line, endpoint, debug)
     }
 
+    /// Only the daemon replacement path may negotiate the audited v5 import vocabulary.
+    pub(crate) fn connect_bootstrap(
+        vm: &str,
+        endpoint: &SshEndpoint,
+        key: Option<&str>,
+        daemon: Option<&str>,
+        debug: Vec<String>,
+    ) -> Result<Self, CliError> {
+        let command = daemon
+            .unwrap_or(DEFAULT_DAEMON)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let line = ssh_command(endpoint, key, &command, false);
+        Self::connect_line_mode(vm, &line, endpoint, debug, true)
+    }
+
     fn connect_line(
         vm: &str,
         line: &CommandLine,
         endpoint: &SshEndpoint,
         debug: Vec<String>,
+    ) -> Result<Self, CliError> {
+        Self::connect_line_mode(vm, line, endpoint, debug, false)
+    }
+
+    fn connect_line_mode(
+        vm: &str,
+        line: &CommandLine,
+        endpoint: &SshEndpoint,
+        debug: Vec<String>,
+        bootstrap: bool,
     ) -> Result<Self, CliError> {
         let mut child = Command::new(&line.program)
             .args(&line.args)
@@ -300,7 +383,8 @@ impl Remote {
         let mut client = Client::new(BufReader::new(stdout), stdin);
         // SSH stdio is byte-transparent; the audited peer bridge stays JSON-line oriented.
         client.enable_binary_uploads();
-        match client.hello(env!("CARGO_PKG_VERSION")) {
+        let handshake = bootstrap_hello(&mut client, bootstrap);
+        match handshake {
             Ok(hello) => Ok(Self {
                 child,
                 client: Some(client),
@@ -445,21 +529,29 @@ impl Remote {
     /// # Errors
     /// Daemon-reported and transport errors.
     pub fn call<C: Call>(&mut self, params: C) -> Result<C::Output, CliError> {
+        let request = params.into();
+        if self.hello.protocol == 5 && !bootstrap_request(&request) {
+            return Err(CliError::InvalidInput("legacy daemon connection permits only vmd upload/import diagnostics; upgrade before ordinary operations".into()));
+        }
         self.client
             .as_mut()
             .ok_or_else(|| CliError::from(ClientError::Closed))?
-            .call(params)
+            .call(Forward::<C::Output>(request, std::marker::PhantomData))
             .map_err(CliError::from)
     }
 
     /// # Errors
     /// Read or transport failures.
     pub fn upload(&mut self, bytes: impl std::io::Read) -> Result<String, CliError> {
-        self.client
+        let client = self
+            .client
             .as_mut()
-            .ok_or_else(|| CliError::from(ClientError::Closed))?
-            .upload(bytes)
-            .map_err(CliError::from)
+            .ok_or_else(|| CliError::from(ClientError::Closed))?;
+        if self.hello.protocol == 5 {
+            client.upload_legacy(bytes).map_err(CliError::from)
+        } else {
+            client.upload(bytes).map_err(CliError::from)
+        }
     }
 }
 
@@ -655,6 +747,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_bootstrap_is_negotiated_only_for_known_import_vocabulary() {
+        use std::io::Cursor;
+        use tilo_vm_protocol::{LayerImport, LayerSource, Provenance, Request, Status};
+        let response = |id, version, root: &str, arch: &str| {
+            format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"protocol\":{version},\"daemon_version\":\"0.1\",\"root\":\"{root}\",\"arch\":\"{arch}\"}}}}\n"
+            )
+        };
+        let first = response(1, 5, "/var/lib/tilo-vm", "x86_64");
+        let mut strict = Client::new(Cursor::new(first.clone()), Vec::new());
+        assert!(matches!(
+            bootstrap_hello(&mut strict, false),
+            Err(ClientError::VersionMismatch { daemon: 5, .. })
+        ));
+        let mut legacy = Client::new(
+            Cursor::new(format!(
+                "{first}{}",
+                response(2, 5, "/var/lib/tilo-vm", "x86_64")
+            )),
+            Vec::new(),
+        );
+        assert_eq!(bootstrap_hello(&mut legacy, true).unwrap().protocol, 5);
+        for (version, root, arch) in [
+            (6, "/var/lib/tilo-vm", "x86_64"),
+            (5, "/other", "x86_64"),
+            (5, "/var/lib/tilo-vm", "unknown"),
+        ] {
+            let input = if version == 6 {
+                response(1, version, root, arch)
+            } else {
+                format!("{first}{}", response(2, version, root, arch))
+            };
+            assert!(
+                bootstrap_hello(&mut Client::new(Cursor::new(input), Vec::new()), true).is_err()
+            );
+        }
+        assert!(!bootstrap_request(&Request::Control(
+            tilo_vm_protocol::Control {
+                slot: "test".into(),
+                args: vec![],
+                private_args: None,
+            }
+        )));
+        assert!(bootstrap_request(&Request::Status(Status { slot: None })));
+        for component in ["shell", "vmd"] {
+            let import = Request::LayerImport(LayerImport {
+                source: LayerSource::Upload("receipt".into()),
+                provenance: Box::new(Provenance::local(component)),
+            });
+            assert_eq!(bootstrap_request(&import), component == "vmd");
+        }
+        let import = Request::LayerImport(LayerImport {
+            source: LayerSource::Path("/outside".into()),
+            provenance: Box::new(Provenance::local("vmd")),
+        });
+        assert!(!bootstrap_request(&import));
+        // No hello result (including an SSH authentication refusal) is not bootstrap permission.
+        assert!(
+            bootstrap_hello(
+                &mut Client::new(Cursor::new(Vec::<u8>::new()), Vec::new()),
+                true
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn imported_daemon_command_preserves_rpc_policy_and_refuses_untrusted_paths() {
         let hash = "ab".repeat(32);
         let command = imported_daemon_command(
@@ -707,7 +866,7 @@ for line in sys.stdin:
  method=request['method']
  with open(os.path.join(root,'calls'),'a') as log: log.write(source+' '+method+'\n')
  if method=='hello':
-  result={'protocol':request['params']['protocol'],'daemon_version':source,'root':root,'arch':'x86_64'}
+  result={'protocol':request['params']['protocol'],'daemon_version':source,'root':root,'arch':'aarch64' if '--wrong-arch' in sys.argv else 'x86_64'}
  elif method=='swap' and source=='old':
   print(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':{'code':-32000,'message':'legacy ExtensionDirectories third overlay: /usr Invalid argument','hint':'upgrade applying daemon'}}),flush=True)
   continue
@@ -756,6 +915,20 @@ for line in sys.stdin:
         assert_eq!(
             std::fs::read_to_string(root.join("calls")).unwrap(),
             "old hello\nold swap\nimported hello\nimported swap\nold hello\n"
+        );
+        let wrong_arch = CommandLine::new(
+            binary.to_str().unwrap(),
+            &["rpc", "--root", root.to_str().unwrap(), "--wrong-arch"],
+        );
+        assert!(
+            old_remote
+                .handoff("fixture", &wrong_arch, &endpoint, vec![])
+                .is_err()
+        );
+        assert!(
+            std::fs::read_to_string(root.join("calls"))
+                .unwrap()
+                .ends_with("old hello\nimported hello\n")
         );
         // A replacement for a different state root must never reach apply.
         let wrong_root = tmp.path().join("wrong");

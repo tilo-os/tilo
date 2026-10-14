@@ -2,8 +2,9 @@
 //!
 //! A bundle is `crates/browser/tilo-browser-runtime/scripts/build.sh`'s
 //! layout: `pkg/` (wasm-bindgen output under the runtime's module name), the
-//! page host's `*.mjs` and `index.html`, the product fonts with
-//! `fonts.json`, and `apps.json`. Two bundles exist:
+//! page host's `*.mjs` and `index.html`, the entry pages' `locales/` (the
+//! arrival screen's lines), the product fonts with `fonts.json`, and
+//! `apps.json`. Two bundles exist:
 //!
 //! - **desktop**: `crates/browser/tilo-web-desktop`, every web-capable Tilo
 //!   app, opened at `app/#/me/<id>`. Used for Tilo's own apps, so they
@@ -976,6 +977,24 @@ fn copy_page_host(sdk_root: &Path, bundle: &Path) -> Result<()> {
             .with_context(|| format!("creating {}", app_dir.display()))?;
         link_or_copy(&app_page, &app_dir.join("index.html"))?;
     }
+    // The arrival screen's lines: `arrival.mjs` fetches `locales/<locale>.ftl`.
+    let locales = web.join("locales");
+    if locales.is_dir() {
+        let into = bundle.join("locales");
+        std::fs::create_dir_all(&into).with_context(|| format!("creating {}", into.display()))?;
+        for entry in
+            std::fs::read_dir(&locales).with_context(|| format!("reading {}", locales.display()))?
+        {
+            let entry = entry?;
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "ftl")
+            {
+                link_or_copy(&entry.path(), &into.join(entry.file_name()))?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1139,12 +1158,13 @@ pub(super) struct VersionFile {
 }
 
 /// The files Cloud packages from a bundle, in Cloud's order: top-level
-/// names sorted, `pkg/` and `fonts/` expanded in place, recursively sorted.
+/// names sorted, `pkg/`, `fonts/` and `locales/` expanded in place,
+/// recursively sorted.
 pub(super) fn packaged_files(bundle: &Path) -> Result<Vec<VersionFile>> {
     let mut files = Vec::new();
     for name in sorted_names(bundle)? {
         let path = bundle.join(&name);
-        if name == "pkg" || name == "fonts" {
+        if name == "pkg" || name == "fonts" || name == "locales" {
             if !path.is_dir() {
                 bail!("{name} in {} must be a directory", bundle.display());
             }
@@ -1487,6 +1507,7 @@ mod tests {
             "host.test.mjs",
             "apps.json",
             "index.html",
+            "locales/en-US.ftl",
             "untrusted.html",
             "build.json",
         ] {
@@ -1507,9 +1528,37 @@ mod tests {
                 "fonts/LICENSES/a.txt",
                 "fonts.json",
                 "host.mjs",
+                "locales/en-US.ftl",
                 "pkg/tilo_browser_runtime.js"
             ]
         );
+    }
+
+    #[test]
+    fn a_packaged_bundle_carries_the_arrival_screens_locales() {
+        let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let bundle = tempfile::tempdir().unwrap();
+        copy_page_host(&sdk, bundle.path()).unwrap();
+        let packaged: Vec<String> = packaged_files(bundle.path())
+            .unwrap()
+            .into_iter()
+            .map(|file| file.name)
+            .collect();
+        assert!(packaged.iter().any(|name| name == "arrival.mjs"));
+        // Every locale `arrivalLocale` picks, and each one shipped beside it.
+        let shipped = std::fs::read_dir(sdk.join(RUNTIME).join("web/locales"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap());
+        let mut wanted: Vec<String> = shipped.map(|name| format!("locales/{name}")).collect();
+        wanted.sort();
+        assert!(wanted.iter().any(|name| name == "locales/en-US.ftl"));
+        assert!(wanted.iter().any(|name| name == "locales/de-DE.ftl"));
+        for name in &wanted {
+            assert!(
+                packaged.contains(name),
+                "{name} is not packaged: {packaged:?}"
+            );
+        }
     }
 
     #[test]
