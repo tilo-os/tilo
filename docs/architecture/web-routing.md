@@ -550,6 +550,24 @@ replaces the address with the workspace's full link. The home is listed
 first among the person's workspaces; the runtime lists no workspace of its
 own.
 
+A person invited to several workspaces, on one host or several, returns
+to them from any of them. The page remembers each room it entered as a
+member (an invitation redeemed, an account it holds, a device it paired;
+not the home's door, and not a guest ticket) in the browser, and desktop
+search offers "Open <workspace>" for the home and each of those rooms,
+beside the desktop's own commands, so a person, a script and an agent
+switch through the same host action. Switching saves what is pending in
+the room in front, closes its desktop and its peer, then loads the other
+room's link: the next room is admitted afresh, through its own door, in a
+new page, so nothing of one room's state or pending work reaches the
+other. Back and Forward across a switch load the room anew, never inside
+the previous room's desktop. A bare desktop entry under a home reopens
+the room the person last chose (choosing the home goes back to it); never
+in an embed. A remembered room whose admission fails is offered as "did
+not open last time" and is no longer reopened by a bare entry, and the
+failure page offers the person's other workspaces. Remembering grants
+nothing: every room still decides at its own door.
+
 The `web-entry` image (`crates/browser/tilo-browser-runtime/container/`)
 is the runtime's desktop bundle as static files. Its `entry.json` is
 written from the environment when the container starts:
