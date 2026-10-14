@@ -36,6 +36,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 workspace-hack = { version = "0.1" }
 xattr = "1.6.1"
+tilo-paths.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
