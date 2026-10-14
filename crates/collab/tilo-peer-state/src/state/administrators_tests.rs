@@ -3,6 +3,7 @@
 //! rewrites the grant rooms held before it so their administrators govern
 //! too.
 use super::*;
+use tilo_action_policy::KindSet;
 use tilo_action_policy::roles::{self, governance};
 
 /// How many of the room's governance actions the member with device
