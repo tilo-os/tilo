@@ -265,6 +265,11 @@ pub struct TabBar {
     title_advance: HashMap<u64, (String, TextStyle, f64)>,
     /// Aligned 1:1 with `tabs`; `None` for a pinned, icon-only pill.
     visible_titles: Vec<Option<String>>,
+    /// Peer faces each pill shows at its trailing edge, aligned 1:1 with
+    /// `tabs`. Set from `draw` (the only pass with presence) before titles
+    /// are elided, so the title gives way to the faces instead of hiding
+    /// under them.
+    pill_faces: Vec<PillFaces>,
     pending_context_menu: Option<(u64, Point)>,
     hover_idx: Option<usize>,
     hover_close_idx: Option<usize>,
@@ -428,6 +433,7 @@ impl TabBar {
             new_tab_rect: Rect::ZERO,
             title_advance: HashMap::new(),
             visible_titles: Vec::new(),
+            pill_faces: Vec::new(),
             pending_context_menu: None,
             hover_idx: None,
             hover_close_idx: None,
@@ -689,6 +695,7 @@ impl TabBar {
         };
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         self.draw_pill_body(&mut ctx, &pill);
+        self.draw_pill_faces(&mut ctx, presence, &pill);
         self.draw_pill_close_chip(&mut ctx, &pill);
         self.draw_pill_action_chips(&mut ctx, &pill);
     }
@@ -947,10 +954,7 @@ impl TabBar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let tab_key = PresenceKey::Tab {
-            id: format!("{:x}", t.id),
-        };
-        let peers = presence.peers_on(&tab_key);
+        let peers = presence.peers_on(&tab_presence_key(t.id));
         if peers.is_empty() {
             return;
         }
@@ -978,6 +982,104 @@ impl TabBar {
             presence.draw_peer_mist(scene, theme, peer, mist_rect);
         }
         scene.pop_layer();
+    }
+
+    /// How many peer faces pill `i` has room for: up to [`PILL_MAX_FACES`]
+    /// plus a "+N" disc, fewer when the title would drop under
+    /// [`MIN_TITLE_PX`], none on a pinned pill or one too narrow for even a
+    /// single face. The mist still says someone is there.
+    fn fit_pill_faces(&self, i: usize, presence: &PresenceCtx) -> PillFaces {
+        let (Some(tab), Some(&r)) = (self.tabs.get(i), self.tab_rects.get(i)) else {
+            return PillFaces::default();
+        };
+        if self.pinned_ids.contains(&tab.id) {
+            return PillFaces::default();
+        }
+        let peers = presence.peers_on(&tab_presence_key(tab.id)).len();
+        let (x0, x1) = self.title_zone_without_faces(i, r);
+        PillFaces::fit(peers, x1 - x0)
+    }
+
+    /// Small faces of the peers on this tab, at the trailing end of the
+    /// title zone (never under the close chip): initials in each person's
+    /// presence colour, agents in the agent identity mark so software never
+    /// reads as a person, ringed so overlapping faces stay separate.
+    fn draw_pill_faces(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
+        pill: &PillPaint<'_>,
+    ) {
+        let faces = self.pill_faces.get(pill.i).copied().unwrap_or_default();
+        if faces.slots() == 0 {
+            return;
+        }
+        let r = pill.rect;
+        let reserve = self
+            .reveal_px
+            .get(pill.i)
+            .copied()
+            .unwrap_or_else(|| Reveal::None.reserve());
+        let x0 = r.x1 - reserve - faces.width() + PILL_FACE_GAP;
+        let cy = r.center().y;
+        let ring = ctx.theme.tokens.colors.surfaces.overlay;
+        let face_rect = |slot: usize| {
+            square_at(
+                Point::new(
+                    x0 + PILL_FACE_PX / 2.0 + crate::num::f64_of_usize(slot) * PILL_FACE_STEP,
+                    cy,
+                ),
+                PILL_FACE_PX,
+            )
+        };
+        let peers = presence.peers_on(&tab_presence_key(pill.tab.id));
+        for (slot, user) in peers.iter().take(faces.faces).enumerate() {
+            let rect = face_rect(slot);
+            let (red, green, blue) = presence.color_for(user);
+            let colour = vello::peniko::Color::from_rgb8(red, green, blue);
+            if presence.is_agent(user) {
+                let theme = ctx.theme;
+                let ring_px = f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0;
+                ctx.scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    ring,
+                    None,
+                    &RoundedRect::from_rect(
+                        rect.inflate(ring_px, ring_px),
+                        f64::from(theme.tokens.radii.detail),
+                    ),
+                );
+                crate::agent_identity::draw_agent_identity_mark(
+                    ctx.scene,
+                    ctx.transform,
+                    rect,
+                    theme.tokens.colors.presence.of_rgb((red, green, blue)),
+                    theme,
+                    crate::agent_identity::AgentIdentityStyle::Solid,
+                );
+            } else {
+                let name = presence
+                    .names
+                    .get(user)
+                    .map_or(user.0.as_str(), String::as_str);
+                let initial = name
+                    .chars()
+                    .find(|c| c.is_alphanumeric())
+                    .map(|c| c.to_uppercase().collect::<String>())
+                    .unwrap_or_default();
+                crate::widget::AvatarFace::new(&initial, "")
+                    .presence(colour)
+                    .ringed_on(ring)
+                    .paint(ctx, rect);
+            }
+        }
+        crate::widget::AvatarFace::paint_overflow(
+            ctx,
+            face_rect(faces.faces),
+            faces.overflow,
+            Some(ring),
+        );
     }
 
     /// The close × (or unsaved-changes dot) chip. Split out of
@@ -1487,6 +1589,12 @@ impl TabBar {
     }
 
     fn title_zone(&self, i: usize, r: Rect) -> (f64, f64) {
+        let (x0, x1) = self.title_zone_without_faces(i, r);
+        let faces = self.pill_faces.get(i).copied().unwrap_or_default().width();
+        (x0, (x1 - faces).max(x0))
+    }
+
+    fn title_zone_without_faces(&self, i: usize, r: Rect) -> (f64, f64) {
         let x0 = r.x0 + PILL_PAD_X + self.leading_zone(i);
         let reserve = self
             .reveal_px
@@ -2270,6 +2378,13 @@ const ACCENT_DOT_R: f64 = 4.0;
 const MODIFIED_DOT_R: f64 = 3.5;
 /// Fits an app glyph, a couple of characters, and the close chip.
 const PILL_MIN_PX: f64 = 84.0;
+/// Peer faces on a pill: at most this many faces before a "+N" disc, each
+/// this wide, overlapping their neighbour so a step is less than a face,
+/// and kept this far from the title.
+const PILL_MAX_FACES: usize = 3;
+const PILL_FACE_PX: f64 = 14.0;
+const PILL_FACE_STEP: f64 = 10.0;
+const PILL_FACE_GAP: f64 = 4.0;
 /// Below this a pill can't host a legible title fragment alongside the close
 /// chip, so squeezing further would be worse than eliding harder.
 const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
@@ -2468,6 +2583,52 @@ fn busy_epoch() -> Instant {
     *EPOCH.get_or_init(crate::time::now)
 }
 
+/// The presence key peers on a tab are registered under.
+fn tab_presence_key(id: u64) -> PresenceKey {
+    PresenceKey::Tab {
+        id: format!("{id:x}"),
+    }
+}
+
+/// Peer faces a pill shows: `faces` initials, then a "+`overflow`" disc
+/// for everyone else (none when zero).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PillFaces {
+    faces: usize,
+    overflow: usize,
+}
+
+impl PillFaces {
+    fn slots(self) -> usize {
+        self.faces.saturating_add(usize::from(self.overflow > 0))
+    }
+
+    /// Width the faces take from the title zone, including their gap.
+    fn width(self) -> f64 {
+        match self.slots() {
+            0 => 0.0,
+            slots => {
+                PILL_FACE_PX
+                    + crate::num::f64_of_usize(slots.saturating_sub(1)) * PILL_FACE_STEP
+                    + PILL_FACE_GAP
+            }
+        }
+    }
+
+    /// The most faces for `peers` that still leave the title
+    /// [`MIN_TITLE_PX`] of a `room`-wide zone; fewer faces fold into "+N".
+    fn fit(peers: usize, room: f64) -> Self {
+        (1..=peers.min(PILL_MAX_FACES))
+            .rev()
+            .map(|faces| Self {
+                faces,
+                overflow: peers.saturating_sub(faces),
+            })
+            .find(|candidate| room - candidate.width() >= MIN_TITLE_PX)
+            .unwrap_or_default()
+    }
+}
+
 fn leading_glyph_rect(r: Rect) -> Rect {
     let x0 = r.x0 + PILL_PAD_X;
     Rect::new(
@@ -2662,6 +2823,9 @@ impl Widget for TabBar {
         if self.tab_rects.len() != self.tabs.len() {
             return;
         }
+        self.pill_faces = (0..self.tabs.len())
+            .map(|i| self.fit_pill_faces(i, presence))
+            .collect();
         // Only pass with a TextRenderer — shapes every title up front.
         self.visible_titles = (0..self.tabs.len())
             .map(|i| self.visible_title(i, tr, theme))
@@ -4925,6 +5089,74 @@ mod tests {
                 occupied >= empty.saturating_add(2),
                 "a peer in another view must add the mist's outer wash and bright core to its navigation tab (empty={empty}, occupied={occupied})",
             );
+        }
+
+        // Case `peers_on_a_tab_show_faces_that_give_way_to_the_title`.
+        {
+            fn faces_at(width: f64) -> (Vec<PillFaces>, f64) {
+                let mut b = TabBar::new(
+                    "g1",
+                    vec![
+                        TabDescriptor::new(1, "Alpha"),
+                        TabDescriptor::new(2, "Beta"),
+                    ],
+                    1,
+                );
+                b.rect = Rect::new(0.0, 0.0, 80.0 + width, 40.0);
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 80.0, 34.0),
+                    Rect::new(80.0, 6.0, 80.0 + width, 34.0),
+                ];
+                b.close_rects = vec![Rect::ZERO; 2];
+                b.max_rects = vec![Rect::ZERO; 2];
+                b.search_rects = vec![Rect::ZERO; 2];
+                let mut presence = PresenceCtx::default();
+                for peer in ["ada", "bot", "cy", "dee", "eve"] {
+                    presence.register_peer_at(
+                        peer.to_string(),
+                        PresenceKey::Tab {
+                            id: "2".to_string(),
+                        },
+                    );
+                }
+                presence.set_participant_kind(crate::permissions::UserId("bot".into()), true);
+                b.draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                    &presence,
+                );
+                let r = b.tab_rects[1];
+                let (_, title_x1) = b.title_zone(1, r);
+                (b.pill_faces.clone(), r.x1 - title_x1)
+            }
+
+            let (wide, wide_trailing) = faces_at(200.0);
+            assert_eq!(wide[0], PillFaces::default(), "nobody is on tab 1");
+            assert_eq!(
+                wide[1],
+                PillFaces {
+                    faces: 3,
+                    overflow: 2
+                },
+                "three faces, the rest folded into +2"
+            );
+            assert!(
+                wide_trailing >= wide[1].width() + Reveal::None.reserve(),
+                "the title zone ends before the faces, so they never cover it"
+            );
+            let (medium, _) = faces_at(110.0);
+            assert_eq!(
+                medium[1],
+                PillFaces {
+                    faces: 2,
+                    overflow: 3
+                },
+                "a tighter pill keeps a legible title and shows fewer faces"
+            );
+            let (narrow, _) = faces_at(70.0);
+            assert_eq!(narrow[1], PillFaces::default(), "too narrow: mist only");
         }
 
         // Case `user_color_is_stable_per_id_and_differs_across_ids`.
