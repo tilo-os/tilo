@@ -424,6 +424,118 @@ mod netns {
     }
 }
 
+/// A topic keeps its membership shuffle only while it can send it to a
+/// neighbor. Exercise the public protocol state without wall-clock sleeps,
+/// including a peer returning before and after the pending timer expires.
+#[test]
+fn gossip_stops_shuffling_after_its_last_peer_leaves_and_restarts_on_join() {
+    use iroh_gossip::proto::{Command, Config, PeerData, topic};
+    use tokio::time::Instant;
+
+    let config = Config::default();
+    let interval = config.membership.shuffle_interval;
+    let mut now = Instant::now();
+    let mut owner: topic::State<u64, _> = topic::State::new(1, None, config.clone());
+    let mut peer: topic::State<u64, _> = topic::State::new(2, None, config);
+    let join = peer
+        .handle(topic::InEvent::Command(Command::Join(vec![1])), now)
+        .find_map(|event| match event {
+            topic::OutEvent::SendMessage(1, message) => Some(message),
+            _ => None,
+        })
+        .expect("the peer sends its join request");
+    let shuffles = |events: Vec<topic::OutEvent<u64>>| -> Vec<topic::Timer<u64>> {
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                topic::OutEvent::ScheduleTimer(after, timer @ topic::Timer::Swarm(_))
+                    if after == interval =>
+                {
+                    Some(timer)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(
+        shuffles(
+            owner
+                .handle(topic::InEvent::UpdatePeerData(PeerData::default()), now)
+                .collect()
+        )
+        .is_empty(),
+        "a lone topic needs no membership shuffle"
+    );
+    let mut armed = shuffles(
+        owner
+            .handle(topic::InEvent::RecvMessage(2, join.clone()), now)
+            .collect(),
+    );
+    assert!(owner.has_active_peers(), "the peer joined the topic");
+    assert_eq!(armed.len(), 1, "a neighbor arms one shuffle");
+
+    // While linked, the same cadence and shuffle messages must survive.
+    now += interval;
+    let events: Vec<_> = owner
+        .handle(topic::InEvent::TimerExpired(armed.pop().unwrap()), now)
+        .collect();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, topic::OutEvent::SendMessage(2, _))),
+        "a live neighbor still receives the shuffle"
+    );
+    armed = shuffles(events);
+    assert_eq!(armed.len(), 1, "a live topic rearms exactly one shuffle");
+    owner
+        .handle(topic::InEvent::PeerDisconnected(2), now)
+        .for_each(drop);
+    assert!(!owner.has_active_peers(), "the last peer left");
+
+    // The outstanding timer may fire once, but it must not keep waking a
+    // desktop that has nobody with whom to exchange membership information.
+    now += interval;
+    let events: Vec<_> = owner
+        .handle(topic::InEvent::TimerExpired(armed.pop().unwrap()), now)
+        .collect();
+    assert!(
+        events.is_empty(),
+        "a peerless topic stops shuffling: {events:?}"
+    );
+    armed = shuffles(
+        owner
+            .handle(topic::InEvent::RecvMessage(2, join.clone()), now)
+            .collect(),
+    );
+    assert!(owner.has_active_peers(), "the returning peer joined");
+    assert_eq!(armed.len(), 1, "a returning peer restarts one shuffle");
+
+    // A shorter absence must reuse the still-pending timer, not duplicate it.
+    owner
+        .handle(topic::InEvent::PeerDisconnected(2), now)
+        .for_each(drop);
+    assert!(
+        shuffles(
+            owner
+                .handle(topic::InEvent::RecvMessage(2, join), now)
+                .collect()
+        )
+        .is_empty(),
+        "returning before expiry does not arm a second shuffle"
+    );
+    now += interval;
+    assert_eq!(
+        shuffles(
+            owner
+                .handle(topic::InEvent::TimerExpired(armed.pop().unwrap()), now)
+                .collect()
+        )
+        .len(),
+        1,
+        "the pending timer continues shuffling after the early return"
+    );
+}
+
 /// iroh-gossip sweeps a topic's message cache only while something is
 /// cached: the first message arms the sweep, it stops once the caches have
 /// expired, and the next message arms it once more. Driven through the
