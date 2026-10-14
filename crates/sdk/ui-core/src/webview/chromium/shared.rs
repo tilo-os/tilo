@@ -310,6 +310,11 @@ impl Claim {
             state: Mutex::default(),
             changed: Condvar::new(),
         });
+        // Published before the first client is admitted: a client that has
+        // connected finds its owner's server on the owner's runtime.
+        if let Some(runtime) = server.runtime.upgrade() {
+            let _ = runtime.server.set(server.clone());
+        }
         let weak = Arc::downgrade(&server);
         if let Err(error) = spawn_named("chromium-share", move || accept_loop(&weak)) {
             server.listener.close();
