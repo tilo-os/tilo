@@ -2577,7 +2577,9 @@ impl InstallerApp {
                 Text::new(&crate::i18n::t("installer-account-name")).with_role(TextRole::Body),
             ));
             children.push(Box::new(
-                TextInput::from_state(&self.full_name).with_id("installer.full_name"),
+                TextInput::from_state(&self.full_name)
+                    .with_id("installer.full_name")
+                    .with_accessible_name(&crate::i18n::t("installer-account-name")),
             ));
             children.push(Box::new(
                 Text::new(&crate::i18n::t("installer-account-name-note"))
@@ -2586,12 +2588,16 @@ impl InstallerApp {
             ));
         }
         if self.profile_completion.is_none() || !completion.username.is_complete() {
-            children.push(Box::new(Text::new("Username").with_role(TextRole::Body)));
             children.push(Box::new(
-                TextInput::from_state(&self.username).with_id("installer.username"),
+                Text::new(&crate::i18n::t("installer-account-username")).with_role(TextRole::Body),
             ));
             children.push(Box::new(
-                Text::new("Used to sign in and for your home directory.")
+                TextInput::from_state(&self.username)
+                    .with_id("installer.username")
+                    .with_accessible_name(&crate::i18n::t("installer-account-username")),
+            ));
+            children.push(Box::new(
+                Text::new(&crate::i18n::t("installer-account-username-note"))
                     .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
@@ -2611,6 +2617,11 @@ impl InstallerApp {
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password")
+                .with_accessible_name(&crate::i18n::t(if tpm_pin {
+                    "installer-account-pin"
+                } else {
+                    "installer-account-password"
+                }))
                 .with_external_buffer(Arc::clone(&self.password))
                 .with_secret(true),
         ));
@@ -2634,6 +2645,11 @@ impl InstallerApp {
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password_confirm")
+                .with_accessible_name(&crate::i18n::t(if tpm_pin {
+                    "installer-account-pin-confirm"
+                } else {
+                    "installer-account-password-confirm"
+                }))
                 .with_external_buffer(Arc::clone(&self.password_confirmation))
                 .with_secret(true),
         ));
@@ -4094,6 +4110,54 @@ mod tests {
             next.get_rect().y1 <= 600.0,
             "continue must remain visible at normal text size"
         );
+    }
+
+    #[test]
+    fn account_fields_have_localized_accessible_names_without_exposing_secrets() {
+        for pin in [false, true] {
+            let mut app = InstallerApp::with_disks(Vec::new());
+            app.step = Step::Account;
+            app.tpm2 = pin;
+            app.secure_boot = pin;
+            app.kernel_lockdown = pin;
+            app.target_verified_boot = pin;
+            *app.password.lock().unwrap() = "private-startup-secret".into();
+            *app.password_confirmation.lock().unwrap() = "private-startup-secret".into();
+            let _ = build(&mut app);
+            for (id, key, protected) in [
+                ("installer.full_name", "installer-account-name", false),
+                ("installer.username", "installer-account-username", false),
+                (
+                    "installer.password",
+                    if pin {
+                        "installer-account-pin"
+                    } else {
+                        "installer-account-password"
+                    },
+                    true,
+                ),
+                (
+                    "installer.password_confirm",
+                    if pin {
+                        "installer-account-pin-confirm"
+                    } else {
+                        "installer-account-password-confirm"
+                    },
+                    true,
+                ),
+            ] {
+                let access = find_test_id(&app, id).unwrap().accessibility().unwrap();
+                assert_eq!(
+                    access.name.as_deref(),
+                    Some(crate::i18n::t(key).as_str()),
+                    "{id}"
+                );
+                assert_eq!(access.state.protected, protected, "{id}");
+                if protected {
+                    assert!(access.value.is_none(), "a named secret must remain private");
+                }
+            }
+        }
     }
 
     #[test]
