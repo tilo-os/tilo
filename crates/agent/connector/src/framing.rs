@@ -2,33 +2,19 @@
 //! error: a 32 MiB attachment is about 43 MiB of base64, and nothing larger
 //! is ever sent.
 
-use std::io::{BufRead, Read as _, Write};
+use std::io::{BufRead, Write};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub const MAX_FRAME_BYTES: usize = 48 * 1024 * 1024;
 
-fn limit() -> u64 {
-    u64::try_from(MAX_FRAME_BYTES)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1)
-}
-
-fn finish<T: DeserializeOwned>(mut line: Vec<u8>, read: usize) -> std::io::Result<Option<T>> {
-    if read == 0 {
-        return Ok(None);
-    }
-    if line.last() != Some(&b'\n') {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "frame too long or cut short",
-        ));
-    }
-    line.pop();
-    serde_json::from_slice(&line)
-        .map(Some)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+fn decode<T: DeserializeOwned>(line: Option<Vec<u8>>) -> std::io::Result<Option<T>> {
+    line.map(|line| {
+        serde_json::from_slice(&line)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    })
+    .transpose()
 }
 
 /// Write `message` as one line and flush it.
@@ -47,9 +33,7 @@ pub fn write_frame<W: Write, T: Serialize>(out: &mut W, message: &T) -> std::io:
 /// # Errors
 /// The stream failed, a line is too long, or it is not a message.
 pub fn read_frame<R: BufRead, T: DeserializeOwned>(input: &mut R) -> std::io::Result<Option<T>> {
-    let mut line = Vec::new();
-    let read = input.by_ref().take(limit()).read_until(b'\n', &mut line)?;
-    finish(line, read)
+    decode(wire_frame::read_line(input, MAX_FRAME_BYTES)?)
 }
 
 /// [`write_frame`] over tokio.
@@ -77,13 +61,7 @@ where
     R: tokio::io::AsyncBufRead + Unpin,
     T: DeserializeOwned,
 {
-    use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
-    let mut line = Vec::new();
-    let read = (&mut *input)
-        .take(limit())
-        .read_until(b'\n', &mut line)
-        .await?;
-    finish(line, read)
+    decode(wire_frame::read_line_async(input, MAX_FRAME_BYTES).await?)
 }
 
 #[cfg(test)]
