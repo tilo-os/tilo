@@ -81,6 +81,19 @@ impl Waiting {
         Some(frame)
     }
 
+    /// Whether `event` from the relay session of `ws` answers an invocation
+    /// waiting here; if so it went to that invocation's caller.
+    pub(super) fn takes(&mut self, ws: u64, event: &super::HostEvent) -> bool {
+        match event {
+            super::HostEvent::Message {
+                author,
+                msg: super::NeighbourMsg::RemoteAction { frame },
+                ..
+            } => self.answer(ws, *author, frame),
+            _ => false,
+        }
+    }
+
     /// Whether `frame` from `author` on `ws` answers an invocation waiting
     /// here; if so it went to that invocation's caller.
     pub(super) fn answer(&mut self, ws: u64, author: EndpointId, frame: &[u8]) -> bool {
