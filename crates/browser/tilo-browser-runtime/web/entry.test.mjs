@@ -163,6 +163,49 @@ test('the home workspace opens through its host door under its listed name, and 
   assert.deepEqual(formatted[0], {mode: 'desktop', target: {scope: {kind: 'room', host: 'https://rooms.example', room: 'ROOM'}}});
   assert.equal(replaced[0], 'https://rooms.example/open/#/@rooms.example/w/ROOM');
   assert.equal(mounts[0].workspaceName, 'Commons');
+  assert.equal(mounts[0].host, 'rooms.example');
+  page.router.stop?.();
+});
+
+test('the entry offers only the web About links the host set', async () => {
+  const about = {notify: 'https://example.org/notify', source: '', community: 'javascript:alert(1)'};
+  const fetch = async () => ({ok: true, json: async () => ({about})});
+  assert.deepEqual(await readEntry({mode: 'desktop', location: {href: 'https://example.org/'}, fetch}),
+    {base: 'https://example.org/', about: {notify: 'https://example.org/notify'}});
+  const none = async () => ({ok: true, json: async () => ({about: {notify: '', source: 'not a url'}})});
+  assert.deepEqual(await readEntry({mode: 'desktop', location: {href: 'https://example.org/'}, fetch: none}),
+    {base: 'https://example.org/'});
+});
+
+test('the desktop gets the entry’s About links, no host pill on the person’s own desktop, and the tab its workspace name', async () => {
+  const about = {source: 'https://example.org/source'};
+  const runtime = {parseLink: () => JSON.stringify({mode: 'desktop', target: {scope: {kind: 'own'}}}), formatLink: () => ''};
+  const mounts = [];
+  const forwarded = [];
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://example.org/#/me', hash: '#/me'},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+    document: {title: 'Tilo'},
+  };
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const deps = {
+    loadRuntime: async () => runtime,
+    fetch: async () => ({ok: true, json: async () => ({about})}),
+    readAccounts: async () => [],
+    mountDesktop: async (element, options) => { mounts.push(options); return {navigation}; },
+  };
+  const page = await boot({mode: 'desktop', window, deps, diagnostics: {onStatus: status => forwarded.push(status)}});
+  assert.deepEqual(mounts[0].about, about);
+  assert.equal(mounts[0].host, undefined);
+  mounts[0].onStatus({frames: 1});
+  assert.equal(window.document.title, 'Tilo');
+  mounts[0].onStatus({workspaceName: 'Garden'});
+  assert.equal(window.document.title, 'Tilo · Garden');
+  mounts[0].onStatus({workspaceName: 'Kitchen'});
+  assert.equal(window.document.title, 'Tilo · Kitchen');
+  assert.equal(forwarded.length, 3);
   page.router.stop?.();
 });
 
