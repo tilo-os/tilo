@@ -134,7 +134,7 @@ impl PresenceCtx {
     /// doc, so it's an Automerge mark (`local_author` /
     /// `RichTextLine::author_runs`). **Silently a no-op if
     /// `set_local_author` was never called** — looks exactly like a network
-    /// fault. Set by `apps/notes`/`apps/chat`; `qdoc` has no per-run author
+    /// fault. Set by `apps/notes`/`apps/chat`; `tilo-doc` has no per-run author
     /// field yet.
     pub fn draw_peer_authorship(
         &self,

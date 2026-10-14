@@ -4606,7 +4606,7 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         wp.inner.insert_str(&mut edits(&mut state.doc), "hello");
 
         // Copy a bold selection. The system-facing clipboard carries plain text;
-        // the widget's matching sidecar carries the qdoc marks.
+        // the widget's matching sidecar carries the tilo-doc marks.
         wp.inner.caret.offset = 0;
         wp.inner.set_anchor();
         wp.inner.caret.offset = 5;
@@ -5585,7 +5585,7 @@ fn tracked_changes_render_and_accept_individually() {
     // Phase: accepting_tracked_deletion_removes_the_struck_text.
     {
         // "keep gone": flag "gone" (5..9) as a tracked deletion (retained-but-struck).
-        // qdoc semantics: ACCEPTING a deletion applies it (removes the struck text);
+        // tilo-doc semantics: ACCEPTING a deletion applies it (removes the struck text);
         // REJECTING keeps the text and drops the `del` mark. We assert both arms
         // on the materialized snapshot (the production read path).
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");

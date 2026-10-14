@@ -1,6 +1,8 @@
 //! Instance-scoped background wake routing shared by native and headless hosts.
 //!
-//! `tilo_host::wake` and `ui::wake` re-export this module.
+//! `tilo_rt::wake`, `tilo_host::wake` and `ui::wake` re-export this crate. It
+//! links no async runtime, so a document model can route wakes in a sandboxed
+//! wasm build.
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
