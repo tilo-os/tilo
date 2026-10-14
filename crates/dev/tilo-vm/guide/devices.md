@@ -138,8 +138,9 @@ someone is using:
 When `vms.toml` names a remote builder for the laptop's architecture, swaps
 build there by default (Builds, below). Building on the device
 (`--builder vm`) works too: release layers link without LTO
-(`tilo-vm guide swapping`), and a laptop has the memory. Slots, layers and
-generations live in `/var` and survive image upgrades.
+(`tilo-vm guide swapping`), and a laptop has the memory. Slots live in `/var`
+and survive image upgrades; their layers do not: booting another image puts
+every slot back on it (`tilo-vm guide images`).
 
 ## A board: the device's own session
 

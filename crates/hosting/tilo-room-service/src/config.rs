@@ -55,6 +55,9 @@ pub struct PersistentConfig {
     /// The channels its Chat opens with while it has none
     /// (`TILO_ROOMS_CHAT_CHANNELS`); unset, none.
     pub chat_channels: Vec<String>,
+    /// The strips, by name, the room's shared desktop has
+    /// (`TILO_ROOMS_STRIPS`); unset, none beyond what people make.
+    pub strips: Vec<String>,
     /// Proxies whose `X-Forwarded-For` names the visitor.
     pub trusted_proxies: TrustedProxies,
     /// User public keys (hex) made Owners of the room at start.
@@ -411,6 +414,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         name,
         shown_name: shown_name(var)?,
         chat_channels: chat_channels(var)?,
+        strips: strips(var)?,
         trusted_proxies: var("TILO_ROOMS_TRUSTED_PROXIES")
             .unwrap_or_default()
             .parse()
@@ -491,6 +495,32 @@ fn chat_channels(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
         "TILO_ROOMS_CHAT_CHANNELS names a channel twice"
     );
     Ok(channels)
+}
+
+/// `TILO_ROOMS_STRIPS`: comma-separated strip names, each 1-48
+/// characters, none twice.
+fn strips(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
+    let strips: Vec<String> = var("TILO_ROOMS_STRIPS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for name in &strips {
+        ensure!(
+            name.chars().count() <= 48 && !name.chars().any(char::is_control),
+            "TILO_ROOMS_STRIPS names strips of up to 48 characters, not {name:?}"
+        );
+    }
+    let mut unique = strips.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    ensure!(
+        unique.len() == strips.len(),
+        "TILO_ROOMS_STRIPS names a strip twice"
+    );
+    Ok(strips)
 }
 
 /// `TILO_ROOMS_MODERATION_MODEL`, a model id.
@@ -658,6 +688,24 @@ mod tests {
         for bad in ["General", "a_b", "a b", "help,help"] {
             assert!(
                 config(&[base[0], base[1], ("TILO_ROOMS_CHAT_CHANNELS", bad)]).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(defaults.strips.is_empty());
+        let strips = config(&[
+            base[0],
+            base[1],
+            ("TILO_ROOMS_STRIPS", " Main, Games night,,Quiet "),
+        ])
+        .unwrap();
+        assert_eq!(
+            strips.persistent.unwrap().strips,
+            ["Main", "Games night", "Quiet"]
+        );
+        let long = "x".repeat(49);
+        for bad in ["Main,Main", long.as_str()] {
+            assert!(
+                config(&[base[0], base[1], ("TILO_ROOMS_STRIPS", bad)]).is_err(),
                 "{bad}"
             );
         }
