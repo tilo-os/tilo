@@ -16580,6 +16580,7 @@ dependencies = [
  "tilo-files",
  "tilo-secrets",
  "tokio",
+ "wire-frame",
  "workspace-hack",
  "zeroize",
 ]
@@ -16866,6 +16867,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "windows 0.62.2",
  "windows-sys 0.61.2",
+ "wire-frame",
  "workspace-hack",
 ]
 

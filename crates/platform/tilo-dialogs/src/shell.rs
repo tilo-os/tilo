@@ -12,7 +12,7 @@
 //! unattended picker ([`crate::unattended_picker`]).
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read as _, Write};
+use std::io::{BufReader, Write};
 use std::os::fd::{FromRawFd as _, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -268,17 +268,7 @@ impl Connection {
 
 fn read_replies(connection: &Connection, stream: UnixStream) {
     let mut reader = BufReader::new(stream);
-    let mut frame = Vec::new();
-    loop {
-        frame.clear();
-        match (&mut reader)
-            .take((MAX_FRAME_BYTES as u64).saturating_add(1))
-            .read_until(b'\n', &mut frame)
-        {
-            Ok(0) | Err(_) => break,
-            Ok(_) if frame.last() != Some(&b'\n') => break,
-            Ok(_) => {}
-        }
+    while let Ok(Some(frame)) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) {
         let Ok(reply) = serde_json::from_slice::<Reply>(frame.trim_ascii_end()) else {
             tracing::warn!("the session's file chooser sent an unreadable reply");
             break;
@@ -676,6 +666,7 @@ impl FilePicker for ShellChooser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead as _, Read as _};
     use std::path::Path;
     use std::time::Duration;
 
