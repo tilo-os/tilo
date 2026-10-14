@@ -60,6 +60,7 @@ fn editor_text_width(width: f64) -> f32 {
 
 mod responsive;
 use responsive::ResponsiveBar;
+mod strips;
 
 /// Persistent chrome is deliberately a little taller than the original
 /// concept's 40 px sketch.  Forty pixels forced the navigation and status
@@ -299,6 +300,7 @@ struct CacheFingerprint {
     clock_activity: Option<(String, u64, bool, bool)>,
     app_tray_revision: u64,
     continuity: Option<String>,
+    strips: strips::StripsKey,
     tilo_mark: Option<bool>,
     host_label: Option<String>,
 }
@@ -680,6 +682,9 @@ pub struct TopBarChrome {
     /// Set when the bar draws and advanced by `update` once reached, so an
     /// idle desktop still wakes to repaint the clock.
     time_wake: Option<Instant>,
+    /// The active workspace's strips as named places, when the host
+    /// reports who is where.
+    strips: strips::StripSwitcher,
 }
 
 /// Seconds the centre band's time reading stays the same for.
@@ -1007,6 +1012,7 @@ impl TopBarChrome {
             focused: false,
             focused_control: None,
             time_wake: None,
+            strips: strips::StripSwitcher::default(),
         };
         this.sync_from_tree(tree);
         this
@@ -1060,6 +1066,7 @@ impl TopBarChrome {
             }),
             app_tray_revision: self.app_tray_revision(),
             continuity: self.continuity_label(),
+            strips: self.strips_key(),
             tilo_mark: self.tilo_mark,
             host_label: self.host_label.clone(),
         }
@@ -1355,6 +1362,7 @@ impl TopBarChrome {
                 ));
         }
         self.collaborator_overflow = peer_count.saturating_sub(3);
+        self.sync_strips(tree);
     }
 
     /// The host's clock reading, already formatted — and pinned by the host
@@ -2477,6 +2485,24 @@ impl TopBarChrome {
         format!("{visible_name}{position_suffix}")
     }
 
+    /// How wide the workspace name may grow in `room`. Named strips follow
+    /// the pill, so the name leaves them their width down to a short
+    /// name's.
+    fn workspace_label_budget(
+        &self,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        room: f64,
+    ) -> f32 {
+        let strips = self.strips_natural_width(text_renderer, theme);
+        let strips_room = if strips > 0.0 {
+            strips + f64::from(theme.tokens.spacing.s2)
+        } else {
+            0.0
+        };
+        ui::num::f32_of_f64((room - strips_room).max(room.min(96.0)).clamp(32.0, 260.0))
+    }
+
     /// Workspace-name pill (click toggles workspace settings) and its
     /// trailing gear glyph, starting at `x`.
     fn draw_workspace_pill(
@@ -2510,8 +2536,11 @@ impl TopBarChrome {
         let gear = SMALL_GLYPH_PX;
         let pill_chrome = pad * 3.0 + gear;
         let breathing = f64::from(tokens.spacing.s4);
-        let label_budget =
-            ui::num::f32_of_f64((center_left - x - pill_chrome - breathing).clamp(32.0, 260.0));
+        let label_budget = self.workspace_label_budget(
+            text_renderer,
+            theme,
+            center_left - x - pill_chrome - breathing,
+        );
         let ws_label = self.workspace_label(text_renderer, &ws_text_style, label_budget);
         let (ws_w, ws_h) = text_renderer.measure_style(
             &ws_label,
@@ -5627,6 +5656,10 @@ impl TopBarChrome {
             *handled = true;
             return;
         }
+        if self.strip_press(point) {
+            *handled = true;
+            return;
+        }
         self.handle_left_click(handled);
     }
 }
@@ -5811,6 +5844,19 @@ impl Widget for TopBarChrome {
                 center_y,
                 after_chevrons,
             );
+            let center_left =
+                f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
+            self.draw_strip_places(
+                scene,
+                transform,
+                theme,
+                text_renderer,
+                center_y,
+                (
+                    self.ws_pill_rect.x1 + f64::from(theme.tokens.spacing.s2),
+                    center_left - f64::from(theme.tokens.spacing.s4),
+                ),
+            );
 
             self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
             if !self.is_compact() {
@@ -5846,6 +5892,9 @@ impl Widget for TopBarChrome {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.handle_strip_naming_event(event, ctx) {
+            return;
+        }
         if self.responsive.active && !self.widget_editing {
             if matches!(event, WindowEvent::Focused(false)) {
                 self.responsive.toolbar.set_focus(false);
@@ -6045,6 +6094,7 @@ impl Widget for TopBarChrome {
             ),
         ];
         rects.extend(self.editor_test_rects());
+        rects.extend(self.strip_test_rects());
         if !self.responsive.active {
             rects.extend(app_tray);
         }
@@ -6128,6 +6178,7 @@ impl Widget for TopBarChrome {
         if let Some(clock) = self.clock_accessibility_node() {
             children.push(clock);
         }
+        children.extend(self.strip_accessibility());
         Some(
             AccessNode::new(Role::Toolbar)
                 .with_semantic_key(if self.is_compact() {
@@ -6202,6 +6253,9 @@ impl Widget for TopBarChrome {
         ) {
             return false;
         }
+        if let Some(performed) = self.strip_semantic_action(target) {
+            return performed;
+        }
         match target {
             "clock.overlay.toggle" => {
                 self.publish_clock_activity_command("toggle", "toggle-stopwatch");
@@ -6243,6 +6297,9 @@ impl Widget for TopBarChrome {
                 return Some(winit::window::CursorIcon::Grab);
             }
         }
+        if self.strip_hit(point) {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
         self.control_targets()
             .into_iter()
             .any(|target| self.control_rect(target).contains(point))
@@ -6257,6 +6314,7 @@ impl Widget for TopBarChrome {
 
     fn set_focus(&mut self, focused: bool) {
         if !focused {
+            self.cancel_strip_naming();
             self.cancel_editor_drag();
             self.editor_submit_key = None;
             self.editor_pointer_release = None;

@@ -8978,6 +8978,22 @@ pub fn run() {
         backend.composites_strip_layers(),
     );
     frame_builder.set_scroll_copy_presenter(backend.copies_scrolls());
+    // A peer stream's picture finishes on a media thread after its frame's
+    // push returned (the loop never waits for a decode); this wakes the loop
+    // to show it, with no polling while a stream plays.
+    match calloop::ping::make_ping() {
+        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
+            Ok(_) => frame_builder
+                .host_mut()
+                .set_peer_picture_wake(Arc::new(move || ping.ping())),
+            Err(error) => {
+                tracing::warn!(%error, "could not register the peer picture wake source; peer streams poll for decoded pictures");
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "could not create the peer picture wake source; peer streams poll for decoded pictures");
+        }
+    }
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
@@ -12273,6 +12289,10 @@ pub fn run() {
                     }
                 }
             );
+            // A picture that outlasted its frame's push is shown once it
+            // finishes, even when no later frame arrives to carry it out; the
+            // view's wake deadline brings the loop back for it.
+            let _ = frame_builder.host_mut().collect_late_peer_pictures();
             // Which legacy windows running on the person's other devices this
             // one shows: each host streams them here only while it does.
             // Nothing shows under the lock.
@@ -13368,6 +13388,7 @@ pub fn run() {
             locker.lock();
         }
 
+        let testctl_cpu = metrics.thread_cpu();
         // Accept new test-control connections and drain them in this same
         // iteration, so a request already written is answered without
         // another calloop sleep. One written after this drain wakes the loop
@@ -13457,6 +13478,7 @@ pub fn run() {
         });
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
+        metrics.mark_testctl_cpu(testctl_cpu);
 
         // Selection bookkeeping after dispatch, not in the protocol handler:
         // smithay raises `new_selection` before installing the new source, so an inline pull would read the previous owner.

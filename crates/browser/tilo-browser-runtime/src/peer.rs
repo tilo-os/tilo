@@ -773,6 +773,8 @@ struct JsPresence {
     drag: Option<JsDrag>,
     #[serde(default)]
     participant: Option<JsParticipant>,
+    #[serde(default)]
+    place: Option<String>,
 }
 
 fn participant_from_js(value: JsParticipant) -> Result<LiveParticipant, JsError> {
@@ -904,6 +906,7 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
             })
             .transpose()?,
         participant: value.participant.map(participant_from_js).transpose()?,
+        place: value.place,
     })
 }
 
@@ -927,6 +930,7 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
             size,
         }),
         participant: frame.participant.map(participant_to_js),
+        place: frame.place,
     }
 }
 

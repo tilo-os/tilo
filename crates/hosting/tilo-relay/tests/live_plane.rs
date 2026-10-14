@@ -71,6 +71,7 @@ fn record() -> LiveRecord {
 /// A presence frame in the clear, which the host never relays.
 fn cleartext_presence(seq: u64) -> Vec<u8> {
     LiveFrame::Presence(PresenceFrame {
+        place: None,
         seq,
         sent_at_ms: 1,
         focus: Some(record()),

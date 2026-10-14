@@ -16,7 +16,8 @@
  */
 import {AdmissionError} from './admission.mjs';
 import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';
-import {boot} from './entry.mjs';
+import {watchForUpdate} from './bundle-update.mjs';
+import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prepareGpu} from './host.mjs';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
@@ -25,7 +26,7 @@ import {createIdentityActions, syncProfile} from './identity-actions.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, IdentityError, MAX_DISPLAY_NAME_BYTES} from './root-identity.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
-import {chooseDisplayName, chosenDisplayName, HostAdmissionError, joinViaHost, keepOwnedHost, keptMembership, listedWorkspaces, membershipOrigins, pairViaHost, randomDisplayName, spectate} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError, joinViaHost, keepOwnedHost, keptMembership, listedWorkspaces, markUnavailable, membershipOrigins, nameEntered, OPEN_WORKSPACE, pairViaHost, randomDisplayName, rememberEntered, spectate, workspaceActions, workspaceChoices} from './workspaces.mjs';
 
 /** Where an embed's state goes: the site that embeds the workspace. */
 const EMBEDDER = 'https://tilo.so';
@@ -287,8 +288,22 @@ export async function startEntryPage({mode}) {
   let displayName;
   /** The workspace this page is getting into, by name, once it knows it. */
   let workspaceName = query.get('workspace') || null;
+  /** The room the link names and the entry it is served under, once read (`deps.onScope`). */
+  let admitting = null;
+  /** The name the host signed into an invitation this page redeemed. */
+  let invitedTo = null;
+  /** Whether this page came in on a guest ticket, which is not remembered as membership. */
+  let viaTicket = false;
+  /** The room in front, remembered as one this browser entered, until the desktop names it. */
+  let unnamed = null;
+  /** Opening another of the person's workspaces, by host action id, once the page is open. */
+  let switchWorkspace = null;
   const diagnostics = {
-    onHostAction: id => { if (id === SET_UP.id) void setUp?.(); else void identityActions?.perform(id); },
+    onHostAction: id => {
+      if (id === SET_UP.id) void setUp?.();
+      else if (id.startsWith(OPEN_WORKSPACE)) void switchWorkspace?.(id);
+      else void identityActions?.perform(id);
+    },
     ...(query.get('room') ? {room: query.get('room')} : {}),
     ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),
     ...(query.has('invite') ? {onInvite: () => { globalThis.tiloInvites += 1; }} : {}),
@@ -296,6 +311,11 @@ export async function startEntryPage({mode}) {
     // the root element); the bar only tells the person something they can
     // act on, unless the page was opened with ?debug.
     onStatus: state => {
+      if (unnamed && typeof state.workspaceName === 'string' && state.workspaceName) {
+        const named = {...unnamed, name: state.workspaceName};
+        unnamed = null;
+        remembering(() => nameEntered(named));
+      }
       if (!state.phase) return;
       root.phase = state.phase;
       if (state.phase === 'presented') arrive('done');
@@ -322,6 +342,13 @@ export async function startEntryPage({mode}) {
   };
   const deps = {
     loadRuntime: async () => (runtime = await loadRuntime()),
+    // An embed always shows the workspace the embedding site names.
+    chosenWorkspace: () => (embed ? null : remembering(() => chosenWorkspace())),
+    onScope: next => {
+      admitting = next;
+      const known = remembering(() => rememberedRoom(next.scope));
+      if (known?.name && !workspaceName) workspaceName = known.name;
+    },
     mountDesktop,
     enterViaHost: async ({workspace}) => {
       reportErrors(workspace.admission);
@@ -350,6 +377,7 @@ export async function startEntryPage({mode}) {
     inspectInvitation: (origin, invitation) => inspectInvitation(origin, invitation, {runtime}),
     confirmInvitation: offer => {
       workspaceName = offer.workspaceName || workspaceName;
+      invitedTo = offer.workspaceName || null;
       return card(`${offer.inviter?.name ?? 'Someone'} invites you to “${offer.workspaceName}” as ${offer.role}.`,
         [['Join', true], ['Not now', false]]);
     },
@@ -368,6 +396,7 @@ export async function startEntryPage({mode}) {
     // web host spent the ticket on this page's pairing code. The root key is
     // read from the host's own certificate, so the link need not carry it.
     redeemTicket: async ({origin, room, ticket, tickets}) => {
+      viaTicket = true;
       const {connectRelayPeer} = await import('./relay.mjs');
       const hostCert = await hostCertificate(await loadRuntime(), origin);
       const admit = new URL(`${encodeURIComponent(room)}/admit`, tickets).href;
@@ -403,7 +432,25 @@ export async function startEntryPage({mode}) {
     if (!page) return;
     if (entered) showVisitState({entered, retryAfter, tell, status});
     // Only the desktop lists host actions: a single app's mount refuses them.
-    const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed ? hostActionParts(page.mount, ['identity', 'machine']) : null;
+    const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed ? hostActionParts(page.mount, ['identity', 'machine', 'workspaces']) : null;
+    const here = page.router.route.target.scope;
+    if (!embed && !entered && !viaTicket && page.peer && here.kind === 'room') {
+      // A room entered as a member: offered again from the person's other workspaces.
+      const room = {origin: here.host, room: here.room ?? page.peer.room};
+      remembering(() => {
+        rememberEntered({...room, name: invitedTo});
+        if (!rememberedRoom({kind: 'room', host: room.origin, room: room.room})?.name) unnamed = room;
+      });
+    }
+    if (hostActions) {
+      const offered = remembering(() => workspaceChoices({home: page.entry?.home, homeRoom: homeRoomOf(page.entry),
+        entered: enteredWorkspaces(), current: here})) ?? [];
+      hostActions('workspaces').setHostActions(workspaceActions(offered));
+      switchWorkspace = id => {
+        const choice = offered.find(candidate => candidate.id === id);
+        return choice ? openWorkspace({choice, page, status}) : undefined;
+      };
+    }
     const attachIdentity = () => keepIdentity({peer: page.peer, mount: hostActions?.('identity') ?? page.mount, home: page.entry?.home,
       name: () => displayName, runtime, link: page.link, naming: {
         ask: (current, save) => askName(current, save),
@@ -432,6 +479,10 @@ export async function startEntryPage({mode}) {
     document.documentElement.dataset.entry = 'open';
     globalThis.tiloMount = page.mount;
     globalThis.tiloRouter = page.router;
+    // A window that opens after a newer version was deployed finds this
+    // version's files gone: offer the reload rather than fail it quietly.
+    watchForUpdate({offer: () => offerUpdate({page, status}),
+      onChecked: update => { if (update) document.documentElement.dataset.update = update.deployed; }});
     const other = document.getElementById('other-mode');
     if (other) {
       // Written when followed, so it carries whatever is in front by then.
@@ -450,8 +501,140 @@ export async function startEntryPage({mode}) {
     // Plain words and a way to try again (index.html); the cause, thrown
     // on, reaches the console and the host's error report.
     status.textContent = failureMessage(error, {workspace: workspaceName, loaded: Boolean(runtime)});
+    const known = admitting && remembering(() => rememberedRoom(admitting.scope));
+    // A declined invitation or a damaged link says nothing about the room.
+    if (known && !(error instanceof AdmissionError && error.code !== 'no-access')) {
+      // A room this browser was a member of: say what is known, and stop
+      // reopening it on a bare entry.
+      remembering(() => markUnavailable(known));
+      if (error instanceof AdmissionError && error.code === 'no-access') {
+        status.textContent = `${known.name ?? 'This workspace'} did not let this browser in. You may have been removed from it, or it no longer exists.`;
+      }
+    }
+    if (!embed && mode === 'desktop' && admitting) void offerOtherWorkspaces({...admitting, runtime});
     throw error;
   }
+}
+
+/** `read()`, or `null` where this browser keeps no storage for the page:
+ * remembering workspaces never stops one from opening. */
+function remembering(read) {
+  try {
+    return read();
+  } catch (error) {
+    console.warn('workspaces: this browser cannot remember them', error);
+    return null;
+  }
+}
+
+/** The remembered room `scope` names, if this browser entered it as a member. */
+function rememberedRoom(scope) {
+  if (scope?.kind !== 'room' || !scope.room) return null;
+  const origin = new URL(scope.host).origin;
+  return enteredWorkspaces().find(entry => entry.origin === origin && entry.room === scope.room) ?? null;
+}
+
+/** The room this browser was admitted to through the home workspace's door. */
+function homeRoomOf(entry) {
+  return entry?.home ? keptMembership(entry.home)?.room ?? null : null;
+}
+
+/** The address that opens `choice` (`workspaceChoices`): the bare entry for the home. */
+function choiceUrl(choice, entry, link) {
+  if (choice.home) return entry.base;
+  return link.format({mode: 'desktop', target: {scope: {kind: 'room', host: choice.origin, room: choice.room}}});
+}
+
+/**
+ * Load `url` as a new page. Only the fragment differs between rooms under
+ * one entry, so that is written as a new history entry and the page loads
+ * again: every room is admitted by a page of its own.
+ */
+function loadPage(url) {
+  const next = new URL(url, location.href);
+  const here = new URL(location.href);
+  if (next.origin === here.origin && next.pathname === here.pathname && next.search === here.search) {
+    history.pushState(null, '', next.href);
+    location.reload();
+  } else {
+    location.assign(next.href);
+  }
+}
+
+/**
+ * Switch to another of the person's workspaces: save what is pending in the
+ * room in front (staying there when that fails), close its desktop and its
+ * peer, then load the other room's page, which admits the person afresh.
+ * A bare entry reopens the choice from now on.
+ */
+async function openWorkspace({choice, page, status}) {
+  const url = choiceUrl(choice, page.entry, page.link);
+  try {
+    await page.mount?.flush?.();
+  } catch (error) {
+    console.warn('switching workspace: saving failed', error);
+    await card('Your latest changes here are not saved yet, so Tilo stayed in this workspace. Try again in a moment.', [['OK', null]]);
+    return;
+  }
+  remembering(() => chooseWorkspace(choice.home ? null : choice));
+  status.textContent = `Opening ${choice.name}…`;
+  await closeRoom(page);
+  loadPage(url);
+}
+
+/** Stop following links, then close the room's desktop and its peer, saving
+ * what they hold; the person decides whether to leave without what cannot
+ * be saved. */
+async function closeRoom(page) {
+  page.router.stop();
+  for (;;) {
+    try {
+      await page.mount?.cleanup?.();
+      await page.peer?.dispose?.();
+      return;
+    } catch (error) {
+      console.warn('leaving the page: closing failed', error);
+      const again = await card('Some changes in this workspace could not be saved yet.', [['Try again', true], ['Leave without them', false]]);
+      if (!again) return;
+    }
+  }
+}
+
+/**
+ * This page runs a version of Tilo the web entry no longer serves, and just
+ * missed a file of it (bundle-update.mjs). Offer to reload into the new
+ * version: the desktop and its documents are kept in this browser, so the
+ * reloaded page reopens the same windows, the one that failed included.
+ * Saved first, as for a switch of workspace; when saving fails the page
+ * stays.
+ */
+async function offerUpdate({page, status}) {
+  const reload = await card('Tilo was updated while this page was open, so it could not open what you asked for. Reload to use the new version; your windows and documents stay as they are.',
+    [['Reload', true], ['Not now', false]]);
+  if (!reload) return;
+  try {
+    await page.mount?.flush?.();
+  } catch (error) {
+    console.warn('updating: saving failed', error);
+    await card('Your latest changes here are not saved yet, so Tilo did not reload. Try again in a moment.', [['OK', null]]);
+    return;
+  }
+  status.textContent = 'Updating Tilo…';
+  await closeRoom(page);
+  location.reload();
+}
+
+/** After a failure to open `scope`, offer the person's other workspaces. */
+async function offerOtherWorkspaces({scope, entry, runtime}) {
+  const link = runtime ? grammar(runtime, entry) : null;
+  const choices = (remembering(() => workspaceChoices({home: entry.home, homeRoom: homeRoomOf(entry),
+    entered: enteredWorkspaces(), current: scope})) ?? []).filter(choice => choice.home || link);
+  if (!choices.length) return;
+  const choice = await card('Open another of your workspaces',
+    [...choices.map(option => [option.unavailable ? `${option.name} (did not open last time)` : option.name, option]), ['Not now', null]]);
+  if (!choice) return;
+  remembering(() => chooseWorkspace(choice.home ? null : choice));
+  loadPage(choiceUrl(choice, entry, link));
 }
 
 /** Offer to set up the machine an `install` link names (`machine-setup.mjs`). */

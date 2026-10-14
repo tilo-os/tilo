@@ -225,7 +225,7 @@ Read from the tree; build on these rather than duplicating them.
 
 - **`os/config.toml` puts `tester` in `wheel`.** Tilo today has ordinary password `sudo`. There is one polkit rule, for the greeter's power actions. No `run0` usage. `os/dev/switch-to-stock-kernel.sh` is the tree's only `bootc usr-overlay` use, and it needs root.
 
-- SELinux targeted and expected Enforcing, with `tilo_fs_t` shipped `permissive`. Kargs include `lockdown=integrity`. Unprivileged user namespaces intentionally allowed (bwrap needs them). `grep -rni tinker` returned nothing — greenfield.
+- SELinux targeted and expected Enforcing, with `tilo_fs_t` enforcing too (it shipped `permissive` until its allow-set was captured from a VM run). Kargs include `lockdown=integrity`. Unprivileged user namespaces intentionally allowed (bwrap needs them). `grep -rni tinker` returned nothing — greenfield.
 
 ---
 

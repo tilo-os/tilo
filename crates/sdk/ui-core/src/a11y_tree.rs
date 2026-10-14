@@ -45,6 +45,10 @@ mod identity_tests;
 #[path = "a11y_tree/continuation_tests.rs"]
 mod continuation_tests;
 
+#[cfg(test)]
+#[path = "a11y_tree/retained_tests.rs"]
+mod retained_tests;
+
 #[path = "a11y_tree/continuation.rs"]
 mod continuation;
 
@@ -59,6 +63,27 @@ use node_identity::WidgetNodeMap;
 
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
+/// Ids are paths, as long as the tree is deep, and every node is hashed a few
+/// times a refresh: a fast hash, not a DoS-resistant one, for keys no peer
+/// chooses.
+type NodeMap = HashMap<SemanticId, SemanticNode, rustc_hash::FxBuildHasher>;
+type RetainedMap = HashMap<SemanticId, RetainedSubtree, rustc_hash::FxBuildHasher>;
+
+/// The subtree a widget's synthetic child built at the last refresh: what it
+/// was built from, and the ids of the nodes it built, in reading order.
+///
+/// Nothing else goes into those nodes. A child with the same id handed over
+/// again, equal in every part, under the same owner and parent durability and
+/// hosting no widget, builds exactly these nodes, so a refresh moves them over
+/// from the last frame rather than building, diffing and dropping them: a key
+/// typed into one paragraph rebuilds that paragraph's row, not every row of the
+/// document.
+struct RetainedSubtree {
+    access: AccessNode,
+    durable: bool,
+    owner: Option<TaffyNodeId>,
+    ids: Vec<SemanticId>,
+}
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionSpec, Collects, EncodedAction, OperationKind, Resource};
 
@@ -241,7 +266,7 @@ type PromptedMap = HashMap<(SemanticId, String), Arc<dyn Fn(&str) -> EncodedActi
 /// The retained accessibility tree. Persists node identity across frames and
 /// diffs each [`refresh`](Self::refresh) against the previous.
 pub struct SemanticTree {
-    nodes: HashMap<SemanticId, SemanticNode>,
+    nodes: NodeMap,
     /// DFS reading order, so consumers can iterate the tree deterministically.
     order: Vec<SemanticId>,
     root: SemanticId,
@@ -256,6 +281,10 @@ pub struct SemanticTree {
     /// `order`. Kept apart so a refresh handed the same component snapshot
     /// reuses them rather than rebuilding and diffing a node per resource.
     components: Vec<ComponentNodes>,
+    /// What each widget's synthetic children built at the last refresh, by
+    /// the child's id: the next refresh moves over the nodes of those it is
+    /// handed again unchanged.
+    retained: RetainedMap,
 }
 
 impl Default for SemanticTree {
@@ -267,7 +296,7 @@ impl Default for SemanticTree {
 impl SemanticTree {
     pub fn new() -> Self {
         let root = SemanticId::root();
-        let mut nodes = HashMap::new();
+        let mut nodes = NodeMap::default();
         nodes.insert(
             root.clone(),
             SemanticNode {
@@ -292,6 +321,7 @@ impl SemanticTree {
             bound_actions: HashMap::new(),
             duplicate_ids: Vec::new(),
             components: Vec::new(),
+            retained: RetainedMap::default(),
         }
     }
 
@@ -406,7 +436,14 @@ impl SemanticTree {
     ) -> TreeDelta {
         let ptr_to_taffy = WidgetNodeMap::new::<BOUND>(root, node_map, admitted);
 
-        let mut builder = Build::<BOUND>::new(&ptr_to_taffy, focused, actions_only);
+        // The action projection keeps nothing between refreshes.
+        let retained = if actions_only {
+            RetainedMap::default()
+        } else {
+            std::mem::take(&mut self.retained)
+        };
+        let mut builder = Build::<BOUND>::new(&ptr_to_taffy, focused, actions_only, retained);
+        builder.nodes.reserve(self.nodes.len());
 
         let root_id = SemanticId::root();
         builder.order.push(root_id.clone());
@@ -419,6 +456,22 @@ impl SemanticTree {
             let child = builder.visit_resource(res);
             root_children.push(child);
         }
+
+        // Retained subtrees take their nodes from the last frame, unless one
+        // of their ids was built afresh or retained twice this frame. Only the
+        // full walk reports such a repeat as it does, so it runs again, with
+        // nothing retained to take.
+        let Some(carried) = self.take_carried(&builder) else {
+            return self.refresh_impl::<BOUND>(
+                root,
+                node_map,
+                admitted,
+                focused,
+                resources,
+                components,
+                actions_only,
+            );
+        };
 
         // A component handing over the tree its nodes were built from keeps
         // them; one handing over a tree that shares all but some subtrees
@@ -510,11 +563,15 @@ impl SemanticTree {
             delta.updated.sort();
         }
 
+        // Present and unchanged in both frames: in no list of the delta.
+        builder.nodes.extend(carried);
+
         let mut duplicate_ids = builder.duplicate_ids;
         for component in &next_components {
             duplicate_ids.extend(component.duplicate_ids.iter().cloned());
         }
         self.nodes = builder.nodes;
+        self.retained = builder.retained;
         self.order = builder.order;
         self.root = root_id;
         self.prompted = builder.prompted;
@@ -524,10 +581,39 @@ impl SemanticTree {
         delta
     }
 
+    /// Take the nodes of the subtrees `builder` retained out of the last
+    /// frame. `None`, with the last frame as it was, when one of their ids is
+    /// missing from it (retained twice) or was built afresh this frame: a
+    /// repeated id the full walk has to report.
+    fn take_carried<const BOUND: bool>(
+        &mut self,
+        builder: &Build<'_, BOUND>,
+    ) -> Option<Vec<(SemanticId, SemanticNode)>> {
+        let mut carried =
+            Vec::with_capacity(builder.carried.iter().map(ExactSizeIterator::len).sum());
+        for id in builder
+            .carried
+            .iter()
+            .flat_map(|range| &builder.order[range.clone()])
+        {
+            let node = if builder.nodes.contains_key(id) {
+                None
+            } else {
+                self.nodes.remove_entry(id)
+            };
+            let Some(node) = node else {
+                self.nodes.extend(carried);
+                return None;
+            };
+            carried.push(node);
+        }
+        Some(carried)
+    }
+
     /// What changed in the widget and declared-resource nodes if `next`
     /// replaced them.
     #[cfg(test)]
-    fn diff(&self, next: &HashMap<SemanticId, SemanticNode>) -> TreeDelta {
+    fn diff(&self, next: &NodeMap) -> TreeDelta {
         Sections {
             nodes: &self.nodes,
             components: &[],
@@ -772,8 +858,12 @@ impl SemanticTree {
 /// [`accesskit_bridge`](crate::accesskit_bridge) emits, so the retained
 /// tree and the AT-SPI export agree on what a widget can do.
 fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
+    verbs(access.role, &access.state)
+}
+
+/// [`verbs_for`] from the two parts of a node it reads.
+fn verbs(role: Role, s: &AccessState) -> Vec<SemanticAction> {
     let mut out = Vec::new();
-    let s = &access.state;
     if s.focusable && !s.disabled {
         out.push(SemanticAction {
             name: "focus".into(),
@@ -790,7 +880,7 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
     }
     if !s.disabled
         && matches!(
-            access.role,
+            role,
             Role::Button
                 | Role::ToggleButton
                 | Role::Checkbox
@@ -809,7 +899,7 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
             kind: SemanticActionKind::Verb(Action::Activate),
         });
     }
-    match access.role {
+    match role {
         Role::Slider | Role::Separator | Role::SpinButton if !s.disabled => {
             out.push(SemanticAction {
                 name: "increment".into(),
@@ -821,7 +911,7 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
                 label: "Decrement".into(),
                 kind: SemanticActionKind::Verb(Action::Decrement),
             });
-            if matches!(access.role, Role::Slider | Role::Separator) && !s.read_only {
+            if matches!(role, Role::Slider | Role::Separator) && !s.read_only {
                 out.push(SemanticAction {
                     name: "set-value".into(),
                     label: "Set value".into(),
@@ -845,7 +935,7 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
                     });
                 }
             }
-            if matches!(access.role, Role::ComboBox) && !s.read_only && !s.disabled {
+            if matches!(role, Role::ComboBox) && !s.read_only && !s.disabled {
                 out.push(SemanticAction {
                     name: "set-value".into(),
                     label: "Set value".into(),
@@ -894,13 +984,20 @@ fn semantic_operation_kind(role: Role, action: &Action) -> OperationKind {
 struct Build<'a, const BOUND: bool> {
     actions_only: bool,
     ambiguous_projection: bool,
-    nodes: HashMap<SemanticId, SemanticNode>,
+    nodes: NodeMap,
     order: Vec<SemanticId>,
     prompted: PromptedMap,
     bound_actions: HashMap<(SemanticId, String), crate::bound_dispatch::BoundActionTarget>,
     ptr_to_taffy: &'a WidgetNodeMap<'a>,
     focused: Option<TaffyNodeId>,
     duplicate_ids: Vec<SemanticId>,
+    /// The last refresh's retained subtrees, taken from as they recur.
+    retained_before: RetainedMap,
+    /// This refresh's, for the next.
+    retained: RetainedMap,
+    /// The spans of `order` holding the ids of retained subtrees, whose nodes
+    /// are taken from the last frame once the walk is done.
+    carried: Vec<std::ops::Range<usize>>,
 }
 
 /// The node a synthetic child hangs off: its id, and whether that id is
@@ -914,7 +1011,7 @@ struct SyntheticParent<'a> {
 /// One frame's nodes as the tree keeps them: the widget and declared-resource
 /// nodes, and each bound component's.
 struct Sections<'a> {
-    nodes: &'a HashMap<SemanticId, SemanticNode>,
+    nodes: &'a NodeMap,
     components: &'a [ComponentNodes],
 }
 
@@ -967,9 +1064,13 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         ptr_to_taffy: &'a WidgetNodeMap<'a>,
         focused: Option<TaffyNodeId>,
         actions_only: bool,
+        retained_before: RetainedMap,
     ) -> Self {
         Self {
-            nodes: HashMap::new(),
+            retained_before,
+            retained: RetainedMap::default(),
+            carried: Vec::new(),
+            nodes: NodeMap::default(),
             order: Vec::new(),
             prompted: HashMap::new(),
             bound_actions: HashMap::new(),
@@ -1004,7 +1105,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         };
         let taffy_id = self.ptr_to_taffy.get(w);
         match w.accessibility() {
-            Some(access) => {
+            Some(mut access) => {
                 let id = if let Some(key) = &access.semantic_key {
                     SemanticId::keyed(semantic_parent, key)
                 } else if let Some(t) = taffy_id {
@@ -1041,8 +1142,8 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                         self.visit_widget(child, &id, durable_identity, &mut children);
                     }
                 }
-                for (i, synth) in access.children.iter().enumerate() {
-                    let child = self.visit_synthetic(
+                for (i, synth) in std::mem::take(&mut access.children).into_iter().enumerate() {
+                    let child = self.visit_synthetic_retained(
                         SyntheticParent {
                             id: &id,
                             durable: durable_identity,
@@ -1064,10 +1165,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
 
                 // Disabled/read-only gate the verbs but focus does not, so
                 // compute against the focus-updated state.
-                let actions = verbs_for(&AccessNode {
-                    state,
-                    ..access.clone()
-                });
+                let actions = verbs(access.role, &state);
 
                 let node = SemanticNode {
                     id: id.clone(),
@@ -1096,6 +1194,57 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                 }
             }
         }
+    }
+
+    /// A widget's synthetic child: its nodes moved over from the last frame
+    /// when it built them from the same parts ([`RetainedSubtree`]), else
+    /// [`visit_synthetic`](Self::visit_synthetic) builds them and they are
+    /// retained for the next.
+    fn visit_synthetic_retained(
+        &mut self,
+        parent: SyntheticParent<'_>,
+        index: usize,
+        access: AccessNode,
+        owner: Option<TaffyNodeId>,
+        hosted: Vec<HostedWidget<'_>>,
+    ) -> SemanticId {
+        // A widget hosted in the child is walked afresh, and the projection
+        // for actions keeps nothing.
+        if !hosted.is_empty() || self.actions_only {
+            return self.visit_synthetic(parent, index, &access, owner, hosted);
+        }
+        let id = access.key.map_or_else(
+            || SemanticId::synthetic(parent.id, index),
+            |key| SemanticId::keyed(parent.id, key),
+        );
+        if let Some(retained) = self.retained_before.remove(&id)
+            && retained.durable == parent.durable
+            && retained.owner == owner
+            && retained.access == access
+        {
+            let start = self.order.len();
+            self.order.extend(retained.ids.iter().cloned());
+            self.carried.push(start..self.order.len());
+            self.retained.insert(id.clone(), retained);
+            return id;
+        }
+        let start = self.order.len();
+        let duplicates = self.duplicate_ids.len();
+        let built = self.visit_synthetic(parent, index, &access, owner, hosted);
+        // A subtree that repeated an id is left to the full walk.
+        if built == id && self.duplicate_ids.len() == duplicates {
+            let ids = self.order[start..].to_vec();
+            self.retained.insert(
+                id,
+                RetainedSubtree {
+                    access,
+                    durable: parent.durable,
+                    owner,
+                    ids,
+                },
+            );
+        }
+        built
     }
 
     /// A virtual row/cell — has no backing widget, but may carry geometry.
