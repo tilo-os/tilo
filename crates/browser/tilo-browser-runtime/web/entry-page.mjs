@@ -166,7 +166,21 @@ export async function startEntryPage({mode}) {
   const embed = query.get('embed') === '1';
   const debug = query.has('debug');
   const loading = status.textContent;
-  const tell = state => { if (embed && parent !== window) parent.postMessage({type: 'tilo-embed', state}, EMBEDDER); };
+  // The step of getting in the page shows (`data-arrival` on the root, see
+  // index.html): `load`ing Tilo, `join`ing through a host's door, `open`ing
+  // the desktop, `draw`ing its first frame (GPU set up), `done` once it
+  // drew, `stopped` when it cannot go on. Each step says itself in the
+  // status line, unless something else (admission, a visit) is said there.
+  const root = document.documentElement.dataset;
+  const opening = mode === 'app' ? 'Opening the app…' : 'Opening the workspace…';
+  const drawing = 'Starting graphics…';
+  const notes = {open: opening, draw: drawing};
+  const arrive = step => {
+    if (root.arrival === 'done' && step !== 'stopped') return;
+    root.arrival = step;
+    if (notes[step] && [loading, opening, drawing].includes(status.textContent)) status.textContent = notes[step];
+  };
+  const tell =state => { if (embed && parent !== window) parent.postMessage({type: 'tilo-embed', state}, EMBEDDER); };
   let joinNow = false;
   try { joinNow = sessionStorage.getItem(JOIN_NOW) === '1'; sessionStorage.removeItem(JOIN_NOW); } catch { /* No storage: watch first. */ }
   /** How this page entered through a host's door: `joined`, `watching` (until a gesture) or `seatless`. */
@@ -186,14 +200,16 @@ export async function startEntryPage({mode}) {
     // act on, unless the page was opened with ?debug.
     onStatus: state => {
       if (!state.phase) return;
-      const root = document.documentElement.dataset;
       root.phase = state.phase;
+      if (state.phase === 'presented') arrive('done');
+      else if (state.phase === 'gpu-pending') arrive('draw');
+      else if (['failed', 'crashed'].includes(state.phase)) arrive('stopped');
       root.frames = String(state.frames ?? 0);
       if (debug) {
         status.textContent = `${state.phase}${state.error ? `: ${state.error}` : ''} · frames ${state.frames ?? 0}${state.persistence ? ` · ${state.persistence}` : ''}`;
       } else if (['failed', 'crashed'].includes(state.phase)) {
         status.textContent = `The desktop stopped drawing${state.error ? `: ${state.error}` : ''}. Reload the page to start it again.`;
-      } else if (state.phase === 'presented' && status.textContent === loading) {
+      } else if (state.phase === 'presented' && [loading, opening, drawing].includes(status.textContent)) {
         // Only the page's own loading note: a visit message stays.
         status.textContent = '';
       }
@@ -272,13 +288,14 @@ export async function startEntryPage({mode}) {
     // Said before admission, so a browser that cannot draw the desktop
     // never takes a seat or leaves a person behind.
     tell('unsupported');
+    arrive('stopped');
     document.documentElement.dataset.entry = 'unsupported';
     status.textContent = '';
     rendererCard(unavailable);
     return;
   }
   try {
-    const page = await boot({mode, surface, status, deps, diagnostics});
+    const page = await boot({mode, surface, status, deps, diagnostics, onStep: arrive});
     if (!page) return;
     if (entered) showVisitState({entered, retryAfter, tell, status});
     identityActions = keepIdentity({peer: page.peer, mount: page.mount, home: page.entry?.home, name: () => displayName,
@@ -308,6 +325,7 @@ export async function startEntryPage({mode}) {
     }
   } catch (error) {
     if (entered || embed) tell(error instanceof HostAdmissionError && error.code === 'full' ? 'full' : 'unavailable');
+    arrive('stopped');
     document.documentElement.dataset.entry = error instanceof AdmissionError ? 'refused' : 'failed';
     status.textContent = error instanceof AdmissionError ? error.message : `Failed: ${error?.message ?? error}`;
     throw error;
