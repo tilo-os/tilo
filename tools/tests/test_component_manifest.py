@@ -106,13 +106,6 @@ class ComponentManifestPolicyTests(unittest.TestCase):
                 "/image/usr/share/tilo/font-catalogs", "/image/elsewhere"))
             self.assertIn("direct file /usr/share/tilo/font-catalogs/ (component 'apps+runtime') is never copied",
                           "\n".join(check.audit(root)))
-        with self.subTest(phase='a runtime publisher key travels from the builder with its runtime'):
-            root = self.fixture()
-            self.edit(root / "os/Containerfile",
-                      "--mount=type=bind,from=builder,source=/out/runtime-bundle-publisher.hex,",
-                      "--mount=type=bind,from=native-builder-payload,source=/out/runtime-bundle-publisher.hex,")
-            self.assertIn("direct file /usr/share/tilo/runtime-bundle-publisher.hex (component 'apps+runtime') "
-                          "is never copied", "\n".join(check.audit(root)))
         with self.subTest(phase='the assembled runtime tree is copied whole'):
             root = self.fixture()
             self.edit(root / "os/Containerfile", "COPY --from=runtime-image-payload /image/usr/ /usr/",

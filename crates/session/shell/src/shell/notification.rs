@@ -151,7 +151,6 @@ fn snoozed_alarm_rows(
                 .find(|(key, _)| key == "dismiss")?
                 .1;
             Some(SearchResult {
-                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: "actions".into(),
@@ -220,7 +219,6 @@ pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search
             let expected_room = request.target.room.clone();
             let action_id = id.clone();
             rows.push(SearchResult {
-                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: "actions".into(),

@@ -382,9 +382,7 @@ impl WinitView {
 
     fn window(&self) -> Option<Retained<WinitUIWindow>> {
         // SAFETY: `WinitView`s are always installed in a `WinitUIWindow`
-        (**self)
-            .window()
-            .map(|window| unsafe { Retained::cast(window) })
+        (**self).window().map(|window| unsafe { Retained::cast(window) })
     }
 
     pub(crate) fn recognize_pinch_gesture(&self, should_recognize: bool) {
@@ -469,9 +467,7 @@ impl WinitView {
                 };
                 rotation.setDelegate(Some(ProtocolObject::from_ref(self)));
                 self.addGestureRecognizer(&rotation);
-                self.ivars()
-                    .rotation_gesture_recognizer
-                    .replace(Some(rotation));
+                self.ivars().rotation_gesture_recognizer.replace(Some(rotation));
             }
         } else if let Some(recognizer) = self.ivars().rotation_gesture_recognizer.take() {
             self.removeGestureRecognizer(&recognizer);

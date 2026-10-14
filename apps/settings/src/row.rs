@@ -9,9 +9,7 @@ use ui::widget::{Button, Dropdown, Slider, Toggle};
 
 use crate::effects::SettingsEffect;
 use crate::host::{PaneCx, Section};
-use crate::widgets::{
-    El, Item, choice_row_stacked, field_row_described, setting_row, setting_row_described,
-};
+use crate::widgets::{El, setting_row, setting_row_described};
 
 /// One labelled row of a settings card ([`PaneCx::row`]).
 #[must_use]
@@ -21,7 +19,6 @@ pub struct Row<'a> {
     description: Option<String>,
     id: Option<String>,
     name: Option<String>,
-    stacked: bool,
 }
 
 impl PaneCx {
@@ -33,7 +30,6 @@ impl PaneCx {
             description: None,
             id: None,
             name: None,
-            stacked: false,
         }
     }
 }
@@ -58,25 +54,16 @@ impl Row<'_> {
         self
     }
 
-    /// With the control on its own line beneath the label, spanning the
-    /// section at every width: a slider wants the whole measure.
-    pub fn stacked(mut self) -> Self {
-        self.stacked = true;
-        self
-    }
-
     /// The row around `control`, which the pane bound itself.
-    pub fn control(self, control: El) -> Item {
-        match (&self.description, self.stacked) {
-            (Some(description), true) => field_row_described(&self.label, description, control),
-            (None, true) => choice_row_stacked(&self.label, control),
-            (Some(description), false) => setting_row_described(&self.label, description, control),
-            (None, false) => setting_row(&self.label, control),
+    pub fn control(self, control: El) -> El {
+        match &self.description {
+            Some(description) => setting_row_described(&self.label, description, control),
+            None => setting_row(&self.label, control),
         }
     }
 
     /// A toggle showing `on`, setting the section's field `field`.
-    pub fn toggle<T: Section>(self, on: &LocalState<bool>, field: Path<T, bool>) -> Item {
+    pub fn toggle<T: Section>(self, on: &LocalState<bool>, field: Path<T, bool>) -> El {
         let toggle = self.cx.bind_field(self.toggle_widget(on), field);
         self.control(Box::new(toggle))
     }
@@ -88,14 +75,14 @@ impl Row<'_> {
         on: &LocalState<bool>,
         field: Path<T, V>,
         edit: impl Fn(bool) -> ui::tilo_resource::Edit<T> + Send + Sync + 'static,
-    ) -> Item {
+    ) -> El {
         let toggle = self.cx.bind_edit(self.toggle_widget(on), field, edit);
         self.control(Box::new(toggle))
     }
 
     /// A toggle showing `on`, invoking the section's verb `verb` with each
     /// flip.
-    pub fn toggle_verb<T: Section>(self, on: &LocalState<bool>, verb: impl Binds<T, bool>) -> Item {
+    pub fn toggle_verb<T: Section>(self, on: &LocalState<bool>, verb: impl Binds<T, bool>) -> El {
         let toggle = self.cx.bind_verb(self.toggle_widget(on), verb);
         self.control(Box::new(toggle))
     }
@@ -105,7 +92,7 @@ impl Row<'_> {
         self,
         on: &LocalState<bool>,
         effect: impl Binds<SettingsEffect, bool>,
-    ) -> Item {
+    ) -> El {
         let toggle = self.cx.bind(self.toggle_widget(on), effect);
         self.control(Box::new(toggle))
     }
@@ -118,7 +105,7 @@ impl Row<'_> {
         current: &LocalState<String>,
         field: Path<T, V>,
         value: impl Fn(String) -> Result<V, String> + Send + Sync + 'static,
-    ) -> Item
+    ) -> El
     where
         T: Section,
         V: Model + Settable + 'static,
@@ -136,7 +123,7 @@ impl Row<'_> {
         options: impl IntoIterator<Item = impl Into<String>>,
         current: &LocalState<String>,
         verb: impl Binds<T, String>,
-    ) -> Item {
+    ) -> El {
         let chooser = self.cx.bind_verb(self.chooser(options, current), verb);
         self.control(Box::new(chooser))
     }
@@ -148,19 +135,19 @@ impl Row<'_> {
         options: impl IntoIterator<Item = impl Into<String>>,
         current: &LocalState<String>,
         effect: impl Binds<SettingsEffect, String>,
-    ) -> Item {
+    ) -> El {
         let chooser = self.cx.bind(self.chooser(options, current), effect);
         self.control(Box::new(chooser))
     }
 
     /// A button `id` reading `text`, invoking `effect` when pressed.
-    pub fn button(self, id: &str, text: &str, effect: impl Into<SettingsEffect>) -> Item {
+    pub fn button(self, id: &str, text: &str, effect: impl Into<SettingsEffect>) -> El {
         let button = self.cx.bind_invocation(Button::new(id, text), effect);
         self.control(Box::new(button))
     }
 
     /// A slider showing `value`, setting the section's field `field`.
-    pub fn slider<T: Section>(self, value: &LocalState<f64>, field: Path<T, f64>) -> Item {
+    pub fn slider<T: Section>(self, value: &LocalState<f64>, field: Path<T, f64>) -> El {
         let slider = self.cx.bind_field(self.slider_widget(value), field);
         self.control(Box::new(slider))
     }
@@ -172,7 +159,7 @@ impl Row<'_> {
         value: &LocalState<f64>,
         field: Path<T, V>,
         value_of: impl Fn(f64) -> Result<V, String> + Send + Sync + 'static,
-    ) -> Item
+    ) -> El
     where
         T: Section,
         V: Model + Settable + 'static,
@@ -185,11 +172,7 @@ impl Row<'_> {
 
     /// A slider showing `value`, invoking the section's verb `verb` with each
     /// committed position.
-    pub fn slider_verb<T: Section>(
-        self,
-        value: &LocalState<f64>,
-        verb: impl Binds<T, f64>,
-    ) -> Item {
+    pub fn slider_verb<T: Section>(self, value: &LocalState<f64>, verb: impl Binds<T, f64>) -> El {
         let slider = self.cx.bind_verb(self.slider_widget(value), verb);
         self.control(Box::new(slider))
     }
@@ -203,7 +186,7 @@ impl Row<'_> {
         selected: &str,
         field: Path<T, V>,
         value: impl Fn(String) -> Result<V, String> + Send + Sync + 'static,
-    ) -> Item
+    ) -> El
     where
         T: Section,
         V: Model + Settable + 'static,
@@ -226,7 +209,7 @@ impl Row<'_> {
         self,
         value: &LocalState<f64>,
         effect: impl Binds<SettingsEffect, f64>,
-    ) -> Item {
+    ) -> El {
         let slider = self.cx.bind(self.slider_widget(value), effect);
         self.control(Box::new(slider))
     }
