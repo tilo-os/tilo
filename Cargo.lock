@@ -17883,6 +17883,7 @@ dependencies = [
 name = "tilo-relay"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "anyhow",
  "app-cli",
  "app-registry",
@@ -17948,6 +17949,7 @@ dependencies = [
  "tilo-identity-host",
  "tilo-moderation",
  "tilo-moq",
+ "tilo-net",
  "tilo-paths",
  "tilo-peer-state",
  "tilo-relay-client",

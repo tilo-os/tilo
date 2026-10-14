@@ -30,6 +30,21 @@ fn private_device_requests_bypass_the_retained_frame_even_when_the_send_fails() 
     check(crate::DeviceActions {
         line: r#"{"passphrase":"private-fixture-answer","confirm":true}"#.into(),
     });
+    let private = crate::Control {
+        slot: "owned".into(),
+        args: vec![
+            "actions".into(),
+            "invoke".into(),
+            "settings".into(),
+            "store-api-key".into(),
+            "--args-stdin".into(),
+        ],
+        private_args: Some(crate::DeviceActions {
+            line: r#"{"key":"private-fixture-answer"}"#.into(),
+        }),
+    };
+    assert!(!format!("{private:?}").contains("private-fixture-answer"));
+    check(private);
     check(crate::DeviceUnlockEnrol {
         passphrase: "private-fixture-answer".into(),
         networks: Vec::new(),

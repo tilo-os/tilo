@@ -189,6 +189,17 @@ pub trait Apply {
     /// Run the in-VM `tilo-control` against this session.
     fn control(&mut self, session: &Session, args: &[String])
     -> Result<ControlResult, DaemonError>;
+    /// Run a secret-bearing semantic invocation without public argument values.
+    fn private_control(
+        &mut self,
+        _session: &Session,
+        _args: &[String],
+        _input: &str,
+    ) -> Result<ControlResult, DaemonError> {
+        Err(DaemonError::InvalidParams(
+            "private control is unavailable in this backend".into(),
+        ))
+    }
     /// PNG of the session's live scene.
     fn shot(&mut self, session: &Session) -> Result<Vec<u8>, DaemonError>;
     /// Capabilities and `SELinux` domain of the running session process,
@@ -801,6 +812,10 @@ pub struct RecordingApply {
     pub image_runtimes: Vec<String>,
     /// Exact normal installer output for production cohort selection tests.
     pub cohort_replies: std::collections::VecDeque<String>,
+    /// Scripted observations from the maintained selection reader.
+    pub cohort_selections: std::collections::VecDeque<crate::SelectedApps>,
+    /// Runtime namespace supplied by cohort fixtures.
+    pub cohort_runtime_root: Option<PathBuf>,
     /// The machine's own session, when it has one.
     pub device: Option<DeviceSession>,
     /// Every call is copied here too, for a test that hands this to a daemon.
@@ -1070,7 +1085,7 @@ impl Apply for RecordingApply {
         _layers: &[PathBuf],
     ) -> Result<crate::SelectedApps, DaemonError> {
         self.call(format!("cohort_selected_apps {}", session.user));
-        Ok(crate::SelectedApps::default())
+        Ok(self.cohort_selections.pop_front().unwrap_or_default())
     }
     fn cohort_runtime_view(
         &mut self,
@@ -1078,7 +1093,10 @@ impl Apply for RecordingApply {
         _layers: &[PathBuf],
         _prior: bool,
     ) -> Result<PathBuf, DaemonError> {
-        Ok(PathBuf::from("/"))
+        Ok(self
+            .cohort_runtime_root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/")))
     }
     fn install_cohort_app_in_view(
         &mut self,

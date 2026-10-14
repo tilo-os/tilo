@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise actual private cohort assembly namespaces without compiling apps."""
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -17,6 +18,41 @@ SOURCE = Path(__file__).with_name('assemble-app-runtime.py')
 SPEC = importlib.util.spec_from_file_location('assemble_runtime', SOURCE)
 ASSEMBLER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ASSEMBLER)
+
+
+class SourceMembership(unittest.TestCase):
+    def test_exact_source_membership_is_sorted_and_bound_to_the_inventory(self):
+        with tempfile.TemporaryDirectory(prefix='source-membership-') as name:
+            repo = Path(name)
+            for directory, app_id in [('first', 'so.tilo.z'), ('second', 'so.tilo.a')]:
+                path = repo / 'apps' / directory / 'tilo-app.toml'
+                path.parent.mkdir(parents=True)
+                path.write_text(f'[package]\nid = "{app_id}"\n')
+            destination = repo / 'system-app-cohort.json'
+            ASSEMBLER.source_membership(repo, destination, 'ab' * 32)
+            self.assertEqual(json.loads(destination.read_text()), {
+                'schema': 1, 'source_inventory': 'ab' * 32,
+                'apps': ['so.tilo.a', 'so.tilo.z'],
+            })
+            (repo / 'apps/first/tilo-app.toml').unlink()
+            ASSEMBLER.source_membership(repo, destination, 'cd' * 32)
+            self.assertEqual(json.loads(destination.read_text())['apps'], ['so.tilo.a'])
+            with self.assertRaisesRegex(ValueError, 'invalid source inventory'):
+                ASSEMBLER.source_membership(repo, destination, 'unbound')
+
+    def test_duplicate_or_empty_membership_is_not_signed(self):
+        with tempfile.TemporaryDirectory(prefix='source-membership-') as name:
+            repo = Path(name)
+            destination = repo / 'system-app-cohort.json'
+            with self.assertRaisesRegex(ValueError, 'empty, oversized or duplicated'):
+                ASSEMBLER.source_membership(repo, destination, 'ab' * 32)
+            for directory in ['first', 'second']:
+                path = repo / 'apps' / directory / 'tilo-app.toml'
+                path.parent.mkdir(parents=True)
+                path.write_text('[package]\nid = "so.tilo.duplicate"\n')
+            with self.assertRaisesRegex(ValueError, 'empty, oversized or duplicated'):
+                ASSEMBLER.source_membership(repo, destination, 'ab' * 32)
+            self.assertFalse(destination.exists())
 
 
 class RuntimeEngines(unittest.TestCase):

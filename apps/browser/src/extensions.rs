@@ -167,8 +167,10 @@ fn install_package(
         std::fs::remove_dir_all(&dest)?;
     }
     std::fs::create_dir_all(&dest)?;
-    zip.archive_mut()
-        .extract(&dest)
+    // Bounded on the way to disk: the declared sizes checked above are the
+    // package's own claim, and a header that lies small must not fill the
+    // extensions directory through an unbounded inflate.
+    zip.extract_to(&dest)
         .map_err(|e| ExtensionError::Archive(e.to_string()))?;
     if let Some(manifest) = keyed_manifest {
         std::fs::write(dest.join("manifest.json"), manifest)?;
