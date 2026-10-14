@@ -250,7 +250,11 @@ pub struct RichTextState {
     containers: Containers,
     /// Where the rich text sits in its document: empty at the root, the
     /// path to the field's map when it is a field of another resource.
-    root_path: tilo_resource::ObjPath,
+    /// Asking the document where an object hangs costs a search of its
+    /// operations, so a field's path is found when an edit first reaches
+    /// it ([`RichText::refresh_under`]) rather than for every field read;
+    /// until then a change is placed by the document.
+    root_path: Option<tilo_resource::ObjPath>,
     body: Rc<BodyOrder>,
     /// Every heading, image and table cell, read whole: the outline and the
     /// document's objects are listed without reading its prose.
@@ -259,13 +263,14 @@ pub struct RichTextState {
     /// of the state (a view still holds the last one) shares them until a
     /// change writes to them.
     loaded: Rc<HashMap<String, Rc<BlockView>>>,
-    /// Where the objects of loaded and featured paragraphs sit (the
+    /// Which loaded paragraph each of its objects belongs to (the
     /// paragraph's map, its text, its attributes), so a change to one is
-    /// placed without asking the document.
-    objects: Rc<HashMap<ObjId, tilo_resource::ObjPath>>,
+    /// placed without asking the document. The path is spelled out only
+    /// for an object a change touched ([`Resource::locate`]).
+    objects: Rc<HashMap<ObjId, (Rc<str>, ParagraphPart)>>,
     /// The objects indexed for each paragraph, so forgetting one touches
     /// only its own.
-    paragraph_objects: Rc<HashMap<String, Vec<ObjId>>>,
+    paragraph_objects: Rc<HashMap<Rc<str>, model::BlockObjects>>,
     header: Rc<Vec<BlockView>>,
     footer: Rc<Vec<BlockView>>,
     notes: Rc<Vec<NoteView>>,
@@ -450,51 +455,145 @@ fn block_obj(doc: &Doc, blocks: &ObjId, id: &str) -> Option<ObjId> {
     }
 }
 
-/// The objects of body paragraph `id` and the path to each.
-fn paragraph_objects(
-    doc: &Doc,
-    c: &Containers,
-    root_path: &[(ObjId, automerge::Prop)],
-    id: &str,
-) -> Vec<(ObjId, tilo_resource::ObjPath)> {
-    use automerge::Prop;
-    let Some(block) = block_obj(doc, &c.blocks, id) else {
-        return Vec::new();
+/// Which of a paragraph's objects an indexed object is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParagraphPart {
+    Block,
+    Text,
+    Attrs,
+}
+
+/// The objects body paragraph `id` is stored in, looked up in `doc`.
+fn paragraph_objects(doc: &Doc, c: &Containers, id: &str) -> Option<model::BlockObjects> {
+    let block = block_obj(doc, &c.blocks, id)?;
+    let child = |key| match doc.get(&block, key) {
+        Ok(Some((Value::Object(_), child))) => Some(child),
+        _ => None,
     };
-    let mut to_block = root_path.to_vec();
-    to_block.push((c.root.clone(), Prop::Map(KEY_BLOCKS.into())));
-    to_block.push((c.blocks.clone(), Prop::Map(id.into())));
-    let mut objects = vec![(block.clone(), to_block.clone())];
-    for key in [BLOCK_TEXT, BLOCK_ATTRS] {
-        if let Ok(Some((Value::Object(_), child))) = doc.get(&block, key) {
-            let mut path = to_block.clone();
-            path.push((block.clone(), Prop::Map(key.into())));
-            objects.push((child, path));
-        }
-    }
-    objects
+    Some(model::BlockObjects {
+        text: child(BLOCK_TEXT),
+        attrs: child(BLOCK_ATTRS),
+        block,
+    })
 }
 
 impl RichTextState {
     /// Index where paragraph `id`'s objects sit, dropping what it had.
     fn index_paragraph(&mut self, doc: &Doc, id: &str) {
         self.forget_paragraph(id);
-        let objects = paragraph_objects(doc, &self.containers, &self.root_path, id);
-        Rc::make_mut(&mut self.paragraph_objects).insert(
-            id.to_owned(),
-            objects.iter().map(|(obj, _)| obj.clone()).collect(),
+        if let Some(objects) = paragraph_objects(doc, &self.containers, id) {
+            self.index_objects(id.into(), objects);
+        }
+    }
+
+    /// Index `objects` as paragraph `id`'s, which has none indexed.
+    fn index_objects(&mut self, id: Rc<str>, objects: model::BlockObjects) {
+        let index = Rc::make_mut(&mut self.objects);
+        index.insert(
+            objects.block.clone(),
+            (Rc::clone(&id), ParagraphPart::Block),
         );
-        Rc::make_mut(&mut self.objects).extend(objects);
+        for (obj, part) in [
+            (&objects.text, ParagraphPart::Text),
+            (&objects.attrs, ParagraphPart::Attrs),
+        ] {
+            if let Some(obj) = obj {
+                index.insert(obj.clone(), (Rc::clone(&id), part));
+            }
+        }
+        Rc::make_mut(&mut self.paragraph_objects).insert(id, objects);
     }
 
     fn forget_paragraph(&mut self, id: &str) {
         if !self.paragraph_objects.contains_key(id) {
             return;
         }
-        let forgotten = Rc::make_mut(&mut self.paragraph_objects).remove(id);
-        let objects = Rc::make_mut(&mut self.objects);
-        for obj in forgotten.unwrap_or_default() {
-            objects.remove(&obj);
+        let Some(objects) = Rc::make_mut(&mut self.paragraph_objects).remove(id) else {
+            return;
+        };
+        let index = Rc::make_mut(&mut self.objects);
+        for obj in [Some(objects.block), objects.text, objects.attrs]
+            .into_iter()
+            .flatten()
+        {
+            index.remove(&obj);
+        }
+    }
+
+    /// The path from the document's root to `obj`, when it is an object of
+    /// a loaded paragraph.
+    fn path_of(&self, obj: &ObjId) -> Option<tilo_resource::ObjPath> {
+        use automerge::Prop;
+        let root_path = self.root_path.as_ref()?;
+        let (id, part) = self.objects.get(obj)?;
+        let c = &self.containers;
+        let mut path = Vec::with_capacity(root_path.len().saturating_add(3));
+        path.extend_from_slice(root_path);
+        path.push((c.root.clone(), Prop::Map(KEY_BLOCKS.into())));
+        path.push((c.blocks.clone(), Prop::Map(id.to_string())));
+        let key = match part {
+            ParagraphPart::Block => return Some(path),
+            ParagraphPart::Text => BLOCK_TEXT,
+            ParagraphPart::Attrs => BLOCK_ATTRS,
+        };
+        let block = self.paragraph_objects.get(id)?.block.clone();
+        path.push((block, Prop::Map(key.into())));
+        Some(path)
+    }
+
+    /// Read the body paragraphs `missing` names and index their objects.
+    /// A heading was read whole for the outline and shares that view. When
+    /// most of the body is missing (a view of all of it, a field read
+    /// whole) one walk over the body reads them, instead of looking each
+    /// up by id and again for its objects.
+    fn read_paragraphs(&mut self, doc: &Doc, missing: Vec<String>) {
+        let bulk = missing.len().saturating_mul(2) >= self.body.len();
+        let mut wanted: HashSet<String> = missing.into_iter().collect();
+        if bulk {
+            let featured = Rc::clone(&self.featured);
+            let read = tilo_resource::profiling::measure("rich_text.load.materialize", || {
+                model::read_body(doc, &self.containers, |kind| !Self::is_featured(kind))
+            });
+            let _index = tilo_resource::profiling::Phase::start("rich_text.load.index");
+            for block in read {
+                if !wanted.remove(&block.entry.id) {
+                    continue;
+                }
+                let view = match (block.view, featured.get(&block.entry.id)) {
+                    (Some(view), _) => Rc::new(view),
+                    (None, Some(view)) => Rc::clone(view),
+                    (None, None) => {
+                        // Not in the outline: read by id below.
+                        wanted.insert(block.entry.id);
+                        continue;
+                    }
+                };
+                let id: Rc<str> = block.entry.id.into();
+                Rc::make_mut(&mut self.loaded).insert(id.to_string(), view);
+                self.index_objects(id, block.objects);
+            }
+        }
+        let mut missing = Vec::with_capacity(wanted.len());
+        for id in wanted {
+            match self.featured.get(&id).map(Rc::clone) {
+                Some(view) => {
+                    self.index_paragraph(doc, &id);
+                    Rc::make_mut(&mut self.loaded).insert(id, view);
+                }
+                None => missing.push(id),
+            }
+        }
+        if missing.is_empty() {
+            return;
+        }
+        let views = tilo_resource::profiling::measure("rich_text.load.materialize", || {
+            model::materialize_blocks(doc, &self.containers, &missing)
+        });
+        let _index = tilo_resource::profiling::Phase::start("rich_text.load.index");
+        for view in views {
+            let id = view.id.clone();
+            self.index_paragraph(doc, &id);
+            Rc::make_mut(&mut self.loaded).insert(id, Rc::new(view));
         }
     }
 }
@@ -532,7 +631,7 @@ impl Resource for RichText {
     /// A change to a paragraph on screen is placed from the index kept of
     /// its objects.
     fn locate(state: &RichTextState, obj: &ObjId) -> Option<tilo_resource::ObjPath> {
-        state.objects.get(obj).cloned()
+        state.path_of(obj)
     }
 
     /// Text written leaves its writer's caret after it; a paragraph styled
@@ -597,40 +696,55 @@ impl Resource for RichText {
         if everything && state.loaded.len() == state.body.len() {
             return Ok(());
         }
-        let mut wanted: HashSet<String> = demand
-            .positions(state.body.len())
-            .filter_map(|position| state.body.id_at(position).map(str::to_owned))
-            .collect();
-        wanted.extend(
-            demand
-                .keys
-                .iter()
-                .filter(|id| state.body.contains(id))
-                .cloned(),
-        );
-        let evicted: Vec<String> = state
-            .loaded
-            .keys()
-            .filter(|id| !wanted.contains(*id))
-            .cloned()
-            .collect();
+        let (evicted, missing): (Vec<String>, Vec<String>) = if everything {
+            // Every paragraph is wanted: no set of them to collect.
+            let body = &state.body;
+            (
+                state
+                    .loaded
+                    .keys()
+                    .filter(|id| !body.contains(id))
+                    .cloned()
+                    .collect(),
+                body.all()
+                    .filter(|id| !state.loaded.contains_key(*id))
+                    .map(str::to_owned)
+                    .collect(),
+            )
+        } else {
+            let mut wanted: HashSet<String> = demand
+                .positions(state.body.len())
+                .filter_map(|position| state.body.id_at(position).map(str::to_owned))
+                .collect();
+            wanted.extend(
+                demand
+                    .keys
+                    .iter()
+                    .filter(|id| state.body.contains(id))
+                    .cloned(),
+            );
+            (
+                state
+                    .loaded
+                    .keys()
+                    .filter(|id| !wanted.contains(*id))
+                    .cloned()
+                    .collect(),
+                wanted
+                    .into_iter()
+                    .filter(|id| !state.loaded.contains_key(id))
+                    .collect(),
+            )
+        };
         for id in &evicted {
             Rc::make_mut(&mut state.loaded).remove(id);
             state.forget_paragraph(id);
         }
-        let missing: Vec<String> = wanted
-            .into_iter()
-            .filter(|id| !state.loaded.contains_key(id))
-            .collect();
         if !evicted.is_empty() || !missing.is_empty() {
             state.log.order();
         }
         if !missing.is_empty() {
-            for view in model::materialize_blocks(doc, &state.containers, &missing) {
-                let id = view.id.clone();
-                Rc::make_mut(&mut state.loaded).insert(id.clone(), Rc::new(view));
-                state.index_paragraph(doc, &id);
-            }
+            state.read_paragraphs(doc, missing);
         }
         Ok(())
     }
@@ -849,16 +963,22 @@ impl RichText {
     /// Returns [`ModelError`] when `root` holds no rich text.
     pub fn read_under(doc: &Doc, root: &ObjId) -> Result<RichTextState, ModelError> {
         let c = containers_of(doc, root)?;
-        let spine = model::body_spine(doc, &c);
-        let featured_ids: Vec<String> = spine
-            .iter()
-            .filter(|entry| RichTextState::is_featured(&entry.kind))
-            .map(|entry| entry.id.clone())
-            .collect();
-        let featured = model::materialize_blocks(doc, &c, &featured_ids)
-            .into_iter()
-            .map(|view| (view.id.clone(), Rc::new(view)))
-            .collect();
+        // One walk reads the spine and, whole, the outline's paragraphs.
+        let (spine, featured) = tilo_resource::profiling::measure("rich_text.read.spine", || {
+            let mut featured = HashMap::new();
+            let spine: Vec<model::SpineEntry> =
+                model::read_body(doc, &c, RichTextState::is_featured)
+                    .into_iter()
+                    .map(|block| {
+                        if let Some(view) = block.view {
+                            featured.insert(view.id.clone(), Rc::new(view));
+                        }
+                        block.entry
+                    })
+                    .collect();
+            (spine, featured)
+        });
+        let _parts = tilo_resource::profiling::Phase::start("rich_text.read.parts");
         Ok(RichTextState {
             body: Rc::new(BodyOrder::from_spine(spine)),
             featured: Rc::new(featured),
@@ -873,7 +993,7 @@ impl RichText {
             styles: Rc::new(model::all_styles(doc, &c)),
             content: Rc::new(model::referenced_content(doc, &c)),
             file_digest: file_digest(doc, &c),
-            root_path: path_to(doc, &c.root),
+            root_path: (c.root == automerge::ROOT).then(Vec::new),
             containers: c,
             log: ChangeLog::fresh(),
         })
@@ -974,6 +1094,11 @@ impl RichText {
         Self::refresh_parts(state, doc, &c, &root);
         if root.key(KEY_BLOCKS) == Touch::Untouched {
             return Ok(());
+        }
+        // An edit reached the body: its next ones are placed without
+        // asking the document where they are.
+        if state.root_path.is_none() {
+            state.root_path = Some(path_to(doc, &c.root));
         }
         let touched = delta.under(&c.blocks);
         for id in touched.keys() {
