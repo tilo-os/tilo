@@ -10,22 +10,32 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use tilo_automerge::ApplyIncoming;
 
 use tilo_resource::__private::{ObjId, Value};
 use tilo_resource::history;
 use tilo_resource::{
-    ActionCx, Collection, Doc, Grid, Id, Model, ModelError, Replica, Resource, Slot, resource,
+    ActionCx, Collection, Doc, Grid, Id, Model, ModelError, Reader, Replica, Resource, Slot,
+    resource,
 };
 
 thread_local! {
     static LOADS: Cell<usize> = const { Cell::new(0) };
+    static CLONES: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Text that counts how often it is read from the document.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// Text that counts how often it is read from the document and copied.
+#[derive(Debug, Default, PartialEq)]
 pub struct Counted(pub String);
+
+impl Clone for Counted {
+    fn clone(&self) -> Self {
+        CLONES.with(|clones| clones.set(clones.get() + 1));
+        Self(self.0.clone())
+    }
+}
 
 impl Model for Counted {
     tilo_resource::leaf_paths!();
@@ -49,6 +59,10 @@ impl Model for Counted {
 
 fn loads() -> usize {
     LOADS.with(Cell::get)
+}
+
+fn clones() -> usize {
+    CLONES.with(Cell::get)
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -228,6 +242,68 @@ fn the_refreshed_state_equals_a_full_read_after_actions_and_merges() {
         left.doc_mut().merge_incoming(&mut doc).unwrap();
         let full = left.state().unwrap();
         assert_eq!(left.live().unwrap(), &full);
+    }
+}
+
+#[test]
+fn a_reader_whose_state_a_view_holds_copies_only_the_touched_item() {
+    let mut replica = Replica::<Notebook>::new();
+    for n in 0..1000 {
+        replica
+            .apply(Notebook::ADD.with(format!("note {n}")))
+            .unwrap();
+    }
+    let mut reader = Reader::<Notebook>::open(replica.doc_mut()).unwrap();
+    let target = reader.state().notes.ids().nth(500).cloned().unwrap();
+    let was = reader.state().notes[&target].body.0.clone();
+    // A view keeps the state it was shown, as a surface's `present` may.
+    let shown = Rc::clone(reader.state());
+
+    replica
+        .apply(Notebook::EDIT.with((target.clone(), "changed".into())))
+        .unwrap();
+    let before = clones();
+    assert!(reader.sync(replica.doc()).unwrap());
+    assert_eq!(clones() - before, 1, "only the edited note is copied");
+
+    let now = reader.state();
+    assert!(
+        !Rc::ptr_eq(now, &shown),
+        "the shown state was not changed in place"
+    );
+    assert_eq!(
+        shown.notes[&target].body.0, was,
+        "the view still sees what it was shown"
+    );
+    assert_eq!(now.notes[&target].body.0, "changed");
+    assert_eq!(now.as_ref(), &replica.state().unwrap());
+    for (id, note) in now.notes.iter() {
+        let held = &shown.notes[id];
+        assert_eq!(std::ptr::eq(note, held), *id != target, "note {id} shared");
+    }
+}
+
+#[test]
+fn a_held_state_stays_as_it_was_shown_while_the_reader_follows() {
+    let mut rng = Lcg(23);
+    let mut replica = Replica::<Notebook>::new();
+    for step in 0..20 {
+        random_action(&mut replica, &mut rng, step);
+    }
+    let mut reader = Reader::<Notebook>::open(replica.doc_mut()).unwrap();
+    let mut held: Vec<(Rc<Notebook>, Notebook)> = Vec::new();
+    for step in 20..220 {
+        held.push((Rc::clone(reader.state()), replica.state().unwrap()));
+        random_action(&mut replica, &mut rng, step);
+        reader.sync(replica.doc()).unwrap();
+        assert_eq!(
+            reader.state().as_ref(),
+            &replica.state().unwrap(),
+            "after step {step}"
+        );
+    }
+    for (at, (shown, read)) in held.iter().enumerate() {
+        assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 20);
     }
 }
 
