@@ -2310,6 +2310,25 @@ pub fn desktop_offer_host_action(id: u64, offer: &str) -> Result<(), JsValue> {
     })
 }
 
+/// Confirm in passing what the page just did out of sight ("Link copied"):
+/// a short-lived pill over the desktop, never a notification.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_acknowledge(id: u64, text: &str) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?
+            .handle
+            .acknowledge(text);
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
 /// The node applications the person asked to open since the last call (a
 /// JSON array of their ids): the page asks the node to open each, and its
 /// window arrives as a legacy window.

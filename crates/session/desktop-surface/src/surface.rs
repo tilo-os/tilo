@@ -2125,7 +2125,11 @@ mod tests {
                 .and_then(|layer| layer.accessibility())
                 .and_then(|node| node.live.zip(node.value))
         };
-        assert_eq!(said(&surface), None);
+        // Present and silent before anything is said.
+        assert_eq!(
+            said(&surface),
+            Some((ui::a11y::Politeness::Polite, String::new()))
+        );
         handle.acknowledge("Link copied");
         assert_eq!(
             said(&surface),

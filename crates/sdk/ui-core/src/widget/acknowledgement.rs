@@ -30,7 +30,7 @@ use crate::tokens::TextRole;
 use crate::widget::{TaffyTreeExt as _, Widget};
 use taffy::{Dimension, LengthPercentageAuto, NodeId, Position, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
 /// How long an acknowledgement stays: enough to read two or three words
@@ -102,7 +102,7 @@ impl Acknowledgement {
         }
     }
 
-    /// The pill for `text_width` of text, centred near the bottom of
+    /// The pill for a `text_width` by `text_height` row, centred near the bottom of
     /// `viewport`.
     fn rect_in(viewport: Rect, text_width: f64, text_height: f64, theme: &Theme) -> Rect {
         let pad_x = f64::from(theme.tokens.spacing.s4);
@@ -136,10 +136,14 @@ impl Acknowledgement {
         let style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
         let inset = f64::from(theme.tokens.spacing.s8);
         let pad_x = f64::from(theme.tokens.spacing.s4);
-        let max_text = (viewport.width() - 2.0 * (inset + pad_x)).max(0.0);
+        let icon = f64::from(theme.tokens.metrics.icon_sm);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let max_text = (viewport.width() - 2.0 * (inset + pad_x) - icon - gap).max(0.0);
         let (text_width, text_height) = text_renderer.measure_style(&self.text, None, &style);
         let text_width = f64::from(text_width).min(max_text);
-        let rect = Self::rect_in(viewport, text_width, f64::from(text_height), theme);
+        let text_height = f64::from(text_height);
+        let content_width = icon + gap + text_width;
+        let rect = Self::rect_in(viewport, content_width, text_height.max(icon), theme);
         let radius = rect.height() / 2.0;
         let faded = alpha < 0.999;
         if faded {
@@ -158,11 +162,27 @@ impl Acknowledgement {
             radius,
             &theme.tokens.elevation.floating,
         );
-        crate::surface::panel(scene, transform, rect, radius, theme);
-        let origin = Point::new(
-            rect.center().x - text_width / 2.0,
-            rect.center().y - f64::from(text_height) / 2.0,
+        // The theme's inverted surface stands apart from whatever window
+        // is behind it, in light and dark alike.
+        let intent = &theme.tokens.colors.intent;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            intent.inverted,
+            None,
+            &RoundedRect::from_rect(rect, radius),
         );
+        let x0 = rect.center().x - content_width / 2.0;
+        let center_y = rect.center().y;
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::from_center_size(Point::new(x0 + icon / 2.0, center_y), (icon, icon)),
+            crate::icons::Icon::Check,
+            intent.on_inverted,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        let origin = Point::new(x0 + icon + gap, center_y - text_height / 2.0);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a pill's text width is a few hundred logical pixels"
@@ -171,7 +191,7 @@ impl Acknowledgement {
         text_renderer.draw_style(
             scene,
             &self.text,
-            theme.tokens.colors.text_primary,
+            intent.on_inverted,
             transform.pre_translate(origin.to_vec2()),
             max_width,
             &style,
@@ -310,10 +330,13 @@ impl Widget for AcknowledgementLayer {
             .and_then(|ack| ack.next_wake_at(now, self.reduce_motion))
     }
 
+    /// Always present, empty while nothing shows: screen readers announce
+    /// a live region whose words change, not one that appears with them.
     fn accessibility(&self) -> Option<AccessNode> {
-        self.acknowledger
-            .current(crate::time::now())
-            .map(|ack| ack.accessibility())
+        Some(self.acknowledger.current(crate::time::now()).map_or_else(
+            || Acknowledgement::new("", crate::time::now()).accessibility(),
+            |ack| ack.accessibility(),
+        ))
     }
 }
 
