@@ -1,10 +1,8 @@
 //! [`DiskRow`] — a full-width selectable disk row.
 //!
-//! `ui::Button` is fixed at 120×40 px, far too narrow for a disk label
-//! like `/dev/sda — 238.5G — Samsung SSD 860 EVO`. `DiskRow` is a leaf
-//! widget that fills the card width, shows the device on one line and the
-//! model on a dimmer second line, and is **focusable** (so keyboard
-//! arrow-nav + startup auto-focus reach it). Selecting it — by click or
+//! A leaf widget that fills the card width, leads with the recognizable
+//! hardware model and capacity, and keeps the device path in its details.
+//! It is **focusable**, so keyboard arrow navigation and startup focus reach it. Selecting it — by click or
 //! by pressing Space/Enter while focused, or by assistive activation — fires
 //! its [`Control`]: the disk's published `select` action, which the
 //! [`crate::installer_app::InstallerApp`] runs through its action door.
@@ -23,15 +21,11 @@ use winit::keyboard::{Key, NamedKey};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::Widget;
 
 use crate::control::Control;
 use crate::disks::Disk;
-
-const ROW_HEIGHT: f32 = 54.0;
-const PAD: f64 = 12.0;
-const NAME_SIZE: f32 = 16.0;
-const MODEL_SIZE: f32 = 12.0;
 
 pub struct DiskRow {
     disk: Disk,
@@ -123,10 +117,17 @@ impl Widget for DiskRow {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.widget_leaf(crate::full_width_row(ROW_HEIGHT), node_map, self)
+        let name = theme.tokens.typography.style(TextRole::Body);
+        let details = theme.tokens.typography.style(TextRole::Caption);
+        let height = (name.line_height_px()
+            + details.line_height_px()
+            + theme.tokens.spacing.s1
+            + 2.0 * theme.tokens.spacing.s2)
+            .max(theme.tokens.metrics.min_pointer_target);
+        taffy.widget_leaf(crate::full_width_row(height), node_map, self)
     }
 
     ui::rect_geometry!();
@@ -165,25 +166,52 @@ impl Widget for DiskRow {
             &shape,
         );
 
-        // Line 1: device path + size. Line 2: model (dim), if present.
-        let head = format!("{}    {}", self.disk.name, self.disk.size);
-        let y1 = self.rect.y0 + PAD * 0.6;
-        text_renderer.draw_text(
+        let name_style = theme.tokens.typography.style(TextRole::Body);
+        let detail_style = theme.tokens.typography.style(TextRole::Caption);
+        let padding = f64::from(theme.tokens.spacing.s3);
+        let width = ui::num::f32_of_f64((self.rect.width() - 2.0 * padding).max(0.0));
+        let model = self.disk.model.trim();
+        let size_width = text_renderer
+            .measure_style(&self.disk.size, None, &name_style)
+            .0;
+        let head = text_renderer.elide_to_width_style(
+            if model.is_empty() {
+                &self.disk.name
+            } else {
+                model
+            },
+            (width - size_width - theme.tokens.spacing.s3).max(0.0),
+            &name_style,
+        );
+        let y1 = self.rect.y0 + f64::from(theme.tokens.spacing.s2);
+        text_renderer.draw_style(
             scene,
             &head,
-            NAME_SIZE,
             if self.disabled() {
                 theme.text_dim
             } else {
                 theme.text_primary
             },
-            transform.pre_translate(Vec2::new(self.rect.x0 + PAD, y1)),
+            transform.pre_translate(Vec2::new(self.rect.x0 + padding, y1)),
             None,
+            &name_style,
         );
-        let mut details = Vec::new();
-        if !self.disk.model.is_empty() {
-            details.push(self.disk.model.clone());
-        }
+        text_renderer.draw_style(
+            scene,
+            &self.disk.size,
+            if self.disabled() {
+                theme.text_dim
+            } else {
+                theme.text_primary
+            },
+            transform.pre_translate(Vec2::new(
+                self.rect.x0 + padding + f64::from(width - size_width),
+                y1,
+            )),
+            None,
+            &name_style,
+        );
+        let mut details = vec![self.disk.name.clone()];
         details.push(self.disk.contents_summary());
         if self.disk.hosts_staged_installer() {
             details.push("prepared by Tilo Imager".to_string());
@@ -200,14 +228,16 @@ impl Widget for DiskRow {
             details.push("not selectable".to_string());
         }
         if !details.is_empty() {
-            let y2 = y1 + f64::from(NAME_SIZE) + 4.0;
-            text_renderer.draw_text(
+            let y2 = y1 + f64::from(name_style.line_height_px() + theme.tokens.spacing.s1);
+            let details =
+                text_renderer.elide_to_width_style(&details.join(" · "), width, &detail_style);
+            text_renderer.draw_style(
                 scene,
-                &details.join(" · "),
-                MODEL_SIZE,
+                &details,
                 theme.text_dim,
-                transform.pre_translate(Vec2::new(self.rect.x0 + PAD, y2)),
+                transform.pre_translate(Vec2::new(self.rect.x0 + padding, y2)),
                 None,
+                &detail_style,
             );
         }
     }
@@ -390,6 +420,33 @@ mod tests {
             Some(tilo_actions::ActionAddress::new("installer.disk:/dev/vdb", "select").encode())
         );
         assert_eq!(doc.length(ROOT), 0);
+    }
+
+    #[test]
+    fn disk_rows_grow_with_the_system_text_scale() {
+        let mut row = row(disk(), false);
+        let mut heights = Vec::new();
+        for theme in [Theme::light(), Theme::light().with_text_scale(2.0)] {
+            let mut taffy = TaffyTree::new();
+            let mut node_map = HashMap::new();
+            let node = row.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(320.0),
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                )
+                .unwrap();
+            row.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
+            heights.push(row.get_rect().height());
+        }
+        assert!(heights[0] > 0.0);
+        assert!(
+            heights[1] >= heights[0] + 20.0,
+            "larger labels need taller rows"
+        );
     }
 
     #[test]
