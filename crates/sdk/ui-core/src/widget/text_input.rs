@@ -5597,6 +5597,11 @@ impl Widget for TextInput {
         Some(node)
     }
 
+    /// The node above never sets `hidden`; answer without cloning the text.
+    fn accessibility_hidden(&self) -> bool {
+        false
+    }
+
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         (path == [0]).then(|| self.accessory_rect()).flatten()
     }
