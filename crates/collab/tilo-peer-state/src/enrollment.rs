@@ -4,18 +4,6 @@ use serde::{Deserialize, Serialize};
 const DOMAIN: &[u8] = b"tilo/browser-enrollment/v2";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ChallengeRequest {
-    pub device_public_key: String,
-    pub request_id: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChallengeResponse {
-    pub version: u32,
-    pub challenge: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CompleteRequest {
     pub version: u32,
     pub challenge: String,
