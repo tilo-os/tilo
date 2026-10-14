@@ -138,6 +138,10 @@ pub struct RosterStatus {
 }
 
 /// Immutable data and policy decisions needed to paint one frame.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent host policy and state flags for one frame, not a state machine"
+)]
 pub struct CollaboratorsModel<'a> {
     pub host: Rect,
     pub rows: &'a [RosterRow],
@@ -217,6 +221,10 @@ impl std::fmt::Debug for StatusField {
 
 /// The complete interactive surface of the collaborator popover.
 #[derive(Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent layout and accessibility facts retained between paint and input"
+)]
 pub struct CollaboratorsOverlay {
     panel: Rect,
     viewport: Rect,
@@ -346,6 +354,20 @@ impl CollaboratorsOverlay {
         }
         self.configure_scroll(theme, model);
         self.partition_sharing(text_renderer, theme);
+        self.retain_frame(model);
+        self.keyboard_focus = self
+            .reconcile_pager_focus(focus)
+            .filter(|hit| self.rect_for_hit(*hit).is_some());
+        if previous_focus_rect != self.focused_rect() {
+            self.reveal_focus();
+        }
+        self.register_targets(model.host);
+        self.paint_frame(scene, transform, text_renderer, theme, model, cursor);
+    }
+
+    /// Keep what input and accessibility need between paints, and drop row
+    /// targets the policy or the footer rule out.
+    fn retain_frame(&mut self, model: &CollaboratorsModel<'_>) {
         self.accessibility_rows.clear();
         self.accessibility_rows.extend_from_slice(model.rows);
         self.accessibility_status = model.own_status.map(str::to_string);
@@ -378,13 +400,17 @@ impl CollaboratorsOverlay {
                 }
             })
             .collect();
-        self.keyboard_focus = self
-            .reconcile_pager_focus(focus)
-            .filter(|hit| self.rect_for_hit(*hit).is_some());
-        if previous_focus_rect != self.focused_rect() {
-            self.reveal_focus();
-        }
-        self.register_targets(model.host);
+    }
+
+    fn paint_frame(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &CollaboratorsModel<'_>,
+        cursor: Option<Point>,
+    ) {
         let rect = self.viewport;
         // Panel role (HIG §9.1/§9.5): the popover's corner is the Panel
         // radius and its edge is derived against the ground, not declared.
@@ -1265,7 +1291,7 @@ impl CollaboratorsOverlay {
             CollaboratorsHit::Invite => Some(self.invite),
             CollaboratorsHit::Join => Some(self.join),
             CollaboratorsHit::RoomActivity => Some(self.activity),
-            CollaboratorsHit::EditStatus => Some(self.status).filter(|_| self.status_editable()),
+            CollaboratorsHit::EditStatus => self.status_editable().then_some(self.status),
             CollaboratorsHit::SetStatusSharing(mode) => self
                 .status_modes
                 .iter()
@@ -1996,9 +2022,27 @@ impl CollaboratorsOverlay {
             return;
         }
         self.expanded_row = Some(index);
-        self.expanded_extra = f64_of_usize(self.expanded_lines.len())
-            * f64::from(caption.line_height_px())
+        let followed = model.followed_id == Some(id_of(model, index));
+        let top = model
+            .rows
+            .get(index)
+            .map_or(0.0, |row| self.recent_top(row, followed, theme));
+        self.expanded_extra = (top - self.row_height.max(64.0)).max(0.0)
+            + f64_of_usize(self.expanded_lines.len()) * f64::from(caption.line_height_px())
             + f64::from(theme.tokens.spacing.s2);
+    }
+
+    /// Where a row's recent summary starts, from the row's top: under the
+    /// resting row, or under the status line when large text pushes that
+    /// lower, so the two never overlap.
+    fn recent_top(&self, row: &RosterRow, followed: bool, theme: &Theme) -> f64 {
+        let resting = self.row_height.max(64.0) - f64::from(theme.tokens.spacing.s1);
+        if row.status.is_none() {
+            return resting;
+        }
+        let has_activity = row.invited || followed || row.activity.is_some() || row.role.is_some();
+        let status_y = if has_activity { 45.0 } else { 29.0 };
+        resting.max(status_y + f64::from(theme.text(TextRole::Caption).line_height_px()) + 2.0)
     }
 
     /// "+N watching" sits beside "Here now" unless that would run into the
@@ -2730,7 +2774,7 @@ impl CollaboratorsOverlay {
         let caption = theme.text(TextRole::Caption);
         let line_height = f64::from(caption.line_height_px());
         let text_x = self.panel.x0 + ROW_TEXT_INSET;
-        let top = frame.y + self.row_height.max(64.0) - f64::from(theme.tokens.spacing.s1);
+        let top = frame.y + self.recent_top(frame.row, frame.followed, theme);
         // Model prose carries the same sparkle as an inferred status, so a
         // summary is never read as the person's own words.
         let (icon, ink) = if recent.automatic {
@@ -2961,6 +3005,10 @@ pub fn roster_colors_with_local_user(
     let mut assigned = ui::presence::assign_peer_colors(&ids, &reserved);
     assigned.extend(explicit);
     assigned
+}
+
+fn id_of<'a>(model: &CollaboratorsModel<'a>, index: usize) -> &'a str {
+    model.rows.get(index).map_or("", |row| row.id.as_str())
 }
 
 fn roster_initial(name: &str) -> char {
@@ -3430,6 +3478,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test walks collapsed, expanded and read-only paints of one roster"
+    )]
     fn roster_recent_details_watching_and_read_only_status() {
         fn paint(
             overlay: &mut CollaboratorsOverlay,

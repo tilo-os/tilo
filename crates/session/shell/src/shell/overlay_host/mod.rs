@@ -14571,6 +14571,51 @@ impl ShellOverlayHost {
         self.status_selection = ui::text_selection::Selection::default();
     }
 
+    /// Follow the painted row's person, or stop when they are the one
+    /// already followed. Revalidated against the live roster first.
+    fn toggle_follow_row(&mut self, index: usize) {
+        let target = self
+            .collaborators_overlay
+            .follow_target(index)
+            .and_then(|id| {
+                self.chrome.as_ref().and_then(|chrome| {
+                    let state = chrome.borrow();
+                    let local_user = state.active_local_user();
+                    tilo_desktop::collaborators::collaborator_roster_rows(
+                        &state.tree().desktop,
+                        &local_user,
+                    )
+                    .into_iter()
+                    .find(|row| row.id == id && row.followable)
+                })
+            });
+        if let Some(target) = target {
+            if self.followed_peer.as_deref() == Some(target.id.as_str()) {
+                self.set_followed_peer(None);
+            } else {
+                self.set_followed_peer(Some(target.id));
+            }
+        }
+    }
+
+    /// Expand the painted row's recent summary, or collapse it when it is
+    /// already the open one. Keyed by the person, not the row index.
+    fn toggle_collaborator_details(&mut self, index: usize) {
+        let Some(target) = self
+            .collaborators_overlay
+            .details_target(index)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        self.expanded_collaborator =
+            if self.expanded_collaborator.as_deref() == Some(target.as_str()) {
+                None
+            } else {
+                Some(target)
+            };
+    }
+
     fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
         if matches!(
             hit,
@@ -14603,45 +14648,15 @@ impl ShellOverlayHost {
             *handled = true;
             return;
         }
-        if let CollaboratorsHit::ToggleDetails(index) = hit {
-            let target = self
-                .collaborators_overlay
-                .details_target(index)
-                .map(str::to_string);
-            if let Some(target) = target {
-                self.expanded_collaborator =
-                    if self.expanded_collaborator.as_deref() == Some(target.as_str()) {
-                        None
-                    } else {
-                        Some(target)
-                    };
-            }
-            *handled = true;
-            return;
+        match hit {
+            CollaboratorsHit::ToggleDetails(index) => self.toggle_collaborator_details(index),
+            CollaboratorsHit::ToggleFollow(index) => self.toggle_follow_row(index),
+            _ => {}
         }
-        if let CollaboratorsHit::ToggleFollow(index) = hit {
-            let target = self
-                .collaborators_overlay
-                .follow_target(index)
-                .and_then(|id| {
-                    self.chrome.as_ref().and_then(|chrome| {
-                        let state = chrome.borrow();
-                        let local_user = state.active_local_user();
-                        tilo_desktop::collaborators::collaborator_roster_rows(
-                            &state.tree().desktop,
-                            &local_user,
-                        )
-                        .into_iter()
-                        .find(|row| row.id == id && row.followable)
-                    })
-                });
-            if let Some(target) = target {
-                if self.followed_peer.as_deref() == Some(target.id.as_str()) {
-                    self.set_followed_peer(None);
-                } else {
-                    self.set_followed_peer(Some(target.id));
-                }
-            }
+        if matches!(
+            hit,
+            CollaboratorsHit::ToggleDetails(_) | CollaboratorsHit::ToggleFollow(_)
+        ) {
             *handled = true;
             return;
         }

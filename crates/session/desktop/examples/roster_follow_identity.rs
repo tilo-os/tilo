@@ -1,7 +1,9 @@
 //! Fixture-only screenshots of production People focus across presence changes.
 use std::error::Error;
 use std::path::Path;
-use tilo_desktop::collaborators::{CollaboratorsModel, CollaboratorsOverlay, RosterRow};
+use tilo_desktop::collaborators::{
+    CollaboratorsModel, CollaboratorsOverlay, RosterRow, RosterStatus,
+};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
@@ -27,6 +29,16 @@ fn rows(theme: &Theme) -> Vec<RosterRow> {
 }
 
 fn paint(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow], theme: &Theme) -> Scene {
+    paint_here(overlay, rows, theme, None, 0)
+}
+
+fn paint_here(
+    overlay: &mut CollaboratorsOverlay,
+    rows: &[RosterRow],
+    theme: &Theme,
+    expanded_id: Option<&str>,
+    watching: usize,
+) -> Scene {
     let mut scene = Scene::new();
     overlay.draw(
         &mut scene,
@@ -49,8 +61,8 @@ fn paint(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow], theme: &Theme) 
             status_editing: false,
             status_selection: ui::text_selection::Selection::default(),
             screen_exposure: None,
-            expanded_id: None,
-            watching: 0,
+            expanded_id,
+            watching,
             status_editable: true,
         },
         None,
@@ -90,6 +102,36 @@ fn main() -> Result<(), Box<dyn Error>> {
             theme.tokens.colors.surfaces.base,
             out.join(format!("{name}-departed.png")),
         );
+        // Who is here and what they did: a live status, a recent summary
+        // (collapsed, then expanded), an agent, and two spectators.
+        let mut here = rows(&theme);
+        let [ada, scribe] = here.as_mut_slice() else {
+            return Err("the fixture has two rows".into());
+        };
+        ada.activity = Some("Main · Notes".into());
+        ada.status = Some(RosterStatus {
+            text: "Tightening the launch notes".into(),
+            automatic: false,
+        });
+        ada.recent = Some(RosterStatus {
+            text: "Rewrote the intro, resolved two review comments and moved the FAQ \
+                   under Pricing"
+                .into(),
+            automatic: true,
+        });
+        scribe.label = "Scribe".into();
+        scribe.initial = 'S';
+        scribe.is_agent = true;
+        scribe.activity = Some("Main · Terminal".into());
+        let mut overlay = CollaboratorsOverlay::default();
+        for (suffix, expanded) in [("collapsed", None), ("expanded", Some("ada"))] {
+            let scene = paint_here(&mut overlay, &here, &theme, expanded, 2);
+            renderer.render_png(
+                &scene,
+                theme.tokens.colors.surfaces.base,
+                out.join(format!("{name}-here-{suffix}.png")),
+            );
+        }
     }
     Ok(())
 }
