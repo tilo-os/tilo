@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The expected strings use a decimal point; a decimal-comma locale on the
+# machine running the test would otherwise print 12,000s.
+export LC_ALL=C
 
 fail() {
   printf '%s\n' "$*" >&2
@@ -61,6 +64,8 @@ cat >"$work/dmesg" <<'EOF'
 printf '%s\n' '[    0.100000] host kernel: start' \
   '[    2.000000] host kernel: Trying to unpack rootfs image as initramfs...' \
   '[   14.000000] host kernel: Freeing initrd memory: 98000K' \
+  '  continuation of a multi-line message, with no [stamp] of its own' \
+  '[   14.100000] host kernel: clk: Disabling unused clocks' \
   '[   14.500000] host kernel: Run /init as init process' \
   '[   20.000000] host systemd[1]: after the initrd'
 EOF
@@ -111,6 +116,11 @@ PATH="$work:$PATH" TILO_TEST_ACTIVE_US=21000000 TILO_TEST_INITRD_US=15000000 \
   >/dev/null 2>"$work/gaps.err" && { echo 'over-budget boot passed' >&2; exit 1; }
 grep -Fq '12.000s before [   14.000000] host kernel: Freeing initrd memory' "$work/gaps.err"
 grep -Fq 'kernel log starts at 0.100s' "$work/gaps.err"
+# An untimestamped continuation line is not a gap of the boot so far.
+if grep -Fq 'Disabling unused clocks' "$work/gaps.err"; then
+  cat "$work/gaps.err" >&2
+  fail 'kernel gap report read an untimestamped continuation line as time 0'
+fi
 grep -Fq 'initrd, longest gaps before switch-root:' "$work/gaps.err"
 grep -Fq 'switch-root milestones:' "$work/gaps.err"
 grep -Fq 'first-boot update check: ldconfig condition' "$work/gaps.err"
