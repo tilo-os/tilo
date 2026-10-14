@@ -8,11 +8,10 @@ use ui::icons::Icon;
 use ui::search::{ScopeDecl, SearchRequest, search_button};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::webview::WebViewCommand;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Banner, Button, Column, Container, Element, EmptyState, ListRow, Row, Section, SegmentedStyle,
-    Spacer, Text, ToggleGroup, Widget,
+    Button, Column, Element, EmptyState, ListRow, Row, Section, SegmentedStyle, Spacer, Text,
+    ToggleGroup, Widget,
 };
 
 use super::{BrowserWidget, LibrarySection, library_filter_matches};
@@ -176,87 +175,12 @@ impl BrowserWidget {
     }
 
     fn extension_rows(&self) -> Vec<Element> {
-        let installed = if self.headless {
-            Vec::new()
-        } else {
-            crate::extensions::list_installed()
-        };
-        let mut rows: Vec<Element> = Vec::new();
-        for extension in installed
-            .into_iter()
-            .filter(|entry| {
-                library_filter_matches(
-                    &self.library_filter.get(),
-                    &[&entry.name, &entry.id, &entry.version],
-                )
-            })
-            .take(100)
-        {
-            let approved = crate::extensions::is_approved(&extension);
-            let loaded = extension
-                .path
-                .canonicalize()
-                .ok()
-                .is_some_and(|path| self.startup_extensions.contains(&path));
-            let status = if loaded {
-                "Load requested at startup"
-            } else if approved {
-                "Approved; restart Browser to load"
-            } else {
-                "Inactive; permission review required"
-            };
-            let permissions = crate::extensions::permission_summary(&extension)
-                .unwrap_or_else(|error| error.to_string());
-            let info = extension.clone();
-            let feedback = self.extension_feedback.clone();
-            let toggle = Button::new(
-                &format!("browser.extension.grant.{}", extension.id),
-                if approved { "Revoke" } else { "Approve" },
-            )
-            .on_effect(move || {
-                let message = match crate::extensions::set_approved(&info, !approved) {
-                    Ok(()) => "Extension preference saved. Restart Browser to apply.".to_owned(),
-                    Err(error) => error.to_string(),
-                };
-                if let Ok(mut slot) = feedback.lock() {
-                    *slot = Some(message);
-                }
-            });
-            let mut actions = Row::new().no_wrap().push(Box::new(toggle));
-            if loaded
-                && approved
-                && let Some(url) = crate::extensions::action_url(&extension)
-            {
-                let engine = self.engine.clone();
-                actions = actions.push(Box::new(
-                    Button::new(
-                        &format!("browser.extension.action.{}", extension.id),
-                        "Open action page",
-                    )
-                    .on_effect(move || engine.send(WebViewCommand::Navigate(url.clone()))),
-                ));
-            }
-            rows.push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .push(Box::new(
-                        Container::new()
-                            .with_no_padding()
-                            .with_flex_grow()
-                            .with_child(Box::new(
-                                ListRow::new(
-                                    format!("browser.extension.{}", extension.id),
-                                    extension.name.clone(),
-                                )
-                                .secondary(format!("{status}. {permissions}"))
-                                .two_line_secondary()
-                                .meta(extension.version.clone()),
-                            )),
-                    ))
-                    .push(Box::new(actions)),
-            ));
+        if self.headless {
+            return Vec::new();
         }
-        rows
+        let filter = self.library_filter.get();
+        self.extensions
+            .library_rows(|fields| library_filter_matches(&filter, fields))
     }
 
     /// What the section shows when it has no rows: one sentence.
@@ -293,6 +217,24 @@ impl BrowserWidget {
                 &self.library_filter.get(),
             );
         }
+        // Extensions always show their header: how to add one, and the way to.
+        if self.library_section == LibrarySection::Extensions && !self.headless {
+            let rows = self.extension_rows();
+            let mut body = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(ui::tokens::Rhythm::Sibling);
+            if let Some(notice) = self.extensions.notice() {
+                body = body.push(notice);
+            }
+            body = body.push(self.extensions.library_header());
+            body = body.push(if rows.is_empty() {
+                Box::new(self.library_empty_state()) as Element
+            } else {
+                crate::rows::separated(rows, theme)
+            });
+            return Box::new(body);
+        }
         let list = match self.library_section {
             LibrarySection::History => {
                 let rows = self.history_rows();
@@ -314,12 +256,7 @@ impl BrowserWidget {
         let Some(list) = list else {
             return Box::new(self.library_empty_state());
         };
-        let mut body = Column::new().with_no_padding().with_intrinsic_height();
-        if self.library_section == LibrarySection::Extensions
-            && let Some(message) = &self.extension_notice
-        {
-            body = body.push(Box::new(Banner::info(message)));
-        }
+        let body = Column::new().with_no_padding().with_intrinsic_height();
         Box::new(body.push(list))
     }
 

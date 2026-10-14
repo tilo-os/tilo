@@ -806,7 +806,7 @@ impl LauncherServices for NativeLauncher {
             Binding::Answer => Phase::BindingAnswer,
             Binding::Admitted => Phase::BindingAdmitted,
             Binding::Refused => Phase::BindingRefused,
-            Binding::TimedOut => Phase::BindingTimedOut,
+            Binding::Abandoned => Phase::BindingAbandoned,
         };
         super::launcher::LaunchSession::current()
             .launch_history

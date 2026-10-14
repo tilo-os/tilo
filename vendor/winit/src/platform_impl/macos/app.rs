@@ -70,8 +70,9 @@ pub(crate) fn override_send_event(global_app: &NSApplication) {
     let mtm = MainThreadMarker::from(global_app);
     let class = global_app.class();
 
-    let method =
-        class.instance_method(sel!(sendEvent:)).expect("NSApplication must have sendEvent: method");
+    let method = class
+        .instance_method(sel!(sendEvent:))
+        .expect("NSApplication must have sendEvent: method");
 
     // SAFETY: Converting our `sendEvent:` implementation to an IMP.
     let overridden = unsafe { mem::transmute::<SendEvent, Imp>(send_event) };
@@ -112,11 +113,17 @@ fn maybe_dispatch_device_event(delegate: &ApplicationDelegate, event: &NSEvent) 
             let delta_y = unsafe { event.deltaY() } as f64;
 
             if delta_x != 0.0 {
-                delegate.maybe_queue_device_event(DeviceEvent::Motion { axis: 0, value: delta_x });
+                delegate.maybe_queue_device_event(DeviceEvent::Motion {
+                    axis: 0,
+                    value: delta_x,
+                });
             }
 
             if delta_y != 0.0 {
-                delegate.maybe_queue_device_event(DeviceEvent::Motion { axis: 1, value: delta_y })
+                delegate.maybe_queue_device_event(DeviceEvent::Motion {
+                    axis: 1,
+                    value: delta_y,
+                })
             }
 
             if delta_x != 0.0 || delta_y != 0.0 {
@@ -124,19 +131,19 @@ fn maybe_dispatch_device_event(delegate: &ApplicationDelegate, event: &NSEvent) 
                     delta: (delta_x, delta_y),
                 });
             }
-        },
+        }
         NSEventType::LeftMouseDown | NSEventType::RightMouseDown | NSEventType::OtherMouseDown => {
             delegate.maybe_queue_device_event(DeviceEvent::Button {
                 button: unsafe { event.buttonNumber() } as u32,
                 state: ElementState::Pressed,
             });
-        },
+        }
         NSEventType::LeftMouseUp | NSEventType::RightMouseUp | NSEventType::OtherMouseUp => {
             delegate.maybe_queue_device_event(DeviceEvent::Button {
                 button: unsafe { event.buttonNumber() } as u32,
                 state: ElementState::Released,
             });
-        },
+        }
         _ => (),
     }
 }
@@ -151,7 +158,9 @@ mod tests {
     #[test]
     fn test_override() {
         // FIXME(madsmtm): Ensure this always runs (maybe use cargo-nextest or `--test-threads=1`?)
-        let Some(mtm) = MainThreadMarker::new() else { return };
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
 
         // Create a new application, without making it the shared application.
         let app = unsafe { NSApplication::new(mtm) };
@@ -168,7 +177,9 @@ mod tests {
 
     #[test]
     fn test_custom_class() {
-        let Some(_mtm) = MainThreadMarker::new() else { return };
+        let Some(_mtm) = MainThreadMarker::new() else {
+            return;
+        };
 
         declare_class!(
             struct TestApplication;

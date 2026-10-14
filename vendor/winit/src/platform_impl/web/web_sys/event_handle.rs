@@ -17,7 +17,11 @@ impl<T: ?Sized> EventListenerHandle<T> {
         target
             .add_event_listener_with_callback(event_type, listener.as_ref().unchecked_ref())
             .expect("Failed to add event listener");
-        EventListenerHandle { target, event_type, listener }
+        EventListenerHandle {
+            target,
+            event_type,
+            listener,
+        }
     }
 }
 

@@ -304,3 +304,11 @@ expected_rows=$((initial_rows + ${#shipped[@]}))
 [ "$rows" = "$expected_rows" ] \
     || die "registry has $rows row(s), expected $initial_rows existing + ${#shipped[@]} installed"
 msg "registry.toml lists $rows package(s)"
+
+# Every runtime build a shipped app pins -- the Browser's engine included --
+# must ship with the image at that exact version, or the app boots into
+# "not installed". The check reads the installed manifests, so no list of
+# runtimes is kept beside the apps.
+STORE="$STORE" RUNTIME_ROOT="${RUNTIME_ROOT:-/usr/lib/tilo-runtime}" BUNDLE_BIN="$BUNDLE_BIN" \
+    "$(dirname "${BASH_SOURCE[0]}")/check-shipped-runtimes.sh" \
+    || die "an app pins a runtime build the image does not ship"
