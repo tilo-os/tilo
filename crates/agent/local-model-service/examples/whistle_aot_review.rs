@@ -15,8 +15,9 @@ use zeroize::Zeroizing;
 fn run() -> Result<(), SpeechError> {
     // SAFETY: fresh single-threaded qualification child, no ambient FD owners.
     unsafe { worker::prepare()? };
-    // SAFETY: argument-free identity queries; review inputs cannot elevate trust.
-    if unsafe { libc::geteuid() == 0 || libc::geteuid() != libc::getuid() } {
+    if rustix::process::geteuid().as_raw() == 0
+        || rustix::process::geteuid().as_raw() != rustix::process::getuid().as_raw()
+    {
         return Err(SpeechError::ModelUnavailable);
     }
     let args: Vec<String> = std::env::args().collect();

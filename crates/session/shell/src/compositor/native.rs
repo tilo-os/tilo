@@ -1152,15 +1152,13 @@ pub(crate) fn peer_shares_host_security_namespaces(pid: u32) -> bool {
 }
 
 fn unattributed_host_client_allowed(peer_uid: libc::uid_t, shares_namespaces: bool) -> bool {
-    // SAFETY: `geteuid` has no failure mode.
-    peer_uid == unsafe { libc::geteuid() } && shares_namespaces
+    peer_uid == rustix::process::geteuid().as_raw() && shares_namespaces
 }
 
 fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
     let credentials = wayland_peer_credentials(stream)?;
     let pid = u32::try_from(credentials.pid).ok()?;
-    // SAFETY: `geteuid` has no failure mode.
-    if credentials.uid != unsafe { libc::geteuid() } {
+    if credentials.uid != rustix::process::geteuid().as_raw() {
         return None;
     }
     if let Some((identity, custody)) =
@@ -9429,8 +9427,7 @@ pub fn run() {
         // Readiness has no identity/key authority. The live trusted onboarding
         // state below gates both its response and the ordinary host-app launch.
         let runtime = crate::shell::launcher::runtime_dir();
-        // SAFETY: getuid has no arguments or memory contract.
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         let pending = tilo_paths::data_local_dir().is_some_and(|data| {
             crate::shell::desktop_continuation::pending_review(
                 &data.join("tilo-imager/migrations/desktop-continuation.json"),
@@ -14870,8 +14867,7 @@ mod tests {
         }
         // Phase `unattributed_public_clients_fail_closed_outside_host_namespaces`.
         {
-            // SAFETY: `geteuid` has no failure mode.
-            let uid = unsafe { libc::geteuid() };
+            let uid = rustix::process::geteuid().as_raw();
             assert!(unattributed_host_client_allowed(uid, true));
             assert!(!unattributed_host_client_allowed(uid, false));
             assert!(!unattributed_host_client_allowed(

@@ -496,7 +496,7 @@ mod native {
                 use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
                 fn acl(owner: u16, mask: u16) -> Vec<u8> {
                     let mut bytes = 2u32.to_le_bytes().to_vec();
-                    let uid = unsafe { libc::geteuid() };
+                    let uid = rustix::process::geteuid().as_raw();
                     for (tag, perm, id) in [
                         (1u16, owner, u32::MAX),
                         (2, 7, uid + 1),

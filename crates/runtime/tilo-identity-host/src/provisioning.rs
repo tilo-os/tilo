@@ -94,7 +94,7 @@ fn identity_load_error(error: runtime_identity::NotAvailable) -> io::Error {
 pub fn login_account_display_name() -> String {
     use std::ffi::CStr;
 
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
     let mut result = std::ptr::null_mut();
     let mut buffer = vec![0_u8; 16 * 1024];
@@ -844,7 +844,7 @@ pub fn prepare_identity_directory(identity_dir: &Path) -> io::Result<()> {
     }
     #[cfg(unix)]
     {
-        if metadata.uid() != unsafe { libc::geteuid() } {
+        if metadata.uid() != rustix::process::geteuid().as_raw() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity directory must be owned by this user",

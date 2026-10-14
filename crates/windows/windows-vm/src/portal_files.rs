@@ -78,9 +78,8 @@ impl Default for PortalDocumentStore {
 pub fn portal_lease_root() -> PathBuf {
     tilo_paths::xdg::runtime_dir()
         .unwrap_or_else(|| {
-            // SAFETY: `geteuid` only reads the process credentials and has no
             // preconditions.
-            let uid = unsafe { libc::geteuid() };
+            let uid = rustix::process::geteuid().as_raw();
             PathBuf::from(format!("/run/user/{uid}"))
         })
         .join("tilo/windows-vm/leases")

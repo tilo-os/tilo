@@ -52,7 +52,7 @@ impl Store {
             let data = tilo_paths::data_dir().unwrap_or_else(|| {
                 // No `$HOME` and no `$XDG_DATA_HOME` is a broken session, but it is
                 // not a reason to write into the current directory.
-                PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }))
+                PathBuf::from(format!("/run/user/{}", rustix::process::geteuid().as_raw()))
             });
             Self {
                 root: data.join("ush"),

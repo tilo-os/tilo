@@ -2054,8 +2054,7 @@ pub fn maybe_run_staging_helper(args: &[String]) -> Result<Option<i32>, String> 
         ));
     };
     #[cfg(unix)]
-    // SAFETY: geteuid has no preconditions.
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err("the staging helper must run as root".into());
     }
     let bytes = read_request(Path::new(request_path))?;
