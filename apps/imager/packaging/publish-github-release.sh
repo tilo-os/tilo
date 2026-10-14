@@ -9,8 +9,17 @@ api="${TILO_RELEASE_API_URL:-https://api.github.com}"
 uploads="${TILO_RELEASE_UPLOADS_URL:-https://uploads.github.com}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
-[[ "$GITHUB_REF_NAME" =~ ^imager-v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-  || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
+release_tag="$GITHUB_REF_NAME"
+prerelease=false
+if [[ ${TILO_CONTINUOUS_PUBLICATION:-0} == 1 ]]; then
+  identity="$(python3 "$(dirname "$0")/continuous-release.py" identity "$(dirname "$0")/../Cargo.toml")"
+  release_tag="$(printf '%s\n' "$identity" | awk -F= '$1 == "release-tag" { print $2 }')"
+  prerelease=true
+  python3 "$(dirname "$0")/continuous-release.py" assets "${1:-release-assets}"
+else
+  [[ "$release_tag" =~ ^imager-v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
+fi
 
 asset_root="${1:-release-assets}"
 if find "$asset_root" -type f -name 'tilo-imager-linux-*' -print -quit | grep -q .; then
@@ -65,18 +74,21 @@ status="$(curl --silent --show-error \
   --retry 5 --retry-max-time 120 --connect-timeout 20 --max-time 120 \
   -H "$auth" -H "$accept" -H "$version" \
   --output "$release_json" --write-out '%{http_code}' \
-  "$release_api/tags/$GITHUB_REF_NAME")"
+  "$release_api/tags/$release_tag")"
 if [ "$status" = 404 ]; then
-  payload="$(python3 - "$GITHUB_REF_NAME" <<'PY'
+  payload="$(python3 - "$release_tag" "$prerelease" "${GITHUB_SHA:-}" <<'PY'
 import json, sys
-tag = sys.argv[1]
+tag, channel, source = sys.argv[1:]
+continuous = channel == "true"
 print(json.dumps({
     "tag_name": tag,
     "target_commitish": "main",
-    "name": f"Tilo Imager {tag}",
-    "body": "Signed Tilo Imager downloads. Verify each adjacent SHA-256 file before opening an artifact.",
+    "name": f"Tilo Installer {tag}",
+    "body": "Signed Tilo Installer downloads. Verify each adjacent SHA-256 file before opening an artifact."
+            + (f"\nContinuous build from source revision {source}; not a stable release." if continuous else ""),
     "draft": True,
-    "prerelease": False,
+    "prerelease": continuous,
+    "make_latest": "false" if continuous else "true",
 }))
 PY
 )"
@@ -84,14 +96,18 @@ PY
     -H "$auth" -H "$accept" -H "$version" -H 'Content-Type: application/json' \
     --data "$payload" "$release_api" >"$release_json"
 elif [ "$status" != 200 ]; then
-  printf 'could not read GitHub release %s (HTTP %s)\n' "$GITHUB_REF_NAME" "$status" >&2
+  printf 'could not read GitHub release %s (HTTP %s)\n' "$release_tag" "$status" >&2
   exit 1
 fi
 
-read -r release_id release_state < <(python3 - "$release_json" <<'PY'
+read -r release_id release_state < <(python3 - "$release_json" "$release_tag" "$prerelease" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as source:
     release = json.load(source)
+if release.get("tag_name") != sys.argv[2]:
+    raise SystemExit("GitHub returned a different release identity")
+if sys.argv[3] == "true" and release.get("prerelease") is not True:
+    raise SystemExit("continuous release must remain a prerelease")
 draft = release.get("draft")
 if not isinstance(draft, bool):
     raise SystemExit("GitHub release response has no boolean draft state")
@@ -108,10 +124,9 @@ if not isinstance(assets, list) or len(assets) >= 100:
     raise SystemExit("GitHub release asset list is invalid or requires pagination")
 PY
 
-while IFS= read -r -d '' remote_name; do
-  [[ -v "local_names[$remote_name]" ]] \
-    || { printf 'release draft contains unexpected asset %s; refusing publication\n' "$remote_name" >&2; exit 1; }
-done < <(python3 - "$assets_json" <<'PY'
+# Validate outside process substitution: Bash does not propagate a producer's
+# failure to the consuming loop. A malformed inventory must stop promotion.
+python3 - "$assets_json" > "$work/remote-names" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as source:
     assets = json.load(source)
@@ -121,7 +136,10 @@ for asset in assets:
         raise SystemExit("release contains an invalid asset name")
     sys.stdout.buffer.write(name.encode() + b"\0")
 PY
-)
+while IFS= read -r -d '' remote_name; do
+  [[ -v "local_names[$remote_name]" ]] \
+    || { printf 'release draft contains unexpected asset %s; refusing publication\n' "$remote_name" >&2; exit 1; }
+done < "$work/remote-names"
 
 processed=0
 index=0
@@ -190,21 +208,25 @@ done < <(find "$asset_root" -type f -print0 | sort -z)
 
 [ "$processed" -gt 0 ]
 if [ "$release_state" = draft ]; then
-  payload="$(python3 - "$GITHUB_REF_NAME" <<'PY'
+  payload="$(python3 - "$release_tag" "$prerelease" <<'PY'
 import json, sys
-tag = sys.argv[1]
-print(json.dumps({"tag_name": tag, "name": f"Tilo Imager {tag}", "draft": False, "prerelease": False}))
+tag, channel = sys.argv[1:]
+continuous = channel == "true"
+print(json.dumps({"tag_name": tag, "name": f"Tilo Installer {tag}", "draft": False,
+                  "prerelease": continuous, "make_latest": "false" if continuous else "true"}))
 PY
 )"
   curl --fail --silent --show-error -X PATCH \
     -H "$auth" -H "$accept" -H "$version" -H 'Content-Type: application/json' \
     --data "$payload" "$release_api/$release_id" >"$release_json"
-  python3 - "$release_json" <<'PY'
+  python3 - "$release_json" "$release_tag" "$prerelease" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as source:
     release = json.load(source)
+if release.get("tag_name") != sys.argv[2] or (sys.argv[3] == "true" and release.get("prerelease") is not True):
+    raise SystemExit("GitHub changed the release identity or continuous channel")
 if release.get("draft") is not False:
     raise SystemExit("GitHub did not publish the fully verified release")
 PY
-  printf 'published complete release %s\n' "$GITHUB_REF_NAME"
+  printf 'published complete release %s\n' "$release_tag"
 fi

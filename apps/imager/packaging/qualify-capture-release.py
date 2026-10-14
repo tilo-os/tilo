@@ -86,13 +86,14 @@ PACKAGES = {'worker': 'apps/imager', 'runtime': 'crates/runtime/runtime-dylib', 
             'shell': 'crates/session/shell', 'fs': 'crates/system/fs',
             'credential_helper': 'crates/system/account-custody',
             'prepared_helper': 'apps/imager', 'control': 'crates/session/control-cli',
+            'launcher': 'crates/packaging/launcher',
             'files': 'apps/file-explorer', 'writer': 'apps/word-processor', 'browser': 'apps/browser',
             'app_package': 'crates/packaging/tilo-app-package-cli',
             'runtime_bundle': 'crates/packaging/runtime-bundle', 'install': 'crates/packaging/install',
             'installer': 'crates/session/installer'}
 TARGETS = {'worker': 'tilo-home-export', 'runtime': 'runtime_dylib', 'host': 'imager', 'imager_tests': 'imager', 'shell': 'shell', 'fs': 'fs',
            'credential_helper': 'tilo-account-credential', 'prepared_helper': 'tilo-prepared-setup',
-           'control': 'tilo-control', 'files': 'file-explorer', 'writer': 'word-processor', 'browser': 'browser',
+           'control': 'tilo-control', 'launcher': 'tilo-launcher', 'files': 'file-explorer', 'writer': 'word-processor', 'browser': 'browser',
            'app_package': 'tilo-app-package', 'runtime_bundle': 'tilo-runtime-bundle', 'install': 'tilo-install', 'installer': 'tilo-installer'}
 PLATFORM_SCRIPTS = {
     'os/usr/libexec/tilo-firstboot-files.py': '/usr/libexec/tilo-firstboot-files.py',
@@ -104,6 +105,7 @@ PLATFORM_SCRIPTS = {
 BINDINGS = {'shell': '/usr/bin/shell', 'fs': '/usr/bin/fs',
             'credential_helper': '/usr/libexec/tilo-account-credential',
             'prepared_helper': '/usr/libexec/tilo-prepared-setup', 'control': '/usr/bin/tilo-control',
+            'launcher': '/usr/bin/tilo-launcher',
             'app_package': '/usr/bin/tilo-app-package',
             'runtime_bundle': '/usr/bin/tilo-runtime-bundle', 'install': '/usr/bin/tilo-install',
             'installer': '/usr/bin/tilo-installer'}
@@ -350,7 +352,11 @@ def execute(command, log, timeout):
 CONTAINER_RUNNER = r'''
 import hashlib,importlib.util,json,os,pathlib,shutil,signal,time
 assert os.getpid()==1 and os.getuid()==0 and os.geteuid()==0
+# Match ordinary OS creation rules, not the signing operator's private umask.
+# Private state/evidence paths and logs keep their explicit0700/0600 modes.
+os.umask(0o022)
 root=pathlib.Path('/owned');root.mkdir(mode=0o711)
+evidence=pathlib.Path('/evidence/owned');evidence.mkdir(mode=0o700)
 candidate=root/'candidate';shutil.copytree('/qualified',candidate);candidate.chmod(0o755)
 spec=importlib.util.spec_from_file_location('actual_qualification',candidate/'apps/imager/packaging/qualify-capture-release.py')
 qualifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(qualifier)
@@ -358,7 +364,7 @@ sequence=0
 def call(command,timeout=30):
  global sequence
  sequence+=1
- return qualifier.execute(command,root/('command-'+str(sequence)+'.log'),timeout)
+ return qualifier.execute(command,evidence/('command-'+str(sequence)+'.log'),timeout)
 def checked(command,timeout=30):
  code,output=call(command,timeout)
  assert code==0
@@ -383,7 +389,6 @@ for name,row in expected.items():
  assert p.is_file() and not p.is_symlink() and m.st_uid==0 and not m.st_mode&0o022
  with p.open('rb') as file:assert hashlib.file_digest(file,'sha256').hexdigest()==row['sha256']
 unexpected=False;code=1
-evidence=pathlib.Path('/evidence/owned');evidence.mkdir(mode=0o700)
 os.environ['TILO_NATIVE_STORE_AUTOCLEAR']='1'
 os.environ['TILO_NATIVE_STORE_ASSOCIATIONS']=str(evidence)
 stores_created=False

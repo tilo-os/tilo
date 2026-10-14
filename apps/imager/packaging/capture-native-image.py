@@ -35,6 +35,17 @@ def bind(source, destination, readonly=False):
         checked(['mount', '-o', 'remount,bind,ro', destination], stdout=subprocess.DEVNULL)
 
 
+def protect_runtime_trust(root):
+    """Keep installed trust immutable without freezing generated capability facts."""
+    for relative in ('usr/share/tilo/runtime-bundle-publisher.hex',
+                     'usr/share/tilo/browser-runtime-publisher.hex',
+                     'usr/share/tilo/registry-runtime-publisher.hex',
+                     'usr/share/tilo/runtime-retained'):
+        path = root / relative
+        if path.exists():
+            bind(path, path, True)
+
+
 def native(args):
     if os.getuid() != 0 or os.geteuid() != 0:
         raise ValueError('native namespace requires the authorized operator')
@@ -48,7 +59,7 @@ def native(args):
             root.chmod(0o755)
             witness = os.open('/proc/self/ns/pid', os.O_RDONLY | os.O_CLOEXEC)
             try:
-                command = [sys.executable, __file__, '--child', '--native-root', root,
+                command = [sys.executable, '-B', __file__, '--child', '--native-root', root,
                            '--stage', args.stage, '--evidence', args.evidence,
                            '--pidns-fd', str(witness), '--mode', args.mode]
                 if args.case:
@@ -118,6 +129,10 @@ def native(args):
         paths.update(Path(row['source_path']) for row in assets['archives'].values())
         for path in sorted(paths):
             bind(path, root / str(path).lstrip('/'), True)
+    # Exporting a bootc-like filesystem does not retain its read-only mounts.
+    # Restore immutable installed publisher/retention custody before any CLI or
+    # app starts; never relax the runtime's real fstatvfs/ownership checks.
+    protect_runtime_trust(root)
     spec = importlib.util.spec_from_file_location('native_qualifier', args.stage / 'apps/imager/packaging/qualify-capture-release.py')
     qualifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(qualifier)
@@ -178,7 +193,9 @@ def main():
                 checked(['podman', 'rm', '--force', name], stdout=subprocess.DEVNULL)
                 if subprocess.run(['podman', 'container', 'exists', name]).returncode != 1:
                     raise ValueError('rootless filesystem container retirement unknown')
-        command = ['sudo', '-n', sys.executable, __file__, '--archive', archive,
+        # Privileged imports must not leave root-owned bytecode in the
+        # operator's staged input tree, preventing its normal retirement.
+        command = ['sudo', '-n', sys.executable, '-B', __file__, '--archive', archive,
                    '--stage', args.stage, '--evidence', args.evidence, '--mode', args.mode]
         if args.case:
             command += ['--case', args.case]

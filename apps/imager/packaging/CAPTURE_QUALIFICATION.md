@@ -26,8 +26,10 @@ bind caller-owned files and call them root-owned installed consumers.
 The closed cohort object has exactly `schema` (integer1), `source_root` (this
 checkout), `source_inputs` (relative source path to actual SHA256) and `roles`.
 Source-only mode requires `worker`, `runtime`, `host`, `imager_tests`. Full mode
-also requires `shell`, `fs`, `control`, `credential_helper`, `prepared_helper`,
-`files`, `writer`. Worker and SDK bytes must match the actually signed sidecar; the host
+also requires `shell`, `fs`, `control`, `launcher`, `credential_helper`,
+`prepared_helper`, `files`, `writer`, `browser`, `app_package`, `runtime_bundle`,
+`install` and `installer`. The installed launcher must match both its actual
+compiler role and the launcher inside the signed SDK. Worker and SDK bytes must match the actually signed sidecar; the host
 must match `--host`. The full fixture must verify launched signed Files and Writer payloads against
 their actual compiler-selected roles, using canonical signing/packing/install
 with a disposable fixture signer and the exact admitted SDK.
@@ -98,7 +100,11 @@ callers retain their existing behavior; this safety mode is explicit.
 
 Both outer and inner command collectors bound output/deadlines and retain child
 PID custody with WNOWAIT until process-group retirement. Diagnostic logs stay
-0600. Public archives and every inventory leaf are hash-verified before admitting
+0600 in the private evidence bind, surviving case namespace retirement. The
+owned runtime uses the ordinary OS umask022 independently of the signing
+operator's private mask; state/evidence directories remain explicitly0700.
+Privileged driver imports disable bytecode writes into the operator's staged
+inputs, so root-owned cache files cannot prevent their retirement. Public archives and every inventory leaf are hash-verified before admitting
 mount coordinates and verified again while staging. Besides the existing input
 namespaces, only descendants of `/srv/rcargo/tasks/` are allowed as durable
 builder coordinates; sibling prefixes and the source/build stores are refused.
@@ -147,3 +153,16 @@ the candidate/cohort/pins/qualifier/image and executed cases' private log hashes
 No detached receipt is accepted as an input. Native execution and release
 publication remain the operator's actions; parser and collector tests do not
 constitute native proof.
+
+Installed component publisher pins retain the normal runtime's root-owner and
+read-only-filesystem checks. Rootless layer installation uses a read-only build
+bind of the exact staged Browser publisher pin, with a shared container SELinux
+label on that public context file. CEF is installed through its normal full
+runtime package, not pre-copied into an overlay lower layer and then replaced.
+Exporting the layer does not
+preserve its mount flags, so the owned native driver restores read-only binds
+for installed publisher pins and exact retained-runtime records before any
+consumer starts. Generated capability facts remain writable in their separate
+paths. Public installed directories have mode0755 and generated public pins mode0644,
+regardless of the operator's private umask; the outer evidence and signing
+identities stay private.

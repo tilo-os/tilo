@@ -6,6 +6,7 @@ It never accepts an old compiler stream. Cached artifacts reported by the new
 Cargo invocation are valid; source differences fail without relabelling them.
 """
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,7 @@ ROLES = {
     'credential_helper': ('crates/system/account-custody', 'tilo-account-credential', 'bin', False),
     'prepared_helper': ('apps/imager', 'tilo-prepared-setup', 'bin', False),
     'control': ('crates/session/control-cli', 'tilo-control', 'bin', False),
+    'launcher': ('crates/packaging/launcher', 'tilo-launcher', 'bin', False),
     'files': ('apps/file-explorer', 'file-explorer', 'bin', False),
     'writer': ('apps/word-processor', 'word-processor', 'bin', False),
     'browser': ('apps/browser', 'browser', 'bin', False),
@@ -69,6 +71,15 @@ def sources():
              'scripts/headless-examples/_control.py',
              'scripts/browser/cef-lock.json', 'scripts/browser/build-host.py',
              'tools/apps/browser_runtime_release.py', 'tools/apps/app_package_isa.py'}
+    # Full admission also measures non-Rust prerequisites (PAM, publisher roots,
+    # fixture executables). Capture its authoritative closure before compilation,
+    # rather than discovering missing inputs after the producer has finished.
+    spec = importlib.util.spec_from_file_location(
+        'capture_source_closure', ROOT / 'apps/imager/packaging/qualify-capture-release.py')
+    qualifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(qualifier)
+    names.update(qualifier.FIXTURE_FILES)
+    names.update(qualifier.PACKAGE_FILES)
     listed = subprocess.check_output(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], cwd=ROOT)
     for item in listed.split(b'\0'):
         if not item:

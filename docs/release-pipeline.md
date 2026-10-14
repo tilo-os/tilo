@@ -8,7 +8,7 @@ does not fan out into unrelated builds:
 | Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned tapps and immutable collection bundles |
 | Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
 | OS | `vX.Y.Z`, the nightly **Release / OS** run on `main` when `main` has moved, or a manual run from `main` with `publish` | Bootc image, sealed-image reproducibility and VM gates | Signed generation image, SBOM and provenance |
-| Imager | `imager-vX.Y.Z` | Native host packages and signed installer media | Linux, Windows, and signed/notarized macOS downloads |
+| Tilo Installer | Relevant protected `main` pushes; `imager-vX.Y.Z` for stable releases | Six native host-package lanes; signed installer media only on tags/manual rehearsals | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
 
 Continuous app packaging runs on relevant `main` pushes. It selects affected
 tapps, reuses unchanged members from the prior immutable collection, and advances
@@ -45,10 +45,17 @@ Pull requests use the cheapest lane that proves the affected boundary:
   ordinary `main` pushes. The nightly run builds nothing when `main` is
   already published. Every OS image carries the Browser's Chromium engine
   runtime, built from the pinned CEF distribution in the image build.
-- Ordinary imager changes use the affected-package checks. Native imager
-  packaging runs only on tags or manual dispatches. Manual runs default to
-  Linux x86_64; tags or `full_native` add Linux ARM64 and Windows on both
-  architectures, including native Intel and Apple-silicon macOS packaging.
+- Installer changes retain affected-package checks. Relevant protected `main`
+  pushes also publish signed native Installer prereleases on all six existing
+  platform/architecture lanes, subject to the exact-source qualification gates.
+  Main reuses reviewed, signed published media; it does not build media or OS
+  images. Stable tags retain distribution and website promotion. Manual runs
+  default to Linux x86_64; tags, automatic main publication or `full_native`
+  enable both architectures on Linux, Windows and macOS. See
+  [Installer release operations](imager-release-operations.md#automatic-main-downloads)
+  for required catalogs, native hosts and narrowly scoped broker authorization.
+  The Forgejo repository/branch API supplies workflow protection preflight;
+  it cannot replace the signing broker's authenticated protected-ref claims.
 
 Release jobs never use an Actions cache as an artifact hand-off. Forgejo cache
 entries are opportunistic and workflow artifacts are scoped to one run. Each

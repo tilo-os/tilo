@@ -580,14 +580,15 @@ grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
   && ok 'serial-getty boot proof reports an explicit signal and nonzero wall time' \
   || bad 'serial-getty fallback can report a misleading zero-duration boot'
 
-[ "$(grep -Fc 'branches: ["main"]' "$workflow")" -eq 0 ] \
+[ "$(grep -Fc 'branches: ["main"]' "$workflow")" -eq 1 ] \
+  && grep -Fq "if: github.event_name != 'push' || github.ref != 'refs/heads/main'" "$workflow" \
   && [ "$(grep -Fc 'pull_request:' "$workflow")" -eq 0 ] \
   && grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
   && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
   && grep -Fq 'runner":"runner-disk-100g"' "$workflow" \
   && grep -Fq 'runner":"runner-disk-100g-arm64"' "$workflow" \
   && grep -Fq 'matrix: ${{ fromJSON(needs.plan.outputs.medium-matrix) }}' "$workflow" \
-  && grep -Fq "if: github.event.inputs.installer_only != 'true'" "$workflow" \
+  && grep -Fq "github.event.inputs.installer_only != 'true'" "$workflow" \
   && grep -Fq './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' "$workflow" \
   && grep -Fq 'TILO_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}' "$workflow" \
   && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE"' "$workflow" \

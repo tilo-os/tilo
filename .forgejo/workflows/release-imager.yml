@@ -1,12 +1,18 @@
-name: Release / imager
+name: Release / Tilo Installer
 
-# Ordinary commits exercise imager code and release-policy invariants in
-# check.yml. This workflow allocates native release hosts only for an explicit
-# manual rehearsal or an imager-v* tag. Tags expand to every supported native
-# host and fail closed unless packages are signed and, on macOS, notarized.
+# Relevant protected-main pushes publish immutable signed native prereleases.
+# Stable tags retain media, distribution-index and website promotion gates.
+# Main never builds OS images or installer media; it consumes reviewed catalogs.
 on:
   push:
+    branches: ["main"]
     tags: ["imager-v*"]
+    paths:
+      - apps/imager/**
+      - tools/imager-profile/**
+      - .forgejo/workflows/release-imager.yml
+      - Cargo.toml
+      - Cargo.lock
   workflow_dispatch:
     inputs:
       capture_qualifier_base:
@@ -69,6 +75,10 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/imager-v') }}
 
 env:
+  TILO_CONTINUOUS_PUBLICATION: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '0' }}
+  # Forgejo 16's workflow context can report false even for protected main.
+  # The plan queries source metadata; brokers still validate the signed JWT.
+  TILO_REF_PROTECTED: 'false'
   # Public binaries live on GitHub, outside the private Forgejo source repository.
   # Override only to pre-created public repositories governed by the same App.
   TILO_VERSION: ${{ startsWith(github.ref, 'refs/tags/imager-v') && github.ref_name || '0.0.0' }}
@@ -84,7 +94,44 @@ jobs:
     outputs:
       linux-matrix: ${{ steps.lanes.outputs.linux-matrix }}
       medium-matrix: ${{ steps.lanes.outputs.medium-matrix }}
+      version: ${{ steps.identity.outputs.version }}
+      release-tag: ${{ steps.identity.outputs.release-tag }}
+      ref-protected: ${{ steps.protection.outputs.ref-protected }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: env.TILO_CONTINUOUS_PUBLICATION == '1'
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check protected main against Forgejo source metadata
+        id: protection
+        if: env.TILO_CONTINUOUS_PUBLICATION == '1'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          # Do not follow redirects with the job token or treat API errors as protection.
+          status="$(curl --fail --silent --show-error --connect-timeout 20 --max-time 60 \
+            -H "Authorization: token $GITHUB_TOKEN" --write-out '%{http_code}' \
+            --output "$RUNNER_TEMP/source-repository.json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY")"
+          test "$status" = 200
+          status="$(curl --fail --silent --show-error --connect-timeout 20 --max-time 60 \
+            -H "Authorization: token $GITHUB_TOKEN" --write-out '%{http_code}' \
+            --output "$RUNNER_TEMP/source-main.json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/branches/main")"
+          test "$status" = 200
+          python3 apps/imager/packaging/continuous-release.py protection \
+            "$RUNNER_TEMP/source-repository.json" --branch-metadata "$RUNNER_TEMP/source-main.json" >> "$GITHUB_ENV"
+          echo 'ref-protected=true' >> "$GITHUB_OUTPUT"
+      - name: Bind continuous release identity to protected exact source
+        id: identity
+        if: env.TILO_CONTINUOUS_PUBLICATION == '1'
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 apps/imager/packaging/continuous-release.py identity apps/imager/Cargo.toml >> "$GITHUB_OUTPUT"
       - name: Select native Linux lanes
         id: lanes
         env:
@@ -122,7 +169,7 @@ jobs:
           [[ -z ${PUBLISHED_OS_SOURCE_REVISION:-} ]] || {
             echo '::error::published_os_source_revision is only for offline installer-only runs'; exit 1;
           }
-          if [[ "$GITHUB_REF" == refs/tags/imager-v* || ${FULL_NATIVE:-false} == true ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* || ${TILO_CONTINUOUS_PUBLICATION:-0} == 1 || ${FULL_NATIVE:-false} == true ]]; then
             echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}' >> "$GITHUB_OUTPUT"
           else
             echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"}]}' >> "$GITHUB_OUTPUT"
@@ -152,6 +199,7 @@ jobs:
           }
 
   medium:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     timeout-minutes: 180
     # Build and boot-test install media only on architecture-matched native
     # hosts. Tags use the dedicated KVM/DRI fleet; manual rehearsals may use
@@ -606,7 +654,7 @@ jobs:
     needs: medium
     # Needs the dedicated KVM release host, which installer-only rehearsals
     # deliberately do not use.
-    if: github.event.inputs.installer_only != 'true' && (vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish')
+    if: (github.event_name != 'push' || github.ref != 'refs/heads/main') && github.event.inputs.installer_only != 'true' && (vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish')
     runs-on: imager-linux-x86_64
     env:
       FEDORA_URL: ${{ vars.TILO_INTERNAL_CYCLE_FEDORA_URL }}
@@ -668,15 +716,30 @@ jobs:
 
   catalog:
     timeout-minutes: 60
+    if: always() && needs.plan.result == 'success' && (needs.medium.result == 'success' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     needs: [plan, medium]
     runs-on: runner
     outputs:
       linux-matrix: ${{ needs.plan.outputs.linux-matrix }}
+      version: ${{ needs.plan.outputs.version }}
+      release-tag: ${{ needs.plan.outputs.release-tag }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Reuse exact reviewed published installer media
+        if: env.TILO_CONTINUOUS_PUBLICATION == '1'
+        run: |
+          python3 apps/imager/packaging/continuous-release.py catalog apps/imager/release-catalog.json --output dist/continuous-media
+          mkdir -p dist/tilo-installer-catalog
+          mv dist/continuous-media/tilo-installer-catalog-v* dist/tilo-installer-catalog/
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: env.TILO_CONTINUOUS_PUBLICATION == '1'
+        with:
+          name: tilo-continuous-installer-media
+          path: dist/continuous-media/*
+          if-no-files-found: error
       - name: Verify the reviewed Desktop catalog against exact package bytes
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -701,7 +764,7 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
             apps/imager/packaging/build-release-catalog.sh release-assets
-          else
+          elif [[ ${TILO_CONTINUOUS_PUBLICATION:-0} != 1 ]]; then
             mkdir -p dist/tilo-installer-catalog
             cp apps/imager/release-catalog.json \
               dist/tilo-installer-catalog/tilo-installer-catalog-v1.json
@@ -713,8 +776,10 @@ jobs:
 
   linux:
     timeout-minutes: 180
-    if: github.event.inputs.installer_only != 'true'
+    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true'
     needs: catalog
+    env:
+      TILO_VERSION: ${{ needs.catalog.outputs.version || (startsWith(github.ref, 'refs/tags/imager-v') && github.ref_name) || '0.0.0' }}
     # Forgejo injects ACTIONS_ID_TOKEN_REQUEST_* only when this native setting
     # is enabled; GitHub's `permissions: id-token: write` is not sufficient.
     enable-openid-connect: true
@@ -734,6 +799,10 @@ jobs:
         run: >-
           python3 apps/imager/packaging/desktop-catalog-release.py consume desktop-catalog
           --source "$GITHUB_SHA" --copy-to apps/imager/desktop-catalog.json
+      - name: Require native Linux architecture
+        run: |
+          test "$(uname -s)" = Linux
+          ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
       - name: Materialize checksum-verified AppImage tools
         uses: ./.forgejo/actions/cache-github-assets
         with:
@@ -811,11 +880,11 @@ jobs:
           EXPECTED_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}
         run: |
           set -euo pipefail
-          case "${GITHUB_REF:-}" in
-            refs/tags/imager-v*)
-              version="${GITHUB_REF_NAME#imager-v}"
+          case "${TILO_CONTINUOUS_PUBLICATION:-0}:${GITHUB_REF:-}" in
+            1:refs/heads/main|*:refs/tags/imager-v*)
+              version="${TILO_VERSION#imager-v}"
               [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-                || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 1; }
+                || { printf 'native release version must be MAJOR.MINOR.PATCH\n' >&2; exit 1; }
               test -n "${CREDENTIAL_BROKER:-}" || {
                 printf 'configure IMAGER_LINUX_CREDENTIAL_BROKER; release signing is OIDC-broker-only\n' >&2
                 exit 1
@@ -827,7 +896,7 @@ jobs:
               echo "TILO_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
               echo "TILO_LINUX_EXPECTED_FINGERPRINT=${EXPECTED_FINGERPRINT^^}" >> "$GITHUB_ENV"
               echo "TILO_REQUIRE_NATIVE_PACKAGES=1" >> "$GITHUB_ENV"
-              echo "TILO_VERSION=${GITHUB_REF_NAME#imager-v}" >> "$GITHUB_ENV"
+              echo "TILO_VERSION=$version" >> "$GITHUB_ENV"
               ;;
           esac
       - run: cargo test -p imager --lib --locked
@@ -861,6 +930,11 @@ jobs:
           flatpak="dist/tilo-imager/tilo-imager-linux-${{ matrix.arch }}.flatpak"
           apps/imager/packaging/sign-linux-release-file.sh \
             "$flatpak" "$flatpak.asc"
+      - name: Sign continuous Flatpak downloads
+        if: env.TILO_CONTINUOUS_PUBLICATION == '1'
+        run: |
+          flatpak="dist/tilo-imager/tilo-imager-linux-${{ matrix.arch }}.flatpak"
+          apps/imager/packaging/sign-linux-release-file.sh "$flatpak" "$flatpak.asc"
       - name: Launch the packaged Linux UI offscreen
         run: |
           set -euo pipefail
@@ -896,7 +970,7 @@ jobs:
             dist/tilo-imager/tilo-installer-*.asc
           if-no-files-found: error
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
-        if: matrix.arch == 'x86_64' && startsWith(github.ref, 'refs/tags/imager-v')
+        if: matrix.arch == 'x86_64' && (startsWith(github.ref, 'refs/tags/imager-v') || env.TILO_CONTINUOUS_PUBLICATION == '1')
         with:
           name: tilo-imager-linux-release-key
           path: |
@@ -908,7 +982,7 @@ jobs:
 
   windows:
     timeout-minutes: 180
-    if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
+    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     needs: catalog
     enable-openid-connect: true
     strategy:
@@ -922,6 +996,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       TILO_WINDOWS_ARCH: ${{ matrix.arch }}
+      TILO_VERSION: ${{ needs.catalog.outputs.version || (startsWith(github.ref, 'refs/tags/imager-v') && github.ref_name) || '0.0.0' }}
+      TILO_RELEASE_TAG: ${{ needs.catalog.outputs.release-tag || github.ref_name }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -963,8 +1039,8 @@ jobs:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_WINDOWS_CREDENTIAL_BROKER }}
           EXPECTED_PUBLISHER: ${{ vars.IMAGER_WINDOWS_PUBLISHER }}
         run: |
-          if ($env:GITHUB_REF -like "refs/tags/imager-v*") {
-            $Version = $env:GITHUB_REF_NAME -replace '^imager-v', ''
+          if ($env:GITHUB_REF -like "refs/tags/imager-v*" -or $env:TILO_CONTINUOUS_PUBLICATION -eq '1') {
+            $Version = $env:TILO_VERSION -replace '^imager-v', ''
             if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "release tag must be imager-vMAJOR.MINOR.PATCH" }
             if (-not $env:CREDENTIAL_BROKER) {
               throw "Configure IMAGER_WINDOWS_CREDENTIAL_BROKER; release signing is OIDC-broker-only"
@@ -976,9 +1052,9 @@ jobs:
             if ($env:EXPECTED_PUBLISHER -match "[`r`n]") { throw "Windows publisher policy must be a single line" }
             "TILO_WINDOWS_EXPECTED_PUBLISHER=$env:EXPECTED_PUBLISHER" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             "TILO_REQUIRE_NATIVE_PACKAGES=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "TILO_VERSION=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "TILO_VERSION=$Version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             if ($env:TILO_RELEASE_REPOSITORY -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw "release repository must be OWNER/REPOSITORY" }
-            "TILO_RELEASE_BASE_URL=$($env:TILO_RELEASE_SERVER.TrimEnd('/'))/$env:TILO_RELEASE_REPOSITORY/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "TILO_RELEASE_BASE_URL=$($env:TILO_RELEASE_SERVER.TrimEnd('/'))/$env:TILO_RELEASE_REPOSITORY/releases/download/$env:TILO_RELEASE_TAG" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
       - shell: powershell
         run: cargo test -p imager --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
@@ -1007,7 +1083,7 @@ jobs:
             & $Setup /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$Install"
             if ($LASTEXITCODE -ne 0) { throw "Tilo Imager setup failed" }
             $Binary = Join-Path $Install "tilo-imager.exe"
-          } elseif ($env:GITHUB_REF -like "refs/tags/imager-v*") {
+          } elseif ($env:GITHUB_REF -like "refs/tags/imager-v*" -or $env:TILO_CONTINUOUS_PUBLICATION -eq '1') {
             throw "release setup executable is missing"
           } else {
             $Binary = "dist/tilo-imager/tilo-imager-windows-$env:TILO_WINDOWS_ARCH.exe"
@@ -1038,8 +1114,10 @@ jobs:
 
   macos:
     timeout-minutes: 180
-    if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
+    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     needs: catalog
+    env:
+      TILO_VERSION: ${{ needs.catalog.outputs.version || (startsWith(github.ref, 'refs/tags/imager-v') && github.ref_name) || '0.0.0' }}
     enable-openid-connect: true
     strategy:
       matrix:
@@ -1067,6 +1145,10 @@ jobs:
           name: tilo-installer-catalog
           path: release-catalog
       - run: python3 apps/imager/packaging/release-catalog.py release-catalog --copy-to apps/imager/release-catalog.json
+      - name: Require native macOS architecture
+        run: |
+          test "$(uname -s)" = Darwin
+          ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
       - name: Configure release signing
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_MACOS_CREDENTIAL_BROKER }}
@@ -1074,11 +1156,11 @@ jobs:
           EXPECTED_CERT_SHA256: ${{ vars.IMAGER_MAC_CERT_SHA256 }}
         run: |
           set -euo pipefail
-          case "${GITHUB_REF:-}" in
-            refs/tags/imager-v*)
-              version="${GITHUB_REF_NAME#imager-v}"
+          case "${TILO_CONTINUOUS_PUBLICATION:-0}:${GITHUB_REF:-}" in
+            1:refs/heads/main|*:refs/tags/imager-v*)
+              version="${TILO_VERSION#imager-v}"
               [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-                || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 1; }
+                || { printf 'native release version must be MAJOR.MINOR.PATCH\n' >&2; exit 1; }
               test -n "${CREDENTIAL_BROKER:-}" || {
                 printf 'configure IMAGER_MACOS_CREDENTIAL_BROKER; release signing is OIDC-broker-only\n' >&2
                 exit 1
@@ -1095,7 +1177,7 @@ jobs:
               echo "TILO_MAC_EXPECTED_TEAM_ID=$EXPECTED_TEAM_ID" >> "$GITHUB_ENV"
               echo "TILO_MAC_EXPECTED_CERT_SHA256=$cert_fingerprint" >> "$GITHUB_ENV"
               echo "TILO_REQUIRE_NATIVE_PACKAGES=1" >> "$GITHUB_ENV"
-              echo "TILO_VERSION=${GITHUB_REF_NAME#imager-v}" >> "$GITHUB_ENV"
+              echo "TILO_VERSION=$version" >> "$GITHUB_ENV"
               ;;
           esac
       - run: cargo test -p imager --lib --locked
@@ -1131,11 +1213,11 @@ jobs:
             "$mountpoint/Tilo Imager.app/Contents/MacOS/tilo-imager" \
               --shots "$smoke/dmg.png" --scenario done --viewport 1180x820
             test -s "$smoke/dmg.png"
-            if [[ "${GITHUB_REF:-}" == refs/tags/imager-v* ]]; then
+            if [[ "${GITHUB_REF:-}" == refs/tags/imager-v* || ${TILO_CONTINUOUS_PUBLICATION:-0} == 1 ]]; then
               codesign --verify --deep --strict --verbose=2 \
                 "$mountpoint/Tilo Imager.app"
             fi
-          elif [[ "${GITHUB_REF:-}" == refs/tags/imager-v* ]]; then
+          elif [[ "${GITHUB_REF:-}" == refs/tags/imager-v* || ${TILO_CONTINUOUS_PUBLICATION:-0} == 1 ]]; then
             printf 'release DMG is missing\n' >&2
             exit 1
           else
@@ -1155,18 +1237,22 @@ jobs:
 
   publish:
     timeout-minutes: 60
-    if: startsWith(github.ref, 'refs/tags/imager-v')
-    needs: [linux, windows, macos]
+    if: always() && needs.linux.result == 'success' && needs.windows.result == 'success' && needs.macos.result == 'success' && (startsWith(github.ref, 'refs/tags/imager-v') || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    needs: [plan, linux, windows, macos]
     runs-on: runner
     enable-openid-connect: true
+    env:
+      TILO_REF_PROTECTED: ${{ needs.plan.outputs.ref-protected || 'false' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release-assets
       - name: Generate the complete WinGet manifest set
+        if: startsWith(github.ref, 'refs/tags/imager-v')
         shell: bash
         run: |
           python3 apps/imager/packaging/generate-winget.py release-assets \
@@ -1177,6 +1263,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ ${TILO_CONTINUOUS_PUBLICATION:-0} == 1 ]]; then
+            python3 apps/imager/packaging/continuous-release.py assets release-assets
+            exit 0
+          fi
           required=(
             tilo-installer-linux-x86_64.img.zst
             tilo-installer-linux-aarch64.img.zst
@@ -1220,7 +1310,7 @@ jobs:
         env:
           TILO_LINUX_EXPECTED_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}
         run: apps/imager/packaging/verify-linux-release.sh release-assets
-      - name: Publish signed downloads to the tag release
+      - name: Publish signed Tilo Installer downloads
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_RELEASE_CREDENTIAL_BROKER }}
           TILO_LINUX_EXPECTED_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}
