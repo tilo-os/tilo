@@ -176,18 +176,10 @@ fn validate_devices(
             {
                 return None;
             }
-            let writable = access
-                .get("writable")
-                .and_then(|value| value.try_clone().ok())
-                .and_then(|value| bool::try_from(value).ok())
-                .unwrap_or(false);
+            let writable = crate::portal::option::<bool>(&access, "writable").unwrap_or(false);
             let label = ["device", "product", "name"]
                 .into_iter()
-                .find_map(|key| {
-                    info.get(key)
-                        .and_then(|value| value.try_clone().ok())
-                        .and_then(|value| String::try_from(value).ok())
-                })
+                .find_map(|key| crate::portal::option::<String>(&info, key))
                 .filter(|label| {
                     !label.is_empty()
                         && label.len() <= MAX_LABEL
