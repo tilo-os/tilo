@@ -170,6 +170,20 @@ room; members refuse its later writes on their own. Room administration
 refuses agent devices. Other users' agents are not admitted, and agents
 never call the host's room actions.
 
+Room administration on a relay (the `tilo-room-admin/1` ALPN, the `/rooms`
+pages, call control) is one decision, `Rooms::authorize`
+(`crates/hosting/tilo-relay/src/rooms/authority.rs`). The caller's
+certificate must be current and unrevoked, and not one of the relay's
+agents. A device of the relay's own user administers every room. Any other
+device administers a room only as far as the room's governance lets its
+person: inviting needs the room's `invite` action and never hands out more
+than the inviter's role, membership changes are the room's policy checks
+(a Moderator reaches those ranked below), and running a call needs the
+`call` action, which no role preset below the owner's holds. What no room
+decides stays the host person's (`host_authority.rs`): creating, listing
+and entering rooms, pre-admission, room grants, administrators, bots,
+application authorship and the host's compute control.
+
 A room the desktop hosts itself applies the same rule through its action
 broker: an agent session takes the role its membership preset grants,
 capped by its person's role (`admit_agent_delegation_at`,
