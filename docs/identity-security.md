@@ -33,9 +33,16 @@ the Secret Service does not answer, or fails while a record is being secured
 Tilo falls back automatically to `identity/secrets/<public-key>.key`, mode
 0600, inside mode-0700 user-owned directories; `TILO_IDENTITY_FILE_SECRETS`
 forces that file store for tests. No sandbox is given this path, so an app
-cannot name it by default; a filesystem grant to a folder containing it (the
-whole home directory, or `~/.config`) would expose it, as it would every other
-file of the person's. Settings labels it **Private session file + app-scoped
+cannot name it by default, and a filesystem grant cannot hand it over either:
+the launcher refuses a grant at or inside `$XDG_CONFIG_HOME/tilo`, and a grant
+containing it (the whole home directory, or `~/.config`) shows that directory
+as an empty read-only tmpfs. Inside a writable grant every directory on the way
+there is bound onto itself, so the app cannot move the real store aside and
+plant another for Tilo to read; a writable grant holding a symlink on that way
+is bound read-only. The same masking covers the accounts vault key, the
+publisher trust and revocation lists and every other file under
+`$XDG_CONFIG_HOME/tilo`, and a `TILO_SECRETS_DIR` store
+(`crates/packaging/launcher/src/capabilities.rs`). Settings labels it **Private session file + app-scoped
 signing broker**; it is intentionally not described as encrypted or
 hardware-backed.
 
