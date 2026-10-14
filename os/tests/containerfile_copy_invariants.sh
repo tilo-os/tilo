@@ -171,7 +171,9 @@ containerfile="$repo/os/Containerfile"
 # they sign, instead of from native-builder-payload: buildkit could serve that
 # stage from an earlier invocation's cache while the builder re-ran and signed
 # the runtime with a fresh key. The installed paths are unchanged.
-expected_contract=d9fb721cef05b0f4ff2f96482b03a473952c90aaaa90457902d4c946adfa26b8
+# The boot audit's image signature policy checker is one intentional payload
+# addition beside the audit in the existing libexec COPY instruction.
+expected_contract=841f944c3de973dccb2c45b5a54b8f54020cca52370e7002b6db2543253c4fb2
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -263,6 +265,7 @@ for path in \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
+  os/usr/libexec/tilo-image-policy-check \
   os/usr/libexec/tilo-extension \
   os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |

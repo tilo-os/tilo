@@ -79,13 +79,13 @@ pub fn default_profile() -> io::Result<PathBuf> {
     let path = if let Some(value) = std::env::var_os("TILO_RUNTIME_PROFILE") {
         PathBuf::from(value)
     } else {
-        let home = std::env::var_os("HOME")
+        let home = tilo_paths::home()
             .ok_or_else(|| invalid("HOME is missing; set TILO_RUNTIME_PROFILE"))?;
         #[cfg(target_os = "macos")]
         let suffix = "Library/Application Support/Tilo/runtime";
         #[cfg(not(target_os = "macos"))]
         let suffix = ".local/state/tilo/runtime";
-        PathBuf::from(home).join(suffix)
+        home.join(suffix)
     };
     if !path.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
