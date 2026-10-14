@@ -559,6 +559,7 @@ addPasskey(envelope, {identity?, rpId?, userName?, userId?}?): Promise<envelope>
 certifyDevice(nodeDevicePublicKey | {devicePublicKey, identity?, runtime?, label?, role?: 'node' | 'browser', encoding?: 'canonical' | 'json'})
   : Promise<string /* canonical DeviceCert, base64 (what a native device keeps on disk); or JSON */>;
 installNodeCertificate({origin, certificate, installToken}): Promise<{device_public_key, user_public_key}>;
+installNode({origin, devicePublicKey, installToken, identity?, label?, runtime?, onProgress?}): Promise<{device_public_key, user_public_key}>;
 // The page's own device, certified by the root itself against the host's
 // certificate (which must be a host of this root), no approver. Defaults:
 // a profile per identity, its device key, the page host's runtime.
@@ -630,6 +631,16 @@ A node provisioned without a certificate (`tilo-relay run --web …
 `x-tilo-install-token`; every other route answers `503`). Once a valid host
 certificate for its key is installed it starts as that identity's host on the
 same origin.
+
+`installNode` does the whole install (`nodeInstallInfo`, `certifyDevice`
+for the node and its session, `installNodeCertificate`), saying each step
+to `onProgress({phase: 'checking' | 'certifying' | 'installing'})`. A
+refusal is an `IdentityError`: `install-token-refused` (403), `not-waiting`
+(a host already serving answers no install route) or `install-refused`. The
+web desktop offers it to the person as "Set up a machine", typed in or
+filled in from an `install` link (`web/machine-setup.mjs`;
+web-routing.md §6.3). The node must allow the page's origin
+(`--allowed-origin`) for the page to reach its install route.
 
 Browsers accept a device as a room's governor when its certificate owns
 workspaces (`can_own_workspaces`), so such a node governs and stewards the

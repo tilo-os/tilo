@@ -402,7 +402,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let room = tree.desktop.active_workspace().expect("workspace").room;
         let records = RecordStore::in_memory();
-        let record = RecordId::for_file("campaign-brief.qdoc");
+        let record = RecordId::for_file("campaign-brief.tilo-doc");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
         assert!(records.open_record(&checkout));
         let agent = ActorId::from(b"writing-agent".as_slice());
@@ -511,7 +511,7 @@ mod tests {
 
         let mut tree = WorkspaceTree::bootstrap_demo();
         let room = tree.desktop.active_workspace().expect("workspace").room;
-        let record = RecordId::for_file("campaign-brief.qdoc");
+        let record = RecordId::for_file("campaign-brief.tilo-doc");
         let kind = ui::RecordKind::new("document");
         let agent = ActorId::from(b"writing-agent".as_slice());
         let agent_hex = agent.to_hex_string();

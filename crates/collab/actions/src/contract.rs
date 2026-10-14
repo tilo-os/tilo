@@ -428,6 +428,12 @@ impl ActionContract {
         self.tags.iter().any(|tag| tag == DOCUMENT_READ_TAG)
     }
 
+    /// Whether the action's result carries content from outside the user's
+    /// own data. See [`UNTRUSTED_CONTENT_TAG`].
+    pub fn carries_untrusted_content(&self) -> bool {
+        self.tags.iter().any(|tag| tag == UNTRUSTED_CONTENT_TAG)
+    }
+
     /// Whether confirmation depends on the invocation's arguments. See
     /// [`ARGUMENT_RISK_TAG`].
     pub fn confirmation_depends_on_arguments(&self) -> bool {

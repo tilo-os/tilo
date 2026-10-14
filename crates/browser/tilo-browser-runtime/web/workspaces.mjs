@@ -145,6 +145,19 @@ function keepMembership(memberships, workspace, value) {
 }
 
 /**
+ * Remember the host at `origin` as one `userPublicKey` owns: a machine this
+ * browser set up for that person (`machine-setup.mjs`). Like a joined host,
+ * it keeps the person's envelope and profile.
+ */
+export function keepOwnedHost({origin, userPublicKey}, memberships = globalThis.localStorage) {
+  const host = {host: {origin}};
+  const kept = keptMembership(host, memberships);
+  keepMembership(memberships, host, {
+    origin: originOf(origin), room: kept?.userPublicKey === userPublicKey ? kept.room ?? null : null, userPublicKey, owner: true,
+  });
+}
+
+/**
  * Join `workspace` as `identity` (the person, created and kept by the
  * caller) through its host's admission door; resolves to the peer.
  */

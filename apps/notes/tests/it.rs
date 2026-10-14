@@ -93,6 +93,8 @@ mod canonical_actions;
 #[path = "canonical_views.rs"]
 mod canonical_views;
 
+#[path = "hosted_header_controls.rs"]
+mod hosted_header_controls;
 #[path = "note_context_menu.rs"]
 mod note_context_menu;
 #[path = "note_header.rs"]

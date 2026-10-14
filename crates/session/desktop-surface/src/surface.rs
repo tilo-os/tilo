@@ -117,6 +117,8 @@ struct Shared {
     /// Bumped whenever `presentation` changes. Unlike `revision` it never
     /// asks a host to save or share the tree.
     presented: u64,
+    /// Where the host confirms in passing what left nothing to see.
+    acknowledger: ui::widget::acknowledgement::Acknowledger,
 }
 
 impl Shared {
@@ -140,6 +142,13 @@ pub struct DesktopHandle {
 }
 
 impl DesktopHandle {
+    /// Confirm in passing an action that left nothing to see ("Link
+    /// copied"): a short-lived pill, said politely to screen readers,
+    /// never a notification. The host asks for a redraw.
+    pub fn acknowledge(&self, text: impl Into<String>) {
+        self.shared.borrow().acknowledger.say(text);
+    }
+
     pub fn revision(&self) -> u64 {
         self.shared.borrow().revision
     }
@@ -383,6 +392,14 @@ pub struct DesktopSurface {
     activity: Option<history::HistoryOverlay>,
     /// The banners and centre, when the host installed notifications.
     notices: Option<notices::NotificationLayer>,
+    /// What an action that leaves nothing to see confirms in passing
+    /// ("Link copied"), over everything else.
+    acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
+    /// Where the host collects what controls emit, once it has bound this
+    /// surface. A tab built after that (a launch, a record that arrived, a
+    /// rebuilt row) is bound to it as it is built, or its registered
+    /// buttons would emit into a queue nobody drains.
+    controls: Option<ui::ControlDomain>,
 }
 
 /// Time the update pass may spend building deferred tabs in one frame. At
@@ -443,7 +460,9 @@ impl DesktopSurface {
             host_choices: Vec::new(),
             presentation: Presentation::default(),
             presented: 0,
+            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
         }));
+        let acknowledger = shared.borrow().acknowledger.clone();
         let mut surface = Self {
             shared: Rc::clone(&shared),
             tiles,
@@ -462,6 +481,8 @@ impl DesktopSurface {
             history: None,
             activity: None,
             notices: None,
+            acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer::new(acknowledger),
+            controls: None,
         };
         surface.show_active_strip();
         (surface, DesktopHandle { shared })
@@ -682,7 +703,13 @@ impl DesktopSurface {
             && let Some(strip) = workspace.strips.iter().find(|s| s.id == strip_id)
         {
             let focused = tree.active_group_for(strip_id);
-            let (row, deferred) = build_row_lazily(self.tiles.as_mut(), workspace, strip, focused);
+            let (row, deferred) = build_row_lazily(
+                self.tiles.as_mut(),
+                self.controls.as_ref(),
+                workspace,
+                strip,
+                focused,
+            );
             // The focused window, built first, is also the one in view.
             if self.reveal.is_none() {
                 self.reveal = focused.map(|group| (strip_id, group));
@@ -736,7 +763,12 @@ impl DesktopSurface {
             }) else {
                 continue;
             };
-            *host = build_tile(self.tiles.as_mut(), workspace, model);
+            *host = build_tile(
+                self.tiles.as_mut(),
+                self.controls.as_ref(),
+                workspace,
+                model,
+            );
             built = true;
             if ui::time::now().duration_since(started) >= BUILD_BUDGET {
                 break;
@@ -784,7 +816,13 @@ impl DesktopSurface {
                         .flat_map(|group| &group.tabs)
                         .any(|tab| live.contains_key(&tab.id));
                     if survives {
-                        let row = build_row(self.tiles.as_mut(), workspace, strip, &mut live);
+                        let row = build_row(
+                            self.tiles.as_mut(),
+                            self.controls.as_ref(),
+                            workspace,
+                            strip,
+                            &mut live,
+                        );
                         self.rows.insert(strip.id, row);
                     }
                 }
@@ -1182,7 +1220,7 @@ impl DesktopSurface {
                 WindowWidth::Normal,
             );
             if let Some(host) = built.host_for_tab_mut(tab.id) {
-                *host = build_tile(self.tiles.as_mut(), workspace, tab);
+                *host = build_tile(self.tiles.as_mut(), self.controls.as_ref(), workspace, tab);
             }
             row.insert_group(built, index);
         }
@@ -1389,7 +1427,7 @@ impl DesktopSurface {
         let Some(tab) = self.tiles.launch(workspace, id, app) else {
             return false;
         };
-        let host = build_tile(self.tiles.as_mut(), workspace, &tab);
+        let host = build_tile(self.tiles.as_mut(), self.controls.as_ref(), workspace, &tab);
         let Some(model) = find_group(&mut shared.tree, strip, group) else {
             return false;
         };
@@ -1458,6 +1496,7 @@ fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
 /// inactive tabs.
 fn build_row_lazily(
     tiles: &mut dyn TileSource,
+    controls: Option<&ui::ControlDomain>,
     workspace: &Workspace,
     strip: &tilo_desktop_model::Strip,
     focused: Option<GroupId>,
@@ -1482,7 +1521,7 @@ fn build_row_lazily(
                 let active = tab.id == group.active_tab;
                 if active && index == focus {
                     if let Some(host) = built.host_for_tab_mut(tab.id) {
-                        *host = build_tile(tiles, workspace, tab);
+                        *host = build_tile(tiles, controls, workspace, tab);
                     }
                 } else {
                     deferred.push((!active, index.abs_diff(focus), tab.id));
@@ -1512,6 +1551,7 @@ fn find_tab(tree: &DesktopTree, strip: StripId, tab: TabId) -> Option<(&Workspac
 /// `live` when present there, else from `tiles`.
 fn build_row(
     tiles: &mut dyn TileSource,
+    controls: Option<&ui::ControlDomain>,
     workspace: &Workspace,
     strip: &tilo_desktop_model::Strip,
     live: &mut HashMap<TabId, TileHost>,
@@ -1531,7 +1571,7 @@ fn build_row(
                 if let Some(host) = built.host_for_tab_mut(tab.id) {
                     *host = live
                         .remove(&tab.id)
-                        .unwrap_or_else(|| build_tile(tiles, workspace, tab));
+                        .unwrap_or_else(|| build_tile(tiles, controls, workspace, tab));
                 }
             }
             built
@@ -1541,11 +1581,24 @@ fn build_row(
 }
 
 /// `tab`'s content from `tiles`, its application named to a panic hook
-/// while it is built and whenever it runs.
-fn build_tile(tiles: &mut dyn TileSource, workspace: &Workspace, tab: &Tab) -> TileHost {
+/// while it is built and whenever it runs, and bound to the host's
+/// `controls` when the host already bound the surface.
+fn build_tile(
+    tiles: &mut dyn TileSource,
+    controls: Option<&ui::ControlDomain>,
+    workspace: &Workspace,
+    tab: &Tab,
+) -> TileHost {
     let _running = ui::widget::panic_scope::enter(Some(tab.id));
-    let host = tiles.tile(workspace, tab);
+    let mut host = tiles.tile(workspace, tab);
     host.set_panic_scope(tab.id);
+    if let Some(domain) = controls {
+        ui::widget::controls::install_control_custody(
+            &mut host,
+            domain,
+            ui::control_custody::CustodyAttachment::Dynamic,
+        );
+    }
     host
 }
 
@@ -1646,13 +1699,16 @@ impl Widget for DesktopSurface {
             .notices
             .as_mut()
             .map(|layer| layer.build_layout(taffy, theme, node_map));
+        let acknowledgement = self.acknowledgement.build_layout(taffy, theme, node_map);
         // The row, when shown, is always the first child, then search, the
-        // history pane and the notifications, each when present.
+        // history pane and the notifications, each when present, and the
+        // acknowledgement last.
         let children: Vec<NodeId> = row
             .into_iter()
             .chain(search)
             .chain(activity)
             .chain(notices)
+            .chain(std::iter::once(acknowledgement))
             .collect();
         let style = Style {
             display: ui::taffy::Display::Flex,
@@ -1695,6 +1751,10 @@ impl Widget for DesktopSurface {
             && let Some(&notices) = nodes.get(next)
         {
             layer.apply_layout(taffy, notices, inner);
+        }
+        if let Some(&acknowledgement) = nodes.last() {
+            self.acknowledgement
+                .apply_layout(taffy, acknowledgement, inner);
         }
         let reveal = self.reveal.take();
         let shown = self.shown;
@@ -1823,6 +1883,7 @@ impl Widget for DesktopSurface {
             .chain(search)
             .chain(activity)
             .chain(notices)
+            .chain(std::iter::once(&self.acknowledgement as &dyn Widget))
             .collect()
     }
 
@@ -1855,10 +1916,12 @@ impl Widget for DesktopSurface {
         let search = open.then(|| self.search.palette_mut() as &mut (dyn Widget + '_));
         let activity = self.activity.as_mut().map(|o| o as &mut (dyn Widget + '_));
         let notices = self.notices.as_mut().map(|l| l as &mut (dyn Widget + '_));
+        let acknowledgement = &mut self.acknowledgement as &mut (dyn Widget + '_);
         row.into_iter()
             .chain(search)
             .chain(activity)
             .chain(notices)
+            .chain(std::iter::once(acknowledgement))
             .collect()
     }
 
@@ -1914,6 +1977,29 @@ impl ui::component_lifecycle::ComponentLifecycle for DesktopSurface {
 }
 
 impl ui::widget::controls::ActionControls for DesktopSurface {
+    /// Bind every tab, shown or not, and keep `domain` for the tabs built
+    /// later; then the overlays the surface currently shows.
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        self.controls = Some(domain.clone());
+        for row in self.rows.values_mut() {
+            for group in &mut row.groups {
+                let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
+                for tab in tabs {
+                    if let Some(host) = group.host_for_tab_mut(tab) {
+                        ui::widget::controls::install_control_custody(host, domain, attachment);
+                    }
+                }
+            }
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+
     /// An action row the palette queued outlives the palette closing on it.
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         ui::widget::controls::take_control_invocation(self.search.palette_mut())
@@ -1939,6 +2025,8 @@ impl DesktopSurface {
         if let Some(layer) = self.notices.as_mut() {
             layer.draw(scene, transform, text, theme, presence);
         }
+        self.acknowledgement
+            .draw(scene, transform, text, theme, presence);
     }
 
     /// Traversal reaches only active tabs; lifecycle must reach them all.
@@ -2023,6 +2111,35 @@ mod tests {
             .collect();
         let tree = seed_tree(&mut minter, "Desk", tabs);
         DesktopSurface::new(tree, 7, Box::new(Notices))
+    }
+
+    /// An acknowledgement is said politely over the desktop, wakes the host
+    /// for its fade and end, and is no notification.
+    #[test]
+    fn an_acknowledgement_passes_over_the_desktop_without_a_notification() {
+        let (mut surface, handle) = desktop(1);
+        let notifications = DesktopNotifications::default();
+        surface.set_notifications(notifications.clone());
+        let said = |surface: &DesktopSurface| {
+            surface
+                .children()
+                .last()
+                .and_then(|layer| layer.accessibility())
+                .and_then(|node| node.live.zip(node.value))
+        };
+        // Present and silent before anything is said.
+        assert_eq!(
+            said(&surface),
+            Some((ui::a11y::Politeness::Polite, String::new()))
+        );
+        handle.acknowledge("Link copied");
+        assert_eq!(
+            said(&surface),
+            Some((ui::a11y::Politeness::Polite, "Link copied".to_owned()))
+        );
+        assert!(surface.needs_redraw());
+        assert!(Widget::next_wake_deadline(&surface).is_some());
+        assert_eq!(notifications.counts(), (0, 0));
     }
 
     /// Each select a host sends applies in the frame its wake draws, in

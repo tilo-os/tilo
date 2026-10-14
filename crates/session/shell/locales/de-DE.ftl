@@ -351,7 +351,6 @@ qs-action-failed = „{ $action }“ fehlgeschlagen
 qs-action-failed-refreshing = { $error }. Der aktuelle Gerätezustand wird aktualisiert.
 qs-bluetooth-connect-failed = { $device } konnte nicht verbunden werden
 qs-bluetooth-disconnect-failed = { $device } konnte nicht getrennt werden
-qs-bluetooth-disconnected = { $device } wurde von diesem Gerät getrennt
 qs-vpn-change-failed = { $profile } konnte nicht geändert werden
 
 # Portal- und Berechtigungsblätter: App-Auswahl, globale Tastenkürzel, Prüfungen, Administratorzugriff, Netzwerkgeheimnisse, Aktionsfreigaben
@@ -565,63 +564,16 @@ host-qs-change-failed-state-restored = Das Bedienelement zeigt wieder den aktuel
 # Ergebnisse im Arbeitsbereichsverlauf
 host-history-partial-undo-title = Ausgewählte Arbeit teilweise rückgängig gemacht
 host-history-partial-undo-body = Spätere Änderungen anderer wurden beibehalten. Der Verlauf zeigt, welche Teile unverändert blieben.
-host-history-reverted-title = Raumänderung zurückgesetzt
-host-history-reverted-body = Vorwärts geschrieben: Die Version, von der du zurückgesetzt hast, bleibt im Verlauf.
-host-history-compared-title = Vergleich bereit
-host-history-compared-body = Der genaue kausale Vorher-nachher-Zustand wird im Verlauf angezeigt.
-host-history-named-title = Version benannt
-host-history-named-body = Im Verlauf dieses Arbeitsbereichs gespeichert, damit alle hier sie sehen.
-host-history-task-updated-title = Aufgabenzentrale aktualisiert
-host-history-task-updated-body = Die Aufgabe und ihr Prüfprotokoll werden mit diesem Arbeitsbereich geteilt.
-host-review-activity-title = Arbeitsbereichsaktivität prüfen
-host-review-activity-body = Der Verlauf ist geöffnet, damit du die zugehörigen Änderungen vor deiner Entscheidung ansehen kannst.
 
 # Anrufübergabe zwischen Geräten
 host-call-handoff-title = Anrufübergabe
-host-call-handoff-approved = Einmal genehmigt; dieses Gerät bereitet seine lokalen Medien vor
-host-call-handoff-declined = Auf diesem Gerät abgelehnt
 host-call-handoff-waiting = Warte auf ausdrückliche Genehmigung auf { $device }; der Anruf läuft hier weiter
 host-call-move-failed = Anruf konnte nicht verschoben werden
 
 # Geräte und Medien: was eine Aktion im Untermenü bewirkt hat
 host-fabric-notice-title = Geräte & Medien
 host-fabric-action-failed = Geräteaktion konnte nicht abgeschlossen werden
-host-fabric-certified-display = einen zertifizierten Bildschirm
-host-fabric-the-display = den Bildschirm
-host-fabric-calibration-applied = Vorgeschlagene Anordnung für { $device } übernommen
-host-fabric-calibration-dismissed = Anordnungsvorschlag für { $device } verworfen
-host-fabric-calibration-restored = Vorherige Anordnung für { $device } wiederhergestellt
-host-fabric-audio-allowed = { $source } darf in dieser Sitzung hier abspielen
-host-fabric-audio-declined = Audio von { $source } abgelehnt
-host-fabric-speaker-joined = { $group } als { $role } beigetreten
-host-fabric-speaker-declined = Beitritt zu { $group } abgelehnt
-host-fabric-speaker-stopped = Wiedergabe auf { $group } beendet
-host-fabric-speaker-playing = Wiedergabe auf { $group }
 host-fabric-speaker-playing-media = Wiedergabe auf { $group }; die Medien laufen weiter von hier
-host-fabric-speaker-left = Dieses Gerät hat { $group } verlassen
-host-fabric-speaker-listen-allowed = { $group } kann mit diesem Mikrofon kalibrieren
-host-fabric-speaker-listen-declined = { $group } verwendet dieses Mikrofon nicht
-host-fabric-speaker-listen-stopped = { $group } kann dieses Mikrofon nicht mehr verwenden
-host-fabric-audio-route-dismissed = Unterbrochene Übertragung { $route } verworfen
-host-fabric-audio-route-stopped = Übertragung { $route } beendet
-host-fabric-input-allowed = { $app } darf diese Eingabe einmal verwenden
-host-fabric-input-declined = Entfernte Eingabe für { $app } abgelehnt
-host-fabric-input-focused-app-allowed = Die fokussierte App darf diese entfernte Eingabe einmal verwenden
-host-fabric-input-stopped = Sitzung für entfernte Eingabe beendet
-host-fabric-pairing-approved = Kopplung von { $accessory } für diese Übergabe genehmigt
-host-fabric-pairing-declined = Kopplung von { $accessory } abgelehnt
-host-fabric-handoff-retrying = Übergabe von { $accessory } wird erneut versucht
-host-fabric-handoff-cancelling = Übergabe von { $accessory } wird abgebrochen
-host-fabric-controller-allowed = { $controller } von { $device } für diese Sitzung erlaubt
-host-fabric-controller-declined = Controller von { $device } abgelehnt
-host-fabric-controller-stopped = Weiterleitung von { $controller } beendet
-host-fabric-media-move-cancelled = Verschieben von { $title } auf { $device } abgebrochen
-host-fabric-media-retrying = { $title } auf { $device } wird erneut versucht
-host-fabric-output-routed = Audio wird jetzt an { $output } geleitet
-host-fabric-input-selected = Aufnahmequelle: { $input }
-host-fabric-tethering-allowed = { $device } darf die Verbindung dieses Telefons nutzen
-host-fabric-tethering-declined = Tethering für { $device } abgelehnt
-host-fabric-tethering-disconnected = Tethering mit { $device } getrennt
 host-fabric-asked-capture = Einmalige Freigabe bei { $device } angefragt: { $input }
 host-fabric-asked-audio = { $device } wurde gebeten, dieses Audio einmal zu erlauben; bis zur Genehmigung bleibt die Wiedergabe lokal
 host-fabric-asked-tethering = { $device } wurde gebeten, seine Verbindung zu teilen
@@ -632,7 +584,6 @@ host-fabric-place-left = { $device } wird nach der Bestätigung links von diesem
 host-fabric-place-right = { $device } wird nach der Bestätigung rechts von diesem Bildschirm angeordnet
 host-fabric-place-above = { $device } wird nach der Bestätigung über diesem Bildschirm angeordnet
 host-fabric-place-below = { $device } wird nach der Bestätigung unter diesem Bildschirm angeordnet
-host-fabric-control-revoked = { $device } kann dieses Gerät nicht mehr steuern
 host-fabric-control-granted = { $device } darf dieses Gerät 15 Minuten lang steuern
 
 # Barrierefreiheitsbaum: Arbeitsbereich-Overlays
@@ -1485,15 +1436,6 @@ search-action-permission-roles-subtitle = Wiederverwendbare Arbeitsbereichsrolle
 # Suche: was eine Shell-Aktion getan hat
 search-action-tab-close-failed = Dieser Tab kann nicht geschlossen werden
 search-action-tab-split-failed = Dieser Tab kann nicht geteilt werden
-search-action-device-list-copied = Geräteliste kopiert
-search-action-device-list-copied-body = { $count ->
-    [one] 1 Gerät
-   *[other] { $count } Geräte
-}
-search-action-enrollment-copied = Einrichtungscode kopiert
-search-action-enrollment-copied-body = Er läuft in fünf Minuten ab und kann keine weiteren Geräte zulassen.
-search-action-home-server-copied = Einrichtungscode für den Heimserver kopiert
-search-action-home-server-copied-body = Er läuft in fünf Minuten ab und gewährt die vollständige Replikation des Arbeitsbereichs.
 search-action-device-revoked = Gerät widerrufen
 search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
 
@@ -1507,8 +1449,6 @@ search-apps-verification-pending = Prüfung durch die Registry ausstehend
 search-apps-store-subtitle = App Store · { $trust } · { $detail }
 search-apps-view-in-store = { $app } im App Store ansehen
 search-apps-store-failed = App Store für { $app } konnte nicht geöffnet werden
-search-apps-opening = { $app } wird geöffnet
-search-apps-opening-body = Wird geladen …
 
 # Suche: Kontinuitätsaktionen zwischen deinen zertifizierten Geräten
 search-continuity-certified-device = Zertifiziertes Gerät

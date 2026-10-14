@@ -13,7 +13,7 @@
 //! key's shape never changes under the same name.
 
 use automerge::{AutoCommit, ReadDoc};
-use tilo_automerge::ReadTyped as _;
+use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId, counter_of, peer_salt_of};
@@ -85,28 +85,6 @@ pub struct ReplicatedStrip {
     pub order: u64,
     pub name: Option<String>,
     pub groups: Vec<ReplicatedGroup>,
-}
-
-/// Write `value` at `key` only when the document does not already say
-/// it, so a document accumulates a change per changed value rather than
-/// one per export — otherwise each sync round manufactures ops out of
-/// untouched state and two peers exporting to each other never fall
-/// quiet.
-pub fn put_str_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: &str) {
-    use automerge::transaction::Transactable;
-    let current = doc.str_at(obj, key);
-    if current.as_deref() != Some(value) {
-        let _ = doc.put(obj, key, value.to_string());
-    }
-}
-
-/// [`put_str_if_changed`] for an unsigned integer.
-pub fn put_uint_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: u64) {
-    use automerge::{ScalarValue, transaction::Transactable};
-    let current = doc.uint_at(obj, key);
-    if current != Some(value) {
-        let _ = doc.put(obj, key, ScalarValue::Uint(value));
-    }
 }
 
 // ---- concurrently created containers ---------------------------------------
@@ -458,14 +436,7 @@ pub fn project_room_policy(
 
     match &policy.owner {
         Some(owner) => {
-            let current = doc
-                .get(&ROOT, ROOM_OWNER_KEY)
-                .ok()
-                .flatten()
-                .and_then(|(value, _)| value.into_string().ok());
-            if current.as_deref() != Some(owner.as_str()) {
-                doc.put(&ROOT, ROOM_OWNER_KEY, owner.as_str())?;
-            }
+            doc.put_str_if_changed(&ROOT, ROOM_OWNER_KEY, owner)?;
         }
         None => {
             if doc.get(&ROOT, ROOM_OWNER_KEY).ok().flatten().is_some() {
@@ -849,10 +820,10 @@ pub fn project_owned_contents(
         if owns_strip {
             live_strips.insert(skey.clone());
             if empty == EmptyStrips::Retain {
-                put_uint_if_changed(doc, &strip_entry, STRIP_RETAINED_EMPTY_KEY, 1);
+                let _ = doc.put_uint_if_changed(&strip_entry, STRIP_RETAINED_EMPTY_KEY, 1);
             }
-            put_str_if_changed(doc, &strip_entry, "name", &strip.name);
-            put_uint_if_changed(doc, &strip_entry, "order", si as u64);
+            let _ = doc.put_str_if_changed(&strip_entry, "name", &strip.name);
+            let _ = doc.put_uint_if_changed(&strip_entry, "order", si as u64);
         }
 
         // A strip whose groups cannot be written is skipped; the sweep
@@ -919,7 +890,7 @@ fn project_owned_groups_in(
         };
         if owns_group {
             live_groups.insert(gkey.clone());
-            put_uint_if_changed(doc, &group_entry, "order", gi as u64);
+            let _ = doc.put_uint_if_changed(&group_entry, "order", gi as u64);
             // Width, maximization and active-tab selection are local
             // presentation preferences. Old room documents may still
             // contain the first two fields, but no current peer writes
@@ -979,8 +950,8 @@ fn project_owned_tabs_in(
         let Ok(tab_entry) = winner_or_create(doc, &tab_copies, &tabs_id, tkey.as_str()) else {
             continue;
         };
-        put_uint_if_changed(doc, &tab_entry, "order", ti as u64);
-        put_str_if_changed(doc, &tab_entry, "title", &tab.title);
+        let _ = doc.put_uint_if_changed(&tab_entry, "order", ti as u64);
+        let _ = doc.put_str_if_changed(&tab_entry, "title", &tab.title);
         if let Ok(blob) = serde_json::to_vec(&tab.tile) {
             let unchanged = matches!(
                 doc.get(&tab_entry, "tile_json").ok().flatten(),
@@ -1369,10 +1340,7 @@ pub fn project_room_records(
         };
         // Compared before writing, like every other value here — a
         // re-projection of unchanged state must not manufacture one.
-        let current = doc.str_at(&entry, "kind");
-        if current.as_deref() != Some(kind.as_str()) {
-            let _ = doc.put(&entry, "kind", kind.clone());
-        }
+        let _ = doc.put_str_if_changed(&entry, "kind", kind);
     }
     Ok(())
 }

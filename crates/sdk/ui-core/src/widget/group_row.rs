@@ -302,6 +302,8 @@ pub struct GroupRow {
     /// Transient: the promoted group leaves its lane's leading gutter to the
     /// workspace wheel, as a user maximize does; a client fullscreen covers it.
     promotion_keeps_gutter: bool,
+    /// A maximize can cover the gutter without hiding its Restore controls.
+    promotion_keeps_controls: bool,
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
@@ -989,6 +991,7 @@ impl GroupRow {
             leading_inset: 0.0,
             fullscreen_group: None,
             promotion_keeps_gutter: false,
+            promotion_keeps_controls: false,
             hidden: false,
             group_drag: None,
             touch_pan: None,
@@ -1277,6 +1280,15 @@ impl GroupRow {
     pub fn set_promotion_keeps_gutter(&mut self, keeps: bool) {
         if self.promotion_keeps_gutter != keeps {
             self.promotion_keeps_gutter = keeps;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Keep the maximized system controls even when the promoted group
+    /// covers its gutter. Client fullscreen leaves this off.
+    pub fn set_promotion_keeps_controls(&mut self, keeps: bool) {
+        if self.promotion_keeps_controls != keeps {
+            self.promotion_keeps_controls = keeps;
             self.structure_dirty = true;
         }
     }
@@ -3401,7 +3413,9 @@ impl Widget for GroupRow {
         }
         for group in &mut self.groups {
             group.set_fullscreen_presentation(
-                self.fullscreen_group == Some(group.id) && !self.promotion_keeps_gutter,
+                self.fullscreen_group == Some(group.id)
+                    && !self.promotion_keeps_gutter
+                    && !self.promotion_keeps_controls,
             );
         }
         let group_nodes: Vec<NodeId> = self

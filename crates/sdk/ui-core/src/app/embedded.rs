@@ -48,6 +48,9 @@ pub struct EmbeddedApp {
     rect: KurboRect,
     region: Region,
     focused: bool,
+    /// Focus state represented by `painted`. A hidden app can lose and regain
+    /// focus without changing the frame its host last showed.
+    painted_focus: bool,
     /// The control that had focus when focus last left the app.
     restore_focus: Option<NodeId>,
     /// Shift was held as focus last moved, so focus entering the app lands
@@ -134,6 +137,7 @@ impl EmbeddedApp {
                 cursor: Cell::new(None),
             },
             focused: false,
+            painted_focus: false,
             restore_focus: None,
             entering_backwards: false,
             wants_frame: Cell::new(true),
@@ -339,7 +343,7 @@ impl Widget for EmbeddedApp {
             // step of half a logical pixel is a whole one and copies.
             self.damage.set_copy_scale(copy_scale(placement));
         }
-        if self.wants_frame.get() || woken || due {
+        if self.wants_frame.get() || woken || due || self.focused != self.painted_focus {
             // A frame whose sync or layout leaves more to settle runs again
             // at once, so what the host paints is the app at rest.
             let mut again = true;
@@ -390,6 +394,7 @@ impl Widget for EmbeddedApp {
             let _ = self.app.refresh_semantic_tree();
             self.wants_frame
                 .set(again || self.region.redraw.replace(false));
+            self.painted_focus = self.focused;
         }
         // A host comparing this frame with one that painted the generation
         // before repaints only the app's damage; any other change to the
@@ -558,7 +563,6 @@ impl Widget for EmbeddedApp {
             self.restore_focus = self.app.focused_control();
             self.app.restore_focused_control(None);
         }
-        self.wants_frame.set(true);
     }
 
     fn is_focused(&self) -> bool {
@@ -631,7 +635,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.wants_frame.get()
+        self.wants_frame.get() || self.focused != self.painted_focus
     }
 
     fn has_pending_visual_work(&self) -> bool {
@@ -1045,6 +1049,56 @@ mod theme_repaint_tests {
             );
             previous = current;
         }
+    }
+
+    #[test]
+    fn focus_restored_before_a_hidden_app_is_drawn_reuses_its_painted_scene() {
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(crate::widget::Text::new("Focus probe")),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        layout(&mut tile, &theme);
+        for _ in 0..8 {
+            paint(&mut tile, &theme);
+            if !tile.needs_redraw() {
+                break;
+            }
+        }
+        assert!(
+            !tile.needs_redraw(),
+            "the app must settle before focus moves"
+        );
+
+        tile.set_focus(true);
+        assert!(tile.needs_redraw(), "visible focus entering needs a frame");
+        paint(&mut tile, &theme);
+        assert!(!tile.needs_redraw());
+        let shown = tile.painted_damage.to;
+
+        tile.set_focus(false);
+        assert!(tile.needs_redraw(), "visible focus leaving needs a frame");
+        // A workspace switch parks this app without drawing it, then gives it
+        // focus back before its next scene is composed.
+        tile.set_focus(true);
+        assert!(!tile.needs_redraw());
+        paint(&mut tile, &theme);
+        assert_eq!(tile.painted_damage.to, shown, "the app did not repaint");
+
+        tile.set_focus(false);
+        paint(&mut tile, &theme);
+        assert!(
+            tile.painted_damage.to > shown,
+            "a lasting focus change repaints"
+        );
+        let unfocused = tile.painted_damage.to;
+        tile.wants_frame.set(true);
+        paint(&mut tile, &theme);
+        assert!(
+            tile.painted_damage.to > unfocused,
+            "other app work still repaints"
+        );
     }
 }
 

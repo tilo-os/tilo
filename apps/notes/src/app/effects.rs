@@ -313,17 +313,11 @@ impl NotesApp {
         let request = PickRequest::save("Export Markdown", "Export", &export_name(title))
             .filter(FileFilter::new("Markdown").glob("*.md"))
             .thread_name("notes-export-markdown");
-        Ok(cx.save_file(
-            request,
-            portable.into_bytes(),
-            |app: &mut Self, saved, _| {
-                if saved {
-                    app.transfer_toasts
-                        .push("Note exported", ui::widget::toast::ToastKind::Success);
-                }
+        Ok(
+            cx.save_file(request, portable.into_bytes(), |_: &mut Self, _, _| {
                 Ok(Effected::done())
-            },
-        ))
+            }),
+        )
     }
 
     fn choose_image(page: PageId, cx: &mut Cx) -> Effected {

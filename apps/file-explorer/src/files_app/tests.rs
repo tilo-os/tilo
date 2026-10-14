@@ -51,7 +51,8 @@ mod open_with_tests {
 
     fn merge_is_never_offered_for_binary_or_unsupported_names() {
         assert!(merge_supported_path(std::path::Path::new("notes.txt")));
-        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
+        assert!(merge_supported_path(std::path::Path::new("legacy.QDOC")));
+        assert!(merge_supported_path(std::path::Path::new("draft.TILO-DOC")));
         assert!(!merge_supported_path(std::path::Path::new("photo.png")));
         assert!(!merge_supported_path(std::path::Path::new("unknown")));
     }

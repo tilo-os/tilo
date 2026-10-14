@@ -916,20 +916,16 @@ fn an_app_that_showed_its_window_and_then_failed_is_not_reported_as_unopened() {
 #[test]
 fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
     /// A launcher parent may exit after daemonising but before its GUI child
-    /// maps a toplevel. The opening acknowledgement retires immediately while
-    /// the placement promise remains available for the bounded handoff grace.
-    fn clean_launch_exit_retires_its_pending_open_notice() {
-        let (mut host, chrome) = host_with_launch_polling();
+    /// maps a toplevel. The pending launch settles immediately while the
+    /// placement promise remains available for the bounded handoff grace.
+    fn clean_launch_exit_settles_its_pending_launch() {
+        let (mut host, _chrome) = host_with_launch_polling();
         let package_id = "so.tilo.exit-before-window-fixture";
         crate::shell::launcher::set_pending_placement(
             package_id,
             crate::compositor::tab_binding::Placement::NewGroup,
         );
-        let notice = chrome.borrow_mut().push_notification_full(
-            tilo_desktop::notifications::Notification::new("Opening Fixture", "Loading…")
-                .with_dismiss_after(std::time::Duration::from_secs(120)),
-        );
-        crate::shell::catalogue::note_pending_notice(package_id, notice);
+        crate::shell::catalogue::note_pending_launch(package_id);
         crate::shell::launcher::push_event(crate::shell::launcher::LaunchEvent {
             package_id: package_id.to_string(),
             display_name: "Fixture".to_string(),
@@ -938,18 +934,10 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
             kind: crate::shell::launcher::LaunchEventKind::Exited,
         });
 
-        assert!(host.drain_launch_events());
+        host.drain_launch_events();
         assert!(
-            chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .all(|n| n.id != notice),
-            "the terminal launch event must dismiss its opening notice"
-        );
-        assert!(
-            crate::shell::catalogue::pending_notice(package_id).is_none(),
-            "the pending id must be consumed along with the card"
+            !crate::shell::catalogue::pending_launch(package_id),
+            "the terminal launch event must settle the pending launch"
         );
         assert_eq!(
             crate::shell::launcher::placement_for_toplevel(package_id, 99_001),
@@ -1015,7 +1003,7 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
         );
     }
 
-    clean_launch_exit_retires_its_pending_open_notice();
+    clean_launch_exit_settles_its_pending_launch();
     launchpad_refusal_reporting_does_not_duplicate_callback_notice();
     escape_dismisses_the_latest_launch_error_without_touching_layout();
 }
@@ -1967,37 +1955,24 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         );
     }
 
-    /// The loading notice must outlive the fork (nothing on screen yet) but
-    /// retire the moment the window's own place says which app is coming —
-    /// otherwise it's noise, or a stale "Loading…" under "isn't responding".
-    fn the_loading_indication_stands_until_the_window_place_speaks_for_itself() {
+    /// A pending launch must outlive the fork (nothing on screen yet) but
+    /// settle the moment the window's own place says which app is coming,
+    /// so the app can be opened again.
+    fn a_pending_launch_stands_until_the_window_place_speaks_for_itself() {
         const SURFACE: u64 = 918_273;
         let (h, chrome) = host_with_launch_polling();
-        let notice = {
-            let mut st = chrome.borrow_mut();
-            st.push_notification_full(tilo_desktop::notifications::Notification::new(
-                "Opening Ledger",
-                "Loading…",
-            ))
-        };
-        crate::shell::catalogue::note_pending_notice("so.tilo.retirefixture", notice);
+        crate::shell::catalogue::note_pending_launch("so.tilo.retirefixture");
 
         assert!(
-            !h.retire_notices_for_opened_windows(),
+            !h.settle_launches_of_opened_windows(),
             "nothing has appeared yet, so nothing is settled"
         );
-        assert!(
-            chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "the user is still waiting; the acknowledgement must still be up"
-        );
+        assert!(crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
 
         // Adoption isn't the end of the wait — for the first moments the
-        // tab holds nothing visible, and a blink-fast app must not be
-        // preceded by an indicator flashing on and off.
+        // tab holds nothing visible.
         let store = crate::compositor::foreign::store();
         store.forget(SURFACE);
         {
@@ -2011,40 +1986,25 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
         assert!(
-            !h.retire_notices_for_opened_windows(),
-            "a tab with nothing painted in it yet is not somewhere the wait \
-             can be handed to; retiring on it hands the user back an empty \
-             desktop"
+            !h.settle_launches_of_opened_windows(),
+            "a tab with nothing painted in it yet has not opened the app"
         );
-        assert!(
-            chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "still waiting — nothing stands in the window's place"
-        );
+        assert!(crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
 
-        // Past the delay the window's place names the app; the notice
-        // stands down rather than repeating it.
+        // Past the delay the window's place names the app.
         store.backdate_first_seen(
             SURFACE,
             crate::compositor::foreign::OPENING_DELAY + std::time::Duration::from_millis(50),
         );
         assert!(
-            h.retire_notices_for_opened_windows(),
-            "the window's own place is naming the app; a second indication \
-             in the corner is noise"
+            h.settle_launches_of_opened_windows(),
+            "the window's own place is naming the app; the launch is settled"
         );
-        assert!(
-            !chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "the wait has moved to where the window will be, and only one \
-             thing may be saying it"
-        );
+        assert!(!crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
         store.forget(SURFACE);
     }
 
@@ -2053,14 +2013,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
     fn a_window_that_paints_before_the_card_is_due_settles_the_open_too() {
         const SURFACE: u64 = 918_274;
         let (h, chrome) = host_with_launch_polling();
-        let notice = {
-            let mut st = chrome.borrow_mut();
-            st.push_notification_full(tilo_desktop::notifications::Notification::new(
-                "Opening Ledger",
-                "Loading…",
-            ))
-        };
-        crate::shell::catalogue::note_pending_notice("so.tilo.retirefixture", notice);
+        crate::shell::catalogue::note_pending_launch("so.tilo.retirefixture");
 
         let store = crate::compositor::foreign::store();
         store.forget(SURFACE);
@@ -2075,7 +2028,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
         assert!(
-            !h.retire_notices_for_opened_windows(),
+            !h.settle_launches_of_opened_windows(),
             "precondition: nothing stands in the window's place yet"
         );
 
@@ -2088,18 +2041,13 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
             "precondition: it presented"
         );
         assert!(
-            h.retire_notices_for_opened_windows(),
+            h.settle_launches_of_opened_windows(),
             "the window is on screen, which is the end of the wait however \
              fast it came"
         );
-        assert!(
-            !chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "once the app is on screen the indication has done its job"
-        );
+        assert!(!crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
         store.forget(SURFACE);
     }
 
@@ -2117,7 +2065,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
     }
 
     each_face_of_the_card_offers_its_own_gesture_as_a_button();
-    the_loading_indication_stands_until_the_window_place_speaks_for_itself();
+    a_pending_launch_stands_until_the_window_place_speaks_for_itself();
     a_window_that_paints_before_the_card_is_due_settles_the_open_too();
     escape_still_dismisses_the_card();
 }

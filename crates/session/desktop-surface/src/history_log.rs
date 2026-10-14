@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, ScalarValue, Value};
+use tilo_automerge::WriteTyped as _;
 use tilo_desktop_model::projection::{EmptyStrips, project_owned_contents};
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
 
@@ -188,8 +189,7 @@ pub fn room_history(mut log: AutoCommit, room: RoomId) -> RoomHistory {
             );
             declared = true;
         }
-        tilo_desktop_model::projection::put_str_if_changed(
-            &mut doc,
+        let _ = doc.put_str_if_changed(
             &ROOT,
             tilo_desktop_model::projection::ROOM_NAME_KEY,
             &workspace.name,

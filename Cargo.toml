@@ -255,6 +255,7 @@ members = [
     "crates/platform/tilo-input-context",
     "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
+    "crates/platform/tilo-wake",
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
@@ -393,6 +394,12 @@ homepage = "https://tilo.so"
 [workspace.metadata.cargo-machete]
 ignored = ["workspace-hack"]
 
+[workspace.lints.rust]
+# `tilo_no_js`: a wasm32-unknown-unknown build for a host that is not a
+# JavaScript page (a sandboxed format provider), which must link no
+# wasm-bindgen glue.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_no_js)"] }
+
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 # `nursery` is unstable and includes documented false positives, so its lints
@@ -495,6 +502,7 @@ cosmic-text = { version = "0.19.0", default-features = false }
 # ---------------------------------------------------------------------------
 tokio = "1.52.3"
 tilo-rt = { version = "0.1.0", path = "crates/platform/tilo-rt" }
+tilo-wake = { version = "0.1.0", path = "crates/platform/tilo-wake" }
 tilo-paths = { version = "0.1.0", path = "crates/platform/tilo-paths" }
 tilo-clipboard = { version = "0.1.0", path = "crates/platform/tilo-clipboard" }
 tilo-dialogs = { version = "0.1.0", path = "crates/platform/tilo-dialogs" }
@@ -907,6 +915,15 @@ strip = "symbols"
 [profile.wasm-split]
 inherits = "wasm-release"
 strip = "none"
+
+# The browser bundles' quick development build (`build.sh --profile quick`).
+# Without debug information and with light optimisation, the linked desktop
+# module is a quarter of `dev`'s, and wasm-bindgen and the splitter take half
+# as long on it, for a compile that is barely slower.
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+debug = false
 
 # Thin-app profile: release settings minus those incompatible with dynamic SDK
 # linking.

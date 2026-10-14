@@ -251,7 +251,6 @@ impl AuthenticatorApp {
             && !ids.contains(&id)
         {
             self.pending_delete = None;
-            self.toast("Account removed", ToastKind::Success);
         }
         if self.selected.is_none_or(|id| !ids.contains(&id)) {
             self.selected = self.vault.ordered().first().map(|account| account.id);
@@ -302,7 +301,6 @@ impl AuthenticatorApp {
         if self.seeds.retry(&ids) {
             self.persistence_message = None;
             self.join_seeds();
-            self.toast("Keys saved on this device", ToastKind::Success);
             true
         } else {
             self.describe_persistence_failure(UNSAVED_DETAIL);
@@ -312,12 +310,10 @@ impl AuthenticatorApp {
 
     /// Keep `seed` as the secret of `id` on this device, reporting a store
     /// that refused it with `failure`.
-    fn keep_seed(&mut self, id: AccountId, seed: &str, failure: &str) -> bool {
-        let saved = self.seeds.put(id, seed);
-        if !saved {
+    fn keep_seed(&mut self, id: AccountId, seed: &str, failure: &str) {
+        if !self.seeds.put(id, seed) {
             self.describe_persistence_failure(failure);
         }
-        saved
     }
 
     /// Recompute the ordered visible set and push it to the list.
@@ -479,7 +475,7 @@ impl AuthenticatorApp {
                 let order = self.vault.next_order();
                 acc.order = order;
                 let id = acc.id;
-                let saved = self.keep_seed(
+                self.keep_seed(
                     id,
                     &acc.secret,
                     "The account was added, but its key isn\u{2019}t saved. Keep this window open, restore access, then retry.",
@@ -490,9 +486,6 @@ impl AuthenticatorApp {
                     &StoredAccount::of(&acc),
                 ));
                 self.selected = Some(id);
-                if saved {
-                    self.toast("Account added", ToastKind::Success);
-                }
             }
             AddPanelEvent::Edit(mut acc) => {
                 let Some(before) = self.vault.get(acc.id).cloned() else {
@@ -504,12 +497,13 @@ impl AuthenticatorApp {
                 // owns colour and order.
                 acc.color = before.color;
                 acc.order = before.order;
-                let saved = acc.secret == before.secret
-                    || self.keep_seed(
+                if acc.secret != before.secret {
+                    self.keep_seed(
                         acc.id,
                         &acc.secret,
                         "The account changed, but its new key isn\u{2019}t saved on this device. Restore access, then retry.",
                     );
+                }
                 let edits = account_edits(&before, &acc);
                 if let Some(dispatch) = &self.dispatch {
                     dispatch.group(|| {
@@ -520,9 +514,6 @@ impl AuthenticatorApp {
                 }
                 self.join_seeds();
                 self.selected = Some(acc.id);
-                if saved {
-                    self.toast("Account updated", ToastKind::Success);
-                }
             }
             AddPanelEvent::Provision(acc) => {
                 if self.vault.get(acc.id).is_none() {
@@ -533,15 +524,12 @@ impl AuthenticatorApp {
                 // Only the local key is installed; the shared identity, order
                 // and colour stay as the document has them, and the form
                 // checked the code parameters against them.
-                let saved = self.keep_seed(
+                self.keep_seed(
                     acc.id,
                     &acc.secret,
                     "The key works for this session, but it isn\u{2019}t saved on this device. Restore access, then retry.",
                 );
                 self.join_seeds();
-                if saved {
-                    self.toast("Key set up on this device", ToastKind::Success);
-                }
             }
         }
         self.list_dirty = true;

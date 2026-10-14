@@ -1,7 +1,7 @@
 //! Spreadsheet interchange: the [`SheetTable`] Sheets imports and exports, and
 //! Excel `.xlsx` import and export.
 //!
-//! Both package formats go through qdoc's codecs ([`tilo_doc_codecs::XlsxCodec`] here,
+//! Both package formats go through tilo-doc's codecs ([`tilo_doc_codecs::XlsxCodec`] here,
 //! [`tilo_doc_codecs::OdsCodec`] in [`crate::ods`]): an untrusted file is read under the
 //! shared zip-bomb and DTD/XXE bounds into plain cells, never through a
 //! dense grid, and only then materialised — within
@@ -376,7 +376,7 @@ pub(crate) fn export_cell(
     }
 }
 
-/// A snapshot of `tables` for qdoc's exporters, each cell written by
+/// A snapshot of `tables` for tilo-doc's exporters, each cell written by
 /// [`export_cell`] with the style `style_for` picks for its format.
 pub(crate) fn snapshot_of(
     tables: &[SheetTable],

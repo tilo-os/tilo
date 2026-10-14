@@ -4763,11 +4763,7 @@ impl Widget for ForeignSurfaceWidget {
         // `new_leaf` can't fail in practice for a single-node insert; a
         // dummy id here just means the fallback is unreachable by real
         // traversal instead of panicking.
-        let style = taffy::Style {
-            size: taffy::Size::from_percent(1.0, 1.0),
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

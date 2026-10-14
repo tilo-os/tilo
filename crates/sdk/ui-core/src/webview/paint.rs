@@ -432,17 +432,21 @@ struct PaintState {
     sent_blobs: std::collections::HashSet<[u8; 32]>,
     /// Whether the app wants the page shown at all.
     wanted_visible: bool,
-    /// When a view last drew this engine's page.
-    last_presented: Instant,
+    /// The frame a view last drew (its pixels' address).
+    presented_pixels: usize,
+    /// Since when a newer frame waits for a view to draw it.
+    undrawn_since: Option<Instant>,
     /// What the engine was last told: painting, or hidden.
     painting: bool,
     /// How long an undrawn page keeps painting.
     hide_after: Duration,
 }
 
-/// A page no view has drawn for this long stops painting: the engine is
-/// told it is hidden, which stops its compositing and rendering until a view
-/// draws it again. Agents keep reading and operating a hidden page.
+/// A page whose newest frame no view drew for this long stops painting: the
+/// engine is told it is hidden, which stops its compositing and rendering
+/// until a view draws it again. A window showing a still page draws nothing
+/// and is not "undrawn"; one the shell keeps from drawing (a hidden tab)
+/// holds the frame back. Agents keep reading and operating a hidden page.
 const HIDE_UNPRESENTED: Duration = Duration::from_secs(2);
 
 /// Any engine, drawn as a display list. Commands and events pass through;
@@ -488,7 +492,8 @@ impl PaintEngine {
                 keyframe_needed: true,
                 sent_blobs: std::collections::HashSet::new(),
                 wanted_visible: true,
-                last_presented: crate::time::now(),
+                presented_pixels: 0,
+                undrawn_since: None,
                 painting: true,
                 hide_after: HIDE_UNPRESENTED,
             }),
@@ -539,11 +544,29 @@ impl PaintEngine {
         }
     }
 
-    /// Paint while the app wants the page and someone sees it: a view drew
-    /// it recently, or a session shares it with someone watching.
+    /// The address of the engine's current frame's pixels; 0 for none.
+    fn current_pixels(&self) -> usize {
+        self.inner
+            .frames()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, |frame| Arc::as_ptr(&frame.rgba) as usize)
+    }
+
+    /// Paint while the app wants the page and someone sees it: no frame waits
+    /// undrawn longer than [`HIDE_UNPRESENTED`], or a session shares it with
+    /// someone watching.
     fn update_visibility(&self, state: &mut PaintState) {
-        let seen =
-            crate::time::now().saturating_duration_since(state.last_presented) < state.hide_after;
+        let now = crate::time::now();
+        if self.current_pixels() == state.presented_pixels {
+            state.undrawn_since = None;
+        } else if state.undrawn_since.is_none() {
+            state.undrawn_since = Some(now);
+        }
+        let seen = state
+            .undrawn_since
+            .is_none_or(|since| now.saturating_duration_since(since) < state.hide_after);
         let paint = state.wanted_visible && (seen || share_watched());
         if paint != state.painting {
             state.painting = paint;
@@ -575,8 +598,10 @@ impl WebViewEngine for PaintEngine {
         self.update_visibility(&mut state);
     }
     fn presented(&self) {
+        let pixels = self.current_pixels();
         let mut state = self.lock();
-        state.last_presented = crate::time::now();
+        state.presented_pixels = pixels;
+        state.undrawn_since = None;
         self.update_visibility(&mut state);
     }
     fn set_modifiers(&self, modifiers: KeyModifiers) {
@@ -1241,6 +1266,17 @@ mod tests {
             "drawn just now: still painting"
         );
 
+        // A window showing a still page draws nothing, and is still seen.
+        std::thread::sleep(Duration::from_millis(60));
+        drop(engine.drain_events());
+        assert!(
+            test.visibility_changes().is_empty(),
+            "a still page on screen keeps painting"
+        );
+
+        // A new frame no view draws (a hidden tab's) stops it.
+        engine.send(WebViewCommand::Navigate("https://example.test/next".into()));
+        drop(engine.drain_events());
         std::thread::sleep(Duration::from_millis(60));
         drop(engine.drain_events());
         assert_eq!(

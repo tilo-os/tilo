@@ -1802,7 +1802,6 @@ impl CameraApp {
                 drop(open);
                 app.dirty = true;
                 if saved {
-                    app.toast = Some("Saved scanned document".into());
                     Ok(Effected::done())
                 } else {
                     Err("Document export cancelled".into())
@@ -1822,9 +1821,7 @@ impl CameraApp {
         } else {
             from.saturating_sub(1)
         };
-        if self.document_scan.move_page(from, to) {
-            self.toast = Some(format!("Page moved to position {}", to + 1));
-        }
+        self.document_scan.move_page(from, to);
     }
 
     fn remove_document_page(&mut self) {
@@ -1833,9 +1830,7 @@ impl CameraApp {
         }
         self.cancel_document_crop();
         let index = self.document_scan.selected;
-        if self.document_scan.remove_page(index) {
-            self.toast = Some("Page removed".into());
-        }
+        self.document_scan.remove_page(index);
     }
 
     fn apply_back(&mut self, _doc: &mut ui::widget::Edits<'_>, _root: &ObjId) {
@@ -2066,7 +2061,6 @@ impl CameraApp {
                     label: "New capture".into(),
                     facing: self.facing,
                 });
-                self.toast = Some("Photo saved".into());
                 Ok(())
             }
             Storage::Disk(dir) => {
@@ -2638,7 +2632,9 @@ impl CameraApp {
                         })),
                         resources: vec![format!("camera.photo:{}", saved.name.clone())],
                     };
-                    self.toast = Some("Photo saved".into());
+                    // The capture is now in the recent handoff; retire the
+                    // "Saving photo…" progress note rather than confirm it.
+                    self.toast = None;
                     if let Some(invocation) = terminal {
                         self.settle(invocation, Ok(output));
                     }
@@ -2705,7 +2701,9 @@ impl CameraApp {
                         })),
                         resources: vec![format!("camera.video:{}", saved.name.clone())],
                     };
-                    self.toast = Some("Video saved".into());
+                    // The capture is now in the recent handoff; retire the
+                    // "Finalizing video…" progress note rather than confirm it.
+                    self.toast = None;
                     if let Some(invocation) = terminal {
                         self.settle(invocation, Ok(output));
                     }
@@ -4172,7 +4170,10 @@ mod tests {
             app.sync_record(&mut doc, &root);
             assert_eq!(app.captures.len(), 1);
             assert_ne!(app.captures[0].id, before);
-            assert!(app.toast.is_some());
+            assert!(
+                app.toast.is_none(),
+                "the new thumbnail is the confirmation; no toast repeats it"
+            );
         }
         // Phase `disk_shutter_writes_a_real_jpeg_via_handle_event`.
         {
@@ -4330,10 +4331,8 @@ mod tests {
             assert!(clip.is_video());
             assert!(clip.dur_ms > 0, "clip has a real duration");
             assert!(
-                app.toast
-                    .as_deref()
-                    .unwrap_or("")
-                    .starts_with("Video saved")
+                app.toast.is_none(),
+                "the clip in the recent handoff is the confirmation"
             );
         }
     }
