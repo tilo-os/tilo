@@ -59,8 +59,8 @@ pub fn kill_tree(child: &mut Child) {
 
 /// Stop a child started with [`own_process_tree`] and reap it. With a
 /// non-zero `grace`, the tree is first asked to exit (`SIGTERM` on Unix) and
-/// the child gets that long to do so; whatever remains is then killed with
-/// [`kill_tree`].
+/// gets that long to do so: until the child and, on Unix, every process left
+/// in its group are gone. Whatever remains is then killed with [`kill_tree`].
 pub fn terminate_tree(child: &mut Child, grace: Duration) {
     #[cfg(unix)]
     if !grace.is_zero()
@@ -74,7 +74,13 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
             .checked_add(grace)
             .unwrap_or_else(Instant::now);
         while Instant::now() < deadline {
-            if child.try_wait().ok().flatten().is_some() {
+            // The leader exiting is not enough: a worker it started may still
+            // be winding down in the group. Signal 0 only probes for one.
+            // SAFETY: as above; signal 0 delivers nothing.
+            if child.try_wait().ok().flatten().is_some()
+                && unsafe { libc::kill(group, 0) } != 0
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
                 return;
             }
             std::thread::sleep(Duration::from_millis(20));

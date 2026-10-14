@@ -16108,6 +16108,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "bounded-command",
  "clap",
  "fluent",
  "fluent-syntax",
