@@ -158,10 +158,21 @@ const fn autobind_has_capacity(current: usize) -> bool {
 /// Optional on-demand workspace creation used by a same-owner home host.
 /// Shared/provider hosts leave this disabled and pre-bind their tenant
 /// workspaces explicitly.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct WorkspaceAutobind {
     /// Relay state root under which a newly seen workspace is persisted.
     pub state_root: std::path::PathBuf,
+    /// The adapter a newly seen workspace's store classifies co-edit bodies
+    /// with: the one the relay was started with.
+    pub shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
+}
+
+impl std::fmt::Debug for WorkspaceAutobind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkspaceAutobind")
+            .field("state_root", &self.state_root)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Relay-wide state a peer session needs for its whole lifetime — the
@@ -2501,7 +2512,10 @@ enum LiveEnvelope {
 // current authenticated source and retain all recipient/session fences.
 /// The devices a retained message goes to live when only they can use it
 /// ([`crate::payloads::ShellPayloads::audience`]); `None` for everyone.
-fn live_audience(envelope: &LiveEnvelope) -> Option<std::collections::BTreeSet<[u8; 32]>> {
+fn live_audience(
+    payloads: &dyn crate::payloads::ShellPayloads,
+    envelope: &LiveEnvelope,
+) -> Option<std::collections::BTreeSet<[u8; 32]>> {
     let LiveEnvelope::Original(original) = envelope else {
         return None;
     };
@@ -2513,10 +2527,11 @@ fn live_audience(envelope: &LiveEnvelope) -> Option<std::collections::BTreeSet<[
     else {
         return None;
     };
-    crate::payloads::shell().audience(&body)
+    payloads.audience(&body)
 }
 
 fn gated_checkpoint_channel(
+    payloads: &dyn crate::payloads::ShellPayloads,
     envelope: &LiveEnvelope,
     source: Option<&StateSource>,
 ) -> Option<[u8; 32]> {
@@ -2533,7 +2548,7 @@ fn gated_checkpoint_channel(
     };
     // Unknown wrapper suffixes retain the generic checkpoint gate.
     if outer_trailing.is_empty()
-        && let Some(checkpoint) = crate::payloads::shell().checkpoint(&channel, &body)
+        && let Some(checkpoint) = payloads.checkpoint(&channel, &body)
     {
         // Channel governance is a sequence of steps that each replace the
         // last on one route, not a baseline of content a live device already
@@ -2964,7 +2979,13 @@ fn new_checkpoint_batch(
         // Keep the same ordered receipt through projection and serial fallback.
         let sequence = state.next_sequence()?;
         let continuity = peer
-            .and_then(|peer| crate::store::continuity::Evidence::authenticated(&envelope, peer))
+            .and_then(|peer| {
+                crate::store::continuity::Evidence::authenticated(
+                    &**state.store.payloads(),
+                    &envelope,
+                    peer,
+                )
+            })
             .map(|evidence| evidence.accept(sequence));
         let checkpoint_stage = if state.store.checkpoint_lineage_exists(&channel, &raw)? {
             Some(
@@ -3994,8 +4015,9 @@ async fn publish_checkpoint_commit(
             }
             break;
         }
-        let checkpoint_channel = gated_checkpoint_channel(&envelope, Some(source));
-        let audience = live_audience(&envelope);
+        let payloads = &**runtime.store.payloads();
+        let checkpoint_channel = gated_checkpoint_channel(payloads, &envelope, Some(source));
+        let audience = live_audience(payloads, &envelope);
         for (recipient, original) in &commit.sessions {
             if recovering
                 && !captured_live_current(&commit.session_lives, &runtime, recipient, original)
@@ -4735,6 +4757,7 @@ async fn enqueue_state_inner(
         ));
     }
     trace_native_publication("admission_authorized", &envelope, None);
+    let payloads = runtime.store.payloads().clone();
     drop(runtime);
     let owner = crate::persistence::handle(workspace).await;
     trace_native_publication("persistence_admission_wait", &envelope, None);
@@ -4747,7 +4770,7 @@ async fn enqueue_state_inner(
     let prepare_workspace = workspace.clone();
     let prepare_source = source.clone();
     let continuity_evidence = source.as_ref().and_then(|source| {
-        crate::store::continuity::Evidence::authenticated(&envelope, &source.peer)
+        crate::store::continuity::Evidence::authenticated(&*payloads, &envelope, &source.peer)
     });
     let delta_len = delta.len();
     let mut envelope = Some(envelope);
@@ -5085,8 +5108,10 @@ async fn enqueue_state_inner(
                         if activating { return Err(crate::persistence::error("activation source authorization changed")); }
                         break;
                     }
-                    let checkpoint_channel = gated_checkpoint_channel(&envelope, source.as_ref());
-                    let audience = live_audience(&envelope);
+                    let payloads = &**runtime.store.payloads();
+                    let checkpoint_channel =
+                        gated_checkpoint_channel(payloads, &envelope, source.as_ref());
+                    let audience = live_audience(payloads, &envelope);
                     // Presence the author sent after this delta was held for
                     // it and goes out with it; from here on nothing waits.
                     if let Envelope::Delta { author_device_public_key, .. } = &*envelope {
@@ -5615,9 +5640,12 @@ async fn handle_delta(
     trace_native_publication("server_authorized", &env, None);
     // The change itself must say what it does and stay inside what its app
     // publishes, before the relay keeps or forwards it.
-    let standings = ws.lock().await.standings.clone();
+    let (standings, payloads) = {
+        let runtime = ws.lock().await;
+        (runtime.standings.clone(), runtime.store.payloads().clone())
+    };
     if let Envelope::Delta { delta, .. } = &env
-        && let Some(reason) = crate::surfaces::refusal(delta, standings.as_deref())
+        && let Some(reason) = crate::surfaces::refusal(&*payloads, delta, standings.as_deref())
     {
         // Neither kept nor forwarded. The session stays: one bad change
         // is not a membership decision.
@@ -5625,7 +5653,7 @@ async fn handle_delta(
         return Ok(None);
     }
     let observed = match (&env, session.compactor) {
-        (Envelope::Delta { delta, .. }, Some(_)) => crate::compaction::Compactor::observe(delta),
+        (Envelope::Delta { delta, .. }, Some(compactor)) => compactor.observe(delta),
         _ => None,
     };
     let admitting = session
@@ -5786,7 +5814,7 @@ async fn handle_commit(
     }
     let observed = session
         .compactor
-        .and_then(|_| crate::compaction::Compactor::observe(&delta));
+        .and_then(|compactor| compactor.observe(&delta));
     let admitting = session
         .compactor
         .zip(observed)
@@ -6682,6 +6710,7 @@ pub(crate) async fn get_or_autobind_workspace(
     crate::workspace_io::get_or_initialize(
         workspaces,
         autobind.state_root.clone(),
+        &autobind.shell_payloads,
         workspace_id,
         true,
         crate::room_access::AdmissionMode::SameOwner,
@@ -6705,6 +6734,7 @@ mod autobind_tests {
         let registry = Arc::new(AsyncMutex::new(HashMap::new()));
         let autobind = WorkspaceAutobind {
             state_root: tmp.path().to_path_buf(),
+            shell_payloads: crate::payloads::neighbour(),
         };
         let (release, reached) =
             crate::store::test_barrier::install(&tmp.path().join("workspaces/7"), "open");

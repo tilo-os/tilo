@@ -17936,7 +17936,6 @@ dependencies = [
  "iroh-relay",
  "launcher",
  "libc",
- "moq-net",
  "n0-future",
  "neighbour-wire",
  "notes",
@@ -17981,6 +17980,7 @@ dependencies = [
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
+ "tilo-relay-shell",
  "tilo-resource",
  "tilo-rt",
  "tilo-seal",
@@ -18074,6 +18074,27 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-relay-shell"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "collab-types",
+ "hex",
+ "moq-net",
+ "postcard",
+ "tilo-moq",
+ "tilo-peer-state",
+ "tilo-relay-protocol",
+ "tilo-relay-session",
+ "tilo-test-env",
+ "tilo-user-identity",
+ "tokio",
+ "tracing",
  "workspace-hack",
 ]
 

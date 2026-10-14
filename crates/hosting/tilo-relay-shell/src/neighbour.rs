@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use tilo_peer_state::NeighbourMsg;
 use tilo_peer_state::transport::{Retention, audience, retention, standalone};
 
-use super::{Checkpoint, CheckpointKind, Route, ShellPayloads};
+use crate::{Checkpoint, CheckpointKind, Route, ShellPayloads};
 
 /// Classifies co-edit bodies as the desktop's `NeighbourMsg` vocabulary.
 #[derive(Clone, Copy, Debug, Default)]

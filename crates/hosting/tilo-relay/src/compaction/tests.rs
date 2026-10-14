@@ -175,7 +175,14 @@ fn read(doc: &AutoCommit, key: &str) -> Option<String> {
 
 fn compact(store: &WorkspaceStore, entries: &[ChannelEntry]) -> Replaced {
     let folded = fold_all(entries).expect("something to fold");
-    let frames = document_frames(&key(99), WORKSPACE, &folded.route, &folded.snapshot).unwrap();
+    let frames = document_frames(
+        &crate::payloads::NeighbourPayloads,
+        &key(99),
+        WORKSPACE,
+        &folded.route,
+        &folded.snapshot,
+    )
+    .unwrap();
     let remove: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
     store
         .replace_channel(
@@ -384,7 +391,14 @@ fn a_sealed_tail_is_never_folded_and_asks_for_a_member() {
 fn host_frames_name_their_signer_as_publisher() {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "x").unwrap();
-    let frames = document_frames(&key(7), WORKSPACE, &route(), &doc.save()).unwrap();
+    let frames = document_frames(
+        &crate::payloads::NeighbourPayloads,
+        &key(7),
+        WORKSPACE,
+        &route(),
+        &doc.save(),
+    )
+    .unwrap();
     let host = key(7).verifying_key().to_bytes();
     let (
         author,
@@ -420,7 +434,8 @@ fn the_host_certificate_is_retained_where_replay_leads_with_it() {
         expires_at_ns: None,
         signature: [0; 64],
     };
-    let (channel, frame) = identity_frame(&cert, WORKSPACE).unwrap();
+    let (channel, frame) =
+        identity_frame(&crate::payloads::NeighbourPayloads, &cert, WORKSPACE).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
     store.retain_checkpoint(&channel, &frame).unwrap();
@@ -463,7 +478,14 @@ fn a_large_snapshot_is_framed_in_segments_the_fold_reads_back() {
         })
         .collect();
     doc.splice_text(&text, 0, 0, &noise).unwrap();
-    let frames = document_frames(&key(7), WORKSPACE, &route(), &doc.save()).unwrap();
+    let frames = document_frames(
+        &crate::payloads::NeighbourPayloads,
+        &key(7),
+        WORKSPACE,
+        &route(),
+        &doc.save(),
+    )
+    .unwrap();
     assert!(frames.len() > 1, "a snapshot above one frame is segmented");
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
@@ -560,7 +582,8 @@ fn observe_classifies_like_full_decode() {
 
     let mut observed = 0;
     for delta in &deltas {
-        let now = Compactor::observe(delta).map(|o| (o.channel, o.len));
+        let now = Compactor::observe_with(&crate::payloads::NeighbourPayloads, delta)
+            .map(|o| (o.channel, o.len));
         assert_eq!(now, observe_by_full_decode(delta), "delta {delta:02x?}");
         observed += usize::from(now.is_some());
     }
@@ -869,7 +892,7 @@ fn opaque_payloads_are_never_folded_or_gc_selected() {
     );
 
     let mut signed = false;
-    let mut opaque = Signatures::with_payloads(&Opaque);
+    let mut opaque = Signatures::with_payloads(std::sync::Arc::new(Opaque));
     let (ask, folded) = plan(
         &entries,
         &mut opaque,
