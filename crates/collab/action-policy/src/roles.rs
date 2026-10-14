@@ -64,8 +64,13 @@ pub mod governance {
     pub const RESUME_BOT: &str = "resume-bot";
     /// Become a bot's installer, after reviewing its grant.
     pub const ADOPT_BOT: &str = "adopt-bot";
+    /// Start, end, restart or moderate one of the room's calls. A call is
+    /// room governance (who may speak, who is denied), so no preset below
+    /// the owner's holds it: the owner, and members the room grants it, run
+    /// calls, and any member joins an active one.
+    pub const CALL: &str = "call";
 
-    pub const ALL: [&str; 19] = [
+    pub const ALL: [&str; 20] = [
         INVITE,
         ADD_MEMBER,
         REMOVE_MEMBER,
@@ -85,6 +90,7 @@ pub mod governance {
         PAUSE_BOT,
         RESUME_BOT,
         ADOPT_BOT,
+        CALL,
     ];
 
     /// Actions that exercise authority over the room or others in it. The
