@@ -207,6 +207,8 @@ impl EmbeddedApp {
     /// The root widget of the app's component: what an app's own tests
     /// reach into, as they would in the app's window.
     pub fn component_root_mut(&mut self) -> Option<&mut dyn Widget> {
+        // Whatever the caller does to it is no change the tracking sees.
+        self.app.mark_semantic_tree_stale();
         let root = self
             .app
             .root_widget
@@ -248,6 +250,7 @@ impl EmbeddedApp {
     }
 
     fn app_widget_mut(&mut self) -> Option<&mut dyn AppWidget> {
+        self.app.mark_semantic_tree_stale();
         self.app
             .root_widget
             .as_any_mut()?
