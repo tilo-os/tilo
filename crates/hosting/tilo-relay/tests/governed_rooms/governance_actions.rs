@@ -158,6 +158,10 @@ pub(super) fn host_operation(action: &str, argument: serde_json::Value) -> Remot
 }
 
 /// What an invocation came to: what it produced, or why the relay refused.
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a test's helper: an answer that is no finished receipt fails the test"
+)]
 pub(super) fn outcome(answer: RemoteActionMessage) -> Result<serde_json::Value, ActionHostError> {
     let RemoteActionMessage::Receipt(receipt) = answer else {
         panic!("an invocation is answered with a receipt");
