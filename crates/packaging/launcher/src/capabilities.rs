@@ -600,17 +600,17 @@ impl CapabilityPlan {
             let Ok(real) = std::fs::canonicalize(granted) else {
                 continue;
             };
-            let Ok(rel) = route.real.strip_prefix(&real) else {
+            let Ok(below) = route.real.strip_prefix(&real) else {
                 continue;
             };
-            let mask = granted.join(rel);
+            let mask = granted.join(below);
             if !self.masked_dirs.contains(&mask) {
                 self.masked_dirs.push(mask);
             }
             // Pin each directory between the grant and the store whose
             // visible mount is writable; a grant path is a mount already.
             let mut dir = granted.clone();
-            let mut parts = rel.components().peekable();
+            let mut parts = below.components().peekable();
             while let Some(part) = parts.next() {
                 if parts.peek().is_none() {
                     break;
@@ -1001,13 +1001,13 @@ mod tests {
 
     /// A person's home with Tilo's store in it, the way `private_store_roots`
     /// names it, and plans confined against it.
-    struct Home {
+    struct Fixture {
         _dir: tempfile::TempDir,
         home: PathBuf,
         store: PathBuf,
     }
 
-    impl Home {
+    impl Fixture {
         fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
             let home = dir.path().join("home");
@@ -1037,7 +1037,7 @@ mod tests {
 
     #[test]
     fn grants_covering_the_private_store_mask_it_and_pin_the_way_there() {
-        let home = Home::new();
+        let home = Fixture::new();
         let config = home.home.join(".config");
         // Phase `a_writable_home_grant_masks_the_store_and_pins_its_parent`.
         {
@@ -1058,11 +1058,22 @@ mod tests {
             assert!(plan.pinned_dirs.is_empty(), "{plan:?}");
         }
         // Phase `a_nested_read_only_grant_is_not_widened_by_a_pin`.
+        // A Read grant under a Write grant is writable too; a Restrict caps it.
         {
-            let plan = home.plan(&[
-                (home.path(""), Access::Write),
-                (home.path(".config"), Access::Read),
-            ]);
+            let caps = vec![
+                fs_grant("so.tilo.files", &home.path(""), Access::Write),
+                fs_grant("so.tilo.files", &home.path(".config"), Access::Read),
+                CapOverride::new(
+                    Subject::app("so.tilo.files"),
+                    Scope::FsPath(home.path(".config")),
+                    Effect::Restrict,
+                    Access::Read,
+                ),
+            ];
+            let plan =
+                CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+                    .confine_private_stores(std::slice::from_ref(&home.store));
+            assert_eq!(plan.ro_paths, vec![config]);
             assert_eq!(plan.masked_dirs, vec![home.store.clone()]);
             assert!(
                 plan.pinned_dirs.is_empty(),
@@ -1102,6 +1113,8 @@ mod tests {
     fn a_missing_or_symlinked_store_still_cannot_be_reached() {
         // Phase `a_missing_store_is_created_private_before_it_is_masked`.
         {
+            use std::os::unix::fs::PermissionsExt as _;
+
             let dir = tempfile::tempdir().unwrap();
             let home = dir.path().join("home");
             std::fs::create_dir_all(&home).unwrap();
@@ -1118,7 +1131,6 @@ mod tests {
                 store.is_dir(),
                 "a writable grant must not be able to create the store itself"
             );
-            use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(
                 std::fs::metadata(&store).unwrap().permissions().mode() & 0o777,
                 0o700
@@ -1160,7 +1172,7 @@ mod tests {
                 CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
                     .confine_private_stores(&[home.join(".config/tilo")]);
             assert!(plan.rw_paths.is_empty(), "{plan:?}");
-            assert_eq!(plan.ro_paths, vec![home.clone()]);
+            assert_eq!(plan.ro_paths, vec![home]);
             assert_eq!(plan.masked_dirs, vec![real]);
             assert!(plan.pinned_dirs.is_empty());
         }
