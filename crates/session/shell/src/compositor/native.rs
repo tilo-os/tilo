@@ -9899,14 +9899,12 @@ pub fn run() {
     // only the compositor draws. Registered on the system bus for this login
     // session; without polkit or logind the requests fail as before.
     let polkit_agent: Option<
-        crate::session_runtime::Registration<crate::polkit_agent::service::AgentHandle>,
+        crate::session_runtime::Registration<tilo_polkit_agent::service::AgentHandle>,
     > = notif_runtime.map(|rt| {
         crate::session_runtime::Registration::start(
             rt.handle(),
             "polkit agent",
-            crate::polkit_agent::service::serve(
-                crate::shell::portal_dialog::PortalDialogQueue::global(),
-            ),
+            crate::polkit_agent::serve(crate::shell::portal_dialog::PortalDialogQueue::global()),
             |_| tracing::info!("polkit: authentication agent registered for this session"),
         )
     });

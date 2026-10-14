@@ -4,16 +4,19 @@
 /// # Errors
 /// Returns an I/O error, an invalid bound or refusal when the file exceeds
 /// the supplied bound. The oversized bytes are never returned.
-pub fn read(path: &std::path::Path, max_bytes: usize) -> std::io::Result<Option<Vec<u8>>> {
+pub fn read(
+    path: &std::path::Path,
+    max_bytes: impl TryInto<u64>,
+) -> std::io::Result<Option<Vec<u8>>> {
     use std::io::Read as _;
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let bound = u64::try_from(max_bytes)
-        .ok()
-        .and_then(|bytes| bytes.checked_add(1))
+    let max_bytes: Option<u64> = max_bytes.try_into().ok();
+    let (max_bytes, bound) = max_bytes
+        .and_then(|bytes| Some((bytes, bytes.checked_add(1)?)))
         .ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -22,13 +25,32 @@ pub fn read(path: &std::path::Path, max_bytes: usize) -> std::io::Result<Option<
         })?;
     let mut bytes = Vec::new();
     file.take(bound).read_to_end(&mut bytes)?;
-    if bytes.len() > max_bytes {
+    if bytes.len() as u64 > max_bytes {
         return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
+            std::io::ErrorKind::FileTooLarge,
             "file exceeds its byte bound",
         ));
     }
     Ok(Some(bytes))
+}
+
+/// [`read`], reporting a file over the bound as the caller's `too_large`
+/// error and other failures through its `From<io::Error>`.
+///
+/// # Errors
+/// `too_large` for a file over `max_bytes`, else the converted I/O error.
+pub fn read_or<E: From<std::io::Error>>(
+    path: &std::path::Path,
+    max_bytes: impl TryInto<u64>,
+    too_large: E,
+) -> Result<Option<Vec<u8>>, E> {
+    read(path, max_bytes).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::FileTooLarge {
+            too_large
+        } else {
+            error.into()
+        }
+    })
 }
 
 #[cfg(test)]

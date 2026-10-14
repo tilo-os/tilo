@@ -3984,6 +3984,10 @@ mod tests {
                 position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
             },
         );
+        assert!(
+            g.bar.elapse_hover_dwell(),
+            "resting on the pill must open it once the hover dwell has run",
+        );
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
         let max_rect = g.bar.max_rects()[0];
