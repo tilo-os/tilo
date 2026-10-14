@@ -2316,6 +2316,13 @@ pub trait Widget {
         false
     }
 
+    /// Why this widget itself asks for animation frames, for diagnostics
+    /// that name a desktop which keeps painting. `None` when it has nothing
+    /// to add to its name and geometry.
+    fn animation_detail(&self) -> Option<String> {
+        None
+    }
+
     /// `App` polls this in `Event::AboutToWait`; without it a curve would
     /// freeze partway until an unrelated event woke it again.
     fn needs_animation_frame(&self) -> bool {

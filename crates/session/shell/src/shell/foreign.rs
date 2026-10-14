@@ -4683,6 +4683,10 @@ impl Widget for ForeignSurfaceWidget {
         self.awaiting_first_paint()
     }
 
+    fn animation_detail(&self) -> Option<String> {
+        Some(ForeignSurfaceWidget::animation_detail(self))
+    }
+
     fn needs_redraw(&self) -> bool {
         self.placement_dirty
             || self.awaiting_first_paint()
