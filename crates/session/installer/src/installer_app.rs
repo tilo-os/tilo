@@ -2600,7 +2600,7 @@ impl InstallerApp {
             children.push(Box::new(
                 TextInput::from_state(&self.full_name)
                     .with_id("installer.full_name")
-                    .with_accessible_name(&crate::i18n::t("installer-account-name")),
+                    .with_accessible_name(crate::i18n::t("installer-account-name")),
             ));
             children.push(Box::new(
                 Text::new(&crate::i18n::t("installer-account-name-note"))
@@ -2615,7 +2615,7 @@ impl InstallerApp {
             children.push(Box::new(
                 TextInput::from_state(&self.username)
                     .with_id("installer.username")
-                    .with_accessible_name(&crate::i18n::t("installer-account-username")),
+                    .with_accessible_name(crate::i18n::t("installer-account-username")),
             ));
             children.push(Box::new(
                 Text::new(&crate::i18n::t("installer-account-username-note"))
@@ -2638,7 +2638,7 @@ impl InstallerApp {
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password")
-                .with_accessible_name(&crate::i18n::t(if tpm_pin {
+                .with_accessible_name(crate::i18n::t(if tpm_pin {
                     "installer-account-pin"
                 } else {
                     "installer-account-password"
@@ -2666,7 +2666,7 @@ impl InstallerApp {
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password_confirm")
-                .with_accessible_name(&crate::i18n::t(if tpm_pin {
+                .with_accessible_name(crate::i18n::t(if tpm_pin {
                     "installer-account-pin-confirm"
                 } else {
                     "installer-account-password-confirm"
