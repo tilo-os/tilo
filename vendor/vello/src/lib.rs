@@ -108,9 +108,9 @@
 
 #[cfg(feature = "wgpu")]
 mod bump_budget;
+mod debug;
 #[cfg(feature = "wgpu")]
 mod image_source;
-mod debug;
 mod recording;
 mod render;
 mod scene;
@@ -148,14 +148,14 @@ pub use wgpu;
 
 #[cfg(feature = "wgpu")]
 pub use image_source::ImageSource;
+pub use scene::{DrawGlyphs, Scene};
+pub use vello_encoding::ImageCacheStats;
+pub use vello_encoding::{FontEmbolden, Glyph, NormalizedCoord};
 /// A stable identity of the compute shaders this build of vello creates
 /// pipelines from: a pipeline cache kept across processes is only valid for
 /// the fingerprint it was filled with.
 #[cfg(feature = "wgpu")]
 pub use vello_shaders::SOURCE_FINGERPRINT as SHADER_FINGERPRINT;
-pub use scene::{DrawGlyphs, Scene};
-pub use vello_encoding::ImageCacheStats;
-pub use vello_encoding::{FontEmbolden, Glyph, NormalizedCoord};
 
 use low_level::ShaderId;
 #[cfg(feature = "wgpu")]
@@ -184,8 +184,7 @@ use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
 pub type ExternalImageSource = fn(u64) -> Option<Vec<u8>>;
 
 #[cfg(feature = "wgpu")]
-static EXTERNAL_IMAGE_SOURCE: std::sync::OnceLock<ExternalImageSource> =
-    std::sync::OnceLock::new();
+static EXTERNAL_IMAGE_SOURCE: std::sync::OnceLock<ExternalImageSource> = std::sync::OnceLock::new();
 
 /// Install the process's [`ExternalImageSource`]. The first one installed stays.
 #[cfg(feature = "wgpu")]
@@ -1867,7 +1866,8 @@ impl Renderer {
         device: &Device,
         built: impl FnOnce() + Send + 'static,
     ) {
-        self.engine.start_deferred_pipelines(device, Box::new(built));
+        self.engine
+            .start_deferred_pipelines(device, Box::new(built));
     }
 
     /// The pipelines [`Self::new_deferring`] deferred that are not installed

@@ -191,6 +191,8 @@ class Report(unittest.TestCase):
         # library /usr still names is deployed, once.
         self.assertEqual(totals["content"], 1200 + len(WINE) + 2 * len(FONT) + db + 70 + len(LIB))
         self.assertEqual(totals["unique_content"], 1200 + len(WINE) + len(FONT) + db + 70 + len(LIB))
+        # Everything but /var/cache/junk/b: what the image-size budget gates.
+        self.assertEqual(totals["usr_content"], 1200 + len(WINE) + 2 * len(FONT) + db + len(LIB))
         self.assertEqual(totals["undeployed"], len(SDK))
         layers = [5 + 1000 + len(WINE) + len(SDK) + len(LIB) + 100 + 50, 2 * len(FONT), db + 70 + 1200]
         self.assertEqual([item["payload"] for item in data["layers"]], layers)

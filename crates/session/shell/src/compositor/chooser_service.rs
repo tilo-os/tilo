@@ -15,7 +15,7 @@
 
 mod contents;
 
-use std::io::{BufRead, BufReader, Read as _, Write};
+use std::io::{BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -176,7 +176,7 @@ fn serve_connection(
     };
     let writer = Arc::new(Mutex::new(writer));
     let mut reader = BufReader::new(stream);
-    let Some(caller) = read_frame(&mut reader)
+    let Some(caller) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES)
         .ok()
         .flatten()
         .and_then(|frame| serde_json::from_slice::<Handshake>(&frame).ok())
@@ -189,7 +189,7 @@ fn serve_connection(
         return;
     }
     loop {
-        let request = match read_frame(&mut reader) {
+        let request = match wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) {
             Ok(Some(frame)) => match serde_json::from_slice::<Request>(&frame) {
                 Ok(request) => request,
                 Err(error) => {
@@ -375,6 +375,7 @@ fn scope_for(
     let scope = PickerScope {
         initial_dir: PathBuf::new(),
         roots: Vec::new(),
+        home: None,
     }
     .with_granted_paths(granted);
     let first = scope.roots.first()?.clone();
@@ -441,30 +442,12 @@ fn send(writer: &Mutex<UnixStream>, reply: &Reply) {
     }
 }
 
-fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Vec<u8>>> {
-    let mut frame = Vec::new();
-    let limit = u64::try_from(MAX_FRAME_BYTES)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let count = reader.by_ref().take(limit).read_until(b'\n', &mut frame)?;
-    if count == 0 {
-        return Ok(None);
-    }
-    if frame.last() != Some(&b'\n') {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "chooser frame is too long or unterminated",
-        ));
-    }
-    frame.pop();
-    Ok(Some(frame))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::portal::FilePickerQueue;
     use crate::shell::state::{Capability, FsMode, GRANT_SESSION, Workspace, WorkspaceId};
+    use std::io::BufRead as _;
     use std::time::Instant;
 
     const APP: &str = "so.tilo.sheets";

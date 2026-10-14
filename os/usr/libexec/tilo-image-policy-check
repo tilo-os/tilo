@@ -11,9 +11,15 @@ audit (tilo-security-audit) runs it; it only reads, never repairs.
 
 The rules mirror containers-policy.json(5): requirements in a scope's list are
 ANDed, and the most specific docker scope wins. So every required scope must
-exist and hold only pinned-key sigstoreSigned requirements, and no more
-specific scope beneath a Tilo namespace (a tag, a digest, a sibling
-repository) may accept anything less than that or an outright reject.
+exist and hold only pinned-key sigstoreSigned requirements, and no scope at or
+beneath a Tilo namespace (a tag, a digest, a sibling repository, the namespace
+itself) may accept anything less than that or an outright reject.
+
+The repositories Tilo publishes but a machine must never run unsigned -- the
+legacy guest and the development and CI images -- are checked by their
+effective rule, not by their own scope's presence: removing a repository's
+scope hands it to the nearest namespace scope or the default, and a default of
+insecureAcceptAnything would then accept it unsigned.
 """
 
 import json
@@ -26,6 +32,16 @@ REQUIRED_SCOPES = ("registry.tilo.so/tilo/tilo", "code.tilo.so/tilo/tilo")
 # Every scope under these namespaces is Tilo-published: it may be refused
 # outright, or it must require the pinned signature.
 TILO_NAMESPACES = ("registry.tilo.so/tilo/", "code.tilo.so/tilo/")
+# Broader scopes that would also govern a Tilo repository with no scope of its
+# own. Unrelated registries keep the policy's default.
+TILO_NAMESPACE_ROOTS = ("registry.tilo.so", "registry.tilo.so/tilo", "code.tilo.so", "code.tilo.so/tilo")
+# Tilo repositories whose effective rule must be the pinned signature or a
+# reject, whichever scope supplies it.
+GUARDED_REPOSITORIES = ("registry.tilo.so/tilo/legacy-guest",) + tuple(
+    f"{registry}/tilo/{name}"
+    for registry in ("registry.tilo.so", "code.tilo.so")
+    for name in ("tilo-vm", "tilo-ci", "tilo-dev")
+)
 # Identities that bind a signature to the image's own repository. remapIdentity,
 # exactReference and exactRepository can accept a signature made for some other
 # image, so they do not prove the requirement.
@@ -100,11 +116,34 @@ def check(text):
         if problem:
             raise PolicyError(f"{scope}: {problem}")
     for scope, requirements in docker.items():
-        if scope in REQUIRED_SCOPES or not scope.startswith(TILO_NAMESPACES):
+        if scope in REQUIRED_SCOPES:
+            continue
+        if not (scope.startswith(TILO_NAMESPACES) or scope in TILO_NAMESPACE_ROOTS):
             continue
         problem = scope_problem(requirements, allow_reject=True)
         if problem:
             raise PolicyError(f"{scope}: {problem}")
+    for repository in GUARDED_REPOSITORIES:
+        scope, requirements = effective_rule(policy, docker, repository)
+        problem = scope_problem(requirements, allow_reject=True)
+        if problem:
+            raise PolicyError(f"{repository}: governed by {scope}: {problem}")
+
+
+def effective_rule(policy, docker, repository):
+    """The scope name and requirements containers/image applies to REPOSITORY.
+
+    The repository's own scope, else the nearest enclosing namespace scope,
+    else the host's, else the policy default.
+    """
+    candidate = repository
+    while True:
+        if candidate in docker:
+            return candidate, docker[candidate]
+        if "/" not in candidate:
+            break
+        candidate = candidate.rsplit("/", 1)[0]
+    return "the default rule", policy.get("default")
 
 
 def main(argv):

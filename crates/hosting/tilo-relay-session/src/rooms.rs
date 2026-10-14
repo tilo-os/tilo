@@ -98,6 +98,16 @@ pub struct RemoveMemberRequest {
     pub user_public_key: [u8; 32],
 }
 
+/// Delegate one application's workspace authorship. A repeated `request_id`
+/// returns the change it committed, and fails if it named another app.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantAppAuthorshipRequest {
+    /// Caller-chosen idempotency key; never zero.
+    pub request_id: [u8; 32],
+    /// The exact registered application identifier.
+    pub app: String,
+}
+
 /// A governed room as its administrators see it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomSummary {
@@ -178,6 +188,14 @@ pub enum RoomCommand {
         room: String,
         /// Nonzero namespace; existing ownership can never be rebound.
         salt: u16,
+    },
+    /// Let an application author `room`'s records: what opening an app there
+    /// for the first time asks of the room's governor. The host's person only.
+    GrantAppAuthorship {
+        /// The governed room.
+        room: String,
+        /// The application.
+        request: GrantAppAuthorshipRequest,
     },
 }
 

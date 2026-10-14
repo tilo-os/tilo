@@ -72,7 +72,7 @@ fn switch(desktop: &Desktop, key: &str, to: &serde_json::Value) -> Work {
 fn switching_back_to_a_workspace_with_apps_stays_within_its_cpu_budget() {
     let mut tree = notes_desktop();
     tree.append_empty_workspace("Elsewhere");
-    let desktop = Desktop::start_with(&tree);
+    let desktop = Desktop::start_with(tree);
     desktop.wait_for("the restored Notes notebook", |targets| {
         targets.iter().any(|name| name == "notes.first_note")
     });

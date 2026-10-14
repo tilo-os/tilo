@@ -27,7 +27,9 @@ pub(crate) struct EventHandler {
 
 impl EventHandler {
     pub(crate) const fn new() -> Self {
-        Self { inner: RefCell::new(None) }
+        Self {
+            inner: RefCell::new(None),
+        }
     }
 
     /// Set the event loop handler for the duration of the given closure.
@@ -56,13 +58,13 @@ impl EventHandler {
         match self.inner.try_borrow_mut().as_deref_mut() {
             Ok(Some(_)) => {
                 unreachable!("tried to set handler while another was already set");
-            },
+            }
             Ok(data @ None) => {
                 *data = Some(EventHandlerData { handler });
-            },
+            }
             Err(_) => {
                 unreachable!("tried to set handler that is currently in use");
-            },
+            }
         }
 
         struct ClearOnDrop<'a>(&'a EventHandler);
@@ -72,10 +74,10 @@ impl EventHandler {
                 match self.0.inner.try_borrow_mut().as_deref_mut() {
                     Ok(data @ Some(_)) => {
                         *data = None;
-                    },
+                    }
                     Ok(None) => {
                         tracing::error!("tried to clear handler, but no handler was set");
-                    },
+                    }
                     Err(_) => {
                         // Note: This is not expected to ever happen, this
                         // module generally controls the `RefCell`, and
@@ -86,7 +88,7 @@ impl EventHandler {
                         // weren't able to unset the handler.
                         eprintln!("tried to clear handler that is currently in use");
                         std::process::abort();
-                    },
+                    }
                 }
             }
         }
@@ -123,17 +125,17 @@ impl EventHandler {
                 // If the handler unwinds, the `RefMut` will ensure that the
                 // handler is no longer borrowed.
                 (handler)(event, event_loop);
-            },
+            }
             Ok(None) => {
                 // `NSApplication`, our app delegate and this handler are all
                 // global state and so it's not impossible that we could get
                 // an event after the application has exited the `EventLoop`.
                 tracing::error!("tried to run event handler, but no handler was set");
-            },
+            }
             Err(_) => {
                 // Prevent re-entrancy.
                 panic!("tried to handle event while another event is currently being handled");
-            },
+            }
         }
     }
 }

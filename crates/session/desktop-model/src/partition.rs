@@ -370,6 +370,7 @@ mod tests {
             active_tab: id.saturating_mul(10),
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }
     }
 

@@ -18,7 +18,7 @@ import {AdmissionError} from './admission.mjs';
 import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
-import {loadRuntime, mountDesktop, prepareGpu} from './host.mjs';
+import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -462,6 +462,7 @@ export async function startEntryPage({mode}) {
   };
   const deps = {
     loadRuntime: async () => (runtime = await loadRuntime()),
+    prefetchApplication,
     // An embed always shows the workspace the embedding site names.
     chosenWorkspace: () => (embed ? null : remembering(() => chosenWorkspace())),
     onScope: next => {

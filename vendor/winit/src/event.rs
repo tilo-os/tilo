@@ -168,11 +168,22 @@ pub struct PrivateIme {
 }
 /// Admission metadata; final text still arrives as the standard IME commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PrivateImeKind { Prepare, Start, Final, Cancel }
+pub enum PrivateImeKind {
+    Prepare,
+    Start,
+    Final,
+    Cancel,
+}
 impl PrivateImeKind {
     #[doc(hidden)]
     pub fn from_protocol(value: u32) -> Option<Self> {
-        match value { 0 => Some(Self::Prepare), 1 => Some(Self::Start), 2 => Some(Self::Final), 3 => Some(Self::Cancel), _ => None }
+        match value {
+            0 => Some(Self::Prepare),
+            1 => Some(Self::Start),
+            2 => Some(Self::Final),
+            3 => Some(Self::Cancel),
+            _ => None,
+        }
     }
 }
 

@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn only_slow_searches_through_scattered_counters_are_indexed() {
-        let mut index = OpIdIndex::default();
+        let index = OpIdIndex::default();
         // Searches worth a build, but too few slabs to be slow.
         index.searched(1_000);
         assert!(!index.wants_counters(1_000, MIN_SLABS - 1));

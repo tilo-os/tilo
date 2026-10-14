@@ -35,11 +35,23 @@
 //! model, since that can't be implemented properly on some platforms (e.g web, iOS) and works
 //! poorly on most other platforms. However, this model can be re-implemented to an extent with
 #![cfg_attr(
-    any(windows_platform, macos_platform, android_platform, x11_platform, wayland_platform),
+    any(
+        windows_platform,
+        macos_platform,
+        android_platform,
+        x11_platform,
+        wayland_platform
+    ),
     doc = "[`EventLoopExtPumpEvents::pump_app_events()`][platform::pump_events::EventLoopExtPumpEvents::pump_app_events()]"
 )]
 #![cfg_attr(
-    not(any(windows_platform, macos_platform, android_platform, x11_platform, wayland_platform)),
+    not(any(
+        windows_platform,
+        macos_platform,
+        android_platform,
+        x11_platform,
+        wayland_platform
+    )),
     doc = "`EventLoopExtPumpEvents::pump_app_events()`"
 )]
 //! [^1]. See that method's documentation for more reasons about why
@@ -186,7 +198,10 @@
 #![allow(clippy::missing_safety_doc)]
 #![warn(clippy::uninlined_format_args)]
 // TODO: wasm-binding needs to be updated for that to be resolved, for now just silence it.
-#![cfg_attr(web_platform, allow(unknown_lints, renamed_and_removed_lints, wasm_c_abi))]
+#![cfg_attr(
+    web_platform,
+    allow(unknown_lints, renamed_and_removed_lints, wasm_c_abi)
+)]
 
 #[cfg(feature = "rwh_04")]
 pub use rwh_04 as raw_window_handle_04;

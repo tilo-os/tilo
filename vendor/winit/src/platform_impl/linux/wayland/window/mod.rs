@@ -80,10 +80,16 @@ pub struct Window {
 
 impl Window {
     pub fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool {
-        self.window_state.lock().unwrap().private_text_input(snapshot)
+        self.window_state
+            .lock()
+            .unwrap()
+            .private_text_input(snapshot)
     }
     pub fn acknowledge_private_text_input(&self, serial: u32, outcome: u32) {
-        self.window_state.lock().unwrap().acknowledge_private_text_input(serial, outcome);
+        self.window_state
+            .lock()
+            .unwrap()
+            .acknowledge_private_text_input(serial, outcome);
     }
 
     pub(crate) fn new(
@@ -97,11 +103,15 @@ impl Window {
 
         let surface = state.compositor_state.create_surface(&queue_handle);
         let compositor = state.compositor_state.clone();
-        let xdg_activation =
-            state.xdg_activation.as_ref().map(|activation_state| activation_state.global().clone());
+        let xdg_activation = state
+            .xdg_activation
+            .as_ref()
+            .map(|activation_state| activation_state.global().clone());
         let display = event_loop_window_target.connection.display();
 
-        let size: Size = attributes.inner_size.unwrap_or(LogicalSize::new(800., 600.).into());
+        let size: Size = attributes
+            .inner_size
+            .unwrap_or(LogicalSize::new(800., 600.).into());
 
         // We prefer server side decorations, however to not have decorations we ask for client
         // side decorations instead.
@@ -112,7 +122,9 @@ impl Window {
         };
 
         let window =
-            state.xdg_shell.create_window(surface.clone(), default_decorations, &queue_handle);
+            state
+                .xdg_shell
+                .create_window(surface.clone(), default_decorations, &queue_handle);
 
         let mut window_state = WindowState::new(
             event_loop_window_target.connection.clone(),
@@ -153,7 +165,7 @@ impl Window {
         match attributes.fullscreen.map(Into::into) {
             Some(Fullscreen::Exclusive(_)) => {
                 warn!("`Fullscreen::Exclusive` is ignored on Wayland");
-            },
+            }
             #[cfg_attr(not(x11_platform), allow(clippy::bind_instead_of_map))]
             Some(Fullscreen::Borderless(monitor)) => {
                 let output = monitor.and_then(|monitor| match monitor {
@@ -163,7 +175,7 @@ impl Window {
                 });
 
                 window.set_fullscreen(output.as_ref())
-            },
+            }
             _ if attributes.maximized => window.set_maximized(),
             _ => (),
         };
@@ -180,9 +192,10 @@ impl Window {
         }
 
         // Activate the window when the token is passed.
-        if let (Some(xdg_activation), Some(token)) =
-            (xdg_activation.as_ref(), attributes.platform_specific.activation_token)
-        {
+        if let (Some(xdg_activation), Some(token)) = (
+            xdg_activation.as_ref(),
+            attributes.platform_specific.activation_token,
+        ) {
             xdg_activation.activate(token.token, &surface);
         }
 
@@ -192,14 +205,20 @@ impl Window {
         // Add the window and window requests into the state.
         let window_state = Arc::new(Mutex::new(window_state));
         let window_id = super::make_wid(&surface);
-        state.windows.get_mut().insert(window_id, window_state.clone());
+        state
+            .windows
+            .get_mut()
+            .insert(window_id, window_state.clone());
 
         let window_requests = WindowRequests {
             redraw_requested: AtomicBool::new(true),
             closed: AtomicBool::new(false),
         };
         let window_requests = Arc::new(window_requests);
-        state.window_requests.get_mut().insert(window_id, window_requests.clone());
+        state
+            .window_requests
+            .get_mut()
+            .insert(window_id, window_requests.clone());
 
         // Setup the event sync to insert `WindowEvents` right from the window.
         let window_events_sink = state.window_events_sink.clone();
@@ -209,13 +228,17 @@ impl Window {
 
         // Do a roundtrip.
         event_queue.roundtrip(&mut state).map_err(|error| {
-            os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(error))))
+            os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(
+                error
+            ))))
         })?;
 
         // XXX Wait for the initial configure to arrive.
         while !window_state.lock().unwrap().is_configured() {
             event_queue.blocking_dispatch(&mut state).map_err(|error| {
-                os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(error))))
+                os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(
+                    error
+                ))))
             })?;
         }
 
@@ -341,7 +364,10 @@ impl Window {
     pub fn set_min_inner_size(&self, min_size: Option<Size>) {
         let scale_factor = self.scale_factor();
         let min_size = min_size.map(|size| size.to_logical(scale_factor));
-        self.window_state.lock().unwrap().set_min_inner_size(min_size);
+        self.window_state
+            .lock()
+            .unwrap()
+            .set_min_inner_size(min_size);
         // NOTE: Requires commit to be applied.
         self.request_redraw();
     }
@@ -351,7 +377,10 @@ impl Window {
     pub fn set_max_inner_size(&self, max_size: Option<Size>) {
         let scale_factor = self.scale_factor();
         let max_size = max_size.map(|size| size.to_logical(scale_factor));
-        self.window_state.lock().unwrap().set_max_inner_size(max_size);
+        self.window_state
+            .lock()
+            .unwrap()
+            .set_max_inner_size(max_size);
         // NOTE: Requires commit to be applied.
         self.request_redraw();
     }
@@ -375,7 +404,10 @@ impl Window {
 
     #[inline]
     pub fn set_transparent(&self, transparent: bool) {
-        self.window_state.lock().unwrap().set_transparent(transparent);
+        self.window_state
+            .lock()
+            .unwrap()
+            .set_transparent(transparent);
     }
 
     #[inline]
@@ -398,7 +430,10 @@ impl Window {
 
     #[inline]
     pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), ExternalError> {
-        self.window_state.lock().unwrap().drag_resize_window(direction)
+        self.window_state
+            .lock()
+            .unwrap()
+            .drag_resize_window(direction)
     }
 
     #[inline]
@@ -506,7 +541,7 @@ impl Window {
         match fullscreen {
             Some(Fullscreen::Exclusive(_)) => {
                 warn!("`Fullscreen::Exclusive` is ignored on Wayland");
-            },
+            }
             #[cfg_attr(not(x11_platform), allow(clippy::bind_instead_of_map))]
             Some(Fullscreen::Borderless(monitor)) => {
                 let output = monitor.and_then(|monitor| match monitor {
@@ -516,7 +551,7 @@ impl Window {
                 });
 
                 self.window.set_fullscreen(output.as_ref())
-            },
+            }
             None => self.window.unset_fullscreen(),
         }
     }
@@ -533,7 +568,10 @@ impl Window {
 
     #[inline]
     pub fn set_cursor_visible(&self, visible: bool) {
-        self.window_state.lock().unwrap().set_cursor_visible(visible);
+        self.window_state
+            .lock()
+            .unwrap()
+            .set_cursor_visible(visible);
     }
 
     pub fn request_user_attention(&self, request_type: Option<UserAttentionType>) {
@@ -542,7 +580,7 @@ impl Window {
             None => {
                 warn!("`request_user_attention` isn't supported");
                 return;
-            },
+            }
         };
 
         // Urgency is only removed by the compositor and there's no need to raise urgency when it
@@ -649,7 +687,10 @@ impl Window {
 
         if window_state.ime_allowed() != allowed && window_state.set_ime_allowed(allowed) {
             let event = WindowEvent::Ime(if allowed { Ime::Enabled } else { Ime::Disabled });
-            self.window_events_sink.lock().unwrap().push_window_event(event, self.window_id);
+            self.window_events_sink
+                .lock()
+                .unwrap()
+                .push_window_event(event, self.window_id);
             self.event_loop_awakener.ping();
         }
     }
@@ -660,7 +701,10 @@ impl Window {
     }
 
     pub fn set_ime_multiline(&self, multiline: bool) {
-        self.window_state.lock().unwrap().set_ime_multiline(multiline);
+        self.window_state
+            .lock()
+            .unwrap()
+            .set_ime_multiline(multiline);
     }
 
     #[inline]

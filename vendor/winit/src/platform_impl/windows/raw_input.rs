@@ -83,7 +83,12 @@ pub fn get_raw_input_device_info(handle: HANDLE) -> Option<RawDeviceInfo> {
 
     let mut minimum_size = 0;
     let status = unsafe {
-        GetRawInputDeviceInfoW(handle, RIDI_DEVICEINFO, &mut info as *mut _ as _, &mut minimum_size)
+        GetRawInputDeviceInfoW(
+            handle,
+            RIDI_DEVICEINFO,
+            &mut info as *mut _ as _,
+            &mut minimum_size,
+        )
     };
 
     if status == u32::MAX || status == 0 {
@@ -108,7 +113,12 @@ pub fn get_raw_input_device_name(handle: HANDLE) -> Option<String> {
     let mut name: Vec<u16> = Vec::with_capacity(minimum_size as _);
 
     let status = unsafe {
-        GetRawInputDeviceInfoW(handle, RIDI_DEVICENAME, name.as_ptr() as _, &mut minimum_size)
+        GetRawInputDeviceInfoW(
+            handle,
+            RIDI_DEVICENAME,
+            name.as_ptr() as _,
+            &mut minimum_size,
+        )
     };
 
     if status == u32::MAX || status == 0 {
@@ -141,7 +151,7 @@ pub fn register_all_mice_and_keyboards_for_raw_input(
         DeviceEvents::Never => {
             window_handle = 0;
             RIDEV_REMOVE
-        },
+        }
         DeviceEvents::WhenFocused => RIDEV_DEVNOTIFY,
         DeviceEvents::Always => RIDEV_DEVNOTIFY | RIDEV_INPUTSINK,
     };
@@ -170,7 +180,13 @@ pub fn get_raw_input_data(handle: HRAWINPUT) -> Option<RAWINPUT> {
     let header_size = size_of::<RAWINPUTHEADER>() as u32;
 
     let status = unsafe {
-        GetRawInputData(handle, RID_INPUT, &mut data as *mut _ as _, &mut data_size, header_size)
+        GetRawInputData(
+            handle,
+            RID_INPUT,
+            &mut data as *mut _ as _,
+            &mut data_size,
+            header_size,
+        )
     };
 
     if status == u32::MAX || status == 0 {

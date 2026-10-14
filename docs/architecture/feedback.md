@@ -15,8 +15,12 @@ The SDK exposes `tilo-feedback` as `ui::feedback`, supplying the portable draft,
 and durable outbox. Drafts begin with no context. The host attaches context only
 after an explicit user action. Semantic identifiers stay local; context sent in
 a report has synthetic field keys. Credentials and declared personal values are
-masked before review output can enter the outbox. Further redaction or an
-attachment change requires fresh approval.
+masked before review output can enter the outbox. The detectors recognise
+email addresses, phone numbers, card numbers, IBANs and secrets; a name or
+postal address in the description is masked only when it was also declared as
+context, so the reporter hides anything else in the preview. Further redaction
+or an attachment change requires fresh approval. The report itself is
+attributed: its destination stores the reporter's person id.
 
 A screenshot is a one-shot request for a specific app surface and semantic
 revision. A changed or protected surface, unknown sensitive geometry, invalid
@@ -89,7 +93,11 @@ the exact destination. Native hosts install it through
 while its window is closed. Browser tile hosts have the same custody slot and
 wake pump; their launch configuration cannot supply a destination or adapter.
 Pending private writes schedule a storage wake independently of draft records;
-awaiting a destination receipt does not schedule automatic transport retries.
+awaiting a destination receipt does not schedule automatic transport retries
+on a timer, but every storage or transport wake re-sends the same approved
+payload until the destination's receipt arrives. Approved reports, Sent ones
+included, stay in the private outbox; once it holds 64 reports or 4 MB it
+refuses new ones rather than evicting.
 An unconfigured entry refuses review/send rather than choosing a public room.
 The relay supplies read-only feedback admission and acknowledgment on its existing
 `RemoteActionFrame` transport. `RelayRecordsLink` carries the existing certified

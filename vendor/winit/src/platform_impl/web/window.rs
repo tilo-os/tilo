@@ -51,7 +51,12 @@ impl Window {
         let runner = target.runner.clone();
         let destroy_fn = Box::new(move || runner.notify_destroy_window(RootWI(id)));
 
-        let inner = Inner { id, window: window.clone(), canvas, destroy_fn: Some(destroy_fn) };
+        let inner = Inner {
+            id,
+            window: window.clone(),
+            canvas,
+            destroy_fn: Some(destroy_fn),
+        };
 
         inner.set_title(&attr.title);
         inner.set_maximized(attr.maximized);
@@ -75,15 +80,19 @@ impl Window {
     }
 
     pub fn canvas(&self) -> Option<HtmlCanvasElement> {
-        self.inner.value().map(|inner| inner.canvas.borrow().raw().clone())
+        self.inner
+            .value()
+            .map(|inner| inner.canvas.borrow().raw().clone())
     }
 
     pub(crate) fn prevent_default(&self) -> bool {
-        self.inner.queue(|inner| inner.canvas.borrow().prevent_default.get())
+        self.inner
+            .queue(|inner| inner.canvas.borrow().prevent_default.get())
     }
 
     pub(crate) fn set_prevent_default(&self, prevent_default: bool) {
-        self.inner.dispatch(move |inner| inner.canvas.borrow().prevent_default.set(prevent_default))
+        self.inner
+            .dispatch(move |inner| inner.canvas.borrow().prevent_default.set(prevent_default))
     }
 
     #[cfg(feature = "rwh_06")]
@@ -107,7 +116,9 @@ impl Window {
     pub(crate) fn raw_display_handle_rwh_06(
         &self,
     ) -> Result<rwh_06::RawDisplayHandle, rwh_06::HandleError> {
-        Ok(rwh_06::RawDisplayHandle::Web(rwh_06::WebDisplayHandle::new()))
+        Ok(rwh_06::RawDisplayHandle::Web(
+            rwh_06::WebDisplayHandle::new(),
+        ))
     }
 }
 
@@ -136,7 +147,11 @@ impl Inner {
     pub fn pre_present_notify(&self) {}
 
     pub fn outer_position(&self) -> Result<PhysicalPosition<i32>, NotSupportedError> {
-        Ok(self.canvas.borrow().position().to_physical(self.scale_factor()))
+        Ok(self
+            .canvas
+            .borrow()
+            .position()
+            .to_physical(self.scale_factor()))
     }
 
     pub fn inner_position(&self) -> Result<PhysicalPosition<i32>, NotSupportedError> {
@@ -233,10 +248,13 @@ impl Inner {
             CursorGrabMode::Locked => true,
             CursorGrabMode::Confined => {
                 return Err(ExternalError::NotSupported(NotSupportedError::new()))
-            },
+            }
         };
 
-        self.canvas.borrow().set_cursor_lock(lock).map_err(ExternalError::Os)
+        self.canvas
+            .borrow()
+            .set_cursor_lock(lock)
+            .map_err(ExternalError::Os)
     }
 
     #[inline]
@@ -472,6 +490,11 @@ impl PlatformSpecificWindowAttributes {
 
 impl Default for PlatformSpecificWindowAttributes {
     fn default() -> Self {
-        Self { canvas: None, prevent_default: true, focusable: true, append: false }
+        Self {
+            canvas: None,
+            prevent_default: true,
+            focusable: true,
+            append: false,
+        }
     }
 }

@@ -2,7 +2,6 @@ use std::io::{self, IoSlice, IoSliceMut, Read as _};
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
 
 use rustix::net::{
     RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer,
@@ -122,12 +121,11 @@ pub fn arm(socket: &impl AsFd) -> io::Result<()> {
 /// Refuses a missing/malformed challenge, unusable socket, or refused ready ack.
 pub fn complete(socket: &mut UnixStream) -> io::Result<()> {
     socket.set_nonblocking(false)?;
-    socket.set_read_timeout(Some(Duration::from_secs(10)))?;
-    socket.set_write_timeout(Some(Duration::from_secs(10)))?;
-    let result = complete_inner(socket);
-    socket.set_read_timeout(None)?;
-    socket.set_write_timeout(None)?;
-    result
+    // No wall-clock deadline: the host answers as soon as it is scheduled,
+    // and a host that is gone closes the socket, which ends every read here
+    // with end-of-file. A fixed deadline only turned a busy machine into a
+    // failed launch.
+    complete_inner(socket)
 }
 fn complete_inner(socket: &mut UnixStream) -> io::Result<()> {
     let mut magic = [0; 4];
@@ -252,6 +250,12 @@ impl Receiver {
             .filter(|tail| !tail.is_empty())
             .ok_or_else(|| refused("native proof exceeded its frame"))?;
         let mut chunk = receive_chunk(socket, tail)?;
+        if chunk.count == 0 && !chunk.invalid && chunk.rights.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the peer closed the connection before answering",
+            ));
+        }
         if chunk.invalid || chunk.count == 0 || chunk.count > tail.len() {
             return Err(refused("invalid native proof ancillary frame"));
         }

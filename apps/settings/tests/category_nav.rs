@@ -186,11 +186,7 @@ fn clicking_network_bluetooth_or_sound_navigates_to_its_pane() {
 
 #[test]
 fn clicking_displays_input_or_appearance_navigates_to_its_pane() {
-    for category in [
-        Category::Displays,
-        Category::MouseKeyboard,
-        Category::Appearance,
-    ] {
+    for category in [Category::Displays, Category::Keyboard, Category::Appearance] {
         click_navigates_to(category);
     }
 }

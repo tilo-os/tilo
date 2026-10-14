@@ -772,11 +772,14 @@ fn load_entries<T: serde::de::DeserializeOwned + Serialize>(
         Err(error) => return Err(error.into()),
     };
     validate_owner_only(&metadata)?;
-    if metadata.len() > MAX_NAMED_SHARE_INBOX_FILE_BYTES {
-        return Err(NamedShareInboxError::StateTooLarge);
-    }
-    let document: EntriesDocumentV1<Vec<T>> = serde_json::from_slice(&std::fs::read(path)?)
-        .map_err(|_| NamedShareInboxError::MalformedState)?;
+    let bytes = tilo_files::native::bounded::read_or(
+        path,
+        MAX_NAMED_SHARE_INBOX_FILE_BYTES,
+        NamedShareInboxError::StateTooLarge,
+    )?
+    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+    let document: EntriesDocumentV1<Vec<T>> =
+        serde_json::from_slice(&bytes).map_err(|_| NamedShareInboxError::MalformedState)?;
     if document.schema_version != NAMED_SHARE_INBOX_VERSION {
         return Err(NamedShareInboxError::UnsupportedVersion);
     }

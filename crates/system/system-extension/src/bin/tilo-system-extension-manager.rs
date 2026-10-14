@@ -496,13 +496,17 @@ fn parse_pci_hex(value: &str) -> Result<u16, String> {
 fn safe_read(path: &Path) -> Result<Vec<u8>, String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("cannot read image-owned input {}: {error}", path.display()))?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_CATALOG_BYTES
-    {
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(format!("unsafe image-owned input {}", path.display()));
     }
-    fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))
+    match tilo_files::native::bounded::read(path, MAX_CATALOG_BYTES) {
+        Ok(Some(bytes)) => Ok(bytes),
+        Ok(None) => Err(format!("cannot read {}: vanished", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+            Err(format!("unsafe image-owned input {}", path.display()))
+        }
+        Err(error) => Err(format!("cannot read {}: {error}", path.display())),
+    }
 }
 
 fn bounded_stdout(

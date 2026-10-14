@@ -7,6 +7,7 @@
 //! and recordings with `cargo run --bin shots`. `--backend winit` (the default)
 //! runs the compositor in a window inside an existing X11/Wayland session.
 
+pub mod agent_admission;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;
@@ -146,6 +147,7 @@ pub mod search;
 pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
+pub mod settings_failures;
 pub(crate) mod shared_display_actions;
 pub mod shell_narrator;
 pub mod spatial_calibration;
@@ -1117,8 +1119,29 @@ pub(crate) fn workspace_surface_chrome(
         // Reserves canvas-x [0, SIDEBAR_RESERVE_PX] for the wheel disc, which
         // lives in the overlay layer, so wheel and strip pan together.
         leading_inset: f64::from(tilo_desktop::sidebar_wheel_disc::SIDEBAR_RESERVE_PX),
-        notify: None,
+        // An application mounted in this process does its asynchronous work
+        // (an action directory question, an invocation, a collaborator's
+        // edit) on the compositor's own thread, which parks while nothing
+        // stirs: without this, what such an app is asked from outside waits
+        // for some unrelated frame, and on an idle desktop never gets an
+        // answer.
+        notify: Some(std::sync::Arc::new(|| {
+            if let Some(wake) = COMPONENT_WAKE.get() {
+                wake();
+            }
+        })),
     }
+}
+
+/// What wakes the compositor loop when an application it hosts wants a frame
+/// ([`install_component_wake`]).
+static COMPONENT_WAKE: std::sync::OnceLock<crate::session_runtime::Wake> =
+    std::sync::OnceLock::new();
+
+/// Let the applications this session hosts wake its loop. Set once, by the
+/// compositor, before any such application is asked anything.
+pub(crate) fn install_component_wake(wake: crate::session_runtime::Wake) {
+    let _ = COMPONENT_WAKE.set(wake);
 }
 
 /// The shared desktop surface for the tree's active workspace, plus the
@@ -1248,6 +1271,7 @@ pub fn build_tilo_overlay_host_with_inputs(
     // handle drives subsequent updates.
     let tree: WorkspaceTree = tree_handle.read().clone();
     launcher::action_authority::Export::of(&tree).publish();
+    launcher::action_authority::follow_tree(&tree_handle);
     for room in tree.rooms() {
         launcher::set_trusted_identity_projection(room, &tree.trusted_identity_projection(room));
     }

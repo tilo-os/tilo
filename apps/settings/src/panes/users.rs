@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use runtime_identity::{IdentitySummary, KeyProtection};
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
+use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind, Widget};
 use zeroize::Zeroizing;
 
 use crate::effects::{SettingsEffect, effect};
@@ -25,7 +25,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, StatusTone, caption, card, error_caption, rows, semantic_status_pill, setting_row,
+    Item, SettingsSection, StatusTone, card, error_caption, field_row, item_row, note, row, rows,
+    semantic_status_pill,
 };
 
 /// Changes to this device's login accounts and the person's identities.
@@ -620,28 +621,28 @@ impl UsersModel {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut cards: Vec<El> = Vec::new();
+        let mut cards: Vec<SettingsSection> = Vec::new();
         if let Some(error) = &self.error {
             cards.push(card(
                 &t("settings-users-error-title"),
-                rows(vec![caption(error)]),
+                rows(vec![note(error)]),
             ));
         }
         let people = if let Some(error) = &self.users_error {
-            rows(vec![error_caption(&t_args(
+            rows(vec![row(error_caption(&t_args(
                 "settings-users-read-error",
                 &[("error", error.as_str().into())],
-            ))])
+            )))])
         } else if self.users.is_empty() {
-            rows(vec![caption(&t("settings-users-empty-accounts"))])
+            rows(vec![note(&t("settings-users-empty-accounts"))])
         } else {
-            rows(self.users.iter().map(|u| self.user_row(u)).collect())
+            rows(self.users.iter().flat_map(|u| self.user_row(u)).collect())
         };
         cards.push(card(&t("settings-users-login-accounts"), people));
         cards.push(self.add_form());
 
         let identity_rows = if self.identities.is_empty() {
-            rows(vec![caption(&t("settings-users-empty-identities"))])
+            rows(vec![note(&t("settings-users-empty-identities"))])
         } else {
             rows(
                 self.identities
@@ -651,21 +652,21 @@ impl UsersModel {
             )
         };
         cards.push(card(&t("settings-users-identities-title"), identity_rows));
-        let mut protection_rows: Vec<El> =
-            vec![caption(&t("settings-users-protection-secret-service"))];
+        let mut protection_rows: Vec<Item> =
+            vec![note(&t("settings-users-protection-secret-service"))];
         if self
             .identities
             .iter()
             .any(|identity| identity.protection == KeyProtection::BrokerFile)
         {
-            protection_rows.push(caption(&t("settings-users-protection-broker-file")));
+            protection_rows.push(note(&t("settings-users-protection-broker-file")));
         }
         if self
             .identities
             .iter()
             .any(|identity| identity.protection == KeyProtection::HardwareBacked)
         {
-            protection_rows.push(caption(&t("settings-users-protection-hardware")));
+            protection_rows.push(note(&t("settings-users-protection-hardware")));
         }
         cards.push(card(
             &t("settings-users-protection-title"),
@@ -673,12 +674,12 @@ impl UsersModel {
         ));
         cards.push(card(
             &t("settings-users-boundary-title"),
-            rows(vec![caption(&t("settings-users-boundary-body"))]),
+            rows(vec![note(&t("settings-users-boundary-body"))]),
         ));
         crate::widgets::cards(cards)
     }
 
-    fn add_form(&self) -> El {
+    fn add_form(&self) -> SettingsSection {
         let full = TextInput::local()
             .with_kind(TextInputKind::Name)
             .with_id("users.form.full_name")
@@ -712,24 +713,26 @@ impl UsersModel {
                 )
             }),
         );
-        let buttons = Row::new()
-            .push(Box::new(create))
-            .push(Box::new(Spacer::new()));
+        let buttons = row(Box::new(
+            Row::new()
+                .push(Box::new(create))
+                .push(Box::new(Spacer::new())),
+        ));
         card(
             &t("settings-users-add-form-title"),
             rows(vec![
-                setting_row(&t("settings-users-full-name"), Box::new(full)),
-                setting_row(&t("settings-users-username"), Box::new(user)),
-                setting_row(&t("settings-users-password"), Box::new(password)),
-                caption(&t("settings-users-password-note")),
-                Box::new(buttons),
+                field_row(&t("settings-users-full-name"), Box::new(full)),
+                field_row(&t("settings-users-username"), Box::new(user)),
+                field_row(&t("settings-users-password"), Box::new(password)),
+                note(&t("settings-users-password-note")),
+                buttons,
             ]),
         )
     }
 
     /// What can be done to `user`'s account: nothing for the signed-in one.
-    fn user_actions(&self, user: &DeviceUser) -> Row {
-        let mut actions = Row::new().push(Box::new(Spacer::new()));
+    fn user_actions(&self, user: &DeviceUser) -> Vec<Button> {
+        let mut actions: Vec<Button> = Vec::new();
         if !user.current {
             let role_action = if user.admin {
                 t("settings-users-make-standard")
@@ -742,49 +745,48 @@ impl UsersModel {
                 t("settings-users-enable-autologin")
             };
             let name = &user.username;
-            actions = actions.push(Box::new(self.cx.bind_invocation(
+            actions.push(self.cx.bind_invocation(
                 Button::new(&format!("settings.users.role.{name}"), &role_action),
                 UsersEffect::SetAdministrator {
                     user: name.clone(),
                     admin: !user.admin,
                 },
-            )));
+            ));
             // An unread automatic-login state offers no switch to flip.
             if user.automatic_login_error.is_none() {
-                actions = actions.push(Box::new(self.cx.bind_invocation(
+                actions.push(self.cx.bind_invocation(
                     Button::new(&format!("settings.users.autologin.{name}"), &auto_action),
                     UsersEffect::SetAutomaticLogin {
                         user: name.clone(),
                         on: !user.automatic_login,
                     },
-                )));
+                ));
             }
-            actions = actions
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("settings.users.remove_keep.{name}"),
-                        &t("settings-users-remove-keep-files"),
-                    ),
-                    UsersEffect::RemoveUser {
-                        user: name.clone(),
-                        keep_files: true,
-                    },
-                )))
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("settings.users.remove.{name}"),
-                        &t("settings-users-remove-account-and-files"),
-                    ),
-                    UsersEffect::RemoveUser {
-                        user: name.clone(),
-                        keep_files: false,
-                    },
-                )));
+            actions.push(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.users.remove_keep.{name}"),
+                    &t("settings-users-remove-keep-files"),
+                ),
+                UsersEffect::RemoveUser {
+                    user: name.clone(),
+                    keep_files: true,
+                },
+            ));
+            actions.push(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.users.remove.{name}"),
+                    &t("settings-users-remove-account-and-files"),
+                ),
+                UsersEffect::RemoveUser {
+                    user: name.clone(),
+                    keep_files: false,
+                },
+            ));
         }
         actions
     }
 
-    fn user_row(&self, user: &DeviceUser) -> El {
+    fn user_row(&self, user: &DeviceUser) -> Vec<Item> {
         let actions = self.user_actions(user);
         let role = if user.admin {
             t("settings-users-role-administrator")
@@ -796,46 +798,33 @@ impl UsersModel {
         } else {
             String::new()
         };
-        let mut row = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Text::new(&user.full_name).with_role(ui::TextRole::Body),
-                    ))
-                    .push(Box::new(Spacer::new()))
-                    .push(semantic_status_pill(
-                        &role,
-                        if user.admin {
-                            StatusTone::Success
-                        } else {
-                            StatusTone::Neutral
-                        },
-                    )),
-            ))
-            .push(Box::new(
-                Text::new(&t_args(
-                    "settings-users-uid-line",
-                    &[
-                        ("username", user.username.as_str().into()),
-                        ("uid", user.uid.into()),
-                        ("you", you.as_str().into()),
-                    ],
-                ))
-                .with_role(ui::TextRole::Caption)
-                .dimmed(),
-            ));
+        let detail = t_args(
+            "settings-users-uid-line",
+            &[
+                ("username", user.username.as_str().into()),
+                ("uid", user.uid.into()),
+                ("you", you.as_str().into()),
+            ],
+        );
+        let pill = semantic_status_pill(
+            &role,
+            if user.admin {
+                StatusTone::Success
+            } else {
+                StatusTone::Neutral
+            },
+        );
+        let mut items = vec![item_row(&user.full_name, vec![pill], &[detail], actions)];
         if let Some(error) = &user.automatic_login_error {
-            row = row.push(error_caption(&t_args(
+            items.push(row(error_caption(&t_args(
                 "settings-users-autologin-error",
                 &[("error", error.as_str().into())],
-            )));
+            ))));
         }
-        Box::new(row.push(Box::new(actions)))
+        items
     }
 
-    fn identity_row(&self, id: &IdentitySummary) -> El {
+    fn identity_row(&self, id: &IdentitySummary) -> Item {
         let name = if id.display_name.is_empty() {
             &id.id
         } else {
@@ -847,40 +836,37 @@ impl UsersModel {
         } else {
             t("settings-users-identity-available")
         };
-        let mut top = Row::new()
-            .push(Box::new(Text::new(name).with_role(ui::TextRole::Body)))
-            .push(Box::new(Spacer::new()))
-            .push(semantic_status_pill(
-                &status,
-                if id.active {
-                    StatusTone::Success
-                } else {
-                    StatusTone::Neutral
+        let pill = semantic_status_pill(
+            &status,
+            if id.active {
+                StatusTone::Success
+            } else {
+                StatusTone::Neutral
+            },
+        );
+        let mut actions: Vec<Button> = Vec::new();
+        if !id.active {
+            actions.push(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.users.identity.activate.{}", id.id),
+                    &t("settings-users-identity-use"),
+                ),
+                UsersEffect::UseIdentity {
+                    identity: id.id.clone(),
                 },
             ));
-        if !id.active {
-            top = top
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("settings.users.identity.activate.{}", id.id),
-                        &t("settings-users-identity-use"),
-                    ),
-                    UsersEffect::UseIdentity {
-                        identity: id.id.clone(),
-                    },
-                )))
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("settings.users.identity.remove.{}", id.id),
-                        &t("settings-users-identity-remove"),
-                    ),
-                    UsersEffect::RemoveIdentity {
-                        identity: id.id.clone(),
-                    },
-                )));
+            actions.push(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.users.identity.remove.{}", id.id),
+                    &t("settings-users-identity-remove"),
+                ),
+                UsersEffect::RemoveIdentity {
+                    identity: id.id.clone(),
+                },
+            ));
         }
         if id.protection == KeyProtection::LegacyPlaintext {
-            top = top.push(Box::new(self.cx.bind_invocation(
+            actions.push(self.cx.bind_invocation(
                 Button::new(
                     &format!("settings.users.identity.protect.{}", id.id),
                     &t("settings-users-identity-protect"),
@@ -888,29 +874,20 @@ impl UsersModel {
                 UsersEffect::ProtectIdentity {
                     identity: id.id.clone(),
                 },
-            )));
+            ));
         }
         let protection = id.protection.label();
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(top))
-                .push(Box::new(
-                    Text::new(&t_args(
-                        "settings-users-identity-detail",
-                        &[
-                            ("id", id.id.as_str().into()),
-                            ("key", key.as_str().into()),
-                            ("threshold", id.threshold.into()),
-                            ("total", id.total_shares.into()),
-                            ("protection", protection.into()),
-                        ],
-                    ))
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-                )),
-        )
+        let detail = t_args(
+            "settings-users-identity-detail",
+            &[
+                ("id", id.id.as_str().into()),
+                ("key", key.as_str().into()),
+                ("threshold", id.threshold.into()),
+                ("total", id.total_shares.into()),
+                ("protection", protection.into()),
+            ],
+        );
+        item_row(name, vec![pill], &[detail], actions)
     }
 }
 
