@@ -176,6 +176,20 @@ enum OutOfBand {
         /// other devices over their device-admin route); repeatable.
         #[arg(long = "capability", value_name = "CAPABILITY")]
         capabilities: Vec<String>,
+        /// Also record the certified host as one of the person's home peers
+        /// in IDENTITY_ROOT's home-peer registry, so this device shares
+        /// workspaces on it: the endpoint id of the relay it runs, hex, as
+        /// `device-key` prints it. Needs the `host` capability.
+        #[arg(long, value_name = "HEX")]
+        home_peer_service: Option<String>,
+        /// A direct address that relay listens on, kept as its dial hint;
+        /// repeatable. Without one the relay is found by its endpoint id.
+        #[arg(
+            long = "home-peer-addr",
+            value_name = "ADDR",
+            requires = "home_peer_service"
+        )]
+        home_peer_addrs: Vec<std::net::SocketAddr>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -1147,6 +1161,7 @@ fn register_home_peer(
     cert: &DeviceCert,
     relay_service_node_id: [u8; 32],
     relay_workspace_ids: &[u64],
+    relay_endpoint: Option<iroh_base::EndpointAddr>,
 ) -> anyhow::Result<()> {
     let path = tilo_relay::home_peer_registry_path(identity_root);
     if !tilo_relay::valid_home_peer_label(&cert.device_label) || relay_workspace_ids.len() > 4096 {
@@ -1187,7 +1202,7 @@ fn register_home_peer(
         schema_version: HomePeerRegistration::CURRENT_SCHEMA,
         device_node_id,
         relay_service_node_id: hex::encode(relay_service_node_id),
-        relay_endpoint: None,
+        relay_endpoint,
         label: cert.device_label.clone(),
         user_public_key: hex::encode(cert.user_public_key),
         device_cert: Some(cert.clone()),
@@ -2515,6 +2530,7 @@ fn commit_approval(
             &prepared.signed.payload.cert,
             prepared.signed.payload.relay_service_node_id,
             &identity.relay_workspace_ids,
+            None,
         )?,
         EnrollmentKind::PersonalDevice => {
             commit_personal_device(
@@ -2633,6 +2649,36 @@ fn out_of_band_payload(
     })
 }
 
+/// A host certified out of band that this device records as one of its
+/// person's home peers: the relay it runs, and where that relay listens.
+struct OutOfBandHomePeer {
+    relay_service_node_id: [u8; 32],
+    relay_endpoint: Option<iroh_base::EndpointAddr>,
+}
+
+impl OutOfBandHomePeer {
+    /// `service` is the relay's endpoint id in hex, as `device-key` prints it.
+    fn parse(service: &str, addrs: &[std::net::SocketAddr]) -> anyhow::Result<Self> {
+        let relay_service_node_id: [u8; 32] = hex::decode(service.trim())
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .context("--home-peer-service must be a 32-byte hex endpoint id")?;
+        let id = iroh_base::EndpointId::from_bytes(&relay_service_node_id)
+            .context("--home-peer-service is not an endpoint id")?;
+        let relay_endpoint = (!addrs.is_empty()).then(|| {
+            addrs
+                .iter()
+                .fold(iroh_base::EndpointAddr::new(id), |endpoint, addr| {
+                    endpoint.with_ip_addr(*addr)
+                })
+        });
+        Ok(Self {
+            relay_service_node_id,
+            relay_endpoint,
+        })
+    }
+}
+
 struct CertifyOptions<'a> {
     root_key: Option<&'a std::path::Path>,
     identity_root: &'a std::path::Path,
@@ -2640,6 +2686,7 @@ struct CertifyOptions<'a> {
     device: &'a str,
     label: &'a str,
     capabilities: &'a [String],
+    home_peer: Option<&'a OutOfBandHomePeer>,
     out: &'a std::path::Path,
 }
 
@@ -2651,6 +2698,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         device,
         label,
         capabilities,
+        home_peer,
         out,
     } = *options;
     let root: Box<dyn RootSigner> = match root_key {
@@ -2684,6 +2732,9 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
             }
         }
     }
+    if home_peer.is_some() && !granted.can_act_as_host {
+        bail!("only a device certified with the host capability can be a home peer");
+    }
     let mut cert = DeviceCert {
         user_public_key: root.public_key(),
         device_public_key,
@@ -2697,6 +2748,19 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
     if let Some(identity_dir) = identity_dir {
         let fleet = project_personal_device(identity_dir, &cert)?;
         commit_personal_device(identity_dir, cert.user_public_key, &fleet)?;
+    }
+    if let Some(home_peer) = home_peer {
+        // The person's continuity shard, which every device of the person
+        // dials, as a nearby approval registers it.
+        register_home_peer(
+            identity_root,
+            &cert,
+            home_peer.relay_service_node_id,
+            &[tilo_relay::personal_continuity_workspace_id(
+                &cert.user_public_key,
+            )],
+            home_peer.relay_endpoint.clone(),
+        )?;
     }
     tilo_user_identity::persist::write_device_cert(out, &cert)?;
     Ok(())
@@ -2740,16 +2804,24 @@ fn out_of_band(command: OutOfBand) -> anyhow::Result<()> {
             device,
             label,
             capabilities,
+            home_peer_service,
+            home_peer_addrs,
             out,
-        } => certify(&CertifyOptions {
-            root_key: root_key.as_deref(),
-            identity_root: &identity_root,
-            identity_dir: identity_dir.as_deref(),
-            device: &device,
-            label: &label,
-            capabilities: &capabilities,
-            out: &out,
-        }),
+        } => {
+            let home_peer = home_peer_service
+                .map(|service| OutOfBandHomePeer::parse(&service, &home_peer_addrs))
+                .transpose()?;
+            certify(&CertifyOptions {
+                root_key: root_key.as_deref(),
+                identity_root: &identity_root,
+                identity_dir: identity_dir.as_deref(),
+                device: &device,
+                label: &label,
+                capabilities: &capabilities,
+                home_peer: home_peer.as_ref(),
+                out: &out,
+            })
+        }
         OutOfBand::InstallCert {
             identity_root,
             identity_dir,
@@ -3031,6 +3103,7 @@ mod tests {
             device: &device,
             label: "workstation (tilo-vm)",
             capabilities,
+            home_peer: None,
             out: &out,
         };
         let shell = ["shell".to_owned()];
@@ -3051,6 +3124,87 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fleet.certificates, vec![cert]);
+    }
+
+    /// A host certified out of band becomes one of the person's home peers:
+    /// the registry names its relay, where that relay listens and the
+    /// person's continuity shard, so the device shares workspaces on it. A
+    /// device that may not host is never registered.
+    #[test]
+    fn a_host_certified_out_of_band_is_registered_as_a_home_peer() {
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(identity_root.path());
+        paths.ensure_directories().unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[45; 32]);
+        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+        let host = ed25519_dalek::SigningKey::from_bytes(&[46; 32]);
+        let device = hex::encode(host.verifying_key().to_bytes());
+        let service = tilo_relay::daemon::relay_service_node_id(&host);
+        let addr: std::net::SocketAddr = "127.0.0.1:41234".parse().unwrap();
+        let out = identity_dir.path().join("host.cert");
+        let registry = tilo_relay::home_peer_registry_path(identity_root.path());
+
+        assert!(OutOfBandHomePeer::parse("not hex", &[addr]).is_err());
+        let home_peer = OutOfBandHomePeer::parse(&hex::encode(service), &[addr]).unwrap();
+        let options = |capabilities| CertifyOptions {
+            root_key: None,
+            identity_root: identity_root.path(),
+            identity_dir: Some(identity_dir.path()),
+            device: &device,
+            label: "Home relay",
+            capabilities,
+            home_peer: Some(&home_peer),
+            out: &out,
+        };
+        let member = ["read-all".to_owned()];
+        let refused = certify(&options(&member)).unwrap_err();
+        assert!(refused.to_string().contains("host capability"), "{refused}");
+        assert!(!registry.exists() && !out.exists());
+
+        let host_capabilities = ["host".to_owned(), "read-all".to_owned()];
+        certify(&options(&host_capabilities)).unwrap();
+        let cert = tilo_user_identity::persist::read_device_cert(&out).unwrap();
+        assert_eq!(cert.capabilities, DeviceCapabilities::host());
+        let peers: Vec<HomePeerRegistration> =
+            serde_json::from_slice(&std::fs::read(&registry).unwrap()).unwrap();
+        assert_eq!(peers.len(), 1);
+        let peer = &peers[0];
+        assert_eq!(peer.device_node_id, device);
+        assert_eq!(peer.relay_service_node_id, hex::encode(service));
+        assert_eq!(
+            peer.user_public_key,
+            hex::encode(root.verifying_key().to_bytes())
+        );
+        assert_eq!(
+            peer.relay_workspace_ids,
+            vec![tilo_relay::personal_continuity_workspace_id(
+                &root.verifying_key().to_bytes()
+            )]
+        );
+        let endpoint = peer.relay_endpoint.as_ref().expect("the dial hint is kept");
+        assert_eq!(endpoint.id.as_bytes(), &service);
+        assert_eq!(endpoint.ip_addrs().copied().collect::<Vec<_>>(), vec![addr]);
+        assert_eq!(peer.device_cert.as_ref(), Some(&cert));
+        assert!(valid_home_peer_registration(peer));
+
+        // Certified again (a relay restarted on another port): one entry,
+        // the newest hint.
+        let moved: std::net::SocketAddr = "127.0.0.1:41235".parse().unwrap();
+        let home_peer = OutOfBandHomePeer::parse(&hex::encode(service), &[moved]).unwrap();
+        certify(&CertifyOptions {
+            home_peer: Some(&home_peer),
+            ..options(&host_capabilities)
+        })
+        .unwrap();
+        let peers: Vec<HomePeerRegistration> =
+            serde_json::from_slice(&std::fs::read(&registry).unwrap()).unwrap();
+        assert_eq!(peers.len(), 1);
+        let endpoint = peers[0].relay_endpoint.as_ref().unwrap();
+        assert_eq!(
+            endpoint.ip_addrs().copied().collect::<Vec<_>>(),
+            vec![moved]
+        );
     }
 
     #[test]
@@ -3096,6 +3250,7 @@ mod tests {
             device: &hex::encode(device.verifying_key().to_bytes()),
             label: "Node",
             capabilities: &capabilities,
+            home_peer: None,
             out: &own,
         })
         .unwrap();
@@ -3808,6 +3963,7 @@ mod tests {
             &[tilo_relay::personal_continuity_workspace_id(
                 &root.verifying_key().to_bytes(),
             )],
+            None,
         )
         .unwrap();
 
@@ -4117,7 +4273,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
             let cert = payload(&root).cert;
-            register_home_peer(dir.path(), &cert, [8; 32], &[2, 9]).unwrap();
+            register_home_peer(dir.path(), &cert, [8; 32], &[2, 9], None).unwrap();
             let json: serde_json::Value = serde_json::from_slice(
                 &std::fs::read(tilo_relay::home_peer_registry_path(dir.path())).unwrap(),
             )
@@ -4143,7 +4299,9 @@ mod tests {
             let path = tilo_relay::home_peer_registry_path(dir.path());
             tilo_files::native::atomic::write_creating_parent(&path, b"not json").unwrap();
             let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-            assert!(register_home_peer(dir.path(), &payload(&root).cert, [8; 32], &[2]).is_err());
+            assert!(
+                register_home_peer(dir.path(), &payload(&root).cert, [8; 32], &[2], None).is_err()
+            );
             assert_eq!(std::fs::read(&path).unwrap(), b"not json");
         }
         // Phase `dropped_response_can_be_retried_with_the_same_authenticated_ack`.
