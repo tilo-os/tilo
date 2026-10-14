@@ -243,6 +243,7 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
                 cx.storage().settings::<crate::sync::PairedDevices>(),
             );
         }
+        self.wake_with(cx.waker());
         self.attach_framework(cx.dispatcher(), history);
     }
 

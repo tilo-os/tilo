@@ -1276,7 +1276,12 @@ host running the portable toolkit can present:
   persisted Automerge log) and detached histories of the records its windows
   show. It retains author/time attribution and device-private seen frontiers;
   opening the pane does not mutate the live documents. Navigation publishes
-  `inSurface` when the shared pane draws the view.
+  `inSurface` when the shared pane draws the view. The surface reaches the
+  pane only through `open_activity`, which `HistorySource::activity_pane`
+  names; the desktop bundle (`tilo-web-desktop/src/activity.rs`) splits the
+  pane into its own module, fetched the first time someone opens Activity,
+  so the start module does not carry it. The request stays open while the
+  module loads; a failed load dismisses it.
 - Browser application notices use `AppNotifier` and the shared banner stack
   and centre. Expired and dismissed banners enter real retained history;
   the browser saves that bounded history through its profile's durable store.
