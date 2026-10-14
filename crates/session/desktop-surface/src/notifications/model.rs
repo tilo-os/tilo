@@ -139,6 +139,15 @@ fn next_id() -> u64 {
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// A person a notification is from: the name their initials come from and
+/// the stable identity (a peer id, a contact handle) that picks their
+/// presence colour, the same one they wear everywhere else.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationPerson {
+    pub name: String,
+    pub identity: String,
+}
+
 /// A single notification. `id` is a process-unique token for the desktop's
 /// own bookkeeping; `sender_id` is the local sending protocol's id (the
 /// freedesktop notification id on the native desktop) used to answer the
@@ -161,6 +170,10 @@ pub struct Notification {
     /// Only the host's durable scheduler can attach this route.
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub scheduled_target: Option<ScheduledNotificationTarget>,
+    /// The person this notification is from, when it is from one (a
+    /// message, a mention): the banner leads with their avatar and keeps
+    /// the app as its source line.
+    pub from: Option<NotificationPerson>,
     /// Sending application's display name; rendered as a caption above the
     /// title when present.
     pub app_name: Option<String>,
@@ -200,6 +213,7 @@ impl Notification {
             remote_route: None,
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             scheduled_target: None,
+            from: None,
             app_name: None,
             app_id: None,
             source_workspace: None,
@@ -217,6 +231,16 @@ impl Notification {
             return Some(k.clone());
         }
         self.actions.first().map(|(k, _)| k.clone())
+    }
+
+    /// From `name`, whose stable `identity` picks their presence colour.
+    #[must_use]
+    pub fn with_from(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
+        self.from = Some(NotificationPerson {
+            name: name.into(),
+            identity: identity.into(),
+        });
+        self
     }
 
     #[must_use]

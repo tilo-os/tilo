@@ -475,8 +475,22 @@ fn kind_icon(kind: ToastKind) -> crate::icons::Icon {
 
 /// Width of a card's leading column after its padding: the severity icon
 /// and the gap to the text.
-fn leading_column(theme: &Theme) -> f64 {
-    f64::from(theme.tokens.metrics.icon_md) + f64::from(theme.tokens.metrics.icon_label_gap)
+/// The side of the card's leading mark, if it has one: a person's avatar
+/// is the size of a list row's, a glyph an icon's.
+fn leading_side(theme: &Theme, card: &ToastCard<'_>) -> Option<f64> {
+    if card.kind == ToastKind::Info && card.person.is_some() {
+        return Some(crate::widget::AvatarSize::Regular.side(theme));
+    }
+    (card.kind != ToastKind::Info || card.icon.is_some())
+        .then(|| f64::from(theme.tokens.metrics.icon_md))
+}
+
+/// The width the leading mark takes before the text, gap included; none
+/// for a card without a mark.
+fn leading_column(theme: &Theme, card: &ToastCard<'_>) -> f64 {
+    leading_side(theme, card).map_or(0.0, |side| {
+        side + f64::from(theme.tokens.metrics.icon_label_gap)
+    })
 }
 
 fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
@@ -519,9 +533,10 @@ pub struct ToastCard<'a> {
     /// which only warnings, errors and successes carry: a glyph naming
     /// what the card is about...
     pub icon: Option<crate::icons::Icon>,
-    /// ...or else the sender's initial, on a quiet badge. The leading
-    /// column is kept even when neither is set, so text aligns down a stack.
-    pub monogram: &'a str,
+    /// The person the card is from, as `(name, identity)`: their avatar
+    /// leads the card, in their presence colour, ahead of any glyph. Plain
+    /// information with neither a person nor an icon leads with its text.
+    pub person: Option<(&'a str, &'a str)>,
     /// Enter/exit animation opacity in `[0, 1]`; `1.0` for a settled card.
     pub alpha: f32,
     /// Draw a dismiss (`X`) button at the top-right and hand its rect back
@@ -559,7 +574,7 @@ impl<'a> ToastCard<'a> {
             caption: "",
             kind,
             icon: None,
-            monogram: "",
+            person: None,
             alpha: 1.0,
             closable: false,
             close_hovered: false,
@@ -586,10 +601,10 @@ impl<'a> ToastCard<'a> {
         self.icon = icon;
         self
     }
-    /// Lead plain information with `monogram`'s first letter.
+    /// Lead the card with the avatar of the person it is from.
     #[must_use]
-    pub fn monogram(mut self, monogram: &'a str) -> Self {
-        self.monogram = monogram;
+    pub fn person(mut self, name: &'a str, identity: &'a str) -> Self {
+        self.person = Some((name, identity));
         self
     }
     #[must_use]
@@ -698,7 +713,7 @@ pub fn minimum_card_height(
     .sum();
     let control_height = ButtonFace::height(crate::widget::ControlSize::Small, theme);
     let mut height = text_height
-        .max(f64::from(theme.tokens.metrics.icon_md))
+        .max(leading_side(theme, card).unwrap_or(f64::from(theme.tokens.metrics.icon_md)))
         .max(if card.closable || card.single_action() {
             control_height
         } else {
@@ -733,7 +748,7 @@ pub fn card_height(
     } else {
         pad_x
     };
-    let text_width = width - leading_column(theme) - pad_x - trailing;
+    let text_width = width - leading_column(theme, card) - pad_x - trailing;
     if card.single_action() || text_width <= 0.0 {
         return compact;
     }
@@ -777,7 +792,7 @@ pub fn paint_card(
     let (pad_x, pad_y) = card_pad(theme);
     paint_card_surface(scene, transform, rect, a, theme);
 
-    let text_x0 = rect.x0 + leading_column(theme);
+    let text_x0 = rect.x0 + leading_column(theme, card);
 
     // Dismiss (X) button — a ghost `Button` face, top-right.
     let mut text_right = if let Some(close_rect) =
@@ -814,7 +829,7 @@ pub fn paint_card(
         a,
         &mut hit,
     );
-    let title_centre = paint_card_text(
+    let block = paint_card_text(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
         Rect::new(text_x0, rect.y0, text_right, action_top.unwrap_or(rect.y1)),
         card,
@@ -829,7 +844,8 @@ pub fn paint_card(
     // a calm stack of notices never reads as a column of alerts.
     paint_leading(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
-        vello::kurbo::Point::new(rect.x0 + pad_x, title_centre),
+        rect.x0 + pad_x,
+        block,
         card,
         a,
     );
@@ -855,61 +871,73 @@ pub fn paint_card(
     hit
 }
 
-/// The card's leading mark, centred on `left_centre` (its left edge, the
-/// title line's centre): a severity glyph for anything that needs
-/// attention; for plain information what the card is about, else whom it
-/// is from. A generic "i" on every card would say nothing.
-fn paint_leading(ctx: &mut PaintCtx<'_>, left_centre: Point, card: &ToastCard<'_>, alpha: f32) {
+/// The card's leading mark at `left`: a severity glyph for anything that
+/// needs attention; for plain information whom it is from (their avatar,
+/// level with the top of the text, as a message reads), else a glyph for
+/// what it is about, on the title's line. A generic "i" or an app's letter
+/// on every card would say nothing, so a card with neither leads with text.
+fn paint_leading(
+    ctx: &mut PaintCtx<'_>,
+    left: f64,
+    block: TextBlock,
+    card: &ToastCard<'_>,
+    alpha: f32,
+) {
     let theme = ctx.theme;
-    let size = f64::from(theme.tokens.metrics.icon_md);
-    let mark = Rect::from_center_size(
-        Point::new(left_centre.x + size / 2.0, left_centre.y),
-        (size, size),
-    );
-    let glyph = match (card.kind, card.icon) {
-        (ToastKind::Info, Some(icon)) => Some((icon, theme.tokens.colors.text_dim)),
-        (ToastKind::Info, None) => None,
-        (kind, _) => Some((kind_icon(kind), kind_color(kind, theme))),
+    let Some(side) = leading_side(theme, card) else {
+        return;
     };
-    if let Some((icon, color)) = glyph {
-        crate::icons::draw_icon(
-            ctx.scene,
-            ctx.transform,
-            mark,
-            icon,
-            color.with_alpha(alpha),
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
+    if let (ToastKind::Info, Some((name, identity))) = (card.kind, card.person) {
+        // Top-aligned with a block at least as tall as the avatar; centred
+        // on a shorter one, so a one-line card is not top-heavy.
+        let centre_y = if block.bottom - block.top >= side {
+            block.top + side / 2.0
+        } else {
+            (block.top + block.bottom) / 2.0
+        };
+        let rect = Rect::from_center_size(Point::new(left + side / 2.0, centre_y), (side, side));
+        let faded = alpha < 0.999;
+        if faded {
+            ctx.scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                ctx.transform,
+                &rect,
+            );
+        }
+        crate::widget::AvatarFace::new(name, identity).paint(ctx, rect);
+        if faded {
+            ctx.scene.pop_layer();
+        }
         return;
     }
-    let Some(initial) = card.monogram.trim().chars().next() else {
-        return;
+    let mark = Rect::from_center_size(
+        Point::new(left + side / 2.0, block.title_centre),
+        (side, side),
+    );
+    let (icon, color) = match (card.kind, card.icon) {
+        (ToastKind::Info, Some(icon)) => (icon, theme.tokens.colors.text_dim),
+        (ToastKind::Info, None) => return,
+        (kind, _) => (kind_icon(kind), kind_color(kind, theme)),
     };
-    let badge = mark.inflate(2.0, 2.0);
-    ctx.scene.fill(
-        Fill::NonZero,
+    crate::icons::draw_icon(
+        ctx.scene,
         ctx.transform,
-        theme
-            .tokens
-            .colors
-            .text_primary
-            .multiply_alpha(0.12 * alpha),
-        None,
-        &RoundedRect::from_rect(badge, f64::from(theme.tokens.radii.detail)),
+        mark,
+        icon,
+        color.with_alpha(alpha),
+        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
-    let letter: String = initial.to_uppercase().collect();
-    let style = theme.text(TextRole::Caption).strong();
-    let (w, h) = ctx.text.measure_style(&letter, None, &style);
-    ctx.text(
-        &letter,
-        &style,
-        theme.tokens.colors.text_primary.with_alpha(alpha),
-        Point::new(
-            badge.center().x - f64::from(w) / 2.0,
-            badge.center().y - f64::from(h) / 2.0,
-        ),
-        None,
-    );
+}
+
+/// Where a card's text landed: the centre of the title's first line and
+/// the block's vertical extent, for the leading mark to line up with.
+#[derive(Clone, Copy, Debug)]
+struct TextBlock {
+    title_centre: f64,
+    top: f64,
+    bottom: f64,
 }
 
 fn paint_card_actions(
@@ -996,10 +1024,32 @@ fn paint_card_actions(
     Some(y0 - f64::from(theme.tokens.spacing.s2))
 }
 
-/// The card's body: the floating material with its edge and shadow, at the
-/// card's concentric radius, fading with the card.
+/// The card's body: a raised floating surface lifted by two shadows, at
+/// the card's concentric radius, fading with the card.
+///
+/// A banner arrives over whatever is on screen, so it is lifted the way
+/// macOS lifts its banners: by its shadow and a surface a step off the
+/// desktop, not by an outline. The token's wide shadow, a little larger
+/// and stronger for a card that must stand off busy windows, reads as
+/// distance; a tight contact shadow gives the edge definition the outline
+/// used to. Where the declared floating surface does not separate from the
+/// desktop (high contrast, forced colours) the theme's panel ground and its
+/// full border do the work instead.
 fn paint_card_surface(scene: &mut Scene, transform: Affine, rect: Rect, alpha: f32, theme: &Theme) {
-    let radius = card_radius(theme);
+    paint_surface(scene, transform, rect, card_radius(theme), alpha, theme);
+}
+
+/// The notification card's surface at `radius`: for anything that stands
+/// in a column of cards (a status pill above them, a locked-screen stand-in
+/// for them), so the column is one material.
+pub fn paint_surface(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    alpha: f32,
+    theme: &Theme,
+) {
     let faded = alpha < 0.999;
     if faded {
         scene.push_layer(
@@ -1010,34 +1060,77 @@ fn paint_card_surface(scene: &mut Scene, transform: Affine, rect: Rect, alpha: f
             &crate::widget::floating_surface::painted_bounds(rect, theme),
         );
     }
-    crate::surface::shadow(
-        scene,
-        transform,
-        rect,
-        radius,
-        &theme.tokens.elevation.floating,
-    );
-    // The floating material and its hairline, without the light inner
-    // edge a panel carries: on a card this small it read as a cheap
-    // outline. The shadow lifts it off the strip instead.
+    let elevation = &theme.tokens.elevation;
+    let floating = elevation.floating;
+    let ambient = crate::tokens::Shadow {
+        offset_y: floating.offset_y * CARD_SHADOW_REACH,
+        blur: floating.blur * CARD_SHADOW_REACH,
+        color: floating.color.multiply_alpha(CARD_SHADOW_STRENGTH),
+    };
+    let contact = crate::tokens::Shadow {
+        offset_y: 1.0,
+        blur: 3.0,
+        color: vello::peniko::Color::BLACK.with_alpha(CARD_CONTACT_ALPHA * elevation.shadow_scale),
+    };
+    crate::surface::shadow(scene, transform, rect, radius, &ambient);
+    crate::surface::shadow(scene, transform, rect, radius, &contact);
     let shape = RoundedRect::from_rect(rect, radius);
-    crate::floating_surface::paint_material(
+    let (ground, border) = card_ground(theme);
+    crate::backdrop::fill_with_ground(
         scene,
         transform,
         &shape,
         crate::floating_surface::Material::Floating,
         theme,
+        ground,
     );
-    scene.stroke(
-        &vello::kurbo::Stroke::new(1.0),
-        transform,
-        crate::chrome::panel_border(theme).multiply_alpha(0.6),
-        None,
-        &crate::surface::edge_outline(rect, radius),
-    );
+    if let Some(border) = border {
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            border,
+            None,
+            &crate::surface::edge_outline(rect, radius),
+        );
+    }
     if faded {
         scene.pop_layer();
     }
+}
+
+/// How much further a card's ambient shadow reaches than the floating
+/// token's.
+const CARD_SHADOW_REACH: f32 = 1.5;
+/// How much stronger a card's ambient shadow is than the floating token's.
+const CARD_SHADOW_STRENGTH: f32 = 1.6;
+/// The contact shadow's strength on a dark material, scaled down on a light
+/// one by its elevation's `shadow_scale`.
+const CARD_CONTACT_ALPHA: f32 = 0.28;
+/// How much of the panel border a light card keeps as its hairline: just
+/// enough to hold a white card's edge over a white window.
+const CARD_LIGHT_HAIRLINE: f32 = 0.45;
+
+/// A card's ground and the edge it needs: the declared floating surface,
+/// a step off the desktop, with a faint hairline only on a light one (where
+/// a white card may sit over a white window). Under high contrast and
+/// forced colours, where surfaces are declared equal and an edge is what
+/// separates them (the high-contrast theme forces colours too), the panel
+/// ground and its full border.
+#[must_use]
+pub fn card_ground(theme: &Theme) -> (vello::peniko::Color, Option<vello::peniko::Color>) {
+    use crate::a11y::relative_luminance;
+    if theme.forced_colors {
+        return (
+            crate::chrome::panel_ground(theme),
+            Some(crate::chrome::panel_border(theme)),
+        );
+    }
+    let declared = theme.tokens.colors.surfaces.overlay;
+    let light = relative_luminance(declared) > 0.5;
+    (
+        declared,
+        light.then(|| crate::chrome::panel_border(theme).multiply_alpha(CARD_LIGHT_HAIRLINE)),
+    )
 }
 
 /// The width of a card's single action face.
@@ -1163,7 +1256,7 @@ fn transient_size(
     } else {
         0.0
     };
-    let chrome = 2.0 * pad_x + leading_column(theme) + close_column + action_column;
+    let chrome = 2.0 * pad_x + leading_column(theme, card) + close_column + action_column;
     let title_style = theme.text(TextRole::Label).strong();
     let body_style = theme.text(TextRole::Caption);
     let title = single_line_text(card.title);
@@ -1195,6 +1288,9 @@ fn transient_size(
         .ceil();
     Some(vello::kurbo::Size::new(width, height))
 }
+
+/// How much smaller than a small icon the resting dismiss glyph is.
+const DISMISS_GLYPH_SCALE: f64 = 0.8;
 
 /// Where a card's dismiss control sits: a Small icon button inset one step
 /// from the top-trailing corner, centred on a single-line card.
@@ -1248,15 +1344,16 @@ fn paint_dismiss_button(
                 .accessible_name("Dismiss"),
         );
     } else {
-        // At rest the close is a quiet glyph, lighter than the title it
-        // sits beside: it is the way out, not the message.
-        let side = f64::from(theme.tokens.metrics.icon_sm);
+        // At rest the close is a small glyph in the faintest ink, well
+        // under the title's weight: it is the way out, not the message.
+        // The pointer on it brings the full control back.
+        let side = f64::from(theme.tokens.metrics.icon_sm) * DISMISS_GLYPH_SCALE;
         crate::icons::draw_icon(
             scene,
             transform,
             Rect::from_center_size(close_rect.center(), (side, side)),
             crate::icons::Icon::X,
-            theme.tokens.colors.text_dim,
+            theme.tokens.colors.text_tertiary,
             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
@@ -1271,17 +1368,20 @@ fn paint_dismiss_button(
 /// pad. `column` runs from the card's top-left to the dismiss button's left
 /// edge (or the card's own right pad when there is none) and the top of the
 /// action row (or the card's bottom).
-fn paint_card_text(ctx: &mut PaintCtx<'_>, column: Rect, card: &ToastCard<'_>, alpha: f32) -> f64 {
+fn paint_card_text(
+    ctx: &mut PaintCtx<'_>,
+    column: Rect,
+    card: &ToastCard<'_>,
+    alpha: f32,
+) -> TextBlock {
     let theme = ctx.theme;
     let (pad_x, pad_y) = card_pad(theme);
     let text_x = column.x0 + pad_x;
     let width_avail = f32_of_f64((column.x1 - text_x).max(0.0));
     // A card sized for its text (`paint_transient`) wraps it; one that is
     // shorter than its wrapped text keeps each field to one elided line.
-    if let Some(title_centre) =
-        paint_wrapped_card_text(ctx, column, card, alpha, text_x, width_avail)
-    {
-        return title_centre;
+    if let Some(block) = paint_wrapped_card_text(ctx, column, card, alpha, text_x, width_avail) {
+        return block;
     }
     let text_renderer = &mut *ctx.text;
     let width_avail = f32_of_f64((column.x1 - text_x).max(0.0));
@@ -1321,6 +1421,7 @@ fn paint_card_text(ctx: &mut PaintCtx<'_>, column: Rect, card: &ToastCard<'_>, a
     let block_h = cap_h + title_h + body_h;
     let text_height = column.height().max(0.0);
     let mut ty = column.y0 + ((text_height - block_h) / 2.0).max(pad_y);
+    let top = ty;
 
     // `paint_card` deliberately owns a fixed-height notification surface.
     // Wrapping an untrusted summary/body into that surface makes the title
@@ -1364,7 +1465,11 @@ fn paint_card_text(ctx: &mut PaintCtx<'_>, column: Rect, card: &ToastCard<'_>, a
             Some(width_avail),
         );
     }
-    title_centre
+    TextBlock {
+        title_centre,
+        top,
+        bottom: top + block_h,
+    }
 }
 
 /// Paint the card's text wrapped at `width`, centred in `column`, when it
@@ -1376,7 +1481,7 @@ fn paint_wrapped_card_text(
     alpha: f32,
     text_x: f64,
     width: f32,
-) -> Option<f64> {
+) -> Option<TextBlock> {
     let theme = ctx.theme;
     let (_, pad_y) = card_pad(theme);
     let caption_style = theme.text(TextRole::Caption);
@@ -1405,8 +1510,12 @@ fn paint_wrapped_card_text(
         return None;
     }
     let mut y = column.y0 + (column.height() - block) / 2.0;
-    // The first line of the title, however many it wraps to.
-    let title_centre = y + caption_h + single.min(title_h) / 2.0;
+    let extent = TextBlock {
+        // The first line of the title, however many it wraps to.
+        title_centre: y + caption_h + single.min(title_h) / 2.0,
+        top: y,
+        bottom: y + block,
+    };
     let dim = theme.tokens.colors.text_dim.with_alpha(alpha);
     let primary = theme.tokens.colors.text_primary.with_alpha(alpha);
     for (text, style, ink, h) in [
@@ -1420,7 +1529,7 @@ fn paint_wrapped_card_text(
         ctx.text(text, style, ink, Point::new(text_x, y), Some(width));
         y += h;
     }
-    Some(title_centre)
+    Some(extent)
 }
 
 impl Widget for ToastStack {

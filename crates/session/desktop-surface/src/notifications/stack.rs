@@ -238,9 +238,16 @@ impl NotificationStack {
     ) -> Rect {
         let title_style = ctx.theme.text(TextRole::Caption);
         let card_rect = Rect::new(x0, y, x0 + width, y + TOAST_HEIGHT);
-        // A Panel-role floater like the toasts it stands in for (HIG §9.5),
-        // so one column is one material.
-        ui::surface::panel(ctx.scene, ctx.transform, card_rect, radius, ctx.theme);
+        // The card surface of the toasts it stands in for (HIG §9.5), so
+        // one column is one material.
+        ui::widget::toast::paint_surface(
+            ctx.scene,
+            ctx.transform,
+            card_rect,
+            radius,
+            1.0,
+            ctx.theme,
+        );
         let label = lock_suppressed_label(count);
         // Centre on the measured line, not the font size (HIG §7a).
         let max_width = f32_of_f64(width - CARD_PADDING_X * 2.0);
@@ -296,7 +303,14 @@ impl NotificationStack {
         let pill_h =
             SELECTOR_HEIGHT.max(f64::from(label_h) + f64::from(ctx.theme.tokens.spacing.s2));
         let pill_rect = Rect::new(x0, y, x0 + width, y + pill_h);
-        ui::surface::panel(ctx.scene, ctx.transform, pill_rect, radius, ctx.theme);
+        ui::widget::toast::paint_surface(
+            ctx.scene,
+            ctx.transform,
+            pill_rect,
+            radius,
+            1.0,
+            ctx.theme,
+        );
         let dot_center = Point::new(
             pill_rect.x0 + CARD_PADDING_X + DOT_RADIUS,
             pill_rect.y0 + pill_h / 2.0,
@@ -337,7 +351,6 @@ impl NotificationStack {
             // widget owns the card's look and hands back the close rect.
             let mut card = ToastCard::new(&n.title, n.severity.toast_kind())
                 .icon(n.icon_kind.icon())
-                .monogram(n.app_name.as_deref().unwrap_or(""))
                 .body(if n.show_preview { &n.body } else { "" })
                 .caption(n.app_name.as_deref().unwrap_or(""))
                 // A card that offers its own way out ("Not now", "Dismiss")
@@ -348,6 +361,11 @@ impl NotificationStack {
                         .any(|(key, _)| key == super::model::NOT_NOW_ACTION || key == "dismiss"),
                 )
                 .actionable(!n.actions.is_empty());
+            // A person's notification leads with them; the app stays the
+            // small source line above the title.
+            if let Some(person) = &n.from {
+                card = card.person(&person.name, &person.identity);
+            }
             let close = self.targets.interaction(&BannerTarget::Dismiss(n.id).key());
             card.close_hovered = close.hovered;
             card.close_pressed = close.pressed;

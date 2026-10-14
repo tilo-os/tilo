@@ -2359,25 +2359,33 @@ impl ShellDriver {
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);
         self.with_chrome(|st| {
-            // Severity ramp in one frame; long dismiss windows so
-            // the still-image scene captures the stack visible.
+            // What a person meets over their work: a collaborator who
+            // needs them, something shared with them, and a failure they
+            // did not cause. Long dismiss windows keep the still-image
+            // scene's stack on screen.
             st.push_notification_full(
-                Notification::new("Switched to workspace Research", "Active tab: Notes")
-                    .with_severity(NotificationSeverity::Info)
+                Notification::new("Ada mentioned you", "“Can you look at the launch notes?”")
+                    .with_app_name("Chat")
+                    .with_from("Ada Lovelace", "peer:ada")
                     .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
             st.push_notification_full(
-                Notification::new("Slow network", "Peer sync delayed; retrying")
-                    .with_severity(NotificationSeverity::Warning)
+                Notification::new("Lena shared “Q3 plan”", "You can edit it.")
+                    .with_app_name("Files")
+                    .with_from("Lena Ortiz", "peer:lena")
                     .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
             st.push_notification_full(
-                Notification::new("Permission denied", "Files cannot access /etc/shadow")
-                    .with_severity(NotificationSeverity::Error)
-                    .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                Notification::new(
+                    "Backup paused",
+                    "The backup drive was disconnected. Reconnect it to continue.",
+                )
+                .with_app_name("Backups")
+                .with_severity(NotificationSeverity::Warning)
+                .with_dismiss_after(Duration::from_secs(60))
+                .with_created_at(settled_at),
             );
         });
     }

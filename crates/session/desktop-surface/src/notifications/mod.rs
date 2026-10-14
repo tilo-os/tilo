@@ -27,8 +27,8 @@ pub use log::{CLEAR_UNDO_WINDOW, NotificationLog};
 pub use model::ScheduledNotificationTarget;
 pub use model::{
     ContinuityNotificationId, DEFAULT_DISMISS_AFTER, MAX_HISTORY, MAX_NOTIFICATIONS,
-    NOT_NOW_ACTION, Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
-    RemoteNotificationRoute, lock_suppressed_label,
+    NOT_NOW_ACTION, Notification, NotificationIconKind, NotificationPerson, NotificationSeverity,
+    PERSISTENT_DISMISS, RemoteNotificationRoute, lock_suppressed_label,
 };
 pub use persistence::{decode_history, encode_history};
 pub use stack::NotificationStack;
