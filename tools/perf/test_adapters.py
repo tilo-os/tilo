@@ -568,5 +568,81 @@ class HostingLoad(unittest.TestCase):
         self.assertLessEqual(budgeted, produced)
 
 
+BROWSER_HARNESS = ROOT / "scripts/perf/browser_qualification.mjs"
+BROWSER_ENV = {**ENV, "profile": "release", "renderer": "swiftshader"}
+
+
+def browser_report(**changes) -> dict:
+    """The shape scripts/perf/browser_qualification.mjs writes, reduced."""
+    report = {
+        "schema": 1, "renderer": "swiftshader",
+        "bundle": {"revision": "a" * 40, "dirty": False, "profile": "release", "digest": "d" * 64,
+                   "runtimeSha256": "e" * 64},
+        "adapter": {"vendor": "google", "architecture": "swiftshader", "device": "", "description": ""},
+        "browser": {"product": "Chrome/153.0.8010.12"},
+        "viewport": {"width": 1920, "height": 1080, "deviceScaleFactor": 1},
+        "workload": {"rounds": 2, "apps": ["so.tilo.notes", "so.tilo.sheets"], "inputHz": 120, "cpuThrottle": 1},
+        "samples": {"load_ms": [900.0, 1100.0], "open_ms": [20.0, 30.0, 25.0, 35.0],
+                    "open_ready_ms": [60.0, 90.0, 70.0, 80.0], "activate_ms": [12.0, 14.0, 40.0],
+                    "demo_interval_ms": [16.0, 17.0, 33.0, 18.0], "demo_work_ms": [9.0, 10.0, 11.0],
+                    "idle_per_s": [0.0, 0.5]},
+    }
+    for key, value in changes.items():
+        if key in report["bundle"]:
+            report["bundle"] = {**report["bundle"], key: value}
+        elif key in report["workload"]:
+            report["workload"] = {**report["workload"], key: value}
+        else:
+            report[key] = value
+    return report
+
+
+class BrowserQualification(unittest.TestCase):
+    def test_each_sample_list_becomes_its_kpi(self):
+        records = {item.kpi: item for item in adapters.browser_qualification(browser_report(), BROWSER_ENV)}
+        self.assertEqual(set(records), {kpi for kpi, _ in adapters.BROWSER_KPIS.values()})
+        interval = records["browser.demo.frame_interval"]
+        self.assertEqual((interval.unit, interval.n, interval.p50, interval.max), ("ms", 4, 17.0, 33.0))
+        idle = records["browser.idle.presented_per_s"]
+        self.assertEqual((idle.unit, idle.n, idle.max), ("per_s", 2, 0.5))
+        self.assertEqual(records["browser.activate.first_frame"].p99, 40.0)
+        meta = interval.meta
+        self.assertEqual((meta["runtime_sha256"], meta["viewport"], meta["adapter"]),
+                         ("e" * 64, "1920x1080@1", "google swiftshader"))
+
+    def test_a_report_of_another_environment_is_refused(self):
+        for report, reason in ((browser_report(renderer="gpu"), "not the env's swiftshader"),
+                               (browser_report(profile="dev"), "dev build"),
+                               (browser_report(revision="b" * 40), "built from b"),
+                               (browser_report(dirty=True), "dirty"),
+                               (browser_report(cpuThrottle=4), "throttled 4x"),
+                               (browser_report(schema=2), "schema")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                adapters.browser_qualification(report, BROWSER_ENV)
+
+    def test_the_ab_lane_accepts_its_untracked_output_but_not_another_commit(self):
+        records = adapters.browser_qualification(browser_report(dirty=True), BROWSER_ENV, require_clean=False)
+        self.assertTrue(records)
+        with self.assertRaisesRegex(ValueError, "built from b"):
+            adapters.browser_qualification(browser_report(revision="b" * 40), BROWSER_ENV, require_clean=False)
+
+    def test_a_measurement_without_samples_fails(self):
+        report = browser_report()
+        report["samples"] = {**report["samples"], "activate_ms": []}
+        with self.assertRaisesRegex(ValueError, "activate_ms"):
+            adapters.browser_qualification(report, BROWSER_ENV)
+
+    def test_the_fields_are_the_harnesses(self):
+        """The harness writes every sample list the adapter reads."""
+        source = BROWSER_HARNESS.read_text()
+        written = set(re.findall(r"\b([a-z_]+_(?:ms|per_s)): rounds", source[source.index("samples: {"):]))
+        self.assertEqual(written, set(adapters.BROWSER_KPIS))
+
+    def test_every_browser_kpi_has_a_budget(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("browser.")}
+        self.assertEqual(budgeted, {kpi for kpi, _ in adapters.BROWSER_KPIS.values()})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,7 +38,7 @@ min_delta = 0.0
 # Perf / scheduled (.forgejo/workflows/perf-scheduled.yml): one job per group,
 # selected by its `kpis` input; its `compare` job runs with the default lane.
 [lanes.perf-scheduled]
-groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting"]
+groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting", "browser"]
 
 # Dev / VM acceptance (.forgejo/workflows/vm-acceptance.yml): the installed
 # desktop in a KVM guest. Its R04 measures compositor CPU per painted frame on
@@ -1746,3 +1746,68 @@ unit = "usd"
 p50 = 0.001
 enforce = true
 source = "KPI: Relay cost per active collaborator-hour"
+
+# Browser runtime (scripts/perf/browser_qualification.mjs): the release
+# desktop bundle (build.sh --bundle desktop, the bytes web-entry.yml
+# publishes) in headless Chrome for Testing on the shared `runner` class, at
+# FHD, three fresh-context rounds, with Chrome's frame-rate limit off so the
+# 120 Hz input, not a 60 Hz headless display, bounds the demo. The runner has
+# no GPU: WebGPU runs on SwiftShader, so these records are compared only with
+# each other and never quoted as hardware frame rates, and the ceilings are
+# reported, never enforced; the relative rule catches regressions of the
+# runtime's own work. The ceilings are the runtime's goals: the demo workload's
+# minimum of 30 fps (95 % of frame intervals within 33.3 ms) and the broader
+# 120 fps (a typical frame interval, and 95 % of frames' runtime CPU, within
+# 8.33 ms); a window activated within 50 ms and first opened within 250 ms
+# (crates/browser/tilo-web-desktop/scripts/open-times.mjs), its own code
+# drawing within a second (the limit of an uninterrupted flow of thought); the
+# desktop's first frame within 2.5 s of navigation (the web's "good" Largest
+# Contentful Paint); an idle desktop presenting at most two frames a second
+# (idle.mjs). A hardware qualification
+# runs the same harness with --renderer gpu --enforce-goals. Timing KPIs need
+# three stored runs before comparison, as the latency group's do: wall-clock
+# on the shared runner varies between nights on identical code.
+
+[kpi."browser.load.desktop_presented"]
+unit = "ms"
+p99 = 2500.0
+baseline_min_runs = 3
+source = "navigation to the desktop's first presented frame, fresh browser context (headless, SwiftShader)"
+
+[kpi."browser.open.first_frame"]
+unit = "ms"
+p99 = 250.0
+baseline_min_runs = 3
+source = "launch command to the first frame presenting the new window, first open (headless, SwiftShader)"
+
+[kpi."browser.open.ready"]
+unit = "ms"
+p99 = 1000.0
+baseline_min_runs = 3
+source = "launch command to the first frame after the app's own code (its split-off module) is instantiated, first open (headless, SwiftShader)"
+
+[kpi."browser.activate.first_frame"]
+unit = "ms"
+p99 = 50.0
+baseline_min_runs = 3
+source = "select command to the first frame with the window active (headless, SwiftShader)"
+
+[kpi."browser.demo.frame_interval"]
+unit = "ms"
+p50 = 8.33
+p95 = 33.3
+baseline_min_runs = 3
+source = "demo: interval between presented frames while a strip pans under 120 Hz wheel input; goals 120 fps (p50) and minimum 30 fps (p95) (headless, SwiftShader)"
+
+[kpi."browser.demo.frame_work"]
+unit = "ms"
+p95 = 8.33
+baseline_min_runs = 3
+source = "demo: the runtime's CPU time per presented frame (draw_total); 120 fps capacity (headless, SwiftShader)"
+
+[kpi."browser.idle.presented_per_s"]
+unit = "per_s"
+max = 2.0
+min_delta = 0.5
+baseline_min_runs = 1
+source = "frames an idle desktop of the demo windows presents per second (headless, SwiftShader)"
