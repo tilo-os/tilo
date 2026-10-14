@@ -37,8 +37,7 @@ fn wrapped_header_sizing_preserves_the_complete_row_and_pager_budget() {
                 .borrow_mut()
                 .retain(Notification::new("Recovery", "Try again."));
         }
-        let height =
-            NotificationCenter::new().preferred_height_for_width(&host.log(), metrics, 320.0);
+        let height = NotificationCenter::new().preferred_height_for_width(&host, metrics, 320.0);
         let layout = CenterLayout::new(Rect::new(0.0, 0.0, 320.0, height), metrics);
         assert_eq!(layout.visible_rows(total), rows.max(1));
         assert!(layout.title_rect().y0 >= layout.back().y1 + qs::RELATED_GAP);
@@ -68,8 +67,8 @@ fn normal_header_retains_its_single_band_geometry() {
     let host = super::super::stack::tests::TestHost::default();
     let center = NotificationCenter::new();
     assert_eq!(
-        center.preferred_height_for_width(&host.log(), metrics, 400.0),
-        center.preferred_height(&host.log(), metrics)
+        center.preferred_height_for_width(&host, metrics, 400.0),
+        center.preferred_height(&host, metrics)
     );
 }
 
@@ -85,14 +84,14 @@ fn narrow_header_keeps_clear_undo_and_nested_back_journeys() {
             .retain(Notification::new("Recovery required", "Try again."));
         let mut center = NotificationCenter::new();
         for _ in 0..2 {
-            let height = center.preferred_height_for_width(&host.log(), metrics, 320.0);
+            let height = center.preferred_height_for_width(&host, metrics, 320.0);
             let layout = CenterLayout::new(Rect::new(0.0, 0.0, 320.0, height), metrics);
             assert_eq!(
                 center.click(&host, &layout, layout.clear().center()),
                 CenterOutcome::Handled
             );
             assert!(host.log().history().is_empty());
-            let height = center.preferred_height_for_width(&host.log(), metrics, 320.0);
+            let height = center.preferred_height_for_width(&host, metrics, 320.0);
             let cleared = CenterLayout::new(Rect::new(0.0, 0.0, 320.0, height), metrics);
             assert!(center.focus_accessibility_path(&host, &[2]));
             assert_eq!(
@@ -130,11 +129,7 @@ fn narrow_header_keeps_clear_undo_and_nested_back_journeys() {
                 CenterOutcome::Back
             );
             assert_eq!(
-                center.click(
-                    &host,
-                    &layout,
-                    layout.read_control(layout.row(0), false).center()
-                ),
+                center.click(&host, &layout, layout.row(0).center()),
                 CenterOutcome::Handled
             );
             assert!(center.is_reading());
