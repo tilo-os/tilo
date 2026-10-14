@@ -165,8 +165,8 @@ drop-in's command line up to the cargo subcommand:
 
 ```toml
 [remote_builders]
-x86_64 = ["rcargo", "--on-builder"]
-aarch64 = ["rcargo", "--on-builder"] # configure rcargo for an aarch64 builder
+x86_64 = ["remote-cargo", "--on-builder"] # any cargo drop-in that runs remotely
+aarch64 = ["remote-cargo", "--on-builder"] # configure it for an aarch64 builder
 ```
 
 Remote assembly and remote VM execution are separate capabilities. Hosting a
