@@ -21,9 +21,10 @@ import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} f
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
-import {browserPerson, currentIdentity, MAX_DISPLAY_NAME_BYTES} from './root-identity.mjs';
+import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
+import {browserIdentity, browserPerson, currentIdentity, IdentityError, MAX_DISPLAY_NAME_BYTES} from './root-identity.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
-import {chooseDisplayName, chosenDisplayName, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, membershipOrigins, pairViaHost, randomDisplayName, spectate} from './workspaces.mjs';
+import {chooseDisplayName, chosenDisplayName, HostAdmissionError, joinViaHost, keepOwnedHost, keptMembership, listedWorkspaces, membershipOrigins, pairViaHost, randomDisplayName, spectate} from './workspaces.mjs';
 
 /** Where an embed's state goes: the site that embeds the workspace. */
 const EMBEDDER = 'https://tilo.so';
@@ -111,6 +112,94 @@ function askName(current = '', save = async typed => typed.trim() || null) {
 }
 
 /**
+ * Setting up a machine over the page: its address, key and install token
+ * (filled in from an `install` link), what that means, and the person's
+ * go-ahead. `run(values, onPhase)` installs; what it throws is said in the
+ * form, which stays open to correct and try again. Resolves to what `run`
+ * resolved to, or `null` when the person cancels.
+ */
+function machineCard({details = {}, run}) {
+  return new Promise(resolve => {
+    const form = document.createElement('form');
+    form.className = 'tilo-entry-card';
+    form.dataset.card = 'machine';
+    const about = document.createElement('p');
+    about.textContent = 'Set up a machine: it hosts your workspaces and keeps what you put in them. Only set up a machine you started yourself.';
+    const inputs = [
+      ['origin', 'Address', 'https://machine.example:8443'],
+      ['devicePublicKey', 'Machine key (the devicePublicKey it printed)', ''],
+      ['installToken', 'Install token (the text in its install token file)', ''],
+    ].map(([name, text, placeholder]) => {
+      const label = document.createElement('label');
+      label.textContent = text;
+      const input = document.createElement('input');
+      Object.assign(input, {name, value: details[name] ?? '', placeholder, required: true, autocomplete: 'off', spellcheck: false});
+      label.append(input);
+      form.append(label);
+      return input;
+    });
+    const progress = document.createElement('p');
+    progress.setAttribute('role', 'status');
+    const error = document.createElement('p');
+    error.className = 'tilo-entry-error';
+    error.setAttribute('role', 'alert');
+    error.hidden = true;
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.textContent = 'Set up';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    const done = value => { form.remove(); resolve(value); };
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const values = Object.fromEntries(inputs.map(input => [input.name, input.value]));
+      for (const control of [...inputs, submit]) control.disabled = true;
+      error.hidden = true;
+      try {
+        done(await run(values, phase => { progress.textContent = SETUP_PHASES[phase] ?? ''; }));
+      } catch (refusal) {
+        progress.textContent = '';
+        error.textContent = setUpFailure(refusal, values.origin);
+        error.hidden = false;
+      } finally {
+        for (const control of [...inputs, submit]) control.disabled = false;
+      }
+    });
+    cancel.addEventListener('click', () => done(null));
+    form.prepend(about);
+    form.append(progress, error, submit, cancel);
+    document.body.append(form);
+    (inputs.find(input => !input.value) ?? submit).focus();
+  });
+}
+
+/**
+ * The root a machine is set up with: the one this page unlocked, else this
+ * browser's own (made now on a first visit). Never a root other than the
+ * person this page is in its workspace as: a device paired to a person kept
+ * elsewhere holds no root of theirs.
+ */
+async function rootOfThisPage(peer) {
+  const person = peer?.userPublicKey;
+  const identity = currentIdentity() ?? await browserIdentity({create: !person});
+  if (!identity || (person && identity.userPublicKey !== person)) {
+    throw new IdentityError('locked', 'This browser does not hold the identity of the person it is here');
+  }
+  return identity;
+}
+
+/** One desktop's host actions from several owners (`names`, in order):
+ * each sets its own, and the desktop lists them all. */
+function hostActionParts(mount, names) {
+  const parts = new Map(names.map(name => [name, []]));
+  return name => ({
+    setHostActions: actions => { parts.set(name, actions); mount.setHostActions([...parts.values()].flat()); },
+    offerHostAction: offer => mount.offerHostAction(offer),
+  });
+}
+
+/**
  * Why this browser cannot draw Tilo, with the steps that turn WebGPU on and
  * a way to try again once they are done. A changed browser setting (Firefox's
  * about:config) reaches a page only when it loads, so trying again reloads.
@@ -189,9 +278,11 @@ export async function startEntryPage({mode}) {
   globalThis.tiloInvites = 0;
   /** Keeping the person this page joined as (`identity-actions.mjs`), once there is one. */
   let identityActions = null;
+  /** Setting up a machine (`machine-setup.mjs`), once the page is open. */
+  let setUp = null;
   let displayName;
   const diagnostics = {
-    onHostAction: id => { void identityActions?.perform(id); },
+    onHostAction: id => { if (id === SET_UP.id) void setUp?.(); else void identityActions?.perform(id); },
     ...(query.get('room') ? {room: query.get('room')} : {}),
     ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),
     ...(query.has('invite') ? {onInvite: () => { globalThis.tiloInvites += 1; }} : {}),
@@ -298,8 +389,10 @@ export async function startEntryPage({mode}) {
     const page = await boot({mode, surface, status, deps, diagnostics, onStep: arrive});
     if (!page) return;
     if (entered) showVisitState({entered, retryAfter, tell, status});
-    identityActions = keepIdentity({peer: page.peer, mount: page.mount, home: page.entry?.home, name: () => displayName,
-      runtime, link: page.link, naming: {
+    // Only the desktop lists host actions: a single app's mount refuses them.
+    const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed ? hostActionParts(page.mount, ['identity', 'machine']) : null;
+    const attachIdentity = () => keepIdentity({peer: page.peer, mount: hostActions?.('identity') ?? page.mount, home: page.entry?.home,
+      name: () => displayName, runtime, link: page.link, naming: {
         ask: (current, save) => askName(current, save),
         set: chosen => {
           displayName = chooseDisplayName(page.peer.userPublicKey, chosen);
@@ -307,7 +400,21 @@ export async function startEntryPage({mode}) {
           return displayName;
         },
       }});
+    identityActions = attachIdentity();
     void followProfile(page, name => { displayName = name; });
+    setUp = async (details = {}) => {
+      const machine = await machineCard({details, run: (values, onPhase) => setUpMachine({
+        details: values, person: () => rootOfThisPage(page.peer), runtime, onProgress: event => onPhase(event.phase)})});
+      if (!machine) return;
+      keepOwnedHost(machine);
+      // A first visit made its person just now: the machine trusts that
+      // root from here on, so offer to keep it.
+      identityActions ??= attachIdentity();
+      identityActions?.authored();
+      await card(`${new URL(machine.origin).host} is yours now. It hosts your workspaces from here on.`, [['Done', null]]);
+    };
+    hostActions?.('machine').setHostActions([SET_UP]);
+    if (page.install && !embed) void setUpFromLink(page.install, setUp);
     // The outcome, for tests and tools driving the page: open, refused or failed.
     document.documentElement.dataset.entry = 'open';
     globalThis.tiloMount = page.mount;
@@ -330,6 +437,18 @@ export async function startEntryPage({mode}) {
     status.textContent = error instanceof AdmissionError ? error.message : `Failed: ${error?.message ?? error}`;
     throw error;
   }
+}
+
+/** Offer to set up the machine an `install` link names (`machine-setup.mjs`). */
+async function setUpFromLink(secret, setUp) {
+  let details;
+  try {
+    details = readInstallSecret(secret);
+  } catch (error) {
+    await card(setUpFailure(error), [['Close', null]]);
+    return;
+  }
+  await setUp(details);
 }
 
 /**
