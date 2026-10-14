@@ -17731,7 +17731,6 @@ dependencies = [
  "subsetter",
  "tempfile",
  "thiserror 2.0.21",
- "tilo-content",
  "tilo-font-catalog",
  "tilo-paths",
  "tilo-sandbox",
