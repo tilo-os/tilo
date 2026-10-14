@@ -72,7 +72,7 @@ this page depends on review having happened.
 | Every crate under `apps/`, `crates/` and `examples/` is a workspace member, exactly once, and on edition 2024. | A crate outside the workspace is never built or tested; an older edition compiles silently. | Check: [`check_workspace_members.py`](../tools/policy/check_workspace_members.py) through `scripts/check-workspace-complete.sh` (pre-commit, policy suite) |
 | Every file under a crate's `tests/` is compiled by a test target. | With `autotests = false`, an undeclared module is silently never built. | Check: [`check_integration_test_modules.py`](../tools/policy/check_integration_test_modules.py) |
 | Checked-in Cap'n Proto bindings match their schemas. | Hand-edited or stale bindings break the wire format. | Check: [`check_capnp_bindings.py`](../tools/policy/check_capnp_bindings.py) |
-| No credentials, merge-conflict markers or `dbg!` in a commit. | A pushed secret is public at once and must be rotated. | Check, pre-commit only: `scripts/scan-secrets.sh` and greps in `.githooks/pre-commit`. CI does not repeat them. |
+| No credentials, merge-conflict markers or `dbg!` in a commit. | A pushed secret is public at once and must be rotated. | Check: [`added_line_policy.py`](../tools/policy/added_line_policy.py) over the lines a change adds (pre-commit on the staged index, `scripts/scan-secrets.sh`, and every new commit through `check_commit_policy.py`, so `--no-verify` does not skip it). `dbg!` only in Rust outside `vendor/`; a credential-shaped fixture needs `example` or `placeholder` on its line. |
 | `docs/codemap.md` lists every crate; published developer docs have valid links. | "Where is X" starts there. | Check: `tools/docs/codemap.py --check`, `tools/docs/developer_docs.py check` (policy suite) |
 
 ## Rust code
@@ -203,9 +203,6 @@ weaken it for convenience ([security.md](architecture/security.md)).
 
 Review-only rules above that look cheap to check, not yet done:
 
-- `scripts/scan-secrets.sh`, conflict markers and `dbg!` run only in pre-commit,
-  so a `--no-verify` commit skips them; `check_commit_policy.py` could scan the
-  new blobs as it already does for text and LF.
 - Vendored crates: require a licence file and a `PROVENANCE.md` with the upstream
   version in every `vendor/*` directory.
 - Motion: a ratchet for literal animation durations, once the motion section is
