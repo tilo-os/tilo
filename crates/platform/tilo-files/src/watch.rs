@@ -44,6 +44,12 @@ struct InboxState {
 }
 
 impl Inbox {
+    /// Queue a change from a native watch's own thread, which holds no lock
+    /// the woken task could need.
+    #[cfg(all(
+        feature = "watch",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     pub(crate) fn push(&self, change: Change) {
         if let Some(waker) = self.queue(change) {
             waker.wake();
