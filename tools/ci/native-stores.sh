@@ -24,6 +24,14 @@ action=$1
 dir=$2
 size=${TILO_NATIVE_STORE_SIZE:-4G}
 
+# Private disposable VM harness only; the default loop lifecycle is unchanged.
+# The helper refuses arbitrary disks and requires the harness's root-owned
+# serial/size/base provenance inside this exact private fixture directory.
+if [[ -n ${TILO_NATIVE_STORE_VIRTIO_PROVENANCE:-} ]]; then
+    exec python3 "$(dirname -- "${BASH_SOURCE[0]}")/native-store-virtio.py" \
+        "$action" "$dir" "$TILO_NATIVE_STORE_VIRTIO_PROVENANCE"
+fi
+
 down() {
     local name loop
     for name in a b; do
