@@ -714,18 +714,6 @@ impl RasterBackend {
         ((target_w / 24).max(1) * 24).clamp(96, 4096)
     }
 
-    /// Test-only: how many *full-page* bitmaps are cached (buckets above the
-    /// thumbnail ceiling). Lets a regression test assert the first paint only
-    /// rasterises the budgeted number of pages instead of a screen-full.
-    #[cfg(test)]
-    pub fn cached_full_page_count(&self) -> usize {
-        const THUMB_MAX: u32 = 600;
-        self.cache
-            .keys()
-            .filter(|(_, _, b, _)| *b > THUMB_MAX)
-            .count()
-    }
-
     fn touch_cache(&mut self, key: RasterKey) {
         self.cache_lru.retain(|candidate| *candidate != key);
         self.cache_lru.push_back(key);
@@ -885,15 +873,6 @@ impl RasterBackend {
         let image = ui::raster::rgba8(Blob::new(bitmap.shared_pixels()), w, h);
         self.tiles.insert(key, image.clone());
         Some(image)
-    }
-
-    /// Test-only: the zoom levels this backend holds tiles for.
-    #[cfg(test)]
-    pub fn cached_tile_levels(&self) -> Vec<crate::tiles::Level> {
-        let mut levels: Vec<_> = self.tiles.keys().map(|k| k.level).collect();
-        levels.sort_unstable();
-        levels.dedup();
-        levels
     }
 
     /// Width bucket adjusted to keep the decoded raster within the per-page

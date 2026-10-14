@@ -1663,6 +1663,7 @@ dependencies = [
  "tilo-app",
  "tilo-content",
  "tilo-files",
+ "tilo-model-gateway",
  "tilo-subject",
  "tilo-test-env",
  "tilo-wet-media",
@@ -3972,6 +3973,7 @@ dependencies = [
  "tilo-egress",
  "tilo-environment",
  "tilo-files",
+ "tilo-paths",
  "tilo-user-identity",
  "tracing",
  "tracing-subscriber",
@@ -5538,6 +5540,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "tilo-automerge-fork",
+ "tilo-paths",
  "tilo-power-mgmt",
  "tilo-startup-metrics",
  "tilo-test-env",
@@ -13151,6 +13154,7 @@ dependencies = [
  "tempfile",
  "tilo-advisory-lock",
  "tilo-files",
+ "tilo-paths",
  "tilo-test-env",
  "tokio",
  "uuid",
@@ -13430,9 +13434,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",
@@ -16121,6 +16125,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "registry-client",
+ "registry-server",
  "registry-types",
  "runtime-bundle",
  "serde",
@@ -16138,6 +16143,7 @@ dependencies = [
  "tilo-paths",
  "tilo-test-env",
  "tilo-ui-graph",
+ "tokio",
  "toml 1.0.6+spec-1.1.0",
  "wasmparser 0.239.0",
  "workspace-hack",
@@ -16499,6 +16505,7 @@ dependencies = [
  "clap_complete",
  "serde_json",
  "tilo-clock",
+ "tilo-paths",
  "workspace-hack",
 ]
 
@@ -16918,6 +16925,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tilo-paths",
  "tilo-test-env",
  "tracing",
  "workspace-hack",
@@ -17825,6 +17833,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "runtime-portal",
+ "socket2",
  "tempfile",
  "tilo-advisory-lock",
  "tilo-platform-caps",
@@ -17945,6 +17954,7 @@ dependencies = [
  "tilo-clock",
  "tilo-connector",
  "tilo-delivery-protocol",
+ "tilo-desktop-model",
  "tilo-doc",
  "tilo-environment",
  "tilo-files",
@@ -22279,6 +22289,7 @@ dependencies = [
  "tilo-document",
  "tilo-files",
  "tilo-paths",
+ "tilo-pdf",
  "tilo-resource",
  "tilo-rich-text",
  "tilo-spellcheck",

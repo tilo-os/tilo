@@ -176,6 +176,58 @@ mod tests {
         }
     }
 
+    /// Lists one system package the way the service does: its signed
+    /// manifest's text and its measured size.
+    struct ListingHost;
+
+    const MAIL_MANIFEST: &str = concat!(
+        "[package]\nid = \"so.tilo.mail\"\nname = \"Mail\"\ncategory = \"Office\"\n",
+        "version = \"0.4.0\"\nkind = \"app\"\n",
+        "[package.names]\nde = \"E-Mail\"\n",
+        "[publisher]\nidentity = \"ed25519:",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "\"\nsignature = \"\"\n",
+        "[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n",
+        "[sandbox.net]\nmode = \"off\"\n[entrypoint]\nbin = \"bin/mail\"\n",
+    );
+
+    impl app_host::Server for ListingHost {
+        fn list(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::ListParams,
+            mut results: app_host::ListResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let mut entry = results.get().init_entries(1).get(0);
+            entry.set_id(&[7; 32]);
+            entry.set_payload_root("/usr/share/tilo-apps/payloads/so.tilo.mail");
+            entry.set_manifest_path("/usr/share/tilo-apps/payloads/so.tilo.mail/manifest.toml");
+            entry.set_manifest_text(MAIL_MANIFEST);
+            entry.set_size_bytes(2_400_000);
+            entry.set_user_managed(false);
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn a_listed_package_carries_its_manifest_name_category_version_and_size() {
+        let (service, fd) = ConnectedService::start(ListingHost).unwrap();
+        let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
+        let listed = client.list().unwrap();
+        let [mail] = listed.as_slice() else {
+            panic!("one listed package, got {listed:?}");
+        };
+        assert_eq!(mail.package.id, "so.tilo.mail");
+        assert_eq!(mail.package.version, "0.4.0");
+        assert_eq!(mail.package.payload_bytes, 2_400_000);
+        assert!(!mail.package.user_managed());
+        assert_eq!(mail.about.name, "Mail");
+        assert_eq!(mail.about.category.as_deref(), Some("Office"));
+        assert_eq!(mail.about.name_for("de-AT"), "E-Mail");
+        assert_eq!(mail.about.name_for("fr"), "Mail");
+        drop(client);
+        assert_eq!(service.shutdown(), Ok(()));
+    }
+
     struct PanickingHost;
     impl app_host::Server for PanickingHost {
         fn list(

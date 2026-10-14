@@ -411,6 +411,40 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
   latch; restoring a guest's write access requires starting a new share rather
   than silently reviving the stopped session.
 
+## What a workspace host reads and originates
+
+A workspace host (`tilo-relay`) is not a passive pipe, and a threat model that
+treats it as one underestimates a compromised or buggy host. Devices'
+deltas are authenticated, retained and forwarded, but the host also acts as
+a peer in its own right. Under its own device key it originates:
+
+- **Governance commits for the rooms it governs.** The host is the room
+  governor (`crates/hosting/tilo-relay/src/rooms*`): it admits members,
+  assigns roles and starts calls, and signs those commits itself. Members
+  verify them against the room's pinned authority like any governance change.
+- **Its retained `IdentityHello` certificate frame**, so a replay carries the
+  host certificate before the host-signed state it leads to (`compaction`).
+- **Folded snapshots of unsealed document channels.** Compaction verifies each
+  device-signed frame, merges what it can read into one Automerge snapshot
+  and signs that snapshot as the host device (`compaction`). Sealed channels
+  are compacted by a member device instead, and the host removes only the
+  entries the member's signed statement names.
+- **Legacy-window input on behalf of browsers.** The browser bridge publishes
+  `RemoteInput` into a desktop's shared legacy windows as the host device
+  (`web::legacy`), behind the desktop's input firewall like any remote input.
+
+To decide retention, replay and compaction it reads the desktop's peer-sync
+messages inside co-edit bodies: whether a body is a document frame and which
+document it names, whether a checkpoint is governance, a member's own
+continuity checkpoint or complete on its own, and which devices a governance
+step is addressed to (`payloads::ShellPayloads`), plus the retained-proof
+inputs of native shell replay (`store::shell_selection`). It also refuses a
+document change its app's published surface does not allow, or that
+the room's governor did not grant its author (`surfaces`). The content of a
+sealed document stays opaque to it. Cross-device actions are signed by their
+source device, so routing them confers no power to forge one (see
+"Encryption" below).
+
 ## Encryption
 
 - Iroh provides encrypted QUIC transport, authenticated endpoint ids, NAT traversal, and encrypted relay fallback. Workspace hosts add mutual device-certificate authentication (`tilo_relay_protocol::auth`): each side signs the other's nonce under its *own* direction tag (`tilo-relay-auth-v2/server`, `…/client`), so a server that signs whatever `client_nonce` it is handed can never be used as an oracle for the `HelloAck2` another server expects from the same device key. Everything a relay reads before that proof lands — the `Hello` and the `HelloAck2` frames — is bounded in size, time and concurrency.
