@@ -959,7 +959,12 @@ impl ChannelDirectory for StewardDirectory {
         None
     }
 
-    fn allowed_devices(&self, room: RoomId, _now: u64) -> BTreeSet<collab_types::Ed25519PublicKey> {
+    fn allowed_devices(
+        &self,
+        room: RoomId,
+        _channel: collab_types::ChannelId,
+        _now: u64,
+    ) -> BTreeSet<collab_types::Ed25519PublicKey> {
         if room != self.room {
             return BTreeSet::new();
         }

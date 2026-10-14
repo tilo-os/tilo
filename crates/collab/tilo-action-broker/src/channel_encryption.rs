@@ -139,9 +139,18 @@ pub trait ChannelDirectory: Send {
     /// The device key of `room`'s governor, when this device does not govern
     /// it and knows who does.
     fn steward_of(&self, room: RoomId) -> Option<Ed25519PublicKey>;
-    /// Every device that may read `room`'s channels at wall-clock `now`
-    /// (seconds since the Unix epoch).
-    fn allowed_devices(&self, room: RoomId, now: u64) -> BTreeSet<Ed25519PublicKey>;
+    /// Every device that may read `channel`, one of `room`'s channels, at
+    /// wall-clock `now` (seconds since the Unix epoch). A channel is one
+    /// record's, so a Read Deny on that record takes its person's devices
+    /// out of this channel and no other: the steward then never hands them
+    /// the record's key, and a device already holding it is removed in a
+    /// new epoch.
+    fn allowed_devices(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+        now: u64,
+    ) -> BTreeSet<Ed25519PublicKey>;
     /// The [`tilo_identity_host::policy_change`] epoch (or a test's own) when
     /// every write to what [`Self::allowed_devices`] reads is announced and
     /// its expiries can be timed: stewards then re-check on announcements and
@@ -675,7 +684,7 @@ impl ChannelEncryption {
             // group, so outsiders cannot make it mint unbounded state.
             if !self
                 .directory
-                .allowed_devices(room, wall)
+                .allowed_devices(room, channel, wall)
                 .contains(&request.device)
             {
                 return;
@@ -729,7 +738,7 @@ impl ChannelEncryption {
         let Some(room) = self.stewards.get(&channel).map(|entry| entry.room) else {
             return;
         };
-        let mut allowed = self.directory.allowed_devices(room, wall);
+        let mut allowed = self.directory.allowed_devices(room, channel, wall);
         allowed.insert(self.device());
         let Some(entry) = self.stewards.get_mut(&channel) else {
             return;
@@ -1461,6 +1470,8 @@ pub mod testing {
         /// How the directory announces changes; `None` announces none, and
         /// stewards keep their one-second re-check.
         pub announces: Arc<Mutex<Option<Announcements>>>,
+        /// Devices kept out of one channel alone: a Read Deny on its record.
+        pub withheld: Arc<Mutex<HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>>>,
     }
 
     /// The epoch a test [`Directory`] reports as its
@@ -1486,7 +1497,12 @@ pub mod testing {
         fn steward_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
             (!self.governs).then_some(self.steward)
         }
-        fn allowed_devices(&self, _: RoomId, now: u64) -> BTreeSet<Ed25519PublicKey> {
+        fn allowed_devices(
+            &self,
+            _: RoomId,
+            channel: ChannelId,
+            now: u64,
+        ) -> BTreeSet<Ed25519PublicKey> {
             let mut allowed = self.policy.allowed.lock().unwrap().clone();
             allowed.extend(
                 self.policy
@@ -1497,6 +1513,9 @@ pub mod testing {
                     .filter(|(_, until)| now < **until)
                     .map(|(device, _)| *device),
             );
+            if let Some(withheld) = self.policy.withheld.lock().unwrap().get(&channel) {
+                allowed.retain(|device| !withheld.contains(device));
+            }
             allowed
         }
         fn policy_epoch(&self) -> Option<u64> {
@@ -1803,6 +1822,80 @@ mod tests {
             laptop.service.access(room_id, channel, now),
             ChannelAccess::Removed
         ));
+    }
+
+    /// A Read Deny on one record takes the denied device out of that
+    /// record's channel alone: the steward removes it in a new epoch there,
+    /// the room's other channels keep their epoch and the device keeps their
+    /// keys, and a request of the denied device never makes the steward
+    /// create a group for the denied record.
+    #[test]
+    fn a_device_withheld_from_one_channel_loses_only_that_channels_key() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let (payroll, notes, budget) = (ChannelId::new(), ChannelId::new(), ChannelId::new());
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(public(2));
+        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        let mut laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
+        for channel in [payroll, notes] {
+            owner.service.access(room_id, channel, now);
+            laptop.service.access(room_id, channel, now);
+        }
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        let notes_epoch = ready_epoch(&owner.service.access(room_id, notes, now));
+        let payroll_epoch = ready_epoch(&owner.service.access(room_id, payroll, now));
+        assert!(ready_epoch(&laptop.service.access(room_id, payroll, now)).is_some());
+        assert_eq!(
+            ready_epoch(&laptop.service.access(room_id, notes, now)),
+            notes_epoch
+        );
+
+        policy
+            .withheld
+            .lock()
+            .unwrap()
+            .extend([payroll, budget].map(|channel| (channel, BTreeSet::from([public(2)]))));
+        run(&mut [&mut owner, &mut laptop], &mut now, 3);
+        assert!(matches!(
+            laptop.service.access(room_id, payroll, now),
+            ChannelAccess::Removed
+        ));
+        let rotated = ready_epoch(&owner.service.access(room_id, payroll, now));
+        assert!(rotated > payroll_epoch, "the denied record's key rotates");
+        assert_eq!(
+            ready_epoch(&owner.service.access(room_id, notes, now)),
+            notes_epoch,
+            "another record's channel keeps its epoch"
+        );
+        assert_eq!(
+            ready_epoch(&laptop.service.access(room_id, notes, now)),
+            notes_epoch
+        );
+        // Asking again for the denied record, or first for another denied
+        // one, admits nothing and creates no group at the steward.
+        laptop.service.access(room_id, budget, now);
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        for channel in [payroll, budget] {
+            assert!(ready_epoch(&laptop.service.access(room_id, channel, now)).is_none());
+        }
+        assert!(!owner.service.stewards.contains_key(&budget));
+        assert!(
+            !owner.service.stewards[&payroll]
+                .steward
+                .members()
+                .contains(&public(2))
+        );
+
+        // Lifting the Deny admits the device again when it asks.
+        policy.withheld.lock().unwrap().clear();
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        assert_eq!(
+            ready_epoch(&laptop.service.access(room_id, payroll, now)),
+            ready_epoch(&owner.service.access(room_id, payroll, now))
+        );
     }
 
     /// Run every device's protocol for `seconds` of simulated time the way
@@ -2644,7 +2737,7 @@ mod tests {
         fn steward_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
             *self.steward.lock().unwrap()
         }
-        fn allowed_devices(&self, _: RoomId, _: u64) -> BTreeSet<Ed25519PublicKey> {
+        fn allowed_devices(&self, _: RoomId, _: ChannelId, _: u64) -> BTreeSet<Ed25519PublicKey> {
             BTreeSet::new()
         }
         fn policy_epoch(&self) -> Option<u64> {
