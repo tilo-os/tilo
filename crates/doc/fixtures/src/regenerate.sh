@@ -5,14 +5,14 @@
 #   crates/doc/fixtures/src/regenerate.sh            # convert every src/*.fodt
 #   crates/doc/fixtures/src/regenerate.sh --check F  # re-open F (an exported .docx/.odt) with LibreOffice
 #
-# Scratch output goes to ~/.cache/qdoc-fidelity (never /tmp).
+# Scratch output goes to ~/.cache/tilo-doc-fidelity (never /tmp).
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repository=$(cd "$here/../../../.." && pwd)
 out="${TILO_DOC_FIXTURE_OUT:-$repository/target/document-fixture-candidates}"
 mkdir -p "$out"
-scratch="${XDG_CACHE_HOME:-$HOME/.cache}/qdoc-fidelity"
+scratch="${XDG_CACHE_HOME:-$HOME/.cache}/tilo-doc-fidelity"
 mkdir -p "$scratch"
 
 soffice() {

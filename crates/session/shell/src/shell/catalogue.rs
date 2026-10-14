@@ -99,12 +99,12 @@ fn lock_catalogue() -> std::sync::MutexGuard<'static, Option<(Vec<CatalogueApp>,
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Run `f` on the session's pending "Opening…" notices, recovering from
+/// Run `f` on the session's launches still opening, recovering from
 /// poisoning as [`lock_catalogue`] does.
-fn with_pending_notices<T>(f: impl FnOnce(&mut Vec<(String, u64)>) -> T) -> T {
+fn with_pending_launches<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
     let session = launcher::LaunchSession::current();
     let mut pending = session
-        .opening_notices
+        .opening_launches
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     f(&mut pending)
@@ -346,37 +346,38 @@ fn schedule_refresh() {
 // Opening something that isn't here yet.
 // ---------------------------------------------------------------------
 
-pub fn note_pending_notice(package_id: &str, notification_id: u64) {
-    with_pending_notices(|pending| {
-        pending.retain(|(id, _)| id != package_id);
-        pending.push((package_id.to_string(), notification_id));
+/// Note that `package_id` is opening. The window's own place (its
+/// placeholder card, then its first frame) is what the person sees; this
+/// only keeps a repeated activation from starting a second launch.
+pub fn note_pending_launch(package_id: &str) {
+    with_pending_launches(|pending| {
+        if !pending.iter().any(|id| id == package_id) {
+            pending.push(package_id.to_string());
+        }
     });
 }
 
 /// A peek, not a take — the frame thread walks this every frame.
-/// Retirement goes through [`take_pending_notice`].
-pub fn pending_notices() -> Vec<(String, u64)> {
-    with_pending_notices(|pending| pending.clone())
+/// Retirement goes through [`take_pending_launch`].
+pub fn pending_launches() -> Vec<String> {
+    with_pending_launches(|pending| pending.clone())
 }
 
-/// Return the active opening notice for `package_id`, if any. Launching the
-/// same app repeatedly while its first install/start is still in flight must
-/// not create a stack of indistinguishable "Opening…" cards or overwrite the
-/// only id that can retire the old cards.
-pub fn pending_notice(package_id: &str) -> Option<u64> {
-    with_pending_notices(|pending| {
-        pending
-            .iter()
-            .find(|(id, _)| id == package_id)
-            .map(|(_, notification_id)| *notification_id)
-    })
+/// Whether `package_id` is still opening. Launching the same app repeatedly
+/// while its first install/start is in flight must not start another one.
+pub fn pending_launch(package_id: &str) -> bool {
+    with_pending_launches(|pending| pending.iter().any(|id| id == package_id))
 }
 
-/// So the "opening" toast is retired by the app appearing, not a timer.
-pub fn take_pending_notice(package_id: &str) -> Option<u64> {
-    with_pending_notices(|pending| {
-        let idx = pending.iter().position(|(id, _)| id == package_id)?;
-        Some(pending.remove(idx).1)
+/// Settle the launch of `package_id`: its window appeared, or it failed.
+/// Returns whether it was still opening.
+pub fn take_pending_launch(package_id: &str) -> bool {
+    with_pending_launches(|pending| {
+        let Some(idx) = pending.iter().position(|id| id == package_id) else {
+            return false;
+        };
+        pending.remove(idx);
+        true
     })
 }
 
@@ -530,31 +531,25 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_open_notices_are_taken_once_and_replaced_by_newer_opens() {
-        /// A pending notice belongs to exactly one open, and taking it
-        /// consumes it — a second launch of the same app must not dismiss
-        /// a notification that no longer exists.
-        fn a_pending_notice_is_taken_once() {
-            note_pending_notice("so.tilo.noticefixture", 42);
-            assert_eq!(take_pending_notice("so.tilo.noticefixture"), Some(42));
-            assert_eq!(take_pending_notice("so.tilo.noticefixture"), None);
+    fn catalogue_opening_launches_are_taken_once() {
+        /// A pending launch belongs to exactly one open, and taking it
+        /// consumes it.
+        fn a_pending_launch_is_taken_once() {
+            note_pending_launch("so.tilo.noticefixture");
+            assert!(take_pending_launch("so.tilo.noticefixture"));
+            assert!(!take_pending_launch("so.tilo.noticefixture"));
         }
 
-        fn a_newer_open_replaces_the_notice_for_the_same_package() {
-            note_pending_notice("so.tilo.replacefixture", 1);
-            assert_eq!(pending_notice("so.tilo.replacefixture"), Some(1));
-            note_pending_notice("so.tilo.replacefixture", 2);
-            assert_eq!(pending_notice("so.tilo.replacefixture"), Some(2));
-            assert_eq!(
-                take_pending_notice("so.tilo.replacefixture"),
-                Some(2),
-                "the live open's notification is the one to retire"
-            );
-            assert_eq!(take_pending_notice("so.tilo.replacefixture"), None);
+        fn a_second_open_of_the_same_package_is_one_launch() {
+            note_pending_launch("so.tilo.replacefixture");
+            note_pending_launch("so.tilo.replacefixture");
+            assert!(pending_launch("so.tilo.replacefixture"));
+            assert!(take_pending_launch("so.tilo.replacefixture"));
+            assert!(!pending_launch("so.tilo.replacefixture"));
         }
 
-        a_pending_notice_is_taken_once();
-        a_newer_open_replaces_the_notice_for_the_same_package();
+        a_pending_launch_is_taken_once();
+        a_second_open_of_the_same_package_is_one_launch();
     }
 
     #[test]

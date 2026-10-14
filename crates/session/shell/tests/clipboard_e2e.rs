@@ -1912,6 +1912,17 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         // focused seat before accepting the queued copy.
         assert!(clipboard.set_text(ClipboardTarget::Clipboard, "app caption"));
         assert!(clipboard.set_image(2, 1, &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]));
+        // Publication is queued to the app clipboard worker. Keep its seat
+        // focused until the actual protocol selection advertises the image;
+        // opening the sink first can revoke its copy serial before publication.
+        app.wait_until(
+            |s| {
+                s.clipboard_offer_mimes
+                    .iter()
+                    .any(|mime| mime == "image/png")
+            },
+            "the app clipboard worker never published its PNG selection",
+        );
 
         let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.app-sink");
         sink.assert_is_tilo_compositor();

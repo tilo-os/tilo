@@ -1436,14 +1436,9 @@ impl Action {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+                // The row the person chose already said it copies; repeating
+                // it in a notification only confirms their own action.
                 ui::text_selection::clipboard_copy(&lines);
-                st.push_notification(
-                    t("search-action-device-list-copied"),
-                    t_args(
-                        "search-action-device-list-copied-body",
-                        &[("count", fleet.certificates.len().into())],
-                    ),
-                );
                 Ok(())
             },
         ),
@@ -1465,11 +1460,8 @@ impl Action {
                         )
                     })
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
+                // The row's subtitle states the copy and its five-minute life.
                 ui::text_selection::clipboard_copy(&token);
-                st.push_notification(
-                    t("search-action-enrollment-copied"),
-                    t("search-action-enrollment-copied-body"),
-                );
                 Ok(())
             },
         ),
@@ -1491,11 +1483,8 @@ impl Action {
                         )
                     })
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
+                // The row's subtitle states the copy and its five-minute life.
                 ui::text_selection::clipboard_copy(&token);
-                st.push_notification(
-                    t("search-action-home-server-copied"),
-                    t("search-action-home-server-copied-body"),
-                );
                 Ok(())
             },
         ),

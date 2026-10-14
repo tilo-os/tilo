@@ -1542,8 +1542,6 @@ impl SlidesApp {
             Ok(deck) => {
                 cx.apply(&actions::replace_deck_action(&deck));
                 self.show_opened_deck();
-                self.io_toast
-                    .show(tr("slides-toast-opened"), ToastKind::Success);
                 Ok(Effected::done())
             }
             Err(error) => {
@@ -1591,15 +1589,11 @@ impl SlidesApp {
         })
     }
 
-    /// Show the outcome of saving: saved, cancelled (nothing to say) or
-    /// failed.
+    /// Show the outcome of saving. Saved and cancelled have nothing to say:
+    /// the person chose the file in the chooser. Only a failure is shown.
     fn finish_save(&mut self, saved: Result<bool, String>) -> EffectAnswer {
         match saved {
-            Ok(true) => {
-                self.io_toast.show("Presentation saved", ToastKind::Success);
-                Ok(Effected::done())
-            }
-            Ok(false) => Ok(Effected::done()),
+            Ok(_) => Ok(Effected::done()),
             Err(error) => {
                 self.io_toast
                     .show("Could not process the presentation", ToastKind::Error);
@@ -2652,14 +2646,7 @@ impl Widget for SlidesApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.widget_leaf(
-            Style {
-                size: Size::from_percent(1.0, 1.0),
-                ..Default::default()
-            },
-            node_map,
-            self,
-        );
+        let node = taffy.fill_leaf(node_map, self);
         self.node = Some(node);
         node
     }

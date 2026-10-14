@@ -16,7 +16,7 @@ use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -4656,14 +4656,7 @@ impl Widget for MapsApp {
         self.nav_card_size = navigation_card_size(theme);
         self.navigation_placement
             .set_preferred_size(self.nav_card_size);
-        let node = taffy.widget_leaf(
-            Style {
-                size: Size::from_percent(1.0, 1.0),
-                ..Default::default()
-            },
-            node_map,
-            self,
-        );
+        let node = taffy.fill_leaf(node_map, self);
         self.node = Some(node);
         node
     }

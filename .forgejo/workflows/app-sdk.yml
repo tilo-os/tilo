@@ -337,6 +337,11 @@ jobs:
           SHOTS_DIR="$RUNNER_TEMP/web-shots" bash tools/ci/measure.sh "SDK app mount tests" -- \
             node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
             http://127.0.0.1:7878 "${apps[@]}" desktop
+      - name: Desktop navigation by wheel, top bar and shortcuts
+        run: |
+          mkdir -p "$RUNNER_TEMP/web-shots"
+          SHOTS_DIR="$RUNNER_TEMP/web-shots" bash tools/ci/measure.sh "Desktop navigation test" -- \
+            node crates/browser/tilo-web-desktop/scripts/navigation.mjs target/tilo-app/web/calculator/bundle
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:

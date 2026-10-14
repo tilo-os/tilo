@@ -438,10 +438,13 @@ impl SessionSettings {
     /// Make every deferred write durable. Waits for the copy's lock and the
     /// disk, so never from a thread that must keep answering input.
     pub fn write_pending(&self) {
+        // A worker may already have taken the pending edits and still be
+        // persisting them. Join that write before deciding there is no work,
+        // so flush_pending returning proves the accepted edits are durable.
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if !self.has_pending() {
             return;
         }
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let Ok(_lock) = lock_copy(&self.paths.copy) else {
             // Still pending: the next call tries again.
             return;
@@ -1024,7 +1027,7 @@ mod tests {
             let view = std::sync::Arc::clone(&view);
             std::thread::spawn(move || {
                 crate::defer_writes_on_this_thread();
-                view.update_section("appearance", object(json!({"theme": "dark"})))
+                view.update_section("appearance", object(json!({"mode": "Dark"})))
                     .unwrap();
                 let _ = done.send(view.load());
             })
@@ -1033,7 +1036,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the write waited for the disk");
         writer.join().unwrap();
-        assert_eq!(seen["appearance"]["theme"], "dark", "read back at once");
+        assert_eq!(seen["appearance"]["mode"], "Dark", "read back at once");
         assert!(view.revision() > before, "readers are told");
         assert!(
             !load_at(&session.paths.person).contains_key("appearance"),
@@ -1041,11 +1044,41 @@ mod tests {
         );
         drop(parked);
         view.flush_pending();
-        assert_eq!(
-            load_at(&session.paths.person)["appearance"]["theme"],
-            "dark"
+        assert_eq!(load_at(&session.paths.person)["appearance"]["mode"], "Dark");
+        assert_eq!(load_at(&session.paths.copy)["appearance"]["mode"], "Dark");
+    }
+
+    /// A flush joins a worker that took the edits before it finished writing.
+    #[test]
+    fn a_flush_waits_for_an_in_flight_deferred_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let (session, view) = deferring_view(dir.path());
+        let parked = lock_copy(&session.paths.copy).unwrap();
+        view.update_section("appearance", object(json!({"mode": "Dark"})))
+            .unwrap();
+        tilo_test_env::wait_until("the writer holds the state lock", || {
+            session.state.try_lock().is_err()
+        });
+        let (started, entered) = std::sync::mpsc::channel();
+        let (done, returned) = std::sync::mpsc::channel();
+        let flush = {
+            let view = std::sync::Arc::clone(&view);
+            std::thread::spawn(move || {
+                started.send(()).unwrap();
+                view.flush_pending();
+                done.send(()).unwrap();
+            })
+        };
+        tilo_test_env::recv("the flush starts", &entered);
+        assert!(
+            returned.try_recv().is_err(),
+            "the flush cannot finish while storage is parked"
         );
-        assert_eq!(load_at(&session.paths.copy)["appearance"]["theme"], "dark");
+        drop(parked);
+        tilo_test_env::recv("the flush joins the writer", &returned);
+        flush.join().unwrap();
+        assert_eq!(load_at(&session.paths.person)["appearance"]["mode"], "Dark");
+        assert_eq!(load_at(&session.paths.copy)["appearance"]["mode"], "Dark");
     }
 
     #[test]

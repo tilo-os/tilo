@@ -8976,7 +8976,12 @@ mod tests {
             }
         }
         let barrier = manager.begin_document_publication_barrier().unwrap();
-        assert_eq!(barrier.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
+        // The marker may spill behind the final edits. Drive the owner as
+        // the live app does, so its queued durable commands reach the worker.
+        tilo_test_env::wait_until("the burst is published", || {
+            manager.poll();
+            barrier.try_complete().unwrap().is_some()
+        });
         assert!(
             manager.is_connected(),
             "a burst must not disable collaboration (busy {busy}x)"

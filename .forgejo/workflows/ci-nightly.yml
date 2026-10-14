@@ -258,7 +258,7 @@ jobs:
 
       # Ignored tests whose requirement this runner meets: the shell ones
       # spawn a real headless compositor (llvmpipe), format-host needs the
-      # Markdown codec built as a wasm32-wasip2 component. FUSE-only ignored
+      # Markdown codec built as a wasm32-unknown-unknown provider. FUSE-only ignored
       # tests run in ci-filesystem.yml. Newly enabled: a failure is listed in the
       # job summary but does not fail the run until the lane has passed here.
       - name: Run ignored tests this runner supports
@@ -269,9 +269,8 @@ jobs:
             (package(shell) and (test(headless_examples_smoke::full_loop_writes_two_pngs) or test(headless_examples_smoke::mcp_live_proof_drives_a_compositor_over_mcp) or test(session_lock_e2e::))) or
             (package(format-host) and binary(integration))
         run: |
-          rustup target add wasm32-wasip2
-          cargo build --locked --release --target wasm32-wasip2 \
-            --manifest-path crates/doc/tilo-doc-codec-markdown-wasm/Cargo.toml
+          rustup target add wasm32-unknown-unknown
+          crates/doc/tilo-doc-codec-markdown-wasm/build.sh
           bash tools/ci/measure.sh "nightly ignored tests" -- \
             bash scripts/ci-run.sh "cargo nextest --run-ignored only" -- \
             bash tools/with-test-environment.sh \

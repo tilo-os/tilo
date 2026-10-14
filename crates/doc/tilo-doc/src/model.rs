@@ -224,12 +224,12 @@ impl Clone for IdGen {
 
 /// The finite per-actor block-id namespace has been consumed.
 ///
-/// qdoc identifiers are durable collaboration keys, so reusing the final
+/// tilo-doc identifiers are durable collaboration keys, so reusing the final
 /// counter (or wrapping to zero) would alias existing content. Callers must
 /// create a new replica/document instead of continuing this namespace.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum IdGenError {
-    #[error("qdoc id namespace for actor {actor_hex} is exhausted")]
+    #[error("tilo-doc id namespace for actor {actor_hex} is exhausted")]
     Exhausted { actor_hex: String },
 }
 
@@ -324,7 +324,7 @@ impl IdGen {
     )]
     pub fn mint(&mut self) -> String {
         self.try_mint()
-            .expect("qdoc id namespace exhausted; refusing to reuse an identifier")
+            .expect("tilo-doc id namespace exhausted; refusing to reuse an identifier")
     }
 }
 
@@ -430,7 +430,7 @@ pub fn try_seeded_id_gen(doc: &AutoCommit, c: &Containers) -> Result<IdGen, IdGe
 )]
 pub fn seeded_id_gen(doc: &AutoCommit, c: &Containers) -> IdGen {
     try_seeded_id_gen(doc, c)
-        .expect("qdoc id namespace exhausted; refusing to seed a colliding identifier")
+        .expect("tilo-doc id namespace exhausted; refusing to seed a colliding identifier")
 }
 
 /// The actor that writes every document's schema.
@@ -513,7 +513,7 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
         // Falling back to a private schema would reintroduce exactly the
         // silent-loss conflict the genesis exists to prevent, so say so.
         tracing::error!(
-            "qdoc: could not adopt the shared schema genesis; this document's \
+            "tilo-doc: could not adopt the shared schema genesis; this document's \
              containers are private to this replica and merging it with another \
              replica's copy will drop one side's content"
         );

@@ -287,7 +287,7 @@ impl Layout {
 
 // ---- public entry point -----------------------------------------------------
 
-/// Render a materialized qdoc snapshot to PDF bytes. Always succeeds for
+/// Render a materialized tilo-doc snapshot to PDF bytes. Always succeeds for
 /// a well-formed snapshot — undecodable image blobs degrade to a
 /// placeholder box rather than erroring; an empty document still yields
 /// a valid, single-page PDF.
