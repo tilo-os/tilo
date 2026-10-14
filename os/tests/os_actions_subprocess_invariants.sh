@@ -35,7 +35,7 @@ else
     if grep -Eq '\.process_group\(0\)' "$PRIVACY"; then ok; else
         fail "PipeWire monitor lacks isolated process ownership"
     fi
-    if grep -Eq 'terminate_monitor' "$PRIVACY"; then ok; else
+    if grep -Eq 'bounded_command::terminate_tree' "$PRIVACY"; then ok; else
         fail "PipeWire monitor errors can leave descendants alive"
     fi
 fi
