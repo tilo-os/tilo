@@ -1224,7 +1224,7 @@ impl InstallerApp {
     fn apply_media_profile(&mut self, profile: crate::media_profile::MediaProfile) {
         self.purpose.clone_from(&profile.purpose);
         self.device_label.clone_from(&profile.device_label);
-        self.prepared_setup = profile.prepared_setup.clone();
+        self.prepared_setup.clone_from(&profile.prepared_setup);
         let status = profile.repair_summary();
         let keyboard_display = profile.keyboard_display_name().map(str::to_string);
         let completion = ProfileCompletion {

@@ -27,7 +27,7 @@ def package(output, host, env):
         release.run(['bash', HERE / 'stage-capture-sidecar.sh', host, root / 'usr', target], env)
         # Native tar/AppImage/Flatpak launchers still need the helper installed
         # on the host. Never elevate an executable from their mutable bundle.
-        for role in ('prepared_helper', 'credential_helper'):
+        for role in ('prepared_helper', 'credential_helper', 'home_seeds', 'prepared_extract'):
             row = cohort['roles'][role]
             destination = root / qualifier.BINDINGS[role].lstrip('/')
             qualifier.bound_file(row['path'], row['sha256'])

@@ -128,7 +128,7 @@ pub fn policy_from_section_for_profile(
     let auto_suspend = section
         .get("auto_suspend")
         .and_then(serde_json::Value::as_bool)
-        .unwrap_or(defaults.idle_suspend.is_some());
+        .unwrap_or_else(|| defaults.idle_suspend.is_some());
     let legacy_suspend_minutes = section
         .get("suspend_minutes")
         .and_then(serde_json::Value::as_u64)

@@ -124,6 +124,8 @@ class BuildOrder(unittest.TestCase):
             self.assertLess(host, cohort)
             self.assertLess(cohort, qualification)
             self.assertIn('--with-writer', commands[worker])
+            self.assertIn('tilo-firstboot-home-seeds', commands[host])
+            self.assertIn('tilo-installer-prepared-setup-extract', commands[host])
             self.assertNotIn('TILO_CAPTURE_PINS', calls[worker][1])
             self.assertEqual(calls[host][1]['TILO_CAPTURE_PINS'], str(output / 'pins.json'))
             self.assertIn('--source-assets', commands[qualification])
@@ -217,7 +219,7 @@ class NativePlatformArchive(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             roles = {}
-            for role in ('prepared_helper', 'credential_helper'):
+            for role in ('prepared_helper', 'credential_helper', 'home_seeds', 'prepared_extract'):
                 path = root / role
                 path.write_bytes(role.encode())
                 roles[role] = {'path': str(path), 'sha256': 'a' * 64}
@@ -225,7 +227,9 @@ class NativePlatformArchive(unittest.TestCase):
             host.write_bytes(b'host')
             qualifier = SimpleNamespace(BINDINGS={
                 'prepared_helper': '/usr/libexec/tilo-prepared-setup',
-                'credential_helper': '/usr/libexec/tilo-account-credential'}, PLATFORM_SCRIPTS={},
+                'credential_helper': '/usr/libexec/tilo-account-credential',
+                'home_seeds': '/usr/libexec/tilo-firstboot-home-seeds',
+                'prepared_extract': '/usr/libexec/tilo-installer-prepared-setup-extract'}, PLATFORM_SCRIPTS={},
                 bound_file=Mock(), admit_cohort=Mock(return_value={'roles': roles}))
 
             def gate(command, env):
@@ -244,6 +248,8 @@ class NativePlatformArchive(unittest.TestCase):
                     ('usr/bin/tilo-imager', b'host'),
                     ('usr/libexec/tilo-prepared-setup', b'prepared_helper'),
                     ('usr/libexec/tilo-account-credential', b'credential_helper'),
+                    ('usr/libexec/tilo-firstboot-home-seeds', b'home_seeds'),
+                    ('usr/libexec/tilo-installer-prepared-setup-extract', b'prepared_extract'),
                     ('usr/share/tilo-imager/capture/service/home-export.tapp', b'isolated sidecar')):
                     member = archive.getmember(name)
                     self.assertEqual((member.uid, member.gid), (0, 0))

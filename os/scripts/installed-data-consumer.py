@@ -198,7 +198,7 @@ def home_facts(store):
     return {'schema': 1, 'archive_protocol': 2, 'seed_protocol': 1,
             'prepared_helper_sha256': store.digest(HELPER),
             'firstboot_user_sha256': store.digest('/usr/libexec/tilo-firstboot-user', 1 << 20),
-            'seed_helper_sha256': store.digest('/usr/libexec/tilo-firstboot-home-seeds.py', 1 << 20),
+            'seed_helper_sha256': store.digest('/usr/libexec/tilo-firstboot-home-seeds', 64 << 20),
             'tar_sha256': store.digest('/usr/bin/tar', 64 << 20)}
 
 
@@ -206,14 +206,13 @@ def home(store, check=False, runner=invoke):
     dependencies = ('/usr/libexec/tilo-verify-home-consumer-capability',
                     '/usr/libexec/tilo-installed-data-consumer.py',
                     '/usr/libexec/tilo-firstboot-files.py')
-    # The seed script imports the installed publication implementation.
+    # Firstboot publication still uses the installed Python implementation.
     infrastructure = {name: store.digest(name, 1 << 20) for name in dependencies}
     before = home_facts(store)
     actual = shape(decode(runner([str(store.path(HELPER)), '--home-consumer-capability']), 4096),
                    HOME_KEYS, {'schema': 1, 'archive_protocol': 2, 'seed_protocol': 1})
     require(actual == before, 'installed Home probe disagrees with exact artifacts')
-    seed = decode(runner([str(store.path('/usr/bin/python3')), '-I',
-                          str(store.path('/usr/libexec/tilo-firstboot-home-seeds.py')), '--capabilities']), 4096)
+    seed = decode(runner([str(store.path('/usr/libexec/tilo-firstboot-home-seeds')), '--capabilities']), 4096)
     shape(seed, {'schema', 'seed_protocol'}, {'schema': 1, 'seed_protocol': 1})
     require(home_facts(store) == before
             and {name: store.digest(name, 1 << 20) for name in dependencies} == infrastructure,

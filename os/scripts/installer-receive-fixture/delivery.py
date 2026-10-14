@@ -7,7 +7,7 @@ import stat
 import time
 import tempfile
 
-EXTRACTOR = '/usr/libexec/tilo-installer-prepared-setup-extract.py'
+EXTRACTOR = '/usr/libexec/tilo-installer-prepared-setup-extract'
 PREPARED = '/usr/libexec/tilo-prepared-setup'
 HANDOFF = '/usr/libexec/tilo-staging-handoff'
 
@@ -47,7 +47,7 @@ def prepare(package_directory, password, target_var, log):
                                str(package_directory / 'prepared-setup.sealed'), '--receipt',
                                str(package_directory / 'receipt.json'), '--quarantine',
                                quarantine + '/contents', '--verify-retained-source'], log, password)
-        authenticated = fixed(['/usr/bin/python3', EXTRACTOR, 'preflight-authenticated',
+        authenticated = fixed([EXTRACTOR, 'preflight-authenticated',
                                '--source-dir', str(package_directory)], log, authenticated)
     reviewed = json.loads(authenticated)
     if not reviewed.get('retained_home') or not reviewed.get('pending_computer_applications_scope'):
@@ -72,9 +72,9 @@ def prepare(package_directory, password, target_var, log):
     else:
         raise RuntimeError('target image already has UID1000')
     fixed([HANDOFF, 'deliver-retained', '--target-var', str(target_var)], log, authenticated)
-    fixed(['/usr/bin/python3', EXTRACTOR, 'retain', '--source-dir', str(package_directory),
+    fixed([EXTRACTOR, 'retain', '--source-dir', str(package_directory),
            '--target-var', str(target_var)], log)
-    fixed(['/usr/bin/python3', EXTRACTOR, 'retain-authenticated-binding', '--source-dir',
+    fixed([EXTRACTOR, 'retain-authenticated-binding', '--source-dir',
            str(package_directory), '--target-var', str(target_var)], log, authenticated)
     with tempfile.TemporaryDirectory(prefix='native-device-', dir='/run') as quarantine:
         fixed([PREPARED, '--install-enrolled-device', '--package',

@@ -407,6 +407,34 @@ fn event_time(state: &State) -> u32 {
 }
 
 impl State {
+    /// `app_id`s of the toplevels `client` has mapped, for naming a client in logs.
+    pub(crate) fn client_app_ids(
+        &self,
+        client: &smithay::reexports::wayland_server::Client,
+    ) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .client_input
+            .surfaces
+            .values()
+            .filter(|surface| surface.client().is_some_and(|c| c.id() == client.id()))
+            .filter_map(toplevel_app_id)
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// Who holds the seat's keyboard focus, for logs: `app_id` (or `none`).
+    pub(crate) fn keyboard_focus_holder(&self) -> String {
+        self.client_input
+            .keyboard_focus
+            .and_then(|id| self.client_input.surfaces.get(&id))
+            .map_or_else(
+                || "none".to_owned(),
+                |surface| toplevel_app_id(surface).unwrap_or_else(|| "unnamed surface".to_owned()),
+            )
+    }
+
     /// Revoke client keyboard focus and retire every pressed seat key without
     /// delivering it to an application.
     ///
@@ -518,7 +546,14 @@ impl State {
                 self.input_method_preedit = super::state::InputMethodPreeditState::Inactive;
             }
         }
+        let previous_holder = self.keyboard_focus_holder();
         self.client_input.keyboard_focus = target.as_ref().map(|(id, _)| *id);
+        tracing::debug!(
+            target: "shell::selection",
+            from = %previous_holder,
+            to = %self.keyboard_focus_holder(),
+            "keyboard focus moved; selection focus follows"
+        );
         self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus);
         // Clipboard/primary selection follow the keyboard: smithay refuses `set_selection` from a client without keyboard focus.
         let selection_client = target.as_ref().and_then(|(_, surface)| surface.client());
@@ -574,6 +609,9 @@ impl State {
             },
         );
         let delivered = forward && has_focus && intercepted.is_none();
+        if delivered {
+            self.client_keys_delivered = self.client_keys_delivered.wrapping_add(1);
+        }
         if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
             if let Some((delivery_time_ns, observed_surface)) =
                 delivery_time_ns.zip(observed_surface)
@@ -1060,6 +1098,11 @@ pub fn focus_touch_target(state: &mut State, fb: &mut FrameBuilder, surface_id: 
 
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
+    // A popup the client destroyed (a closed menu or Quick Access panel) keeps
+    // its keyboard grab until smithay is told to forget it; while the grab
+    // lives it ignores every focus change below, so the next window to open
+    // or the one that should get focus back never receives it.
+    state.popup_manager.cleanup();
     let captured = chrome_captures_input(fb);
     let handoff = (!captured)
         .then(|| state.apply_floating_focus_handoffs(fb))

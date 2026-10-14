@@ -30,6 +30,7 @@ libc.workspace = true
 tilo-power-mgmt = { path = "../../system/power", default-features = false }
 zeroize.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 serde.workspace = true
 uuid.workspace = true
 tilo-actions = { path = "../../collab/actions" }

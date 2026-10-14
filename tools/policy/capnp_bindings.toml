@@ -14,8 +14,8 @@ bindings_sha256 = "fbc87391fdc3fa7b199ca99edabd60b7694ad94e5a4a7989943203f121a25
 path = "crates/packaging/app-host"
 src_prefix = "schema"
 schemas = ["schema/app-host.capnp"]
-schema_sha256 = "fb4f1453aa414f657ac82235d1e0a613934e790bc8e9ed33bc8685d038452efe"
-bindings_sha256 = "b9e7fb648ee5269a3d270498bc785d7dceec7e03059abda40421cd3b5f1ea043"
+schema_sha256 = "a03f3c74844783214fffcaf069dff7debecf8fbb8149d816cef1be0504966d36"
+bindings_sha256 = "0ffeb143d0f4a8d7dc6f63df694f1b181c7866705d89a7c9d829aff70751953e"
 
 [[crate]]
 path = "crates/runtime/runtime-collab"

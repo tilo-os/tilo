@@ -479,7 +479,7 @@ mod tests {
                 CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(499), fake_device_paths);
             assert_eq!(live.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
         }
-        // Phase `restriction_removes_a_granted_path`.
+        // Phase `restriction_makes_a_granted_path_read_only`.
         {
             let caps = vec![
                 fs_grant("so.tilo.books", "/var/workspace/books", Access::Write),

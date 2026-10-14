@@ -643,11 +643,7 @@ async fn a_revisionless_invoke_an_owner_cannot_bind_is_refused() {
             let request = directory_request(&fixture, None, None);
             let refused = admit_directory_invoke(&fixture, &request).await;
             assert!(
-                matches!(
-                    &refused,
-                    Err(ActionHostError::InvalidRequest { reason })
-                        if reason.contains("changed since that revision")
-                ),
+                matches!(&refused, Err(ActionHostError::StaleRevision)),
                 "{refused:?}"
             );
             assert!(

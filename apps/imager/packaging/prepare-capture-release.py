@@ -92,7 +92,8 @@ def prepare(output, feature, env, build_only=False):
     env.update(TILO_CAPTURE_PINS=str(output / 'pins.json'),
                TILO_CAPTURE_SIDECAR=str(output / 'sidecar'), TILO_REQUIRE_CAPTURE='1')
     run([recorder, 'build', '--locked', '--release', '-p', 'imager', '--bin', 'imager',
-         '--bin', 'tilo-prepared-setup', '-p', 'installer', '--bin', 'tilo-installer',
+         '--bin', 'tilo-prepared-setup', '--bin', 'tilo-installer-prepared-setup-extract',
+         '-p', 'installer', '--bin', 'tilo-installer', '--bin', 'tilo-firstboot-home-seeds',
          '--features', 'imager/' + feature], env)
     run([recorder, 'test', '--locked', '--release', '-p', 'imager', '--lib', '--no-run',
          '--features', feature + ',native-capture-qualification'], env)

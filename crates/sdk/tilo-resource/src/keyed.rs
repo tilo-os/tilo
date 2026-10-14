@@ -8,6 +8,11 @@
 //! it carries ([`Identified::id`]), merges concurrent edits per field of each
 //! item, and holds them in memory as a plain `Vec<T>` in id order (then
 //! [`Identified::order`]), so code that works with a vector keeps working.
+//!
+//! Clones share the vector until one of them changes it: a copy of a state
+//! holding items (a view keeping the state it was shown while the reader
+//! follows) costs a pointer, and a change copies only the items of the field
+//! it touched.
 
 use std::cmp::Ordering;
 use std::marker::PhantomData;
@@ -18,6 +23,7 @@ use automerge::{ObjId, ObjType, ReadDoc, Value};
 
 use crate::action::{ActionCx, Refusal};
 use crate::collection::Id;
+use crate::cow::Shared;
 use crate::delta::Delta;
 use crate::model::LocatedAt as _;
 use crate::model::{Doc, Model, ModelError, Slot, edit_whole, read_key, refresh_key};
@@ -41,7 +47,8 @@ pub trait Identified {
 /// stored the way `S` says: [`Keyed`] under their ids alone, in their own
 /// order; [`Ordered`](crate::Ordered) as someone arranged them.
 pub struct Items<T, S> {
-    items: Vec<T>,
+    /// Shared between clones until one of them changes the items.
+    items: Shared<Vec<T>>,
     storage: PhantomData<fn() -> S>,
 }
 
@@ -103,20 +110,27 @@ pub trait ItemStorage: 'static {
 pub struct ById;
 
 impl<T: Clone, S> Clone for Items<T, S> {
+    /// Shares the items, however many: the first of the clones to change
+    /// them copies them.
     fn clone(&self) -> Self {
-        Self::from(self.items.clone())
+        Self {
+            items: self.items.share(),
+            storage: PhantomData,
+        }
     }
 }
 
 impl<T: std::fmt::Debug, S> std::fmt::Debug for Items<T, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.items.fmt(f)
+        self.items.get().fmt(f)
     }
 }
 
 impl<T: PartialEq, S> PartialEq for Items<T, S> {
+    /// Items two clones still share are the same and not compared one by
+    /// one.
     fn eq(&self, other: &Self) -> bool {
-        self.items == other.items
+        self.items.same(&other.items) || self.items.get() == other.items.get()
     }
 }
 
@@ -129,20 +143,21 @@ impl<T, S> Default for Items<T, S> {
 impl<T, S> Deref for Items<T, S> {
     type Target = Vec<T>;
     fn deref(&self) -> &Vec<T> {
-        &self.items
+        self.items.get()
     }
 }
 
 impl<T, S> DerefMut for Items<T, S> {
+    /// The items, to change: copied first when a clone still shares them.
     fn deref_mut(&mut self) -> &mut Vec<T> {
-        &mut self.items
+        self.items.make_mut()
     }
 }
 
 impl<T, S> From<Vec<T>> for Items<T, S> {
     fn from(items: Vec<T>) -> Self {
         Self {
-            items,
+            items: Shared::new(items),
             storage: PhantomData,
         }
     }
@@ -158,7 +173,7 @@ impl<T, S> IntoIterator for Items<T, S> {
     type Item = T;
     type IntoIter = std::vec::IntoIter<T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.items.into_iter()
+        self.items.into_inner().into_iter()
     }
 }
 
@@ -166,7 +181,7 @@ impl<'a, T, S> IntoIterator for &'a Items<T, S> {
     type Item = &'a T;
     type IntoIter = std::slice::Iter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.items.iter()
+        self.items.get().iter()
     }
 }
 
@@ -174,13 +189,13 @@ impl<'a, T, S> IntoIterator for &'a mut Items<T, S> {
     type Item = &'a mut T;
     type IntoIter = std::slice::IterMut<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.items.iter_mut()
+        self.items.make_mut().iter_mut()
     }
 }
 
 impl<T: serde::Serialize, S> serde::Serialize for Items<T, S> {
     fn serialize<Ser: serde::Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
-        self.items.serialize(serializer)
+        self.items.get().serialize(serializer)
     }
 }
 
@@ -204,30 +219,32 @@ impl<T: Identified, S> Items<T, S> {
 
     /// Where the item `id` is.
     pub fn position_of(&self, id: &Id) -> Option<usize> {
-        self.items.iter().position(|item| &item.id() == id)
+        self.items.get().iter().position(|item| &item.id() == id)
     }
 
     /// The item `id`.
     pub fn find(&self, id: &Id) -> Option<&T> {
-        self.items.iter().find(|item| &item.id() == id)
+        self.items.get().iter().find(|item| &item.id() == id)
     }
 
-    /// The item `id`, to change.
+    /// The item `id`, to change. The items are copied first when a clone
+    /// still shares them, and only when the item is there.
     pub fn find_mut(&mut self, id: &Id) -> Option<&mut T> {
-        self.items.iter_mut().find(|item| &item.id() == id)
+        let at = self.position_of(id)?;
+        self.items.make_mut().get_mut(at)
     }
 
     /// Remove the item `id`.
     pub fn take(&mut self, id: &Id) -> Option<T> {
         let at = self.position_of(id)?;
-        Some(self.items.remove(at))
+        Some(self.items.make_mut().remove(at))
     }
 }
 
 impl<T: Identified> Keyed<T> {
     /// Sort as a read from the document does: by id, then [`Identified::order`].
     pub fn settle(&mut self) {
-        settle(&mut self.items);
+        settle(self.items.make_mut());
     }
 }
 
@@ -442,7 +459,7 @@ impl<T: Model + Identified, S> crate::items::ItemSource for Items<T, S> {
         crate::collection::listed_items(T::TABLE, self, field)
     }
     fn item_presence(&self) -> usize {
-        usize::from(!self.items.is_empty())
+        usize::from(!self.items.get().is_empty())
     }
     fn label_of_item(&self, id: &Id) -> Option<String> {
         let item = self.find(id)?;
@@ -462,11 +479,11 @@ impl<T: Model + Identified, S: 'static> crate::table::PublishedItems for Items<T
 
 impl<T: Model + Identified, S> crate::collection::ItemList for Items<T, S> {
     fn count(&self) -> usize {
-        self.items.len()
+        self.items.get().len()
     }
 
     fn item(&self, at: usize) -> Option<(Id, &dyn std::any::Any)> {
-        let item = self.items.get(at)?;
+        let item = self.items.get().get(at)?;
         Some((item.id(), item as &dyn std::any::Any))
     }
 }
@@ -486,7 +503,7 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
 
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
-        serde_json::Value::Array(self.items.iter().map(Model::to_json).collect())
+        serde_json::Value::Array(self.items.get().iter().map(Model::to_json).collect())
     }
 
     #[inline(never)]
@@ -516,7 +533,7 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
 
     #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        S::store(&self.items, doc, slot)
+        S::store(self.items.get(), doc, slot)
     }
 
     #[inline(never)]
@@ -531,7 +548,11 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
             *self = Self::load(doc, value, id)?;
             return Ok(());
         }
-        S::refresh(&mut self.items, doc, id, delta)
+        // Untouched items stay shared with any clone of them.
+        if !delta.touches(id) {
+            return Ok(());
+        }
+        S::refresh(self.items.make_mut(), doc, id, delta)
     }
 
     #[inline(never)]
@@ -564,12 +585,12 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
 
     #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<Edit<R>>) {
-        S::diff(&self.items, &after.items, path, out);
+        S::diff(self.items.get(), after.items.get(), path, out);
     }
 
     fn check(&self) -> Result<(), Refusal> {
         if T::CHECKS {
-            self.items.iter().try_for_each(Model::check)?;
+            self.items.get().iter().try_for_each(Model::check)?;
         }
         Ok(())
     }
@@ -624,7 +645,7 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
     }
 
     fn collect_text(&self, out: &mut Vec<String>) {
-        for item in &self.items {
+        for item in self.items.get() {
             item.collect_text(out);
         }
     }

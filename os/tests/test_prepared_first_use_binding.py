@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boundary regressions; these do not establish authenticated installer provenance."""
+"""Native CLI regressions and explicit Python-oracle helper checks, not provenance."""
 import copy
 import importlib.util
 import hashlib
@@ -7,18 +7,26 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[1] / 'usr/libexec/tilo-installer-prepared-setup-extract.py'
+SCRIPT = Path(__file__).resolve().parents[1] / 'tests/oracles/tilo-installer-prepared-setup-extract.py'
 spec = importlib.util.spec_from_file_location('prepared_transport', SCRIPT)
 transport = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(transport)
 
 
-class FirstUseBinding(unittest.TestCase):
-    def origin(self):
-        return dict(schema=1, identity_public_key=[1] * 32, setup_binding='setup-actual-person',
-                    sealed_bytes=48, ciphertext_sha256='a' * 64)
+class NativeProfileBinding(unittest.TestCase):
+    def preflight(self, root, succeeds=True):
+        binary = os.environ.get('TILO_PREPARED_EXTRACT_BINARY', str(
+            SCRIPT.parents[3] / 'target/debug/tilo-installer-prepared-setup-extract'))
+        result = subprocess.run([binary, 'preflight-profile', '--source-dir', str(root)],
+                                capture_output=True, check=False)
+        if succeeds:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b'')
 
     def test_prepared_profile_binding_is_preserved_and_mutations_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -32,27 +40,32 @@ class FirstUseBinding(unittest.TestCase):
             profile = dict(schema=1, purpose='server', device_label='Travel computer',
                            prepared_setup=expected)
             (root / 'profile.json').write_text(json.dumps(profile))
-            transport.preflight_profile(root)
+            self.preflight(root)
             self.assertEqual(json.loads((root / transport.RECEIPT_FILE).read_text()), expected)
             for mutation in (dict(purpose='other-os'), dict(password='never-log'),
                              dict(device_label='bad\nlabel'), dict(prepared_setup=None)):
                 changed = dict(profile, **mutation)
                 (root / 'profile.json').write_text(json.dumps(changed))
-                with self.subTest(fields=list(mutation)), self.assertRaises(ValueError):
-                    transport.preflight_profile(root)
+                with self.subTest(fields=list(mutation)):
+                    self.preflight(root, succeeds=False)
                 self.assertEqual(json.loads((root / transport.RECEIPT_FILE).read_text()), expected)
             (root / 'profile.json').write_text(json.dumps(profile))
             sealed.write_bytes(b'x' * len(ciphertext))
-            with self.assertRaises(ValueError):
-                transport.preflight_profile(root)
+            self.preflight(root, succeeds=False)
             self.assertEqual(json.loads((root / transport.RECEIPT_FILE).read_text()), expected)
 
     def test_legacy_profile_without_preparation_still_passes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / 'profile.json').write_text(json.dumps(dict(schema=1, hostname='legacy')))
-            transport.preflight_profile(root)
+            self.preflight(root)
             self.assertFalse((root / transport.RECEIPT_FILE).exists())
+
+class PythonOracleBoundaries(unittest.TestCase):
+    """Unshipped oracle internals; native command coverage lives above and in Rust."""
+    def origin(self):
+        return dict(schema=1, identity_public_key=[1] * 32, setup_binding='setup-actual-person',
+                    sealed_bytes=48, ciphertext_sha256='a' * 64)
 
     def test_closed_intended_person_and_ciphertext_shape(self):
         original = self.origin()

@@ -1,4 +1,0 @@
-bytes = 983040
-measured = 93218050
-run = 75138
-reason = "Guarded local dictation and native Edit routing (#2974): app SDK run 75138 measured the merged release desktop module at 93218050 bytes, 25858 above the existing budget. This is a total merged-tree measurement including intervening main changes, not an exclusive measurement of dictation's cost; Chromium's native caret adapter is excluded from wasm. Record the ratchet's standard 1% headroom rounded to 64 KiB, with original-field, caller-custody and microphone consent checks retained."

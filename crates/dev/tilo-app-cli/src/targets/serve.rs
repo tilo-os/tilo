@@ -318,7 +318,7 @@ fn content_type(path: &Path) -> &'static str {
         Some("ttf") => "font/ttf",
         Some("otf") => "font/otf",
         Some("woff2") => "font/woff2",
-        Some("txt" | "toml" | "md") => "text/plain; charset=utf-8",
+        Some("txt" | "toml" | "md" | "ftl") => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
 }

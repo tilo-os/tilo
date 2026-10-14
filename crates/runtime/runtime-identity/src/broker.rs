@@ -2,7 +2,12 @@
 //!
 //! The launcher owns the private share and passes the sandbox exactly one end
 //! of a connected Unix socket.  The app can read public identity metadata and
-//! request signatures, but cannot export the share or enumerate identities.
+//! request signatures with an enrolled *device* key, but cannot export the
+//! share, enumerate identities, or obtain a signature from the person's root
+//! key: a root signature over the right 32 bytes is a device certificate or a
+//! revocation, so the root key is never a signing oracle for an application.
+//! Signatures an app needs go through the identity service, which binds each
+//! one to a granted action.
 
 use std::io::{self, Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
@@ -83,6 +88,14 @@ pub fn serve(mut stream: UnixStream, identity: SigningIdentity) -> io::Result<()
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 write_frame(&mut stream, 0, &encoded)?;
             }
+            // A root-capable record answers metadata only. The checked path
+            // for application signatures is the identity service.
+            OP_SIGN if identity.signs_with_root_key() => write_frame(
+                &mut stream,
+                1,
+                b"the root signing key is never brokered to an application; \
+                  request signatures through the identity service",
+            )?,
             OP_SIGN => match identity.sign_local(&payload) {
                 Ok(signature) => write_frame(&mut stream, 0, &signature)?,
                 Err(error) => write_frame(&mut stream, 1, error.to_string().as_bytes())?,
@@ -170,19 +183,22 @@ pub(crate) fn sign(stream: &Mutex<UnixStream>, message: &[u8]) -> Result<[u8; 64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{SigningKey, Verifier};
+    use ed25519_dalek::SigningKey;
     use std::os::fd::IntoRawFd;
 
     #[test]
     fn broker_signs_over_pinned_bounded_frames_without_exposing_the_key() {
-        // phase: broker_signs_without_exposing_the_key
+        // phase: broker_serves_metadata_but_never_signs_with_the_root_key
+        // A single-device record's local secret is the person's root key.
+        // The broker answers metadata for it and refuses to sign: a root
+        // signature over a certificate digest would enrol the asking app's
+        // machine as one of the person's devices.
         {
             let key = SigningKey::from_bytes(&[42; 32]);
-            let verifier = key.verifying_key();
             let identity = SigningIdentity::from_local_parts(
                 "Ada".into(),
                 [1, 2, 3],
-                verifier.to_bytes(),
+                key.verifying_key().to_bytes(),
                 1,
                 1,
                 1,
@@ -198,14 +214,17 @@ mod tests {
 
             let message = b"brokered operation";
             write_frame(&mut app, OP_SIGN, message).unwrap();
-            let (status, signature) = read_frame(&mut app).unwrap();
+            let (status, reply) = read_frame(&mut app).unwrap();
+            assert_eq!(status, 1, "a root-capable record must not sign for an app");
+            assert!(
+                String::from_utf8_lossy(&reply).contains("root signing key"),
+                "the refusal names the reason: {}",
+                String::from_utf8_lossy(&reply)
+            );
+            // The connection stays usable: metadata still answers after a refusal.
+            write_frame(&mut app, OP_METADATA, &[]).unwrap();
+            let (status, _) = read_frame(&mut app).unwrap();
             assert_eq!(status, 0);
-            verifier
-                .verify(
-                    message,
-                    &ed25519_dalek::Signature::from_slice(&signature).unwrap(),
-                )
-                .unwrap();
             drop(app);
             thread.join().unwrap();
         }

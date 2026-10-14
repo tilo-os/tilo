@@ -240,25 +240,27 @@ installer_identity_fixture() (
   generation="$(mktemp -d)"
   trap 'rm -rf -- "$generation"' EXIT
   export generation
-  # The installed helper lives in /usr; execute the same production Python
-  # from this checkout when exercising the backend outside a Tilo image.
+  # Hardware selection still executes from this checkout. Generation selection
+  # is outside this disk-identity fixture; native transport has its own tests.
   python3() {
     if [ "$1" = /usr/lib/tilo/hardware_profile.py ]; then
       shift
       command python3 "$repo_root/os/dev/hardware_profile.py" "$@"
-    elif [ "$#" -eq 2 ] \
-      && [ "$1" = /usr/libexec/tilo-installer-prepared-setup-extract.py ] \
-      && [ "$2" = selected-generation ]; then
-      # Simulate only native generation selection with no prepared payload.
-      # Disk identity validation still executes in the production backend.
-      printf '%s\n' "$generation"
     else
       command python3 "$@"
     fi
   }
   export -f id python3
   export repo_root
-  TILO_INSTALL_TRANSIENT=1 "$backend" "$@"
+  python3 - "$backend" "$generation/backend" <<'PY'
+from pathlib import Path
+import sys
+source = Path(sys.argv[1]).read_text()
+selection = '$(/usr/libexec/tilo-installer-prepared-setup-extract selected-generation)'
+assert source.count(selection) == 1
+Path(sys.argv[2]).write_text(source.replace(selection, '$generation'))
+PY
+  TILO_INSTALL_TRANSIENT=1 bash "$generation/backend" "$@"
 )
 
 identity_error="$(

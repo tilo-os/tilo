@@ -39,6 +39,24 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
         row['manifest_path'] = str(PRODUCER.ROOT / 'unrelated/Cargo.toml')
         self.assertIsNone(PRODUCER.select_artifact([row], 'launcher'))
 
+    def test_native_custody_helpers_require_actual_compiler_roles(self):
+        for role, package, name in (
+                ('home_seeds', 'crates/session/installer', 'tilo-firstboot-home-seeds'),
+                ('prepared_extract', 'apps/imager', 'tilo-installer-prepared-setup-extract')):
+            with self.subTest(role=role):
+                target = PRODUCER.ROOT / 'target/release' / name
+                row = {'reason': 'compiler-artifact',
+                       'manifest_path': str(PRODUCER.ROOT / package / 'Cargo.toml'),
+                       'target': {'name': name, 'kind': ['bin']},
+                       'profile': {'test': False}, 'executable': str(target)}
+                self.assertEqual(PRODUCER.select_artifact([row], role), (row, target))
+                self.assertEqual(QUALIFIER.BINDINGS[role], '/usr/libexec/' + name)
+                self.assertEqual(QUALIFIER.TARGETS[role], name)
+                self.assertEqual(QUALIFIER.PACKAGES[role], package)
+                row['manifest_path'] = str(PRODUCER.ROOT / 'unrelated/Cargo.toml')
+                self.assertIsNone(PRODUCER.select_artifact([row], role))
+                self.assertNotIn('os/usr/libexec/' + name + '.py', QUALIFIER.FIXTURE_FILES)
+
     def test_actual_source_inventory_covers_full_admission_closure(self):
         sources = PRODUCER.sources()
         required = set(QUALIFIER.FIXTURE_FILES) | set(QUALIFIER.PACKAGE_FILES)

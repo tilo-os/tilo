@@ -59,20 +59,6 @@ const QUEUED_ACTIONS: [QueuedAction; 5] = [
     ),
 ];
 
-/// The other words people type for each action, by action id. Like the
-/// ids, they are the stable English vocabulary scripts use too.
-fn synonyms(id: &str) -> &'static str {
-    match id {
-        "lock" => "lock screen",
-        "switch-user" => "switch account",
-        "suspend" => "sleep",
-        "restart" => "reboot",
-        "shut-down" => "shutdown power off turn off",
-        LOGOUT_ID => "log out logout sign out",
-        _ => "",
-    }
-}
-
 /// One admission path for every shell-owned session lifecycle entry point.
 ///
 /// The visual power menu and typed action provider must not disagree about a
@@ -225,6 +211,25 @@ pub struct SessionActionsProvider {
     policy: SessionActionPolicy,
     /// The rows' searchable text, indexed while it stays the same.
     ranker: ui::search::ListIndex,
+    /// The rows and their searchable text, built once for what they are
+    /// built from ([`BuiltFrom`]): a keystroke only searches them.
+    built: RefCell<Option<Built>>,
+}
+
+/// Which session actions are offered, the desktop's language, and the
+/// settings document whose shortcuts the rows show, and whether the local
+/// administrator may inspect retained-home retirement.
+type BuiltFrom = (
+    Vec<bool>,
+    String,
+    Option<settings_store::SettingsStamp>,
+    bool,
+);
+
+struct Built {
+    from: BuiltFrom,
+    rows: Vec<SearchResult>,
+    fields: Vec<Vec<(String, FieldWeight)>>,
 }
 
 impl SessionActionsProvider {
@@ -232,7 +237,71 @@ impl SessionActionsProvider {
         Self {
             policy,
             ranker: ui::search::ListIndex::default(),
+            built: RefCell::default(),
         }
+    }
+
+    fn built_from(&self, chrome: &crate::shell::chrome_state::ChromeState) -> BuiltFrom {
+        #[cfg(target_os = "linux")]
+        let retirement = retirement_admin(chrome);
+        #[cfg(not(target_os = "linux"))]
+        let retirement = {
+            let _ = chrome;
+            false
+        };
+        (
+            QUEUED_ACTIONS
+                .iter()
+                .map(|(_, action, ..)| self.policy.offers(*action))
+                .collect(),
+            crate::shell::i18n::current_locale(),
+            settings_store::stamp(),
+            retirement,
+        )
+    }
+
+    fn build(&self, from: BuiltFrom) -> Built {
+        let mut rows: Vec<SearchResult> = QUEUED_ACTIONS
+            .iter()
+            .zip(&from.0)
+            .filter(|(_, offered)| **offered)
+            .map(|(&entry, _)| self.queued_result(entry))
+            .collect();
+        rows.insert(1.min(rows.len()), self.logout_result());
+        #[cfg(target_os = "linux")]
+        if from.3 {
+            rows.push(retirement_result());
+        }
+        let shortcuts = settings_store::hardware::ShortcutConfig::load();
+        for row in &mut rows {
+            row.shortcut = super::actions::action_shortcut(&shortcuts, &row.id);
+        }
+        let fields = rows
+            .iter()
+            .map(|row| {
+                let mut fields = vec![
+                    (row.title.to_lowercase(), FieldWeight::TITLE),
+                    (row.id.clone(), FieldWeight::IDENTITY),
+                    (
+                        row.subtitle.clone().unwrap_or_default().to_lowercase(),
+                        FieldWeight::SUBTITLE,
+                    ),
+                ];
+                // Lock, restart, shut down: the other words for each, in
+                // every language.
+                fields.extend(
+                    crate::shell::i18n::words_in_every_locale(&format!(
+                        "{}session-{}",
+                        crate::shell::i18n::KEYWORD_PREFIX,
+                        row.id
+                    ))
+                    .into_iter()
+                    .map(|word| (word, FieldWeight::KEYWORD)),
+                );
+                fields
+            })
+            .collect();
+        Built { from, rows, fields }
     }
 }
 
@@ -257,31 +326,15 @@ impl SearchProvider for SessionActionsProvider {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
         }
-        let mut rows: Vec<SearchResult> = QUEUED_ACTIONS
-            .iter()
-            .filter(|(_, action, ..)| self.policy.offers(*action))
-            .map(|&entry| self.queued_result(entry))
-            .collect();
-        rows.insert(1.min(rows.len()), self.logout_result());
-        #[cfg(target_os = "linux")]
-        if retirement_admin(ctx.chrome) {
-            rows.push(retirement_result());
+        let from = self.built_from(ctx.chrome);
+        let mut built = self.built.borrow_mut();
+        if built.as_ref().is_none_or(|built| built.from != from) {
+            *built = Some(self.build(from));
         }
-        let fields: Vec<_> = rows
-            .iter()
-            .map(|row| {
-                vec![
-                    (row.title.clone(), FieldWeight::TITLE),
-                    (row.id.clone(), FieldWeight::IDENTITY),
-                    (synonyms(&row.id).to_owned(), FieldWeight::IDENTITY),
-                    (
-                        row.subtitle.clone().unwrap_or_default(),
-                        FieldWeight::SUBTITLE,
-                    ),
-                ]
-            })
-            .collect();
-        crate::shell::search::rank_rows(&self.ranker, ctx.needle.trim(), rows, &fields)
+        let Some(Built { rows, fields, .. }) = built.as_ref() else {
+            return Vec::new();
+        };
+        crate::shell::search::rank_kept_rows(&self.ranker, ctx.needle.trim(), rows, fields)
     }
 }
 
@@ -304,6 +357,7 @@ impl SessionActionsProvider {
         let contract = queued_contract(id, action);
         let policy = self.policy.clone();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
@@ -330,6 +384,7 @@ impl SessionActionsProvider {
         let contract = logout_contract();
         let policy = self.policy.clone();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
@@ -573,6 +628,36 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retirement_rows_leave_the_cached_index_when_the_session_locks() {
+        let mut chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+        let provider = SessionActionsProvider::new(SessionActionPolicy::new(
+            tilo_power_mgmt::InhibitRegistry::new(),
+        ));
+        let mut from = provider.built_from(&chrome.borrow());
+        // Seed the previously admitted administrator's cached rows. Locking
+        // must remove the row even if language and shortcuts have not changed.
+        from.3 = true;
+        let built = provider.build(from);
+        assert!(built.rows.iter().any(|row| row.id == "retained-retirement"));
+        assert_eq!(built.rows.len(), built.fields.len());
+        *provider.built.borrow_mut() = Some(built);
+        chrome.borrow_mut().set_session_locked(true);
+        let doc = AutoCommit::new();
+        let rows = provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "",
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &ROOT,
+        });
+        assert!(rows.iter().all(|row| row.id != "retained-retirement"));
+        assert!(!provider.built.borrow().as_ref().unwrap().from.3);
+    }
+
     #[test]
     fn logout_is_addressable_confirmed_and_inhibited_only_like_the_power_menu() {
         // Phase `logout_is_exactly_addressable_and_declares_destructive_confirmation`.
@@ -664,6 +749,7 @@ fn retirement_admin(chrome: &crate::shell::chrome_state::ChromeState) -> bool {
 #[cfg(target_os = "linux")]
 fn retirement_result() -> SearchResult {
     SearchResult {
+        shortcut: None,
         kind: ResourceKind::Action,
         operation_kind: tilo_actions::OperationKind::View,
         provider_id: PROVIDER_ID.into(),

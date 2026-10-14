@@ -388,9 +388,9 @@ pub fn home_consumer_capability(
     };
     let helper_digest = digest(&helper, 1024 * 1024 * 1024, true)?;
     let firstboot = Path::new("/usr/libexec/tilo-firstboot-user");
-    let seed_helper = Path::new("/usr/libexec/tilo-firstboot-home-seeds.py");
+    let seed_helper = Path::new("/usr/libexec/tilo-firstboot-home-seeds");
     let firstboot_digest = digest(firstboot, 1024 * 1024, false)?;
-    let seed_digest = digest(seed_helper, 1024 * 1024, false)?;
+    let seed_digest = digest(seed_helper, 64 * 1024 * 1024, false)?;
     let tar = Path::new("/usr/bin/tar");
     let tar_digest = digest(tar, 64 * 1024 * 1024, true)?;
     let mut child = Command::new(tar)
@@ -438,7 +438,7 @@ pub fn home_consumer_capability(
     if digest(&helper, 1024 * 1024 * 1024, true)? != helper_digest
         || digest(tar, 64 * 1024 * 1024, true)? != tar_digest
         || digest(firstboot, 1024 * 1024, false)? != firstboot_digest
-        || digest(seed_helper, 1024 * 1024, false)? != seed_digest
+        || digest(seed_helper, 64 * 1024 * 1024, false)? != seed_digest
     {
         return Err(failed());
     }

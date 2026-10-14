@@ -268,17 +268,30 @@ def validate_migration(raw, handoff=None):
 
 
 def _pending_computer_scope(receipt):
-    # Same closed parser as authenticated archive preflight. No source is opened.
-    import importlib.util
-    from pathlib import Path
-    path = Path(__file__).with_name('tilo-installer-prepared-setup-extract.py')
-    spec = importlib.util.spec_from_file_location('tilo_pending_computer_transport', path)
-    transport = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(transport)
+    # Validate the pending scope through the native closed parser, without
+    # claiming a completed archive or opening any source.
+    metadata = {key: receipt[key] for key in (
+        'identity_public_key', 'setup_binding', 'retained_home',
+        'pending_computer_applications_scope') if key in receipt}
+    metadata['schema'] = 1
+    _prepared_transport('preflight-authenticated', '--source-dir', '/nonexistent',
+                        receipt=metadata)
+    return receipt.get('pending_computer_applications_scope')
+
+
+def _prepared_transport(*args, receipt=None):
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          'tilo-installer-prepared-setup-extract')
     try:
-        return transport.pending_computer_applications_scope(receipt)
-    except (ValueError, KeyError, TypeError) as error:
-        raise Refusal('pending Computer applications metadata differs') from error
+        result = subprocess.run([script, *args],
+                                input=None if receipt is None else canonical(receipt),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise Refusal('prepared setup transport is unavailable') from error
+    if result.returncode != 0 or len(result.stdout) > 80 * 1024:
+        raise Refusal('prepared setup transport validation failed')
+    return result.stdout
 
 
 def validate_handoff(raw):
@@ -537,27 +550,23 @@ def deliver_staged_preparation(handoff, output):
         return
     # Reuse the root image's canonical bounded ciphertext-only transport. The
     # boot-selected ESP is the sole source, never an attached-media scan.
-    import importlib.util
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tilo-installer-prepared-setup-extract.py')
-    spec = importlib.util.spec_from_file_location('tilo_prepared_transport', script)
-    transport = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(transport)
+    def preflight(directory):
+        _prepared_transport('preflight', '--source-dir', directory,
+                            '--receipt', json.dumps(expected))
     def deliver(root):
-        candidate = transport.source(root)
-        if candidate is None:
-            raise Refusal('reviewed encrypted setup is absent from the booted staging ESP')
-        fd, _facts, actual = candidate
-        os.close(fd)
-        if actual != expected:
-            raise Refusal('staged encrypted setup receipt differs from the reviewed handoff')
-        if os.path.lexists(os.path.join(output, transport.FILE)):
-            transport.preflight(output, json.dumps(expected))
+        # Verify the mounted ESP's ciphertext before publishing to the selected
+        # generation. Existing output still has to match that same receipt.
+        with tempfile.TemporaryDirectory(prefix='tilo-prepared-', dir=output) as staging:
+            _prepared_transport('--source-root', root, '--out-dir', staging)
+            preflight(staging)
+        if os.path.lexists(os.path.join(output, 'prepared-setup.sealed')):
+            preflight(output)
         else:
-            transport.extract([root], output)
-            transport.preflight(output, json.dumps(expected))
+            _prepared_transport('--source-root', root, '--out-dir', output)
+            preflight(output)
     try:
         with_boot_esp(handoff['staging_esp']['partuuid'], deliver)
-    except (ValueError, OSError) as error:
+    except (Refusal, ValueError, OSError) as error:
         raise Refusal('prepared encrypted setup delivery failed: %s' % error) from error
     write_atomic(os.path.join(output, 'profile.json'), canonical(handoff['profile']), 0o644)
 
@@ -935,18 +944,9 @@ def authenticated_retained_plan(stream):
     if completed is not None or apps_only:
         # Reuse the canonical bounded archive receipt schema; this validates
         # public metadata only and never creates a source mount or grant.
-        import importlib.util
-        from pathlib import Path
-        path = Path(__file__).with_name('tilo-installer-prepared-setup-extract.py')
-        spec = importlib.util.spec_from_file_location('tilo_prepared_transport', path)
-        transport = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(transport)
-        try:
-            if completed is not None:
-                completed = transport.home_expectation(completed)
-            transport.preflight_authenticated(transport.selected_generation(), receipt)
-        except (ValueError, KeyError, TypeError) as error:
-            raise Refusal('authenticated completed Home is malformed') from error
+        generation = _prepared_transport('selected-generation').decode('utf-8').strip()
+        _prepared_transport('preflight-authenticated', '--source-dir', generation,
+                            receipt=receipt)
         if ((receipt.get('retained_home') is not None and not apps_only)
                 or (completed is not None and completed['setup_binding'] != receipt.get('setup_binding'))):
             raise Refusal('authenticated completed Home lineage differs')

@@ -27,9 +27,10 @@ class CredentialTransportTests(unittest.TestCase):
             home.mkdir(parents=True)
         (root / "home").mkdir(exist_ok=True)
         # This inert helper covers unlock ordering only. The separate native
-        # seed/adoption fixture uses the actual root-owned script and real NSS.
+        # seed/adoption fixture uses the actual native executable and real NSS.
         seeds = root / "home-seeds.py"
-        seeds.write_text("import os, sys\nfrom pathlib import Path\nassert sys.argv[1:] == ['fixtureuser']\nPath(os.environ['FIXTURE_ROOT'], 'seeds-called').write_text('called')\nraise SystemExit(int(os.environ.get('FIXTURE_SEEDS_FAILURE', '0')))\n")
+        seeds.write_text("#!/usr/bin/env python3\nimport os, sys\nfrom pathlib import Path\nassert sys.argv[1:] == ['fixtureuser']\nPath(os.environ['FIXTURE_ROOT'], 'seeds-called').write_text('called')\nraise SystemExit(int(os.environ.get('FIXTURE_SEEDS_FAILURE', '0')))\n")
+        seeds.chmod(0o755)
         source = SOURCE.read_text()
         replacements = {
             "CONF=/etc/tilo/install-user.conf": f"CONF={credential}",
@@ -38,7 +39,7 @@ class CredentialTransportTests(unittest.TestCase):
             "key=/var/lib/tilo/device-private/keypair.bin": f"key={root}/absent-device-key",
             '"/home/$user"': f'"{root}/home/$user"',
             '"/var/home/$user"': f'"{root}/var-home/$user"',
-            'seed_helper=/etc/tilo/firstboot-home-seeds.py': f'seed_helper={seeds}',
+            'seed_helper=/etc/tilo/firstboot-home-seeds': f'seed_helper={seeds}',
             'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"': f'FILES_HELPER="{ROOT}/os/usr/libexec/tilo-firstboot-files.py"',
         }
         (root / 'home').mkdir(exist_ok=True)

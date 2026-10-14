@@ -184,6 +184,7 @@ fn invoke(chrome: &Chrome, action: WindowAction) -> Result<(), ActionError> {
 fn result(row: WindowRow, score: i32) -> SearchResult {
     let action = row.action;
     SearchResult {
+        shortcut: None,
         kind: match row.kind {
             WindowRowKind::Tab => ResourceKind::Tab,
             WindowRowKind::WindowGroup => ResourceKind::WindowGroup,

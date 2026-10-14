@@ -130,6 +130,7 @@ impl Outbound {
     ) -> Option<Vec<u8>> {
         let room = self.rooms.entry(ws).or_insert_with(|| Room {
             frame: PresenceFrame {
+                place: None,
                 seq: 0,
                 sent_at_ms: 0,
                 focus: None,

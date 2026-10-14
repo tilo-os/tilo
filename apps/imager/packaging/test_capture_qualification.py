@@ -36,6 +36,9 @@ class StagedSourceClosure(unittest.TestCase):
         prerequisites = qualifier.fixed_module(qualifier.ROOT /
             'os/scripts/installer-receive-fixture/prerequisite-image.py', 'test_prerequisites')
         self.assertLessEqual(set(prerequisites.ASSETS), files)
+        for name in ('tilo-firstboot-home-seeds.py', 'tilo-installer-prepared-setup-extract.py'):
+            self.assertNotIn('os/usr/libexec/' + name, files)
+            self.assertNotIn('os/usr/libexec/' + name, prerequisites.ASSETS)
         self.assertLessEqual(set(qualifier.PLATFORM_SCRIPTS), files)
 
     def test_production_stage_copies_and_binds_whole_closure(self):

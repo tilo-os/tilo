@@ -55,9 +55,7 @@ FIXTURE_FILES = (
     'os/scripts/installer-source-fixture/flatpak-runtime/dependencies/common.py',
     'apps/imager/src/setup/flatpak_transfer/portable/native_tests/runnable/fixture-app',
     'os/usr/libexec/tilo-firstboot-user',
-    'os/usr/libexec/tilo-firstboot-home-seeds.py',
     'os/usr/libexec/tilo-firstboot-files.py',
-    'os/usr/libexec/tilo-installer-prepared-setup-extract.py',
     'os/usr/libexec/tilo-staging-handoff',
     'os/usr/libexec/tilo-store-volume',
     'os/usr/libexec/tilo-install-handoff-copy.py',
@@ -85,6 +83,7 @@ PACKAGE_FILES = (
 PACKAGES = {'worker': 'apps/imager', 'runtime': 'crates/runtime/runtime-dylib', 'host': 'apps/imager', 'imager_tests': 'apps/imager',
             'shell': 'crates/session/shell', 'fs': 'crates/system/fs',
             'credential_helper': 'crates/system/account-custody',
+            'home_seeds': 'crates/session/installer', 'prepared_extract': 'apps/imager',
             'prepared_helper': 'apps/imager', 'control': 'crates/session/control-cli',
             'launcher': 'crates/packaging/launcher',
             'files': 'apps/file-explorer', 'writer': 'apps/word-processor', 'browser': 'apps/browser',
@@ -93,6 +92,7 @@ PACKAGES = {'worker': 'apps/imager', 'runtime': 'crates/runtime/runtime-dylib', 
             'installer': 'crates/session/installer'}
 TARGETS = {'worker': 'tilo-home-export', 'runtime': 'runtime_dylib', 'host': 'imager', 'imager_tests': 'imager', 'shell': 'shell', 'fs': 'fs',
            'credential_helper': 'tilo-account-credential', 'prepared_helper': 'tilo-prepared-setup',
+           'home_seeds': 'tilo-firstboot-home-seeds', 'prepared_extract': 'tilo-installer-prepared-setup-extract',
            'control': 'tilo-control', 'launcher': 'tilo-launcher', 'files': 'file-explorer', 'writer': 'word-processor', 'browser': 'browser',
            'app_package': 'tilo-app-package', 'runtime_bundle': 'tilo-runtime-bundle', 'install': 'tilo-install', 'installer': 'tilo-installer'}
 PLATFORM_SCRIPTS = {
@@ -104,6 +104,8 @@ PLATFORM_SCRIPTS = {
 }
 BINDINGS = {'shell': '/usr/bin/shell', 'fs': '/usr/bin/fs',
             'credential_helper': '/usr/libexec/tilo-account-credential',
+            'home_seeds': '/usr/libexec/tilo-firstboot-home-seeds',
+            'prepared_extract': '/usr/libexec/tilo-installer-prepared-setup-extract',
             'prepared_helper': '/usr/libexec/tilo-prepared-setup', 'control': '/usr/bin/tilo-control',
             'launcher': '/usr/bin/tilo-launcher',
             'app_package': '/usr/bin/tilo-app-package',

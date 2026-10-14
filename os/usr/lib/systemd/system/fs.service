@@ -85,17 +85,25 @@ ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/
     --storage-sock /run/tilo/fs-storage.sock --blob-sock /run/tilo/fs-blobs.sock \
     --acl /var/lib/tilo/fs-capabilities.json --principal person:local \
     $TILO_FS_DATA_PLANE_ARGS
-# `fusermount -u` is preferable to plain `umount` because it doesn't
-# need CAP_SYS_ADMIN. `-z` makes the unmount lazy so a hung client
-# can't block shutdown.
-ExecStop=/usr/bin/fusermount3 -u -z /var/workspace
+# No ExecStop=: the daemon ends its own mount. systemd's SIGTERM takes the
+# daemon's stop path, which unmounts and then makes the final namespace save.
+# On the FUSE data plane the mount is held by fusermount3's auto_unmount
+# helper, which blocks every signal and lazily detaches /var/workspace (what
+# `fusermount3 -u -z` did) as soon as the daemon releases the session or
+# exits, so a hung client cannot block the stop. An `ExecStop=` naming
+# fusermount3 cannot run at all: systemd checks the executable while its exec
+# child is still init_t, which may not execute fusermount_exec_t, so every
+# stop ended in 203/EXEC. Do not grant init_t that instead.
+#
 # On a machine with a dedicated store volume at /var/lib/tilo/store
 # (`--store`) the daemon serves the Tier 1 data plane instead: the
 # room's native tree is bind-mounted at /var/workspace and fanotify fills
 # placeholders on first access. Placeholders read as holes once the daemon's
 # fanotify group is gone, so the bind must never outlive the process. The
-# daemon detaches it on a clean stop; this covers a crash or SIGKILL, and is
-# a no-op for the FUSE data plane (already unmounted above).
+# daemon detaches it on a clean stop. This lazy umount is the backstop for
+# both planes when the daemon could not: a crash, or the SIGKILL after
+# TimeoutStopSec= (which also kills fusermount3's helper). It is a no-op
+# after a clean stop. umount is mount_exec_t, which init_t may execute.
 ExecStopPost=-/usr/bin/umount --lazy /var/workspace
 Restart=always
 RestartSec=5

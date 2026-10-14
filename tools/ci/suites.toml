@@ -112,7 +112,6 @@ suites = [
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
   "os/tests/test_oci_archive_layer_report.py",
-  "os/tests/test_esp_write.py",
   "os/tests/test_local_image_epoch.py",
   "os/tests/security_audit_kconfig.sh",
   "os/tests/boot_chain_source.sh",
@@ -189,6 +188,14 @@ suites = [
   "os/tests/test_raw_rootfs_receipt.py",
   "os/tests/test_rebind_development_rootfs.py",
   "os/tests/test_rebind_development_trust.py",
+  "os/scripts/installer-receive-fixture/test_prerequisite_image.py",
+  "os/scripts/installer-source-fixture/test_bounded_native.py",
+  "os/scripts/installer-source-fixture/test_source.py",
+  "os/tests/data_consumer_capability_test.py",
+  "os/tests/test_install_purpose.py",
+  "os/tests/test_optional_service_consumer.py",
+  "os/tests/test_prepared_first_use_binding.py",
+  "os/tests/test_service_candidate_bridge.py",
   "os/tests/test_reconstructed_partials.py",
   "os/tests/test_reseal_image.py",
   "os/tests/test_retain_development_rootfs.py",
@@ -222,6 +229,11 @@ suites = [
   "os/tests/windows_guest_powershell_syntax.py",
   "os/tests/windows_owner_backend.sh",
 ]
+
+[[group]]
+name = "native-store-autoclear"
+inputs = ["tools/ci/native-store-autoclear.py"]
+suites = ["tools/ci/test_native_store_autoclear.py"]
 
 [[group]]
 name = "os-workflows"
@@ -356,8 +368,8 @@ suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
 name = "imager-packaging"
-inputs = ["apps/imager/packaging/", "apps/imager/desktop-catalog.json", "tools/tests/test_imager_enabled_platforms.py", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/host-session-e2e.yml"]
-suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_continuous_release.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py"]
+inputs = ["apps/imager/packaging/", "apps/imager/tilo-app.toml", "apps/imager/desktop-catalog.json", "tools/tests/test_imager_enabled_platforms.py", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/host-session-e2e.yml"]
+suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_continuous_release.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_capture_admission.py", "apps/imager/packaging/test_capture_build_phases.py", "apps/imager/packaging/test_capture_build_script.py", "apps/imager/packaging/test_capture_openpgp.py", "apps/imager/packaging/test_capture_protocol.py", "apps/imager/packaging/test_service_source_assets.py"]
 
 [[group]]
 name = "ntfs-helper"
@@ -448,11 +460,14 @@ inputs = [
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   "crates/session/shell/examples/redraw_bench.rs",
+  # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
+  "tools/web/chrome.mjs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
   # default collection.
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
+  "scripts/perf/browser_qualification.test.mjs",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_latency_bench_test.py",
   "scripts/perf/device_notes_latency_test.py",
@@ -544,10 +559,12 @@ name = "browser-runtime-web"
 # and the scripts that assemble the web core. app-installer reads the Rust
 # app catalogue. The live transport suites load the MoQ library that check.yml
 # builds from scripts/moq-browser before the offline suites run.
-inputs = ["crates/browser/tilo-browser-runtime/", "scripts/moq-browser/", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
+# bundle-update runs the split modules' loader that wasm-split's main.rs writes.
+inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "scripts/moq-browser/", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/here.test.mjs",
   "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
   "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
@@ -558,6 +575,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs",
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs",
   "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
   "crates/browser/tilo-browser-runtime/web/native-catalogue.test.mjs",
   "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
@@ -572,11 +590,13 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/router.test.mjs",
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/arrival.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs",
   "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
   "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/bundle-update.test.mjs",
   "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
@@ -667,6 +687,13 @@ readers = [
 ]
 
 [[cargo]]
+package = "tilo-esp-write"
+# The ESP writer's tests run tilo-deployment's boot-counter pass, which reads
+# its UKIs with the shipped command-line parser, against the built helper.
+inputs = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
+readers = ["crates/system/esp-write/tests/esp_write.rs"]
+
+[[cargo]]
 package = "greeter"
 # The greeter offers exactly the sessions the image ships.
 inputs = ["os/usr/share/wayland-sessions/*.desktop"]
@@ -676,6 +703,7 @@ readers = ["crates/session/greeter/src/greeter_app.rs"]
 package = "launcher"
 inputs = [
   "apps/*/tilo-app.toml",
+  "apps/imager/packaging/",
   "os/usr/lib/tilo/jit-entitled.conf",
   "os/usr/lib/tilo/web-engine-entitled.conf",
   "os/usr/share/tilo/system-interfaces.toml",
@@ -691,6 +719,7 @@ readers = [
   "crates/packaging/launcher/src/seccomp.rs",
   "crates/packaging/launcher/src/services.rs",
   "crates/packaging/launcher/examples/startup_frame_timeline.rs",
+  "crates/packaging/launcher/tests/capture_service/openpgp_native.rs",
 ]
 
 [[cargo]]
@@ -701,8 +730,8 @@ readers = ["crates/runtime/egress/src/policy.rs"]
 
 [[cargo]]
 package = "tilo-vm"
-inputs = ["apps/*/tilo-app.toml"]
-readers = ["crates/dev/tilo-vm/src/build.rs"]
+inputs = ["apps/*/tilo-app.toml", "os/dev/vm.sh"]
+readers = ["crates/dev/tilo-vm/src/build.rs", "crates/dev/tilo-vm/src/hypervisor.rs"]
 
 [[cargo]]
 package = "tilo-vm-protocol"
@@ -867,10 +896,16 @@ inputs = [
   "crates/system/block-devices/tests/fixtures/imager.json",
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
+  "os/usr/libexec/", "os/scripts/",
+  "os/usr/libexec/tilo-firstboot-home-seeds.py", "os/usr/libexec/tilo-firstboot-user",
+  "crates/session/installer/src/layouts.rs", "crates/session/installer/src/media_profile.rs",
 ]
 readers = [
   "apps/imager/src/probe.rs", "apps/imager/src/setup/desktop_install.rs",
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
+  "apps/imager/src/media_layout/tests.rs", "apps/imager/src/setup/account_admission.rs",
+  "apps/imager/src/setup/home_transfer/promotion/seeds_native_tests.rs",
+  "apps/imager/tests/profile_transport.rs",
 ]
 
 [[cargo]]
@@ -975,8 +1010,12 @@ inputs = [
   "scripts/headless-examples/",
   "apps/store/fixtures/published/snapshot379.json.gz.b64",
   "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64",
+  # The search relevance table runs over every app's manifest and keywords.
+  "apps/*/tilo-app.toml",
+  "apps/*/search/*.ftl",
 ]
 readers = [
+  "crates/session/shell/src/shell/search/relevance_tests.rs",
   "crates/session/shell/examples/files_clipboard_native.rs",
   "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
@@ -1084,6 +1123,10 @@ by = "tools/tests/test_focused_test.py"
 
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.
+
+[[unrequired]]
+suite = "scripts/test-cloud-rystic.py"
+reason = "explicit licensed integration runner: requires installed/authenticated Rystic and metered local twins; run python3 scripts/test-cloud-rystic.py all on trusted hosts; --contracts additionally exposes documented vendor fidelity failures"
 
 [[unrequired]]
 suite = "tools/ci/test_airdrop_sender.py"

@@ -190,6 +190,17 @@ pub enum FilesEffect {
         #[param("Access to the original file", choices = ["read-only", "edit-in-parent"])]
         access: Option<String>,
     },
+    /// Import once from cloud…
+    ///
+    /// Copies the mounted entry's bytes into a local folder. Native Drive
+    /// documents retain their link representation, not a fabricated file.
+    #[effect(row)]
+    ImportOnce {
+        #[param("The cloud entry's published row id")]
+        entry: String,
+        #[param("Absolute path of an existing local destination folder")]
+        folder: String,
+    },
     /// Copy to folder…
     #[effect(row)]
     CopyTo {

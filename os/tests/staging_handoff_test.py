@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
@@ -126,7 +127,16 @@ else:
 
 class Fixture:
     def __init__(self, root):
-        self.root = Path(root)
+        self.root = Path(root).resolve()
+        self.helper = self.root / 'tilo-staging-handoff'
+        shutil.copyfile(HELPER, self.helper)
+        binary = Path(os.environ.get('TILO_PREPARED_EXTRACT_BINARY',
+                      REPO / 'target/debug/tilo-installer-prepared-setup-extract'))
+        if binary.read_bytes()[:4] != b'\x7fELF':
+            raise AssertionError('prepared transport fixture requires the compiled production ELF')
+        installed = self.root / 'tilo-installer-prepared-setup-extract'
+        shutil.copyfile(binary, installed)
+        installed.chmod(0o755)
         self.efivars = self.root / 'efivars'
         self.esp = self.root / 'esp'
         self.efivars.mkdir()
@@ -172,7 +182,7 @@ class Fixture:
                     FAKE_EFIBOOT_LOG=str(self.log))
 
     def run(self, *argv, env=None):
-        return subprocess.run([sys.executable, str(HELPER)] + list(argv), env=env or self.env(),
+        return subprocess.run([sys.executable, str(self.helper)] + list(argv), env=env or self.env(),
                               capture_output=True, text=True)
 
     def check(self, mode='guided', **overrides):
@@ -408,8 +418,8 @@ class DetectTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.fixture = Fixture(self.temporary.name)
-        self.out = Path(self.temporary.name) / 'run/handoff.json'
-        self.error = Path(self.temporary.name) / 'run/handoff.error'
+        self.out = Path(self.temporary.name).resolve() / 'run/handoff.json'
+        self.error = Path(self.temporary.name).resolve() / 'run/handoff.error'
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -622,7 +632,10 @@ class MigrationHandoffTests(unittest.TestCase):
         import io
         import runpy
         from types import SimpleNamespace
-        helper = runpy.run_path(str(HELPER), run_name='tilo_staging_codec_test')
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        fixture = Fixture(temporary.name)
+        helper = runpy.run_path(str(fixture.helper), run_name='tilo_staging_codec_test')
         main = self.document()['migration']
         main['home_policy'] = 'access-read-write'
         main['categories']['flatpak'] = False
@@ -692,9 +705,9 @@ class MigrationHandoffTests(unittest.TestCase):
         self.assertNotEqual(os.geteuid(), 0, 'fixture injection requires an unprivileged test runner')
         with tempfile.TemporaryDirectory() as temporary:
             fixture = Fixture(temporary)
-            home = Path(temporary) / 'user-home'
+            home = fixture.root / 'user-home'
             home.mkdir(mode=0o700)
-            seed = Path(temporary) / 'private-seed'
+            seed = fixture.root / 'private-seed'
             seed.mkdir(mode=0o700)
             raw = self.document()['migration']
             raw['flatpak_inventory'] = {'schema': 1, 'inventory': {'refs': [], 'remotes': []}, 'selected': [], 'installations': []}

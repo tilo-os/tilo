@@ -2,13 +2,15 @@
 //! [`tilo_relay_protocol::rooms`]).
 //!
 //! `/rooms` is room administration with the authorization of
-//! [`ROOM_ADMIN_ALPN`](super::ROOM_ADMIN_ALPN): the session's device must be
-//! one of the relay's own user. `/join` redeems an invitation for a device
-//! with no session yet. Unlike the workspace-join protocol, a page's
-//! verified redemption is not admitted at once: it waits, in memory, until
-//! the room's owner admits or declines it. A relay restart forgets waiting
+//! [`ROOM_ADMIN_ALPN`](super::ROOM_ADMIN_ALPN) ([`Rooms::authorize`]): the
+//! session's device is one of the relay's own user, or a member's the
+//! room's governance lets do what it asks. `/join` redeems an invitation for
+//! a device with no session yet. Unlike the workspace-join protocol, a
+//! page's verified redemption is not admitted at once: it waits, in memory,
+//! until someone the room lets invite admits or declines it. A relay restart forgets waiting
 //! requests; the person asks again.
 
+use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::{
     JoinChallenge, JoinChallengeRequest, JoinProof, MemberRole, VerifiedRedemption,
 };
@@ -18,10 +20,12 @@ use tilo_relay_protocol::rooms::{
 };
 use tilo_user_identity::DeviceCert;
 
+use super::authority::RoomOp;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedRoom, IssueInvitationRequest,
     IssuedInvitation, RemoveMemberRequest, Rooms, SetMemberRoleRequest, system_time,
 };
+use crate::host_authority::HostOperation;
 
 /// How long a declined request still answers its device's status.
 const DECIDED_LIFETIME_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -79,7 +83,7 @@ impl PageJoins {
     }
 }
 
-const fn member_role(role: RoomRole) -> MemberRole {
+pub(super) const fn member_role(role: RoomRole) -> MemberRole {
     match role {
         RoomRole::Viewer => MemberRole::Viewer,
         RoomRole::Commenter => MemberRole::Commenter,
@@ -205,18 +209,14 @@ impl Rooms {
             }
             RoomsRequest::Pending { room } => self.page_pending(&room, device).await?,
             RoomsRequest::Requests { room } => {
-                self.authorize(device, now, "join.requests")?;
-                self.room(&room).await?;
-                RoomsReply::Requests(self.waiting(&room, now))
+                RoomsReply::Requests(self.join_requests(&room, device, now).await?)
             }
             RoomsRequest::Admit { room, request_id } => {
-                self.authorize(device, now, "join.admit")?;
-                self.admit_page(&room, request_id, now).await?;
+                self.admit_page(&room, device, request_id, now).await?;
                 self.page_room(&room).await?
             }
             RoomsRequest::Decline { room, request_id } => {
-                self.authorize(device, now, "join.decline")?;
-                self.decline_page(&room, request_id, now).await?;
+                self.decline_page(&room, device, request_id, now).await?;
                 RoomsReply::Requests(self.waiting(&room, now))
             }
             request @ (RoomsRequest::SetRole { .. }
@@ -232,10 +232,10 @@ impl Rooms {
                     .await?
             }
             RoomsRequest::Notices { room } => {
-                self.authorize(device, now, "room.notices")?;
                 let room = self.room(&room).await?;
-                let notices = room.lock().await.admissions.notices();
-                RoomsReply::Notices(notices)
+                let room = room.lock().await;
+                self.authorize(device, Some(&room), RoomOp::Govern(governance::INVITE), now)?;
+                RoomsReply::Notices(room.admissions.notices())
             }
         })
     }
@@ -377,14 +377,13 @@ impl Rooms {
             inviter_name,
         } = request;
         let now = tilo_clock::unix_now_ns();
-        self.authorize(device, now, "invitation.pre-admit")?;
+        self.authorize(device, None, RoomOp::Host(HostOperation::PreAdmit), now)?;
         grant.verify()?;
         if grant.owner_user_public_key != self.inner.host.cert.user_public_key {
             return Err(CollaborationError::new(
                 "only the room's owner pre-admits people",
             ));
         }
-        self.authorize(device, now, "invitation.issue")?;
         let room_id = grant.room.clone();
         let issued = {
             let room = self.room(&room_id).await?;
@@ -423,7 +422,7 @@ impl Rooms {
         name: &str,
         now: u64,
     ) -> Result<RoomsReply, CollaborationError> {
-        self.authorize(device, now, "room.create")?;
+        self.authorize(device, None, RoomOp::Host(HostOperation::CreateRoom), now)?;
         let created = self.create(name).await?;
         self.page_room(&created.room).await
     }
@@ -433,7 +432,7 @@ impl Rooms {
         device: &DeviceCert,
         now: u64,
     ) -> Result<RoomsReply, CollaborationError> {
-        self.authorize(device, now, "room.list")?;
+        self.authorize(device, None, RoomOp::Host(HostOperation::ListRooms), now)?;
         let rooms = self
             .inner
             .rooms
@@ -492,6 +491,31 @@ impl Rooms {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The join requests waiting in `room`, for `device`: someone the room
+    /// lets invite.
+    ///
+    /// # Errors
+    ///
+    /// Why the device may not see them.
+    pub(super) async fn join_requests(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        now: u64,
+    ) -> Result<Vec<JoinRequest>, CollaborationError> {
+        {
+            let governed = self.room(room).await?;
+            let governed = governed.lock().await;
+            self.authorize(
+                device,
+                Some(&governed),
+                RoomOp::Govern(governance::INVITE),
+                now,
+            )?;
+        }
+        Ok(self.waiting(room, now))
+    }
+
     fn waiting(&self, room: &str, now: u64) -> Vec<JoinRequest> {
         let mut joins = self.page_joins();
         joins.prune(now);
@@ -503,9 +527,10 @@ impl Rooms {
             .collect()
     }
 
-    async fn decline_page(
+    pub(super) async fn decline_page(
         &self,
         room: &str,
+        device: &DeviceCert,
         request_id: [u8; 32],
         now: u64,
     ) -> Result<(), CollaborationError> {
@@ -513,6 +538,12 @@ impl Rooms {
         // Serialize with admission, which holds this lock until governance
         // publication completes and removes the waiting request.
         let decision = governed.lock().await;
+        self.authorize(
+            device,
+            Some(&decision),
+            RoomOp::Govern(governance::INVITE),
+            now,
+        )?;
         let mut joins = self.page_joins();
         let join = joins
             .0
@@ -536,9 +567,10 @@ impl Rooms {
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its decision is committed, published and answered"
     )]
-    async fn admit_page(
+    pub(super) async fn admit_page(
         &self,
         room_id: &str,
+        administrator: &DeviceCert,
         request_id: [u8; 32],
         now: u64,
     ) -> Result<(), CollaborationError> {
@@ -547,6 +579,12 @@ impl Rooms {
         // A retry after a lost HTTPS reply observes the committed receipt.
         // Never re-admit a member who has since lost governed access.
         if let Some(device) = room.admitted_device(request_id) {
+            self.authorize(
+                administrator,
+                Some(&room),
+                RoomOp::Govern(governance::INVITE),
+                now,
+            )?;
             room.peer().permissions(device, system_time(now))?;
             return Ok(());
         }
@@ -562,6 +600,14 @@ impl Rooms {
                 join.redemption.clone(),
             )
         };
+        // Admitting someone hands out the role their invitation carries:
+        // the invite action, and never a role above the admitter's own.
+        self.authorize(
+            administrator,
+            Some(&room),
+            RoomOp::Invite(redemption.join().grant().role.into()),
+            now,
+        )?;
         self.admit_redemption(
             &mut room,
             device,

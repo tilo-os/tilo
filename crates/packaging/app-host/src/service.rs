@@ -597,6 +597,17 @@ fn registry_catalogue(registry: &str) -> Result<String, Error> {
     registry_catalogue_from(&configured, registry, app_cli::client::fetch_entries)
 }
 
+/// The catalogue last accepted from `registry`, without the network, under
+/// the same configuration and size rules as a fresh one.
+fn last_verified_catalogue(registry: &str) -> Result<String, Error> {
+    let configured = app_cli::config::load_registries();
+    registry_catalogue_from(
+        &configured,
+        registry,
+        app_cli::client::last_verified_entries,
+    )
+}
+
 fn registry_catalogue_from(
     configured: &app_cli::config::RegistriesFile,
     name: &str,
@@ -1253,6 +1264,31 @@ impl app_host::Server for AppHostServer {
                 .to_string()
                 .map_err(failed)?;
             let json = tokio::task::spawn_blocking(move || registry_catalogue(&registry))
+                .await
+                .map_err(failed)??;
+            results.get().set_entries(&json);
+            Ok(())
+        }
+    }
+
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
+    )]
+    fn last_verified_catalogue(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::LastVerifiedCatalogueParams,
+        mut results: app_host::LastVerifiedCatalogueResults,
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+        async move {
+            let registry = params
+                .get()
+                .map_err(failed)?
+                .get_registry()
+                .map_err(failed)?
+                .to_string()
+                .map_err(failed)?;
+            let json = tokio::task::spawn_blocking(move || last_verified_catalogue(&registry))
                 .await
                 .map_err(failed)??;
             results.get().set_entries(&json);

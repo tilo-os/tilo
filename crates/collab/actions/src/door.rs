@@ -201,6 +201,13 @@ pub enum DoorError {
     UnexpectedArgument(ActionAddress),
     /// Typed arguments failed the action's declared schema.
     InvalidArguments(String),
+    /// A typed argument is a number outside the range its parameter
+    /// declares: [`InvalidArguments`](Self::InvalidArguments) whose bound
+    /// reaches the caller as data ([`DoorError::failure_details`]).
+    ArgumentOutOfRange {
+        param: String,
+        violation: crate::params::ArgViolation,
+    },
     /// The address exists and is intentionally advertised, but its current
     /// precondition is not satisfied.
     Unavailable { code: String, reason: String },
@@ -237,10 +244,41 @@ impl DoorError {
             DoorError::Unknown(_) | DoorError::UnregisteredType(_) => "unknown_action",
             DoorError::MissingArgument(_)
             | DoorError::UnexpectedArgument(_)
-            | DoorError::InvalidArguments(_) => "invalid_arguments",
+            | DoorError::InvalidArguments(_)
+            | DoorError::ArgumentOutOfRange { .. } => "invalid_arguments",
             DoorError::Unavailable { .. } => "action_unavailable",
             DoorError::ConfirmationRequired => "action_confirmation_required",
             DoorError::Failed(_) => "action_failed",
+        }
+    }
+
+    /// What an [`ActionFailure`](crate::ActionFailure) reporting this
+    /// refusal carries beside its message, for a caller to act on without
+    /// reading prose: `{"param": …, "violation": …}` for an argument out of
+    /// its declared range.
+    #[must_use]
+    pub fn failure_details(&self) -> Option<serde_json::Value> {
+        match self {
+            DoorError::ArgumentOutOfRange { param, violation } => {
+                Some(serde_json::json!({ "param": param, "violation": violation }))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// An argument out of its declared range keeps its bound as data; every
+/// other argument refusal is reported in words.
+impl From<crate::params::ArgError> for DoorError {
+    fn from(error: crate::params::ArgError) -> Self {
+        match error {
+            crate::params::ArgError::OutOfRange { name, violation } => {
+                DoorError::ArgumentOutOfRange {
+                    param: name,
+                    violation,
+                }
+            }
+            error => DoorError::InvalidArguments(error.to_string()),
         }
     }
 }
@@ -260,6 +298,9 @@ impl std::fmt::Display for DoorError {
                 write!(f, "action ({}, {}) takes no argument", a.resource, a.action)
             }
             DoorError::InvalidArguments(why) | DoorError::Failed(why) => write!(f, "{why}"),
+            DoorError::ArgumentOutOfRange { param, violation } => {
+                write!(f, "argument `{param}` {violation}")
+            }
             DoorError::Unavailable { code, reason } => write!(f, "{code}: {reason}"),
             DoorError::ConfirmationRequired => {
                 f.write_str("this action requires explicit confirmation")
@@ -398,8 +439,8 @@ pub fn encode(
 ///
 /// Returns [`DoorError::Unknown`] when the address is not published,
 /// [`DoorError::Unavailable`] when policy currently disables it, or
-/// [`DoorError::InvalidArguments`] when the object violates its parameter
-/// contract.
+/// [`DoorError::InvalidArguments`] (or [`DoorError::ArgumentOutOfRange`])
+/// when the object violates its parameter contract.
 pub fn encode_json(
     resources: &[Resource],
     address: &ActionAddress,
@@ -407,9 +448,7 @@ pub fn encode_json(
 ) -> Result<EncodedAction, DoorError> {
     let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
     ensure_available(spec)?;
-    let encoded = spec
-        .build_json(arguments)
-        .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+    let encoded = spec.build_json(arguments).map_err(DoorError::from)?;
     if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
         return Err(DoorError::InvalidArguments(
             String::from_utf8_lossy(&encoded.payload).into_owned(),

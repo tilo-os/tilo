@@ -26,6 +26,8 @@ ROLES = {
     'fs': ('crates/system/fs', 'fs', 'bin', False),
     'credential_helper': ('crates/system/account-custody', 'tilo-account-credential', 'bin', False),
     'prepared_helper': ('apps/imager', 'tilo-prepared-setup', 'bin', False),
+    'home_seeds': ('crates/session/installer', 'tilo-firstboot-home-seeds', 'bin', False),
+    'prepared_extract': ('apps/imager', 'tilo-installer-prepared-setup-extract', 'bin', False),
     'control': ('crates/session/control-cli', 'tilo-control', 'bin', False),
     'launcher': ('crates/packaging/launcher', 'tilo-launcher', 'bin', False),
     'files': ('apps/file-explorer', 'file-explorer', 'bin', False),

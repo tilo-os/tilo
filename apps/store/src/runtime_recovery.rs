@@ -65,8 +65,8 @@ pub fn inspect(
     let root = host
         .list()?
         .into_iter()
-        .find(|package| package.id == target.app)
-        .and_then(|package| package.package_id())
+        .find(|package| package.package.id == target.app)
+        .and_then(|package| package.package.package_id())
         .ok_or_else(|| ui::i18n!("store-runtime-not-installed"))?;
     host.inspect_optional_runtime(&target.app, root, &target.runtime)
 }

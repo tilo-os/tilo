@@ -22,7 +22,25 @@ pub struct SelectedApps {
 
 pub(crate) struct VerifiedCohort {
     pub(crate) version: String,
+    pub(crate) source_inventory: Option<String>,
     pub(crate) packages: Vec<CohortPackage>,
+}
+
+impl VerifiedCohort {
+    /// A no-op requires every authenticated cohort package to be selected,
+    /// not merely present in the system store. A held or missing selection
+    /// takes the ordinary installer path instead.
+    pub(crate) fn selections_identical(&self, selected: &SelectedApps) -> bool {
+        self.packages.iter().all(|package| {
+            let mut rows = selected.apps.iter().filter(|row| row.id == package.row.id);
+            rows.next().is_some_and(|row| {
+                row.package_id_hex == package.row.package_id_hex
+                    && row.version == package.row.version
+                    && row.runtime == package.row.runtime
+                    && row.publisher_key_hex == package.row.publisher_key_hex
+            }) && rows.next().is_none()
+        })
+    }
 }
 
 pub(crate) struct CohortPackage {
@@ -296,6 +314,42 @@ fn closure(runtime: &Path, entries: Vec<PathBuf>, arch: &str) -> Result<(), Daem
     Ok(())
 }
 
+/// Membership is part of the signed toolkit payload, not an editable registry.
+/// Replacing that read-only system registry retires obsolete image packages;
+/// account-owned selections are deliberately not removed or rewritten here.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SystemMembership {
+    pub(crate) schema: u32,
+    pub(crate) source_inventory: String,
+    pub(crate) apps: Vec<String>,
+}
+
+fn membership(bundle: &Path) -> Result<Option<SystemMembership>, DaemonError> {
+    let path = bundle.join("lib/system-app-cohort.json");
+    if !path.try_exists().map_err(invalid)? {
+        return Ok(None);
+    }
+    let membership: SystemMembership =
+        serde_json::from_slice(&bounded(&within(bundle, &path)?, 128 * 1024)?).map_err(invalid)?;
+    if membership.schema != 1
+        || membership.source_inventory.len() != 64
+        || !membership
+            .source_inventory
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || membership.apps.is_empty()
+        || membership.apps.len() > 512
+        || membership
+            .apps
+            .windows(2)
+            .any(|pair| matches!(pair, [a, b] if a >= b))
+    {
+        return Err(invalid("invalid signed system membership"));
+    }
+    Ok(Some(membership))
+}
+
 pub(crate) fn verify(
     layer: &Path,
     base_store: &Path,
@@ -339,12 +393,24 @@ pub(crate) fn verify(
         .iter()
         .map(|row| row.id.as_str())
         .collect::<BTreeSet<_>>();
-    if ids.len() != rows.entries().len()
-        || registry(base_store)?
+    let membership = membership(&bundle)?;
+    let incomplete = match &membership {
+        Some(membership) => {
+            membership
+                .apps
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+                != ids
+        }
+        // Legacy layers cannot authorize retirement. Preserve their stricter
+        // image-superset admission rather than silently ignoring absent apps.
+        None => registry(base_store)?
             .entries()
             .iter()
-            .any(|row| !ids.contains(row.id.as_str()))
-    {
+            .any(|row| !ids.contains(row.id.as_str())),
+    };
+    if ids.len() != rows.entries().len() || incomplete {
         return Err(invalid(
             "the cohort omits a system application or repeats an ID",
         ));
@@ -382,6 +448,7 @@ pub(crate) fn verify(
         .collect::<Result<Vec<_>, DaemonError>>()?;
     Ok(VerifiedCohort {
         version: manifest.version,
+        source_inventory: membership.map(|membership| membership.source_inventory),
         packages,
     })
 }
