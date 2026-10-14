@@ -290,6 +290,15 @@ class SoftwareRaster(unittest.TestCase):
         self.assertEqual(problem, "3 frames painted while idle > 2 "
                                   "(apps by so.tilo.file-explorer 2, revision 1)")
 
+    def test_animated_idle_frames_name_whose_motion_they_are(self):
+        painted = [{"painted": 1, "paint_reasons": "animation", "paint_clients": "",
+                    "paint_animations": "content/DesktopSurface/TileHost"},
+                   {"painted": 1, "paint_reasons": "animation+owed", "paint_clients": "",
+                    "paint_animations": "content/DesktopSurface/TileHost"}]
+        self.assertEqual(resources.painters(painted),
+                         {"animation of content/DesktopSurface/TileHost": 1,
+                          "animation+owed of content/DesktopSurface/TileHost": 1})
+
     def test_frames_from_an_older_trace_are_counted_unattributed(self):
         self.assertEqual(resources.painters([{"painted": 1}, {"painted": 1, "paint_reasons": ""}]),
                          {"no reason": 1, "unattributed": 1})
