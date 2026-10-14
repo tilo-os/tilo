@@ -696,7 +696,8 @@ impl ApplicationHandler<u64> for Runner {
             self.replay_deferred(event_loop);
             return;
         }
-        let result = with_mount(id, |m| {
+        // Owner model work shows in the frame it asks for, which judges it.
+        let result = with_mount_quietly(id, |m| {
             m.service_owner_models();
             if let Some(failure) = m.gpu.as_ref().and_then(Gpu::failure) {
                 m.error = Some(failure);
@@ -1985,13 +1986,22 @@ impl Mount {
         let ime = ime_window.as_ref().map(|i| {
             serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})
         });
-        let unbuilt = moved_only
-            && self.error.is_none()
-            && self.entries == self.tree_entries.get()
-            && self
-                .semantics
-                .borrow_mut()
-                .defer_unbuilt(ime_window.as_ref(), ui::time::now());
+        let unbuilt = if !moved_only || self.error.is_some() {
+            false
+        } else if self.entries != self.tree_entries.get() {
+            // What kept a moved frame's tree from waiting, for attribution.
+            self.metric_end("tree_built:mount_call", self.metric_start());
+            false
+        } else if self
+            .semantics
+            .borrow_mut()
+            .defer_unbuilt(ime_window.as_ref(), ui::time::now())
+        {
+            true
+        } else {
+            self.metric_end("tree_built:gate", self.metric_start());
+            false
+        };
         let (decision, root_rect) = if unbuilt {
             (None, self.tree_root_rect.get())
         } else {
