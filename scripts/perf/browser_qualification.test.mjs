@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
 import {
-  GOALS, Invalid, appModules, classifyAdapter, intervals, judgeGoals, parseArgs, percentile, stats, summarize, unlistedResources,
+  GOALS, Invalid, appModules, chromeFlags, classifyAdapter, intervals, judgeGoals, parseArgs, percentile, stats, summarize, unlistedResources,
   verifyBundle,
 } from './browser_qualification.mjs';
 
@@ -81,6 +81,15 @@ test("an app's code is its split-off module, after the shared modules it needs",
   assert.deepEqual(appModules(split, 'so.tilo.notes'), ['tilo_browser_runtime.notes.wasm']);
   assert.deepEqual(appModules(split, 'so.tilo.clocks'), [], 'an app linked into the start module has no module to wait for');
   assert.deepEqual(appModules(null, 'so.tilo.notes'), []);
+});
+
+test("Chrome's flags follow the renderer and whether the run is root's", () => {
+  assert.deepEqual(chromeFlags('gpu', 501), ['--disable-frame-rate-limit', '--disable-gpu-vsync']);
+  const ci = chromeFlags('swiftshader', 0);
+  assert.ok(ci.includes('--use-vulkan=swiftshader') && ci.includes('--use-angle=swiftshader'));
+  assert.ok(ci.includes('--no-sandbox'), 'Chrome refuses to run as root with its sandbox');
+  assert.ok(!chromeFlags('swiftshader', 1000).includes('--no-sandbox'));
+  assert.ok(!chromeFlags('gpu', undefined).includes('--no-sandbox'));
 });
 
 test('the adapter names its renderer, and an empty info is unknown', () => {
