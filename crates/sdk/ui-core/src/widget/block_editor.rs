@@ -659,6 +659,9 @@ pub struct BlockEditor {
     /// Structural text replacement must flush as one host undo boundary even
     /// when triggered by a character key (which ordinary `TextInput` debounces).
     commit_pending: bool,
+    /// The span last formatted from typed markdown, which an immediate
+    /// Backspace turns back into the markdown.
+    inline_conversion: Option<inline_markdown::InlineConversion>,
     last_mouse_pos: Point,
     /// `(block_idx, byte)` start of an in-flight cross-block selection
     /// drag. While set, `CursorMoved` paints selection bands across every
@@ -891,6 +894,7 @@ impl BlockEditor {
             edit_pending: false,
             edit_scope: EditScope::Anywhere,
             commit_pending: false,
+            inline_conversion: None,
             last_mouse_pos: Point::ZERO,
             cross_block_drag_start: None,
             cross_block_drag_touched: None,
@@ -11308,13 +11312,17 @@ impl BlockEditor {
     }
 
     /// Routes the event into the focused block's own `TextInput`, drains
-    /// any structural signal it emitted, and promotes `# `/`## `/`### `
-    /// paragraphs to headings on the keystroke that completes the prefix.
+    /// any structural signal it emitted, promotes `# `/`## `/`### `
+    /// paragraphs to headings on the keystroke that completes the prefix,
+    /// and formats inline markdown on the keystroke that closes it.
     #[expect(
         clippy::indexing_slicing,
         reason = "the focused index is validated before it is used"
     )]
     fn route_event_to_focused_block(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        if self.revert_inline_conversion(event, ctx) {
+            return;
+        }
         if matches!(
             event,
             WindowEvent::KeyboardInput {
@@ -11353,6 +11361,7 @@ impl BlockEditor {
         let Some(focused_idx) = self.focused else {
             return;
         };
+        let typed_markdown = self.typed_markdown_origin(event);
         // Snapshot the text to distinguish an actual content change
         // (typing) from a mere caret move (a click). Markdown shortcuts
         // fire only on content changes; bullets also accept task markers.
@@ -11417,6 +11426,9 @@ impl BlockEditor {
                 }
             }
         }
+        if let Some(origin) = typed_markdown {
+            self.format_typed_markdown(&origin);
+        }
     }
 }
 
@@ -11476,6 +11488,8 @@ fn code_header_height(blocks: &[Block], index: usize, scale: f64) -> f64 {
 
 #[path = "block_editor_handle_reveal.rs"]
 mod handle_reveal;
+#[path = "block_editor_inline_markdown.rs"]
+mod inline_markdown;
 #[path = "block_editor_present.rs"]
 mod present;
 pub use present::{BlockContent, EditScope, PresenceKeyFn};
