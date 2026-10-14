@@ -3026,6 +3026,47 @@ impl Widget for WindowGroup {
             .into_iter()
             .any(Widget::has_pending_visual_work)
     }
+    fn animation_detail(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if self
+            .spawned_at
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS))
+        {
+            parts.push("spawn".to_string());
+        }
+        if self.closing_at.is_some() {
+            parts.push("closing".to_string());
+        }
+        if !self.closing_hosts.is_empty() {
+            parts.push(format!("closing-hosts={}", self.closing_hosts.len()));
+        }
+        if self.rect_spring.is_some() {
+            parts.push("rect-spring".to_string());
+        }
+        if let Some(spring) = &self.width_spring {
+            parts.push(format!(
+                "width={:.1}->{:.1} settled={} stepped={} dirty={}",
+                spring.value(),
+                spring.target(),
+                spring.is_settled(),
+                self.width_stepped,
+                self.style_dirty
+            ));
+        }
+        if self.navigation_bar_visible() && self.bar.needs_animation_frame() {
+            parts.push("bar".to_string());
+        }
+        let active_id = self.bar.active_id();
+        if self
+            .hosts
+            .iter()
+            .any(|(i, h)| *i == active_id && h.needs_animation_frame())
+        {
+            parts.push("host".to_string());
+        }
+        Some(parts.join(" "))
+    }
+
     fn needs_animation_frame(&self) -> bool {
         if self.close_complete() {
             return false;

@@ -98,9 +98,8 @@ pub(crate) fn animating_leaves(root: &dyn ui::widget::Widget) -> Vec<String> {
         if out.len() == before {
             let rect = widget.get_rect();
             let detail = widget
-                .as_any()
-                .and_then(|any| any.downcast_ref::<crate::shell::foreign::ForeignSurfaceWidget>())
-                .map(|foreign| format!(" {}", foreign.animation_detail()))
+                .animation_detail()
+                .map(|detail| format!(" {detail}"))
                 .unwrap_or_default();
             out.push(format!(
                 "{here}@{:.0},{:.0} {:.0}x{:.0}{detail}",
