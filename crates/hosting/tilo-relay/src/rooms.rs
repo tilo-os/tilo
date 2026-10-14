@@ -10,10 +10,12 @@
 //! decision, so a member it admits can subscribe at once and a member it
 //! removes is cut off.
 //!
-//! Devices of the relay's own user administer its rooms over
-//! [`ROOM_ADMIN_ALPN`] or, from a page, over HTTPS; any device redeems an
-//! invitation over the shared workspace-join protocol, and a page over
-//! HTTPS, where the owner then admits it.
+//! Rooms are administered over [`ROOM_ADMIN_ALPN`] or, from a page, over
+//! HTTPS: by devices of the relay's own user, and by other members as far as
+//! the room's governance lets them (`authority`, one decision for every
+//! door). Any device redeems an invitation over the shared workspace-join
+//! protocol, and a page over HTTPS, where someone the room lets invite then
+//! admits it.
 
 mod admin;
 mod admissions;
@@ -21,6 +23,7 @@ mod admissions;
 mod agent_members;
 #[cfg(feature = "agents")]
 mod applications;
+mod authority;
 mod collaboration;
 mod content;
 pub use content::RoomContent;
