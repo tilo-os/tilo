@@ -87,6 +87,7 @@ pub mod accessibility;
 pub mod app_scope;
 pub mod appearance;
 pub mod continuity;
+pub mod continuity_privacy;
 pub mod day_schedule;
 pub mod device_displays;
 pub mod dictation;
