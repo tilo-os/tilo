@@ -295,6 +295,15 @@ pub(super) struct BrokerTransport {
     /// order. They wait here for the shovel to catch up instead of
     /// disabling collaboration; see [`Self::enqueue`].
     spill: std::collections::VecDeque<SdkCommand>,
+    /// A queue slot held back for the next publication barrier. The owner
+    /// usually waits on a receipt on its own thread, so a barrier parked in
+    /// [`Self::spill`], which only the owner moves, could never be answered.
+    /// Nothing else is admitted while the slot is spent, so a barrier that
+    /// finds it spent has no document mutation ahead of it that
+    /// [`Self::queued_barrier`] does not already cover.
+    barrier_slot: Option<tokio_mpsc::OwnedPermit<QueuedSdkCommand>>,
+    /// The barrier that last spent [`Self::barrier_slot`], while queued.
+    queued_barrier: std::sync::Weak<BarrierReplies>,
     _thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -319,8 +328,9 @@ impl BrokerTransport {
     /// Presence is shed and document changes report `Busy`, as before.
     fn enqueue(&mut self, command: SdkCommand) -> Result<(), TransportError> {
         self.flush_spill();
-        if !self.spill.is_empty() {
-            // Everything behind a parked command stays behind it.
+        if !self.spill.is_empty() || !self.reserve_barrier_slot() {
+            // Everything behind a parked command stays behind it, and
+            // nothing goes ahead of the next barrier's slot.
             if command.is_transient_presence() {
                 return Err(TransportError::Shed);
             }
@@ -388,7 +398,10 @@ impl BrokerTransport {
 
     /// Move parked commands into the queue while it has room.
     fn flush_spill(&mut self) {
-        while let Some(command) = self.spill.pop_front() {
+        while !self.spill.is_empty() && self.reserve_barrier_slot() {
+            let Some(command) = self.spill.pop_front() else {
+                return;
+            };
             match admit_sdk_command(&self.outbound_tx, command, &self.state) {
                 Ok(()) => {}
                 Err(Refused {
@@ -406,6 +419,71 @@ impl BrokerTransport {
                 }
             }
         }
+    }
+
+    /// Hold [`Self::barrier_slot`] before admitting anything else. False
+    /// while the queue is full; the owner is woken when it drains.
+    fn reserve_barrier_slot(&mut self) -> bool {
+        if self.barrier_slot.is_some() {
+            return true;
+        }
+        let mut retried = false;
+        loop {
+            match self.outbound_tx.clone().try_reserve_owned() {
+                Ok(permit) => {
+                    self.barrier_slot = Some(permit);
+                    return true;
+                }
+                Err(tokio_mpsc::error::TrySendError::Full(_)) if !retried => {
+                    // Arm before the retry so a release racing it is never missed.
+                    self.state.command_bytes.arm_room_wake();
+                    retried = true;
+                }
+                Err(tokio_mpsc::error::TrySendError::Full(_)) => return false,
+                Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
+                    // Admission reports the closed queue.
+                    self.state.fail_closed("outbound command queue");
+                    return true;
+                }
+            }
+        }
+    }
+
+    /// Queue a publication barrier in the held slot, never in the spill:
+    /// it orders only document mutations, and those are never parked.
+    fn queue_barrier(&mut self, reply: BarrierReply) -> Result<(), TransportError> {
+        if !self.state.is_healthy() {
+            return Err(TransportError::Closed);
+        }
+        if self.reserve_barrier_slot() {
+            let Some(slot) = self.barrier_slot.take() else {
+                return Err(TransportError::Closed);
+            };
+            let replies = Arc::new(BarrierReplies::new(reply));
+            self.queued_barrier = Arc::downgrade(&replies);
+            slot.send(QueuedSdkCommand {
+                command: SdkCommand::PublicationBarrier(replies),
+                _reservation: self.state.command_bytes.empty_reservation(),
+            });
+            self.reserve_barrier_slot();
+            return Ok(());
+        }
+        // The slot is spent and nothing was admitted since: this barrier
+        // covers exactly what the queued one does.
+        let reply = match self.queued_barrier.upgrade() {
+            Some(queued) => match queued.join(reply) {
+                Ok(()) => return Ok(()),
+                Err(reply) => reply,
+            },
+            None => reply,
+        };
+        if !self.state.is_healthy() {
+            return Err(TransportError::Closed);
+        }
+        // The barrier that spent the slot was answered (or none ever did):
+        // every document mutation before this one has been handled.
+        let _ = reply.send(self.state.publication_result());
+        Ok(())
     }
 
     /// Route [`wifi_continuity_command`] through this transport.
@@ -583,7 +661,7 @@ impl CollabTransport for BrokerTransport {
         &mut self,
     ) -> Result<DocumentPublicationReceipt, DocumentPublicationError> {
         let (reply, receiver) = mpsc::sync_channel(1);
-        if let Err(error) = self.enqueue(SdkCommand::PublicationBarrier(reply)) {
+        if let Err(error) = self.queue_barrier(reply) {
             return Err(self
                 .state
                 .publication_result()
@@ -683,6 +761,45 @@ impl CollabTransport for BrokerTransport {
     }
 }
 
+type BarrierReply = mpsc::SyncSender<Result<(), DocumentPublicationError>>;
+
+/// Replies owed by one queued publication barrier. Barriers submitted while
+/// it waits and nothing else could be admitted join it. Dropping the command
+/// unanswered drops the replies, which their receipts report as a failure.
+struct BarrierReplies(std::sync::Mutex<Option<Vec<BarrierReply>>>);
+
+impl BarrierReplies {
+    fn new(reply: BarrierReply) -> Self {
+        Self(std::sync::Mutex::new(Some(vec![reply])))
+    }
+
+    /// Wait on this barrier's answer, unless it was already given.
+    fn join(&self, reply: BarrierReply) -> Result<(), BarrierReply> {
+        match &mut *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            Some(replies) => {
+                replies.push(reply);
+                Ok(())
+            }
+            None => Err(reply),
+        }
+    }
+
+    fn answer(&self, result: &Result<(), DocumentPublicationError>) {
+        let replies = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        for reply in replies.into_iter().flatten() {
+            let _ = reply.send(result.clone());
+        }
+    }
+}
+
 enum SdkCommand {
     Initialize {
         route: RouteSpec,
@@ -698,7 +815,7 @@ enum SdkCommand {
     PrimaryReady(mpsc::SyncSender<Result<RouteSpec, String>>),
     /// Answered once every document mutation queued before it has been
     /// handed to the broker, with the first one that was not.
-    PublicationBarrier(mpsc::SyncSender<Result<(), DocumentPublicationError>>),
+    PublicationBarrier(Arc<BarrierReplies>),
     InstallEncryption {
         spec: RouteSpec,
         group: Box<channel_crypto::ChannelGroup>,
@@ -1702,6 +1819,14 @@ impl ByteBudget {
 
     fn reserve(&self, bytes: usize, limit: usize) -> Option<ByteReservation> {
         self.reserve_with(bytes, limit, false)
+    }
+
+    /// A reservation of nothing, for a command that rides a held queue slot.
+    fn empty_reservation(&self) -> ByteReservation {
+        ByteReservation {
+            budget: self.clone(),
+            bytes: 0,
+        }
     }
 
     /// Like [`Self::reserve`], but an otherwise empty budget admits one item
@@ -3431,7 +3556,10 @@ impl CollaborationManager {
         source: SdkConnectSource,
         identity: SdkIdentitySource,
     ) -> Result<(BrokerTransport, mpsc::Receiver<InitStatus>), runtime_portal::NotAvailable> {
-        let (outbound_tx, outbound_rx) = tokio_mpsc::channel::<QueuedSdkCommand>(SDK_COMMAND_QUEUE);
+        // One slot more than the command budget: it is held back for the
+        // next publication barrier (see `BrokerTransport::barrier_slot`).
+        let (outbound_tx, outbound_rx) =
+            tokio_mpsc::channel::<QueuedSdkCommand>(SDK_COMMAND_QUEUE + 1);
         let (inbound_tx, inbound_rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
         let state = BridgeState::new();
         let inbound = InboundBridge::new(inbound_tx, state.clone());
@@ -3463,6 +3591,8 @@ impl CollaborationManager {
             worker_stopped: false,
             wifi_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
+            barrier_slot: None,
+            queued_barrier: std::sync::Weak::new(),
             _thread: Some(handle),
         };
         Ok((transport, init_rx))
@@ -4126,12 +4256,12 @@ async fn drive_shovel(
                 // A manager still connecting settles on this answer.
                 inbound_tx.state.notify_events();
             }
-            SdkCommand::PublicationBarrier(reply) => {
+            SdkCommand::PublicationBarrier(replies) => {
                 // A superseded receipt may have no receiver. Its prefix still ran.
                 // A latched, specific publication failure (a refused signature
                 // or commit) outranks the generic "did not reach" marker.
                 let unpublished = unpublished.take();
-                let _ = reply.send(inbound_tx.state.publication_result().and_then(|()| {
+                replies.answer(&inbound_tx.state.publication_result().and_then(|()| {
                     unpublished.map_or(Ok(()), |reason| {
                         Err(DocumentPublicationError::Failed(reason))
                     })
@@ -8995,7 +9125,8 @@ mod tests {
     fn parking_transport(
         capacity: usize,
     ) -> (BrokerTransport, tokio_mpsc::Receiver<QueuedSdkCommand>) {
-        let (outbound_tx, outbound_rx) = tokio_mpsc::channel(capacity);
+        // Plus the slot held for the next barrier, as `start_sdk` sizes it.
+        let (outbound_tx, outbound_rx) = tokio_mpsc::channel(capacity + 1);
         let (_, inbound_rx) = tokio_mpsc::channel(1);
         let (action_directory_tx, action_directory_rx) = mpsc::sync_channel(1);
         let transport = BrokerTransport {
@@ -9011,9 +9142,59 @@ mod tests {
             worker_stopped: false,
             wifi_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
+            barrier_slot: None,
+            queued_barrier: std::sync::Weak::new(),
             _thread: None,
         };
         (transport, outbound_rx)
+    }
+
+    /// A barrier submitted while the queue is full goes into the slot held
+    /// for it, behind every earlier edit. Parked in the spill, it would move
+    /// only when the owner next called the transport, and an owner blocked
+    /// on the receipt never does. A second barrier with no edit between
+    /// shares the first one's answer.
+    #[test]
+    fn a_barrier_behind_a_full_queue_is_queued_not_parked() {
+        let (mut transport, mut shovel) = parking_transport(4);
+        let mut edits = 0;
+        let refused = loop {
+            match transport.submit(TransportCommand::Primary(
+                CollabRequest::document_incremental(vec![edits]),
+            )) {
+                Ok(()) => edits += 1,
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(refused, TransportError::Busy);
+        assert!(edits > 0);
+
+        let first = transport.publication_barrier().unwrap();
+        let second = transport.publication_barrier().unwrap();
+        assert!(transport.spill.is_empty(), "a barrier is never parked");
+        for n in 0..edits {
+            assert!(
+                matches!(
+                    shovel.try_recv().map(|queued| queued.command),
+                    Ok(SdkCommand::Primary(CollabRequest::Document { .. }))
+                ),
+                "edit {n} precedes the barrier"
+            );
+        }
+        let Ok(QueuedSdkCommand {
+            command: SdkCommand::PublicationBarrier(replies),
+            ..
+        }) = shovel.try_recv()
+        else {
+            panic!("the barrier was queued behind the edits");
+        };
+        assert!(
+            shovel.try_recv().is_err(),
+            "both barriers share one command"
+        );
+        replies.answer(&Ok(()));
+        assert_eq!(first.wait(None), Ok(()));
+        assert_eq!(second.wait(None), Ok(()));
     }
 
     /// A burst of durable commands, more than the queue holds by count and
@@ -9814,7 +9995,9 @@ mod tests {
             Ok(None),
             "accepted publication must hold the barrier while hydration is pending"
         );
-        assert!(state.command_bytes.0.load(Ordering::Acquire) >= b"retained original".len());
+        assert!(
+            state.document_command_bytes.0.load(Ordering::Acquire) >= b"retained original".len()
+        );
         ready.store(true, Ordering::Release);
         assert_eq!(receipt.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
         let captured = captures.lock().unwrap().signed_ops.clone();
@@ -9954,6 +10137,8 @@ mod tests {
             worker_stopped: false,
             wifi_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
+            barrier_slot: None,
+            queued_barrier: std::sync::Weak::new(),
             _thread: None,
         }));
         let earlier = manager.begin_document_publication_barrier().unwrap();
