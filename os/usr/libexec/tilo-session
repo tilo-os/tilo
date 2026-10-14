@@ -223,6 +223,10 @@ flight_dir="${XDG_STATE_HOME:-${HOME:?}/.local/state}/tilo/session-logs"
 # record only reaches the journal.
 { "$MKDIR" -p -- "$flight_dir" && "$CHMOD" 0700 "$flight_dir"; } 2>/dev/null || true
 flight_log="$flight_dir/latest.log"
+# The recorder keeps the compositor's log events (tracing records) here too,
+# under their own bound, so hours of periodic measurement lines in
+# latest.log cannot displace a launch's timing or an error.
+flight_events="$flight_dir/events.log"
 TILO_FRAME_TRACE="$flight_dir/frame-trace.csv"
 export TILO_FRAME_TRACE
 export TILO_PAINT_STATS=1
@@ -265,6 +269,13 @@ start_flight_record() {
       "$CHMOD" 0600 "$flight_dir/previous.log.tmp" &&
       "$MV" -f -- "$flight_dir/previous.log.tmp" "$flight_dir/previous.log"; } 2>/dev/null ||
       "$RM" -f -- "$flight_dir/previous.log.tmp" 2>/dev/null || true
+  fi
+  # The log events the recorder keeps apart from the measurement stream.
+  if [ -f "$flight_events" ]; then
+    { "$TAIL" -c 4194304 -- "$flight_events" >"$flight_dir/previous-events.log.tmp" &&
+      "$CHMOD" 0600 "$flight_dir/previous-events.log.tmp" &&
+      "$MV" -f -- "$flight_dir/previous-events.log.tmp" "$flight_dir/previous-events.log"; } 2>/dev/null ||
+      "$RM" -f -- "$flight_dir/previous-events.log.tmp" 2>/dev/null || true
   fi
   if [ -f "$TILO_FRAME_TRACE" ]; then
     { "$CP" -- "$TILO_FRAME_TRACE" "$flight_dir/previous-frame-trace.csv.tmp" &&
@@ -318,10 +329,15 @@ end_flight_record() {
   kill -KILL "$flight_relay_pid" 2>/dev/null || true
   wait "$flight_relay_pid" 2>/dev/null
   flight_relay_pid=""
-  printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s restart_request=%s\n' \
+  local end_record
+  end_record=$(printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s restart_request=%s' \
     "$("$DATE" --iso-8601=seconds)" "$status" \
     "$([ -e "$logout_request_path" ] && printf yes || printf no)" \
-    "$([ "$restart_requested" = 1 ] && printf yes || printf no)" >>"$flight_log" 2>/dev/null || true
+    "$([ "$restart_requested" = 1 ] && printf yes || printf no)")
+  printf '%s
+' "$end_record" >>"$flight_log" 2>/dev/null || true
+  printf '%s
+' "$end_record" >>"$flight_events" 2>/dev/null || true
 }
 
 while :; do
