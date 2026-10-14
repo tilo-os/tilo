@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, GrantId, KindSet, RoomPolicy, Subject, TreePath,
+    ActionKind, Answer, Authority, Grant, GrantId, RoomPolicy, Subject, TreePath,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
