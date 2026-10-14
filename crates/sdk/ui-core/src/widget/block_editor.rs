@@ -9275,6 +9275,12 @@ impl Widget for BlockEditor {
             .retained_block_selection
             .as_ref()
             .and_then(|_| self.selected_block_range());
+        // Every block's controls carry the same labels: look each up once,
+        // not once per block per frame.
+        let change_type_label = crate::i18n!("block-editor-change-type");
+        let text_label = crate::i18n::I18nManager::lookup("widget-block-text", None);
+        let indent_label = crate::i18n::I18nManager::lookup("widget-block-indent", None);
+        let outdent_label = crate::i18n::I18nManager::lookup("widget-block-outdent", None);
         children.extend(self.blocks.iter().enumerate().map(|(index, block)| {
             let up_disabled = self.neighboring_group(index, true).is_none();
             let position = index.saturating_add(1);
@@ -9302,7 +9308,7 @@ impl Widget for BlockEditor {
                             .disabled(down_disabled),
                     ),
                 AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-change-type"))
+                    .with_name(change_type_label.clone())
                     .with_action_target(format!("notes.block-type:{}", block.id))
                     .with_bounds(bounds)
                     .with_state(AccessState::new().focusable(true)),
@@ -9313,7 +9319,7 @@ impl Widget for BlockEditor {
             {
                 block_children.insert(
                     0,
-                    text.with_name(crate::i18n::I18nManager::format("widget-block-text", &[]))
+                    text.with_name(text_label.clone())
                         .with_action_target(format!("notes.block-text:{}", block.id))
                         .with_bounds(block.line.get_rect()),
                 );
@@ -9321,16 +9327,16 @@ impl Widget for BlockEditor {
             for (direction, label, disabled) in [
                 (
                     "in",
-                    "widget-block-indent",
+                    &indent_label,
                     self.blocks[self.movable_group(index)]
                         .iter()
                         .any(|b| b.indent() >= MAX_LIST_INDENT),
                 ),
-                ("out", "widget-block-outdent", block.indent() == 0),
+                ("out", &outdent_label, block.indent() == 0),
             ] {
                 block_children.push(
                     AccessNode::new(Role::Button)
-                        .with_name(crate::i18n::I18nManager::format(label, &[]))
+                        .with_name(label.clone())
                         .with_action_target(format!("notes.block-indent:{}:{direction}", block.id))
                         .with_bounds(bounds)
                         .with_state(AccessState::new().focusable(!disabled).disabled(disabled)),
