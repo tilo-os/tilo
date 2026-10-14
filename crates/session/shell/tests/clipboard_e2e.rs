@@ -100,6 +100,13 @@ fn deadline() -> Duration {
     tilo_test_env::hang_bound()
 }
 
+/// When an operation that started now has waited [`deadline`] long.
+fn deadline_end() -> Instant {
+    Instant::now()
+        .checked_add(deadline())
+        .expect("a representable deadline")
+}
+
 /// Spacing of the grid [`TestClient::pointer_target`] probes for a client.
 const POINTER_GRID_STEP: i32 = 40;
 
@@ -2123,7 +2130,7 @@ fn x11_connect(compositor: &Compositor) -> x11rb::rust_connection::RustConnectio
     let (display, authority) = private_xwayland_connection(compositor).expect("private display");
     let number = display.trim_start_matches(':').to_string();
     let cookie_file = std::fs::read(&authority).expect("read Xauthority");
-    let cookie = cookie_file[cookie_file.len() - 16..].to_vec();
+    let cookie = cookie_file[cookie_file.len().saturating_sub(16)..].to_vec();
     let stream = UnixStream::connect(format!("/tmp/.X11-unix/X{number}")).expect("X socket");
     let (stream, _) = x11rb::rust_connection::DefaultStream::from_unix_stream(stream).unwrap();
     x11rb::rust_connection::RustConnection::connect_to_stream_with_auth_info(
@@ -2167,7 +2174,9 @@ fn x11_paste(compositor: &Compositor) -> String {
     conn.convert_selection(window, clipboard, utf8, prop, x11rb::CURRENT_TIME)
         .unwrap();
     conn.flush().unwrap();
-    let end = Instant::now() + deadline();
+    let end = Instant::now()
+        .checked_add(deadline())
+        .expect("a representable deadline");
     loop {
         assert!(
             Instant::now() < end,
@@ -2309,7 +2318,7 @@ fn x11_focused_window(
     // settled, not mid-resize. The X server reports the window as the input
     // focus once satellite holds Wayland focus.
     let probe = x11_connect(compositor);
-    let end = Instant::now() + deadline();
+    let end = deadline_end();
     let mut last_paint = Instant::now();
     let mut focused_since: Option<Instant> = None;
     loop {
@@ -3405,7 +3414,7 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for ClientState {
                 state.control_pending_offer = Some(id);
             }
             zwlr_data_control_device_v1::Event::Selection { id } => {
-                state.control_selection_events += 1;
+                state.control_selection_events = state.control_selection_events.saturating_add(1);
                 state.control_pending_offer = None;
                 state.control_clipboard = id.map(|offer| {
                     let mimes = offer.data::<ControlMimes>().cloned().unwrap_or_default();
@@ -6248,6 +6257,17 @@ fn x11_and_wayland_clients_trade_copies_in_both_directions() {
     assert_eq!(x11_paste(&compositor), "wayland one", "wayland -> x11");
     // It copies in turn; a Wayland client that maps later (the terminal) pastes.
     let owner = serve_x11_clipboard(conn, window, "x11 two".to_string());
+    // The copy lands while the X11 window is focused; wait for the compositor
+    // to hold it before another window opens and takes focus.
+    let end = Instant::now() + deadline();
+    while compositor.chrome_paste(false).as_deref() != Some("x11 two") {
+        assert!(
+            Instant::now() < end,
+            "the compositor never received the X11 copy\n{}",
+            compositor.recent_log()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let mut terminal = TestClient::new(compositor.connect(), "org.tilo.test.trade-terminal");
     terminal.map_window(&compositor);
     assert_eq!(terminal.read_clipboard(None), "x11 two", "x11 -> wayland");
@@ -6274,7 +6294,7 @@ impl Compositor {
 
     /// Wait for a log line containing every fragment of `needles`.
     fn wait_for_log(&self, needles: &[&str], what: &str) {
-        let end = Instant::now() + deadline();
+        let end = deadline_end();
         loop {
             let log = self.full_log();
             if log
@@ -6562,10 +6582,21 @@ fn large_offers_cross_and_oversized_ones_are_dropped_with_a_logged_reason() {
     app2.map_window(&compositor);
     let serial = press_ctrl_c(&compositor, &mut app2);
     app2.copy_with_serial(&huge, serial);
-    compositor.wait_for_log(
-        &["selection source exceeded the mirror size limit"],
-        "an oversized selection was dropped silently",
-    );
+    // The source has to keep being dispatched: the compositor's pull is a
+    // `send` request it must answer.
+    let end = Instant::now() + deadline();
+    while !compositor
+        .full_log()
+        .contains("selection source exceeded the mirror size limit")
+    {
+        assert!(
+            Instant::now() < end,
+            "an oversized selection was dropped silently\n{}",
+            compositor.recent_log()
+        );
+        app2.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Electron destroys its data source once it is done with it. By then Tilo has
