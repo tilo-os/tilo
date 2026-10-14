@@ -120,7 +120,9 @@ pub(crate) const ACCOUNT_CHILD_FD: i32 = 42;
 /// Bwrap private-service namespace information, closed before app execution.
 pub(crate) const SERVICE_NAMESPACE_CHILD_FD: i32 = 43;
 /// Every fixed child slot; declared services are numbered around them.
-pub(crate) const RESERVED_CHILD_FDS: [i32; 24] = [
+/// Retained-home workers and views exist only in the Linux sandbox. Keep
+/// portable service discovery independent of those modules.
+pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     runtime_identity::broker::BROKER_CHILD_FD,
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
@@ -129,23 +131,52 @@ pub(crate) const RESERVED_CHILD_FDS: [i32; 24] = [
     BASELINE_SECCOMP_CHILD_FD,
     ACCOUNT_CHILD_FD,
     SERVICE_NAMESPACE_CHILD_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::capture::SOURCE_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::capture::SHIM_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::capture::OUTPUT_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::capture::executable::BWRAP_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::capture::executable::LOADER_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::capture::original::BOOTSTRAP_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::capture::original::CLAIM_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::target_projection::TOKEN_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::target_projection::FUSE_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::target_projection::READY_FD,
+    #[cfg(target_os = "linux")]
     crate::retained_view::VIEW_FD,
+    #[cfg(target_os = "linux")]
     crate::retained_view::ALIAS_VIEW_FD,
+    #[cfg(target_os = "linux")]
     crate::retained_view::ALIAS_ARGS_FD,
+    #[cfg(target_os = "linux")]
     crate::retained_view::SELECTED_PARENT_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::RETAINED_SELECTED_REPLACEMENT_PERMIT_FD,
+    #[cfg(target_os = "linux")]
     crate::owned_service::RETAINED_NATIVE_HISTORY_VERIFIER_FD,
 ];
+
+fn child_fd_reserved(fd: i32) -> bool {
+    if RESERVED_CHILD_FDS.contains(&fd) {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if crate::owned_service::capture::archive_reserved_fd(fd) {
+            return true;
+        }
+    }
+    false
+}
 const STORE_APP_ID: &str = "so.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 /// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON
@@ -853,9 +884,7 @@ fn resolve_service_binds_inner(
         // proxy and the egress gate.
         let host = OwnedFd::from(stream);
 
-        while RESERVED_CHILD_FDS.contains(&next_child_fd)
-            || crate::owned_service::capture::archive_reserved_fd(next_child_fd)
-        {
+        while child_fd_reserved(next_child_fd) {
             next_child_fd = next_child_fd.saturating_add(1);
         }
         let child_fd = next_child_fd;
@@ -1431,24 +1460,33 @@ mod tests {
         }
         let resolved = resolve_service_binds(&services, false).unwrap();
         assert_eq!(resolved.len(), listeners.len());
-        assert!(
-            resolved
-                .iter()
-                .any(|service| { service.child_fd > crate::retained_view::SELECTED_PARENT_FD })
-        );
-        assert!(
-            resolved
-                .iter()
-                .all(|service| { service.child_fd != crate::retained_view::SELECTED_PARENT_FD })
-        );
-        for reserved in [
-            crate::retained_view::ALIAS_VIEW_FD,
-            crate::retained_view::ALIAS_ARGS_FD,
-            crate::owned_service::RETAINED_SELECTED_REPLACEMENT_PERMIT_FD,
-            crate::owned_service::RETAINED_NATIVE_HISTORY_VERIFIER_FD,
-        ] {
+        for &reserved in RESERVED_CHILD_FDS {
             assert!(resolved.iter().any(|service| service.child_fd > reserved));
             assert!(resolved.iter().all(|service| service.child_fd != reserved));
+        }
+        // Assert the Linux view slots directly as well, so accidentally omitting
+        // one from the reservation table cannot make the test pass.
+        #[cfg(target_os = "linux")]
+        {
+            assert!(
+                resolved
+                    .iter()
+                    .any(|service| { service.child_fd > crate::retained_view::SELECTED_PARENT_FD })
+            );
+            assert!(
+                resolved.iter().all(|service| {
+                    service.child_fd != crate::retained_view::SELECTED_PARENT_FD
+                })
+            );
+            for reserved in [
+                crate::retained_view::ALIAS_VIEW_FD,
+                crate::retained_view::ALIAS_ARGS_FD,
+                crate::owned_service::RETAINED_SELECTED_REPLACEMENT_PERMIT_FD,
+                crate::owned_service::RETAINED_NATIVE_HISTORY_VERIFIER_FD,
+            ] {
+                assert!(resolved.iter().any(|service| service.child_fd > reserved));
+                assert!(resolved.iter().all(|service| service.child_fd != reserved));
+            }
         }
     }
 
