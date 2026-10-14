@@ -1,4 +1,0 @@
-bytes = 983040
-measured = 92243834
-run = 72551
-reason = "Caller custody throughout SDK effect lifecycles (#2944): retained dispatcher clones, delayed workers, per-poll futures, completion and retirement preserve the original caller's current authority. App SDK run 72551 attempt 2 measured the total merged release desktop module at 92243834 bytes, 34682 above the existing budget; that total includes main's intervening changes and is not an exclusive measurement of this feature's cost. This receipt adds the ratchet's standard 1% headroom rounded to 64 KiB, with no custody checks removed."

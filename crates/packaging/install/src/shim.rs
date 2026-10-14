@@ -12,25 +12,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
-
-/// Suffix appended to the shim binary's path to find its sidecar.
-/// Must match `cli-shim`'s `SIDECAR_SUFFIX`.
-pub const SIDECAR_SUFFIX: &str = ".tilo-shim";
-
-/// Wire form of the sidecar TOML. Same shape as `cli-shim`'s
-/// `Sidecar`. Duplicated intentionally so we don't have to depend
-/// on the shim crate at link time (it's a binary, and its runtime
-/// deps needn't ride along in the install crate).
-#[derive(Debug, Serialize)]
-struct Sidecar<'a> {
-    package_id: &'a str,
-    command: &'a str,
-    /// Only set in dev mode — points at the developer's
-    /// `target/debug/tilo-launcher`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    launcher: Option<&'a Path>,
-}
+use cli_shim::{Sidecar, sidecar_path_for};
 
 /// Options `write_shims` needs beyond the manifest data itself.
 #[derive(Debug, Clone)]
@@ -72,7 +54,7 @@ pub fn write_shims(spec: &ShimInstall<'_>) -> Result<Vec<PathBuf>, ShimError> {
     for cmd in spec.commands {
         validate_command_name(cmd)?;
         let shim_target = spec.bin_dir.join(cmd);
-        let sidecar_target = spec.bin_dir.join(format!("{cmd}{SIDECAR_SUFFIX}"));
+        let sidecar_target = sidecar_path_for(&shim_target);
 
         // Overwrite semantics: the installer already treats the
         // reverse-DNS id as the install slot, so an upgrade
@@ -91,9 +73,9 @@ pub fn write_shims(spec: &ShimInstall<'_>) -> Result<Vec<PathBuf>, ShimError> {
         set_executable(&shim_target)?;
 
         let sidecar = Sidecar {
-            package_id: spec.package_id,
-            command: cmd,
-            launcher: spec.launcher_override,
+            package_id: spec.package_id.to_owned(),
+            command: cmd.clone(),
+            launcher: spec.launcher_override.map(Path::to_path_buf),
         };
         let sidecar_text =
             toml::to_string(&sidecar).map_err(|e| ShimError::EncodeSidecar(e.to_string()))?;
@@ -120,8 +102,9 @@ pub fn remove_shims(bin_dir: &Path, commands: &[String]) -> Result<(), ShimError
     for cmd in commands {
         // We deliberately don't validate the name here — if a
         // stale entry has garbage in it we still want to try.
-        let _ = fs::remove_file(bin_dir.join(cmd));
-        let _ = fs::remove_file(bin_dir.join(format!("{cmd}{SIDECAR_SUFFIX}")));
+        let shim = bin_dir.join(cmd);
+        let _ = fs::remove_file(sidecar_path_for(&shim));
+        let _ = fs::remove_file(shim);
     }
     Ok(())
 }

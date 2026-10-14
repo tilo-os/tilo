@@ -20,7 +20,7 @@ pub struct Peer {
     pub incoming: moq_net::origin::Producer,
     outgoing: moq_net::origin::Producer,
     namespace: Option<String>,
-    /// Held so this participant's namespace broadcast lives as long as it.
+    /// Kept so the namespace broadcast stays announced while the peer lives.
     _broadcast: Option<moq_net::broadcast::Producer>,
     presence: Option<moq_net::track::Producer>,
     records: HashMap<String, (moq_net::broadcast::Producer, moq_net::track::Producer)>,

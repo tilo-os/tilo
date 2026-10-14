@@ -476,3 +476,133 @@ fn a_foreign_device_is_not_bounded_in_the_room_it_governs() {
         Role::Owner
     );
 }
+/// Read is a kind like any other: a Deny on Read below the room answers Deny
+/// for exactly the nodes under it, the most specific grant winning, while the
+/// room and every other record stay readable. Both read paths agree.
+#[test]
+fn a_read_deny_below_the_room_refuses_only_what_it_names() {
+    let (mut peer, source, now) = fixture();
+    let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
+    put_member(&mut peer, &person, Role::Viewer);
+    let room_id = peer.room().to_owned();
+    let read_grant = |id: &str, node: TreePath, answer: Answer| {
+        Grant::new(
+            id,
+            Subject::person(person.as_str()),
+            node,
+            KindSet::READ,
+            answer,
+            Subject::person("a different person"),
+        )
+    };
+    for grant in [
+        read_grant(
+            "payroll-hidden",
+            collab_types::document_node(&room_id, "app", "payroll"),
+            Answer::Deny,
+        ),
+        read_grant(
+            "finance-hidden",
+            TreePath::room(&room_id).app("finance"),
+            Answer::Deny,
+        ),
+        // A more specific Allow reopens one record of the hidden app.
+        read_grant(
+            "finance-summary",
+            collab_types::document_node(&room_id, "finance", "summary"),
+            Answer::Allow,
+        ),
+    ] {
+        put_grant(&mut peer, &grant);
+    }
+    let restored = restore_bounded(&peer, now, &PeerLimits::default());
+    let read = restored.read();
+    for (app, record, readable) in [
+        ("app", "payroll", false),
+        ("app", "notes", true),
+        ("other.app", "payroll", true),
+        ("finance", "ledger", false),
+        ("finance", "summary", true),
+    ] {
+        assert_eq!(
+            peer.check_document_read(source, app, record, now).is_ok(),
+            readable,
+            "{app}/{record}"
+        );
+        assert_eq!(
+            read.document_read_allowed(source, app, record, now)
+                .unwrap(),
+            readable,
+            "{app}/{record}"
+        );
+    }
+    let access = read.room_access(source, now).unwrap();
+    assert!(access.read(), "the room itself stays readable");
+    assert!(!access.write());
+}
+/// A steward withholds a record's channel from exactly the member devices
+/// that may not read the record, by the same decision as
+/// [`StatePeer::check_document_read`]: a Read Deny naming one record
+/// withholds that record's channel alone, and a record reopened by a more
+/// specific Allow is withheld from nobody.
+#[test]
+fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
+    let (mut peer, source, now) = fixture();
+    let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
+    put_member(&mut peer, &person, Role::Viewer);
+    let room_id = peer.room().to_owned();
+    // Every member device of the fixture is this person's: the Deny names
+    // the person, so it withholds the record from all of them.
+    let devices: std::collections::BTreeSet<[u8; 32]> = peer
+        .governed_access(now)
+        .unwrap()
+        .member_devices
+        .into_iter()
+        .collect();
+    assert!(devices.contains(&source));
+    assert!(peer.withheld_record_readers(now).unwrap().is_empty());
+    let read_grant = |id: &str, node: TreePath, answer: Answer| {
+        Grant::new(
+            id,
+            Subject::person(person.as_str()),
+            node,
+            KindSet::READ,
+            answer,
+            Subject::person("a different person"),
+        )
+    };
+    for grant in [
+        read_grant(
+            "payroll-hidden",
+            collab_types::document_node(&room_id, "app", "payroll"),
+            Answer::Deny,
+        ),
+        read_grant(
+            "finance-hidden",
+            TreePath::room(&room_id).app("finance"),
+            Answer::Deny,
+        ),
+        read_grant(
+            "finance-summary",
+            collab_types::document_node(&room_id, "finance", "summary"),
+            Answer::Allow,
+        ),
+    ] {
+        put_grant(&mut peer, &grant);
+    }
+    let withheld = peer.withheld_record_readers(now).unwrap();
+    let payroll = collab_types::document_channel_id("app", &room_id, "payroll");
+    assert_eq!(withheld.get(&payroll), Some(&devices));
+    assert_eq!(withheld.len(), 1);
+    assert!(
+        peer.check_document_read(source, "app", "payroll", now)
+            .is_err()
+    );
+    for (app, record) in [("app", "notes"), ("finance", "summary")] {
+        assert!(peer.check_document_read(source, app, record, now).is_ok());
+        assert!(
+            !withheld.contains_key(&collab_types::document_channel_id(app, &room_id, record)),
+            "{app}/{record}"
+        );
+    }
+}

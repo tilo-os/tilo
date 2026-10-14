@@ -908,3 +908,106 @@ fn binary_upload_cancellation_cleans_partial_files_and_keeps_rpc_aligned() {
         vec![57; (2 << 20) + 33]
     );
 }
+
+/// Runs one of tilo-vmd's boot-time commands against `root`, as its unit does.
+fn boot_step(root: &std::path::Path, step: &str, booted: &str) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
+        .args([step, "--apply", "record", "--manifest", "/nonexistent"])
+        .args(["--base", "/nonexistent", "--booted", booted])
+        .arg("--root")
+        .arg(root)
+        .output()
+        .unwrap()
+}
+
+/// An upgraded laptop kept running layers built for its previous image (an
+/// old shell against a new launcher and tilo-vmd). Booting another image
+/// puts every slot back on it before anything is merged: the slot runs
+/// generation 0, the old generations cannot be rolled back to, status says
+/// what was dropped, and rebooting the same image changes nothing.
+#[test]
+fn booting_another_image_puts_slots_back_on_it_over_stdio() {
+    let root = tempfile::tempdir().unwrap();
+    let shell = {
+        let mut daemon = Daemon::spawn(root.path());
+        let client = &mut daemon.client;
+        client.hello("test").unwrap();
+        client
+            .call(SlotCreate {
+                name: "agent-a".into(),
+                kind: SlotKind::Headless,
+                owner: Owner::default(),
+                outputs: vec![],
+                identity: false,
+            })
+            .unwrap();
+        // The image the slot is made on, as the boot records it.
+        let first = boot_step(root.path(), "reconcile-image", "composefs:old");
+        assert!(first.status.success(), "{first:?}");
+        let shell = import(client, "shell", &tarball("usr/bin/shell", b"old shell"));
+        let applied = client
+            .call(Swap {
+                slot: "agent-a".into(),
+                component: "shell".into(),
+                layer: shell.clone(),
+                info: Some(ComponentInfo::new(Scope::Session, vec![])),
+            })
+            .unwrap();
+        assert_eq!(applied.generation, 1);
+        shell
+    };
+
+    // The same image again: the swap stays.
+    let same = boot_step(root.path(), "reconcile-image", "composefs:old");
+    assert!(same.status.success(), "{same:?}");
+    {
+        let mut daemon = Daemon::spawn(root.path());
+        let client = &mut daemon.client;
+        client.hello("test").unwrap();
+        let status = client.call(Status { slot: None }).unwrap();
+        assert_eq!(status.slots_image.as_deref(), Some("composefs:old"));
+        assert_eq!(status.image_change, None);
+        let slot = status.slots.iter().find(|s| s.name == "agent-a").unwrap();
+        assert_eq!(slot.generation, 1);
+    }
+
+    // The upgrade's first boot.
+    let upgraded = boot_step(root.path(), "reconcile-image", "composefs:new");
+    assert!(upgraded.status.success(), "{upgraded:?}");
+    let said = String::from_utf8_lossy(&upgraded.stderr);
+    assert!(
+        said.contains("slot agent-a left generation 1 (shell) and runs the image as installed"),
+        "{said}"
+    );
+    let restored = boot_step(root.path(), "restore", "composefs:new");
+    assert!(restored.status.success(), "{restored:?}");
+
+    let mut daemon = Daemon::spawn(root.path());
+    let client = &mut daemon.client;
+    client.hello("test").unwrap();
+    let status = client.call(Status { slot: None }).unwrap();
+    assert_eq!(status.slots_image.as_deref(), Some("composefs:new"));
+    let change = status.image_change.expect("the change is reported");
+    assert_eq!(change.from.as_deref(), Some("composefs:old"));
+    assert_eq!(change.to, "composefs:new");
+    assert_eq!(change.dropped.len(), 1);
+    assert_eq!(change.dropped[0].slot, "agent-a");
+    assert_eq!(change.dropped[0].components, vec!["shell".to_owned()]);
+    let slot = status.slots.iter().find(|s| s.name == "agent-a").unwrap();
+    assert_eq!(slot.generation, 0);
+    assert!(slot.components.is_empty(), "{:?}", slot.components);
+    let error = rpc_error(client.call(Rollback {
+        slot: "agent-a".into(),
+        to: Some(1),
+    }));
+    assert!(error.message.contains('1'), "{error:?}");
+    // Imported moments ago, so the boot keeps the layer for a later one;
+    // nothing references it any more.
+    assert!(
+        client
+            .call(LayerList {})
+            .unwrap()
+            .iter()
+            .any(|layer| layer.hash == shell)
+    );
+}

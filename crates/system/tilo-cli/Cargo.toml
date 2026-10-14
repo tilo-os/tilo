@@ -21,6 +21,7 @@ clap_complete.workspace = true
 # Reads the session's GPU health record for `tilo system health --gpu`.
 serde_json.workspace = true
 workspace-hack = { version = "0.1" }
+tilo-paths.workspace = true
 
 [dev-dependencies]
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

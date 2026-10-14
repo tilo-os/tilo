@@ -11,6 +11,8 @@
 #[cfg(feature = "native-editor")]
 pub mod editor;
 pub use tilo_platform_caps::{Availability, availability, available};
+#[cfg(unix)]
+pub mod local_socket;
 pub mod rendezvous;
 
 /// A capability of this crate.

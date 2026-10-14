@@ -1,7 +1,9 @@
 //! The actual endpoint-bound room service must sign and retain namespace claims.
 use super::*;
 
-async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, room: &str) {
+/// Admit `member`'s person to `room` as an Editor, through an invitation
+/// `host` issues and `member`'s device redeems.
+pub(super) async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, room: &str) {
     let issued = relay
         .rooms()
         .unwrap()

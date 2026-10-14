@@ -98,15 +98,6 @@ impl RecordSegment {
         }
     }
 
-    /// The store's record id.
-    #[must_use]
-    pub fn as_record_id(&self) -> &str {
-        match self {
-            Self::Primary => PACKAGE_PRIMARY,
-            Self::Id(id) => id,
-        }
-    }
-
     /// The record part of a `record:<app>:<record>` provider: empty for the primary.
     #[must_use]
     pub fn provider_part(&self) -> &str {
