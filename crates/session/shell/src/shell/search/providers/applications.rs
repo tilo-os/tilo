@@ -154,7 +154,10 @@ enum ApplicationEntry {
     /// keystroke does not copy the app's manifest view into each row.
     Installed(Arc<InstalledApp>),
     Dynamic(DynamicLauncherRecord),
-    Catalogue(CatalogueApp),
+    /// Boxed: a catalogue entry carries its whole registry record (names,
+    /// description, images, download and trust fields), several times the
+    /// size of the other variants.
+    Catalogue(Box<CatalogueApp>),
 }
 
 struct ApplicationsSnapshot {
@@ -261,7 +264,7 @@ impl ApplicationsProvider {
                         && !host_app_ids.contains(&package_id)
                         && seen_catalogue.insert(package_id)
                 })
-                .map(ApplicationEntry::Catalogue),
+                .map(|app| ApplicationEntry::Catalogue(Box::new(app))),
         );
         let index = index_entries(&entries);
         ApplicationsSnapshot {
@@ -1152,7 +1155,7 @@ impl ApplicationsProvider {
             ),
             ApplicationEntry::Catalogue(app) => self.catalogue_results_for_membership(
                 ctx.needle,
-                vec![app.clone()],
+                vec![app.as_ref().clone()],
                 &score,
                 &snapshot.installed_ids,
                 &snapshot.host_app_ids,
