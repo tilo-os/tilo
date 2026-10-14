@@ -1,5 +1,8 @@
 //! Text controls over collaborative plain text: every edit a splice action.
 
+use std::collections::HashMap;
+
+use taffy::{NodeId, TaffyTree};
 use tilo_resource::text::splice_between;
 use tilo_resource::{Doc, Model, Path, PlainText, Resource, Segment, TextEdit};
 use ui_core::automerge::{ObjId, ReadDoc as _};
@@ -7,6 +10,7 @@ use ui_core::widget::{
     AppModel, Autocomplete, CodeEditor, Decorator, EventCtx, ModelPath, TextInput, Widget,
 };
 use ui_core::winit::event::WindowEvent;
+use ui_core::{Theme, taffy};
 
 use super::dispatch::Dispatcher;
 
@@ -279,6 +283,19 @@ impl<W: EditsText + 'static, R: Resource> Decorator for TextControl<W, R> {
         self.stored = self.control.shown_text().to_owned();
     }
 
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = self.control.build_layout(taffy, theme, node_map);
+        // Retained input must pass through submit, including its permission
+        // check, rather than stopping at the inner editor's local edit.
+        ui_core::widget::decorator::register_node(node_map, node, self);
+        node
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.control.handle_event(event, ctx);
         self.submit(&mut ctx.edits());
@@ -308,5 +325,94 @@ impl<W: EditsText + 'static, R: Resource> Decorator for TextControl<W, R> {
             .perform_semantic_action(target, action, state, path);
         self.submit(state);
         handled
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui_core::a11y::Action;
+    use ui_core::widget::Edits;
+
+    #[test]
+    fn layout_hook_registers_the_text_control_instead_of_the_editor() {
+        let mut control = Box::new(TextControl::view_only(
+            CodeEditor::local(),
+            PlainText::root_text,
+        ));
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let node =
+            Decorator::build_layout(&mut *control, &mut taffy, &Theme::dark(), &mut node_map);
+        let owner = *node_map.get(&node).expect("retained node owner");
+        assert_eq!(owner.cast::<()>(), std::ptr::from_mut(&mut *control).cast());
+        // SAFETY: the boxed control is still alive and has not moved since
+        // build_layout registered it. The shared borrow ends here.
+        assert!(
+            unsafe { &*owner }
+                .as_any()
+                .unwrap()
+                .is::<TextControl<CodeEditor>>()
+        );
+    }
+
+    fn retained_set_value(read_only: Option<bool>, expected: &str) {
+        let mut doc = Doc::new();
+        PlainText::initialize(&mut doc).unwrap();
+        let dispatcher =
+            Dispatcher::<PlainText>::new("test", PlainText::KIND, false, Some("text-author"));
+        dispatcher
+            .apply_now(
+                &mut Edits::lend(&mut doc),
+                &TextEdit::ReplaceText {
+                    text: "stored".into(),
+                },
+            )
+            .unwrap();
+        let mut control = Box::new(TextControl::view_only(
+            CodeEditor::local(),
+            PlainText::root_text,
+        ));
+        if let Some(read_only) = read_only {
+            dispatcher.core().set_read_only(read_only);
+            control.attach(dispatcher);
+        }
+        control.pull(&doc);
+        let before = doc.get_heads();
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let node = Widget::build_layout(&mut *control, &mut taffy, &Theme::dark(), &mut node_map);
+        let owner = *node_map.get(&node).expect("retained node owner");
+        // SAFETY: the boxed control remains alive and unmoved; no other
+        // reference to it is used during this retained-host dispatch.
+        assert!(unsafe { &mut *owner }.perform_action(
+            &Action::SetValue("edited".into()),
+            &[],
+            &mut Edits::lend(&mut doc),
+            &ui_core::automerge::ROOT,
+        ));
+        assert_eq!(PlainText::read(&doc).unwrap(), expected);
+        assert_eq!(control.control().shown_text(), expected);
+        assert_eq!(control.control_mut().take_edited(), None);
+        if read_only != Some(false) {
+            assert_eq!(doc.get_heads(), before, "a refused edit writes nothing");
+        }
+        control.pull(&doc);
+        assert_eq!(control.control().shown_text(), expected);
+    }
+
+    #[test]
+    fn retained_set_value_submits_the_edit() {
+        retained_set_value(Some(false), "edited");
+    }
+
+    #[test]
+    fn retained_set_value_restores_text_when_permission_is_refused() {
+        retained_set_value(Some(true), "stored");
+    }
+
+    #[test]
+    fn retained_set_value_restores_text_without_a_dispatcher() {
+        retained_set_value(None, "stored");
     }
 }

@@ -74,7 +74,7 @@ $ s(tau) = 10 tau^3 - 15 tau^4 + 6 tau^5 $
   *Boundary conditions.* For $tau in {0, 1}$,
   $s'(tau) = s''(tau) = 0$. Among paths with these
   endpoints, this curve minimizes the squared jerk:
-  $ J = integral_0^T (dif^3 x / dif t^3)^2 dif t $
+  $ J = integral_0^T (upright(d)^3 x / (upright(d) t^3))^2 thin upright(d) t $
 ]
 
 == A gentler handoff
@@ -245,7 +245,7 @@ const CHEATSHEET: &str = r#"#set page(width: 16cm, height: auto, margin: 1.4cm)
 == Math
 Inline $e^(i pi) + 1 = 0$ and display:
 
-$ integral_0^1 x^2 dif x = 1/3 $
+$ integral_0^1 x^2 thin upright(d) x = 1/3 $
 
 == Figures
 #figure(

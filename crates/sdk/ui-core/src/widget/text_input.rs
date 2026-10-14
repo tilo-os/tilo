@@ -6039,14 +6039,12 @@ impl TextInput {
             if let Some(list) = presence.carets.get(&key) {
                 for (user, caret) in list {
                     let name = presence.display_name(user);
-                    presence.draw_peer_caret_labeled(
-                        scene,
-                        theme,
-                        text_renderer,
-                        transform,
+                    presence.draw_peer_caret_labeled_within(
+                        &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                         user,
                         &name,
                         self.caret_rect(theme, *caret),
+                        self.rect,
                     );
                 }
             }

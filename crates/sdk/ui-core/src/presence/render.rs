@@ -233,6 +233,47 @@ impl PresenceCtx {
         );
     }
 
+    /// A labeled caret inside a clipped editing surface. The name flips below
+    /// a top-row caret and shifts left at the right edge instead of being cut.
+    pub fn draw_peer_caret_labeled_within(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        user: &UserId,
+        name: &str,
+        caret_rect: Rect,
+        bounds: Rect,
+    ) {
+        if bounds.intersect(caret_rect).area() <= 0.0 || bounds.area() <= 0.0 {
+            return;
+        }
+        let color = color_for(self, user, ctx.theme);
+        ctx.scene
+            .fill(Fill::NonZero, ctx.transform, color, None, &caret_rect);
+        let agent = self.is_agent(user);
+        let (width, height) = peer_pill_size_for(ctx.text, ctx.theme, name, agent);
+        let gap = f64::from(ctx.theme.tokens.spacing.s1);
+        let x = caret_rect
+            .x0
+            .clamp(bounds.x0, (bounds.x1 - width).max(bounds.x0));
+        let above = caret_rect.y0 - height - gap;
+        let y = if above >= bounds.y0 {
+            above
+        } else {
+            caret_rect.y1 + gap
+        };
+        let y = y.clamp(bounds.y0, (bounds.y1 - height).max(bounds.y0));
+        draw_peer_pill_kind(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            Rect::new(x, y, x + width, y + height),
+            name,
+            color,
+            agent,
+        );
+    }
+
     /// Outline `rect` in the peer's colour — "this peer has *this object*
     /// selected". The counterpart to [`Self::draw_peer_selection`] for
     /// content that is an object rather than a run of text: a clip on a

@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────┐
-//! │ ‹ document ▾ ›  Compile Save Open Export   − + Fit  Problems │
+//! │ document  Outline / Files  Bold Italic Math  Save Export PDF │
 //! ├───────────────────────────┬──────────────────────────────┤
 //! │ source editor             │      rendered preview         │
 //! │ (code, line numbers,      │  (scrollable pages + thumbs)  │
@@ -161,6 +161,8 @@ pub struct TypstApp {
 
     // --- panes ---
     editor: SourceEditor,
+    navigation: crate::navigation::Navigation,
+    pending_format: Vec<crate::editor::SourceFormat>,
     preview: PreviewPane,
     diagnostics: DiagnosticsPanel,
 
@@ -187,6 +189,8 @@ pub struct TypstApp {
     initialized: bool,
     /// Last source text we highlighted / compiled — drives change detection.
     last_source: String,
+    last_project: Vec<(String, String)>,
+    structure_dirty: bool,
     /// Mirror of the source read each `sync`, used by `draw` (which has no
     /// doc access) for the caret readout and change detection. The editor body
     /// and its syntax highlighting live in the shared `SourceEditor` widget.
@@ -197,6 +201,8 @@ pub struct TypstApp {
     err_count: usize,
     warn_count: usize,
     elapsed_ms: u128,
+    heading_positions: Vec<compile::HeadingPosition>,
+    pending_heading: Option<usize>,
     /// Whether the current width put us in the single-pane compact layout.
     /// Recomputed every `layout_in` from the live width — never cached from
     /// the first frame.
@@ -207,6 +213,7 @@ pub struct TypstApp {
     /// The renderer's accessibility text scale; width breakpoints designed at
     /// 1× are compared against `width / text_k`.
     text_k: f64,
+    layout_theme: Theme,
     /// Capture only: on the next layout pass, drop the caret at the end of
     /// the source and scroll it into view. Never set in a live window.
     demo_scroll_caret_end: bool,
@@ -274,6 +281,8 @@ impl TypstApp {
             worker: None,
             applied_seq: 0,
             editor,
+            navigation: crate::navigation::Navigation::new(),
+            pending_format: Vec::new(),
             preview: PreviewPane::new(),
             diagnostics: DiagnosticsPanel::new(),
             files: Rc::default(),
@@ -285,14 +294,19 @@ impl TypstApp {
             pending_resource_io: None,
             initialized: false,
             last_source: String::new(),
+            last_project: Vec::new(),
+            structure_dirty: true,
             source_cache: String::new(),
             show_diagnostics: false,
             err_count: 0,
             warn_count: 0,
             elapsed_ms: 0,
+            heading_positions: Vec::new(),
+            pending_heading: None,
             compact: false,
             compact_view: CompactPane::Editor,
             text_k: 1.0,
+            layout_theme: theme.clone(),
             demo_scroll_caret_end: false,
             demo_editor_select: false,
             demo_preview_zoom: false,
@@ -387,9 +401,14 @@ impl TypstApp {
     fn open_file(&mut self, id: &Id) {
         self.current = Some(id.clone());
         self.follow_current();
+        self.structure_dirty = true;
+        self.applied_seq = 0;
+        self.initialized = false;
+        self.worker = None;
         self.editor.reset_cursor();
         // Keep focus consistent with the visible pane in compact mode.
-        self.editor.focused = !(self.compact && matches!(self.compact_view, CompactPane::Preview));
+        self.editor
+            .set_focused(!(self.compact && matches!(self.compact_view, CompactPane::Preview)));
         self.preview.fit_width();
         let name = self.current_file().map(|file| file.name.0.clone());
         if let Some(name) = name {
@@ -415,6 +434,7 @@ impl TypstApp {
     /// Stage a capture: the view state each scenario shows once its files
     /// are laid out.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        self.navigation.open();
         match scenario {
             Some("preview") => self.compact_view = CompactPane::Preview,
             Some("menu") => {
@@ -423,11 +443,11 @@ impl TypstApp {
             }
             Some("problems" | "errors") => self.show_diagnostics = true,
             Some("scrolled") => {
-                self.editor.focused = true;
+                self.editor.set_focused(true);
                 self.demo_scroll_caret_end = true;
             }
             Some("editor-select") => {
-                self.editor.focused = true;
+                self.editor.set_focused(true);
                 self.demo_editor_select = true;
             }
             Some("preview-zoom") => self.demo_preview_zoom = true,
@@ -457,8 +477,19 @@ impl TypstApp {
             page_count: self.preview.page_count(),
         })
         .into_iter()
+        .chain(self.navigation.live_resources())
         .map(ui::framework::LiveRow::from_resource)
         .collect()
+    }
+
+    /// The hosted source control, for file-scoped capture presence.
+    pub fn source_widget(&self) -> &dyn Widget {
+        self.editor.widget()
+    }
+
+    /// The actual visible outline target, not a capture-only coordinate.
+    pub fn heading_target(&self, heading: &str) -> Option<Rect> {
+        self.navigation.heading_target(heading)
     }
 
     // ----- compile pipeline -----------------------------------------------
@@ -493,6 +524,10 @@ impl TypstApp {
             self.preview.set_stale(true);
         } else {
             self.preview.set_pages_with_text(&out.pages, &out.page_text);
+            self.heading_positions = out.heading_positions;
+            if let Some(line) = self.pending_heading.take() {
+                self.jump_preview_to_heading(line);
+            }
         }
         self.diagnostics.set_diagnostics(out.diagnostics);
         if self.err_count > 0 {
@@ -514,13 +549,42 @@ impl TypstApp {
     /// Compile `source` on the worker, or here when no worker could start
     /// (the browser has no threads for it).
     fn request_compile(&mut self, source: &str) {
+        let (name, main_source) = self.compilation_main(source);
+        let files = self.project_snapshot();
         if let Some(w) = self.worker.as_mut() {
-            w.request(source.to_string(), PPP);
+            w.request_project(name, main_source, files.clone(), PPP);
         } else {
-            let out = compile::compile_source(&self.parts, source, PPP);
+            let out = compile::compile_project(&self.parts, &name, &main_source, &files, PPP);
             self.apply_output(out);
         }
         self.last_source = source.to_string();
+        self.last_project = files;
+    }
+
+    fn project_snapshot(&self) -> Vec<(String, String)> {
+        self.files
+            .files
+            .values()
+            .map(|file| (project_name(file).to_owned(), file.source.clone()))
+            .collect()
+    }
+
+    /// Companion sources (bibliographies and data) edit independently while
+    /// the nearest Typst entry point keeps a real compiled preview.
+    fn compilation_main(&self, source: &str) -> (String, String) {
+        if let Some(file) = self.current_file()
+            && is_typst_file(file)
+        {
+            return (project_name(file).to_owned(), source.to_owned());
+        }
+        self.files
+            .files
+            .values()
+            .find(|file| is_typst_file(file))
+            .map_or_else(
+                || (self.current_name(), source.to_owned()),
+                |file| (project_name(file).to_owned(), file.source.clone()),
+            )
     }
 
     fn force_recompile(&mut self) {
@@ -602,17 +666,20 @@ impl TypstApp {
     /// Compile the source shown to a PDF and write it to the exact `path`.
     /// Returns an error string on a compile failure or an I/O error.
     fn export_pdf_to_path(&self, path: &std::path::Path) -> Result<(), String> {
-        let bytes = compile::compile_pdf(&self.parts, &self.source_cache).map_err(|diags| {
-            let errs = diags
-                .iter()
-                .filter(|d| d.kind == compile::DiagKind::Error)
-                .count();
-            if errs > 0 {
-                format!("{} — fix errors first", plural(errs, "error", "errors"))
-            } else {
-                "could not build PDF".to_string()
-            }
-        })?;
+        let (name, source) = self.compilation_main(&self.source_cache);
+        let bytes =
+            compile::compile_project_pdf(&self.parts, &name, &source, &self.project_snapshot())
+                .map_err(|diags| {
+                    let errs = diags
+                        .iter()
+                        .filter(|d| d.kind == compile::DiagKind::Error)
+                        .count();
+                    if errs > 0 {
+                        format!("{} — fix errors first", plural(errs, "error", "errors"))
+                    } else {
+                        "could not build PDF".to_string()
+                    }
+                })?;
         tilo_files::file_at(path)
             .and_then(|(dir, name)| {
                 tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root())?;
@@ -698,10 +765,15 @@ impl TypstApp {
         }
     }
 
-    fn run_command(&self, command: Command, _doc: &ui::automerge::AutoCommit) {
+    fn run_command(&mut self, command: Command, _doc: &ui::automerge::AutoCommit) {
         use crate::actions::TypstEffect;
         let effect = match command {
-            Command::Compile => TypstEffect::Compile,
+            Command::ToggleOutline => TypstEffect::Outline,
+            Command::Bold => TypstEffect::Bold,
+            Command::Italic => TypstEffect::Italic,
+            Command::Math => TypstEffect::Math,
+            Command::Cite => TypstEffect::Cite,
+            Command::Section => TypstEffect::Section,
             Command::Save => TypstEffect::Save { path: None },
             Command::Open => TypstEffect::OpenFile { path: None },
             Command::ExportPdf => TypstEffect::ExportPdf { path: None },
@@ -712,8 +784,17 @@ impl TypstApp {
             Command::ShowEditor => TypstEffect::Editor,
             Command::ShowPreview => TypstEffect::Preview,
         };
-        if let Some(actions) = &self.actions {
-            actions.effect(&effect);
+        if matches!(
+            effect,
+            TypstEffect::Save { .. } | TypstEffect::OpenFile { .. } | TypstEffect::ExportPdf { .. }
+        ) {
+            if let Some(actions) = &self.actions {
+                actions.effect(&effect);
+            }
+        } else {
+            // The shared control already admitted this local view gesture.
+            // Published effects use this same implementation for other callers.
+            self.perform_resource_operation(effect);
         }
     }
 
@@ -727,6 +808,32 @@ impl TypstApp {
         use crate::actions::TypstEffect;
         match operation {
             TypstEffect::Compile => self.force_recompile(),
+            TypstEffect::Outline => {
+                self.navigation.toggle();
+                self.structure_dirty = true;
+                self.layout_in(self.rect);
+                self.dirty = true;
+            }
+            TypstEffect::Bold => self.pending_format.push(crate::editor::SourceFormat::Bold),
+            TypstEffect::Italic => self
+                .pending_format
+                .push(crate::editor::SourceFormat::Italic),
+            TypstEffect::Math => self.pending_format.push(crate::editor::SourceFormat::Math),
+            TypstEffect::Cite => self
+                .pending_format
+                .push(crate::editor::SourceFormat::Citation),
+            TypstEffect::Section => self
+                .pending_format
+                .push(crate::editor::SourceFormat::Section),
+            TypstEffect::OpenProjectFile { id } => {
+                let id = Id::from_raw(id);
+                if self.files.file(&id).is_some() {
+                    self.open_file(&id);
+                    self.navigation.dismiss_if_overlay();
+                    self.layout_in(self.rect);
+                }
+            }
+            TypstEffect::GoToHeading { line } => self.go_to_heading(line),
             TypstEffect::Save { .. } => {
                 let _ = self.save();
             }
@@ -750,7 +857,7 @@ impl TypstApp {
                     if self.compact {
                         self.set_compact_view(CompactPane::Editor);
                     } else {
-                        self.editor.focused = true;
+                        self.editor.set_focused(true);
                     }
                 }
             }
@@ -763,11 +870,44 @@ impl TypstApp {
         }
     }
 
+    fn jump_preview_to_heading(&mut self, line: usize) {
+        if let Some(position) = self
+            .heading_positions
+            .iter()
+            .find(|position| position.line == line)
+        {
+            self.preview
+                .jump_to_location(position.page, position.x_pt, position.y_pt);
+        }
+    }
+
+    fn go_to_heading(&mut self, line: usize) {
+        if let Some(heading) = crate::navigation::headings(&self.source_cache)
+            .into_iter()
+            .find(|heading| heading.line == line)
+        {
+            self.editor.goto_line(&self.source_cache, line);
+            if self.compiling() {
+                self.pending_heading = Some(line);
+            } else {
+                self.jump_preview_to_heading(heading.line);
+            }
+            self.navigation.dismiss_if_overlay();
+            self.structure_dirty = true;
+            if self.compact {
+                self.set_compact_view(CompactPane::Editor);
+            }
+            self.editor.set_focused(true);
+            self.layout_in(self.rect);
+            self.dirty = true;
+        }
+    }
+
     /// Switch the compact single-pane view. Keeps editor focus in sync so the
     /// caret only blinks (and only demands animation frames) while editing.
     fn set_compact_view(&mut self, view: CompactPane) {
         self.compact_view = view;
-        self.editor.focused = matches!(view, CompactPane::Editor);
+        self.editor.set_focused(matches!(view, CompactPane::Editor));
         self.layout_in(self.rect);
         self.dirty = true;
     }
@@ -781,7 +921,7 @@ impl TypstApp {
 
     /// 1-based (line, col) of the editor caret within the cached source.
     /// Single pass over the leading chars — no allocation.
-    fn caret_line_col(&self) -> (usize, usize) {
+    pub fn caret_line_col(&self) -> (usize, usize) {
         let caret = self.editor.caret().min(self.source_cache.len());
         let mut line = 1usize;
         let mut col = 1usize;
@@ -821,6 +961,7 @@ impl TypstApp {
         let status_top = (r.y1 - frame.status_h).max(self.bar_rect.y1);
         self.status_rect = Rect::new(r.x0, status_top, r.x1, r.y1);
         let body = Rect::new(r.x0, self.bar_rect.y1, r.x1, status_top);
+        let body = self.navigation.layout(body, &self.layout_theme);
         let content_w = r.width();
 
         // Derive the layout mode from the *current* width every pass, so a
@@ -845,8 +986,7 @@ impl TypstApp {
                 }
             }
         } else {
-            self.splitter
-                .set_bounds(Rect::new(r.x0, body.y0, r.x1, body.y1));
+            self.splitter.set_bounds(body);
             let (editor_col, preview) = self.splitter.pane_rects();
             self.preview_rect = preview;
             let (main, diag) = self.split_off_diagnostics(editor_col);
@@ -916,6 +1056,7 @@ impl TypstApp {
     /// Measure the chrome in `theme` and re-fit everything that follows from
     /// it: the panes, the panel's rows, and where each control sits.
     fn refresh_frame(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.layout_theme = theme.clone();
         let status_line = tr
             .measure_style("Ag", None, &theme.text(ui::tokens::TextRole::Caption))
             .1;
@@ -958,7 +1099,15 @@ impl TypstApp {
     /// What the person reads while working, left: where the caret is.
     fn status_left_label(&self) -> String {
         let (ln, col) = self.caret_line_col();
-        format!("Ln {ln}, Col {col}")
+        let words = crate::navigation::word_count(&self.source_cache);
+        let compile = if self.compiling() {
+            "Compiling…".to_owned()
+        } else if self.err_count > 0 {
+            plural(self.err_count, "error", "errors")
+        } else {
+            format!("Compiled in {} ms", self.elapsed_ms)
+        };
+        format!("Ln {ln}, Col {col}  ·  {words} words  ·  {compile}")
     }
 
     /// What the person reads while working, right: the document's pages and
@@ -969,8 +1118,8 @@ impl TypstApp {
             return "No pages".to_string();
         }
         format!(
-            "{}, {:.0}%",
-            plural(pages, "page", "pages"),
+            "Page {} of {pages}  ·  {:.0}%",
+            self.preview.current_page() + 1,
             self.preview.zoom() * 100.0
         )
     }
@@ -1012,6 +1161,15 @@ impl Widget for TypstApp {
         for child in self.chrome.children_mut() {
             child.settle(edits, path);
         }
+        self.navigation.widget_mut().settle(edits, path);
+        for effect in self.navigation.take_requests() {
+            self.perform_resource_operation(effect);
+        }
+        for format in std::mem::take(&mut self.pending_format) {
+            if !self.editor.insert_format(format, edits) {
+                self.set_flash("The source could not be edited");
+            }
+        }
         for command in self.chrome.take() {
             self.run_command(command, edits.doc());
             self.dirty = true;
@@ -1040,6 +1198,9 @@ impl Widget for TypstApp {
         // Show the open file's source as the document holds it.
         self.editor.pull(doc);
         let source = self.editor.text().to_owned();
+        self.navigation
+            .sync(&self.files, self.current.as_ref(), &source);
+        self.navigation.widget_mut().sync(doc, &automerge::ROOT);
 
         // In the browser the fonts arrive after the editor opens; compile
         // once they have, with parts built from them.
@@ -1057,7 +1218,10 @@ impl Widget for TypstApp {
             // First frame: compile synchronously so the very first paint
             // (a capture's included) has rendered pages, then bring the async
             // worker online for subsequent edits.
-            let out = compile::compile_source(&self.parts, &source, PPP);
+            let files = self.project_snapshot();
+            let (name, main_source) = self.compilation_main(&source);
+            let out = compile::compile_project(&self.parts, &name, &main_source, &files, PPP);
+            self.last_project = files;
             self.apply_output(out);
             self.worker = CompileWorker::spawn(self.parts.clone());
             self.last_source = source.clone();
@@ -1066,7 +1230,7 @@ impl Widget for TypstApp {
             return;
         }
 
-        if source != self.last_source {
+        if source != self.last_source || self.project_snapshot() != self.last_project {
             self.request_compile(&source);
         }
         self.source_cache = source;
@@ -1082,13 +1246,13 @@ impl Widget for TypstApp {
     ) -> NodeId {
         // Replaced controls may be dropped now: this pass rebuilds the tree
         // (and `node_map`) without them.
+        self.layout_theme = theme.clone();
         self.chrome.layout_rebuilt();
         // One taffy node per hosted control, in the order `children` returns
         // them, so the host's focus walk lines up. The controls are placed by
         // hand in `draw`, so their taffy geometry is unused: the nodes exist
         // so each control is registered in `node_map` (a11y, focus, events).
         let child_nodes: Vec<NodeId> = self
-            .chrome
             .children_mut()
             .into_iter()
             .map(|child| child.build_layout(taffy, theme, node_map))
@@ -1108,15 +1272,29 @@ impl Widget for TypstApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.chrome.children()
+        let mut children = self.chrome.children();
+        if self.navigation.visible() {
+            children.push(self.navigation.widget());
+        }
+        children.push(self.editor.widget());
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.chrome.children_mut()
+        let mut children = self.chrome.children_mut();
+        if self.navigation.visible() {
+            children.push(self.navigation.widget_mut());
+        }
+        children.push(self.editor.widget_mut());
+        children
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        self.chrome.take_structure_dirty()
+        let own = std::mem::take(&mut self.structure_dirty);
+        let chrome = self.chrome.take_structure_dirty();
+        let navigation = self.navigation.take_structure_dirty()
+            | self.navigation.widget_mut().take_structure_dirty();
+        own || chrome || navigation
     }
 
     fn draw(
@@ -1144,8 +1322,9 @@ impl Widget for TypstApp {
         self.chrome.draw(scene, t, tr, theme, presence);
 
         if self.editor_rect.area() > 0.0 {
+            self.editor.focused = self.editor.widget().is_focused();
             self.editor
-                .draw(scene, t, tr, theme, self.diagnostics.diags());
+                .draw(scene, t, tr, theme, self.diagnostics.diags(), presence);
         }
         if self.preview_rect.area() > 0.0 {
             self.preview
@@ -1158,6 +1337,8 @@ impl Widget for TypstApp {
         if self.show_diagnostics && self.diag_rect.height() > 1.0 {
             self.diagnostics.draw(scene, t, tr, theme);
         }
+
+        self.navigation.draw(scene, t, tr, theme, presence);
 
         ui::chrome::status_bar::draw(
             scene,
@@ -1202,9 +1383,25 @@ impl Widget for TypstApp {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // The controls see the event first. Keys reach them only while the
         // editor is not typing, or while one holds an open list.
+        self.editor.focused = self.editor.widget().is_focused();
         let already_handled = *ctx.handled;
         let is_key = matches!(event, WindowEvent::KeyboardInput { .. });
-        if !is_key || !self.editor.focused || self.chrome.captures_input() {
+        if self.navigation.visible()
+            && !self.chrome.captures_input()
+            && (!is_key || self.navigation.widget().is_focused())
+        {
+            let nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
+            let node = nodes
+                .get(self.chrome.children().len())
+                .copied()
+                .unwrap_or(ctx.node_id);
+            self.navigation
+                .widget_mut()
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        }
+        if (already_handled || !*ctx.handled)
+            && (!is_key || !self.editor.focused || self.chrome.captures_input())
+        {
             // The layout tree may lag the controls by a frame when one was
             // just shown or hidden; a control with no node yet is addressed
             // by the window's own.
@@ -1215,6 +1412,17 @@ impl Widget for TypstApp {
                 if *ctx.handled && !already_handled {
                     break;
                 }
+            }
+        }
+        for effect in self.navigation.take_requests() {
+            let focuses_source = matches!(effect, crate::actions::TypstEffect::GoToHeading { .. });
+            self.perform_resource_operation(effect);
+            if focuses_source {
+                *ctx.focus_target = ctx
+                    .taffy
+                    .children(ctx.node_id)
+                    .ok()
+                    .and_then(|nodes| nodes.last().copied());
             }
         }
         for command in self.chrome.take() {
@@ -1272,11 +1480,6 @@ impl Widget for TypstApp {
     /// controls above them are retained widgets and name themselves.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        let source = AccessNode::new(Role::MultilineTextInput)
-            .with_name("Typst source")
-            .with_value(self.source_cache.clone())
-            .with_state(AccessState::new().focusable(true).multiline(true))
-            .with_action_target("typst.source");
         let preview = AccessNode::new(Role::Canvas)
             .with_name("Document preview")
             .with_value(format!(
@@ -1292,7 +1495,7 @@ impl Widget for TypstApp {
             })
             .with_semantic_key("typst.preview")
             .with_hashed_key("typst.preview");
-        let mut children = vec![source, preview];
+        let mut children = vec![preview];
         if self.show_diagnostics {
             children.extend(self.diagnostics.accessibility());
         }
@@ -1401,8 +1604,18 @@ impl Widget for TypstApp {
 }
 
 impl ui::widget::controls::ActionControls for TypstApp {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
+    }
+
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        ui::widget::semantic_action_bindings(self.accessibility())
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        for child in self.children() {
+            bindings.extend(ui::widget::controls::control_action_bindings(child));
+        }
+        bindings
     }
 }
 
@@ -1489,6 +1702,25 @@ impl TypstApp {
             }
             if let Key::Character(ch) = logical_key {
                 match ch.to_lowercase().as_str() {
+                    "b" | "i" if self.editor.focused => {
+                        let format = if ch.eq_ignore_ascii_case("b") {
+                            crate::editor::SourceFormat::Bold
+                        } else {
+                            crate::editor::SourceFormat::Italic
+                        };
+                        self.editor.insert_format(format, doc);
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                    "l" if mods.shift_key() => {
+                        self.navigation.toggle();
+                        self.structure_dirty = true;
+                        self.layout_in(self.rect);
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
                     "s" => {
                         // A failed save says so in the flash.
                         let _ = self.save();
@@ -1713,6 +1945,17 @@ impl TypstApp {
             *handled = true;
             return;
         }
+        if self.navigation.dismiss_at(p) {
+            self.structure_dirty = true;
+            self.layout_in(self.rect);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        if self.navigation.visible() && self.navigation.rect().contains(p) {
+            *handled = true;
+            return;
+        }
         if self.editor_rect.contains(p) {
             self.editor.focused = true;
             let text = self.source_cache.clone();
@@ -1750,6 +1993,18 @@ impl TypstApp {
     }
 }
 
+fn is_typst_file(file: &crate::resource::TypstFile) -> bool {
+    std::path::Path::new(project_name(file))
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("typ"))
+}
+
+fn project_name(file: &crate::resource::TypstFile) -> &str {
+    file.project_path
+        .as_ref()
+        .map_or(&file.name.0, |path| &path.0)
+}
+
 /// A text file a chooser or the command line named.
 pub(crate) fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
     let (dir, name) = tilo_files::file_at(path)?;
@@ -1775,6 +2030,8 @@ mod tests {
     use ui::tilo_resource::{Replica, Resource as _};
 
     use crate::resource::{TypstEditorShell, Workspace};
+    use crate::samples::DEFAULT_INDEX;
+    use ui::tilo_resource::Invoke;
 
     /// A workspace of the bundled examples, presented to an editor showing
     /// the first, synced once so it compiled.
@@ -1821,6 +2078,141 @@ mod tests {
     }
 
     #[test]
+    fn outline_click_and_row_action_jump_to_the_same_source_section() {
+        use crate::actions::TypstEffect;
+        // Captures intentionally publish inert effect handlers. Use a live
+        // hosted record to prove pointer and automation share the operation.
+        let mut app = live_fixture((1440, 810));
+        let file = crate::resource::sample_id(DEFAULT_INDEX);
+        app.effect_on(
+            &format!("typst.project-file:{file}"),
+            &TypstEffect::OpenProjectFile {
+                id: file.to_string(),
+            },
+        )
+        .unwrap();
+        app.effect(&TypstEffect::Outline).unwrap();
+        app.harness()
+            .wait_for_visuals(ui::time::Duration::from_secs(10))
+            .unwrap();
+        let heading = "A gentler handoff";
+        let source = app
+            .state()
+            .file(&crate::resource::sample_id(DEFAULT_INDEX))
+            .unwrap()
+            .source
+            .clone();
+        let line = crate::navigation::headings(&source)
+            .into_iter()
+            .find(|h| h.title == heading)
+            .unwrap()
+            .line;
+        let target = app
+            .surface_mut::<TypstApp>()
+            .heading_target(heading)
+            .unwrap()
+            .center();
+        assert!(
+            app.agent_surface()
+                .to_string()
+                .contains(&format!("typst.heading:{line}"))
+        );
+        app.harness().click_at(target.x, target.y);
+        app.settle();
+        let audit = app.harness().native_app_audit();
+        app.with_surface::<TypstApp, _>(|view| {
+            assert_eq!(
+                view.caret_line_col().0,
+                line,
+                "target {target:?}; mouse {:?}; selected {:?}; audit {audit:?}",
+                view.mouse,
+                view.navigation.selected()
+            );
+            assert_eq!(view.err_count, 0);
+        })
+        .unwrap();
+        let row = format!("typst.heading:{line}");
+        let published = app.agent_surface().to_string();
+        assert!(published.contains(&row));
+        app.call_on(&row, "go-to-heading", serde_json::json!({}))
+            .unwrap();
+        app.with_surface::<TypstApp, _>(|view| assert_eq!(view.caret_line_col().0, line))
+            .unwrap();
+    }
+
+    #[test]
+    fn project_file_navigation_preserves_each_buffer_and_supports_relative_includes() {
+        use crate::actions::TypstEffect;
+        let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+        let main = app.state().files.ids().next().unwrap().clone();
+        app.invoke(crate::resource::new_file("body.typ", None, "= Included\n"))
+            .unwrap();
+        let body = app
+            .state()
+            .files
+            .ids()
+            .find(|id| **id != main)
+            .unwrap()
+            .clone();
+        let source = Workspace::paths().files.item(&main).source;
+        app.invoke(Invoke::edit(&source.replace("#include \"body.typ\"")).unwrap())
+            .unwrap();
+        app.harness()
+            .wait_for_visuals(ui::time::Duration::from_secs(10))
+            .unwrap();
+        app.with_surface::<TypstApp, _>(|view| {
+            assert_eq!(view.err_count, 0);
+            view.preview.select_all();
+            assert!(view.preview.selected_text().unwrap().contains("Included"));
+            view.preview.clear_selection();
+        })
+        .unwrap();
+        let row = format!("typst.project-file:{body}");
+        app.effect_on(
+            &row,
+            &TypstEffect::OpenProjectFile {
+                id: body.to_string(),
+            },
+        )
+        .unwrap();
+        app.harness().type_text("Introduction. ");
+        assert_eq!(
+            app.state().file(&main).unwrap().source,
+            "#include \"body.typ\""
+        );
+        assert!(
+            app.state()
+                .file(&body)
+                .unwrap()
+                .source
+                .starts_with("Introduction. "),
+            "edited source: {:?}",
+            app.state().file(&body).unwrap().source
+        );
+        app.effect_on(
+            &format!("typst.project-file:{main}"),
+            &TypstEffect::OpenProjectFile {
+                id: main.to_string(),
+            },
+        )
+        .unwrap();
+        app.harness()
+            .wait_for_visuals(ui::time::Duration::from_secs(10))
+            .unwrap();
+        app.with_surface::<TypstApp, _>(|view| {
+            assert_eq!(view.editor.text(), "#include \"body.typ\"");
+            view.preview.select_all();
+            assert!(
+                view.preview
+                    .selected_text()
+                    .unwrap()
+                    .contains("Introduction")
+            );
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn hosted_capture_finishes_the_real_preview_compile_before_its_first_render() {
         let mut app =
             ui::framework::testing::TestApp::<TypstEditorShell>::capture_at(None, (1280, 800))
@@ -1863,6 +2255,27 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    #[test]
+    fn toolbar_navigation_and_formatting_use_real_local_operations() {
+        let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+        app.harness().resize((1440, 810)).unwrap();
+        let outline = app.harness().a11y_node_named("Outline / Files").unwrap();
+        app.harness()
+            .perform_a11y_action(outline, &ui::a11y::Action::Activate)
+            .unwrap();
+        app.settle();
+        assert!(app.surface_mut::<TypstApp>().navigation.visible());
+        let bold = app.harness().a11y_node_named("Bold").unwrap();
+        app.harness()
+            .perform_a11y_action(bold, &ui::a11y::Action::Activate)
+            .unwrap();
+        app.settle();
+        let file = app.state().files.values().next().unwrap().clone();
+        assert_eq!(file.source, "**");
+        assert!(app.undo());
+        assert!(app.state().files.values().next().unwrap().source.is_empty());
     }
 
     #[test]
@@ -2264,7 +2677,14 @@ mod tests {
             use ui::widget::Widget as _;
 
             let (app, _doc) = fresh();
-            let tree = app.accessibility().expect("Typst semantics");
+            let mut tree = app.accessibility().expect("Typst semantics");
+            tree.children.insert(
+                0,
+                app.editor
+                    .widget()
+                    .accessibility()
+                    .expect("hosted source semantics"),
+            );
             assert_eq!(tree.role, ui::a11y::Role::Document);
             assert_eq!(tree.children[0].role, ui::a11y::Role::MultilineTextInput);
             assert_eq!(tree.children[1].role, ui::a11y::Role::Canvas);
@@ -2319,7 +2739,17 @@ mod tests {
             app.harness()
                 .perform_a11y_action(more, &ui::a11y::Action::Activate)
                 .unwrap();
-            for command in ["Open", "Save", "Export PDF", "Compile"] {
+            for command in [
+                "Open",
+                "Save",
+                "Export PDF",
+                "Outline / Files",
+                "Bold",
+                "Italic",
+                "Math",
+                "Cite",
+                "Section",
+            ] {
                 assert!(
                     app.harness().a11y_node_named(command).is_some(),
                     "published command {command}"
@@ -2464,7 +2894,12 @@ mod tests {
                 .with_widget(|surface: &mut TypstApp| surface.chrome.toolbar_names())
                 .unwrap();
             for wanted in [
-                "Compile",
+                "Outline / Files",
+                "Bold",
+                "Italic",
+                "Math",
+                "Cite",
+                "Section",
                 "Save",
                 "Open",
                 "Export PDF",

@@ -5,21 +5,25 @@
 //! [`CompileOutput`] (decoded page bitmaps + flattened diagnostics), which is
 //! `Send` and trivially cacheable in widget state.
 //!
-//! A minimal [`World`] implementation backs compilation. We need only one
-//! in-memory source file (`/main.typ`) plus the fonts embedded by
-//! `typst-assets` (plus the shared Windows emoji face). In the browser the
+//! An in-memory project [`World`] backs compilation, alongside the fonts
+//! embedded by `typst-assets` (plus the shared Windows emoji face). All project
+//! files must be supplied by the caller; includes and bibliography reads never
+//! fall back to the host filesystem or network. In the browser the
 //! same fonts arrive as host data after the editor opens, keeping 9 MiB out
 //! of the page's first download. There is no package resolution, no
 //! filesystem, and the only clock is the toolkit's (`ui::clock`), so a capture
 //! shows the same date on every run.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use typst::diag::{FileError, FileResult, Severity, SourceDiagnostic};
-use typst::foundations::{Bytes, Datetime, Duration};
+use typst::foundations::{Bytes, Datetime, Duration, NativeElement};
+use typst::introspection::Introspector;
 use typst::layout::{Frame, FrameItem, Point as TypstPoint, Transform};
-use typst::syntax::{DiagSpanKind, FileId, Source};
+use typst::model::HeadingElem;
+use typst::syntax::{DiagSpanKind, FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook, TextItem};
 use typst::utils::{LazyHash, Scalar};
 use typst::{Library, LibraryExt, World};
@@ -90,12 +94,28 @@ pub struct TextCell {
     pub text: String,
 }
 
+/// A compiled heading destination in the edited main source. Unlike rendered
+/// title matching, this distinguishes duplicate headings and outline entries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeadingPosition {
+    /// One-based line of the heading's source span in the main file.
+    pub line: usize,
+    /// Zero-based physical page index, independent of printed page numbering.
+    pub page: usize,
+    /// Coordinates in typographic points from the page's top-left corner.
+    pub x_pt: f64,
+    pub y_pt: f64,
+}
+
 /// The full result of one compile pass.
 #[derive(Clone)]
 pub struct CompileOutput {
     pub pages: Vec<PageImage>,
     /// Extracted selectable text, one entry per page (parallel to `pages`).
     pub page_text: Vec<Vec<TextRun>>,
+    /// Heading destinations keyed by one-based source line in the main file.
+    /// Empty when compilation fails; included files have no main-source key.
+    pub heading_positions: Vec<HeadingPosition>,
     pub diagnostics: Vec<Diagnostic>,
     /// Wall-clock compile+render time in milliseconds.
     pub elapsed_ms: u128,
@@ -251,25 +271,53 @@ impl WorldParts {
     }
 }
 
-/// Per-compile world: shares the heavy [`WorldParts`] by `Arc`, owns only the
-/// one in-memory source file.
+/// Per-compile world: shares the heavy [`WorldParts`] by `Arc`, and owns an
+/// immutable snapshot of the project's UTF-8 files.
 struct TypstWorld {
     parts: Arc<WorldParts>,
     main_id: FileId,
     main: Source,
+    files: HashMap<FileId, Source>,
 }
 
 impl TypstWorld {
-    fn new(parts: Arc<WorldParts>, src: &str) -> Self {
-        // `/main.typ` in the project root: the one file this world serves.
-        let main = Source::detached(src);
-        let main_id = main.id();
-        Self {
+    fn new(
+        parts: Arc<WorldParts>,
+        main_name: &str,
+        src: &str,
+        files: &[(String, String)],
+    ) -> Result<Self, Diagnostic> {
+        let main_id = project_file_id(main_name)?;
+        let main = Source::new(main_id, src.to_owned());
+        let mut files: HashMap<_, _> = files
+            .iter()
+            .map(|(name, text)| {
+                let id = project_file_id(name)?;
+                Ok((id, Source::new(id, text.clone())))
+            })
+            .collect::<Result<_, Diagnostic>>()?;
+        // The edited buffer wins over a saved copy of the same project file.
+        files.insert(main_id, main.clone());
+        Ok(Self {
             parts,
             main_id,
             main,
-        }
+            files,
+        })
     }
+}
+
+fn project_file_id(name: &str) -> Result<FileId, Diagnostic> {
+    let path = VirtualPath::new(name).map_err(|error| Diagnostic {
+        kind: DiagKind::Error,
+        message: format!("invalid project file path `{name}`: {error}"),
+        line: None,
+        col: None,
+        end_line: None,
+        end_col: None,
+        hints: Vec::new(),
+    })?;
+    Ok(FileId::new(RootedPath::new(VirtualRoot::Project, path)))
 }
 
 impl World for TypstWorld {
@@ -283,22 +331,16 @@ impl World for TypstWorld {
         self.main_id
     }
     fn source(&self, id: FileId) -> FileResult<Source> {
-        if id == self.main_id {
-            Ok(self.main.clone())
-        } else {
-            Err(FileError::NotFound(PathBuf::from(
-                id.vpath().get_without_slash(),
-            )))
-        }
+        self.files
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| FileError::NotFound(PathBuf::from(id.vpath().get_without_slash())))
     }
     fn file(&self, id: FileId) -> FileResult<Bytes> {
-        if id == self.main_id {
-            Ok(Bytes::new(self.main.text().to_string().into_bytes()))
-        } else {
-            Err(FileError::NotFound(PathBuf::from(
-                id.vpath().get_without_slash(),
-            )))
-        }
+        self.files
+            .get(&id)
+            .map(|source| Bytes::new(source.text().as_bytes().to_vec()))
+            .ok_or_else(|| FileError::NotFound(PathBuf::from(id.vpath().get_without_slash())))
     }
     fn font(&self, index: usize) -> Option<Font> {
         self.parts.fonts.get(index).cloned()
@@ -337,8 +379,34 @@ fn civil_from_days(days: i64) -> (i32, u8, u8) {
 /// bad input — compiler errors are returned as [`Diagnostic`]s with an empty
 /// page list.
 pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> CompileOutput {
+    compile_project(parts, "main.typ", src, &[], pixel_per_pt)
+}
+
+/// Compile and rasterise an immutable in-memory project snapshot. Names are
+/// project-root-relative paths; Typst resolves includes relative to each source
+/// file's directory. `src` overrides any entry matching `main_name` in `files`.
+/// Missing files and packages produce diagnostics, never host I/O.
+pub fn compile_project(
+    parts: &Arc<WorldParts>,
+    main_name: &str,
+    src: &str,
+    files: &[(String, String)],
+    pixel_per_pt: f32,
+) -> CompileOutput {
     let started = ui::time::now();
-    let world = TypstWorld::new(parts.clone(), src);
+    let world = match TypstWorld::new(parts.clone(), main_name, src, files) {
+        Ok(world) => world,
+        Err(error) => {
+            return CompileOutput {
+                pages: Vec::new(),
+                page_text: Vec::new(),
+                heading_positions: Vec::new(),
+                diagnostics: vec![error],
+                elapsed_ms: started.elapsed().as_millis(),
+                ok: false,
+            };
+        }
+    };
 
     let result = typst::compile::<PagedDocument>(&world);
     let warnings = result.warnings;
@@ -348,8 +416,9 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> 
         render_bleed: false,
     };
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    let (pages, page_text, ok) = match result.output {
+    let (pages, page_text, heading_positions, ok) = match result.output {
         Ok(document) => {
+            let heading_positions = extract_heading_positions(&world, &document);
             let mut imgs = Vec::with_capacity(document.pages().len());
             let mut texts = Vec::with_capacity(document.pages().len());
             for page in document.pages() {
@@ -361,13 +430,13 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> 
                 imgs.push(img);
                 texts.push(extract_page_text(&page.frame));
             }
-            (imgs, texts, true)
+            (imgs, texts, heading_positions, true)
         }
         Err(errors) => {
             for d in &errors {
                 diagnostics.push(flatten(&world, d));
             }
-            (Vec::new(), Vec::new(), false)
+            (Vec::new(), Vec::new(), Vec::new(), false)
         }
     };
 
@@ -383,6 +452,7 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> 
     CompileOutput {
         pages,
         page_text,
+        heading_positions,
         diagnostics,
         elapsed_ms: started.elapsed().as_millis(),
         ok,
@@ -399,7 +469,21 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> 
 /// Returns the flattened compiler [`Diagnostic`]s when `src` fails to compile,
 /// or when the PDF backend fails on an otherwise-valid document.
 pub fn compile_pdf(parts: &Arc<WorldParts>, src: &str) -> Result<Vec<u8>, Vec<Diagnostic>> {
-    let world = TypstWorld::new(parts.clone(), src);
+    compile_project_pdf(parts, "main.typ", src, &[])
+}
+
+/// Export the same in-memory project snapshot used by [`compile_project`].
+///
+/// # Errors
+/// Returns flattened compiler or PDF backend diagnostics when export fails.
+pub fn compile_project_pdf(
+    parts: &Arc<WorldParts>,
+    main_name: &str,
+    src: &str,
+    files: &[(String, String)],
+) -> Result<Vec<u8>, Vec<Diagnostic>> {
+    let world =
+        TypstWorld::new(parts.clone(), main_name, src, files).map_err(|error| vec![error])?;
     let flatten_all = |errors: &[SourceDiagnostic]| -> Vec<Diagnostic> {
         errors.iter().map(|d| flatten(&world, d)).collect()
     };
@@ -410,6 +494,27 @@ pub fn compile_pdf(parts: &Arc<WorldParts>, src: &str) -> Result<Vec<u8>, Vec<Di
     let bytes = typst_pdf::pdf(&document, &options).map_err(|errors| flatten_all(&errors))?;
     comemo::evict(8);
     Ok(bytes)
+}
+
+fn extract_heading_positions(world: &TypstWorld, document: &PagedDocument) -> Vec<HeadingPosition> {
+    let introspector = document.introspector();
+    introspector
+        .query(&HeadingElem::ELEM.select())
+        .iter()
+        .filter_map(|heading| {
+            // A line in an include is not a line in the edited buffer. Headings
+            // without a resolvable main-source span also have no source key.
+            let node = world.main.find(heading.span())?;
+            let (line, _) = byte_to_line_col(world.main.text(), node.range().start);
+            let position = introspector.position(heading.location()?)?;
+            Some(HeadingPosition {
+                line,
+                page: position.page.get() - 1,
+                x_pt: position.point.x.to_pt(),
+                y_pt: position.point.y.to_pt(),
+            })
+        })
+        .collect()
 }
 
 /// Walk a compiled page frame and pull out every run of shaped text with its
@@ -612,7 +717,8 @@ mod tests {
         #[cfg(target_os = "windows")]
         {
             let parts = WorldParts::new();
-            let world = TypstWorld::new(parts, "= Native Grün 🌍");
+            let world = TypstWorld::new(parts, "main.typ", "= Native Grün 🌍", &[])
+                .expect("valid project path");
             let output = typst::compile::<PagedDocument>(&world)
                 .output
                 .expect("emoji document compiles");
@@ -683,6 +789,153 @@ mod tests {
                 "a real single-page PDF is more than a stub"
             );
         }
+    }
+
+    #[test]
+    fn heading_destinations_distinguish_outline_entries_and_duplicate_titles() {
+        let parts = WorldParts::new();
+        let source = "#set page(width: 300pt, height: 420pt, margin: 30pt)\n#outline()\n#pagebreak()\n= Repeated\nFirst body.\n#pagebreak()\n= Repeated\nSecond body.\n";
+        let output = compile_source(&parts, source, 1.0);
+        assert!(output.ok, "{:?}", output.diagnostics);
+        let first = output
+            .heading_positions
+            .iter()
+            .find(|pos| pos.line == 4)
+            .expect("first source heading has a destination");
+        let second = output
+            .heading_positions
+            .iter()
+            .find(|pos| pos.line == 7)
+            .expect("second source heading has a destination");
+        assert_eq!(first.page, 1, "not the outline entry on page zero");
+        assert_eq!(second.page, 2, "duplicate title keeps its own location");
+        for position in [first, second] {
+            assert!(position.x_pt.is_finite() && position.x_pt >= 30.0);
+            assert!(position.y_pt.is_finite() && position.y_pt >= 30.0);
+            assert!(position.y_pt < output.pages[position.page].height_pt);
+        }
+    }
+
+    #[test]
+    fn heading_destinations_keep_same_page_positions_and_exclude_includes() {
+        let parts = WorldParts::new();
+        let source = "#include \"body.typ\"\n= Repeated\nBody.\n#v(60pt)\n= Repeated";
+        let files = vec![("docs/body.typ".into(), "= Included".into())];
+        let output = compile_project(&parts, "docs/main.typ", source, &files, 1.0);
+        assert!(output.ok, "{:?}", output.diagnostics);
+        assert_eq!(output.heading_positions.len(), 2);
+        let first = output.heading_positions[0];
+        let second = output.heading_positions[1];
+        assert_eq!((first.line, second.line), (2, 5));
+        assert_eq!((first.page, second.page), (0, 0));
+        assert!(second.y_pt > first.y_pt + 60.0);
+    }
+
+    #[test]
+    fn project_compiles_relative_includes_and_bibliography_and_exports_pdf() {
+        let parts = WorldParts::new();
+        let source = "#include \"chapters/body.typ\"\n\nA citation @snapshot.\n#bibliography(\"references.bib\")";
+        let files = vec![
+            ("docs/paper.typ".into(), "#stale_saved_buffer".into()),
+            (
+                "docs/chapters/body.typ".into(),
+                "#include \"../shared.typ\"".into(),
+            ),
+            ("docs/shared.typ".into(), "= Included snapshot".into()),
+            (
+                "docs/references.bib".into(),
+                "@article{snapshot, title={Snapshot bibliography}, author={Doe, Jane}, year={2026}, journal={Example Journal}}".into(),
+            ),
+            // A root-relative lookup instead of a source-relative lookup fails.
+            ("references.bib".into(), "not a bibliography".into()),
+        ];
+        let output = compile_project(&parts, "docs/paper.typ", source, &files, 1.0);
+        assert!(output.ok, "{:?}", output.diagnostics);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let text: String = output
+            .page_text
+            .iter()
+            .flatten()
+            .flat_map(|run| &run.cells)
+            .map(|cell| cell.text.as_str())
+            .collect();
+        assert!(text.contains("Included snapshot"), "{text}");
+        assert!(text.contains("Snapshot bibliography"), "{text}");
+        let pdf = compile_project_pdf(&parts, "docs/paper.typ", source, &files)
+            .expect("the project exports with the same includes and bibliography");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 400);
+    }
+
+    #[test]
+    fn project_missing_files_fail_without_host_fallback() {
+        let parts = WorldParts::new();
+        for source in [
+            "Main\n#include \"missing.typ\"",
+            "Main\n#bibliography(\"missing.bib\")",
+            "Main\n#read(\"/etc/passwd\")",
+            "Main\n#import \"@preview/example:0.1.0\": *",
+        ] {
+            let output = compile_project(&parts, "docs/paper.typ", source, &[], 1.0);
+            assert!(!output.ok, "unexpectedly compiled {source}");
+            assert!(output.pages.is_empty());
+            assert!(output.heading_positions.is_empty());
+            let error = output
+                .diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.kind == DiagKind::Error)
+                .expect("missing files produce an error");
+            assert_eq!(error.line, Some(2), "{error:?}");
+            assert!(error.col.is_some(), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn project_diagnostics_only_resolve_main_file_spans() {
+        let parts = WorldParts::new();
+        let files = vec![("docs/body.typ".into(), "Body\n#undefined_in_body".into())];
+        let output = compile_project(
+            &parts,
+            "docs/paper.typ",
+            "#include \"body.typ\"",
+            &files,
+            1.0,
+        );
+        assert!(!output.ok);
+        let error = output
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("undefined_in_body"))
+            .expect("included source error is reported");
+        assert_eq!(error.line, None);
+        assert_eq!(error.col, None);
+        assert_eq!(error.end_line, None);
+        assert_eq!(error.end_col, None);
+
+        // A new snapshot must not reuse the previous include's cached source.
+        let files = vec![("docs/body.typ".into(), "Fixed body".into())];
+        let output = compile_project(
+            &parts,
+            "docs/paper.typ",
+            "#include \"body.typ\"\n#undefined_in_main",
+            &files,
+            1.0,
+        );
+        assert!(!output.ok);
+        assert_eq!(output.error_count(), 1, "{:?}", output.diagnostics);
+        assert_eq!(output.diagnostics[0].line, Some(2));
+        assert!(output.diagnostics[0].message.contains("undefined_in_main"));
+    }
+
+    #[test]
+    fn invalid_project_paths_are_diagnostics_not_panics() {
+        let parts = WorldParts::new();
+        let output = compile_project(&parts, "../outside.typ", "Body", &[], 1.0);
+        assert!(!output.ok);
+        assert_eq!(output.error_count(), 1);
+        assert!(output.diagnostics[0].message.contains("../outside.typ"));
+        let files = vec![("../outside.typ".into(), "Body".into())];
+        assert!(compile_project_pdf(&parts, "main.typ", "Body", &files).is_err());
     }
 
     #[test]

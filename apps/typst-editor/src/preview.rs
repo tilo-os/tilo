@@ -488,6 +488,82 @@ impl PreviewPane {
         self.current = i.min(self.images.len().saturating_sub(1));
     }
 
+    /// Scroll to an exact compiled destination: a zero-based page index and
+    /// coordinates in page points. Keeps zoom, places the destination near the
+    /// top, and preserves horizontal pan unless the destination is offscreen.
+    /// Invalid pages or non-finite/negative coordinates leave the view unchanged.
+    pub fn jump_to_location(&mut self, page: usize, x_pt: f64, y_pt: f64) -> bool {
+        let Some(b) = self.boxes.get(page).copied() else {
+            return false;
+        };
+        if !x_pt.is_finite() || !y_pt.is_finite() || x_pt < 0.0 || y_pt < 0.0 {
+            return false;
+        }
+        let target = Point::new(b.x_off + x_pt, b.top + y_pt);
+        let screen = self.viewport.content_point_to_screen(target);
+        let main = self.viewport.rect();
+        let left = main.x0 + self.metrics.view_pad;
+        let right = (main.x1 - self.metrics.view_pad).max(left);
+        let scroll_x = self.viewport.scroll_x() + (screen.x - screen.x.clamp(left, right));
+        self.viewport
+            .set_scroll(scroll_x, target.y * self.viewport.zoom());
+        self.current = page;
+        true
+    }
+
+    /// Scroll to the first occurrence of a heading's rendered text, preserving
+    /// zoom and horizontal pan. Whitespace is collapsed so wrapped headings and
+    /// headings split across shaped runs still match. Returns `false` without
+    /// moving when the text is empty or absent from the compiled text layer.
+    ///
+    /// The extracted layer has no heading tags: repeated text resolves to its
+    /// first occurrence in reading order, not necessarily a semantic heading.
+    pub fn jump_to_heading(&mut self, heading: &str) -> bool {
+        let heading = heading.split_whitespace().collect::<Vec<_>>().join(" ");
+        if heading.is_empty() {
+            return false;
+        }
+        let logical = self.logical_text();
+        let offsets = self.logical_offsets();
+        let mut normalized = String::new();
+        let mut source_bytes = Vec::new();
+        for (byte, ch) in logical.char_indices() {
+            let ch = if ch.is_whitespace() { ' ' } else { ch };
+            if ch == ' ' && normalized.ends_with(' ') {
+                continue;
+            }
+            normalized.push(ch);
+            source_bytes.extend(std::iter::repeat_n(byte, ch.len_utf8()));
+        }
+        let Some((start, _)) = normalized.match_indices(&heading).find(|(start, _)| {
+            let before = normalized
+                .get(..*start)
+                .and_then(|text| text.chars().next_back());
+            let after = normalized
+                .get(*start + heading.len()..)
+                .and_then(|text| text.chars().next());
+            !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+        }) else {
+            return false;
+        };
+        // A shaped glyph may contain several characters (a ligature). Resolve
+        // the original byte to its containing cell, not the next cell boundary.
+        let Some(source_byte) = source_bytes.get(start) else {
+            return false;
+        };
+        let index = offsets
+            .partition_point(|&byte| byte <= *source_byte)
+            .saturating_sub(1);
+        let Some(cell) = self.cells.get(index) else {
+            return false;
+        };
+        let target_y = cell.rect.y0 * self.viewport.zoom();
+        let page = cell.line_key.0;
+        self.viewport.set_scroll(self.viewport.scroll_x(), target_y);
+        self.current = page;
+        true
+    }
+
     // ----- pointer -------------------------------------------------------
 
     /// Handle a left-press. Returns `true` when the app should route subsequent
@@ -874,7 +950,7 @@ impl PreviewPane {
             self.refit();
         }
 
-        self.draw_main(scene, transform, tr, theme);
+        self.draw_main(scene, transform, theme);
         if self.has_thumbs() {
             self.draw_thumbs(scene, transform, tr, theme);
         }
@@ -909,22 +985,13 @@ impl PreviewPane {
         );
     }
 
-    fn draw_main(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_main(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let c = &theme.tokens.colors;
         let main = self.viewport.rect();
-        let page_count = self.images.len();
-        let caption = theme.text(TextRole::Caption).numeric();
-        let caption_gap = f64::from(theme.tokens.spacing.s2);
         let page_radius = f64::from(theme.tokens.radii.detail);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &main);
 
-        for (i, (b, image)) in self.boxes.iter().zip(self.images.iter_mut()).enumerate() {
+        for (b, image) in self.boxes.iter().zip(self.images.iter_mut()) {
             let tl = self
                 .viewport
                 .content_point_to_screen(Point::new(b.x_off, b.top));
@@ -953,17 +1020,6 @@ impl PreviewPane {
                 page_rect,
                 ui::surface::edge_on(c.surfaces.content),
                 1.0,
-            );
-
-            // Page caption under the page.
-            let label = format!("Page {} of {page_count}", i + 1);
-            tr.draw_style(
-                scene,
-                &label,
-                c.text_dim,
-                transform * Affine::translate((page_rect.x0, page_rect.y1 + caption_gap)),
-                None,
-                &caption,
             );
         }
 
@@ -1173,6 +1229,151 @@ mod tests {
         p.set_pages_with_text(&pages, &[runs]);
         p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
         p
+    }
+
+    #[test]
+    fn exact_heading_jump_uses_source_destinations_not_outline_text() {
+        let parts = crate::compile::WorldParts::new();
+        let source = "#set page(width: 300pt, height: 420pt, margin: 30pt)\n#outline()\n#pagebreak()\n= Repeated\nFirst body.\n#pagebreak()\n= Repeated\nSecond body.";
+        let output = crate::compile::compile_source(&parts, source, 1.0);
+        assert!(output.ok, "{:?}", output.diagnostics);
+        let mut p = PreviewPane::new();
+        p.set_rect(Rect::new(0.0, 0.0, 400.0, 180.0));
+        p.set_pages_with_text(&output.pages, &output.page_text);
+        assert!(p.jump_to_heading("Repeated"));
+        assert_eq!(
+            p.current_page(),
+            0,
+            "title fallback finds the outline entry"
+        );
+        let zoom = p.viewport.zoom();
+        for (line, page) in [(4, 1), (7, 2)] {
+            let position = output
+                .heading_positions
+                .iter()
+                .find(|pos| pos.line == line)
+                .expect("source heading has a compiled destination");
+            assert!(p.jump_to_location(position.page, position.x_pt, position.y_pt));
+            assert_eq!(p.current_page(), page);
+            assert_eq!(p.viewport.zoom(), zoom);
+            let target = p.viewport.content_point_to_screen(Point::new(
+                p.boxes[page].x_off + position.x_pt,
+                p.boxes[page].top + position.y_pt,
+            ));
+            assert!((target.y - p.viewport.rect().y0 - p.metrics.view_pad).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn exact_location_jump_preserves_pan_when_visible_and_reveals_hidden_x() {
+        let mut p = pane();
+        p.demo_pan_view(3.0, 0.5, 0.0);
+        let zoom = p.viewport.zoom();
+        let pan = p.viewport.scroll_x();
+        assert!(p.jump_to_location(0, 100.0, 240.0));
+        assert_eq!(p.viewport.scroll_x(), pan);
+        assert_eq!(p.viewport.zoom(), zoom);
+        assert!((p.viewport.scroll_y() - 240.0 * zoom).abs() < 0.01);
+        assert!(p.jump_to_location(0, 190.0, 480.0));
+        assert!(
+            p.viewport.scroll_x() > pan,
+            "reveals a destination to the right"
+        );
+        let target = p.viewport.content_point_to_screen(Point::new(190.0, 480.0));
+        assert!(target.x <= p.viewport.rect().x1 - p.metrics.view_pad + 0.01);
+    }
+
+    #[test]
+    fn invalid_location_jump_leaves_view_unchanged() {
+        let mut p = pane();
+        p.demo_set_view(1.5, 0.4);
+        let before = (
+            p.viewport.scroll_x(),
+            p.viewport.scroll_y(),
+            p.current_page(),
+        );
+        for (page, x, y) in [
+            (1, 20.0, 40.0),
+            (0, f64::NAN, 40.0),
+            (0, 20.0, f64::INFINITY),
+            (0, -1.0, 40.0),
+            (0, 20.0, -1.0),
+        ] {
+            assert!(!p.jump_to_location(page, x, y));
+            assert_eq!(
+                (
+                    p.viewport.scroll_x(),
+                    p.viewport.scroll_y(),
+                    p.current_page()
+                ),
+                before
+            );
+        }
+        assert!(!PreviewPane::new().jump_to_location(0, 20.0, 40.0));
+    }
+
+    #[test]
+    fn heading_jump_uses_compiled_runs_and_preserves_zoom_and_pan() {
+        let mut p = pane();
+        p.set_pages_with_text(
+            &[page(200.0, 800.0), page(200.0, 800.0)],
+            &[
+                vec![line_run(40.0, "Introduction", 20.0, 8.0)],
+                vec![
+                    line_run(180.0, "A gentler ", 20.0, 8.0),
+                    line_run(180.0, "handoff", 100.0, 8.0),
+                ],
+            ],
+        );
+        p.demo_pan_view(1.9, 0.5, 0.0);
+        let zoom = p.viewport.zoom();
+        let pan = p.viewport.scroll_x();
+        assert!(p.jump_to_heading("A gentler handoff"));
+        assert_eq!(p.current_page(), 1);
+        assert_eq!(p.viewport.zoom(), zoom);
+        assert_eq!(p.viewport.scroll_x(), pan);
+        let target = p
+            .viewport
+            .content_point_to_screen(Point::new(p.boxes[1].x_off + 20.0, p.boxes[1].top + 180.0));
+        assert!((target.y - p.viewport.rect().y0 - p.metrics.view_pad).abs() < 0.01);
+    }
+
+    #[test]
+    fn heading_jump_normalizes_wrapping_and_unicode_and_chooses_first_match() {
+        let mut p = pane();
+        p.set_pages_with_text(
+            &[page(200.0, 800.0)],
+            &[vec![
+                line_run(200.0, "Élan\u{a0}and", 20.0, 8.0),
+                line_run(220.0, "ﬂow", 20.0, 8.0),
+                line_run(500.0, "Élan and ﬂow", 20.0, 8.0),
+            ]],
+        );
+        assert!(p.jump_to_heading(" \tÉlan   and\nﬂow "));
+        assert_eq!(p.viewport.scroll_y(), 200.0 * p.viewport.zoom());
+    }
+
+    #[test]
+    fn heading_jump_missing_or_empty_text_leaves_view_unchanged() {
+        let mut p = pane();
+        p.demo_set_view(1.5, 0.4);
+        let before = (
+            p.viewport.scroll_x(),
+            p.viewport.scroll_y(),
+            p.current_page(),
+        );
+        for heading in ["", " \t\n", "missing heading", "worlds", "ello"] {
+            assert!(!p.jump_to_heading(heading));
+            assert_eq!(
+                (
+                    p.viewport.scroll_x(),
+                    p.viewport.scroll_y(),
+                    p.current_page()
+                ),
+                before
+            );
+        }
+        assert!(!PreviewPane::new().jump_to_heading("Hello"));
     }
 
     #[test]

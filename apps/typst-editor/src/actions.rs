@@ -1,7 +1,7 @@
 //! The Typst editor's own operations: compile, open, save and export the
 //! file shown (effects of the compiler and the filesystem), and zoom and
-//! arrange the preview (views). None of them changes the workspace document;
-//! an open or a save that does records what it changed through the
+//! arrange the preview (views). Formatting splices the shared source through
+//! the bound editor; open and save record what changed through the
 //! workspace's verbs ([`crate::resource::Workspace`]). Live Problems
 //! rows and preview pages are published beneath the workspace by the
 //! surface.
@@ -21,6 +21,31 @@ pub enum TypstEffect {
     /// Recompile.
     #[effect(idempotent)]
     Compile,
+    /// Toggle files and outline.
+    #[effect(view)]
+    Outline,
+    /// Bold selection.
+    Bold,
+    /// Italic selection.
+    Italic,
+    /// Insert math.
+    Math,
+    /// Insert citation.
+    Cite,
+    /// Insert section.
+    Section,
+    /// Go to heading.
+    #[effect(view, row)]
+    GoToHeading {
+        #[param("The one-based source line")]
+        line: usize,
+    },
+    /// Open project file.
+    #[effect(view, row)]
+    OpenProjectFile {
+        #[param("The project file's stable id")]
+        id: String,
+    },
     /// Save Typst file.
     #[effect(job, cancellable, destructive)]
     Save {

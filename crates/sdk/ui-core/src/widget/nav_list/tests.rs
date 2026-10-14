@@ -111,6 +111,29 @@ fn the_keyboard_moves_the_selection_and_skips_headers() {
 }
 
 #[test]
+fn activation_repeats_without_repeating_selection_changes() {
+    let chosen = Rc::new(Cell2::new(Vec::<String>::new()));
+    let activated = Rc::new(Cell2::new(Vec::<String>::new()));
+    let selection = Rc::clone(&chosen);
+    let activation = Rc::clone(&activated);
+    let list = NavList::new(mailboxes())
+        .on_select(move |id| selection.borrow_mut().push(id))
+        .on_activate(move |id| activation.borrow_mut().push(id));
+    let mut h = harness(list, Theme::dark());
+    let row = h
+        .root::<NavList>()
+        .row_rect("sent")
+        .expect("shown destination");
+    click_at(&mut h, row.center().x, row.center().y);
+    click_at(&mut h, row.center().x, row.center().y);
+    // Direct root dispatch does not apply the host's pointer focus request.
+    focus(&mut h);
+    assert!(key(&mut h, Key::Named(NamedKey::Enter)));
+    assert_eq!(chosen.borrow().as_slice(), ["sent"]);
+    assert_eq!(activated.borrow().as_slice(), ["sent", "sent", "sent"]);
+}
+
+#[test]
 fn a_section_that_does_not_fold_stays_open() {
     let list = NavList::new(vec![NavSection::new(
         "library",

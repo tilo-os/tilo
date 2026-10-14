@@ -24,7 +24,12 @@ use ui::widget::{Button, ControlSize, Text, Widget};
 /// What a control asked the editor to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
-    Compile,
+    ToggleOutline,
+    Bold,
+    Italic,
+    Math,
+    Cite,
+    Section,
     Save,
     Open,
     ExportPdf,
@@ -110,14 +115,24 @@ fn build_toolbar(
     use crate::actions::TypstEffect;
     let label = problems_label(problems);
     // Overflow folds the trailing commands first, so the order is the
-    // priority: what the person needs at every width (compile, and whether the
-    // source has problems) leads, the preview's zoom follows, and the file
+    // priority: document navigation leads, formatting follows, and the file
     // commands, which have shortcuts, fold into the More menu first.
     Toolbar::new(Orientation::Horizontal)
-        .push_button("Compile", command(queue, Command::Compile))
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Compile)))
+        .push_button("Outline / Files", command(queue, Command::ToggleOutline))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Outline)))
         .push_toggle(&label, shown, command(queue, Command::ToggleProblems))
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Problems)))
+        .push_separator()
+        .push_button("Bold", command(queue, Command::Bold))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Bold)))
+        .push_button("Italic", command(queue, Command::Italic))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Italic)))
+        .push_button("Math", command(queue, Command::Math))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Math)))
+        .push_button("Cite", command(queue, Command::Cite))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Cite)))
+        .push_button("Section", command(queue, Command::Section))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Section)))
         .push_separator()
         .push_icon(Icon::Minus, "Zoom out", command(queue, Command::ZoomOut))
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::ZoomOut)))

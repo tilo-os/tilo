@@ -38,6 +38,12 @@ pub struct TypstFile {
     /// opening and saving change it.
     #[model(readonly)]
     pub path: Option<Atom>,
+    /// Project path
+    ///
+    /// Stable relative include path, independent of the host save destination.
+    /// Older records fall back to their file name until they are opened again.
+    #[model(readonly)]
+    pub project_path: Option<Atom>,
     /// Source
     ///
     /// The Typst text, merged character by character.
@@ -72,6 +78,7 @@ impl Workspace {
             cx.id(),
             TypstFile {
                 name: Atom(name.trim().to_owned()),
+                project_path: Some(Atom(name.trim().to_owned())),
                 path: path.map(Atom),
                 source: source.unwrap_or_default(),
             },
@@ -88,6 +95,9 @@ impl Workspace {
         #[param("Where it was saved")] path: String,
     ) -> Result<(), Refusal> {
         let file = self.files.get_mut(file).ok_or("no such file")?;
+        if file.project_path.is_none() {
+            file.project_path = Some(file.name.clone());
+        }
         file.name = Atom(file_name(&path));
         file.path = Some(Atom(path));
         Ok(())
@@ -106,6 +116,7 @@ impl Workspace {
     ) -> Result<(), Refusal> {
         let file = self.files.get_mut(file).ok_or("no such file")?;
         file.name = Atom(file_name(&path));
+        file.project_path = Some(Atom(file_name(&path)));
         file.path = Some(Atom(path));
         file.source = source;
         Ok(())
@@ -157,11 +168,20 @@ pub(crate) fn sample_files(scenario: Option<&str>) -> Vec<(Id, TypstFile)> {
             };
             let file = TypstFile {
                 name: Atom(sample.name.to_owned()),
+                project_path: Some(Atom(sample.name.to_owned())),
                 path: None,
                 source: source.to_owned(),
             };
             (sample_id(index), file)
         })
+        .chain(std::iter::once((
+            Id::from_raw("sample-references"),
+            TypstFile {
+                name: Atom("references.bib".into()),
+                source: "@article{flash,\n  author = {Flash, Tamar and Hogan, Neville},\n  title = {The coordination of arm movements},\n  year = {1985},\n}\n".into(),
+                ..TypstFile::default()
+            },
+        )))
         .collect()
 }
 
@@ -281,13 +301,21 @@ impl ResourceSurface<Workspace, crate::actions::TypstEffect> for TypstApp {
     }
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
+        fn find(
+            resource: ui::tilo_actions::Resource,
+            id: &str,
+        ) -> Option<ui::tilo_actions::Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource);
+            }
+            resource
+                .children
+                .into_iter()
+                .find_map(|child| find(child, id))
+        }
         self.live_rows()
             .into_iter()
-            .flat_map(|row| {
-                let resource = row.into_resource();
-                std::iter::once(resource.clone()).chain(resource.children)
-            })
-            .find(|resource| resource.id.as_str() == id)
+            .find_map(|row| find(row.into_resource(), id))
             .map(ui::framework::LiveRow::from_resource)
     }
 }

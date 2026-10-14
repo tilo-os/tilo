@@ -39,6 +39,7 @@ pub mod chrome;
 pub mod compile;
 pub mod diagnostics;
 pub mod editor;
+mod navigation;
 pub mod preview;
 pub mod resource;
 pub mod samples;

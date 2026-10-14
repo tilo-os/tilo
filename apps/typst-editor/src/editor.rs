@@ -16,9 +16,11 @@
 use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::{Modifiers, WindowEvent};
 
 use ui::framework::{Dispatcher, TextControl};
+use ui::presence::{PathSegment, PresenceCtx};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Path;
@@ -30,6 +32,16 @@ use crate::resource::Workspace;
 
 /// Tab expands to this many spaces (soft tabs).
 const TAB_WIDTH: usize = 2;
+
+/// Source syntax inserted around the shared editor's selection, or at its caret.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceFormat {
+    Bold,
+    Italic,
+    Math,
+    Citation,
+    Section,
+}
 
 pub struct SourceEditor {
     /// The shared code-editing widget — caret, selection, clipboard, undo,
@@ -58,7 +70,7 @@ impl SourceEditor {
             .item(&ui::tilo_resource::Id::from_raw(""))
             .source;
         Self {
-            code: TextControl::view_only_at(Self::control_new(), nowhere),
+            code: TextControl::view_only_at(Self::control_new(&nowhere), nowhere),
             dispatcher: None,
             focused: true,
             rect: Rect::ZERO,
@@ -75,10 +87,34 @@ impl Default for SourceEditor {
 }
 
 impl SourceEditor {
-    fn control_new() -> CodeEditor {
-        CodeEditor::local()
+    fn control_new(path: &Path<Workspace, String>) -> CodeEditor {
+        // Collection ids, not their current order, identify the source to peers.
+        let presence_path = path
+            .segments()
+            .iter()
+            .map(|segment| PathSegment::Field(segment.to_string()))
+            .collect();
+        let mut control = CodeEditor::new(presence_path)
+            .with_accessible_name("Typst source")
             .with_language(Language::Typst)
-            .with_tab_width(TAB_WIDTH)
+            .with_tab_width(TAB_WIDTH);
+        control.set_focused(true);
+        control
+    }
+
+    /// Include this control in the host's widget children so the framework
+    /// publishes the real caret/selection and exposes the editor to accessibility.
+    pub fn widget(&self) -> &dyn Widget {
+        &self.code
+    }
+
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+        self.control_mut().set_focused(focused);
+    }
+
+    pub fn widget_mut(&mut self) -> &mut dyn Widget {
+        &mut self.code
     }
 
     fn control(&self) -> &CodeEditor {
@@ -97,7 +133,8 @@ impl SourceEditor {
     /// Show the source at `path`, each edit a splice there once a
     /// dispatcher is attached.
     pub fn follow(&mut self, path: Path<Workspace, String>) {
-        let mut control = Self::control_new();
+        let mut control = Self::control_new(&path);
+        control.set_focused(self.focused);
         control.set_rect(self.rect);
         self.code = TextControl::view_only_at(control, path);
         if let Some(dispatcher) = &self.dispatcher {
@@ -168,6 +205,77 @@ impl SourceEditor {
     /// clicked). `_text` is unused — the widget holds the source.
     pub fn goto_line(&mut self, _text: &str, line_1based: usize) {
         self.control_mut().goto_line(line_1based);
+    }
+
+    /// Insert Typst syntax through the same control and permission-checked
+    /// splice action as typing. Selected text stays selected inside its new
+    /// delimiters; without a selection the caret sits between them. Returns
+    /// whether the edit was accepted. A refused edit restores its selection.
+    pub fn insert_format(
+        &mut self,
+        format: SourceFormat,
+        edits: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        let caret = self.caret();
+        let selection = self.control().inner().selection_anchor_focus_public();
+        let (start, end) = self.control().selection().unwrap_or((caret, caret));
+        let text = self.text();
+        let selected = text.get(start..end).unwrap_or_default();
+        let (prefix, suffix) = match format {
+            SourceFormat::Bold => ("*", "*"),
+            SourceFormat::Italic => ("_", "_"),
+            SourceFormat::Math => ("$", "$"),
+            SourceFormat::Citation => ("@", ""),
+            SourceFormat::Section => {
+                // A heading must start on its own line, and must not absorb
+                // the unselected remainder of the paragraph.
+                let prefix = if start == 0 || text.get(..start).is_some_and(|s| s.ends_with('\n')) {
+                    "= "
+                } else {
+                    "\n= "
+                };
+                let suffix =
+                    if end == text.len() || text.get(end..).is_some_and(|s| s.starts_with('\n')) {
+                        ""
+                    } else {
+                        "\n"
+                    };
+                (prefix, suffix)
+            }
+        };
+        let replacement = format!("{prefix}{selected}{suffix}");
+        let expected = format!(
+            "{}{replacement}{}",
+            text.get(..start).unwrap_or_default(),
+            text.get(end..).unwrap_or_default(),
+        );
+        let inner_start = start + prefix.len();
+        let inner_end = inner_start + selected.len();
+        self.control_mut()
+            .inner_mut()
+            .insert_at_cursor(&replacement);
+        self.submit(edits);
+        if self.text() != expected {
+            if let Some((anchor, focus)) = selection {
+                self.control_mut().set_selection(anchor, focus);
+            } else {
+                self.set_caret(caret);
+            }
+            return false;
+        }
+        if selection.is_some() {
+            let (anchor, focus) = if caret == start {
+                (inner_end, inner_start)
+            } else {
+                (inner_start, inner_end)
+            };
+            self.control_mut().set_selection(anchor, focus);
+        } else {
+            self.set_caret(inner_start);
+        }
+        self.focused = true;
+        self.control_mut().set_focused(true);
+        true
     }
 
     // ----- scrolling -------------------------------------------------------
@@ -280,6 +388,7 @@ impl SourceEditor {
         tr: &mut TextRenderer,
         theme: &Theme,
         diags: &[Diagnostic],
+        presence: &PresenceCtx,
     ) {
         let focused = self.focused;
         self.control_mut().set_focused(focused);
@@ -310,8 +419,37 @@ impl SourceEditor {
         self.control_mut().set_diagnostics(spans);
         let pointer = self.hover.filter(|p| self.rect.contains(*p));
         self.control_mut().set_pointer(pointer);
+        // This is a document on the window ground, not a raised input well.
+        // Keep the shared gutter/current-line lifts subtle on that ground.
+        let mut source_theme = theme.clone();
+        source_theme.tokens.colors.surfaces.raised = theme.tokens.colors.surfaces.content;
+        let mut content = Scene::new();
         self.control_mut()
-            .draw_embedded(scene, transform, tr, theme);
+            .draw(&mut content, transform, tr, &source_theme, presence);
+        // Shape first: caret geometry now includes wrapping, theme scales and
+        // this frame's caret-follow scroll. Clip on a complete visual-row edge
+        // rather than cutting the last line in half at the pane boundary.
+        let clip = self.content_clip(theme);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
+        scene.append(&content, None);
+        scene.pop_layer();
+    }
+
+    fn content_clip(&self, theme: &Theme) -> Rect {
+        let first = self.control().caret_rect(theme, 0);
+        let line = first.height();
+        if line <= 0.0 {
+            return Rect::ZERO;
+        }
+        let top = (first.y0 + ((self.rect.y0 - first.y0) / line).ceil() * line)
+            .clamp(self.rect.y0, self.rect.y1);
+        let bottom = first.y0 + ((self.rect.y1 - first.y0) / line).floor() * line;
+        Rect::new(
+            self.rect.x0,
+            top,
+            self.rect.x1,
+            bottom.clamp(self.rect.y0, self.rect.y1).max(top),
+        )
     }
 
     /// The hover card for the diagnostic under the pointer, drawn in the
@@ -369,6 +507,7 @@ fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::ColorCompat as _;
     use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
 
     /// A workspace whose one file holds `text`, and an editor showing it
@@ -474,6 +613,7 @@ mod tests {
                 &mut TextRenderer::new(),
                 &Theme::dark(),
                 &[warn, err],
+                &PresenceCtx::empty(),
             );
             let severities: Vec<Severity> = ed
                 .control()
@@ -506,7 +646,14 @@ mod tests {
         .iter()
         .enumerate()
         {
-            editor.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, theme, &[]);
+            editor.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr,
+                theme,
+                &[],
+                &PresenceCtx::empty(),
+            );
             let input = editor.control().inner();
             let line = input.body_line_height();
             let gutter = editor.control().gutter_width();
@@ -522,6 +669,229 @@ mod tests {
             let caret = editor.control().caret_rect(theme, 4);
             assert_eq!(editor.control().byte_at_point(caret.center()), 4);
         }
+    }
+
+    #[test]
+    fn formatting_splices_selected_unicode_and_preserves_selection_direction() {
+        use automerge::ReadDoc as _;
+        for (format, expected, selected) in [
+            (SourceFormat::Bold, "before *café λ* after", (8, 16)),
+            (SourceFormat::Italic, "before _café λ_ after", (8, 16)),
+            (SourceFormat::Math, "before $café λ$ after", (8, 16)),
+            (SourceFormat::Citation, "before @café λ after", (8, 16)),
+            (SourceFormat::Section, "before \n= café λ\n after", (10, 18)),
+        ] {
+            for reversed in [false, true] {
+                let (mut doc, mut editor) = showing("before café λ after");
+                editor.attach(ui::framework::testing::detached_dispatcher("author"));
+                let obj = editor.control().inner().bound_obj().unwrap().clone();
+                let (anchor, focus) = if reversed { (15, 7) } else { (7, 15) };
+                editor.control_mut().set_selection(anchor, focus);
+                assert!(editor.insert_format(format, &mut ui::widget::Edits::lend(&mut doc)));
+                assert_eq!(source(&doc), expected);
+                assert_eq!(
+                    doc.text(&obj).unwrap(),
+                    expected,
+                    "the same CRDT Text is spliced"
+                );
+                assert_eq!(editor.text(), expected);
+                assert_eq!(editor.control().selection(), Some(selected));
+                assert_eq!(
+                    editor.caret(),
+                    if reversed { selected.0 } else { selected.1 }
+                );
+                editor.pull(&doc);
+                assert_eq!(editor.text(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn formatting_at_a_caret_inserts_editable_syntax_without_placeholder_copy() {
+        for (format, expected, caret) in [
+            (SourceFormat::Bold, "**", 1),
+            (SourceFormat::Italic, "__", 1),
+            (SourceFormat::Math, "$$", 1),
+            (SourceFormat::Citation, "@", 1),
+            (SourceFormat::Section, "= ", 2),
+        ] {
+            let (mut doc, mut editor) = showing("");
+            editor.attach(ui::framework::testing::detached_dispatcher("author"));
+            assert!(editor.insert_format(format, &mut ui::widget::Edits::lend(&mut doc)));
+            assert_eq!(source(&doc), expected);
+            assert_eq!(editor.caret(), caret);
+            assert_eq!(editor.control().selection(), None);
+        }
+        let (mut doc, mut editor) = showing("paragraph");
+        editor.attach(ui::framework::testing::detached_dispatcher("author"));
+        editor.set_caret(4);
+        assert!(editor.insert_format(
+            SourceFormat::Section,
+            &mut ui::widget::Edits::lend(&mut doc)
+        ));
+        assert_eq!(source(&doc), "para\n= \ngraph");
+        assert_eq!(editor.caret(), 7);
+    }
+
+    #[test]
+    fn view_only_formatting_restores_the_original_text_caret_and_selection() {
+        let (mut doc, mut editor) = showing("café λ");
+        editor.control_mut().set_selection(8, 0);
+        assert!(!editor.insert_format(SourceFormat::Bold, &mut ui::widget::Edits::lend(&mut doc)));
+        assert_eq!(source(&doc), "café λ");
+        assert_eq!(editor.text(), "café λ");
+        assert_eq!(editor.caret(), 0);
+        assert_eq!(editor.control().selection(), Some((0, 8)));
+        editor.set_caret(5);
+        assert!(!editor.insert_format(SourceFormat::Math, &mut ui::widget::Edits::lend(&mut doc)));
+        assert_eq!(editor.caret(), 5);
+        assert_eq!(editor.control().selection(), None);
+    }
+
+    #[test]
+    fn source_clips_on_complete_visual_rows_after_scaling_wrapping_and_scrolling() {
+        let mut editor = SourceEditor::new();
+        editor.set_text(&"a long source line that wraps many times at narrow widths\n".repeat(30));
+        let mut tr = TextRenderer::new();
+        for theme in [
+            Theme::dark(),
+            Theme::light(),
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.2),
+        ] {
+            for height in [5.0, 103.0, 231.0] {
+                editor.set_rect(Rect::new(19.0, 27.0, 233.0, 27.0 + height));
+                for scroll in [0.0, 13.5, 51.25] {
+                    editor.scroll_by(0.0, scroll, "");
+                    let mut rendered = Scene::new();
+                    editor.draw(
+                        &mut rendered,
+                        Affine::IDENTITY,
+                        &mut tr,
+                        &theme,
+                        &[],
+                        &PresenceCtx::empty(),
+                    );
+                    let clip = editor.content_clip(&theme);
+                    let mut clipping = Scene::new();
+                    clipping.push_layer(
+                        Fill::NonZero,
+                        BlendMode::default(),
+                        1.0,
+                        Affine::IDENTITY,
+                        &clip,
+                    );
+                    assert!(
+                        rendered
+                            .encoding()
+                            .path_data
+                            .starts_with(&clipping.encoding().path_data),
+                        "the complete-row clip is actually encoded before content"
+                    );
+                    assert_eq!(rendered.encoding().n_open_clips, 0);
+                    assert!((clip.x0 - editor.rect.x0).abs() < f64::EPSILON);
+                    assert!((clip.x1 - editor.rect.x1).abs() < f64::EPSILON);
+                    let first = editor.control().caret_rect(&theme, 0);
+                    assert!(clip.y0 >= editor.rect.y0);
+                    assert!(clip.y0 - editor.rect.y0 < first.height());
+                    assert!(clip.y1 <= editor.rect.y1);
+                    if clip.height() > 0.0 {
+                        let rows = (clip.y1 - first.y0) / first.height();
+                        assert!(
+                            (rows - rows.round()).abs() < 0.001,
+                            "no partial final row: {rows}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn active_line_is_a_subtle_lift_of_the_document_ground_only_when_focused() {
+        let mut editor = SourceEditor::new();
+        editor.set_text("a note\n");
+        editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        let mut tr = TextRenderer::new();
+        for theme in [Theme::dark(), Theme::light()] {
+            let band = theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.content, 0.5)
+                .with_alpha_factor(0.6)
+                .premultiply()
+                .to_rgba8()
+                .to_u32();
+            for focused in [true, false] {
+                editor.focused = focused;
+                let mut rendered = Scene::new();
+                editor.draw(
+                    &mut rendered,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &[],
+                    &PresenceCtx::empty(),
+                );
+                assert_eq!(rendered.encoding().draw_data.contains(&band), focused);
+            }
+        }
+    }
+
+    #[test]
+    fn source_uses_real_file_scoped_presence_and_publishes_its_selection() {
+        use ui::collaboration::PresencePayload;
+        use ui::presence::capability::{presence_key, subtree_presence};
+        let (_doc, mut editor) = showing("= Heading\nA note\n");
+        editor.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+        let key = presence_key(editor.widget()).unwrap();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut plain = Scene::new();
+        editor.draw(
+            &mut plain,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &[],
+            &PresenceCtx::empty(),
+        );
+        let mut presence = PresenceCtx::empty();
+        presence.set_caret(&key, ui::UserId("collaborator".into()), 3);
+        presence.set_display_name(ui::UserId("collaborator".into()), "Ada");
+        let mut with_peer = Scene::new();
+        editor.draw(
+            &mut with_peer,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &[],
+            &presence,
+        );
+        assert!(
+            with_peer.encoding().draw_data.len() > plain.encoding().draw_data.len(),
+            "the actual peer caret and label are painted"
+        );
+        editor.control_mut().set_selection(2, 5);
+        assert!(
+            matches!(subtree_presence(editor.widget()).as_slice(), [(scope, PresencePayload::Selection { start: 2, end: 5 })] if scope == &key)
+        );
+        editor.follow(
+            Workspace::paths()
+                .files
+                .item(&Id::from_raw("other-file"))
+                .source,
+        );
+        assert_ne!(presence_key(editor.widget()).unwrap(), key);
+        editor.focused = false;
+        editor.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &[],
+            &presence,
+        );
+        assert!(subtree_presence(editor.widget()).is_empty());
     }
 
     #[test]

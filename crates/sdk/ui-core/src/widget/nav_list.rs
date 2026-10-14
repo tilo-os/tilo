@@ -815,6 +815,7 @@ struct NavShared {
     item_actions: Vec<String>,
     section_actions: HashMap<NodeId, String>,
     on_select: Callback<String>,
+    on_activate: Callback<String>,
     selection_actions: HashMap<String, crate::widget::ActionEmitter<()>>,
     selection_emitted: bool,
     on_action: Option<Box<dyn FnMut(&str, &str)>>,
@@ -912,10 +913,12 @@ impl NavList {
                     return;
                 }
                 shared.navigated = true;
-                if !std::mem::take(&mut shared.selection_emitted)
-                    && let Some(action) = shared.selection_actions.get_mut(&key)
-                {
-                    let _ = action.emit(());
+                if !std::mem::take(&mut shared.selection_emitted) {
+                    if let Some(action) = shared.selection_actions.get_mut(&key) {
+                        let _ = action.emit(());
+                    } else if let Some(callback) = shared.on_activate.as_mut() {
+                        callback(key);
+                    }
                 }
             })
             .on_row_action(move |id, index| {
@@ -1119,6 +1122,15 @@ impl NavList {
     #[must_use]
     pub fn on_select(self, f: impl FnMut(String) + 'static) -> Self {
         self.shared.borrow_mut().on_select = Some(Box::new(f));
+        self
+    }
+
+    /// Called when the chosen destination is activated, including a repeated
+    /// click or Enter on the selected row. Selection-only changes do not call
+    /// this; action-bound destinations use their binding instead.
+    #[must_use]
+    pub fn on_activate(self, f: impl FnMut(String) + 'static) -> Self {
+        self.shared.borrow_mut().on_activate = Some(Box::new(f));
         self
     }
 

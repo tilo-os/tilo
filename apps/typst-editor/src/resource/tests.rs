@@ -288,6 +288,98 @@ fn an_agent_edits_the_workspace_one_call_each() {
     assert_eq!(only(&app).name.0, "appendix.typ");
 }
 
+#[test]
+fn hosted_source_accessibility_edits_persist_undo_and_refuse_viewers() {
+    let mut app = TestApp::<TypstEditorShell>::new().unwrap();
+    let node = app.harness().a11y_node_named("Typst source").unwrap();
+    app.harness()
+        .perform_a11y_action(
+            node,
+            &ui::a11y::Action::SetValue("= Accessible paper".into()),
+        )
+        .unwrap();
+    app.settle();
+    assert_eq!(only(&app).source, "= Accessible paper");
+    assert!(app.undo());
+    assert_eq!(only(&app).source, "");
+    app.set_role(ui::Role::Viewer);
+    let node = app.harness().a11y_node_named("Typst source").unwrap();
+    let _ = app
+        .harness()
+        .perform_a11y_action(node, &ui::a11y::Action::SetValue("Not allowed".into()));
+    app.settle();
+    assert_eq!(only(&app).source, "");
+}
+
+#[test]
+fn saving_keeps_nested_virtual_include_paths() {
+    let mut app = TestApp::<TypstEditorShell>::new().unwrap();
+    app.invoke(new_file("docs/main.typ", None, "#include \"body.typ\""))
+        .unwrap();
+    let main = app
+        .state()
+        .files
+        .iter()
+        .find(|(_, file)| file.name.0 == "docs/main.typ")
+        .map(|(id, _)| id.clone())
+        .unwrap();
+    app.invoke(new_file("docs/body.typ", None, "Included"))
+        .unwrap();
+    app.invoke(Workspace::SAVED_AT.with(workspace::SavedAt {
+        file: main.clone(),
+        path: "/documents/main.typ".into(),
+    }))
+    .unwrap();
+    let state = app.state();
+    let file = state.file(&main).unwrap();
+    assert_eq!(file.project_path, Some(Atom("docs/main.typ".into())));
+    let files: Vec<_> = state
+        .files
+        .values()
+        .map(|file| {
+            (
+                file.project_path.as_ref().unwrap().0.clone(),
+                file.source.clone(),
+            )
+        })
+        .collect();
+    let output = crate::compile::compile_project(
+        &crate::compile::WorldParts::new(),
+        &file.project_path.as_ref().unwrap().0,
+        &file.source,
+        &files,
+        1.0,
+    );
+    assert!(output.ok, "{:?}", output.diagnostics);
+}
+
+#[test]
+fn formatting_effects_are_published_permission_checked_and_undoable() {
+    use crate::actions::TypstEffect;
+    for (effect, expected) in [
+        (TypstEffect::Bold, "**"),
+        (TypstEffect::Italic, "__"),
+        (TypstEffect::Math, "$$"),
+        (TypstEffect::Cite, "@"),
+        (TypstEffect::Section, "= "),
+    ] {
+        let mut app = TestApp::<TypstEditorShell>::new().unwrap();
+        let surface = app.agent_surface().to_string();
+        for id in ["bold", "italic", "math", "cite", "section", "outline"] {
+            assert!(surface.contains(id), "missing {id}");
+        }
+        app.effect(&effect).unwrap();
+        app.settle();
+        assert_eq!(only(&app).source, expected);
+        assert!(app.undo(), "formatting is one attributed undo step");
+        assert_eq!(only(&app).source, "");
+        app.set_role(ui::Role::Viewer);
+        let _ = app.effect(&effect);
+        app.settle();
+        assert_eq!(only(&app).source, "", "a viewer cannot format");
+    }
+}
+
 /// What an agent does for a person is history the person reads: the
 /// app's sentence for each field and verb, naming the file as it was
 /// called.
@@ -356,7 +448,17 @@ fn history_entries_render_as_the_apps_sentences() {
 fn a_capture_shows_the_examples_with_their_problems_as_live_rows() {
     let mut app = TestApp::<TypstEditorShell>::capture(Some("errors")).unwrap();
     let state = app.state();
-    assert_eq!(state.files.len(), 1, "a window edits one document");
+    assert_eq!(
+        state.files.len(),
+        2,
+        "capture includes the project's bibliography"
+    );
+    assert!(
+        state
+            .files
+            .values()
+            .any(|file| file.name.0 == "references.bib")
+    );
     assert_eq!(
         state.file(&sample_id(DEFAULT_INDEX)).unwrap().source,
         crate::samples::ERROR_WARNING

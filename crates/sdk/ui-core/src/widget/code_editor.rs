@@ -946,6 +946,10 @@ impl crate::presence::capability::PublishesPresence for CodeEditor {
     fn presence_key(&self) -> Option<PresenceKey> {
         self.inner.presence_key()
     }
+
+    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+        self.inner.presence_payload()
+    }
 }
 
 // ---------------------------------------------------------------------------
