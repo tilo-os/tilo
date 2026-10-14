@@ -1666,12 +1666,20 @@ impl Widget for MainPanel {
                             .blocks()
                             .first()
                             .is_some_and(|block| block.line.cursor_pos() == 0);
+                    // A caret revealed downward keeps the page's own bottom
+                    // padding under it, the room the last line has at the
+                    // end of the note: a new line never lands flush against
+                    // the window's edge or under what floats over it. A
+                    // viewport too short for that keeps the caret itself.
+                    let margin = self
+                        .body_bottom_inset()
+                        .min((viewport_h - caret.height()).max(0.0));
                     if at_document_start {
                         self.scroll_y = 0.0;
                     } else if caret.y0 - self.scroll_y < viewport_top {
                         self.scroll_y = caret.y0 - viewport_top;
-                    } else if caret.y1 - self.scroll_y > viewport_bottom {
-                        self.scroll_y = caret.y1 - viewport_bottom;
+                    } else if caret.y1 + margin - self.scroll_y > viewport_bottom {
+                        self.scroll_y = caret.y1 + margin - viewport_bottom;
                     }
                     self.follow_caret = false;
                 }
