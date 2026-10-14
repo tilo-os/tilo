@@ -1777,6 +1777,19 @@ pub trait Widget {
         self.accessibility().is_some_and(|node| node.state.hidden)
     }
 
+    /// [`Self::accessibility`]'s own node with its `children` left empty:
+    /// its role, identity (`semantic_key`) and state. Focus capture and focus
+    /// order read only these, for every node on every frame, so a widget
+    /// whose node carries a large subtree (a document exporting its every
+    /// block) answers without building it. An override must equal
+    /// `accessibility()` with `children` cleared.
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        self.accessibility().map(|mut node| {
+            node.children.clear();
+            node
+        })
+    }
+
     /// Geometry for an immediate-mode semantic child from
     /// [`AccessNode::children`](crate::a11y::AccessNode::children). The path is
     /// its child-index path beneath this widget's accessibility node. Returning

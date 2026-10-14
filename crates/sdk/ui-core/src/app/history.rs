@@ -259,7 +259,9 @@ impl App {
                         (
                             allowed && widget.is_focusable() && widget.is_enabled(),
                             allowed && widget.traps_focus(),
-                            widget.accessibility().is_some_and(|node| node.state.hidden),
+                            widget
+                                .accessibility_root()
+                                .is_some_and(|node| node.state.hidden),
                         )
                     })
                     .unwrap_or((false, false, false))

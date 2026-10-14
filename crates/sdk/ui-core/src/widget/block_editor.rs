@@ -3397,11 +3397,7 @@ impl BlockEditor {
             children.push(std::sync::Arc::new(menu));
         }
         Some(crate::a11y::SharedAccessNode {
-            node: AccessNode::new(Role::Document)
-                .with_description(
-                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
-                )
-                .with_state(AccessState::new().focusable(self.is_focusable()).focused(self.is_focused()).multiline(true)),
+            node: self.document_access_node(),
             children,
         })
     }
@@ -4506,6 +4502,22 @@ impl BlockEditor {
             self.structure_dirty = true;
             self.dirty = true;
         }
+    }
+
+    /// The editor's document node, which [`Widget::accessibility`] fills
+    /// with a node per block.
+    fn document_access_node(&self) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        AccessNode::new(Role::Document)
+            .with_description(
+                "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
+            )
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .multiline(true),
+            )
     }
 
     fn refresh_image_dimensions(&mut self) {
@@ -10062,6 +10074,12 @@ impl Widget for BlockEditor {
 
     fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
         self.accessibility_shared_with(None)
+    }
+
+    /// The document's own node without its blocks: what focus capture and
+    /// focus order ask of the editor on every frame.
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        Some(self.document_access_node())
     }
 
     /// The document node above is never hidden; answer without building
