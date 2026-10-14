@@ -23,7 +23,7 @@
 //! device with [`register_device`], and each trim hands the device's free
 //! ranges back to the kernel (`crate::shell::render::software_gpu_memory`).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -61,8 +61,6 @@ struct Schedule {
     last_trim: Option<Instant>,
     /// A trim taken off the schedule is running.
     trimming: bool,
-    /// The running trim serves a set-time request ([`request_after`]).
-    serving_set_time: bool,
 }
 
 impl Schedule {
@@ -97,8 +95,7 @@ impl Schedule {
     fn take(&mut self, now: Instant) -> bool {
         if self.due().is_some_and(|due| due <= now) {
             self.pending = None;
-            self.serving_set_time = self.later.is_some_and(|later| later <= now);
-            if self.serving_set_time {
+            if self.later.is_some_and(|later| later <= now) {
                 self.later = None;
             }
             self.quiet = None;
@@ -117,7 +114,6 @@ struct Trimmer {
 
 static TRIMMER: OnceLock<Option<&'static Trimmer>> = OnceLock::new();
 static TRIMS: AtomicU64 = AtomicU64::new(0);
-static STARTUP_TRIMMED: AtomicBool = AtomicBool::new(false);
 
 /// Software-GPU devices whose freed memory each trim returns, by registration.
 static DEVICES: Mutex<Vec<(u64, wgpu::Device)>> = Mutex::new(Vec::new());
@@ -215,12 +211,6 @@ pub fn request_when_quiet() {
     trimmer.wake.notify_one();
 }
 
-/// Whether the trim asked for at startup ([`request_after`]) has run, so
-/// startup's scratch is back with the kernel.
-pub fn startup_trimmed() -> bool {
-    STARTUP_TRIMMED.load(Ordering::Acquire)
-}
-
 /// Trims run so far in this process.
 pub fn trims_completed() -> u64 {
     TRIMS.load(Ordering::Acquire)
@@ -286,9 +276,6 @@ fn serve(trimmer: &'static Trimmer) {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             schedule.trimming = false;
-            if schedule.serving_set_time {
-                STARTUP_TRIMMED.store(true, Ordering::Release);
-            }
             TRIMS.fetch_add(1, Ordering::AcqRel);
             continue;
         }

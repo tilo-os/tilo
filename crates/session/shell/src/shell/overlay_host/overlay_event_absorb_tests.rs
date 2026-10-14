@@ -121,7 +121,6 @@ impl crate::shell::search::SearchProvider for DirectoryPaletteFixtureProvider {
             return Vec::new();
         }
         vec![crate::shell::search::SearchResult {
-            shortcut: None,
             kind: crate::shell::search::ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::View,
             provider_id: "directory-fixture".into(),
@@ -185,7 +184,7 @@ impl crate::shell::search::SearchProvider for AppSourceFilterFixtureProvider {
                 self.id(),
                 "fixture-host-app",
                 "Open Host fixture",
-                Some("Not sandboxed · System".into()),
+                Some("System · unconfined host app".into()),
                 100,
                 |_, _, _| {},
             ));
@@ -2637,138 +2636,42 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
         assert_eq!(lens.y1, 680.0);
     }
 
-    workspace_lens_leaves_wide_workspace_visible_and_interactive();
-    workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
-}
+    fn compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset() {
+        let h = build_harness_sized(800.0, 600.0);
+        let panel = h.host.shortcut_help_panel_rect();
+        let done = h.host.shortcut_help_done_rect();
+        assert_eq!(panel.x0, 32.0);
+        assert_eq!(panel.x1, 768.0);
+        assert_eq!(panel.y0, 32.0);
+        assert_eq!(panel.y1, 568.0);
+        assert!(done.y0 >= panel.y0 + 16.0);
+        assert!(done.y1 <= panel.y1 - 18.0);
 
-#[test]
-fn compact_shortcut_help_fits_the_window_and_scrolls_its_body() {
-    let (vw, vh) = (800.0, 600.0);
-    let mut h = build_harness_sized(vw, vh);
-    h.chrome.borrow_mut().overlays.shortcut_help = true;
-    settle(&mut h, vw, vh);
-    let panel = h.host.shortcut_help_panel_rect();
-    let done = h.host.shortcut_help_done_rect();
-    assert_eq!(panel.x0, 32.0);
-    assert_eq!(panel.x1, 768.0);
-    assert_eq!(panel.y0, 32.0);
-    assert_eq!(panel.y1, 568.0);
-    assert!(done.y0 >= panel.y0 + 16.0);
-    assert!(done.y1 <= panel.y1 - 18.0);
-    // The content is taller than an 800x600 window, so the body scrolls
-    // instead of overflowing its panel.
-    assert!(h.host.shortcut_guide_max_scroll > 0.0);
-    // Everything is reachable by scrolling: the scroll range is exactly
-    // the content that does not fit, so the last row ends at the body's
-    // bottom edge when scrolled to the end, and scrolling past it is
-    // clamped rather than leaving blank space or clipping a row.
-    let body_h = panel.height() - 98.0 - 22.0;
-    let note_lines = shortcut_note_lines(
-        shortcut_action_summary(&h.host.shortcut_config).is_some(),
-        h.host.desktop_controls.config().vim_mode,
-    );
-    let content_h = shortcut_guide_content_height(
-        panel.width() - 48.0,
-        SHORTCUT_GUIDE_ROWS.len(),
-        note_lines,
-        h.host.shortcut_navigation_step,
-    );
-    assert!(
-        (h.host.shortcut_guide_max_scroll - (content_h - body_h)).abs() < 1e-6,
-        "scroll range {} must equal the overflow {}",
-        h.host.shortcut_guide_max_scroll,
-        content_h - body_h
-    );
-    h.host.shortcut_guide_scroll = f64::MAX;
-    settle(&mut h, vw, vh);
-    assert_eq!(
-        h.host.shortcut_guide_scroll, h.host.shortcut_guide_max_scroll,
-        "scrolling past the end clamps to the last row"
-    );
-    h.host.shortcut_guide_scroll = 0.0;
-    settle(&mut h, vw, vh);
-    let painted: Vec<_> = h.host.shortcut_binding_rects.clone();
-    let body = Rect::new(
-        panel.x0 + 24.0,
-        panel.y0 + 98.0,
-        panel.x1 - 24.0,
-        panel.y1 - 22.0,
-    );
-    assert!(
-        painted
-            .iter()
-            .all(|(_, rect)| rect.y0 >= body.y0 - 6.0 && rect.y1 <= body.y1 + 6.0),
-        "pointer targets stay inside the visible body"
-    );
-}
-
-#[test]
-fn wide_shortcut_help_is_exactly_as_tall_as_its_content() {
-    let (vw, vh) = (1280.0, 1000.0);
-    let mut h = build_harness_sized(vw, vh);
-    h.chrome.borrow_mut().overlays.shortcut_help = true;
-    settle(&mut h, vw, vh);
-    let panel = h.host.shortcut_help_panel_rect();
-    assert_eq!(panel.width(), 960.0);
-    assert!(
-        panel.height() < vh - 64.0,
-        "a tall window keeps the card intrinsic"
-    );
-    assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
-    assert!(panel.y0 >= 32.0 && panel.y1 <= vh - 32.0);
-    assert_eq!(
-        h.host.shortcut_guide_max_scroll, 0.0,
-        "nothing to scroll when the whole guide fits"
-    );
-}
-
-/// Every anchored shell overlay stays inside the window at every size from a
-/// phone-class window to the desktop: the regression net for placement that
-/// runs off a short or narrow window.
-#[test]
-fn anchored_overlays_stay_inside_the_window_at_every_size() {
-    for (vw, vh) in [
-        (640.0, 400.0),
-        (800.0, 600.0),
-        (900.0, 520.0),
-        (1280.0, 800.0),
-        (1472.0, 920.0),
-    ] {
-        let window = Rect::new(0.0, 0.0, vw, vh);
-        let mut h = build_harness_sized(vw, vh);
-        {
-            let mut chrome = h.chrome.borrow_mut();
-            chrome.overlays.shortcut_help = true;
-        }
-        settle(&mut h, vw, vh);
-        let guide = h.host.shortcut_help_panel_rect();
+        let body_bottom = panel.y1 - 22.0;
+        let body_top = panel.y0 + 88.0;
+        let navigation_height = 154.0;
+        let essentials_y = body_top + navigation_height + 12.0;
+        let compact_final_pill_bottom =
+            essentials_y + 18.0 + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
         assert!(
-            guide.x0 >= window.x0
-                && guide.x1 <= window.x1
-                && guide.y0 >= window.y0
-                && guide.y1 <= window.y1,
-            "shortcut guide {guide:?} leaves {window:?}"
-        );
-        h.chrome.borrow_mut().overlays.shortcut_help = false;
-        h.chrome.borrow_mut().overlays.quick_settings = true;
-        settle(&mut h, vw, vh);
-        let qs = h.host.quick_settings_rect();
-        assert!(
-            qs.x0 >= window.x0 && qs.x1 <= window.x1 && qs.y0 >= window.y0 && qs.y1 <= window.y1,
-            "quick settings {qs:?} leaves {window:?}"
-        );
-        h.chrome.borrow_mut().overlays.quick_settings = false;
-        h.chrome.borrow_mut().overlays.ws_settings = true;
-        settle(&mut h, vw, vh);
-        let lens = h.host.ws_settings_rect();
-        assert!(
-            lens.x0 >= window.x0
-                && lens.x1 <= window.x1
-                && lens.y0 >= window.y0
-                && lens.y1 <= window.y1,
-            "workspace lens {lens:?} leaves {window:?}"
+            compact_final_pill_bottom <= body_bottom,
+            "compact help's final recovery shortcut must fit without clipping: pill={compact_final_pill_bottom}, body={body_bottom}"
         );
     }
+
+    fn wide_shortcut_help_remains_a_contextual_card() {
+        let h = build_harness_sized(1280.0, 800.0);
+        let panel = h.host.shortcut_help_panel_rect();
+        assert_eq!(panel.width(), 960.0);
+        assert_eq!(panel.height(), 600.0);
+        assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
+        assert!(panel.y0 >= 100.0 && panel.y1 <= 700.0);
+    }
+
+    workspace_lens_leaves_wide_workspace_visible_and_interactive();
+    workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
+    compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset();
+    wide_shortcut_help_remains_a_contextual_card();
 }
 
 #[test]

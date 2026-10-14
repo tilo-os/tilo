@@ -155,7 +155,6 @@ mod tests {
             tabs: vec![tab],
             width: tilo_desktop_model::width::WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         }
     }
 

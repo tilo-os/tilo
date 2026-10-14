@@ -83,10 +83,7 @@ impl PresentationState {
         self.manager.feedback(
             surface,
             queue,
-            Feedback {
-                clock: self.clock.clone(),
-                observer: Mutex::new(Some(observer)),
-            },
+            Feedback { clock: self.clock.clone(), observer: Mutex::new(Some(observer)) },
         );
     }
 }

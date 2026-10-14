@@ -373,8 +373,6 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", features = ["test-support"] }
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
-# The hosted-terminal tests tee its PTY writes in any profile.
-terminal = { path = "../../../apps/terminal", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 # A browser in the room a node governs, for the node's own session to share
 # sealed records with.
@@ -421,7 +419,6 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tilo-secret-service = { path = "../../system/secret-service" }
 signal-hook-registry = "1.4.8"
 # Raw Vulkan for returning the device memory lavapipe freed
 # (`shell::render::software_gpu_memory`); the version wgpu-hal and ui's

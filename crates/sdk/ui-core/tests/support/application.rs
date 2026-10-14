@@ -762,14 +762,10 @@ impl tilo_ui::resources::PublishesResources for ProbeRoot {
                         ..tilo_actions::ActionContract::view()
                     }),
                 )
-                .with_action(tilo_actions::ActionSpec::prompted_param(
+                .with_action(tilo_actions::ActionSpec::prompted(
                     "prompt",
                     "Prompt",
-                    tilo_actions::ActionParam::required(
-                        "value",
-                        tilo_actions::ParamType::Text,
-                        "Value",
-                    ),
+                    "Value",
                     "Value",
                     tilo_actions::ExecutionLocus::ClientLocal,
                     |value| {

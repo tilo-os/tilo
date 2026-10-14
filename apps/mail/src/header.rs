@@ -121,7 +121,7 @@ pub(crate) fn list_bar(state: &MailState) -> BarSpec {
         BarItem::icon(Icon::Refresh, "Refresh", Command::Refresh),
         BarItem::icon(Icon::Pencil, "New message", Command::Compose),
         BarItem::icon(
-            Icon::Users,
+            Icon::Search,
             crate::i18n::t("mail-contact-recipients"),
             Command::ContactRecipients,
         ),

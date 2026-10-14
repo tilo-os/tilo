@@ -897,7 +897,6 @@ mod tests {
             active_tab: 4,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         }];
         workspace.strips = vec![strip];
         DesktopTree {
