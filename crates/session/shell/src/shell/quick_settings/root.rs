@@ -457,8 +457,12 @@ impl QuickSettingsRoot {
         };
         let rect = self.stop_rect(stop, state);
         let page = self.panel;
-        self.scroll
-            .scroll_into_view(rect - vello::kurbo::Vec2::new(page.x0, page.y0));
+        self.scroll.scroll_into_view(Rect::new(
+            rect.x0 - page.x0,
+            rect.y0 - page.y0,
+            rect.x1 - page.x0,
+            rect.y1 - page.y0,
+        ));
         self.panel = self.page_rect(state);
     }
 
@@ -3441,18 +3445,14 @@ mod tests {
             deepest = deepest.max(root.scroll_offset());
         }
         assert!(deepest > 0.0, "reaching the last stops scrolled the page");
-        let names = root
-            .semantic_rects(state)
-            .into_iter()
-            .map(|(name, rect)| {
-                assert!(
-                    shown.contains(rect.center()),
-                    "{name} targets {rect:?} outside {shown:?}"
-                );
-                name
-            })
-            .collect::<Vec<_>>();
-        assert!(!names.is_empty());
+        let targets = root.semantic_rects(state);
+        assert!(!targets.is_empty());
+        for (name, rect) in targets {
+            assert!(
+                shown.contains(rect.center()),
+                "{name} targets {rect:?} outside {shown:?}"
+            );
+        }
     }
 
     #[test]
